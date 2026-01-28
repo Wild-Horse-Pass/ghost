@@ -40,6 +40,10 @@ node_modules/
 *.profraw
 coverage/
 
+# Release binaries (use GitHub Releases instead)
+releases/*.tar.gz
+releases/*.zip
+
 # Wallet data (local testing)
 wallet-data/
 
