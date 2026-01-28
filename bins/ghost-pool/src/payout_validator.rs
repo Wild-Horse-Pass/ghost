@@ -381,7 +381,7 @@ pub fn quick_validate(proposal: &PayoutProposal) -> Result<(), PayoutValidationE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ghost_common::types::NodeId;
+    use ghost_common::{PayoutEntry, PayoutType};
 
     fn test_context() -> BlockContext {
         BlockContext {
