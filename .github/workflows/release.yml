@@ -52,19 +52,24 @@ jobs:
         run: |
           mkdir -p dist
 
-          # Copy binaries
-          for bin in ghost-pool ghost-cli ghost-coordinator ghost-pay translator ghost-gsp ghost-light-wallet-cli ghost-light-wallet-tui; do
+          # Copy binaries (check actual names from target directory)
+          for bin in ghost-pool ghost-cli ghost-coordinator ghost-pay translator ghost-gsp ghost-light-wallet ghost-light-wallet-tui ghost-wallet ghost-wallet-tui; do
             if [ -f "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" ]; then
               cp "target/${{ matrix.target }}/release/${bin}${{ matrix.suffix }}" dist/
             fi
           done
 
-          # Create archive
+          # Create archive only if dist has files
           cd dist
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a ../bitcoin-ghost-${{ github.ref_name }}-${{ matrix.target }}.zip *
+          if [ -n "$(ls -A .)" ]; then
+            if [ "${{ runner.os }}" = "Windows" ]; then
+              7z a ../bitcoin-ghost-${{ github.ref_name }}-${{ matrix.target }}.zip *
+            else
+              tar czvf ../bitcoin-ghost-${{ github.ref_name }}-${{ matrix.target }}.tar.gz *
+            fi
           else
-            tar czvf ../bitcoin-ghost-${{ github.ref_name }}-${{ matrix.target }}.tar.gz *
+            echo "No binaries found to package"
+            exit 1
           fi
 
       - name: Upload artifacts
