@@ -32,11 +32,11 @@
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
-use zeromq::{Socket, SocketRecv, SocketSend, PubSocket, SubSocket, ZmqMessage};
+use zeromq::{PubSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
 
 use ghost_common::config::P2PPortConfig;
 use ghost_common::error::{GhostError, GhostResult};
@@ -249,8 +249,8 @@ impl MeshNetwork {
         msg_type: MessageType,
         payload: &T,
     ) -> GhostResult<MessageEnvelope> {
-        let payload_bytes = serde_json::to_vec(payload)
-            .map_err(|e| GhostError::Serialization(e.to_string()))?;
+        let payload_bytes =
+            serde_json::to_vec(payload).map_err(|e| GhostError::Serialization(e.to_string()))?;
 
         let sequence = self.next_sequence();
 
@@ -316,7 +316,8 @@ impl MeshNetwork {
         }
 
         // Serialize the envelope
-        let data = envelope.serialize()
+        let data = envelope
+            .serialize()
             .map_err(|e| GhostError::Serialization(e.to_string()))?;
 
         // Construct the endpoint based on message type
@@ -346,7 +347,9 @@ impl MeshNetwork {
         let host_only = host.split(':').next().unwrap_or(host);
 
         let base_port = match msg_type {
-            MessageType::ShareProof | MessageType::ShareConvergence => self.config.ports.share_propagation,
+            MessageType::ShareProof | MessageType::ShareConvergence => {
+                self.config.ports.share_propagation
+            }
             MessageType::BlockFound => self.config.ports.block_announcement,
             MessageType::Vote => self.config.ports.consensus_voting,
             MessageType::HealthPing => self.config.ports.health_monitoring,
@@ -369,7 +372,10 @@ impl MeshNetwork {
 
                 // Only warn for signature failures (potential attacks)
                 // Other failures are just noise from malformed data
-                if matches!(e, crate::message_validator::MessageValidationError::InvalidSignature(_)) {
+                if matches!(
+                    e,
+                    crate::message_validator::MessageValidationError::InvalidSignature(_)
+                ) {
                     warn!(error = %e, "Message rejected due to invalid signature");
                 }
                 return Err(GhostError::P2PMessage(e.to_string()));
@@ -422,7 +428,9 @@ impl MeshNetwork {
     /// Start the mesh network
     pub async fn start(self: &Arc<Self>) -> GhostResult<()> {
         if self.running.load(Ordering::SeqCst) {
-            return Err(GhostError::AlreadyRunning("Mesh network already running".into()));
+            return Err(GhostError::AlreadyRunning(
+                "Mesh network already running".into(),
+            ));
         }
 
         info!(
@@ -480,32 +488,56 @@ impl MeshNetwork {
         // (public_address is for telling peers how to reach us, not for binding)
         let bind_address = "0.0.0.0";
         let endpoints = [
-            format!("tcp://{}:{}", bind_address, self.config.ports.share_propagation),
-            format!("tcp://{}:{}", bind_address, self.config.ports.block_announcement),
-            format!("tcp://{}:{}", bind_address, self.config.ports.consensus_voting),
-            format!("tcp://{}:{}", bind_address, self.config.ports.health_monitoring),
+            format!(
+                "tcp://{}:{}",
+                bind_address, self.config.ports.share_propagation
+            ),
+            format!(
+                "tcp://{}:{}",
+                bind_address, self.config.ports.block_announcement
+            ),
+            format!(
+                "tcp://{}:{}",
+                bind_address, self.config.ports.consensus_voting
+            ),
+            format!(
+                "tcp://{}:{}",
+                bind_address, self.config.ports.health_monitoring
+            ),
             format!("tcp://{}:{}", bind_address, self.config.ports.discovery),
-            format!("tcp://{}:{}", bind_address, self.config.ports.elder_management),
-            format!("tcp://{}:{}", bind_address, self.config.ports.payout_proposal),
-            format!("tcp://{}:{}", bind_address, self.config.ports.payout_transaction),
+            format!(
+                "tcp://{}:{}",
+                bind_address, self.config.ports.elder_management
+            ),
+            format!(
+                "tcp://{}:{}",
+                bind_address, self.config.ports.payout_proposal
+            ),
+            format!(
+                "tcp://{}:{}",
+                bind_address, self.config.ports.payout_transaction
+            ),
         ];
 
         for endpoint in &endpoints {
-            pub_socket.bind(endpoint).await
-                .map_err(|e| GhostError::P2PMessage(format!("Failed to bind {}: {}", endpoint, e)))?;
+            pub_socket.bind(endpoint).await.map_err(|e| {
+                GhostError::P2PMessage(format!("Failed to bind {}: {}", endpoint, e))
+            })?;
             info!(endpoint = %endpoint, "Bound PUB socket");
         }
 
         // Take the receiver from the RwLock
-        let mut outbound_rx = self.outbound_rx.write().take()
+        let mut outbound_rx = self
+            .outbound_rx
+            .write()
+            .take()
             .ok_or_else(|| GhostError::Internal("Outbound receiver already taken".into()))?;
 
         // Process outbound messages
         while self.running.load(Ordering::SeqCst) {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                outbound_rx.recv()
-            ).await {
+            match tokio::time::timeout(std::time::Duration::from_millis(100), outbound_rx.recv())
+                .await
+            {
                 Ok(Some((_endpoint, data))) => {
                     // Create ZMQ message with topic prefix
                     let zmq_msg: ZmqMessage = data.into();
@@ -513,7 +545,7 @@ impl MeshNetwork {
                         warn!(error = %e, "Failed to send message");
                     }
                 }
-                Ok(None) => break, // Channel closed
+                Ok(None) => break,  // Channel closed
                 Err(_) => continue, // Timeout, check running state
             }
         }
@@ -527,11 +559,14 @@ impl MeshNetwork {
         let mut sub_socket = SubSocket::new();
 
         // Subscribe to all topics
-        sub_socket.subscribe("").await
+        sub_socket
+            .subscribe("")
+            .await
             .map_err(|e| GhostError::P2PMessage(format!("Failed to subscribe: {}", e)))?;
 
         // Track which peers we've attempted to connect to
-        let mut connected_addresses: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut connected_addresses: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         while self.running.load(Ordering::SeqCst) {
             // Get ALL peers (not just connected ones) - we need to attempt connection first
@@ -545,7 +580,11 @@ impl MeshNetwork {
                 }
 
                 // Extract host from public_address (may be "host:port" or just "host")
-                let host = peer.public_address.split(':').next().unwrap_or(&peer.public_address);
+                let host = peer
+                    .public_address
+                    .split(':')
+                    .next()
+                    .unwrap_or(&peer.public_address);
 
                 // Connect to all message type ports
                 let ports = [
@@ -564,8 +603,10 @@ impl MeshNetwork {
                     let endpoint = format!("tcp://{}:{}", host, port);
                     match tokio::time::timeout(
                         std::time::Duration::from_secs(5),
-                        sub_socket.connect(&endpoint)
-                    ).await {
+                        sub_socket.connect(&endpoint),
+                    )
+                    .await
+                    {
                         Ok(Ok(_)) => {
                             debug!(endpoint = %endpoint, "Connected SUB socket");
                             connected_any = true;
@@ -588,10 +629,9 @@ impl MeshNetwork {
             }
 
             // Try to receive a message
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                sub_socket.recv()
-            ).await {
+            match tokio::time::timeout(std::time::Duration::from_millis(100), sub_socket.recv())
+                .await
+            {
                 Ok(Ok(msg)) => {
                     let data: Vec<u8> = msg.into_vec().into_iter().flatten().collect();
                     self.messages_received.fetch_add(1, Ordering::Relaxed);
@@ -623,10 +663,9 @@ impl MeshNetwork {
         };
 
         while self.running.load(Ordering::SeqCst) {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                inbound_rx.recv()
-            ).await {
+            match tokio::time::timeout(std::time::Duration::from_millis(100), inbound_rx.recv())
+                .await
+            {
                 Ok(Some(data)) => {
                     if let Err(e) = self.handle_received(&data).await {
                         debug!(error = %e, "Failed to handle message");
@@ -652,13 +691,16 @@ impl MeshNetwork {
                 node_id: self.identity.node_id(),
                 public_address: self.config.public_address.clone(),
                 block_height: 0, // Would track actual height
-                round_id: 0, // Would track current round
+                round_id: 0,     // Would track current round
                 capabilities: ghost_common::types::NodeCapabilities::default(),
                 miner_count: self.peers.peer_count() as u32,
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
             };
 
-            match self.create_envelope(MessageType::HealthPing, &crate::message::HealthPingMessage { ping }) {
+            match self.create_envelope(
+                MessageType::HealthPing,
+                &crate::message::HealthPingMessage { ping },
+            ) {
                 Ok(envelope) => {
                     if let Err(e) = self.broadcast(envelope).await {
                         debug!(error = %e, "Failed to broadcast health ping");
@@ -803,7 +845,8 @@ impl MeshNetwork {
         );
 
         // Serialize envelope
-        let data = envelope.serialize()
+        let data = envelope
+            .serialize()
             .map_err(|e| GhostError::Serialization(e.to_string()))?;
 
         // Get all connected peers and try to queue messages
@@ -840,7 +883,8 @@ impl MeshNetwork {
             }
         }
 
-        self.messages_sent.fetch_add(queued as u64, Ordering::Relaxed);
+        self.messages_sent
+            .fetch_add(queued as u64, Ordering::Relaxed);
 
         info!(
             msg_type = ?msg_type,

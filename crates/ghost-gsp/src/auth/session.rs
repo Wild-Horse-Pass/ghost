@@ -84,11 +84,12 @@ impl JwtManager {
     pub fn validate_token(&self, token: &str) -> GspResult<WalletId> {
         let validation = Validation::default();
 
-        let token_data = decode::<Claims>(token, &self.decoding_key, &validation)
-            .map_err(|e| match e.kind() {
+        let token_data = decode::<Claims>(token, &self.decoding_key, &validation).map_err(|e| {
+            match e.kind() {
                 jsonwebtoken::errors::ErrorKind::ExpiredSignature => GspError::SessionExpired,
                 _ => GspError::InvalidToken(e.to_string()),
-            })?;
+            }
+        })?;
 
         Ok(WalletId::from(token_data.claims.sub))
     }

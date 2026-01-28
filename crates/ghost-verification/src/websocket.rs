@@ -48,14 +48,9 @@ use tracing::{debug, error, info, warn};
 #[serde(tag = "event", content = "data")]
 pub enum WsEvent {
     /// Miner connected to pool
-    MinerConnected {
-        miner_id: String,
-        address: String,
-    },
+    MinerConnected { miner_id: String, address: String },
     /// Miner disconnected from pool
-    MinerDisconnected {
-        miner_id: String,
-    },
+    MinerDisconnected { miner_id: String },
     /// Share submitted by miner
     ShareSubmitted {
         miner_id: String,
@@ -69,10 +64,7 @@ pub enum WsEvent {
         miner_id: String,
     },
     /// New round started
-    RoundStarted {
-        round_id: u64,
-        height: u64,
-    },
+    RoundStarted { round_id: u64, height: u64 },
     /// Round ended
     RoundEnded {
         round_id: u64,
@@ -80,14 +72,9 @@ pub enum WsEvent {
         miner_count: u32,
     },
     /// Peer connected
-    PeerConnected {
-        peer_id: String,
-        address: String,
-    },
+    PeerConnected { peer_id: String, address: String },
     /// Peer disconnected
-    PeerDisconnected {
-        peer_id: String,
-    },
+    PeerDisconnected { peer_id: String },
     /// Consensus vote received
     ConsensusVote {
         proposal_id: String,
@@ -115,9 +102,7 @@ pub enum WsEvent {
         uptime_secs: u64,
     },
     /// Error event
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 /// WebSocket state for managing connections

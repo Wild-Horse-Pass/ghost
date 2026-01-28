@@ -190,9 +190,9 @@ fn test_coinbase_payout_construction() {
 
     // Simulate 3 miners with work proportions
     let miner_shares = vec![
-        ("miner_1", 0.5),  // 50%
-        ("miner_2", 0.3),  // 30%
-        ("miner_3", 0.2),  // 20%
+        ("miner_1", 0.5), // 50%
+        ("miner_2", 0.3), // 30%
+        ("miner_3", 0.2), // 20%
     ];
 
     let mut payouts: Vec<PayoutEntry> = Vec::new();
@@ -214,7 +214,10 @@ fn test_coinbase_payout_construction() {
 
     // Verify total payout
     let total_payout: u64 = payouts.iter().map(|p| p.amount_sats).sum();
-    assert!(total - total_payout < 10, "Rounding error should be minimal");
+    assert!(
+        total - total_payout < 10,
+        "Rounding error should be minimal"
+    );
 
     // Verify treasury got 1%
     assert_eq!(payouts[0].amount_sats, treasury_fee);
@@ -345,8 +348,8 @@ fn test_template_update_on_new_block() {
 fn test_vardiff_adjustment() {
     // Simulate vardiff controller logic
     struct VardiffState {
-        target_secs: u64,      // Target seconds between shares
-        current_diff: f64,     // Current difficulty
+        target_secs: u64,  // Target seconds between shares
+        current_diff: f64, // Current difficulty
         min_diff: f64,
         max_diff: f64,
     }

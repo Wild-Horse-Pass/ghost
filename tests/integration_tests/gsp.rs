@@ -11,8 +11,8 @@
 //! Run with: cargo test --test integration gsp
 
 use ghost_gsp_proto::{
-    ClientMessage, PaymentMode, PaymentStatus, ServerMessage, WalletId, WalletProof,
-    validate_message,
+    validate_message, ClientMessage, PaymentMode, PaymentStatus, ServerMessage, WalletId,
+    WalletProof,
 };
 
 // ============================================================================
@@ -386,7 +386,10 @@ mod payments {
     #[test]
     fn test_payment_status_display() {
         assert_eq!(format!("{}", PaymentStatus::Preparing), "preparing");
-        assert_eq!(format!("{}", PaymentStatus::PendingSignature), "pending_signature");
+        assert_eq!(
+            format!("{}", PaymentStatus::PendingSignature),
+            "pending_signature"
+        );
         assert_eq!(format!("{}", PaymentStatus::Broadcast), "broadcast");
         assert_eq!(format!("{}", PaymentStatus::Confirmed), "confirmed");
     }
@@ -443,9 +446,16 @@ mod auth_requirements {
     #[test]
     fn test_requires_auth_balance_queries() {
         assert!(ClientMessage::GetBalance.requires_auth());
-        assert!(ClientMessage::GetUtxos { min_confirmations: 1 }.requires_auth());
+        assert!(ClientMessage::GetUtxos {
+            min_confirmations: 1
+        }
+        .requires_auth());
         assert!(ClientMessage::GetGhostLocks.requires_auth());
-        assert!(ClientMessage::GetTransactions { limit: 10, offset: 0 }.requires_auth());
+        assert!(ClientMessage::GetTransactions {
+            limit: 10,
+            offset: 0
+        }
+        .requires_auth());
     }
 
     #[test]
@@ -457,9 +467,15 @@ mod auth_requirements {
 
     #[test]
     fn test_not_requires_auth() {
-        assert!(!ClientMessage::Authenticate { token: "test".to_string() }.requires_auth());
+        assert!(!ClientMessage::Authenticate {
+            token: "test".to_string()
+        }
+        .requires_auth());
         assert!(!ClientMessage::Ping { timestamp: None }.requires_auth());
-        assert!(!ClientMessage::Unsubscribe { subscription: "balance".to_string() }.requires_auth());
+        assert!(!ClientMessage::Unsubscribe {
+            subscription: "balance".to_string()
+        }
+        .requires_auth());
     }
 }
 
@@ -509,7 +525,11 @@ mod message_flow {
         let parsed: ServerMessage = serde_json::from_str(&json).unwrap();
 
         match parsed {
-            ServerMessage::BalanceUpdate { confirmed, unconfirmed, locked } => {
+            ServerMessage::BalanceUpdate {
+                confirmed,
+                unconfirmed,
+                locked,
+            } => {
                 assert_eq!(confirmed, 1_000_000);
                 assert_eq!(unconfirmed, 50_000);
                 assert_eq!(locked, 100_000);

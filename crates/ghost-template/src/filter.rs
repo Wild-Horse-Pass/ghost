@@ -94,7 +94,10 @@ impl TemplateFilter {
 
         for (i, template_tx) in template.transactions.iter().enumerate() {
             // Check if any dependency was rejected
-            let dependency_rejected = template_tx.depends.iter().any(|&dep| rejected_set.contains(&dep));
+            let dependency_rejected = template_tx
+                .depends
+                .iter()
+                .any(|&dep| rejected_set.contains(&dep));
 
             if dependency_rejected {
                 debug!(
@@ -168,7 +171,10 @@ impl TemplateFilter {
             included = included_indices.len(),
             rejected = rejected_indices.len(),
             total_fee = total_fee,
-            rejection_rate = format!("{:.1}%", rejected_indices.len() as f64 / template.transactions.len() as f64 * 100.0),
+            rejection_rate = format!(
+                "{:.1}%",
+                rejected_indices.len() as f64 / template.transactions.len() as f64 * 100.0
+            ),
             "Template filtering complete"
         );
 
@@ -183,7 +189,10 @@ impl TemplateFilter {
     }
 
     /// Filter and return statistics
-    pub fn filter_with_stats(&mut self, template: BlockTemplate) -> (FilteredTemplate, TemplateStats) {
+    pub fn filter_with_stats(
+        &mut self,
+        template: BlockTemplate,
+    ) -> (FilteredTemplate, TemplateStats) {
         let filtered = self.filter(template);
         let stats = TemplateStats::from_filtered(&filtered);
         (filtered, stats)

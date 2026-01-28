@@ -78,7 +78,7 @@ struct PersistedBucket {
 /// Serializable rate limiter state
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistedRateLimiterState {
-    buckets: Vec<(String, PersistedBucket)>,  // node_id_hex -> bucket
+    buckets: Vec<(String, PersistedBucket)>, // node_id_hex -> bucket
     saved_at: u64,
 }
 
@@ -118,16 +118,20 @@ impl RateLimiter {
 
                         // Calculate elapsed time and refill tokens
                         let elapsed_secs = now.saturating_sub(persisted.last_update_unix);
-                        let refilled = persisted.tokens + (elapsed_secs as f64 * refill_rate as f64);
+                        let refilled =
+                            persisted.tokens + (elapsed_secs as f64 * refill_rate as f64);
                         let tokens = refilled.min(max_tokens as f64);
 
                         // Only restore if bucket isn't full (still useful to track)
                         if tokens < max_tokens as f64 {
-                            buckets.insert(node_id, TokenBucket {
-                                tokens,
-                                last_update: now_instant,
-                                last_update_unix: now,
-                            });
+                            buckets.insert(
+                                node_id,
+                                TokenBucket {
+                                    tokens,
+                                    last_update: now_instant,
+                                    last_update_unix: now,
+                                },
+                            );
                         }
                     }
                 }
@@ -163,8 +167,8 @@ impl RateLimiter {
 
         // Refill tokens based on time elapsed
         let elapsed = now.duration_since(bucket.last_update).as_secs_f64();
-        bucket.tokens = (bucket.tokens + elapsed * self.refill_rate as f64)
-            .min(self.max_tokens as f64);
+        bucket.tokens =
+            (bucket.tokens + elapsed * self.refill_rate as f64).min(self.max_tokens as f64);
         bucket.last_update = now;
         bucket.last_update_unix = now_unix;
 
@@ -182,9 +186,7 @@ impl RateLimiter {
         let mut buckets = self.buckets.write();
         let now = Instant::now();
 
-        buckets.retain(|_, bucket| {
-            now.duration_since(bucket.last_update).as_secs() < max_age_secs
-        });
+        buckets.retain(|_, bucket| now.duration_since(bucket.last_update).as_secs() < max_age_secs);
     }
 
     /// Serialize state for persistence (call periodically, e.g., every 60 seconds)
@@ -319,7 +321,10 @@ impl VoteHandler {
             pending_proposals: RwLock::new(std::collections::HashMap::new()),
             broadcast_fn: None,
             execute_fn: None,
-            rate_limiter: RateLimiter::new(config.rate_limit_max_tokens, config.rate_limit_refill_rate),
+            rate_limiter: RateLimiter::new(
+                config.rate_limit_max_tokens,
+                config.rate_limit_refill_rate,
+            ),
             config,
         }
     }
@@ -337,13 +342,15 @@ impl VoteHandler {
         let mut proposals = self.pending_proposals.write();
         let initial_count = proposals.len();
 
-        proposals.retain(|_hash, pending| {
-            pending.received_at.elapsed() < stale_threshold
-        });
+        proposals.retain(|_hash, pending| pending.received_at.elapsed() < stale_threshold);
 
         let evicted = initial_count - proposals.len();
         if evicted > 0 {
-            debug!(evicted, remaining = proposals.len(), "Evicted stale proposals");
+            debug!(
+                evicted,
+                remaining = proposals.len(),
+                "Evicted stale proposals"
+            );
         }
         evicted
     }
@@ -400,7 +407,7 @@ impl VoteHandler {
                     "Too many pending proposals, rejecting new proposal"
                 );
                 return Err(ghost_common::error::GhostError::Internal(
-                    "Too many pending proposals - resource exhausted".to_string()
+                    "Too many pending proposals - resource exhausted".to_string(),
                 ));
             }
         }
@@ -410,7 +417,9 @@ impl VoteHandler {
             proposal: proposal.clone(),
             received_at: std::time::Instant::now(),
         };
-        self.pending_proposals.write().insert(proposal_hash, pending);
+        self.pending_proposals
+            .write()
+            .insert(proposal_hash, pending);
 
         // Create voting session
         let elders = self.elders.read().clone();
@@ -441,9 +450,8 @@ impl VoteHandler {
                 proposal: proposal.clone(),
             };
 
-            let payload = serde_json::to_vec(&proposal_msg).map_err(|e| {
-                ghost_common::error::GhostError::Serialization(e.to_string())
-            })?;
+            let payload = serde_json::to_vec(&proposal_msg)
+                .map_err(|e| ghost_common::error::GhostError::Serialization(e.to_string()))?;
 
             if let Err(e) = broadcast(MessageType::PayoutProposal, payload) {
                 warn!(error = %e, "Failed to broadcast payout proposal");
@@ -527,7 +535,11 @@ impl VoteHandler {
 
         // 6. Check for duplicate addresses (same address receiving multiple payouts)
         let mut seen_addresses = std::collections::HashSet::new();
-        for payout in proposal.miner_payouts.iter().chain(proposal.node_payouts.iter()) {
+        for payout in proposal
+            .miner_payouts
+            .iter()
+            .chain(proposal.node_payouts.iter())
+        {
             if !seen_addresses.insert(&payout.address) {
                 return Err("duplicate payout address");
             }
@@ -582,18 +594,16 @@ impl VoteHandler {
         let vote = Vote::new(self.identity.node_id(), approve, signature);
 
         // Submit to voting manager
-        if let Some(result) = self.voting_manager.vote(round_id, proposal_hash, vote.clone()) {
+        if let Some(result) = self
+            .voting_manager
+            .vote(round_id, proposal_hash, vote.clone())
+        {
             match result {
                 VoteResult::Decided(consensus_result) => {
                     self.handle_decision(round_id, proposal_hash, consensus_result)?;
                 }
                 _ => {
-                    debug!(
-                        round_id,
-                        approve,
-                        "Vote recorded: {:?}",
-                        result
-                    );
+                    debug!(round_id, approve, "Vote recorded: {:?}", result);
                 }
             }
         }
@@ -607,9 +617,8 @@ impl VoteHandler {
                 signature,
             };
 
-            let payload = serde_json::to_vec(&vote_msg).map_err(|e| {
-                ghost_common::error::GhostError::Serialization(e.to_string())
-            })?;
+            let payload = serde_json::to_vec(&vote_msg)
+                .map_err(|e| ghost_common::error::GhostError::Serialization(e.to_string()))?;
 
             broadcast(MessageType::Vote, payload)?;
         }
@@ -623,11 +632,10 @@ impl VoteHandler {
         let vote = Vote::new(sender, vote_msg.approve, vote_msg.signature);
 
         // Submit to voting manager
-        if let Some(result) = self.voting_manager.vote(
-            vote_msg.round_id,
-            vote_msg.proposal_hash,
-            vote,
-        ) {
+        if let Some(result) =
+            self.voting_manager
+                .vote(vote_msg.round_id, vote_msg.proposal_hash, vote)
+        {
             match result {
                 VoteResult::Decided(consensus_result) => {
                     self.handle_decision(
@@ -638,10 +646,10 @@ impl VoteHandler {
                 }
                 VoteResult::ApprovalRecorded | VoteResult::RejectionRecorded => {
                     // Log progress
-                    if let Some(status) = self.voting_manager.get_session(
-                        vote_msg.round_id,
-                        vote_msg.proposal_hash,
-                    ) {
+                    if let Some(status) = self
+                        .voting_manager
+                        .get_session(vote_msg.round_id, vote_msg.proposal_hash)
+                    {
                         debug!(
                             round_id = vote_msg.round_id,
                             approvals = status.approvals,
@@ -652,22 +660,13 @@ impl VoteHandler {
                     }
                 }
                 VoteResult::DuplicateVote => {
-                    debug!(
-                        sender = hex::encode(sender),
-                        "Duplicate vote ignored"
-                    );
+                    debug!(sender = hex::encode(sender), "Duplicate vote ignored");
                 }
                 VoteResult::NotEligible => {
-                    warn!(
-                        sender = hex::encode(sender),
-                        "Vote from non-eligible voter"
-                    );
+                    warn!(sender = hex::encode(sender), "Vote from non-eligible voter");
                 }
                 VoteResult::InvalidSignature => {
-                    warn!(
-                        sender = hex::encode(sender),
-                        "Invalid vote signature"
-                    );
+                    warn!(sender = hex::encode(sender), "Invalid vote signature");
                 }
                 VoteResult::AlreadyDecided => {
                     debug!("Vote received after decision");
@@ -727,7 +726,10 @@ impl VoteHandler {
         let sessions_cancelled = self.voting_manager.cancel_sessions_for_round(round_id);
 
         if removed.is_empty() && sessions_cancelled == 0 {
-            debug!(round_id, "No proposals or sessions found to cancel for round");
+            debug!(
+                round_id,
+                "No proposals or sessions found to cancel for round"
+            );
         } else {
             info!(
                 round_id,
@@ -747,8 +749,9 @@ impl VoteHandler {
 
     /// Get voting status for a round
     pub fn get_status(&self, round_id: RoundId, proposal_hash: [u8; 32]) -> Option<VotingStatus> {
-        self.voting_manager.get_session(round_id, proposal_hash).map(|s| {
-            VotingStatus {
+        self.voting_manager
+            .get_session(round_id, proposal_hash)
+            .map(|s| VotingStatus {
                 round_id: s.round_id,
                 proposal_hash: s.proposal_hash,
                 approvals: s.approvals,
@@ -757,8 +760,7 @@ impl VoteHandler {
                 threshold: s.threshold,
                 decided: s.is_decided,
                 result: s.result,
-            }
-        })
+            })
     }
 }
 
@@ -772,9 +774,10 @@ impl MessageHandler for VoteHandler {
                 msg_type = ?envelope.msg_type,
                 "Rate limited message from peer"
             );
-            return Err(ghost_common::error::GhostError::RateLimited(
-                format!("Node {} rate limited", hex::encode(&envelope.sender[..8]))
-            ));
+            return Err(ghost_common::error::GhostError::RateLimited(format!(
+                "Node {} rate limited",
+                hex::encode(&envelope.sender[..8])
+            )));
         }
 
         match envelope.msg_type {
@@ -851,14 +854,12 @@ mod tests {
             block_hash: [0u8; 32],
             block_height: 800_000,
             proposer: [1u8; 32],
-            miner_payouts: vec![
-                PayoutEntry {
-                    address: b"bc1q...".to_vec(),
-                    amount: 300_000_000,
-                    recipient_id: [1u8; 32],
-                    payout_type: PayoutType::Mining,
-                },
-            ],
+            miner_payouts: vec![PayoutEntry {
+                address: b"bc1q...".to_vec(),
+                amount: 300_000_000,
+                recipient_id: [1u8; 32],
+                payout_type: PayoutType::Mining,
+            }],
             node_payouts: vec![],
             treasury_amount: 25_000_000,
             tx_fees: 10_000_000,

@@ -322,7 +322,11 @@ impl Treasury {
     /// Calculate treasury amount from block subsidy
     ///
     /// Returns the satoshi amount that should go to treasury.
-    pub fn calculate_treasury_amount(&self, subsidy_sats: u64, current_height: TrustedBlockHeight) -> u64 {
+    pub fn calculate_treasury_amount(
+        &self,
+        subsidy_sats: u64,
+        current_height: TrustedBlockHeight,
+    ) -> u64 {
         let percent = self.treasury_allocation_percent(current_height);
         ((subsidy_sats as f64) * (percent / 100.0)) as u64
     }
@@ -330,7 +334,11 @@ impl Treasury {
     /// Calculate node pool amount from block subsidy
     ///
     /// Returns the satoshi amount that should go to node rewards.
-    pub fn calculate_node_pool_amount(&self, subsidy_sats: u64, current_height: TrustedBlockHeight) -> u64 {
+    pub fn calculate_node_pool_amount(
+        &self,
+        subsidy_sats: u64,
+        current_height: TrustedBlockHeight,
+    ) -> u64 {
         let percent = self.node_pool_allocation_percent(current_height);
         ((subsidy_sats as f64) * (percent / 100.0)) as u64
     }
@@ -398,11 +406,7 @@ impl L2FeeAllocation {
     /// L2 fees are split:
     /// - 50% to GhostPay-enabled nodes
     /// - 50% to treasury
-    pub fn calculate(
-        transfer_fees: u64,
-        wraith_fees: u64,
-        reconciliation_fees: u64,
-    ) -> Self {
+    pub fn calculate(transfer_fees: u64, wraith_fees: u64, reconciliation_fees: u64) -> Self {
         let total = transfer_fees + wraith_fees + reconciliation_fees;
         let to_nodes = total / 2;
         let to_treasury = total - to_nodes;
@@ -469,8 +473,14 @@ mod tests {
         let treasury = Treasury::with_threshold(vec![0u8; 25], TEST_THRESHOLD);
 
         // Pre-threshold: treasury gets 0.5%
-        assert_eq!(treasury.treasury_allocation_percent(TrustedBlockHeight::for_test(800_000)), 0.5);
-        assert_eq!(treasury.node_pool_allocation_percent(TrustedBlockHeight::for_test(800_000)), 0.5);
+        assert_eq!(
+            treasury.treasury_allocation_percent(TrustedBlockHeight::for_test(800_000)),
+            0.5
+        );
+        assert_eq!(
+            treasury.node_pool_allocation_percent(TrustedBlockHeight::for_test(800_000)),
+            0.5
+        );
     }
 
     #[test]
@@ -535,11 +545,15 @@ mod tests {
         let subsidy = 312_500_000u64; // 3.125 BTC
 
         // Year 0: 0.5% of subsidy
-        let amount_year_0 = treasury.calculate_treasury_amount(subsidy, TrustedBlockHeight::for_test(800_000));
+        let amount_year_0 =
+            treasury.calculate_treasury_amount(subsidy, TrustedBlockHeight::for_test(800_000));
         assert_eq!(amount_year_0, 1_562_500); // 0.5% of 3.125 BTC = 0.015625 BTC
 
         // Year 5: 0% of subsidy
-        let amount_year_5 = treasury.calculate_treasury_amount(subsidy, TrustedBlockHeight::for_test(800_000 + (BLOCKS_PER_YEAR * 5)));
+        let amount_year_5 = treasury.calculate_treasury_amount(
+            subsidy,
+            TrustedBlockHeight::for_test(800_000 + (BLOCKS_PER_YEAR * 5)),
+        );
         assert_eq!(amount_year_5, 0);
     }
 
@@ -548,11 +562,30 @@ mod tests {
         let mut treasury = Treasury::with_threshold(vec![0u8; 25], TEST_THRESHOLD);
         treasury.deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000));
 
-        assert_eq!(treasury.decay_year(TrustedBlockHeight::for_test(800_000)), 0);
-        assert_eq!(treasury.decay_year(TrustedBlockHeight::for_test(800_000 + BLOCKS_PER_YEAR - 1)), 0);
-        assert_eq!(treasury.decay_year(TrustedBlockHeight::for_test(800_000 + BLOCKS_PER_YEAR)), 1);
-        assert_eq!(treasury.decay_year(TrustedBlockHeight::for_test(800_000 + (BLOCKS_PER_YEAR * 3))), 3);
-        assert_eq!(treasury.decay_year(TrustedBlockHeight::for_test(800_000 + (BLOCKS_PER_YEAR * 10))), 5); // Capped at 5
+        assert_eq!(
+            treasury.decay_year(TrustedBlockHeight::for_test(800_000)),
+            0
+        );
+        assert_eq!(
+            treasury.decay_year(TrustedBlockHeight::for_test(800_000 + BLOCKS_PER_YEAR - 1)),
+            0
+        );
+        assert_eq!(
+            treasury.decay_year(TrustedBlockHeight::for_test(800_000 + BLOCKS_PER_YEAR)),
+            1
+        );
+        assert_eq!(
+            treasury.decay_year(TrustedBlockHeight::for_test(
+                800_000 + (BLOCKS_PER_YEAR * 3)
+            )),
+            3
+        );
+        assert_eq!(
+            treasury.decay_year(TrustedBlockHeight::for_test(
+                800_000 + (BLOCKS_PER_YEAR * 10)
+            )),
+            5
+        ); // Capped at 5
     }
 
     #[test]
@@ -561,9 +594,15 @@ mod tests {
         treasury.deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000));
 
         assert!(!treasury.is_decay_complete(TrustedBlockHeight::for_test(800_000)));
-        assert!(!treasury.is_decay_complete(TrustedBlockHeight::for_test(800_000 + (BLOCKS_PER_YEAR * 4))));
-        assert!(treasury.is_decay_complete(TrustedBlockHeight::for_test(800_000 + (BLOCKS_PER_YEAR * 5))));
-        assert!(treasury.is_decay_complete(TrustedBlockHeight::for_test(800_000 + (BLOCKS_PER_YEAR * 10))));
+        assert!(!treasury.is_decay_complete(TrustedBlockHeight::for_test(
+            800_000 + (BLOCKS_PER_YEAR * 4)
+        )));
+        assert!(treasury.is_decay_complete(TrustedBlockHeight::for_test(
+            800_000 + (BLOCKS_PER_YEAR * 5)
+        )));
+        assert!(treasury.is_decay_complete(TrustedBlockHeight::for_test(
+            800_000 + (BLOCKS_PER_YEAR * 10)
+        )));
     }
 
     #[test]
@@ -571,18 +610,43 @@ mod tests {
         let mut treasury = Treasury::with_threshold(vec![0u8; 25], TEST_THRESHOLD);
 
         // Pre-threshold: None
-        assert!(treasury.years_since_threshold(TrustedBlockHeight::for_test(800_000)).is_none());
+        assert!(treasury
+            .years_since_threshold(TrustedBlockHeight::for_test(800_000))
+            .is_none());
 
         treasury.deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000));
 
         // At threshold: 0 years
-        assert!((treasury.years_since_threshold(TrustedBlockHeight::for_test(800_000)).unwrap() - 0.0).abs() < 0.001);
+        assert!(
+            (treasury
+                .years_since_threshold(TrustedBlockHeight::for_test(800_000))
+                .unwrap()
+                - 0.0)
+                .abs()
+                < 0.001
+        );
 
         // 1 year later
-        assert!((treasury.years_since_threshold(TrustedBlockHeight::for_test(800_000 + BLOCKS_PER_YEAR)).unwrap() - 1.0).abs() < 0.001);
+        assert!(
+            (treasury
+                .years_since_threshold(TrustedBlockHeight::for_test(800_000 + BLOCKS_PER_YEAR))
+                .unwrap()
+                - 1.0)
+                .abs()
+                < 0.001
+        );
 
         // 2.5 years later
-        assert!((treasury.years_since_threshold(TrustedBlockHeight::for_test(800_000 + (BLOCKS_PER_YEAR * 5 / 2))).unwrap() - 2.5).abs() < 0.001);
+        assert!(
+            (treasury
+                .years_since_threshold(TrustedBlockHeight::for_test(
+                    800_000 + (BLOCKS_PER_YEAR * 5 / 2)
+                ))
+                .unwrap()
+                - 2.5)
+                .abs()
+                < 0.001
+        );
     }
 
     #[test]
@@ -603,11 +667,11 @@ mod tests {
         // Use restore_with_threshold for custom threshold
         let treasury = Treasury::restore_with_threshold(
             vec![0u8; 25],
-            150_000_000,       // balance (1.5 BTC)
-            TEST_THRESHOLD,    // 1 BTC threshold
-            Some(750_000),     // threshold reached at block 750,000
-            200_000_000,       // total collected
-            50_000_000,        // total payouts
+            150_000_000,    // balance (1.5 BTC)
+            TEST_THRESHOLD, // 1 BTC threshold
+            Some(750_000),  // threshold reached at block 750,000
+            200_000_000,    // total collected
+            50_000_000,     // total payouts
         );
 
         assert!(treasury.at_threshold());

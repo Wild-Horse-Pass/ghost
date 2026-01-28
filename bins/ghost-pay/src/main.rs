@@ -62,9 +62,11 @@ use bitcoin::Network;
 use ghost_common::constants::SATS_PER_BTC_F64;
 use ghost_common::rpc::BitcoinRpc;
 use ghost_keys::{GhostKeys, GhostKeysExport, PaymentDetector};
-use ghost_locks::{Denomination, TimelockTier, GhostLock, LockState};
+use ghost_locks::{Denomination, GhostLock, LockState, TimelockTier};
 use ghost_reconciliation::{BatchExecutor, ReconciliationInput, Settlement};
-use ghost_storage::{Database, GhostLockRecord, GhostLockState as DbLockState, WithdrawalRequest, WithdrawalStatus};
+use ghost_storage::{
+    Database, GhostLockRecord, GhostLockState as DbLockState, WithdrawalRequest, WithdrawalStatus,
+};
 use wraith_protocol::{ParticipantTier, WraithCoordinator, WraithDenomination};
 
 /// Ghost Pay L2 Node
@@ -172,8 +174,8 @@ struct ScanRequest {
 
 /// Convert an x-only pubkey hex to a P2TR address
 fn pubkey_hex_to_p2tr_address(pubkey_hex: &str, network: Network) -> String {
-    use bitcoin::secp256k1::XOnlyPublicKey;
     use bitcoin::key::TweakedPublicKey;
+    use bitcoin::secp256k1::XOnlyPublicKey;
 
     // Parse the x-only public key from hex
     let bytes = match hex::decode(pubkey_hex) {
@@ -241,7 +243,12 @@ async fn main() -> Result<()> {
     // Parse Bitcoin RPC URL and create client
     let rpc_url = &args.bitcoin_rpc;
     let (rpc_host, rpc_port) = parse_rpc_url(rpc_url, network);
-    let rpc = Arc::new(BitcoinRpc::new(&rpc_host, rpc_port, &args.rpc_user, &args.rpc_password)?);
+    let rpc = Arc::new(BitcoinRpc::new(
+        &rpc_host,
+        rpc_port,
+        &args.rpc_user,
+        &args.rpc_password,
+    )?);
     info!("Bitcoin RPC configured: {}:{}", rpc_host, rpc_port);
 
     // Save treasury address before args is moved
@@ -271,22 +278,30 @@ async fn main() -> Result<()> {
 
                 // Load locks for this ghost_id (pending and active, not spent)
                 if let Ok(db_locks) = db.get_ghost_locks_by_owner(&ghost_id_str) {
-                    let lock_infos: Vec<LockInfo> = db_locks.iter()
+                    let lock_infos: Vec<LockInfo> = db_locks
+                        .iter()
                         .filter(|r| r.state != ghost_storage::GhostLockState::Spent)
                         .map(|r| LockInfo {
-                        id: r.lock_id.clone(),
-                        denomination: r.denomination.clone(),
-                        amount_sats: r.amount_sats,
-                        state: r.state.as_str().to_string(),
-                        created_at: r.created_at as u64,
-                        timelock_tier: r.timelock_tier.clone(),
-                        jump_risk: r.jump_risk_tier.clone(),
-                        needs_jump: r.next_jump_height.map(|h| h <= r.creation_height + 1000).unwrap_or(false),
-                        address: pubkey_hex_to_p2tr_address(&r.lock_pubkey, network),
-                        output_pubkey: r.lock_pubkey.clone(),
-                        recovery_height: r.recovery_height,
-                        blocks_until_jump: r.next_jump_height.unwrap_or(0).saturating_sub(r.creation_height),
-                    }).collect();
+                            id: r.lock_id.clone(),
+                            denomination: r.denomination.clone(),
+                            amount_sats: r.amount_sats,
+                            state: r.state.as_str().to_string(),
+                            created_at: r.created_at as u64,
+                            timelock_tier: r.timelock_tier.clone(),
+                            jump_risk: r.jump_risk_tier.clone(),
+                            needs_jump: r
+                                .next_jump_height
+                                .map(|h| h <= r.creation_height + 1000)
+                                .unwrap_or(false),
+                            address: pubkey_hex_to_p2tr_address(&r.lock_pubkey, network),
+                            output_pubkey: r.lock_pubkey.clone(),
+                            recovery_height: r.recovery_height,
+                            blocks_until_jump: r
+                                .next_jump_height
+                                .unwrap_or(0)
+                                .saturating_sub(r.creation_height),
+                        })
+                        .collect();
 
                     info!("Loaded {} existing locks from database", lock_infos.len());
                     *state.locks.write() = lock_infos;
@@ -390,22 +405,30 @@ async fn generate_keys(
     // Load existing locks from database for this ghost_id (pending and active, not spent)
     if let Ok(db_locks) = state.db.get_ghost_locks_by_owner(&ghost_id_str) {
         let network = state.network;
-        let lock_infos: Vec<LockInfo> = db_locks.iter()
+        let lock_infos: Vec<LockInfo> = db_locks
+            .iter()
             .filter(|r| r.state != ghost_storage::GhostLockState::Spent)
             .map(|r| LockInfo {
-            id: r.lock_id.clone(),
-            denomination: r.denomination.clone(),
-            amount_sats: r.amount_sats,
-            state: r.state.as_str().to_string(),
-            created_at: r.created_at as u64,
-            timelock_tier: r.timelock_tier.clone(),
-            jump_risk: r.jump_risk_tier.clone(),
-            needs_jump: r.next_jump_height.map(|h| h <= r.creation_height + 1000).unwrap_or(false),
-            address: pubkey_hex_to_p2tr_address(&r.lock_pubkey, network),
-            output_pubkey: r.lock_pubkey.clone(),
-            recovery_height: r.recovery_height,
-            blocks_until_jump: r.next_jump_height.unwrap_or(0).saturating_sub(r.creation_height),
-        }).collect();
+                id: r.lock_id.clone(),
+                denomination: r.denomination.clone(),
+                amount_sats: r.amount_sats,
+                state: r.state.as_str().to_string(),
+                created_at: r.created_at as u64,
+                timelock_tier: r.timelock_tier.clone(),
+                jump_risk: r.jump_risk_tier.clone(),
+                needs_jump: r
+                    .next_jump_height
+                    .map(|h| h <= r.creation_height + 1000)
+                    .unwrap_or(false),
+                address: pubkey_hex_to_p2tr_address(&r.lock_pubkey, network),
+                output_pubkey: r.lock_pubkey.clone(),
+                recovery_height: r.recovery_height,
+                blocks_until_jump: r
+                    .next_jump_height
+                    .unwrap_or(0)
+                    .saturating_sub(r.creation_height),
+            })
+            .collect();
 
         info!("Loaded {} existing locks from database", lock_infos.len());
         *state.locks.write() = lock_infos;
@@ -456,9 +479,7 @@ async fn get_ghost_id(
 // ============================================================================
 
 /// List all locks
-async fn list_locks(
-    State(state): State<Arc<AppState>>,
-) -> Json<Vec<LockInfo>> {
+async fn list_locks(State(state): State<Arc<AppState>>) -> Json<Vec<LockInfo>> {
     let locks = state.locks.read().clone();
     Json(locks)
 }
@@ -476,7 +497,10 @@ async fn create_lock(
     Json(req): Json<CreateLockRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     // Fetch current block height from Bitcoin Core first (before acquiring locks)
-    let creation_height = state.rpc.get_blockchain_info().await
+    let creation_height = state
+        .rpc
+        .get_blockchain_info()
+        .await
         .map(|info| info.blocks as u32)
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, "Failed to get block height, using default");
@@ -487,8 +511,7 @@ async fn create_lock(
     let keys = keys_guard.as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     // Determine denomination
-    let denomination = Denomination::from_sats(req.amount_sats)
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let denomination = Denomination::from_sats(req.amount_sats).ok_or(StatusCode::BAD_REQUEST)?;
 
     // Determine timelock tier
     let timelock_tier = match req.timelock_tier.as_deref() {
@@ -501,9 +524,11 @@ async fn create_lock(
     let lock_index = state.ghost_locks.read().len() as u32;
 
     // Derive lock and recovery secrets
-    let lock_secret = keys.derive_lock_secret(lock_index)
+    let lock_secret = keys
+        .derive_lock_secret(lock_index)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    let recovery_secret = keys.derive_recovery_secret(lock_index)
+    let recovery_secret = keys
+        .derive_recovery_secret(lock_index)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Create the actual GhostLock
@@ -515,7 +540,8 @@ async fn create_lock(
         denomination,
         timelock_tier,
         creation_height,
-    ).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    )
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Generate taproot address from output key
     let output_key = ghost_lock.output_key();
@@ -548,7 +574,10 @@ async fn create_lock(
     };
 
     // Get the ghost_id for database
-    let owner_ghost_id = state.ghost_id.read().clone()
+    let owner_ghost_id = state
+        .ghost_id
+        .read()
+        .clone()
         .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Create database record
@@ -574,7 +603,9 @@ async fn create_lock(
     };
 
     // Persist to database
-    state.db.insert_ghost_lock(&db_record)
+    state
+        .db
+        .insert_ghost_lock(&db_record)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Store the actual lock in memory cache
@@ -600,7 +631,8 @@ async fn get_lock(
     Path(id): Path<String>,
 ) -> Result<Json<LockInfo>, StatusCode> {
     let locks = state.locks.read();
-    let lock = locks.iter()
+    let lock = locks
+        .iter()
         .find(|l| l.id == id)
         .cloned()
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -613,7 +645,9 @@ async fn initiate_jump(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     // Update database state
-    state.db.update_ghost_lock_state(&id, DbLockState::Jumping)
+    state
+        .db
+        .update_ghost_lock_state(&id, DbLockState::Jumping)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     // Update the actual GhostLock state in memory
@@ -645,9 +679,7 @@ async fn initiate_jump(
 // ============================================================================
 
 /// List active sessions
-async fn list_sessions(
-    State(state): State<Arc<AppState>>,
-) -> Json<Vec<SessionInfo>> {
+async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<SessionInfo>> {
     let sessions = state.sessions.read().clone();
     Json(sessions)
 }
@@ -692,7 +724,8 @@ async fn join_session(
     let mut sessions = state.sessions.write();
 
     // Look for existing session
-    let session = sessions.iter_mut()
+    let session = sessions
+        .iter_mut()
         .find(|s| s.tier == req.tier && s.denomination == req.denomination && s.state == "waiting");
 
     match session {
@@ -740,7 +773,8 @@ async fn get_session(
     Path(id): Path<String>,
 ) -> Result<Json<SessionInfo>, StatusCode> {
     let sessions = state.sessions.read();
-    let session = sessions.iter()
+    let session = sessions
+        .iter()
         .find(|s| s.id == id)
         .cloned()
         .ok_or(StatusCode::NOT_FOUND)?;
@@ -785,7 +819,10 @@ async fn scan_transaction(
     Json(req): Json<ScanRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     // Queue for background scanning
-    state.scanner_tx.send(req.clone()).await
+    state
+        .scanner_tx
+        .send(req.clone())
+        .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(serde_json::json!({
@@ -813,25 +850,29 @@ struct WithdrawalRequestBody {
 async fn list_withdrawals(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
-    let ghost_id = state.ghost_id.read().clone()
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let ghost_id = state.ghost_id.read().clone().ok_or(StatusCode::NOT_FOUND)?;
 
-    let withdrawals = state.db.get_pending_withdrawals(&ghost_id)
+    let withdrawals = state
+        .db
+        .get_pending_withdrawals(&ghost_id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    let result: Vec<serde_json::Value> = withdrawals.iter().map(|w| {
-        serde_json::json!({
-            "id": w.id,
-            "lock_id": w.lock_id,
-            "destination_address": w.destination_address,
-            "amount_sats": w.amount_sats,
-            "fee_sats": w.fee_sats,
-            "status": w.status.as_str(),
-            "batch_id": w.batch_id,
-            "l1_txid": w.l1_txid,
-            "created_at": w.created_at
+    let result: Vec<serde_json::Value> = withdrawals
+        .iter()
+        .map(|w| {
+            serde_json::json!({
+                "id": w.id,
+                "lock_id": w.lock_id,
+                "destination_address": w.destination_address,
+                "amount_sats": w.amount_sats,
+                "fee_sats": w.fee_sats,
+                "status": w.status.as_str(),
+                "batch_id": w.batch_id,
+                "l1_txid": w.l1_txid,
+                "created_at": w.created_at
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(Json(result))
 }
@@ -841,11 +882,12 @@ async fn request_withdrawal(
     State(state): State<Arc<AppState>>,
     Json(req): Json<WithdrawalRequestBody>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let ghost_id = state.ghost_id.read().clone()
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let ghost_id = state.ghost_id.read().clone().ok_or(StatusCode::NOT_FOUND)?;
 
     // Validate the lock exists and is owned by this ghost_id
-    let lock = state.db.get_ghost_lock(&req.lock_id)
+    let lock = state
+        .db
+        .get_ghost_lock(&req.lock_id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
@@ -879,9 +921,10 @@ async fn request_withdrawal(
     }
 
     // Validate destination address format
-    if !req.destination_address.starts_with("bc1") &&
-       !req.destination_address.starts_with("tb1") &&
-       !req.destination_address.starts_with("bcrt1") {
+    if !req.destination_address.starts_with("bc1")
+        && !req.destination_address.starts_with("tb1")
+        && !req.destination_address.starts_with("bcrt1")
+    {
         return Ok(Json(serde_json::json!({
             "success": false,
             "error": "Invalid destination address format (must be bech32)"
@@ -889,10 +932,15 @@ async fn request_withdrawal(
     }
 
     // Check for existing pending withdrawal on this lock
-    let existing = state.db.get_withdrawals_by_lock(&req.lock_id)
+    let existing = state
+        .db
+        .get_withdrawals_by_lock(&req.lock_id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    if existing.iter().any(|w| w.status == WithdrawalStatus::Pending || w.status == WithdrawalStatus::Batched) {
+    if existing
+        .iter()
+        .any(|w| w.status == WithdrawalStatus::Pending || w.status == WithdrawalStatus::Batched)
+    {
         return Ok(Json(serde_json::json!({
             "success": false,
             "error": "A withdrawal is already pending for this lock"
@@ -916,7 +964,9 @@ async fn request_withdrawal(
         updated_at: now,
     };
 
-    let id = state.db.insert_withdrawal_request(&withdrawal)
+    let id = state
+        .db
+        .insert_withdrawal_request(&withdrawal)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     info!(
@@ -943,10 +993,11 @@ async fn get_withdrawal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let ghost_id = state.ghost_id.read().clone()
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let ghost_id = state.ghost_id.read().clone().ok_or(StatusCode::NOT_FOUND)?;
 
-    let withdrawal = state.db.get_withdrawal_request(id)
+    let withdrawal = state
+        .db
+        .get_withdrawal_request(id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
@@ -974,10 +1025,11 @@ async fn cancel_withdrawal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let ghost_id = state.ghost_id.read().clone()
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let ghost_id = state.ghost_id.read().clone().ok_or(StatusCode::NOT_FOUND)?;
 
-    let withdrawal = state.db.get_withdrawal_request(id)
+    let withdrawal = state
+        .db
+        .get_withdrawal_request(id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
         .ok_or(StatusCode::NOT_FOUND)?;
 
@@ -994,7 +1046,9 @@ async fn cancel_withdrawal(
         })));
     }
 
-    state.db.cancel_withdrawal(id)
+    state
+        .db
+        .cancel_withdrawal(id)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     info!(id = id, "Cancelled withdrawal request");
@@ -1010,9 +1064,7 @@ async fn cancel_withdrawal(
 // ============================================================================
 
 /// Get node status
-async fn get_status(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn get_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let has_keys = state.keys.read().is_some();
     let lock_count = state.locks.read().len();
     let session_count = state.sessions.read().len();
@@ -1201,7 +1253,10 @@ async fn run_session_coordinator(state: Arc<AppState>) {
         // Get session IDs and their current states to avoid holding lock during async work
         let session_states: Vec<(String, String)> = {
             let sessions = state.sessions.read();
-            sessions.iter().map(|s| (s.id.clone(), s.state.clone())).collect()
+            sessions
+                .iter()
+                .map(|s| (s.id.clone(), s.state.clone()))
+                .collect()
         };
 
         for (session_id, session_state) in session_states {
@@ -1235,7 +1290,9 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                         if let Some(coordinator) = coordinators.get_mut(&session_id) {
                             match coordinator.build_phase1() {
                                 Ok(split_tx) => {
-                                    let hex = bitcoin::consensus::encode::serialize_hex(&split_tx.transaction);
+                                    let hex = bitcoin::consensus::encode::serialize_hex(
+                                        &split_tx.transaction,
+                                    );
                                     info!(
                                         session_id = %session_id,
                                         outputs = split_tx.intermediate_count,
@@ -1278,7 +1335,9 @@ async fn run_session_coordinator(state: Arc<AppState>) {
 
                                 // Update session state
                                 let mut sessions = state.sessions.write();
-                                if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
+                                if let Some(session) =
+                                    sessions.iter_mut().find(|s| s.id == session_id)
+                                {
                                     session.state = "confirming_phase1".to_string();
                                 }
                             }
@@ -1290,7 +1349,9 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                                 );
                                 // Mark session as failed
                                 let mut sessions = state.sessions.write();
-                                if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
+                                if let Some(session) =
+                                    sessions.iter_mut().find(|s| s.id == session_id)
+                                {
                                     session.state = "failed".to_string();
                                 }
                             }
@@ -1312,14 +1373,17 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                         // Check transaction confirmations via RPC
                         match state.rpc.get_raw_transaction(&txid.to_string(), true).await {
                             Ok(tx_info) => {
-                                let confirmations = tx_info.get("confirmations")
+                                let confirmations = tx_info
+                                    .get("confirmations")
                                     .and_then(|v| v.as_i64())
                                     .unwrap_or(0);
                                 if confirmations >= REQUIRED_CONFIRMATIONS as i64 {
                                     // Get the block height where it was confirmed
-                                    let confirm_height = tx_info.get("blockheight")
+                                    let confirm_height = tx_info
+                                        .get("blockheight")
                                         .and_then(|v| v.as_u64())
-                                        .unwrap_or(0) as u32;
+                                        .unwrap_or(0)
+                                        as u32;
 
                                     // Confirm phase 1
                                     let mut coordinators = state.coordinators.write();
@@ -1337,7 +1401,9 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                                             // Update session state
                                             drop(coordinators);
                                             let mut sessions = state.sessions.write();
-                                            if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
+                                            if let Some(session) =
+                                                sessions.iter_mut().find(|s| s.id == session_id)
+                                            {
                                                 session.state = "building_phase2".to_string();
                                             }
                                         }
@@ -1375,7 +1441,9 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                         if let Some(coordinator) = coordinators.get_mut(&session_id) {
                             match coordinator.build_phase2() {
                                 Ok(merge_tx) => {
-                                    let hex = bitcoin::consensus::encode::serialize_hex(&merge_tx.transaction);
+                                    let hex = bitcoin::consensus::encode::serialize_hex(
+                                        &merge_tx.transaction,
+                                    );
                                     info!(
                                         session_id = %session_id,
                                         participants = merge_tx.participant_count,
@@ -1418,7 +1486,9 @@ async fn run_session_coordinator(state: Arc<AppState>) {
 
                                 // Update session state
                                 let mut sessions = state.sessions.write();
-                                if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
+                                if let Some(session) =
+                                    sessions.iter_mut().find(|s| s.id == session_id)
+                                {
                                     session.state = "confirming_phase2".to_string();
                                 }
                             }
@@ -1429,7 +1499,9 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                                     "Phase 2 broadcast failed"
                                 );
                                 let mut sessions = state.sessions.write();
-                                if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
+                                if let Some(session) =
+                                    sessions.iter_mut().find(|s| s.id == session_id)
+                                {
                                     session.state = "failed".to_string();
                                 }
                             }
@@ -1441,7 +1513,8 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                     // Check if Phase 2 is already complete
                     let is_complete = {
                         let coordinators = state.coordinators.read();
-                        coordinators.get(&session_id)
+                        coordinators
+                            .get(&session_id)
                             .map(|c| matches!(c.state(), wraith_protocol::SessionState::Completed))
                             .unwrap_or(false)
                     };
@@ -1464,18 +1537,24 @@ async fn run_session_coordinator(state: Arc<AppState>) {
 
                             match state.rpc.get_raw_transaction(&txid.to_string(), true).await {
                                 Ok(tx_info) => {
-                                    let confirmations = tx_info.get("confirmations")
+                                    let confirmations = tx_info
+                                        .get("confirmations")
                                         .and_then(|v| v.as_i64())
                                         .unwrap_or(0);
 
                                     if confirmations >= REQUIRED_CONFIRMATIONS as i64 {
-                                        let confirm_height = tx_info.get("blockheight")
+                                        let confirm_height = tx_info
+                                            .get("blockheight")
                                             .and_then(|v| v.as_u64())
-                                            .unwrap_or(0) as u32;
+                                            .unwrap_or(0)
+                                            as u32;
 
                                         let mut coordinators = state.coordinators.write();
-                                        if let Some(coordinator) = coordinators.get_mut(&session_id) {
-                                            if let Err(e) = coordinator.confirm_phase2(confirm_height) {
+                                        if let Some(coordinator) = coordinators.get_mut(&session_id)
+                                        {
+                                            if let Err(e) =
+                                                coordinator.confirm_phase2(confirm_height)
+                                            {
                                                 warn!(error = %e, "Failed to confirm phase 2");
                                             } else {
                                                 info!(
@@ -1564,13 +1643,14 @@ async fn run_settlement_loop(state: Arc<AppState>) {
         debug!(fee_rate = fee_rate, "Using estimated fee rate");
 
         // Get pending withdrawal requests
-        let pending_withdrawals: Vec<WithdrawalRequest> = match state.db.get_pending_withdrawals(&ghost_id) {
-            Ok(requests) => requests,
-            Err(e) => {
-                warn!(error = %e, "Failed to get pending withdrawals");
-                continue;
-            }
-        };
+        let pending_withdrawals: Vec<WithdrawalRequest> =
+            match state.db.get_pending_withdrawals(&ghost_id) {
+                Ok(requests) => requests,
+                Err(e) => {
+                    warn!(error = %e, "Failed to get pending withdrawals");
+                    continue;
+                }
+            };
 
         if pending_withdrawals.is_empty() {
             debug!("No pending withdrawal requests");
@@ -1683,7 +1763,10 @@ async fn run_settlement_loop(state: Arc<AppState>) {
 
                             // Update withdrawal requests to batched status
                             for withdrawal_id in &processed_withdrawal_ids {
-                                if let Err(e) = state.db.update_withdrawal_batched(*withdrawal_id, &batch_id) {
+                                if let Err(e) = state
+                                    .db
+                                    .update_withdrawal_batched(*withdrawal_id, &batch_id)
+                                {
                                     error!(
                                         withdrawal_id = withdrawal_id,
                                         error = %e,
@@ -1709,7 +1792,8 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                             }
 
                             // Serialize and broadcast via Bitcoin Core RPC
-                            let tx_hex = bitcoin::consensus::encode::serialize_hex(&batch_tx.transaction);
+                            let tx_hex =
+                                bitcoin::consensus::encode::serialize_hex(&batch_tx.transaction);
 
                             match state.rpc.send_raw_transaction(&tx_hex).await {
                                 Ok(broadcast_txid) => {
@@ -1723,14 +1807,20 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                     );
 
                                     // Update executor state with confirmed txid
-                                    let confirmed_txid: bitcoin::Txid = broadcast_txid.parse().unwrap_or(txid);
-                                    if let Err(e) = executor.mark_submitted(&batch_id, confirmed_txid) {
+                                    let confirmed_txid: bitcoin::Txid =
+                                        broadcast_txid.parse().unwrap_or(txid);
+                                    if let Err(e) =
+                                        executor.mark_submitted(&batch_id, confirmed_txid)
+                                    {
                                         error!(error = %e, "Failed to mark batch as submitted");
                                     }
 
                                     // Update withdrawals to submitted status
                                     for withdrawal_id in &processed_withdrawal_ids {
-                                        if let Err(e) = state.db.update_withdrawal_submitted(*withdrawal_id, &broadcast_txid) {
+                                        if let Err(e) = state.db.update_withdrawal_submitted(
+                                            *withdrawal_id,
+                                            &broadcast_txid,
+                                        ) {
                                             error!(
                                                 withdrawal_id = withdrawal_id,
                                                 error = %e,
@@ -1748,11 +1838,15 @@ async fn run_settlement_loop(state: Arc<AppState>) {
 
                                     // Revert lock states back to Active on broadcast failure
                                     for withdrawal in &pending_withdrawals {
-                                        if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
-                                            if let Err(revert_err) = state.db.update_ghost_lock_state(
-                                                &withdrawal.lock_id,
-                                                DbLockState::Active,
-                                            ) {
+                                        if processed_withdrawal_ids
+                                            .contains(&withdrawal.id.unwrap_or(-1))
+                                        {
+                                            if let Err(revert_err) =
+                                                state.db.update_ghost_lock_state(
+                                                    &withdrawal.lock_id,
+                                                    DbLockState::Active,
+                                                )
+                                            {
                                                 error!(
                                                     lock_id = %withdrawal.lock_id,
                                                     error = %revert_err,
@@ -1785,7 +1879,9 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                 match state.rpc.get_raw_transaction(txid_str, true).await {
                     Ok(tx_json) => {
                         // Check for confirmations field
-                        if let Some(confirmations) = tx_json.get("confirmations").and_then(|c| c.as_u64()) {
+                        if let Some(confirmations) =
+                            tx_json.get("confirmations").and_then(|c| c.as_u64())
+                        {
                             debug!(
                                 batch_id = %batch_id,
                                 txid = %txid_str,
@@ -1811,18 +1907,22 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                 let block_height = tx_json
                                     .get("blockheight")
                                     .and_then(|h| h.as_u64())
-                                    .unwrap_or(0) as u32;
+                                    .unwrap_or(0)
+                                    as u32;
 
                                 // Mark batch as confirmed in executor
                                 if let Err(e) = executor.mark_confirmed(&batch_id, block_height) {
                                     error!(error = %e, "Failed to mark batch as confirmed");
                                 } else {
                                     // Update all withdrawals in this batch to confirmed status
-                                    if let Ok(withdrawals) = state.db.get_all_pending_withdrawals() {
+                                    if let Ok(withdrawals) = state.db.get_all_pending_withdrawals()
+                                    {
                                         for withdrawal in withdrawals {
                                             if withdrawal.batch_id.as_deref() == Some(&batch_id) {
                                                 if let Some(id) = withdrawal.id {
-                                                    if let Err(e) = state.db.update_withdrawal_confirmed(id) {
+                                                    if let Err(e) =
+                                                        state.db.update_withdrawal_confirmed(id)
+                                                    {
                                                         error!(
                                                             withdrawal_id = id,
                                                             error = %e,
@@ -1840,7 +1940,9 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                     }
 
                                     // Store finalization in database
-                                    if let Err(e) = state.db.finalize_reconciliation_batch(&batch_id) {
+                                    if let Err(e) =
+                                        state.db.finalize_reconciliation_batch(&batch_id)
+                                    {
                                         error!(error = %e, "Failed to finalize batch in database");
                                     }
                                 }
@@ -1911,7 +2013,9 @@ async fn estimate_fee_rate(state: &Arc<AppState>) -> u64 {
     // Try to get cached fee rate from database (with staleness check)
     if let Ok(Some(cached)) = state.db.kv_get("fee_rate_cache") {
         if let Some((rate_str, timestamp_str)) = cached.split_once(':') {
-            if let (Ok(rate), Ok(timestamp)) = (rate_str.parse::<u64>(), timestamp_str.parse::<i64>()) {
+            if let (Ok(rate), Ok(timestamp)) =
+                (rate_str.parse::<u64>(), timestamp_str.parse::<i64>())
+            {
                 let now = chrono::Utc::now().timestamp();
                 let age_secs = now.saturating_sub(timestamp);
 
@@ -1931,11 +2035,11 @@ async fn estimate_fee_rate(state: &Arc<AppState>) -> u64 {
 
     // Fallback to network defaults
     let default_rate = match state.network {
-        Network::Bitcoin => 10,   // Mainnet: ~10 sat/vB for standard priority
-        Network::Testnet => 2,    // Testnet: lower fees
-        Network::Signet => 1,     // Signet: minimal fees
-        Network::Regtest => 1,    // Regtest: minimal fees
-        _ => 5,                   // Unknown: conservative default
+        Network::Bitcoin => 10, // Mainnet: ~10 sat/vB for standard priority
+        Network::Testnet => 2,  // Testnet: lower fees
+        Network::Signet => 1,   // Signet: minimal fees
+        Network::Regtest => 1,  // Regtest: minimal fees
+        _ => 5,                 // Unknown: conservative default
     };
 
     debug!(

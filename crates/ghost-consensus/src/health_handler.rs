@@ -25,8 +25,8 @@
 //! Handles incoming health pings and updates peer information in the database.
 //! Also discovers elders dynamically from HealthPing capabilities.
 
-use std::sync::Arc;
 use async_trait::async_trait;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use ghost_common::error::GhostResult;
@@ -53,7 +53,11 @@ pub struct HealthPingHandler {
 impl HealthPingHandler {
     /// Create a new health ping handler
     pub fn new(peers: Arc<PeerManager>, db: Option<Arc<Database>>) -> Self {
-        Self { peers, db, elder_callback: None }
+        Self {
+            peers,
+            db,
+            elder_callback: None,
+        }
     }
 
     /// Set the database for persistence
@@ -117,7 +121,7 @@ impl HealthPingHandler {
             let peer = PeerRecord {
                 peer_id: node_id_hex.clone(),
                 address: String::new(), // Will be updated when we know the address
-                port: 8555, // Default port
+                port: 8555,             // Default port
                 node_id: Some(node_id_hex),
                 first_seen: now,
                 last_seen: now,

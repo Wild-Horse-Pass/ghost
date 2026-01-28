@@ -311,7 +311,10 @@ impl RotationManager {
                 urgency: RotationUrgency::Emergency,
                 reason: format!(
                     "Identity marked as compromised: {}",
-                    metadata.compromise_reason.as_deref().unwrap_or("unknown reason")
+                    metadata
+                        .compromise_reason
+                        .as_deref()
+                        .unwrap_or("unknown reason")
                 ),
                 age_days: metadata.age_days(),
                 days_until_warning: None,
@@ -538,10 +541,7 @@ pub fn rotation_reminder_message(status: &RotationStatus) -> String {
             )
         }
         RotationUrgency::Emergency => {
-            format!(
-                "🚨 EMERGENCY: {} ROTATE IMMEDIATELY!",
-                status.reason
-            )
+            format!("🚨 EMERGENCY: {} ROTATE IMMEDIATELY!", status.reason)
         }
     }
 }

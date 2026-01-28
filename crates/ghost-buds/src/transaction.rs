@@ -54,11 +54,7 @@ pub struct ClassifiedTransaction {
 
 impl ClassifiedTransaction {
     /// Create from a Bitcoin transaction and classification
-    pub fn new(
-        tx: &Transaction,
-        classification: ClassificationResult,
-        fee: Option<u64>,
-    ) -> Self {
+    pub fn new(tx: &Transaction, classification: ClassificationResult, fee: Option<u64>) -> Self {
         let txid = tx.compute_txid().to_string();
         let weight = tx.weight().to_wu() as usize;
         let output_value: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();

@@ -92,7 +92,11 @@ impl TimelockTier {
 
     /// Get all tiers
     pub fn all() -> &'static [TimelockTier] {
-        &[TimelockTier::Short, TimelockTier::Standard, TimelockTier::Long]
+        &[
+            TimelockTier::Short,
+            TimelockTier::Standard,
+            TimelockTier::Long,
+        ]
     }
 }
 

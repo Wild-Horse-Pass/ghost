@@ -203,7 +203,7 @@ fn test_636_unicode_homoglyph_prevention() {
     let homoglyph_inputs = vec![
         "bc1qаddress", // Cyrillic 'а' looks like ASCII 'a'
         "bc1qаddrеss", // Multiple Cyrillic chars
-        "ⅰnput",      // Roman numeral looks like 'i'
+        "ⅰnput",       // Roman numeral looks like 'i'
     ];
 
     for input in homoglyph_inputs {
@@ -445,10 +445,12 @@ fn generate_random_bytes() -> [u8; 32] {
     for i in 0..4 {
         let mut hasher = state.build_hasher();
         hasher.write_usize(i);
-        hasher.write_u64(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64);
+        hasher.write_u64(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64,
+        );
         let hash = hasher.finish();
         result[i * 8..(i + 1) * 8].copy_from_slice(&hash.to_le_bytes());
     }
@@ -577,12 +579,7 @@ struct ValidatedShareParams {
 }
 
 impl ValidatedShareParams {
-    fn parse(
-        job_id: &str,
-        extranonce2: &str,
-        ntime: &str,
-        nonce: &str,
-    ) -> Result<Self, String> {
+    fn parse(job_id: &str, extranonce2: &str, ntime: &str, nonce: &str) -> Result<Self, String> {
         validate_share_params(job_id, extranonce2, ntime, nonce)
     }
 }

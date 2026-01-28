@@ -117,12 +117,12 @@ impl Default for EntryConfig {
     fn default() -> Self {
         Self {
             delay_enabled: true,
-            min_delay_ms: 1000,      // 1 second minimum
-            max_delay_ms: 60_000,    // 1 minute mean delay
+            min_delay_ms: 1000,   // 1 second minimum
+            max_delay_ms: 60_000, // 1 minute mean delay
             batching_enabled: true,
-            min_batch_size: 5,       // Wait for at least 5 entries
+            min_batch_size: 5,         // Wait for at least 5 entries
             max_batch_wait_ms: 30_000, // Or 30 seconds max
-            jitter_ms: 500,          // ±500ms jitter
+            jitter_ms: 500,            // ±500ms jitter
             cover_traffic_enabled: false,
             cover_traffic_ratio: 0.1, // 10% cover traffic
             max_queue_size: 1000,
@@ -152,7 +152,7 @@ impl EntryConfig {
         Self {
             delay_enabled: true,
             min_delay_ms: 5_000,
-            max_delay_ms: 300_000,   // 5 minute mean delay
+            max_delay_ms: 300_000, // 5 minute mean delay
             batching_enabled: true,
             min_batch_size: 10,
             max_batch_wait_ms: 120_000, // 2 minute batch wait
@@ -301,7 +301,9 @@ impl EntryScheduler {
         self.queue.lock().push_back(entry.clone());
 
         self.stats.entries_scheduled.fetch_add(1, Ordering::Relaxed);
-        self.stats.total_delay_ms.fetch_add(delay.as_millis() as u64, Ordering::Relaxed);
+        self.stats
+            .total_delay_ms
+            .fetch_add(delay.as_millis() as u64, Ordering::Relaxed);
 
         debug!(
             entry_id = entry_id,
@@ -371,7 +373,9 @@ impl EntryScheduler {
         };
 
         self.queue.lock().push_back(cover);
-        self.stats.cover_traffic_sent.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .cover_traffic_sent
+            .fetch_add(1, Ordering::Relaxed);
 
         debug!(entry_id = entry_id, "Scheduled cover traffic");
 
@@ -462,7 +466,9 @@ impl EntryScheduler {
         }
 
         if !ready.is_empty() {
-            self.stats.entries_executed.fetch_add(ready.len() as u64, Ordering::Relaxed);
+            self.stats
+                .entries_executed
+                .fetch_add(ready.len() as u64, Ordering::Relaxed);
         }
 
         ready
@@ -470,7 +476,8 @@ impl EntryScheduler {
 
     /// Get time until next entry is ready
     pub fn time_until_next(&self) -> Option<Duration> {
-        self.queue.lock()
+        self.queue
+            .lock()
             .front()
             .map(|e| e.scheduled_at.saturating_duration_since(Instant::now()))
     }
@@ -572,7 +579,9 @@ mod tests {
         let session_id = [1u8; 32];
         let participant_data = vec![0x01, 0x02, 0x03];
 
-        let entry = scheduler.schedule_entry(session_id, participant_data.clone()).unwrap();
+        let entry = scheduler
+            .schedule_entry(session_id, participant_data.clone())
+            .unwrap();
 
         assert_eq!(entry.session_id, session_id);
         assert_eq!(entry.participant_data, participant_data);

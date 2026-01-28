@@ -23,7 +23,7 @@
 //! Verification challenge types
 
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// Challenge type for verification
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -393,8 +393,8 @@ impl<T: Serialize> SignedResponse<T> {
         }
 
         // Decode signature
-        let signature_bytes = hex::decode(&self.signature)
-            .map_err(|e| format!("Invalid signature hex: {}", e))?;
+        let signature_bytes =
+            hex::decode(&self.signature).map_err(|e| format!("Invalid signature hex: {}", e))?;
 
         if signature_bytes.len() != 64 {
             return Err(format!(
@@ -534,7 +534,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
-            + MAX_FUTURE_TIME_SECS + 100;
+            + MAX_FUTURE_TIME_SECS
+            + 100;
 
         let result = signed.verify(|_, _, _| true);
         assert!(result.is_err());

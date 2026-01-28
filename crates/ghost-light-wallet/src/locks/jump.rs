@@ -141,10 +141,7 @@ pub async fn request_jump(
     let _ = msg;
     let _ = client;
 
-    info!(
-        lock_id = request.lock_id,
-        "Jump request submitted"
-    );
+    info!(lock_id = request.lock_id, "Jump request submitted");
 
     // Placeholder response
     Ok(JumpResponse {
@@ -159,10 +156,7 @@ pub async fn request_jump(
 }
 
 /// Check jump status
-pub async fn check_jump_status(
-    client: &GspClient,
-    jump_id: &str,
-) -> WalletResult<JumpResponse> {
+pub async fn check_jump_status(client: &GspClient, jump_id: &str) -> WalletResult<JumpResponse> {
     // In a real implementation, this would query the GSP
     let _ = client;
     let _ = jump_id;
@@ -193,7 +187,7 @@ fn is_valid_address_format(address: &str) -> bool {
     // Check for valid prefixes
     let valid_prefixes = [
         "bc1q", "bc1p", // Mainnet bech32/bech32m
-        "tb1q", "tb1p", // Testnet bech32/bech32m
+        "tb1q", "tb1p",  // Testnet bech32/bech32m
         "bcrt1", // Regtest
         "1", "3", // Legacy mainnet
         "m", "n", "2", // Legacy testnet
@@ -231,9 +225,15 @@ mod tests {
 
     #[test]
     fn test_address_validation() {
-        assert!(is_valid_address_format("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"));
-        assert!(is_valid_address_format("bc1pmfr3p9j00pfxjh0zmgp99y8zftmd3s5pmedqhyptwy6lm87hf5sspknck9"));
-        assert!(is_valid_address_format("tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7"));
+        assert!(is_valid_address_format(
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        ));
+        assert!(is_valid_address_format(
+            "bc1pmfr3p9j00pfxjh0zmgp99y8zftmd3s5pmedqhyptwy6lm87hf5sspknck9"
+        ));
+        assert!(is_valid_address_format(
+            "tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7"
+        ));
 
         assert!(!is_valid_address_format(""));
         assert!(!is_valid_address_format("invalid"));

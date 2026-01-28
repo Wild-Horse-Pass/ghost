@@ -333,11 +333,12 @@ impl Transport {
     /// Create a new transport layer
     pub fn new(config: TransportConfig) -> Result<Self, TransportError> {
         let tor_proxy = if config.tor.enabled {
-            let addr: SocketAddr = config.tor.socks_proxy.parse()
-                .map_err(|e| TransportError::InvalidAddress(format!(
+            let addr: SocketAddr = config.tor.socks_proxy.parse().map_err(|e| {
+                TransportError::InvalidAddress(format!(
                     "Invalid Tor SOCKS proxy address '{}': {}",
                     config.tor.socks_proxy, e
-                )))?;
+                ))
+            })?;
             Some(addr)
         } else {
             None
@@ -361,9 +362,9 @@ impl Transport {
             return Err(TransportError::NotAvailable("Tor not enabled".into()));
         }
 
-        let proxy = self.tor_proxy.ok_or_else(||
-            TransportError::NotAvailable("Tor proxy not configured".into())
-        )?;
+        let proxy = self
+            .tor_proxy
+            .ok_or_else(|| TransportError::NotAvailable("Tor proxy not configured".into()))?;
 
         // Try to connect to the SOCKS proxy
         let timeout = Duration::from_secs(5);
@@ -377,7 +378,7 @@ impl Transport {
                 proxy, e
             ))),
             Err(_) => Err(TransportError::Timeout(
-                "Tor SOCKS proxy connection timed out".into()
+                "Tor SOCKS proxy connection timed out".into(),
             )),
         }
     }
@@ -388,22 +389,27 @@ impl Transport {
             return Err(TransportError::NotAvailable("I2P not enabled".into()));
         }
 
-        let sam_addr: SocketAddr = self.config.i2p.sam_address.parse()
-            .map_err(|e| TransportError::InvalidAddress(format!(
+        let sam_addr: SocketAddr = self.config.i2p.sam_address.parse().map_err(|e| {
+            TransportError::InvalidAddress(format!(
                 "Invalid I2P SAM address '{}': {}",
                 self.config.i2p.sam_address, e
-            )))?;
+            ))
+        })?;
 
         let timeout = Duration::from_secs(5);
         match tokio::time::timeout(timeout, TcpStream::connect(sam_addr)).await {
             Ok(Ok(mut stream)) => {
                 // Send HELLO to verify SAM protocol
                 let hello = "HELLO VERSION MIN=3.0 MAX=3.3\n";
-                stream.write_all(hello.as_bytes()).await
+                stream
+                    .write_all(hello.as_bytes())
+                    .await
                     .map_err(|e| TransportError::Sam(format!("Failed to send HELLO: {}", e)))?;
 
                 let mut response = vec![0u8; 256];
-                let n = stream.read(&mut response).await
+                let n = stream
+                    .read(&mut response)
+                    .await
                     .map_err(|e| TransportError::Sam(format!("Failed to read response: {}", e)))?;
 
                 let response_str = String::from_utf8_lossy(&response[..n]);
@@ -422,7 +428,7 @@ impl Transport {
                 sam_addr, e
             ))),
             Err(_) => Err(TransportError::Timeout(
-                "I2P SAM bridge connection timed out".into()
+                "I2P SAM bridge connection timed out".into(),
             )),
         }
     }
@@ -438,10 +444,15 @@ impl Transport {
             return Ok(session.b32_address.clone());
         }
 
-        let sam_addr: SocketAddr = self.config.i2p.sam_address.parse()
+        let sam_addr: SocketAddr = self
+            .config
+            .i2p
+            .sam_address
+            .parse()
             .map_err(|e: std::net::AddrParseError| TransportError::InvalidAddress(e.to_string()))?;
 
-        let mut stream = TcpStream::connect(sam_addr).await
+        let mut stream = TcpStream::connect(sam_addr)
+            .await
             .map_err(|e| TransportError::I2p(format!("Failed to connect to SAM: {}", e)))?;
 
         // HELLO handshake
@@ -453,7 +464,10 @@ impl Transport {
         let response_str = String::from_utf8_lossy(&response[..n]);
 
         if !response_str.contains("HELLO REPLY RESULT=OK") {
-            return Err(TransportError::Sam(format!("HELLO failed: {}", response_str)));
+            return Err(TransportError::Sam(format!(
+                "HELLO failed: {}",
+                response_str
+            )));
         }
 
         // Create session with TRANSIENT destination
@@ -468,11 +482,15 @@ impl Transport {
         let response_str = String::from_utf8_lossy(&response[..n]);
 
         if !response_str.contains("SESSION STATUS RESULT=OK") {
-            return Err(TransportError::Sam(format!("SESSION CREATE failed: {}", response_str)));
+            return Err(TransportError::Sam(format!(
+                "SESSION CREATE failed: {}",
+                response_str
+            )));
         }
 
         // Parse destination from response
-        let dest_start = response_str.find("DESTINATION=")
+        let dest_start = response_str
+            .find("DESTINATION=")
             .ok_or_else(|| TransportError::Sam("No DESTINATION in response".into()))?;
         let dest_str = &response_str[dest_start + 12..];
         let dest_end = dest_str.find(char::is_whitespace).unwrap_or(dest_str.len());
@@ -499,12 +517,13 @@ impl Transport {
 
     /// Calculate I2P b32 address from destination
     fn calculate_i2p_b32(&self, destination: &str) -> Result<String, TransportError> {
-        use sha2::{Sha256, Digest};
-        use base64::Engine;
         use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        use sha2::{Digest, Sha256};
 
         // Decode base64 destination
-        let dest_bytes = STANDARD.decode(destination)
+        let dest_bytes = STANDARD
+            .decode(destination)
             .map_err(|e| TransportError::I2p(format!("Invalid destination base64: {}", e)))?;
 
         // SHA-256 hash
@@ -549,18 +568,20 @@ fn base32_encode_lowercase(data: &[u8]) -> String {
 
 impl Transport {
     /// Connect to a peer via the configured transport
-    pub async fn connect(&self, address: &AnonymousAddress) -> Result<Box<dyn AsyncStream>, TransportError> {
+    pub async fn connect(
+        &self,
+        address: &AnonymousAddress,
+    ) -> Result<Box<dyn AsyncStream>, TransportError> {
         let addr_transport = address.transport_type();
 
         match (self.config.transport_type, addr_transport) {
             // Direct TCP connection
-            (TransportType::Tcp, TransportType::Tcp) => {
-                self.connect_tcp(address.as_str()).await
-            }
+            (TransportType::Tcp, TransportType::Tcp) => self.connect_tcp(address.as_str()).await,
 
             // Tor connection to .onion address (Tor transport for Tor address)
-            (TransportType::Tor, TransportType::Tor) |
-            (_, TransportType::Tor) if self.config.tor.enabled => {
+            (TransportType::Tor, TransportType::Tor) | (_, TransportType::Tor)
+                if self.config.tor.enabled =>
+            {
                 self.connect_via_tor(address.as_str()).await
             }
 
@@ -568,15 +589,16 @@ impl Transport {
             (TransportType::Tor, TransportType::Tcp) if self.config.tor.enabled => {
                 if self.config.tor.strict_mode {
                     return Err(TransportError::Tor(
-                        "Strict Tor mode enabled - cannot connect to clearnet addresses".into()
+                        "Strict Tor mode enabled - cannot connect to clearnet addresses".into(),
                     ));
                 }
                 self.connect_via_tor(address.as_str()).await
             }
 
             // I2P connection to .i2p address
-            (TransportType::I2p, TransportType::I2p) |
-            (_, TransportType::I2p) if self.config.i2p.enabled => {
+            (TransportType::I2p, TransportType::I2p) | (_, TransportType::I2p)
+                if self.config.i2p.enabled =>
+            {
                 self.connect_via_i2p(address.as_str()).await
             }
 
@@ -621,9 +643,9 @@ impl Transport {
 
     /// Connect via Tor SOCKS5 proxy
     async fn connect_via_tor(&self, address: &str) -> Result<Box<dyn AsyncStream>, TransportError> {
-        let proxy = self.tor_proxy.ok_or_else(||
-            TransportError::NotAvailable("Tor proxy not configured".into())
-        )?;
+        let proxy = self
+            .tor_proxy
+            .ok_or_else(|| TransportError::NotAvailable("Tor proxy not configured".into()))?;
 
         debug!(address = %address, proxy = %proxy, "Connecting via Tor");
 
@@ -649,13 +671,18 @@ impl Transport {
         // Ensure we have a session
         self.init_i2p_session().await?;
 
-        let sam_addr: SocketAddr = self.config.i2p.sam_address.parse()
+        let sam_addr: SocketAddr = self
+            .config
+            .i2p
+            .sam_address
+            .parse()
             .map_err(|e: std::net::AddrParseError| TransportError::InvalidAddress(e.to_string()))?;
 
         debug!(address = %address, sam = %sam_addr, "Connecting via I2P");
 
         // Connect to SAM for STREAM CONNECT
-        let mut stream = TcpStream::connect(sam_addr).await
+        let mut stream = TcpStream::connect(sam_addr)
+            .await
             .map_err(|e| TransportError::I2p(format!("Failed to connect to SAM: {}", e)))?;
 
         // HELLO
@@ -665,14 +692,16 @@ impl Transport {
         let response_str = String::from_utf8_lossy(&response[..n]);
 
         if !response_str.contains("HELLO REPLY RESULT=OK") {
-            return Err(TransportError::Sam(format!("HELLO failed: {}", response_str)));
+            return Err(TransportError::Sam(format!(
+                "HELLO failed: {}",
+                response_str
+            )));
         }
 
         // STREAM CONNECT
         let connect_cmd = format!(
             "STREAM CONNECT ID={} DESTINATION={} SILENT=false\n",
-            self.config.i2p.session_name,
-            address
+            self.config.i2p.session_name, address
         );
         stream.write_all(connect_cmd.as_bytes()).await?;
 
@@ -683,7 +712,10 @@ impl Transport {
             info!(address = %address, "I2P connection established");
             Ok(Box::new(stream))
         } else {
-            Err(TransportError::I2p(format!("STREAM CONNECT failed: {}", response_str)))
+            Err(TransportError::I2p(format!(
+                "STREAM CONNECT failed: {}",
+                response_str
+            )))
         }
     }
 
@@ -699,11 +731,12 @@ impl Transport {
         // Split host:port
         if let Some(colon_pos) = addr.rfind(':') {
             let host = addr[..colon_pos].to_string();
-            let port: u16 = addr[colon_pos + 1..].parse()
-                .map_err(|e| TransportError::InvalidAddress(format!(
+            let port: u16 = addr[colon_pos + 1..].parse().map_err(|e| {
+                TransportError::InvalidAddress(format!(
                     "Invalid port in address '{}': {}",
                     address, e
-                )))?;
+                ))
+            })?;
             Ok((host, port))
         } else {
             Err(TransportError::InvalidAddress(format!(
@@ -727,11 +760,15 @@ impl Transport {
 
         // Read method selection response
         let mut response = [0u8; 2];
-        stream.read_exact(&mut response).await
+        stream
+            .read_exact(&mut response)
+            .await
             .map_err(|e| TransportError::Socks5(format!("Failed to read auth method: {}", e)))?;
 
         if response[0] != 0x05 {
-            return Err(TransportError::Socks5("Invalid SOCKS version in response".into()));
+            return Err(TransportError::Socks5(
+                "Invalid SOCKS version in response".into(),
+            ));
         }
         if response[1] != 0x00 {
             return Err(TransportError::Socks5(format!(
@@ -777,31 +814,47 @@ impl Transport {
         // Read connection response
         // [version (1), reply (1), reserved (1), atyp (1), addr (var), port (2)]
         let mut response = [0u8; 4];
-        stream.read_exact(&mut response).await
-            .map_err(|e| TransportError::Socks5(format!("Failed to read connect response: {}", e)))?;
+        stream.read_exact(&mut response).await.map_err(|e| {
+            TransportError::Socks5(format!("Failed to read connect response: {}", e))
+        })?;
 
         if response[0] != 0x05 {
-            return Err(TransportError::Socks5("Invalid SOCKS version in connect response".into()));
+            return Err(TransportError::Socks5(
+                "Invalid SOCKS version in connect response".into(),
+            ));
         }
 
         // Check reply code
         match response[1] {
             0x00 => (), // Success
-            0x01 => return Err(TransportError::Socks5("General SOCKS server failure".into())),
-            0x02 => return Err(TransportError::Socks5("Connection not allowed by ruleset".into())),
+            0x01 => {
+                return Err(TransportError::Socks5(
+                    "General SOCKS server failure".into(),
+                ))
+            }
+            0x02 => {
+                return Err(TransportError::Socks5(
+                    "Connection not allowed by ruleset".into(),
+                ))
+            }
             0x03 => return Err(TransportError::Socks5("Network unreachable".into())),
             0x04 => return Err(TransportError::Socks5("Host unreachable".into())),
             0x05 => return Err(TransportError::Socks5("Connection refused".into())),
             0x06 => return Err(TransportError::Socks5("TTL expired".into())),
             0x07 => return Err(TransportError::Socks5("Command not supported".into())),
             0x08 => return Err(TransportError::Socks5("Address type not supported".into())),
-            code => return Err(TransportError::Socks5(format!("Unknown error code: 0x{:02x}", code))),
+            code => {
+                return Err(TransportError::Socks5(format!(
+                    "Unknown error code: 0x{:02x}",
+                    code
+                )))
+            }
         }
 
         // Read and discard bound address (we don't need it)
         let atyp = response[3];
         let addr_len = match atyp {
-            0x01 => 4,  // IPv4
+            0x01 => 4, // IPv4
             0x03 => {
                 // Domain - first read length byte
                 let mut len = [0u8; 1];
@@ -809,7 +862,12 @@ impl Transport {
                 len[0] as usize
             }
             0x04 => 16, // IPv6
-            _ => return Err(TransportError::Socks5(format!("Unknown address type: 0x{:02x}", atyp))),
+            _ => {
+                return Err(TransportError::Socks5(format!(
+                    "Unknown address type: 0x{:02x}",
+                    atyp
+                )))
+            }
         };
 
         // Read address + port
@@ -831,15 +889,22 @@ impl Transport {
                 if let Some(ref onion) = self.config.tor.onion_address {
                     Ok(AnonymousAddress::Onion(format!("{}:{}", onion, port)))
                 } else {
-                    Err(TransportError::NotAvailable("Tor hidden service not configured".into()))
+                    Err(TransportError::NotAvailable(
+                        "Tor hidden service not configured".into(),
+                    ))
                 }
             }
             TransportType::I2p => {
                 let session = self.i2p_session.read();
                 if let Some(ref sess) = *session {
-                    Ok(AnonymousAddress::I2p(format!("{}:{}", sess.b32_address, port)))
+                    Ok(AnonymousAddress::I2p(format!(
+                        "{}:{}",
+                        sess.b32_address, port
+                    )))
                 } else {
-                    Err(TransportError::NotAvailable("I2P session not initialized".into()))
+                    Err(TransportError::NotAvailable(
+                        "I2P session not initialized".into(),
+                    ))
                 }
             }
         }

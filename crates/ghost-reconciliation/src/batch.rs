@@ -23,11 +23,11 @@
 //! Batch management for settlements
 
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 use crate::error::{ReconciliationError, ReconciliationResult};
 use crate::settlement::Settlement;
-use crate::{MIN_BATCH_SIZE, MAX_BATCH_SIZE, DISPUTE_WINDOW_BLOCKS};
+use crate::{DISPUTE_WINDOW_BLOCKS, MAX_BATCH_SIZE, MIN_BATCH_SIZE};
 
 /// Batch state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -290,9 +290,7 @@ impl Batch {
     /// Mark as rejected (disputed)
     pub fn mark_rejected(&mut self) -> ReconciliationResult<()> {
         if self.state.is_terminal() {
-            return Err(ReconciliationError::AlreadyFinalized {
-                id: self.id_hex(),
-            });
+            return Err(ReconciliationError::AlreadyFinalized { id: self.id_hex() });
         }
 
         self.state = BatchState::Rejected;
@@ -313,8 +311,14 @@ impl Batch {
     ///
     /// Returns (proof, index, leaf_count) if settlement found.
     /// The leaf_count is required for collision-resistant verification.
-    pub fn get_merkle_proof(&self, settlement_hash: &[u8; 32]) -> Option<(Vec<[u8; 32]>, usize, usize)> {
-        let index = self.settlement_hashes.iter().position(|h| h == settlement_hash)?;
+    pub fn get_merkle_proof(
+        &self,
+        settlement_hash: &[u8; 32],
+    ) -> Option<(Vec<[u8; 32]>, usize, usize)> {
+        let index = self
+            .settlement_hashes
+            .iter()
+            .position(|h| h == settlement_hash)?;
         let proof = compute_merkle_proof(&self.settlement_hashes, index);
         let leaf_count = self.settlement_hashes.len();
         Some((proof, index, leaf_count))

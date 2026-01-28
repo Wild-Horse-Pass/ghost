@@ -56,7 +56,10 @@ impl GhostId {
     }
 
     /// Create from raw bytes
-    pub fn from_bytes(scan_bytes: &[u8; 33], spend_bytes: &[u8; 33]) -> Result<Self, GhostKeyError> {
+    pub fn from_bytes(
+        scan_bytes: &[u8; 33],
+        spend_bytes: &[u8; 33],
+    ) -> Result<Self, GhostKeyError> {
         let scan_pubkey = PublicKey::from_slice(scan_bytes)?;
         let spend_pubkey = PublicKey::from_slice(spend_bytes)?;
         Ok(Self::new(scan_pubkey, spend_pubkey))
@@ -86,8 +89,8 @@ impl GhostId {
 
     /// Decode from bech32m string
     pub fn decode(s: &str) -> Result<Self, GhostKeyError> {
-        let (hrp, data) = bech32::decode(s)
-            .map_err(|e| GhostKeyError::Bech32Error(e.to_string()))?;
+        let (hrp, data) =
+            bech32::decode(s).map_err(|e| GhostKeyError::Bech32Error(e.to_string()))?;
 
         if hrp.as_str() != GHOST_ID_HRP {
             return Err(GhostKeyError::InvalidGhostId(format!(

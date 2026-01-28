@@ -435,7 +435,9 @@ fn test_723_prop_payout_calculation() {
         })
         .unwrap();
 
-    let payouts = manager.calculate_payouts(0, PayoutScheme::Proportional).unwrap();
+    let payouts = manager
+        .calculate_payouts(0, PayoutScheme::Proportional)
+        .unwrap();
 
     let miner1_payout = *payouts.get("miner1").unwrap();
     let miner2_payout = *payouts.get("miner2").unwrap();
@@ -932,6 +934,9 @@ impl RoundManager {
     }
 
     fn get_payout_history(&self, miner_id: &str) -> Vec<PayoutRecord> {
-        self.payout_history.get(miner_id).cloned().unwrap_or_default()
+        self.payout_history
+            .get(miner_id)
+            .cloned()
+            .unwrap_or_default()
     }
 }

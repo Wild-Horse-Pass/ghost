@@ -9,9 +9,7 @@
 //! - Database integrity
 //! - Concurrent access
 
-use ghost_storage::{
-    Database, ShareRecord, RoundRecord, NodeRecord, PayoutStatus,
-};
+use ghost_storage::{Database, NodeRecord, PayoutStatus, RoundRecord, ShareRecord};
 use std::sync::Arc;
 
 // =============================================================================
@@ -124,7 +122,11 @@ fn test_554_list_shares_by_miner() {
         let share = ShareRecord {
             id: None,
             round_id: 1,
-            miner_id: if i % 2 == 0 { "miner1".to_string() } else { "miner2".to_string() },
+            miner_id: if i % 2 == 0 {
+                "miner1".to_string()
+            } else {
+                "miner2".to_string()
+            },
             difficulty: 1000.0,
             work: 1000.0,
             share_hash: format!("hash{}", i),
@@ -634,8 +636,8 @@ fn test_565_share_work_vs_difficulty() {
         id: None,
         round_id: 1,
         miner_id: "miner1".to_string(),
-        difficulty: 1000.0,    // Share difficulty
-        work: 1500.0,          // Work contribution (can differ)
+        difficulty: 1000.0, // Share difficulty
+        work: 1500.0,       // Work contribution (can differ)
         share_hash: "hash1".to_string(),
         timestamp: 1700000000,
         received_by: "node1".to_string(),
@@ -784,10 +786,14 @@ fn test_571_update_round_block_found() {
         "node1",
         625_000_000,
         1_000_000,
-    ).unwrap();
+    )
+    .unwrap();
 
     let updated = db.get_round(1).unwrap().unwrap();
-    assert_eq!(updated.block_hash, Some("000000000000000000012345".to_string()));
+    assert_eq!(
+        updated.block_hash,
+        Some("000000000000000000012345".to_string())
+    );
     assert_eq!(updated.winning_miner, Some("miner1".to_string()));
     assert_eq!(updated.subsidy_sats, Some(625_000_000));
     assert_eq!(updated.payout_status, PayoutStatus::Pending);
@@ -857,14 +863,8 @@ fn test_573_mark_rounds_orphaned_by_hash() {
     db.create_round(&round).unwrap();
 
     // Now set block_hash via update_round_block_found
-    db.update_round_block_found(
-        1,
-        "blockhash123",
-        "miner1",
-        "node1",
-        625_000_000,
-        1_000_000,
-    ).unwrap();
+    db.update_round_block_found(1, "blockhash123", "miner1", "node1", 625_000_000, 1_000_000)
+        .unwrap();
 
     // Verify block_hash was set and status is Pending
     let before = db.get_round(1).unwrap().unwrap();
@@ -902,15 +902,13 @@ fn test_574_get_rounds_by_block_hash() {
         db.create_round(&round).unwrap();
 
         // Set block_hash - first two get "same_block_hash", third gets "other_hash"
-        let hash = if i <= 2 { "same_block_hash" } else { "other_hash" };
-        db.update_round_block_found(
-            i,
-            hash,
-            "miner1",
-            "node1",
-            625_000_000,
-            1_000_000,
-        ).unwrap();
+        let hash = if i <= 2 {
+            "same_block_hash"
+        } else {
+            "other_hash"
+        };
+        db.update_round_block_found(i, hash, "miner1", "node1", 625_000_000, 1_000_000)
+            .unwrap();
     }
 
     let rounds = db.get_rounds_by_block_hash("same_block_hash").unwrap();
@@ -999,7 +997,10 @@ fn test_577_retrieve_node() {
 
     let retrieved = db.get_node("node1_pubkey").unwrap();
     assert!(retrieved.is_some());
-    assert_eq!(retrieved.unwrap().display_name, Some("TestNode".to_string()));
+    assert_eq!(
+        retrieved.unwrap().display_name,
+        Some("TestNode".to_string())
+    );
 }
 
 #[test]
@@ -1023,7 +1024,8 @@ fn test_578_update_node_last_seen() {
     };
     db.upsert_node(&node).unwrap();
 
-    db.update_node_last_seen("node1_pubkey", 1700003600).unwrap();
+    db.update_node_last_seen("node1_pubkey", 1700003600)
+        .unwrap();
 
     let updated = db.get_node("node1_pubkey").unwrap().unwrap();
     assert_eq!(updated.last_seen, 1700003600);
@@ -1138,7 +1140,8 @@ fn test_582_get_top_nodes_by_shares() {
         db.upsert_node(&node).unwrap();
 
         // Use increment_node_shares to set the share counts
-        db.increment_node_shares(&format!("node{}_pubkey", i), ((i + 1) * 100) as u64).unwrap();
+        db.increment_node_shares(&format!("node{}_pubkey", i), ((i + 1) * 100) as u64)
+            .unwrap();
     }
 
     let top = db.get_top_nodes_by_shares(3).unwrap();
@@ -1151,12 +1154,14 @@ fn test_583_register_node_with_elder_check() {
     let db = Database::in_memory().unwrap();
 
     // Register a node without PoW - should not become elder
-    let (is_elder, order) = db.register_node_with_elder_check(
-        "node1_pubkey",
-        Some("192.168.1.1:8333"),
-        Some("Node1"),
-        "{}",
-    ).unwrap();
+    let (is_elder, order) = db
+        .register_node_with_elder_check(
+            "node1_pubkey",
+            Some("192.168.1.1:8333"),
+            Some("Node1"),
+            "{}",
+        )
+        .unwrap();
 
     // Without PoW, node should not be elder even if slots available
     assert!(!is_elder);

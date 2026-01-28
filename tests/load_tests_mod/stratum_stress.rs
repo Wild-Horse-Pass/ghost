@@ -57,7 +57,8 @@ impl SimulatedConnection {
 
     pub fn receive_message(&self, bytes: usize) {
         self.messages_received.fetch_add(1, Ordering::SeqCst);
-        self.bytes_received.fetch_add(bytes as u64, Ordering::SeqCst);
+        self.bytes_received
+            .fetch_add(bytes as u64, Ordering::SeqCst);
     }
 
     fn message_size(&self, msg: &StratumMessage) -> usize {
@@ -104,7 +105,9 @@ impl ConnectionPool {
             return None;
         }
 
-        let id = self.total_connections_created.fetch_add(1, Ordering::SeqCst);
+        let id = self
+            .total_connections_created
+            .fetch_add(1, Ordering::SeqCst);
         let conn = Arc::new(SimulatedConnection::new(id));
         conns.push(Arc::clone(&conn));
         Some(conn)
@@ -129,7 +132,11 @@ impl ConnectionPool {
     }
 
     pub fn total_bytes_transferred(&self) -> u64 {
-        self.connections.read().iter().map(|c| c.total_bytes()).sum()
+        self.connections
+            .read()
+            .iter()
+            .map(|c| c.total_bytes())
+            .sum()
     }
 
     pub fn churn_rate(&self) -> f64 {
@@ -163,11 +170,11 @@ impl Default for StratumStressConfig {
     fn default() -> Self {
         Self {
             target_connections: 1000,
-            ramp_rate: 100.0,   // 100 new connections per second
-            msg_rate: 0.1,     // 1 message per 10 seconds per connection
+            ramp_rate: 100.0, // 100 new connections per second
+            msg_rate: 0.1,    // 1 message per 10 seconds per connection
             duration_secs: 60,
             churn_enabled: true,
-            churn_rate: 10.0,  // 10 disconnects per second
+            churn_rate: 10.0, // 10 disconnects per second
         }
     }
 }
@@ -356,7 +363,10 @@ mod tests {
         println!("  Errors: {}", results.errors);
 
         // Performance assertions
-        assert!(results.peak_connections >= 500, "Should reach at least 500 connections");
+        assert!(
+            results.peak_connections >= 500,
+            "Should reach at least 500 connections"
+        );
         assert!(results.errors < 10, "Should have minimal errors");
     }
 }

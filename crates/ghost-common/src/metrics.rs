@@ -145,7 +145,9 @@ impl Histogram {
 
     /// Default buckets for latency measurements (milliseconds)
     pub fn latency_buckets() -> Self {
-        Self::new(&[1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 5000.0])
+        Self::new(&[
+            1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0, 5000.0,
+        ])
     }
 
     pub fn observe(&self, value: f64) {
@@ -406,21 +408,13 @@ impl Metrics {
             "Total shares submitted",
             self.shares_total.get()
         );
-        write_counter!(
-            "shares_valid",
-            "Valid shares",
-            self.shares_valid.get()
-        );
+        write_counter!("shares_valid", "Valid shares", self.shares_valid.get());
         write_counter!(
             "shares_invalid",
             "Invalid shares",
             self.shares_invalid.get()
         );
-        write_counter!(
-            "shares_stale",
-            "Stale shares",
-            self.shares_stale.get()
-        );
+        write_counter!("shares_stale", "Stale shares", self.shares_stale.get());
         write_counter!(
             "work_total",
             "Total work (difficulty sum)",
@@ -540,9 +534,24 @@ impl Metrics {
         );
 
         // Latency histograms
-        self.write_histogram(&mut output, "share_latency_ms", "Share processing latency in milliseconds", &self.share_latency_ms);
-        self.write_histogram(&mut output, "template_latency_ms", "Template generation latency in milliseconds", &self.template_latency_ms);
-        self.write_histogram(&mut output, "rpc_latency_ms", "RPC call latency in milliseconds", &self.rpc_latency_ms);
+        self.write_histogram(
+            &mut output,
+            "share_latency_ms",
+            "Share processing latency in milliseconds",
+            &self.share_latency_ms,
+        );
+        self.write_histogram(
+            &mut output,
+            "template_latency_ms",
+            "Template generation latency in milliseconds",
+            &self.template_latency_ms,
+        );
+        self.write_histogram(
+            &mut output,
+            "rpc_latency_ms",
+            "RPC call latency in milliseconds",
+            &self.rpc_latency_ms,
+        );
 
         output
     }
@@ -551,7 +560,10 @@ impl Metrics {
         let prefix = &self.config.prefix;
         let full_name = format!("{}_{}", prefix, name);
 
-        output.push_str(&format!("# HELP {} {}\n# TYPE {} histogram\n", full_name, help, full_name));
+        output.push_str(&format!(
+            "# HELP {} {}\n# TYPE {} histogram\n",
+            full_name, help, full_name
+        ));
 
         let mut cumulative = 0u64;
         for bucket in &histogram.buckets {
@@ -562,9 +574,20 @@ impl Metrics {
             ));
         }
 
-        output.push_str(&format!("{}_bucket{{le=\"+Inf\"}} {}\n", full_name, cumulative));
-        output.push_str(&format!("{}_sum {}\n", full_name, histogram.sum.load(Ordering::Relaxed) as f64 / 1000.0));
-        output.push_str(&format!("{}_count {}\n", full_name, histogram.count.load(Ordering::Relaxed)));
+        output.push_str(&format!(
+            "{}_bucket{{le=\"+Inf\"}} {}\n",
+            full_name, cumulative
+        ));
+        output.push_str(&format!(
+            "{}_sum {}\n",
+            full_name,
+            histogram.sum.load(Ordering::Relaxed) as f64 / 1000.0
+        ));
+        output.push_str(&format!(
+            "{}_count {}\n",
+            full_name,
+            histogram.count.load(Ordering::Relaxed)
+        ));
     }
 }
 

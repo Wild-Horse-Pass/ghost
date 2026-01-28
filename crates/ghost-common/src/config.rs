@@ -180,10 +180,7 @@ impl NodeConfig {
 
         // Fee percentage validation
         if self.pool.treasury_fee_percent < 0.0 || self.pool.treasury_fee_percent > 100.0 {
-            result.add_error(
-                "pool.treasury_fee_percent",
-                "Must be between 0 and 100",
-            );
+            result.add_error("pool.treasury_fee_percent", "Must be between 0 and 100");
         }
         if self.pool.treasury_fee_percent > 10.0 {
             result.add_warning(
@@ -250,13 +247,19 @@ impl NodeConfig {
             ("sv1_port", self.network.sv1_port),
             ("http_port", self.network.http_port),
             ("p2p.share_propagation", self.network.p2p.share_propagation),
-            ("p2p.block_announcement", self.network.p2p.block_announcement),
+            (
+                "p2p.block_announcement",
+                self.network.p2p.block_announcement,
+            ),
             ("p2p.consensus_voting", self.network.p2p.consensus_voting),
             ("p2p.health_monitoring", self.network.p2p.health_monitoring),
             ("p2p.discovery", self.network.p2p.discovery),
             ("p2p.elder_management", self.network.p2p.elder_management),
             ("p2p.payout_proposal", self.network.p2p.payout_proposal),
-            ("p2p.payout_transaction", self.network.p2p.payout_transaction),
+            (
+                "p2p.payout_transaction",
+                self.network.p2p.payout_transaction,
+            ),
         ];
 
         // Check for zero ports
@@ -392,16 +395,17 @@ impl NodeConfig {
         if gp.transfer_fee_bps > 1000 {
             result.add_warning(
                 "ghost_pay.transfer_fee_bps",
-                &format!("High transfer fee of {} basis points ({}%)", gp.transfer_fee_bps, gp.transfer_fee_bps as f64 / 100.0),
+                &format!(
+                    "High transfer fee of {} basis points ({}%)",
+                    gp.transfer_fee_bps,
+                    gp.transfer_fee_bps as f64 / 100.0
+                ),
             );
         }
 
         // Wraith fee
         if gp.wraith_enabled && (gp.wraith_fee_percent < 0.0 || gp.wraith_fee_percent > 10.0) {
-            result.add_error(
-                "ghost_pay.wraith_fee_percent",
-                "Must be between 0 and 10",
-            );
+            result.add_error("ghost_pay.wraith_fee_percent", "Must be between 0 and 10");
         }
     }
 
@@ -813,8 +817,8 @@ impl Default for PoolConfig {
         Self {
             // Default placeholder - MUST be configured in production
             treasury_address: String::new(),
-            treasury_fee_percent: 2.0,  // 2% pool fee
-            min_payout_sats: 100_000,   // 0.001 BTC minimum
+            treasury_fee_percent: 2.0, // 2% pool fee
+            min_payout_sats: 100_000,  // 0.001 BTC minimum
             payout_interval_blocks: 100,
         }
     }
@@ -854,7 +858,10 @@ mod tests {
 
         let result = config.validate();
         assert!(!result.is_valid());
-        assert!(result.errors.iter().any(|e| e.field == "network.signing_key"));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.signing_key"));
     }
 
     #[test]
@@ -862,15 +869,15 @@ mod tests {
         let mut config = NodeConfig::default();
         config.network.public_mining = true;
         // 64 hex chars = valid 32-byte key
-        config.network.signing_key = Some(
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
-        );
+        config.network.signing_key =
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
 
         let result = config.validate();
         // Should not have signing_key error (may have other errors like missing treasury)
-        assert!(!result.errors.iter().any(|e|
-            e.field == "network.signing_key" && e.message.contains("REQUIRED")
-        ));
+        assert!(!result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.signing_key" && e.message.contains("REQUIRED")));
     }
 
     #[test]
@@ -882,9 +889,10 @@ mod tests {
 
         let result = config.validate();
         assert!(!result.is_valid());
-        assert!(result.errors.iter().any(|e|
-            e.field == "network.signing_key" && e.message.contains("64 hex")
-        ));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.signing_key" && e.message.contains("64 hex")));
     }
 
     #[test]
@@ -892,15 +900,15 @@ mod tests {
         let mut config = NodeConfig::default();
         config.network.public_mining = true;
         // Contains non-hex chars (g, h, i, j)
-        config.network.signing_key = Some(
-            "ghij456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
-        );
+        config.network.signing_key =
+            Some("ghij456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
 
         let result = config.validate();
         assert!(!result.is_valid());
-        assert!(result.errors.iter().any(|e|
-            e.field == "network.signing_key" && e.message.contains("hexadecimal")
-        ));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.signing_key" && e.message.contains("hexadecimal")));
     }
 
     #[test]
@@ -911,6 +919,9 @@ mod tests {
 
         let result = config.validate();
         // Should not have signing_key error when public_mining is disabled
-        assert!(!result.errors.iter().any(|e| e.field == "network.signing_key"));
+        assert!(!result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.signing_key"));
     }
 }

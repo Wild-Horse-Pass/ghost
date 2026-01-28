@@ -105,7 +105,10 @@ fn test_092_duplicate_ports_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e| e.message.contains("Port conflict")));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.message.contains("Port conflict")));
 }
 
 #[test]
@@ -117,7 +120,10 @@ fn test_093_valid_port_range_accepted() {
 
     let result = config.validate();
     // Should not have port-related errors
-    assert!(!result.errors.iter().any(|e| e.field.contains("port") && e.message.contains("Invalid port 0")));
+    assert!(!result
+        .errors
+        .iter()
+        .any(|e| e.field.contains("port") && e.message.contains("Invalid port 0")));
 }
 
 #[test]
@@ -128,9 +134,10 @@ fn test_094_public_mining_requires_signing_key() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "network.signing_key" && e.message.contains("REQUIRED")
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "network.signing_key" && e.message.contains("REQUIRED")));
 }
 
 #[test]
@@ -140,7 +147,10 @@ fn test_095_missing_signing_key_produces_error() {
     config.network.signing_key = None;
 
     let result = config.validate();
-    assert!(result.errors.iter().any(|e| e.field == "network.signing_key"));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "network.signing_key"));
 }
 
 #[test]
@@ -151,9 +161,10 @@ fn test_096_invalid_signing_key_length_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "network.signing_key" && e.message.contains("64 hex")
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "network.signing_key" && e.message.contains("64 hex")));
 }
 
 #[test]
@@ -161,30 +172,30 @@ fn test_097_invalid_signing_key_chars_rejected() {
     let mut config = NodeConfig::default();
     config.network.public_mining = true;
     // Contains 'g', 'h', 'i', 'j' which are not hex
-    config.network.signing_key = Some(
-        "ghij456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
-    );
+    config.network.signing_key =
+        Some("ghij456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "network.signing_key" && e.message.contains("hexadecimal")
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "network.signing_key" && e.message.contains("hexadecimal")));
 }
 
 #[test]
 fn test_098_valid_signing_key_accepted() {
     let mut config = NodeConfig::default();
     config.network.public_mining = true;
-    config.network.signing_key = Some(
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
-    );
+    config.network.signing_key =
+        Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
 
     let result = config.validate();
     // Should not have signing_key REQUIRED error
-    assert!(!result.errors.iter().any(|e|
-        e.field == "network.signing_key" && e.message.contains("REQUIRED")
-    ));
+    assert!(!result
+        .errors
+        .iter()
+        .any(|e| e.field == "network.signing_key" && e.message.contains("REQUIRED")));
 }
 
 #[test]
@@ -194,7 +205,10 @@ fn test_099_private_mining_doesnt_require_signing_key() {
     config.network.signing_key = None;
 
     let result = config.validate();
-    assert!(!result.errors.iter().any(|e| e.field == "network.signing_key"));
+    assert!(!result
+        .errors
+        .iter()
+        .any(|e| e.field == "network.signing_key"));
 }
 
 #[test]
@@ -204,9 +218,10 @@ fn test_100_seed_nodes_http_remote_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field.contains("seed_nodes") && e.message.contains("Insecure HTTP")
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field.contains("seed_nodes") && e.message.contains("Insecure HTTP")));
 }
 
 #[test]
@@ -216,9 +231,10 @@ fn test_101_seed_nodes_https_accepted() {
 
     let result = config.validate();
     // Should not have seed_nodes error for HTTPS
-    assert!(!result.errors.iter().any(|e|
-        e.field.contains("seed_nodes") && e.message.contains("Insecure HTTP")
-    ));
+    assert!(!result
+        .errors
+        .iter()
+        .any(|e| e.field.contains("seed_nodes") && e.message.contains("Insecure HTTP")));
 }
 
 #[test]
@@ -228,9 +244,10 @@ fn test_102_seed_nodes_localhost_http_warning() {
 
     let result = config.validate();
     // Should be a warning, not an error
-    assert!(result.warnings.iter().any(|e|
-        e.field.contains("seed_nodes") && e.message.contains("localhost")
-    ));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|e| e.field.contains("seed_nodes") && e.message.contains("localhost")));
     // Should NOT be an error
     assert!(!result.errors.iter().any(|e| e.field.contains("seed_nodes")));
 }
@@ -256,7 +273,10 @@ fn test_104_empty_rpc_password_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e| e.field == "bitcoin.rpc_password"));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "bitcoin.rpc_password"));
 }
 
 #[test]
@@ -266,9 +286,10 @@ fn test_105_default_credentials_produce_warning() {
     config.bitcoin.rpc_password = "bitcoin".to_string();
 
     let result = config.validate();
-    assert!(result.warnings.iter().any(|e|
-        e.field.contains("rpc_user") || e.field.contains("rpc_password")
-    ));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|e| e.field.contains("rpc_user") || e.field.contains("rpc_password")));
 }
 
 #[test]
@@ -288,9 +309,10 @@ fn test_107_non_standard_port_produces_warning() {
     config.bitcoin.rpc_port = 9999; // Not 8332
 
     let result = config.validate();
-    assert!(result.warnings.iter().any(|e|
-        e.field == "bitcoin.rpc_port" && e.message.contains("differs from default")
-    ));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|e| e.field == "bitcoin.rpc_port" && e.message.contains("differs from default")));
 }
 
 #[test]
@@ -299,9 +321,10 @@ fn test_108_missing_zmq_hashblock_warning() {
     config.bitcoin.zmq_hashblock = None;
 
     let result = config.validate();
-    assert!(result.warnings.iter().any(|e|
-        e.field == "bitcoin.zmq_hashblock"
-    ));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|e| e.field == "bitcoin.zmq_hashblock"));
 }
 
 #[test]
@@ -324,9 +347,10 @@ fn test_113_empty_treasury_address_warning() {
     config.pool.treasury_address = String::new();
 
     let result = config.validate();
-    assert!(result.warnings.iter().any(|e|
-        e.field == "pool.treasury_address"
-    ));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|e| e.field == "pool.treasury_address"));
 }
 
 #[test]
@@ -337,9 +361,10 @@ fn test_114_invalid_treasury_address_prefix_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "pool.treasury_address" && e.message.contains("prefix")
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "pool.treasury_address" && e.message.contains("prefix")));
 }
 
 #[test]
@@ -349,9 +374,10 @@ fn test_115_treasury_address_matches_mainnet() {
     config.pool.treasury_address = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string();
 
     let result = config.validate();
-    assert!(!result.errors.iter().any(|e|
-        e.field == "pool.treasury_address" && e.message.contains("prefix")
-    ));
+    assert!(!result
+        .errors
+        .iter()
+        .any(|e| e.field == "pool.treasury_address" && e.message.contains("prefix")));
 }
 
 #[test]
@@ -361,9 +387,10 @@ fn test_116_treasury_address_matches_testnet() {
     config.pool.treasury_address = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string();
 
     let result = config.validate();
-    assert!(!result.errors.iter().any(|e|
-        e.field == "pool.treasury_address" && e.message.contains("prefix")
-    ));
+    assert!(!result
+        .errors
+        .iter()
+        .any(|e| e.field == "pool.treasury_address" && e.message.contains("prefix")));
 }
 
 #[test]
@@ -373,9 +400,10 @@ fn test_117_fee_percent_negative_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "pool.treasury_fee_percent"
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "pool.treasury_fee_percent"));
 }
 
 #[test]
@@ -385,9 +413,10 @@ fn test_118_fee_percent_over_100_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "pool.treasury_fee_percent"
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "pool.treasury_fee_percent"));
 }
 
 #[test]
@@ -396,9 +425,10 @@ fn test_119_high_fee_warning() {
     config.pool.treasury_fee_percent = 15.0; // > 10%
 
     let result = config.validate();
-    assert!(result.warnings.iter().any(|e|
-        e.field == "pool.treasury_fee_percent" && e.message.contains("High")
-    ));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|e| e.field == "pool.treasury_fee_percent" && e.message.contains("High")));
 }
 
 #[test]
@@ -408,9 +438,10 @@ fn test_120_min_payout_below_dust_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "pool.min_payout_sats" && e.message.contains("dust")
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "pool.min_payout_sats" && e.message.contains("dust")));
 }
 
 // =============================================================================
@@ -434,9 +465,10 @@ fn test_130_archive_mode_with_pruning_warning() {
     config.storage.prune_height = 1000;
 
     let result = config.validate();
-    assert!(result.warnings.iter().any(|e|
-        e.field.contains("archive_mode") || e.field.contains("prune_height")
-    ));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|e| e.field.contains("archive_mode") || e.field.contains("prune_height")));
 }
 
 #[test]
@@ -460,9 +492,10 @@ fn test_132_zero_virtual_block_secs_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "ghost_pay.virtual_block_secs"
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "ghost_pay.virtual_block_secs"));
 }
 
 #[test]
@@ -476,9 +509,10 @@ fn test_133_zero_epoch_blocks_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "ghost_pay.epoch_blocks"
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "ghost_pay.epoch_blocks"));
 }
 
 #[test]
@@ -491,9 +525,10 @@ fn test_134_high_transfer_fee_warning() {
     });
 
     let result = config.validate();
-    assert!(result.warnings.iter().any(|e|
-        e.field == "ghost_pay.transfer_fee_bps"
-    ));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|e| e.field == "ghost_pay.transfer_fee_bps"));
 }
 
 #[test]
@@ -508,9 +543,10 @@ fn test_135_wraith_fee_out_of_range_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "ghost_pay.wraith_fee_percent"
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "ghost_pay.wraith_fee_percent"));
 }
 
 // =============================================================================
@@ -527,9 +563,10 @@ fn test_136_zero_heartbeat_secs_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "coordinator.heartbeat_secs"
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "coordinator.heartbeat_secs"));
 }
 
 #[test]
@@ -542,9 +579,10 @@ fn test_137_coordinator_port_conflict_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "coordinator.port" && e.message.contains("conflicts")
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "coordinator.port" && e.message.contains("conflicts")));
 }
 
 #[test]
@@ -556,9 +594,10 @@ fn test_138_short_fire_ping_timeout_warning() {
     });
 
     let result = config.validate();
-    assert!(result.warnings.iter().any(|e|
-        e.field == "coordinator.fire_ping_timeout_ms"
-    ));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|e| e.field == "coordinator.fire_ping_timeout_ms"));
 }
 
 #[test]
@@ -571,9 +610,10 @@ fn test_139_convergence_threshold_out_of_range_rejected() {
 
     let result = config.validate();
     assert!(!result.is_valid());
-    assert!(result.errors.iter().any(|e|
-        e.field == "coordinator.convergence_threshold"
-    ));
+    assert!(result
+        .errors
+        .iter()
+        .any(|e| e.field == "coordinator.convergence_threshold"));
 }
 
 // =============================================================================

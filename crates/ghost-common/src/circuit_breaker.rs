@@ -40,9 +40,9 @@
 //! }
 //! ```
 
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use parking_lot::Mutex;
 use tracing::{debug, info, warn};
 
 /// Circuit breaker configuration
@@ -372,6 +372,9 @@ mod tests {
 
         // Failed call
         let result: Result<i32, CircuitBreakerError<&str>> = breaker.call(|| Err("error"));
-        assert!(matches!(result, Err(CircuitBreakerError::ServiceError("error"))));
+        assert!(matches!(
+            result,
+            Err(CircuitBreakerError::ServiceError("error"))
+        ));
     }
 }

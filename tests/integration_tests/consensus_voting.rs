@@ -11,13 +11,12 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 // Real imports from ghost-consensus
-use ghost_consensus::{
-    ReputationManager, PeerReputation, BadBehavior,
-    INITIAL_REPUTATION, MAX_REPUTATION, DISCONNECT_THRESHOLD, TRUST_THRESHOLD,
-    TRUST_MIN_GOOD_MESSAGES,
-};
 use ghost_common::constants::BFT_THRESHOLD_PERCENT;
 use ghost_common::types::NodeId;
+use ghost_consensus::{
+    BadBehavior, PeerReputation, ReputationManager, DISCONNECT_THRESHOLD, INITIAL_REPUTATION,
+    MAX_REPUTATION, TRUST_MIN_GOOD_MESSAGES, TRUST_THRESHOLD,
+};
 
 // =============================================================================
 // VOTE SESSION TESTS (Tests 235-249)
@@ -226,7 +225,10 @@ fn test_270_proposal_exceeds_available_rejected() {
 
     let context = test_context();
     let result = validate_payout_proposal(&proposal, &context);
-    assert!(matches!(result, Err(PayoutValidationError::ExceedsAvailable { .. })));
+    assert!(matches!(
+        result,
+        Err(PayoutValidationError::ExceedsAvailable { .. })
+    ));
 }
 
 #[test]
@@ -241,7 +243,10 @@ fn test_271_proposal_unreasonable_reward_rejected() {
         block_reward: 625_000_000, // 6.25 BTC
     };
     let result = validate_payout_proposal(&proposal, &context);
-    assert!(matches!(result, Err(PayoutValidationError::UnreasonableReward(_))));
+    assert!(matches!(
+        result,
+        Err(PayoutValidationError::UnreasonableReward(_))
+    ));
 }
 
 #[test]
@@ -256,7 +261,10 @@ fn test_272_proposal_exceeds_supply_rejected() {
         block_reward: MAX_BTC_SUPPLY,
     };
     let result = validate_payout_proposal(&proposal, &context);
-    assert!(matches!(result, Err(PayoutValidationError::ExceedsSupply(_))));
+    assert!(matches!(
+        result,
+        Err(PayoutValidationError::ExceedsSupply(_))
+    ));
 }
 
 #[test]
@@ -293,7 +301,10 @@ fn test_275_too_many_outputs_rejected() {
 
     let context = test_context();
     let result = validate_payout_proposal(&proposal, &context);
-    assert!(matches!(result, Err(PayoutValidationError::TooManyOutputs(_))));
+    assert!(matches!(
+        result,
+        Err(PayoutValidationError::TooManyOutputs(_))
+    ));
 }
 
 #[test]
@@ -309,11 +320,16 @@ fn test_276_no_miner_payouts_rejected() {
 #[test]
 fn test_277_duplicate_recipient_rejected() {
     let mut proposal = valid_proposal();
-    proposal.miner_payouts.push(proposal.miner_payouts[0].clone());
+    proposal
+        .miner_payouts
+        .push(proposal.miner_payouts[0].clone());
 
     let context = test_context();
     let result = validate_payout_proposal(&proposal, &context);
-    assert!(matches!(result, Err(PayoutValidationError::DuplicateRecipient(_))));
+    assert!(matches!(
+        result,
+        Err(PayoutValidationError::DuplicateRecipient(_))
+    ));
 }
 
 #[test]
@@ -333,7 +349,10 @@ fn test_279_pool_fee_exceeds_limit() {
 
     let context = test_context();
     let result = validate_payout_proposal(&proposal, &context);
-    assert!(matches!(result, Err(PayoutValidationError::ExcessivePoolFee(_))));
+    assert!(matches!(
+        result,
+        Err(PayoutValidationError::ExcessivePoolFee(_))
+    ));
 }
 
 #[test]
@@ -480,7 +499,9 @@ fn test_309_reputation_cannot_go_below_zero() {
 
     assert!(manager.get_score(&node_id) <= INITIAL_REPUTATION);
     // Score is capped at 0
-    assert!(manager.get_score(&node_id) == 0 || manager.get_score(&node_id) <= DISCONNECT_THRESHOLD);
+    assert!(
+        manager.get_score(&node_id) == 0 || manager.get_score(&node_id) <= DISCONNECT_THRESHOLD
+    );
 }
 
 #[test]
@@ -756,7 +777,9 @@ fn validate_payout_proposal(
 
     // Check reasonable reward (not more than 10x block reward)
     if proposal.total_amount > context.block_reward * 10 {
-        return Err(PayoutValidationError::UnreasonableReward(proposal.total_amount));
+        return Err(PayoutValidationError::UnreasonableReward(
+            proposal.total_amount,
+        ));
     }
 
     // Check against max supply
@@ -771,7 +794,9 @@ fn validate_payout_proposal(
 
     // Check output count
     if proposal.miner_payouts.len() > MAX_PAYOUT_OUTPUTS {
-        return Err(PayoutValidationError::TooManyOutputs(proposal.miner_payouts.len()));
+        return Err(PayoutValidationError::TooManyOutputs(
+            proposal.miner_payouts.len(),
+        ));
     }
 
     // Check pool fee
@@ -790,7 +815,9 @@ fn validate_payout_proposal(
             return Err(PayoutValidationError::EmptyAddress);
         }
         if !seen_recipients.insert(payout.recipient_id) {
-            return Err(PayoutValidationError::DuplicateRecipient(payout.recipient_id));
+            return Err(PayoutValidationError::DuplicateRecipient(
+                payout.recipient_id,
+            ));
         }
     }
 

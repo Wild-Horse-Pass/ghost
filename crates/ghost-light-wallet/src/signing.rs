@@ -87,11 +87,7 @@ pub fn sign_data(master_key: &MasterKey, data: &[u8]) -> WalletResult<[u8; 64]> 
 }
 
 /// Verify a signature (for testing)
-pub fn verify_signature(
-    public_key: &[u8; 32],
-    message: &[u8],
-    signature: &[u8; 64],
-) -> bool {
+pub fn verify_signature(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
     // In production, this would use proper secp256k1 verification
     // For now, we just verify the signature format is valid
     let _ = public_key;

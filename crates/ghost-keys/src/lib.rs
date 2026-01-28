@@ -53,7 +53,9 @@ mod ghost_id;
 mod keys;
 mod scanning;
 
-pub use derivation::{compute_tweak, derive_payment_address, derive_shared_secret, derive_spend_key, tagged_hash};
+pub use derivation::{
+    compute_tweak, derive_payment_address, derive_shared_secret, derive_spend_key, tagged_hash,
+};
 pub use error::GhostKeyError;
 pub use ghost_id::GhostId;
 pub use keys::{GhostKeys, GhostKeysExport};

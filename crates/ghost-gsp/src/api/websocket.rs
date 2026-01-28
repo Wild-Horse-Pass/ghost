@@ -35,8 +35,8 @@ use futures::{SinkExt, StreamExt};
 use tracing::{debug, error, info, warn};
 
 use ghost_gsp_proto::{
-    ClientMessage, PaymentMode, PaymentStatus, PreparedPayment, ServerMessage, WalletId,
-    WalletProof, validate_message,
+    validate_message, ClientMessage, PaymentMode, PaymentStatus, PreparedPayment, ServerMessage,
+    WalletId, WalletProof,
 };
 
 use crate::auth::verify_schnorr_proof;
@@ -50,9 +50,11 @@ pub async fn ws_handler(
 ) -> impl IntoResponse {
     // Check connection limit
     if !state.can_accept_connection() {
-        return ws.on_failed_upgrade(|_| {
-            warn!("WebSocket connection rejected: max connections reached");
-        }).on_upgrade(|_| async {});
+        return ws
+            .on_failed_upgrade(|_| {
+                warn!("WebSocket connection rejected: max connections reached");
+            })
+            .on_upgrade(|_| async {});
     }
 
     ws.on_upgrade(move |socket| handle_socket(socket, state))
@@ -98,13 +100,11 @@ async fn handle_socket(socket: WebSocket, state: Arc<GspState>) {
         let response = match handle_message(&state, &mut conn_state, msg).await {
             Ok(Some(resp)) => resp,
             Ok(None) => continue, // No response needed
-            Err(e) => {
-                ServerMessage::Error {
-                    code: "ERROR".to_string(),
-                    message: e.to_string(),
-                    request_id: None,
-                }
-            }
+            Err(e) => ServerMessage::Error {
+                code: "ERROR".to_string(),
+                message: e.to_string(),
+                request_id: None,
+            },
         };
 
         // Send response
@@ -138,15 +138,18 @@ async fn handle_message(
 ) -> Result<Option<ServerMessage>, GspError> {
     let text = match msg {
         Message::Text(t) => t,
-        Message::Binary(_) => return Err(GspError::BadRequest("Binary messages not supported".to_string())),
+        Message::Binary(_) => {
+            return Err(GspError::BadRequest(
+                "Binary messages not supported".to_string(),
+            ))
+        }
         Message::Ping(_) | Message::Pong(_) => return Ok(None),
         Message::Close(_) => return Ok(None),
     };
 
     // Parse message
-    let client_msg: ClientMessage = serde_json::from_str(&text).map_err(|e| {
-        GspError::BadRequest(format!("Invalid JSON: {}", e))
-    })?;
+    let client_msg: ClientMessage = serde_json::from_str(&text)
+        .map_err(|e| GspError::BadRequest(format!("Invalid JSON: {}", e)))?;
 
     // Validate message
     let validation = validate_message(&client_msg);
@@ -165,40 +168,28 @@ async fn handle_message(
             handle_authenticate(state, conn_state, &token).await
         }
 
-        ClientMessage::Ping { timestamp } => {
-            Ok(Some(ServerMessage::Pong {
-                timestamp,
-                server_time: chrono::Utc::now().timestamp(),
-            }))
-        }
+        ClientMessage::Ping { timestamp } => Ok(Some(ServerMessage::Pong {
+            timestamp,
+            server_time: chrono::Utc::now().timestamp(),
+        })),
 
-        ClientMessage::GetBalance => {
-            handle_get_balance(state, conn_state).await
-        }
+        ClientMessage::GetBalance => handle_get_balance(state, conn_state).await,
 
         ClientMessage::GetUtxos { min_confirmations } => {
             handle_get_utxos(state, conn_state, min_confirmations).await
         }
 
-        ClientMessage::GetGhostLocks => {
-            handle_get_ghost_locks(state, conn_state).await
-        }
+        ClientMessage::GetGhostLocks => handle_get_ghost_locks(state, conn_state).await,
 
         ClientMessage::GetTransactions { limit, offset } => {
             handle_get_transactions(state, conn_state, limit, offset).await
         }
 
-        ClientMessage::SubscribeBalance => {
-            handle_subscribe(state, conn_state, "balance").await
-        }
+        ClientMessage::SubscribeBalance => handle_subscribe(state, conn_state, "balance").await,
 
-        ClientMessage::SubscribePayments => {
-            handle_subscribe(state, conn_state, "payments").await
-        }
+        ClientMessage::SubscribePayments => handle_subscribe(state, conn_state, "payments").await,
 
-        ClientMessage::SubscribeLocks => {
-            handle_subscribe(state, conn_state, "locks").await
-        }
+        ClientMessage::SubscribeLocks => handle_subscribe(state, conn_state, "locks").await,
 
         ClientMessage::Unsubscribe { subscription } => {
             handle_unsubscribe(state, conn_state, &subscription).await
@@ -219,7 +210,8 @@ async fn handle_message(
             signature,
             public_key,
         } => {
-            handle_submit_signed_payment(state, conn_state, &payment_id, &signature, &public_key).await
+            handle_submit_signed_payment(state, conn_state, &payment_id, &signature, &public_key)
+                .await
         }
 
         ClientMessage::GetPaymentStatus { payment_id } => {
@@ -234,16 +226,15 @@ async fn handle_message(
         ClientMessage::PrepareGhostLock {
             owner_pubkey,
             capacity_sats,
-        } => {
-            handle_prepare_ghost_lock(state, conn_state, &owner_pubkey, capacity_sats).await
-        }
+        } => handle_prepare_ghost_lock(state, conn_state, &owner_pubkey, capacity_sats).await,
 
         ClientMessage::ConfirmGhostLockFunding {
             lock_id,
             funding_txid,
             proof,
         } => {
-            handle_confirm_ghost_lock_funding(state, conn_state, &lock_id, &funding_txid, &proof).await
+            handle_confirm_ghost_lock_funding(state, conn_state, &lock_id, &funding_txid, &proof)
+                .await
         }
 
         ClientMessage::RequestJump {
@@ -252,7 +243,15 @@ async fn handle_message(
             target_address,
             proof,
         } => {
-            handle_request_jump(state, conn_state, &lock_id, &priority, &target_address, &proof).await
+            handle_request_jump(
+                state,
+                conn_state,
+                &lock_id,
+                &priority,
+                &target_address,
+                &proof,
+            )
+            .await
         }
     }
 }
@@ -274,13 +273,11 @@ async fn handle_authenticate(
                 error: None,
             }))
         }
-        Err(e) => {
-            Ok(Some(ServerMessage::AuthResult {
-                success: false,
-                wallet_id: None,
-                error: Some(e.to_string()),
-            }))
-        }
+        Err(e) => Ok(Some(ServerMessage::AuthResult {
+            success: false,
+            wallet_id: None,
+            error: Some(e.to_string()),
+        })),
     }
 }
 
@@ -289,7 +286,10 @@ async fn handle_get_balance(
     state: &Arc<GspState>,
     conn_state: &ConnectionState,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     // Query pay node for balance
     let balance = state.pay_node.get_balance(&wallet_id.to_string()).await?;
@@ -307,10 +307,16 @@ async fn handle_get_utxos(
     conn_state: &ConnectionState,
     min_confirmations: u32,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     // Query pay node for UTXOs
-    let utxos = state.pay_node.get_utxos(&wallet_id.to_string(), min_confirmations).await?;
+    let utxos = state
+        .pay_node
+        .get_utxos(&wallet_id.to_string(), min_confirmations)
+        .await?;
 
     let total_sats: u64 = utxos.iter().map(|u| u.amount_sats).sum();
 
@@ -322,10 +328,16 @@ async fn handle_get_ghost_locks(
     state: &Arc<GspState>,
     conn_state: &ConnectionState,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     // Query pay node for locks
-    let locks = state.pay_node.get_ghost_locks(&wallet_id.to_string()).await?;
+    let locks = state
+        .pay_node
+        .get_ghost_locks(&wallet_id.to_string())
+        .await?;
 
     let total_locked_sats: u64 = locks.iter().map(|l| l.balance_sats).sum();
 
@@ -342,10 +354,14 @@ async fn handle_get_transactions(
     limit: u32,
     offset: u32,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     // Query pay node for transactions
-    let (transactions, total_count) = state.pay_node
+    let (transactions, total_count) = state
+        .pay_node
         .get_transactions(&wallet_id.to_string(), limit, offset)
         .await?;
 
@@ -361,7 +377,10 @@ async fn handle_subscribe(
     conn_state: &mut ConnectionState,
     subscription: &str,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     // Add subscription
     state.subscriptions.subscribe(wallet_id, subscription);
@@ -378,7 +397,10 @@ async fn handle_unsubscribe(
     conn_state: &mut ConnectionState,
     subscription: &str,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     // Remove subscription
     state.subscriptions.unsubscribe(wallet_id, subscription);
@@ -401,7 +423,10 @@ async fn handle_request_jump(
     target_address: &str,
     proof: &WalletProof,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     // Validate proof structure first
     if let Err(e) = proof.validate_structure() {
@@ -464,12 +489,25 @@ async fn handle_request_jump(
     );
 
     // Request jump from pay node
-    match state.pay_node.request_jump(lock_id, target_address, priority).await {
+    match state
+        .pay_node
+        .request_jump(lock_id, target_address, priority)
+        .await
+    {
         Ok(result) => {
             // Parse the response
-            let jump_txid = result.get("txid").and_then(|v| v.as_str()).map(String::from);
-            let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-            let error = result.get("error").and_then(|v| v.as_str()).map(String::from);
+            let jump_txid = result
+                .get("txid")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let success = result
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let error = result
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(String::from);
 
             Ok(Some(ServerMessage::JumpRequested {
                 success,
@@ -507,7 +545,10 @@ async fn handle_prepare_payment(
     mode: &PaymentMode,
     proof: &WalletProof,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     // Validate proof structure
     if let Err(e) = proof.validate_structure() {
@@ -565,14 +606,33 @@ async fn handle_prepare_payment(
     );
 
     // Prepare payment via pay node
-    match state.pay_node.prepare_payment(&wallet_id.to_string(), recipient, amount_sats).await {
+    match state
+        .pay_node
+        .prepare_payment(&wallet_id.to_string(), recipient, amount_sats)
+        .await
+    {
         Ok(result) => {
             // Parse the response into PreparedPayment
-            let payment_id = result.get("payment_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let payment_id = result
+                .get("payment_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let fee_sats = result.get("fee_sats").and_then(|v| v.as_u64()).unwrap_or(0);
-            let expires_at = result.get("expires_at").and_then(|v| v.as_i64()).unwrap_or(0);
-            let sighash = result.get("sighash").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let recipient_address = result.get("recipient_address").and_then(|v| v.as_str()).unwrap_or(recipient).to_string();
+            let expires_at = result
+                .get("expires_at")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let sighash = result
+                .get("sighash")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let recipient_address = result
+                .get("recipient_address")
+                .and_then(|v| v.as_str())
+                .unwrap_or(recipient)
+                .to_string();
 
             let payment = PreparedPayment {
                 payment_id,
@@ -623,7 +683,10 @@ async fn handle_submit_signed_payment(
     signature: &str,
     public_key: &str,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     info!(
         wallet_id = %wallet_id,
@@ -632,11 +695,24 @@ async fn handle_submit_signed_payment(
     );
 
     // Submit payment via pay node
-    match state.pay_node.submit_payment(payment_id, signature, public_key).await {
+    match state
+        .pay_node
+        .submit_payment(payment_id, signature, public_key)
+        .await
+    {
         Ok(result) => {
-            let success = result.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
-            let txid = result.get("txid").and_then(|v| v.as_str()).map(String::from);
-            let error = result.get("error").and_then(|v| v.as_str()).map(String::from);
+            let success = result
+                .get("success")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let txid = result
+                .get("txid")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let error = result
+                .get("error")
+                .and_then(|v| v.as_str())
+                .map(String::from);
 
             Ok(Some(ServerMessage::PaymentSubmitted {
                 success,
@@ -669,7 +745,10 @@ async fn handle_get_payment_status(
     conn_state: &ConnectionState,
     payment_id: &str,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     debug!(
         wallet_id = %wallet_id,
@@ -680,8 +759,14 @@ async fn handle_get_payment_status(
     // Get status from pay node
     match state.pay_node.get_payment_status(payment_id).await {
         Ok(result) => {
-            let status_str = result.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let confirmations = result.get("confirmations").and_then(|v| v.as_u64()).map(|c| c as u32);
+            let status_str = result
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let confirmations = result
+                .get("confirmations")
+                .and_then(|v| v.as_u64())
+                .map(|c| c as u32);
 
             let status = match status_str {
                 "preparing" => PaymentStatus::Preparing,
@@ -722,7 +807,10 @@ async fn handle_cancel_payment(
     payment_id: &str,
     proof: &WalletProof,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     // Validate proof structure
     if let Err(e) = proof.validate_structure() {
@@ -784,14 +872,16 @@ async fn handle_cancel_payment(
 
     // Cancel payment via pay node
     match state.pay_node.cancel_payment(payment_id).await {
-        Ok(success) => {
-            Ok(Some(ServerMessage::PaymentSubmitted {
-                success,
-                payment_id: payment_id.to_string(),
-                txid: None,
-                error: if success { None } else { Some("Failed to cancel payment".to_string()) },
-            }))
-        }
+        Ok(success) => Ok(Some(ServerMessage::PaymentSubmitted {
+            success,
+            payment_id: payment_id.to_string(),
+            txid: None,
+            error: if success {
+                None
+            } else {
+                Some("Failed to cancel payment".to_string())
+            },
+        })),
         Err(e) => {
             warn!(
                 wallet_id = %wallet_id,
@@ -819,7 +909,10 @@ async fn handle_prepare_ghost_lock(
     _owner_pubkey: &str,
     capacity_sats: u64,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     info!(
         wallet_id = %wallet_id,
@@ -828,16 +921,18 @@ async fn handle_prepare_ghost_lock(
     );
 
     // Create lock via pay node
-    match state.pay_node.create_lock(&wallet_id.to_string(), capacity_sats, None).await {
-        Ok(lock_info) => {
-            Ok(Some(ServerMessage::LockPrepared {
-                success: true,
-                lock_id: Some(lock_info.lock_id),
-                funding_address: Some(lock_info.funding_address),
-                required_sats: Some(capacity_sats),
-                error: None,
-            }))
-        }
+    match state
+        .pay_node
+        .create_lock(&wallet_id.to_string(), capacity_sats, None)
+        .await
+    {
+        Ok(lock_info) => Ok(Some(ServerMessage::LockPrepared {
+            success: true,
+            lock_id: Some(lock_info.lock_id),
+            funding_address: Some(lock_info.funding_address),
+            required_sats: Some(capacity_sats),
+            error: None,
+        })),
         Err(e) => {
             warn!(
                 wallet_id = %wallet_id,
@@ -866,7 +961,10 @@ async fn handle_confirm_ghost_lock_funding(
     funding_txid: &str,
     proof: &WalletProof,
 ) -> Result<Option<ServerMessage>, GspError> {
-    let wallet_id = conn_state.wallet_id.as_ref().ok_or(GspError::Unauthorized)?;
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
 
     // Validate proof structure
     if let Err(e) = proof.validate_structure() {
@@ -923,9 +1021,16 @@ async fn handle_confirm_ghost_lock_funding(
     );
 
     // Confirm funding via pay node
-    match state.pay_node.confirm_lock_funding(lock_id, funding_txid, 0).await {
+    match state
+        .pay_node
+        .confirm_lock_funding(lock_id, funding_txid, 0)
+        .await
+    {
         Ok(result) => {
-            let block_height = result.get("block_height").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let block_height = result
+                .get("block_height")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
 
             Ok(Some(ServerMessage::LockConfirmed {
                 lock_id: lock_id.to_string(),

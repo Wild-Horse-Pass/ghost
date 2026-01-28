@@ -146,9 +146,8 @@ impl WalletProof {
         }
 
         // Validate hex encoding
-        hex::decode(&self.nonce).map_err(|_| {
-            GspProtoError::InvalidProof("Invalid nonce hex encoding".to_string())
-        })?;
+        hex::decode(&self.nonce)
+            .map_err(|_| GspProtoError::InvalidProof("Invalid nonce hex encoding".to_string()))?;
         hex::decode(&self.signature).map_err(|_| {
             GspProtoError::InvalidProof("Invalid signature hex encoding".to_string())
         })?;
@@ -165,9 +164,9 @@ impl WalletProof {
         }
 
         // Validate timestamp matches message
-        let msg_timestamp: i64 = parts[1].parse().map_err(|_| {
-            GspProtoError::InvalidProof("Invalid timestamp in message".to_string())
-        })?;
+        let msg_timestamp: i64 = parts[1]
+            .parse()
+            .map_err(|_| GspProtoError::InvalidProof("Invalid timestamp in message".to_string()))?;
         if msg_timestamp != self.timestamp {
             return Err(GspProtoError::InvalidProof(
                 "Timestamp mismatch".to_string(),
@@ -191,7 +190,10 @@ impl WalletProof {
 
     /// Extract the action from the message
     pub fn action(&self) -> Option<&str> {
-        self.message.split(':').next().and_then(|s| s.strip_prefix("ghost-"))
+        self.message
+            .split(':')
+            .next()
+            .and_then(|s| s.strip_prefix("ghost-"))
     }
 
     /// Get the wallet ID derived from this proof's public key

@@ -124,7 +124,10 @@ pub fn max_payload_size(msg_type: MessageType) -> usize {
 }
 
 /// Validate payload size against message type limits
-pub fn validate_payload_size(msg_type: MessageType, payload_size: usize) -> Result<(), MessageValidationError> {
+pub fn validate_payload_size(
+    msg_type: MessageType,
+    payload_size: usize,
+) -> Result<(), MessageValidationError> {
     let max_size = max_payload_size(msg_type);
     if payload_size > max_size {
         return Err(MessageValidationError::PayloadTooLarge(
@@ -163,8 +166,8 @@ pub fn verify_envelope_signature(envelope: &MessageEnvelope) -> Result<(), Messa
     signed_data.extend_from_slice(&envelope.sequence.to_le_bytes());
 
     // Verify using sender's public key (which IS their node ID)
-    let is_valid = verify_signature(&envelope.sender, &signed_data, &envelope.signature)
-        .unwrap_or(false);
+    let is_valid =
+        verify_signature(&envelope.sender, &signed_data, &envelope.signature).unwrap_or(false);
 
     if !is_valid {
         let sender_hex = hex::encode(&envelope.sender[..8]);

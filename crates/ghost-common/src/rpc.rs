@@ -117,13 +117,11 @@ fn is_retryable_error(error: &GhostError) -> bool {
                 "ECONNRESET",
                 "ECONNREFUSED",
             ];
-            transient_patterns.iter().any(|pattern| {
-                msg.to_lowercase().contains(&pattern.to_lowercase())
-            })
+            transient_patterns
+                .iter()
+                .any(|pattern| msg.to_lowercase().contains(&pattern.to_lowercase()))
         }
-        GhostError::Internal(msg) => {
-            msg.contains("timeout") || msg.contains("connection")
-        }
+        GhostError::Internal(msg) => msg.contains("timeout") || msg.contains("connection"),
         _ => false,
     }
 }
@@ -189,8 +187,14 @@ pub fn validate_block_template(
             template.previousblockhash.len(),
         ));
     }
-    if !template.previousblockhash.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(TemplateValidationError::InvalidHex("previousblockhash".into()));
+    if !template
+        .previousblockhash
+        .chars()
+        .all(|c| c.is_ascii_hexdigit())
+    {
+        return Err(TemplateValidationError::InvalidHex(
+            "previousblockhash".into(),
+        ));
     }
 
     // Validate bits format (8 hex chars)
@@ -219,7 +223,9 @@ pub fn validate_block_template(
             return Err(TemplateValidationError::CoinbaseAuxKeyTooLong(key.len()));
         }
         if value.len() > MAX_COINBASE_AUX_VALUE_LEN {
-            return Err(TemplateValidationError::CoinbaseAuxValueTooLong(value.len()));
+            return Err(TemplateValidationError::CoinbaseAuxValueTooLong(
+                value.len(),
+            ));
         }
     }
 
@@ -361,7 +367,10 @@ impl BitcoinRpc {
     }
 
     /// Create a new RPC client with full configuration and retry settings
-    pub fn with_config_and_retry(config: RpcConfig, retry_config: RpcRetryConfig) -> GhostResult<Self> {
+    pub fn with_config_and_retry(
+        config: RpcConfig,
+        retry_config: RpcRetryConfig,
+    ) -> GhostResult<Self> {
         use base64::Engine;
 
         // Validate configuration
@@ -380,8 +389,8 @@ impl BitcoinRpc {
         let auth = base64::engine::general_purpose::STANDARD
             .encode(format!("{}:{}", config.username, config.password));
 
-        let mut client_builder = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs));
+        let mut client_builder =
+            reqwest::Client::builder().timeout(std::time::Duration::from_secs(config.timeout_secs));
 
         // Add custom CA certificate if provided
         if let Some(ref cert_path) = config.tls_cert_path {
@@ -425,7 +434,8 @@ impl BitcoinRpc {
         method: &str,
         params: Vec<Value>,
     ) -> GhostResult<T> {
-        self.call_with_retry(method, params, &self.retry_config).await
+        self.call_with_retry(method, params, &self.retry_config)
+            .await
     }
 
     /// Make an RPC call with custom retry configuration

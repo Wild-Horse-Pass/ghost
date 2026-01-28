@@ -28,14 +28,10 @@ use futures_util::{SinkExt, StreamExt};
 use parking_lot::RwLock;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_tungstenite::{
-    connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream,
-};
+use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
 
-use ghost_gsp_proto::{
-    ClientMessage, ServerMessage, SessionToken, WalletId,
-};
+use ghost_gsp_proto::{ClientMessage, ServerMessage, SessionToken, WalletId};
 
 /// Balance information from GSP
 #[derive(Debug, Clone, Default)]
@@ -134,24 +130,20 @@ impl GspClient {
 
     /// Read task - receives messages from WebSocket
     async fn read_task(
-        mut read: futures_util::stream::SplitStream<
-            WebSocketStream<MaybeTlsStream<TcpStream>>,
-        >,
+        mut read: futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         connected: Arc<RwLock<bool>>,
         _session_token: Arc<RwLock<Option<SessionToken>>>,
     ) {
         while let Some(result) = read.next().await {
             match result {
-                Ok(Message::Text(text)) => {
-                    match serde_json::from_str::<ServerMessage>(&text) {
-                        Ok(msg) => {
-                            Self::handle_server_message(msg).await;
-                        }
-                        Err(e) => {
-                            warn!("Failed to parse server message: {}", e);
-                        }
+                Ok(Message::Text(text)) => match serde_json::from_str::<ServerMessage>(&text) {
+                    Ok(msg) => {
+                        Self::handle_server_message(msg).await;
                     }
-                }
+                    Err(e) => {
+                        warn!("Failed to parse server message: {}", e);
+                    }
+                },
                 Ok(Message::Close(_)) => {
                     info!("GSP closed connection");
                     *connected.write() = false;

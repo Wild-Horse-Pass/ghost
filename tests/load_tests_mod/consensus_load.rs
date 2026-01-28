@@ -19,8 +19,8 @@ pub enum ConsensusMessageType {
 impl ConsensusMessageType {
     fn size_bytes(&self) -> usize {
         match self {
-            ConsensusMessageType::Proposal => 512,    // Contains payout data
-            ConsensusMessageType::Vote => 128,        // Hash + signature
+            ConsensusMessageType::Proposal => 512, // Contains payout data
+            ConsensusMessageType::Vote => 128,     // Hash + signature
             ConsensusMessageType::PreCommit => 128,
             ConsensusMessageType::Commit => 128,
             ConsensusMessageType::ViewChange => 256,
@@ -315,7 +315,10 @@ mod tests {
         println!("  Messages/round: {:.1}", results.messages_per_round);
 
         assert!(results.total_proposals > 0);
-        assert_eq!(results.success_rate, 1.0, "All rounds should succeed without Byzantine nodes");
+        assert_eq!(
+            results.success_rate, 1.0,
+            "All rounds should succeed without Byzantine nodes"
+        );
     }
 
     #[test]
@@ -366,8 +369,14 @@ mod tests {
         println!("  Duration: {:?}", results.duration);
 
         // Performance assertions
-        assert!(results.proposals_per_second >= 5.0, "Should achieve at least 5 proposals/sec");
-        assert!(results.success_rate >= 0.99, "Should have >99% success rate");
+        assert!(
+            results.proposals_per_second >= 5.0,
+            "Should achieve at least 5 proposals/sec"
+        );
+        assert!(
+            results.success_rate >= 0.99,
+            "Should have >99% success rate"
+        );
     }
 
     #[test]

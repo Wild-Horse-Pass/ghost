@@ -350,10 +350,11 @@ impl ReconciliationTx {
                     data.extend_from_slice(&batch_id.to_le_bytes());
                     data.extend_from_slice(state_root);
 
-                    let push_bytes = PushBytesBuf::try_from(data)
-                        .map_err(|_| ReconciliationError::InvalidBatch(
-                            "OP_RETURN data exceeds push limit".to_string()
-                        ))?;
+                    let push_bytes = PushBytesBuf::try_from(data).map_err(|_| {
+                        ReconciliationError::InvalidBatch(
+                            "OP_RETURN data exceeds push limit".to_string(),
+                        )
+                    })?;
 
                     let script = Builder::new()
                         .push_opcode(bitcoin::blockdata::opcodes::all::OP_RETURN)
@@ -376,7 +377,9 @@ impl ReconciliationTx {
                     address, amount, ..
                 }
                 | TxOutput::TreasuryFee { address, amount }
-                | TxOutput::NodeFee { address, amount, .. } => {
+                | TxOutput::NodeFee {
+                    address, amount, ..
+                } => {
                     let addr = Address::from_str(address)
                         .map_err(|e| {
                             ReconciliationError::InvalidBatch(format!("Invalid address: {}", e))

@@ -101,7 +101,10 @@ fn test_812_max_length_username() {
 fn test_813_very_long_username() {
     let long_username = "a".repeat(10_000);
     let result = validate_username(&long_username);
-    assert!(result.is_err(), "Extremely long username should be rejected");
+    assert!(
+        result.is_err(),
+        "Extremely long username should be rejected"
+    );
 }
 
 #[test]
@@ -114,7 +117,10 @@ fn test_814_unicode_username() {
 #[test]
 fn test_815_whitespace_only_username() {
     let result = validate_username("   \t\n");
-    assert!(result.is_err(), "Whitespace-only username should be rejected");
+    assert!(
+        result.is_err(),
+        "Whitespace-only username should be rejected"
+    );
 }
 
 #[test]
@@ -217,9 +223,7 @@ fn test_827_empty_share_list() {
 
 #[test]
 fn test_828_very_large_share_list() {
-    let shares: Vec<Share> = (0..1_000_000)
-        .map(|_| Share { difficulty: 1.0 })
-        .collect();
+    let shares: Vec<Share> = (0..1_000_000).map(|_| Share { difficulty: 1.0 }).collect();
     let result = sum_difficulties(&shares);
     assert!((result - 1_000_000.0).abs() < 0.001);
 }

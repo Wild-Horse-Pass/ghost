@@ -23,7 +23,7 @@
 //! HTTP routes for verification endpoints
 
 use axum::{
-    extract::{Query, State, ws::WebSocketUpgrade},
+    extract::{ws::WebSocketUpgrade, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -44,10 +44,13 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
 
     Router::new()
         // WebSocket for real-time updates
-        .route("/ws", get(move |ws: WebSocketUpgrade| {
-            let ws_state = Arc::clone(&ws_state);
-            async move { ws_handler(ws, State(ws_state)).await }
-        }))
+        .route(
+            "/ws",
+            get(move |ws: WebSocketUpgrade| {
+                let ws_state = Arc::clone(&ws_state);
+                async move { ws_handler(ws, State(ws_state)).await }
+            }),
+        )
         // Health and node info
         .route("/health", get(health_handler))
         .route("/node-info", get(node_info_handler))
@@ -74,7 +77,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/config", get(api_config_handler))
         .route("/api/v1/resources/status", get(api_resources_handler))
         .route("/api/v1/ghostpay/status", get(api_ghostpay_status_handler))
-        .route("/api/v1/buds/capabilities", get(api_buds_capabilities_handler))
+        .route(
+            "/api/v1/buds/capabilities",
+            get(api_buds_capabilities_handler),
+        )
         // Additional dashboard endpoints
         .route("/api/v1/swarm", get(api_swarm_handler))
         .route("/api/v1/network/treasury", get(api_treasury_handler))
@@ -85,7 +91,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/node/nickname", get(api_nickname_handler))
         // Additional endpoints for dashboard compatibility
         .route("/api/v1/rewards/full", get(api_rewards_full_handler))
-        .route("/api/v1/settlement/status", get(api_settlement_status_handler))
+        .route(
+            "/api/v1/settlement/status",
+            get(api_settlement_status_handler),
+        )
         .route("/api/v1/swarm/nodes", get(api_swarm_nodes_handler))
         .route("/api/v1/watchdog/status", get(api_watchdog_status_handler))
         .route("/api/v1/system/version", get(api_system_version_handler))
@@ -94,43 +103,109 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/wraith/sessions", get(api_wraith_sessions_handler))
         .route("/api/v1/network/elder", get(api_network_elder_handler))
         .route("/api/v1/buds/mempool", get(api_buds_mempool_handler))
-        .route("/api/v1/mining/best-hash", get(api_mining_best_hash_handler))
-        .route("/api/v1/network/payout-history", get(api_payout_history_handler))
-        .route("/api/v1/ghostpay/payout-history", get(api_ghostpay_payout_history_handler))
-        .route("/api/v1/rewards/node-history", get(api_rewards_node_history_handler))
+        .route(
+            "/api/v1/mining/best-hash",
+            get(api_mining_best_hash_handler),
+        )
+        .route(
+            "/api/v1/network/payout-history",
+            get(api_payout_history_handler),
+        )
+        .route(
+            "/api/v1/ghostpay/payout-history",
+            get(api_ghostpay_payout_history_handler),
+        )
+        .route(
+            "/api/v1/rewards/node-history",
+            get(api_rewards_node_history_handler),
+        )
         // Config endpoints (GET for reading, POST for updating)
         .route("/api/v1/config/full", get(api_config_full_handler))
-        .route("/api/v1/config/profiles/mempool", get(api_config_profiles_mempool_handler))
-        .route("/api/v1/config/profiles/template", get(api_config_profiles_template_handler))
-        .route("/api/v1/config/archive_mode", get(api_config_archive_mode_handler).post(api_config_archive_mode_post_handler))
-        .route("/api/v1/config/ghost_mode", get(api_config_ghost_mode_handler).post(api_config_ghost_mode_post_handler))
-        .route("/api/v1/config/mempool_profile", get(api_config_mempool_profile_handler).post(api_config_mempool_profile_post_handler))
-        .route("/api/v1/config/public_mining", get(api_config_public_mining_handler).post(api_config_public_mining_post_handler))
-        .route("/api/v1/config/template_profile", get(api_config_template_profile_handler).post(api_config_template_profile_post_handler))
-        .route("/api/v1/config/bitcoin_pure", get(api_config_bitcoin_pure_handler).post(api_config_bitcoin_pure_post_handler))
-        .route("/api/v1/config/ghost_pay", get(api_config_ghost_pay_handler).post(api_config_ghost_pay_post_handler))
-        .route("/api/v1/config/elder", get(api_config_elder_handler).post(api_config_elder_post_handler))
-        .route("/api/v1/config/prune_profile", get(api_config_prune_profile_handler).post(api_config_prune_profile_post_handler))
-        .route("/api/v1/config/operator_window", get(api_config_operator_window_handler))
+        .route(
+            "/api/v1/config/profiles/mempool",
+            get(api_config_profiles_mempool_handler),
+        )
+        .route(
+            "/api/v1/config/profiles/template",
+            get(api_config_profiles_template_handler),
+        )
+        .route(
+            "/api/v1/config/archive_mode",
+            get(api_config_archive_mode_handler).post(api_config_archive_mode_post_handler),
+        )
+        .route(
+            "/api/v1/config/ghost_mode",
+            get(api_config_ghost_mode_handler).post(api_config_ghost_mode_post_handler),
+        )
+        .route(
+            "/api/v1/config/mempool_profile",
+            get(api_config_mempool_profile_handler).post(api_config_mempool_profile_post_handler),
+        )
+        .route(
+            "/api/v1/config/public_mining",
+            get(api_config_public_mining_handler).post(api_config_public_mining_post_handler),
+        )
+        .route(
+            "/api/v1/config/template_profile",
+            get(api_config_template_profile_handler).post(api_config_template_profile_post_handler),
+        )
+        .route(
+            "/api/v1/config/bitcoin_pure",
+            get(api_config_bitcoin_pure_handler).post(api_config_bitcoin_pure_post_handler),
+        )
+        .route(
+            "/api/v1/config/ghost_pay",
+            get(api_config_ghost_pay_handler).post(api_config_ghost_pay_post_handler),
+        )
+        .route(
+            "/api/v1/config/elder",
+            get(api_config_elder_handler).post(api_config_elder_post_handler),
+        )
+        .route(
+            "/api/v1/config/prune_profile",
+            get(api_config_prune_profile_handler).post(api_config_prune_profile_post_handler),
+        )
+        .route(
+            "/api/v1/config/operator_window",
+            get(api_config_operator_window_handler),
+        )
         // Mining endpoints
-        .route("/api/v1/mining/payout_address", get(api_mining_payout_address_handler))
+        .route(
+            "/api/v1/mining/payout_address",
+            get(api_mining_payout_address_handler),
+        )
         .route("/api/v1/mining/private", get(api_mining_private_handler))
         .route("/api/v1/mining/public", get(api_mining_public_handler))
         // Ghost Pay endpoints
-        .route("/api/v1/ghost-pay/pruning", get(api_ghostpay_pruning_handler))
+        .route(
+            "/api/v1/ghost-pay/pruning",
+            get(api_ghostpay_pruning_handler),
+        )
         // Settings endpoints
-        .route("/api/v1/settings/ghostpay_payout_address", get(api_settings_ghostpay_payout_address_handler))
+        .route(
+            "/api/v1/settings/ghostpay_payout_address",
+            get(api_settings_ghostpay_payout_address_handler),
+        )
         // Swarm endpoints
         .route("/api/v1/swarm/sync", get(api_swarm_sync_handler))
-        .route("/api/v1/swarm/update-all", get(api_swarm_update_all_handler))
+        .route(
+            "/api/v1/swarm/update-all",
+            get(api_swarm_update_all_handler),
+        )
         // System endpoints
-        .route("/api/v1/system/update/status", get(api_system_update_status_handler))
+        .route(
+            "/api/v1/system/update/status",
+            get(api_system_update_status_handler),
+        )
         .route("/api/v1/system/updates", get(api_system_updates_handler))
         .route("/api/v1/system/update", get(api_system_update_handler))
         .route("/api/v1/system/rollback", get(api_system_rollback_handler))
         // Watchdog endpoints
         .route("/api/v1/watchdog/events", get(api_watchdog_events_handler))
-        .route("/api/v1/watchdog/clear-cache", get(api_watchdog_clear_cache_handler))
+        .route(
+            "/api/v1/watchdog/clear-cache",
+            get(api_watchdog_clear_cache_handler),
+        )
         // Backup endpoints
         .route("/api/v1/backup/export", get(api_backup_export_handler))
         .route("/api/v1/backup/import", get(api_backup_import_handler))
@@ -187,9 +262,7 @@ async fn health_handler(
 }
 
 /// Node info handler (detailed node information)
-async fn node_info_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn node_info_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
     Json(serde_json::json!({
         "node_id": health.node_id,
@@ -204,24 +277,25 @@ async fn node_info_handler(
 }
 
 /// Peers handler - returns connected peers info
-async fn peers_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn peers_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
     // Query database for peer list if available
     let peers = if let Some(ref db) = state.database {
         match db.get_active_peers(50) {
-            Ok(peer_records) => peer_records.iter().map(|p| {
-                serde_json::json!({
-                    "peer_id": p.peer_id,
-                    "address": p.address,
-                    "port": p.port,
-                    "node_id": p.node_id,
-                    "last_seen": p.last_seen,
-                    "connection_count": p.connection_count
+            Ok(peer_records) => peer_records
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "peer_id": p.peer_id,
+                        "address": p.address,
+                        "port": p.port,
+                        "node_id": p.node_id,
+                        "last_seen": p.last_seen,
+                        "connection_count": p.connection_count
+                    })
                 })
-            }).collect::<Vec<_>>(),
+                .collect::<Vec<_>>(),
             Err(e) => {
                 error!(error = %e, "Failed to query peers");
                 vec![]
@@ -238,25 +312,26 @@ async fn peers_handler(
 }
 
 /// Shares handler - returns recent share statistics
-async fn shares_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn shares_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
     // Query database for recent shares if available
     let (shares, total_shares) = if let Some(ref db) = state.database {
         let shares = match db.get_recent_shares(100) {
-            Ok(share_records) => share_records.iter().map(|s| {
-                serde_json::json!({
-                    "round_id": s.round_id,
-                    "miner_id": s.miner_id,
-                    "difficulty": s.difficulty,
-                    "work": s.work,
-                    "share_hash": s.share_hash,
-                    "timestamp": s.timestamp,
-                    "valid": s.valid
+            Ok(share_records) => share_records
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "round_id": s.round_id,
+                        "miner_id": s.miner_id,
+                        "difficulty": s.difficulty,
+                        "work": s.work,
+                        "share_hash": s.share_hash,
+                        "timestamp": s.timestamp,
+                        "valid": s.valid
+                    })
                 })
-            }).collect::<Vec<_>>(),
+                .collect::<Vec<_>>(),
             Err(e) => {
                 error!(error = %e, "Failed to query shares");
                 vec![]
@@ -276,27 +351,28 @@ async fn shares_handler(
 }
 
 /// Rounds handler - returns recent round information
-async fn rounds_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn rounds_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
     // Query database for recent rounds if available
     let rounds = if let Some(ref db) = state.database {
         match db.get_recent_rounds(20) {
-            Ok(round_records) => round_records.iter().map(|r| {
-                serde_json::json!({
-                    "round_id": r.round_id,
-                    "block_height": r.block_height,
-                    "block_hash": r.block_hash,
-                    "start_time": r.start_time,
-                    "end_time": r.end_time,
-                    "total_shares": r.total_shares,
-                    "total_work": r.total_work,
-                    "winning_miner": r.winning_miner,
-                    "payout_status": r.payout_status.as_str()
+            Ok(round_records) => round_records
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "round_id": r.round_id,
+                        "block_height": r.block_height,
+                        "block_hash": r.block_hash,
+                        "start_time": r.start_time,
+                        "end_time": r.end_time,
+                        "total_shares": r.total_shares,
+                        "total_work": r.total_work,
+                        "winning_miner": r.winning_miner,
+                        "payout_status": r.payout_status.as_str()
+                    })
                 })
-            }).collect::<Vec<_>>(),
+                .collect::<Vec<_>>(),
             Err(e) => {
                 error!(error = %e, "Failed to query rounds");
                 vec![]
@@ -314,25 +390,26 @@ async fn rounds_handler(
 }
 
 /// Payouts handler - returns payout history
-async fn payouts_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn payouts_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     // Query database for recent payouts if available
     let (payouts, total_payouts) = if let Some(ref db) = state.database {
         let total = db.get_payout_count().unwrap_or(0);
         let payouts = match db.get_recent_payouts(50) {
-            Ok(payout_records) => payout_records.iter().map(|p| {
-                serde_json::json!({
-                    "round_id": p.round_id,
-                    "recipient_id": p.recipient_id,
-                    "recipient_type": p.recipient_type.as_str(),
-                    "address": p.address,
-                    "amount_sats": p.amount_sats,
-                    "txid": p.txid,
-                    "status": p.status.as_str(),
-                    "created_at": p.created_at
+            Ok(payout_records) => payout_records
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "round_id": p.round_id,
+                        "recipient_id": p.recipient_id,
+                        "recipient_type": p.recipient_type.as_str(),
+                        "address": p.address,
+                        "amount_sats": p.amount_sats,
+                        "txid": p.txid,
+                        "status": p.status.as_str(),
+                        "created_at": p.created_at
+                    })
                 })
-            }).collect::<Vec<_>>(),
+                .collect::<Vec<_>>(),
             Err(e) => {
                 error!(error = %e, "Failed to query payouts");
                 vec![]
@@ -350,9 +427,7 @@ async fn payouts_handler(
 }
 
 /// Consensus state handler - returns current consensus status
-async fn consensus_state_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn consensus_state_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
     // Query database for elder count and peer info
@@ -431,16 +506,22 @@ async fn archive_handler(
         Ok(response) => {
             if should_sign && state.can_sign() {
                 if let Some(signed) = state.sign_response(response.clone(), query.nonce) {
-                    return (StatusCode::OK, Json(serde_json::json!({
-                        "signed": true,
-                        "response": signed
-                    })));
+                    return (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "signed": true,
+                            "response": signed
+                        })),
+                    );
                 }
             }
-            (StatusCode::OK, Json(serde_json::json!({
-                "signed": false,
-                "response": response
-            })))
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": response
+                })),
+            )
         }
         Err(e) => {
             error!(error = %e, "Archive verification failed");
@@ -497,16 +578,22 @@ async fn policy_handler(
         Ok(response) => {
             if should_sign && state.can_sign() {
                 if let Some(signed) = state.sign_response(response.clone(), query.nonce) {
-                    return (StatusCode::OK, Json(serde_json::json!({
-                        "signed": true,
-                        "response": signed
-                    })));
+                    return (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "signed": true,
+                            "response": signed
+                        })),
+                    );
                 }
             }
-            (StatusCode::OK, Json(serde_json::json!({
-                "signed": false,
-                "response": response
-            })))
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": response
+                })),
+            )
         }
         Err(e) => {
             error!(error = %e, "Policy verification failed");
@@ -570,16 +657,22 @@ async fn stratum_handler(
         Ok(response) => {
             if should_sign && state.can_sign() {
                 if let Some(signed) = state.sign_response(response.clone(), query.nonce) {
-                    return (StatusCode::OK, Json(serde_json::json!({
-                        "signed": true,
-                        "response": signed
-                    })));
+                    return (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "signed": true,
+                            "response": signed
+                        })),
+                    );
                 }
             }
-            (StatusCode::OK, Json(serde_json::json!({
-                "signed": false,
-                "response": response
-            })))
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": response
+                })),
+            )
         }
         Err(e) => {
             error!(error = %e, "Stratum verification failed");
@@ -640,16 +733,22 @@ async fn ghostpay_handler(
         Ok(response) => {
             if should_sign && state.can_sign() {
                 if let Some(signed) = state.sign_response(response.clone(), query.nonce) {
-                    return (StatusCode::OK, Json(serde_json::json!({
-                        "signed": true,
-                        "response": signed
-                    })));
+                    return (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "signed": true,
+                            "response": signed
+                        })),
+                    );
                 }
             }
-            (StatusCode::OK, Json(serde_json::json!({
-                "signed": false,
-                "response": response
-            })))
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": response
+                })),
+            )
         }
         Err(e) => {
             error!(error = %e, "GhostPay verification failed");
@@ -677,9 +776,7 @@ async fn ghostpay_handler(
 // ============================================================================
 
 /// API v1 node status handler
-async fn api_node_status_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_node_status_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
     let config = state.dashboard_config.read();
     Json(serde_json::json!({
@@ -706,18 +803,26 @@ async fn api_node_status_handler(
 }
 
 /// API v1 node shares handler (5-4-3-2-1 system)
-async fn api_node_shares_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_node_shares_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let _health = state.get_health().await;
     let config = state.dashboard_config.read();
     // Calculate total shares based on capabilities (5-4-3-2-1 system)
     let mut total = 0;
-    if config.archive_mode { total += 5; }
-    if config.ghost_pay { total += 4; }
-    if config.public_mining { total += 3; }
-    if config.bitcoin_pure { total += 2; }
-    if config.elder { total += 1; }
+    if config.archive_mode {
+        total += 5;
+    }
+    if config.ghost_pay {
+        total += 4;
+    }
+    if config.public_mining {
+        total += 3;
+    }
+    if config.bitcoin_pure {
+        total += 2;
+    }
+    if config.elder {
+        total += 1;
+    }
 
     Json(serde_json::json!({
         "total": total,
@@ -735,9 +840,7 @@ async fn api_node_shares_handler(
 }
 
 /// API v1 node info handler (detailed)
-async fn api_node_info_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_node_info_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
     let config = state.dashboard_config.read();
     let node_id_short = health.node_id.chars().take(8).collect::<String>();
@@ -786,22 +889,23 @@ async fn api_mining_status_handler(
 }
 
 /// API v1 miners handler
-async fn api_miners_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_miners_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
     // Query miners from the current round's shares
     let miners = if let Some(ref db) = state.database {
         match db.get_round_miners(health.round_id) {
-            Ok(miner_work) => miner_work.iter().map(|(miner_id, work)| {
-                serde_json::json!({
-                    "miner_id": miner_id,
-                    "work": work,
-                    "shares_this_round": work.floor() as u64,
-                    "active": true
+            Ok(miner_work) => miner_work
+                .iter()
+                .map(|(miner_id, work)| {
+                    serde_json::json!({
+                        "miner_id": miner_id,
+                        "work": work,
+                        "shares_this_round": work.floor() as u64,
+                        "active": true
+                    })
                 })
-            }).collect::<Vec<_>>(),
+                .collect::<Vec<_>>(),
             Err(e) => {
                 error!(error = %e, "Failed to query miners");
                 vec![]
@@ -819,9 +923,7 @@ async fn api_miners_handler(
 }
 
 /// API v1 pool status handler
-async fn api_pool_status_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_pool_status_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
     Json(serde_json::json!({
         "pool_name": "Ghost Pool",
@@ -839,9 +941,7 @@ async fn api_pool_status_handler(
 }
 
 /// API v1 config handler
-async fn api_config_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_config_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let config = state.dashboard_config.read();
     Json(serde_json::json!({
         "archive_mode": config.archive_mode,
@@ -855,9 +955,7 @@ async fn api_config_handler(
 }
 
 /// API v1 resources handler
-async fn api_resources_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_resources_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
     Json(serde_json::json!({
         "cpu_percent": 0.0,
@@ -906,22 +1004,23 @@ async fn api_buds_capabilities_handler(
 }
 
 /// API v1 Swarm handler - for multi-node management
-async fn api_swarm_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_swarm_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
     // Query database for connected peers
     let (nodes, total) = if let Some(ref db) = state.database {
         let peers = db.get_active_peers(50).unwrap_or_default();
-        let nodes_json: Vec<_> = peers.iter().map(|p| {
-            serde_json::json!({
-                "node_id": p.node_id.clone().unwrap_or_else(|| "unknown".to_string()),
-                "address": format!("{}:{}", p.address, p.port),
-                "last_seen": p.last_seen,
-                "is_self": false
+        let nodes_json: Vec<_> = peers
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "node_id": p.node_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                    "address": format!("{}:{}", p.address, p.port),
+                    "last_seen": p.last_seen,
+                    "is_self": false
+                })
             })
-        }).collect();
+            .collect();
         let total = nodes_json.len() + 1; // +1 for self
         (nodes_json, total)
     } else {
@@ -942,15 +1041,19 @@ async fn api_swarm_handler(
 }
 
 /// API v1 Treasury handler
-async fn api_treasury_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_treasury_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     // Query database for treasury stats
     let (total_fees, payout_count) = if let Some(ref db) = state.database {
         // Sum all payouts where recipient_type is Treasury
         let payouts = db.get_recent_payouts(1000).unwrap_or_default();
-        let treasury_payouts: Vec<_> = payouts.iter()
-            .filter(|p| matches!(p.recipient_type, ghost_storage::models::RecipientType::Treasury))
+        let treasury_payouts: Vec<_> = payouts
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p.recipient_type,
+                    ghost_storage::models::RecipientType::Treasury
+                )
+            })
             .collect();
         let total: u64 = treasury_payouts.iter().map(|p| p.amount_sats).sum();
         (total, treasury_payouts.len())
@@ -997,7 +1100,11 @@ async fn api_rewards_current_handler(
     // Get node reward entry from database
     let (balance_sats, total_credits, last_round) = if let Some(ref db) = state.database {
         match db.get_or_create_node_reward(&health.node_id) {
-            Ok(entry) => (entry.balance_sats, entry.total_credits_sats, entry.last_credited_round),
+            Ok(entry) => (
+                entry.balance_sats,
+                entry.total_credits_sats,
+                entry.last_credited_round,
+            ),
             Err(e) => {
                 error!(error = %e, "Failed to query node rewards");
                 (0, 0, 0)
@@ -1009,11 +1116,21 @@ async fn api_rewards_current_handler(
 
     // Calculate node shares based on capabilities
     let mut node_shares = 0u32;
-    if config.archive_mode { node_shares += 5; }
-    if config.ghost_pay { node_shares += 4; }
-    if config.public_mining { node_shares += 3; }
-    if config.bitcoin_pure { node_shares += 2; }
-    if config.elder { node_shares += 1; }
+    if config.archive_mode {
+        node_shares += 5;
+    }
+    if config.ghost_pay {
+        node_shares += 4;
+    }
+    if config.public_mining {
+        node_shares += 3;
+    }
+    if config.bitcoin_pure {
+        node_shares += 2;
+    }
+    if config.elder {
+        node_shares += 1;
+    }
 
     Json(serde_json::json!({
         "round_id": health.round_id,
@@ -1038,7 +1155,8 @@ async fn api_rewards_history_handler(
     let (rewards, total_sats) = if let Some(ref db) = state.database {
         // Get payouts where this node was the recipient
         let payouts = db.get_recent_payouts(100).unwrap_or_default();
-        let node_payouts: Vec<_> = payouts.iter()
+        let node_payouts: Vec<_> = payouts
+            .iter()
             .filter(|p| p.recipient_id == health.node_id)
             .map(|p| {
                 serde_json::json!({
@@ -1050,7 +1168,8 @@ async fn api_rewards_history_handler(
                 })
             })
             .collect();
-        let total: u64 = payouts.iter()
+        let total: u64 = payouts
+            .iter()
             .filter(|p| p.recipient_id == health.node_id)
             .map(|p| p.amount_sats)
             .sum();
@@ -1068,9 +1187,7 @@ async fn api_rewards_history_handler(
 }
 
 /// API v1 Logs handler
-async fn api_logs_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_logs_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     // Try to read recent log entries from journalctl
     let entries = match tokio::process::Command::new("journalctl")
         .args(["-u", "ghost-pool", "-n", "100", "--no-pager", "-o", "json"])
@@ -1081,7 +1198,8 @@ async fn api_logs_handler(
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 // Parse JSON lines
-                stdout.lines()
+                stdout
+                    .lines()
                     .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
                     .map(|entry| {
                         serde_json::json!({
@@ -1109,7 +1227,7 @@ async fn api_logs_handler(
                 vec![]
             }
         }
-        Err(_) => vec![]
+        Err(_) => vec![],
     };
 
     let total = entries.len();
@@ -1122,9 +1240,7 @@ async fn api_logs_handler(
 }
 
 /// API v1 Locks handler (Ghost Lock state channels)
-async fn api_locks_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_locks_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
     let config = state.dashboard_config.read();
 
@@ -1134,24 +1250,28 @@ async fn api_locks_handler(
         let ghost_id = format!("ghost{}", &health.node_id[..8.min(health.node_id.len())]);
         match db.get_ghost_locks_by_owner(&ghost_id) {
             Ok(lock_records) => {
-                let active: Vec<_> = lock_records.iter()
+                let active: Vec<_> = lock_records
+                    .iter()
                     .filter(|l| l.state == ghost_storage::models::GhostLockState::Active)
                     .collect();
                 let total: u64 = active.iter().map(|l| l.amount_sats).sum();
-                let locks_json: Vec<_> = lock_records.iter().map(|l| {
-                    serde_json::json!({
-                        "lock_id": l.lock_id,
-                        "denomination": l.denomination,
-                        "amount_sats": l.amount_sats,
-                        "state": format!("{:?}", l.state),
-                        "timelock_tier": l.timelock_tier,
-                        "creation_height": l.creation_height,
-                        "recovery_height": l.recovery_height,
-                        "funding_txid": l.funding_txid,
-                        "next_jump_height": l.next_jump_height,
-                        "created_at": l.created_at
+                let locks_json: Vec<_> = lock_records
+                    .iter()
+                    .map(|l| {
+                        serde_json::json!({
+                            "lock_id": l.lock_id,
+                            "denomination": l.denomination,
+                            "amount_sats": l.amount_sats,
+                            "state": format!("{:?}", l.state),
+                            "timelock_tier": l.timelock_tier,
+                            "creation_height": l.creation_height,
+                            "recovery_height": l.recovery_height,
+                            "funding_txid": l.funding_txid,
+                            "next_jump_height": l.next_jump_height,
+                            "created_at": l.created_at
+                        })
                     })
-                }).collect();
+                    .collect();
                 (locks_json, active.len(), total)
             }
             Err(e) => {
@@ -1172,9 +1292,7 @@ async fn api_locks_handler(
 }
 
 /// API v1 Nickname handler
-async fn api_nickname_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_nickname_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
     // Return short node ID as nickname
     let nickname = health.node_id.chars().take(8).collect::<String>();
@@ -1191,22 +1309,29 @@ async fn api_rewards_full_handler(
     let config = state.dashboard_config.read();
 
     // Get node reward entry from database
-    let (balance_sats, total_credits, total_withdrawals, last_round) = if let Some(ref db) = state.database {
-        match db.get_or_create_node_reward(&health.node_id) {
-            Ok(entry) => (entry.balance_sats, entry.total_credits_sats, entry.total_withdrawals_sats, entry.last_credited_round),
-            Err(e) => {
-                error!(error = %e, "Failed to query node rewards");
-                (0, 0, 0, 0)
+    let (balance_sats, total_credits, total_withdrawals, last_round) =
+        if let Some(ref db) = state.database {
+            match db.get_or_create_node_reward(&health.node_id) {
+                Ok(entry) => (
+                    entry.balance_sats,
+                    entry.total_credits_sats,
+                    entry.total_withdrawals_sats,
+                    entry.last_credited_round,
+                ),
+                Err(e) => {
+                    error!(error = %e, "Failed to query node rewards");
+                    (0, 0, 0, 0)
+                }
             }
-        }
-    } else {
-        (0, 0, 0, 0)
-    };
+        } else {
+            (0, 0, 0, 0)
+        };
 
     // Get payout history
     let (rewards_history, last_payout) = if let Some(ref db) = state.database {
         let payouts = db.get_recent_payouts(20).unwrap_or_default();
-        let node_payouts: Vec<_> = payouts.iter()
+        let node_payouts: Vec<_> = payouts
+            .iter()
             .filter(|p| p.recipient_id == health.node_id)
             .map(|p| {
                 serde_json::json!({
@@ -1218,15 +1343,18 @@ async fn api_rewards_full_handler(
                 })
             })
             .collect();
-        let last = payouts.iter()
+        let last = payouts
+            .iter()
             .filter(|p| p.recipient_id == health.node_id)
             .next()
-            .map(|p| serde_json::json!({
-                "round_id": p.round_id,
-                "amount_sats": p.amount_sats,
-                "txid": p.txid,
-                "created_at": p.created_at
-            }));
+            .map(|p| {
+                serde_json::json!({
+                    "round_id": p.round_id,
+                    "amount_sats": p.amount_sats,
+                    "txid": p.txid,
+                    "created_at": p.created_at
+                })
+            });
         (node_payouts, last)
     } else {
         (vec![], None)
@@ -1234,11 +1362,21 @@ async fn api_rewards_full_handler(
 
     // Calculate node shares
     let mut node_shares = 0u32;
-    if config.archive_mode { node_shares += 5; }
-    if config.ghost_pay { node_shares += 4; }
-    if config.public_mining { node_shares += 3; }
-    if config.bitcoin_pure { node_shares += 2; }
-    if config.elder { node_shares += 1; }
+    if config.archive_mode {
+        node_shares += 5;
+    }
+    if config.ghost_pay {
+        node_shares += 4;
+    }
+    if config.public_mining {
+        node_shares += 3;
+    }
+    if config.bitcoin_pure {
+        node_shares += 2;
+    }
+    if config.elder {
+        node_shares += 1;
+    }
 
     Json(serde_json::json!({
         "round_id": health.round_id,
@@ -1266,17 +1404,21 @@ async fn api_settlement_status_handler(
 
         // Get the most recent finalized batch
         let all_pending = db.get_pending_reconciliation_batches().unwrap_or_default();
-        let last = all_pending.iter()
+        let last = all_pending
+            .iter()
             .filter(|b| b.finalized_at.is_some())
             .next()
-            .map(|b| serde_json::json!({
-                "batch_id": b.batch_id,
-                "total_amount_sats": b.total_amount_sats,
-                "l1_txid": b.l1_txid,
-                "finalized_at": b.finalized_at
-            }));
+            .map(|b| {
+                serde_json::json!({
+                    "batch_id": b.batch_id,
+                    "total_amount_sats": b.total_amount_sats,
+                    "l1_txid": b.l1_txid,
+                    "finalized_at": b.finalized_at
+                })
+            });
 
-        let total: u64 = all_pending.iter()
+        let total: u64 = all_pending
+            .iter()
             .filter(|b| b.finalized_at.is_some())
             .map(|b| b.total_amount_sats)
             .sum();
@@ -1286,7 +1428,11 @@ async fn api_settlement_status_handler(
         (0, None, 0)
     };
 
-    let status = if pending_count > 0 { "processing" } else { "idle" };
+    let status = if pending_count > 0 {
+        "processing"
+    } else {
+        "idle"
+    };
 
     Json(serde_json::json!({
         "status": status,
@@ -1299,9 +1445,7 @@ async fn api_settlement_status_handler(
 }
 
 /// API v1 Swarm nodes handler
-async fn api_swarm_nodes_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_swarm_nodes_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
     // Start with self
@@ -1363,7 +1507,7 @@ async fn api_watchdog_status_handler(
             Err(_) => serde_json::json!({
                 "status": "error",
                 "message": "RPC connection failed"
-            })
+            }),
         }
     } else {
         serde_json::json!({
@@ -1410,7 +1554,7 @@ async fn api_system_version_handler(
     let ghost_core_version = if let Some(ref rpc) = state.rpc {
         match rpc.get_network_info().await {
             Ok(info) => Some(info.subversion),
-            Err(_) => None
+            Err(_) => None,
         }
     } else {
         None
@@ -1428,27 +1572,28 @@ async fn api_system_version_handler(
 }
 
 /// API v1 Payments handler
-async fn api_payments_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_payments_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     // Query database for recent payouts (payments are derived from payouts)
     let (payments, total) = if let Some(ref db) = state.database {
         let payout_records = db.get_recent_payouts(50).unwrap_or_default();
         let total = db.get_payout_count().unwrap_or(0);
-        let payments_json: Vec<_> = payout_records.iter().map(|p| {
-            serde_json::json!({
-                "id": format!("{}-{}", p.round_id, p.recipient_id),
-                "round_id": p.round_id,
-                "recipient": p.recipient_id,
-                "recipient_type": format!("{:?}", p.recipient_type),
-                "amount_sats": p.amount_sats,
-                "address": p.address,
-                "txid": p.txid,
-                "status": format!("{:?}", p.status),
-                "type": "payout",
-                "created_at": p.created_at
+        let payments_json: Vec<_> = payout_records
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "id": format!("{}-{}", p.round_id, p.recipient_id),
+                    "round_id": p.round_id,
+                    "recipient": p.recipient_id,
+                    "recipient_type": format!("{:?}", p.recipient_type),
+                    "amount_sats": p.amount_sats,
+                    "address": p.address,
+                    "txid": p.txid,
+                    "status": format!("{:?}", p.status),
+                    "type": "payout",
+                    "created_at": p.created_at
+                })
             })
-        }).collect();
+            .collect();
         (payments_json, total)
     } else {
         (vec![], 0)
@@ -1468,25 +1613,31 @@ async fn api_backup_history_handler(
     let backup_dir = std::path::Path::new("/home/ghost/.ghost/backups");
     let backups = if backup_dir.exists() {
         match std::fs::read_dir(backup_dir) {
-            Ok(entries) => {
-                entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| e.path().extension().map(|ext| ext == "backup" || ext == "db").unwrap_or(false))
-                    .filter_map(|e| {
-                        let metadata = e.metadata().ok()?;
-                        let modified = metadata.modified().ok()?
-                            .duration_since(std::time::UNIX_EPOCH).ok()?
-                            .as_secs();
-                        Some(serde_json::json!({
-                            "filename": e.file_name().to_string_lossy(),
-                            "path": e.path().to_string_lossy(),
-                            "size_bytes": metadata.len(),
-                            "created_at": modified
-                        }))
-                    })
-                    .collect::<Vec<_>>()
-            }
-            Err(_) => vec![]
+            Ok(entries) => entries
+                .filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|ext| ext == "backup" || ext == "db")
+                        .unwrap_or(false)
+                })
+                .filter_map(|e| {
+                    let metadata = e.metadata().ok()?;
+                    let modified = metadata
+                        .modified()
+                        .ok()?
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()?
+                        .as_secs();
+                    Some(serde_json::json!({
+                        "filename": e.file_name().to_string_lossy(),
+                        "path": e.path().to_string_lossy(),
+                        "size_bytes": metadata.len(),
+                        "created_at": modified
+                    }))
+                })
+                .collect::<Vec<_>>(),
+            Err(_) => vec![],
         }
     } else {
         vec![]
@@ -1509,16 +1660,19 @@ async fn api_wraith_sessions_handler(
         let rounds = db.get_active_wraith_rounds().unwrap_or_default();
         let active = rounds.len();
         let participants: u32 = rounds.iter().map(|r| r.participant_count).sum();
-        let sessions_json: Vec<_> = rounds.iter().map(|r| {
-            serde_json::json!({
-                "round_id": r.round_id,
-                "denomination": r.denomination,
-                "amount_sats": r.amount_sats,
-                "participant_count": r.participant_count,
-                "phase": format!("{:?}", r.phase),
-                "registration_deadline": r.registration_deadline
+        let sessions_json: Vec<_> = rounds
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "round_id": r.round_id,
+                    "denomination": r.denomination,
+                    "amount_sats": r.amount_sats,
+                    "participant_count": r.participant_count,
+                    "phase": format!("{:?}", r.phase),
+                    "registration_deadline": r.registration_deadline
+                })
             })
-        }).collect();
+            .collect();
         (sessions_json, active, participants)
     } else {
         (vec![], 0, 0)
@@ -1548,16 +1702,19 @@ async fn api_network_elder_handler(
         let elder_records = db.get_elders().unwrap_or_default();
         let total = elder_records.len() as u32;
         let is_self_elder = elder_records.iter().any(|e| e.node_id == health.node_id);
-        let elders_json: Vec<_> = elder_records.iter().map(|e| {
-            serde_json::json!({
-                "node_id": e.node_id,
-                "display_name": e.display_name,
-                "elder_order": e.elder_order,
-                "first_seen": e.first_seen,
-                "last_seen": e.last_seen,
-                "is_self": e.node_id == health.node_id
+        let elders_json: Vec<_> = elder_records
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "node_id": e.node_id,
+                    "display_name": e.display_name,
+                    "elder_order": e.elder_order,
+                    "first_seen": e.first_seen,
+                    "last_seen": e.last_seen,
+                    "is_self": e.node_id == health.node_id
+                })
             })
-        }).collect();
+            .collect();
         (elders_json, total, is_self_elder)
     } else {
         (vec![], 0, false)
@@ -1611,7 +1768,10 @@ async fn api_buds_mempool_handler(
                     }
                     Err(e) => {
                         error!(error = %e, "Failed to get raw mempool");
-                        (vec![], serde_json::json!({"T0": 0, "T1": 0, "T2": 0, "T3": 0, "T4": 0}))
+                        (
+                            vec![],
+                            serde_json::json!({"T0": 0, "T1": 0, "T2": 0, "T3": 0, "T4": 0}),
+                        )
                     }
                 };
 
@@ -1697,18 +1857,21 @@ async fn api_payout_history_handler(
     let (payouts, total) = if let Some(ref db) = state.database {
         let payout_records = db.get_recent_payouts(100).unwrap_or_default();
         let total = db.get_payout_count().unwrap_or(0);
-        let payouts_json: Vec<_> = payout_records.iter().map(|p| {
-            serde_json::json!({
-                "round_id": p.round_id,
-                "recipient_id": p.recipient_id,
-                "recipient_type": format!("{:?}", p.recipient_type),
-                "amount_sats": p.amount_sats,
-                "address": p.address,
-                "txid": p.txid,
-                "status": format!("{:?}", p.status),
-                "created_at": p.created_at
+        let payouts_json: Vec<_> = payout_records
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "round_id": p.round_id,
+                    "recipient_id": p.recipient_id,
+                    "recipient_type": format!("{:?}", p.recipient_type),
+                    "amount_sats": p.amount_sats,
+                    "address": p.address,
+                    "txid": p.txid,
+                    "status": format!("{:?}", p.status),
+                    "created_at": p.created_at
+                })
             })
-        }).collect();
+            .collect();
         (payouts_json, total)
     } else {
         (vec![], 0)
@@ -1730,19 +1893,22 @@ async fn api_ghostpay_payout_history_handler(
     // Query withdrawals as GhostPay payouts
     let (payouts, total) = if let Some(ref db) = state.database {
         let withdrawals = db.get_pending_withdrawals(&ghost_id).unwrap_or_default();
-        let payouts_json: Vec<_> = withdrawals.iter().map(|w| {
-            serde_json::json!({
-                "id": w.id,
-                "lock_id": w.lock_id,
-                "destination": w.destination_address,
-                "amount_sats": w.amount_sats,
-                "fee_sats": w.fee_sats,
-                "status": format!("{:?}", w.status),
-                "batch_id": w.batch_id,
-                "l1_txid": w.l1_txid,
-                "created_at": w.created_at
+        let payouts_json: Vec<_> = withdrawals
+            .iter()
+            .map(|w| {
+                serde_json::json!({
+                    "id": w.id,
+                    "lock_id": w.lock_id,
+                    "destination": w.destination_address,
+                    "amount_sats": w.amount_sats,
+                    "fee_sats": w.fee_sats,
+                    "status": format!("{:?}", w.status),
+                    "batch_id": w.batch_id,
+                    "l1_txid": w.l1_txid,
+                    "created_at": w.created_at
+                })
             })
-        }).collect();
+            .collect();
         let total = payouts_json.len();
         (payouts_json, total)
     } else {
@@ -1765,18 +1931,21 @@ async fn api_rewards_node_history_handler(
     let (history, total) = if let Some(ref db) = state.database {
         // Get nodes with balance
         let nodes = db.get_nodes_with_balance(0).unwrap_or_default();
-        let history_json: Vec<_> = nodes.iter().map(|n| {
-            serde_json::json!({
-                "node_id": n.node_id,
-                "balance_sats": n.balance_sats,
-                "last_credited_round": n.last_credited_round,
-                "total_credits_sats": n.total_credits_sats,
-                "total_withdrawals_sats": n.total_withdrawals_sats,
-                "is_self": n.node_id == health.node_id,
-                "created_at": n.created_at,
-                "updated_at": n.updated_at
+        let history_json: Vec<_> = nodes
+            .iter()
+            .map(|n| {
+                serde_json::json!({
+                    "node_id": n.node_id,
+                    "balance_sats": n.balance_sats,
+                    "last_credited_round": n.last_credited_round,
+                    "total_credits_sats": n.total_credits_sats,
+                    "total_withdrawals_sats": n.total_withdrawals_sats,
+                    "is_self": n.node_id == health.node_id,
+                    "created_at": n.created_at,
+                    "updated_at": n.updated_at
+                })
             })
-        }).collect();
+            .collect();
         let total = history_json.len();
         (history_json, total)
     } else {
@@ -1794,9 +1963,7 @@ async fn api_rewards_node_history_handler(
 // ============================================================================
 
 /// API v1 Config full handler
-async fn api_config_full_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_config_full_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
     let config = state.dashboard_config.read();
     Json(serde_json::json!({
@@ -2145,13 +2312,16 @@ async fn api_mining_public_handler(
     let (miners, total) = if let Some(ref db) = state.database {
         match db.get_round_miners(health.round_id) {
             Ok(miner_work) => {
-                let miners_json: Vec<_> = miner_work.iter().map(|(miner_id, work)| {
-                    serde_json::json!({
-                        "miner_id": miner_id,
-                        "work": work,
-                        "type": "public"
+                let miners_json: Vec<_> = miner_work
+                    .iter()
+                    .map(|(miner_id, work)| {
+                        serde_json::json!({
+                            "miner_id": miner_id,
+                            "work": work,
+                            "type": "public"
+                        })
                     })
-                }).collect();
+                    .collect();
                 let total = miners_json.len();
                 (miners_json, total)
             }
@@ -2184,10 +2354,10 @@ async fn api_ghostpay_pruning_handler(
     // Get pruning profile settings
     let (enabled, threshold) = match config.prune_profile.as_str() {
         "none" => (false, 0),
-        "minimal" => (true, 100000), // Prune locks below 100k sats
-        "moderate" => (true, 1000000), // Prune locks below 1M sats
+        "minimal" => (true, 100000),      // Prune locks below 100k sats
+        "moderate" => (true, 1000000),    // Prune locks below 1M sats
         "aggressive" => (true, 10000000), // Prune locks below 10M sats
-        _ => (false, 0)
+        _ => (false, 0),
     };
 
     Json(serde_json::json!({
@@ -2217,16 +2387,20 @@ async fn api_settings_ghostpay_payout_address_handler(
 // ============================================================================
 
 /// API v1 Swarm sync handler
-async fn api_swarm_sync_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_swarm_sync_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
     // Check sync status based on peer connectivity and block height
     let (status, synced_peers) = if let Some(ref db) = state.database {
         let peers = db.get_active_peers(50).unwrap_or_default();
         let synced = peers.len();
-        let status = if synced >= 3 { "synced" } else if synced > 0 { "syncing" } else { "disconnected" };
+        let status = if synced >= 3 {
+            "synced"
+        } else if synced > 0 {
+            "syncing"
+        } else {
+            "disconnected"
+        };
         (status, synced)
     } else {
         ("unknown", 0)
@@ -2385,25 +2559,28 @@ async fn admin_test_consensus_handler(
     State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
     match state.trigger_test_proposal() {
-        Ok(Some(hash)) => {
-            (StatusCode::OK, Json(serde_json::json!({
+        Ok(Some(hash)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
                 "success": true,
                 "proposal_hash": hex::encode(hash),
                 "message": "Test proposal broadcast to peers"
-            })))
-        }
-        Ok(None) => {
-            (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+            })),
+        ),
+        Ok(None) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
                 "success": false,
                 "error": "Test proposal handler not configured"
-            })))
-        }
-        Err(e) => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+            })),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
                 "success": false,
                 "error": format!("Failed to trigger test proposal: {}", e)
-            })))
-        }
+            })),
+        ),
     }
 }
 

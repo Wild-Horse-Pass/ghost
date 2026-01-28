@@ -271,8 +271,10 @@ impl PeerScore {
         // Elder bonus
         let elder_bonus = if peer.is_elder { 0.2 } else { 0.0 };
 
-        let score =
-            (latency_score * 0.3) + (reliability_score * 0.3) + (capability_score * 0.2) + elder_bonus;
+        let score = (latency_score * 0.3)
+            + (reliability_score * 0.3)
+            + (capability_score * 0.2)
+            + elder_bonus;
 
         Self {
             node_id: peer.node_id,

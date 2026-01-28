@@ -110,10 +110,10 @@ impl PolicyProfile {
             name: "full_open".to_string(),
             description: "Accept all valid transactions (T0-T3)".to_string(),
             allowed_tiers: vec![BudsTier::T0, BudsTier::T1, BudsTier::T2, BudsTier::T3],
-            max_op_return_size: 520, // Bitcoin consensus limit
+            max_op_return_size: 520,          // Bitcoin consensus limit
             max_witness_per_input: 4_000_000, // Essentially unlimited
-            max_tx_outputs: 2500, // Near consensus limit
-            max_tx_size: 400_000, // Standard relay limit
+            max_tx_outputs: 2500,             // Near consensus limit
+            max_tx_size: 400_000,             // Standard relay limit
             allow_inscriptions: true,
             allow_runes: true,
             allow_brc20: true,
@@ -123,10 +123,7 @@ impl PolicyProfile {
     }
 
     /// Create a custom profile
-    pub fn custom(
-        name: impl Into<String>,
-        allowed_tiers: Vec<BudsTier>,
-    ) -> Self {
+    pub fn custom(name: impl Into<String>, allowed_tiers: Vec<BudsTier>) -> Self {
         Self {
             name: name.into(),
             description: "Custom policy profile".to_string(),
@@ -155,9 +152,7 @@ impl PolicyProfile {
 
     /// Check if profile allows any data-anchoring (T2+)
     pub fn allows_data(&self) -> bool {
-        self.allowed_tiers
-            .iter()
-            .any(|t| *t >= BudsTier::T2)
+        self.allowed_tiers.iter().any(|t| *t >= BudsTier::T2)
     }
 
     /// Check if profile allows heavy data (T3)
@@ -365,7 +360,7 @@ mod tests {
     #[test]
     fn test_strictness() {
         assert_eq!(PolicyProfile::bitcoin_pure().strictness(), 2); // T0+T1
-        assert_eq!(PolicyProfile::permissive().strictness(), 1);   // T0+T1+T2
-        assert_eq!(PolicyProfile::full_open().strictness(), 0);    // T0-T3
+        assert_eq!(PolicyProfile::permissive().strictness(), 1); // T0+T1+T2
+        assert_eq!(PolicyProfile::full_open().strictness(), 0); // T0-T3
     }
 }

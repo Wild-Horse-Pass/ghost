@@ -6,6 +6,6 @@
 //! - Consensus message flooding
 //! - Memory usage under load
 
+pub mod consensus_load;
 pub mod mining_load;
 pub mod stratum_stress;
-pub mod consensus_load;

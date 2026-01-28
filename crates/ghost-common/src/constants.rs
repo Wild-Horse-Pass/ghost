@@ -267,10 +267,10 @@ pub const L2_EPOCH_BLOCKS: u64 = 2160;
 
 /// Wraith denomination tiers (satoshis)
 pub const WRAITH_DENOMINATIONS: [u64; 4] = [
-    100_000,        // 0.001 BTC
-    1_000_000,      // 0.01 BTC
-    10_000_000,     // 0.1 BTC
-    100_000_000,    // 1 BTC
+    100_000,     // 0.001 BTC
+    1_000_000,   // 0.01 BTC
+    10_000_000,  // 0.1 BTC
+    100_000_000, // 1 BTC
 ];
 
 // =============================================================================
@@ -300,7 +300,10 @@ mod tests {
     #[test]
     fn test_coinbase_output_sum() {
         // 1 treasury + 100 nodes + 200 miners = 301
-        assert_eq!(1 + MAX_NODE_OUTPUTS + MAX_MINER_OUTPUTS, MAX_COINBASE_OUTPUTS);
+        assert_eq!(
+            1 + MAX_NODE_OUTPUTS + MAX_MINER_OUTPUTS,
+            MAX_COINBASE_OUTPUTS
+        );
     }
 
     #[test]

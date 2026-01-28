@@ -36,7 +36,10 @@ fn test_001_payout_precision_no_satoshi_loss() {
     let pool_fee_safe = subsidy_sats * (pool_fee_percent as u64) / 100;
 
     // For this specific case they're equal, but let's test edge cases
-    assert_eq!(pool_fee_float, pool_fee_safe, "Pool fee calculation mismatch");
+    assert_eq!(
+        pool_fee_float, pool_fee_safe,
+        "Pool fee calculation mismatch"
+    );
 
     // Test with odd amounts that don't divide evenly
     let odd_subsidy: u64 = 312_500_001; // 3.125 BTC + 1 sat
@@ -76,7 +79,8 @@ fn test_002_accumulated_rounding_error_across_outputs() {
 
     // CRITICAL: With proper integer math and remainder handling, nothing is lost
     assert_eq!(
-        total_with_remainder, total_reward,
+        total_with_remainder,
+        total_reward,
         "FUND LOSS: {} sats unaccounted with integer math",
         total_reward.saturating_sub(total_with_remainder)
     );
@@ -119,7 +123,8 @@ fn test_003_total_outputs_equals_total_inputs() {
 
     // CRITICAL ASSERTION: No satoshis vanish
     assert_eq!(
-        total_outputs, total_available,
+        total_outputs,
+        total_available,
         "FUND LOSS: {} sats vanished! inputs={}, outputs={}",
         total_available.saturating_sub(total_outputs),
         total_available,
@@ -169,10 +174,16 @@ fn test_004_dust_threshold_doesnt_silently_lose_funds() {
     let unaccounted = total_reward.saturating_sub(total_distributed + dust_ledger_credit);
 
     println!("Miners paid on-chain: {}/{}", miners_paid, num_miners);
-    println!("Miners credited to L2 ledger (below dust): {}", miners_filtered);
+    println!(
+        "Miners credited to L2 ledger (below dust): {}",
+        miners_filtered
+    );
     println!("Total on-chain distributed: {} sats", total_distributed);
-    println!("Total credited to L2 ledger: {} sats ({:.4} BTC)",
-             dust_ledger_credit, dust_ledger_credit as f64 / 100_000_000.0);
+    println!(
+        "Total credited to L2 ledger: {} sats ({:.4} BTC)",
+        dust_ledger_credit,
+        dust_ledger_credit as f64 / 100_000_000.0
+    );
     println!("Unaccounted (rounding): {} sats", unaccounted);
 
     // CRITICAL: All funds must be accounted for (on-chain OR L2 ledger)
@@ -189,8 +200,10 @@ fn test_004_dust_threshold_doesnt_silently_lose_funds() {
         "Test setup: expected some dust-filtered miners with small reward pool"
     );
 
-    println!("\n✓ All funds accounted: {} sats on-chain + {} sats L2 credit = {} of {} sats",
-             total_distributed, dust_ledger_credit, total_accounted, total_reward);
+    println!(
+        "\n✓ All funds accounted: {} sats on-chain + {} sats L2 credit = {} of {} sats",
+        total_distributed, dust_ledger_credit, total_accounted, total_reward
+    );
 }
 
 #[test]
@@ -202,7 +215,9 @@ fn test_005_ledger_credit_alternative_for_dust() {
 
     impl LedgerCredit {
         fn new() -> Self {
-            Self { credits: HashMap::new() }
+            Self {
+                credits: HashMap::new(),
+            }
         }
 
         fn add_credit(&mut self, miner_id: &str, amount: u64) {
@@ -282,7 +297,8 @@ fn test_006_bft_threshold_small_clusters() {
         println!("{}: threshold = {}", description, threshold);
         assert_eq!(
             threshold, expected_threshold,
-            "Threshold mismatch for {} nodes", total
+            "Threshold mismatch for {} nodes",
+            total
         );
     }
 
@@ -361,8 +377,14 @@ fn test_007_consensus_with_node_dropout() {
     voting.vote_for();
     // Third node is offline
 
-    assert!(!voting.is_approved(), "Should not be approved with 2/3 votes");
-    assert!(voting.can_still_approve(), "Could still approve if 3rd votes");
+    assert!(
+        !voting.is_approved(),
+        "Should not be approved with 2/3 votes"
+    );
+    assert!(
+        voting.can_still_approve(),
+        "Could still approve if 3rd votes"
+    );
 
     // This is the DANGER: 2 out of 3 honest nodes voted FOR
     // But consensus requires 3/3, so payout is STUCK
@@ -378,7 +400,10 @@ fn test_007_consensus_with_node_dropout() {
     voting4.vote_for();
     // Fourth node offline
 
-    assert!(voting4.is_approved(), "4-node cluster: 3/4 should approve (threshold=3)");
+    assert!(
+        voting4.is_approved(),
+        "4-node cluster: 3/4 should approve (threshold=3)"
+    );
 }
 
 // =============================================================================
@@ -453,8 +478,12 @@ fn test_008_timeout_state_has_defined_fund_handling() {
 
     // Document the risk
     println!("\n*** TIMEOUT STATE REACHED ***");
-    println!("Votes: {}/{} FOR, threshold = {}",
-             session.votes_for, session.votes_for + session.votes_against, session.threshold);
+    println!(
+        "Votes: {}/{} FOR, threshold = {}",
+        session.votes_for,
+        session.votes_for + session.votes_against,
+        session.threshold
+    );
     println!("This payout is now in LIMBO - funds at risk!");
 
     // The safe behavior would be to auto-reject and retry
@@ -473,11 +502,11 @@ fn test_009_wraith_split_preserves_all_satoshis() {
 
     // Test various input amounts for remainder loss
     let test_amounts: Vec<u64> = vec![
-        1_000_000,      // Exactly divisible by 10
-        1_000_001,      // 1 sat remainder
-        1_000_009,      // 9 sat remainder (maximum loss)
-        10_000_000,     // Large, divisible
-        10_000_007,     // Large with remainder
+        1_000_000,  // Exactly divisible by 10
+        1_000_001,  // 1 sat remainder
+        1_000_009,  // 9 sat remainder (maximum loss)
+        10_000_000, // Large, divisible
+        10_000_007, // Large with remainder
     ];
 
     for input_amount in test_amounts {
@@ -494,7 +523,8 @@ fn test_009_wraith_split_preserves_all_satoshis() {
         assert!(
             remainder < SPLIT_RATIO as u64,
             "Remainder {} exceeds maximum expected {}",
-            remainder, SPLIT_RATIO - 1
+            remainder,
+            SPLIT_RATIO - 1
         );
 
         // In a safe implementation, remainder would be:
@@ -514,14 +544,17 @@ fn test_009_wraith_split_preserves_all_satoshis() {
 
     println!(
         "\n{} participants: {} sats lost to rounding ({} per participant)",
-        num_participants, total_loss, total_loss / num_participants
+        num_participants,
+        total_loss,
+        total_loss / num_participants
     );
 
     // Maximum loss per participant is 9 sats, so 50 participants = 450 sats max
     assert!(
         total_loss <= (SPLIT_RATIO as u64 - 1) * num_participants,
         "Total loss {} exceeds maximum expected {}",
-        total_loss, (SPLIT_RATIO - 1) * num_participants as usize
+        total_loss,
+        (SPLIT_RATIO - 1) * num_participants as usize
     );
 }
 
@@ -563,7 +596,8 @@ fn test_010_wraith_split_with_fair_remainder_distribution() {
         assert!(
             max_output - min_output <= 1,
             "Outputs not fairly distributed: max={}, min={}",
-            max_output, min_output
+            max_output,
+            min_output
         );
     }
 }
@@ -606,7 +640,7 @@ fn test_011_excess_input_not_silently_lost() {
 
     // Test case: User accidentally inputs 1.05 BTC instead of 1.0 BTC
     let input = WraithInput {
-        amount: 105_000_000,      // 1.05 BTC
+        amount: 105_000_000,                // 1.05 BTC
         expected_denomination: 100_000_000, // 1.0 BTC expected
     };
 
@@ -624,12 +658,21 @@ fn test_011_excess_input_not_silently_lost() {
     );
 
     println!("Excess input test:");
-    println!("  Input: {} sats ({} BTC)", input.amount, input.amount as f64 / 1e8);
-    println!("  Expected: {} sats ({} BTC)", input.expected_denomination,
-             input.expected_denomination as f64 / 1e8);
-    println!("  Excess: {} sats ({} BTC) - would become network fee!",
-             input.amount - input.expected_denomination,
-             (input.amount - input.expected_denomination) as f64 / 1e8);
+    println!(
+        "  Input: {} sats ({} BTC)",
+        input.amount,
+        input.amount as f64 / 1e8
+    );
+    println!(
+        "  Expected: {} sats ({} BTC)",
+        input.expected_denomination,
+        input.expected_denomination as f64 / 1e8
+    );
+    println!(
+        "  Excess: {} sats ({} BTC) - would become network fee!",
+        input.amount - input.expected_denomination,
+        (input.amount - input.expected_denomination) as f64 / 1e8
+    );
 }
 
 // =============================================================================
@@ -669,8 +712,10 @@ fn test_012_settlement_fee_truncation_accumulation() {
     println!("Settlement fee truncation test:");
     println!("  Settlements tested: {}", num_settlements);
     println!("  Total accumulated loss: {} sats", total_loss);
-    println!("  Average loss per settlement: {:.2} sats",
-             total_loss as f64 / num_settlements as f64);
+    println!(
+        "  Average loss per settlement: {:.2} sats",
+        total_loss as f64 / num_settlements as f64
+    );
 
     // The loss should be minimal
     // With integer division, we lose up to 999 sats per settlement in the worst case
@@ -699,7 +744,7 @@ fn test_012_settlement_fee_truncation_accumulation() {
 
 #[test]
 fn test_013_merkle_root_collision_resistance() {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     // VULNERABLE: Bitcoin-style merkle tree (duplicates odd elements)
     // This is what the OLD code did - keeping inline to demonstrate the bug
@@ -777,7 +822,10 @@ fn test_013_merkle_root_collision_resistance() {
     let empty_root = compute_merkle_root(&[]);
     let single_root = compute_merkle_root(&[a]);
 
-    assert_ne!(empty_root, single_root, "Empty and single element must differ");
+    assert_ne!(
+        empty_root, single_root,
+        "Empty and single element must differ"
+    );
 
     // Test proof verification requires correct leaf count
     let proof = ghost_reconciliation::batch::compute_merkle_proof(&list1, 0);
@@ -839,11 +887,17 @@ fn test_014_address_parsing_no_silent_fallback() {
 
     // Test cases
     let test_addresses = vec![
-        ("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx", "Valid testnet Bech32"),
+        (
+            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+            "Valid testnet Bech32",
+        ),
         ("tb1invalid", "Too short"),
         ("garbage_data_that_is_not_an_address", "Not an address"),
         ("", "Empty string"),
-        ("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", "Valid mainnet"),
+        (
+            "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",
+            "Valid mainnet",
+        ),
     ];
 
     println!("Address parsing fallback test:");
@@ -854,10 +908,13 @@ fn test_014_address_parsing_no_silent_fallback() {
         let current_status = match &result_current {
             AddressParseResult::ValidBech32(_) => "Valid",
             AddressParseResult::FallbackToRawBytes(bytes) => {
-                println!("  *** DANGER: '{}' fell back to {} raw bytes ***",
-                         description, bytes.len());
+                println!(
+                    "  *** DANGER: '{}' fell back to {} raw bytes ***",
+                    description,
+                    bytes.len()
+                );
                 "FALLBACK (DANGEROUS)"
-            },
+            }
             AddressParseResult::Invalid(_) => "Invalid",
         };
 
@@ -867,7 +924,10 @@ fn test_014_address_parsing_no_silent_fallback() {
             AddressParseResult::Invalid(_) => "Invalid (safe)",
         };
 
-        println!("  {}: current={}, safe={}", description, current_status, safe_status);
+        println!(
+            "  {}: current={}, safe={}",
+            description, current_status, safe_status
+        );
     }
 }
 
@@ -911,17 +971,17 @@ fn test_015_coinbase_serialization_txid_not_wtxid() {
     // Valid non-witness coinbase (simplified)
     let non_witness_tx = vec![
         0x02, 0x00, 0x00, 0x00, // version 2
-        0x01,                   // input count = 1 (NOT marker)
-        // ... rest of transaction
+        0x01, // input count = 1 (NOT marker)
+              // ... rest of transaction
     ];
 
     // Invalid witness coinbase (would produce WTXID instead of TXID)
     let witness_tx = vec![
         0x02, 0x00, 0x00, 0x00, // version 2
-        0x00,                   // marker (WRONG for merkle root!)
-        0x01,                   // flag
-        0x01,                   // input count = 1
-        // ... rest of transaction
+        0x00, // marker (WRONG for merkle root!)
+        0x01, // flag
+        0x01, // input count = 1
+              // ... rest of transaction
     ];
 
     assert!(
@@ -984,12 +1044,21 @@ fn test_016_end_to_end_fund_accounting() {
     println!("  Node pool (15%): {} sats", node_pool);
     println!("  Miner pool: {} sats", miner_pool);
     println!();
-    println!("  {} nodes @ {} sats = {} sats", num_nodes, per_node, node_total);
-    println!("  {} miners @ {} sats = {} sats", num_miners, per_miner, miner_total);
+    println!(
+        "  {} nodes @ {} sats = {} sats",
+        num_nodes, per_node, node_total
+    );
+    println!(
+        "  {} miners @ {} sats = {} sats",
+        num_miners, per_miner, miner_total
+    );
     println!();
     println!("  Total outputs: {} sats", total_outputs);
     println!("  Remainders: {} sats", total_remainder);
-    println!("  Unaccounted: {} sats", total_available - total_outputs - total_remainder);
+    println!(
+        "  Unaccounted: {} sats",
+        total_available - total_outputs - total_remainder
+    );
 
     // CRITICAL: All satoshis must be accounted for
     assert_eq!(

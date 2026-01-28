@@ -24,11 +24,11 @@
 
 use std::path::Path;
 
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use tracing::{debug, info};
 
 use crate::error::{LightWalletError, WalletResult};
-use crate::keys::{encrypt_key, decrypt_key, MasterKey};
+use crate::keys::{decrypt_key, encrypt_key, MasterKey};
 use crate::wallet::WalletBalance;
 
 /// Current cache schema version
@@ -62,9 +62,14 @@ impl WalletCache {
             .unwrap_or(0);
 
         if user_version < SCHEMA_VERSION {
-            debug!(current = user_version, target = SCHEMA_VERSION, "Upgrading schema");
+            debug!(
+                current = user_version,
+                target = SCHEMA_VERSION,
+                "Upgrading schema"
+            );
             self.create_tables()?;
-            self.conn.execute(&format!("PRAGMA user_version = {}", SCHEMA_VERSION), [])?;
+            self.conn
+                .execute(&format!("PRAGMA user_version = {}", SCHEMA_VERSION), [])?;
         }
 
         Ok(())
@@ -230,7 +235,15 @@ impl WalletCache {
             "INSERT OR REPLACE INTO transactions
              (txid, amount_sats, is_incoming, status, counterparty, memo, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![txid, amount_sats, is_incoming, status, counterparty, memo, now],
+            params![
+                txid,
+                amount_sats,
+                is_incoming,
+                status,
+                counterparty,
+                memo,
+                now
+            ],
         )?;
 
         Ok(())
@@ -373,7 +386,9 @@ mod tests {
         let path = temp.path().join("test.db");
         let cache = WalletCache::open(&path, "password").unwrap();
 
-        cache.set_setting("gsp_url", "wss://gsp.example.com").unwrap();
+        cache
+            .set_setting("gsp_url", "wss://gsp.example.com")
+            .unwrap();
 
         let value = cache.get_setting("gsp_url").unwrap();
         assert_eq!(value, Some("wss://gsp.example.com".to_string()));

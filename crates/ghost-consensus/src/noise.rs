@@ -127,7 +127,10 @@ impl NoiseKeypair {
         private_key.copy_from_slice(&keypair.private);
         public_key.copy_from_slice(&keypair.public);
 
-        Self { private_key, public_key }
+        Self {
+            private_key,
+            public_key,
+        }
     }
 
     /// Create from existing private key bytes
@@ -154,7 +157,10 @@ impl NoiseKeypair {
         // For now, we'll just store both from generation
         public_key.copy_from_slice(&keypair.public);
 
-        Ok(Self { private_key, public_key })
+        Ok(Self {
+            private_key,
+            public_key,
+        })
     }
 
     /// Create from hex-encoded private key
@@ -251,8 +257,7 @@ pub struct NoiseSession {
 impl NoiseSession {
     /// Create a new initiator session (client connecting to server)
     pub fn initiator(keypair: &NoiseKeypair) -> Result<Self, NoiseError> {
-        let builder = Builder::new(NOISE_PATTERN.parse()?)
-            .local_private_key(&keypair.private_key);
+        let builder = Builder::new(NOISE_PATTERN.parse()?).local_private_key(&keypair.private_key);
 
         let handshake = builder.build_initiator()?;
 
@@ -266,8 +271,7 @@ impl NoiseSession {
 
     /// Create a new responder session (server accepting connection)
     pub fn responder(keypair: &NoiseKeypair) -> Result<Self, NoiseError> {
-        let builder = Builder::new(NOISE_PATTERN.parse()?)
-            .local_private_key(&keypair.private_key);
+        let builder = Builder::new(NOISE_PATTERN.parse()?).local_private_key(&keypair.private_key);
 
         let handshake = builder.build_responder()?;
 
@@ -286,7 +290,9 @@ impl NoiseSession {
         mut self,
         mut stream: S,
     ) -> Result<(NoiseTransport<S>, [u8; 32]), NoiseError> {
-        let mut handshake = self.handshake.take()
+        let mut handshake = self
+            .handshake
+            .take()
             .ok_or_else(|| NoiseError::Handshake("Session already used".into()))?;
 
         let mut buf = vec![0u8; MAX_MESSAGE_SIZE];
@@ -330,7 +336,8 @@ impl NoiseSession {
         }
 
         // Get peer's static public key
-        let peer_public_key = handshake.get_remote_static()
+        let peer_public_key = handshake
+            .get_remote_static()
             .ok_or_else(|| NoiseError::Handshake("No remote static key".into()))?;
 
         let mut peer_key = [0u8; 32];
@@ -501,7 +508,9 @@ impl NoiseManager {
         };
 
         // Parse trusted peers
-        let trusted_peers: Vec<[u8; 32]> = config.trusted_peers.iter()
+        let trusted_peers: Vec<[u8; 32]> = config
+            .trusted_peers
+            .iter()
             .filter_map(|hex| {
                 let bytes = hex::decode(hex).ok()?;
                 if bytes.len() == 32 {
@@ -706,9 +715,7 @@ mod tests {
         let (stream1, stream2) = duplex(65536);
 
         // Manager 2 acts as responder
-        let responder_handle = tokio::spawn(async move {
-            manager2.wrap_responder(stream2).await
-        });
+        let responder_handle = tokio::spawn(async move { manager2.wrap_responder(stream2).await });
 
         // Manager 1 acts as initiator
         let (mut transport1, peer_key) = manager1.wrap_initiator(stream1).await.unwrap();
@@ -746,6 +753,9 @@ mod tests {
     fn test_message_size_limit() {
         // MAX_PAYLOAD_SIZE should allow encryption overhead
         assert!(MAX_PAYLOAD_SIZE < MAX_MESSAGE_SIZE);
-        assert_eq!(MAX_PAYLOAD_SIZE + NOISE_OVERHEAD, MAX_MESSAGE_SIZE - NOISE_OVERHEAD + NOISE_OVERHEAD);
+        assert_eq!(
+            MAX_PAYLOAD_SIZE + NOISE_OVERHEAD,
+            MAX_MESSAGE_SIZE - NOISE_OVERHEAD + NOISE_OVERHEAD
+        );
     }
 }

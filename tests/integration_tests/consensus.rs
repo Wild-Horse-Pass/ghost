@@ -7,9 +7,9 @@
 //! 4. Consensus achievement
 //! 5. Timeout handling
 
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 use ghost_common::constants::BFT_THRESHOLD_PERCENT;
 
@@ -78,7 +78,10 @@ fn test_bft_threshold() {
     for i in 0..6 {
         session.add_vote(node_ids[i], true);
     }
-    assert!(!session.is_approved(), "6/10 should not reach 67% threshold");
+    assert!(
+        !session.is_approved(),
+        "6/10 should not reach 67% threshold"
+    );
     assert_eq!(session.approval_count(), 6);
 
     // 7th approval reaches threshold
@@ -102,7 +105,10 @@ fn test_rejection_threshold() {
 
     // 4th rejection blocks
     session.add_vote(node_ids[3], false);
-    assert!(session.is_rejected(), "4/10 rejections should block (can't reach 67%)");
+    assert!(
+        session.is_rejected(),
+        "4/10 rejections should block (can't reach 67%)"
+    );
 }
 
 /// Test vote propagation across nodes
@@ -165,15 +171,24 @@ fn test_mixed_votes_consensus() {
     }
 
     assert!(!session.is_approved(), "8/15 approvals not enough");
-    assert!(!session.is_rejected(), "2/15 rejections not enough to block");
-    assert!(!session.is_complete(), "Session not complete with 10/15 votes");
+    assert!(
+        !session.is_rejected(),
+        "2/15 rejections not enough to block"
+    );
+    assert!(
+        !session.is_complete(),
+        "Session not complete with 10/15 votes"
+    );
 
     // 3 more approvals
     for i in 10..13 {
         session.add_vote(node_ids[i], true);
     }
 
-    assert!(session.is_approved(), "11/15 approvals should reach threshold");
+    assert!(
+        session.is_approved(),
+        "11/15 approvals should reach threshold"
+    );
     assert!(session.is_complete());
 }
 
@@ -192,11 +207,18 @@ fn test_multiple_proposals() {
         }
 
         fn create_session(&mut self, proposal_hash: [u8; 32], total_nodes: usize) {
-            self.sessions
-                .insert(proposal_hash, ConsensusSession::new(proposal_hash, total_nodes));
+            self.sessions.insert(
+                proposal_hash,
+                ConsensusSession::new(proposal_hash, total_nodes),
+            );
         }
 
-        fn vote(&mut self, proposal_hash: &[u8; 32], node_id: [u8; 32], approve: bool) -> Option<bool> {
+        fn vote(
+            &mut self,
+            proposal_hash: &[u8; 32],
+            node_id: [u8; 32],
+            approve: bool,
+        ) -> Option<bool> {
             if let Some(session) = self.sessions.get_mut(proposal_hash) {
                 session.add_vote(node_id, approve);
                 if session.is_complete() {
@@ -307,7 +329,11 @@ fn test_vote_deduplication() {
 
     // Duplicate vote (same node voting again)
     session.add_vote(node_id, true);
-    assert_eq!(session.approval_count(), 1, "Duplicate vote should be ignored");
+    assert_eq!(
+        session.approval_count(),
+        1,
+        "Duplicate vote should be ignored"
+    );
 
     // Changed vote (node changes mind)
     session.add_vote(node_id, false);

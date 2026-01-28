@@ -430,7 +430,8 @@ impl CoordinatorPool {
     pub fn activate_coordinator(&self, id: &CoordinatorId) -> Result<(), PoolError> {
         let mut coordinators = self.coordinators.write();
 
-        let coord = coordinators.get_mut(id)
+        let coord = coordinators
+            .get_mut(id)
             .ok_or_else(|| PoolError::CoordinatorNotFound(hex::encode(&id[..8])))?;
 
         if coord.trust_score < self.policy.min_trust_score {
@@ -462,13 +463,15 @@ impl CoordinatorPool {
 
         // Check if the coordinator exists and is standby
         {
-            let coord = coordinators.get(id)
+            let coord = coordinators
+                .get(id)
                 .ok_or_else(|| PoolError::CoordinatorNotFound(hex::encode(&id[..8])))?;
 
             if coord.status != CoordinatorStatus::Standby {
                 return Err(PoolError::InvalidConfig(format!(
                     "Coordinator {} is {:?}, not Standby",
-                    coord.id_hex(), coord.status
+                    coord.id_hex(),
+                    coord.status
                 )));
             }
         }
@@ -504,10 +507,13 @@ impl CoordinatorPool {
 
     /// Get the active coordinator
     pub fn get_active(&self) -> Result<CoordinatorInfo, PoolError> {
-        let active_id = self.active_id.read()
+        let active_id = self
+            .active_id
+            .read()
             .ok_or(PoolError::NoActiveCoordinator)?;
 
-        self.coordinators.read()
+        self.coordinators
+            .read()
             .get(&active_id)
             .cloned()
             .ok_or(PoolError::NoActiveCoordinator)
@@ -568,7 +574,9 @@ impl CoordinatorPool {
         // Select next coordinator
         let next_id = self.select_next_coordinator()?;
 
-        let old_id = self.active_id.read()
+        let old_id = self
+            .active_id
+            .read()
             .ok_or(PoolError::NoActiveCoordinator)?;
 
         // Perform rotation
@@ -665,7 +673,8 @@ impl CoordinatorPool {
     pub fn record_heartbeat(&self, id: &CoordinatorId) -> Result<(), PoolError> {
         let mut coordinators = self.coordinators.write();
 
-        let coord = coordinators.get_mut(id)
+        let coord = coordinators
+            .get_mut(id)
             .ok_or_else(|| PoolError::CoordinatorNotFound(hex::encode(&id[..8])))?;
 
         coord.record_heartbeat();
@@ -704,7 +713,8 @@ impl CoordinatorPool {
 
     /// Get standby count
     pub fn standby_count(&self) -> usize {
-        self.coordinators.read()
+        self.coordinators
+            .read()
             .values()
             .filter(|c| c.status == CoordinatorStatus::Standby)
             .count()
@@ -726,13 +736,16 @@ impl CoordinatorPool {
 
         PoolStats {
             total_coordinators: coordinators.len(),
-            active_count: coordinators.values()
+            active_count: coordinators
+                .values()
                 .filter(|c| c.status == CoordinatorStatus::Active)
                 .count(),
-            standby_count: coordinators.values()
+            standby_count: coordinators
+                .values()
                 .filter(|c| c.status == CoordinatorStatus::Standby)
                 .count(),
-            failed_count: coordinators.values()
+            failed_count: coordinators
+                .values()
                 .filter(|c| c.status == CoordinatorStatus::Failed)
                 .count(),
             current_epoch: *self.current_epoch.read(),
@@ -788,7 +801,10 @@ mod tests {
 
         // Duplicate should fail
         let coord2 = test_coordinator(1, "Coordinator A Dup");
-        assert!(matches!(pool.register_coordinator(coord2), Err(PoolError::AlreadyRegistered(_))));
+        assert!(matches!(
+            pool.register_coordinator(coord2),
+            Err(PoolError::AlreadyRegistered(_))
+        ));
     }
 
     #[test]

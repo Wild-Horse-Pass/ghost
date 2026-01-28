@@ -169,12 +169,12 @@ impl CoinbaseCommitment {
     /// 1. Output count matches
     /// 2. Total value matches
     /// 3. Cryptographic hash of outputs matches
-    pub fn verify(&self, coinbase_outputs: &[CoinbaseOutput]) -> Result<(), CoinbaseVerificationError> {
+    pub fn verify(
+        &self,
+        coinbase_outputs: &[CoinbaseOutput],
+    ) -> Result<(), CoinbaseVerificationError> {
         // Check output count (excluding witness commitment which has 0 value)
-        let value_outputs: Vec<_> = coinbase_outputs
-            .iter()
-            .filter(|o| o.value > 0)
-            .collect();
+        let value_outputs: Vec<_> = coinbase_outputs.iter().filter(|o| o.value > 0).collect();
 
         if value_outputs.len() != self.output_count {
             return Err(CoinbaseVerificationError::OutputCountMismatch {
@@ -246,7 +246,9 @@ pub struct CoinbaseOutput {
 
 impl CoinbaseOutput {
     /// Parse outputs from raw coinbase transaction bytes
-    pub fn parse_from_coinbase(coinbase_bytes: &[u8]) -> Result<Vec<Self>, CoinbaseVerificationError> {
+    pub fn parse_from_coinbase(
+        coinbase_bytes: &[u8],
+    ) -> Result<Vec<Self>, CoinbaseVerificationError> {
         // Minimum size check
         if coinbase_bytes.len() < 60 {
             return Err(CoinbaseVerificationError::ParseError(
@@ -277,9 +279,10 @@ impl CoinbaseOutput {
 
         // Skip inputs (for coinbase, there's always exactly 1)
         if input_count != 1 {
-            return Err(CoinbaseVerificationError::ParseError(
-                format!("Expected 1 coinbase input, got {}", input_count),
-            ));
+            return Err(CoinbaseVerificationError::ParseError(format!(
+                "Expected 1 coinbase input, got {}",
+                input_count
+            )));
         }
 
         // Skip prevout hash (32) + index (4) = 36 bytes
@@ -304,26 +307,28 @@ impl CoinbaseOutput {
         for i in 0..output_count {
             // Read value (8 bytes LE)
             if cursor + 8 > coinbase_bytes.len() {
-                return Err(CoinbaseVerificationError::ParseError(
-                    format!("Truncated output {} value", i),
-                ));
+                return Err(CoinbaseVerificationError::ParseError(format!(
+                    "Truncated output {} value",
+                    i
+                )));
             }
-            let value = u64::from_le_bytes(
-                coinbase_bytes[cursor..cursor + 8]
-                    .try_into()
-                    .map_err(|_| CoinbaseVerificationError::ParseError("Invalid value bytes".into()))?,
-            );
+            let value = u64::from_le_bytes(coinbase_bytes[cursor..cursor + 8].try_into().map_err(
+                |_| CoinbaseVerificationError::ParseError("Invalid value bytes".into()),
+            )?);
             cursor += 8;
 
             // Read script pubkey
-            let (script_len, consumed) = read_varint(&coinbase_bytes[cursor..])
-                .ok_or_else(|| CoinbaseVerificationError::ParseError("Invalid output script length".into()))?;
+            let (script_len, consumed) =
+                read_varint(&coinbase_bytes[cursor..]).ok_or_else(|| {
+                    CoinbaseVerificationError::ParseError("Invalid output script length".into())
+                })?;
             cursor += consumed;
 
             if cursor + script_len > coinbase_bytes.len() {
-                return Err(CoinbaseVerificationError::ParseError(
-                    format!("Truncated output {} script", i),
-                ));
+                return Err(CoinbaseVerificationError::ParseError(format!(
+                    "Truncated output {} script",
+                    i
+                )));
             }
 
             let script_pubkey = coinbase_bytes[cursor..cursor + script_len].to_vec();

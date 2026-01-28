@@ -207,7 +207,9 @@ pub struct MonotonicTimer {
 
 impl MonotonicTimer {
     pub fn new() -> Self {
-        Self { started: Instant::now() }
+        Self {
+            started: Instant::now(),
+        }
     }
 
     /// Get elapsed milliseconds since timer was created

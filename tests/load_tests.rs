@@ -9,6 +9,6 @@
 mod load_tests_mod;
 
 // Re-export for easier access
+pub use load_tests_mod::consensus_load;
 pub use load_tests_mod::mining_load;
 pub use load_tests_mod::stratum_stress;
-pub use load_tests_mod::consensus_load;

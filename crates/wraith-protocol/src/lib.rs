@@ -65,15 +65,14 @@ mod session;
 mod tier;
 
 pub use blind::{
-    BlindedAddress, BlindingContext, BlindSignature, CoordinatorSigner,
-    TokenVerifier, UnblindedToken,
+    BlindSignature, BlindedAddress, BlindingContext, CoordinatorSigner, TokenVerifier,
+    UnblindedToken,
 };
 pub use coordinator::{Participant, TimeoutAction, WraithCoordinator};
 pub use denomination::WraithDenomination;
 pub use error::WraithError;
 pub use executor::{
-    MergeTransaction, SplitTransaction, WraithInput, WraithOutput,
-    WraithTransactionBuilder,
+    MergeTransaction, SplitTransaction, WraithInput, WraithOutput, WraithTransactionBuilder,
 };
 pub use phase::{Phase, PhaseExecution, PhaseState};
 pub use session::{SessionState, WraithSession};

@@ -271,14 +271,22 @@ fn validate_bounded_entry(key: &str, value: &str) -> Result<(), String> {
         return Err(format!("key too long: {} > {}", key.len(), MAX_KEY_LEN));
     }
     if value.len() > MAX_VALUE_SIZE {
-        return Err(format!("value too large: {} > {}", value.len(), MAX_VALUE_SIZE));
+        return Err(format!(
+            "value too large: {} > {}",
+            value.len(),
+            MAX_VALUE_SIZE
+        ));
     }
     Ok(())
 }
 
 fn validate_bounded_map(entries: &[(&str, &str)]) -> Result<(), String> {
     if entries.len() > MAX_ENTRIES {
-        return Err(format!("too many entries: {} > {}", entries.len(), MAX_ENTRIES));
+        return Err(format!(
+            "too many entries: {} > {}",
+            entries.len(),
+            MAX_ENTRIES
+        ));
     }
     for (key, value) in entries {
         validate_bounded_entry(key, value)?;
@@ -289,7 +297,9 @@ fn validate_bounded_map(entries: &[(&str, &str)]) -> Result<(), String> {
 #[test]
 fn test_126_bounded_map_max_entries() {
     // BoundedMap should accept up to MAX_ENTRIES
-    let entries: Vec<(&str, &str)> = (0..5).map(|i| (["a", "b", "c", "d", "e"][i], "v")).collect();
+    let entries: Vec<(&str, &str)> = (0..5)
+        .map(|i| (["a", "b", "c", "d", "e"][i], "v"))
+        .collect();
     assert!(validate_bounded_map(&entries).is_ok());
 }
 
@@ -324,7 +334,10 @@ fn test_130_json_nesting_depth_limit() {
     const MAX_NESTING_DEPTH: usize = 64;
     fn validate_nesting_depth(depth: usize) -> Result<(), String> {
         if depth > MAX_NESTING_DEPTH {
-            return Err(format!("nesting too deep: {} > {}", depth, MAX_NESTING_DEPTH));
+            return Err(format!(
+                "nesting too deep: {} > {}",
+                depth, MAX_NESTING_DEPTH
+            ));
         }
         Ok(())
     }
@@ -423,7 +436,10 @@ fn test_142_block_tx_count_varint() {
     // Test varint parsing for tx count
     assert_eq!(parse_varint(&[0x01]).unwrap(), (1, 1));
     assert_eq!(parse_varint(&[0xfd, 0x01, 0x00]).unwrap(), (1, 3));
-    assert_eq!(parse_varint(&[0xfe, 0x01, 0x00, 0x00, 0x00]).unwrap(), (1, 5));
+    assert_eq!(
+        parse_varint(&[0xfe, 0x01, 0x00, 0x00, 0x00]).unwrap(),
+        (1, 5)
+    );
 }
 
 #[test]
@@ -524,8 +540,7 @@ fn test_154_error_message_sanitization() {
 
 #[test]
 fn test_155_error_context_preservation() {
-    let err = RpcError::Connection("original error".into())
-        .with_context("during getblocktemplate");
+    let err = RpcError::Connection("original error".into()).with_context("during getblocktemplate");
     assert!(err.to_string().contains("getblocktemplate"));
 }
 
@@ -713,11 +728,7 @@ fn sanitize_error_message(msg: &str) -> String {
         if let Some(at_pos) = result.find('@') {
             if colon_pos < at_pos {
                 // Replace user:pass@host with user:***@host
-                result = format!(
-                    "{}:***{}",
-                    &result[..colon_pos],
-                    &result[at_pos..]
-                );
+                result = format!("{}:***{}", &result[..colon_pos], &result[at_pos..]);
             }
         } else {
             // No @, just redact everything after :
@@ -763,9 +774,8 @@ impl Default for RpcConfig {
 
 impl RpcConfig {
     fn validate(&self) -> Result<(), String> {
-        let is_localhost = self.host == "127.0.0.1"
-            || self.host == "localhost"
-            || self.host == "::1";
+        let is_localhost =
+            self.host == "127.0.0.1" || self.host == "localhost" || self.host == "::1";
         if !is_localhost && !self.tls_enabled {
             return Err("TLS required for remote".into());
         }
@@ -790,7 +800,9 @@ struct BoundedMap {
 
 impl BoundedMap {
     fn new() -> Self {
-        Self { inner: std::collections::HashMap::new() }
+        Self {
+            inner: std::collections::HashMap::new(),
+        }
     }
     fn iter(&self) -> impl Iterator<Item = (&String, &String)> {
         self.inner.iter()

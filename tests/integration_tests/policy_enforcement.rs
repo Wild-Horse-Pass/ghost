@@ -9,16 +9,14 @@
 //! BUDS tier tests use real ghost-policy PolicyProfile and PolicyEngine.
 //! Fee, size, and dust tests use local helpers for Bitcoin consensus rules.
 
+use bitcoin::{
+    absolute::LockTime, blockdata::script::Builder, hashes::Hash, transaction::Version, Amount,
+    ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
+};
 use ghost_buds::BudsTier;
 use ghost_policy::{
-    PolicyProfile, PolicyEngine, PolicyDecision, ProfileBuilder, ProfilePreset,
-    TransactionValidator, RejectionReason,
-};
-use bitcoin::{
-    absolute::LockTime, transaction::Version, Amount, ScriptBuf, Sequence,
-    Transaction, TxIn, TxOut, Witness,
-    blockdata::script::Builder,
-    hashes::Hash,
+    PolicyDecision, PolicyEngine, PolicyProfile, ProfileBuilder, ProfilePreset, RejectionReason,
+    TransactionValidator,
 };
 
 // =============================================================================
@@ -63,9 +61,7 @@ fn create_op_return_script(data_size: usize) -> ScriptBuf {
 
 /// Create a non-coinbase outpoint
 fn non_coinbase_outpoint() -> bitcoin::OutPoint {
-    let txid = bitcoin::Txid::from_raw_hash(
-        bitcoin::hashes::sha256d::Hash::hash(&[1u8])
-    );
+    let txid = bitcoin::Txid::from_raw_hash(bitcoin::hashes::sha256d::Hash::hash(&[1u8]));
     bitcoin::OutPoint { txid, vout: 0 }
 }
 
@@ -209,9 +205,18 @@ fn test_406_fee_rate_zero_vsize_handled() {
 #[test]
 fn test_407_total_fees_calculation() {
     let transactions = vec![
-        TxFeeInfo { fee: 100, vsize: 100 },
-        TxFeeInfo { fee: 200, vsize: 150 },
-        TxFeeInfo { fee: 300, vsize: 200 },
+        TxFeeInfo {
+            fee: 100,
+            vsize: 100,
+        },
+        TxFeeInfo {
+            fee: 200,
+            vsize: 150,
+        },
+        TxFeeInfo {
+            fee: 300,
+            vsize: 200,
+        },
     ];
     let total = calculate_total_fees(&transactions);
     assert_eq!(total, 600);
@@ -220,9 +225,18 @@ fn test_407_total_fees_calculation() {
 #[test]
 fn test_408_fee_priority_ordering() {
     let mut transactions = vec![
-        TxFeeInfo { fee: 100, vsize: 100 }, // 1 sat/vB
-        TxFeeInfo { fee: 400, vsize: 100 }, // 4 sat/vB
-        TxFeeInfo { fee: 200, vsize: 100 }, // 2 sat/vB
+        TxFeeInfo {
+            fee: 100,
+            vsize: 100,
+        }, // 1 sat/vB
+        TxFeeInfo {
+            fee: 400,
+            vsize: 100,
+        }, // 4 sat/vB
+        TxFeeInfo {
+            fee: 200,
+            vsize: 100,
+        }, // 2 sat/vB
     ];
 
     sort_by_fee_rate(&mut transactions);
@@ -373,10 +387,16 @@ fn test_423_t2_accepted_by_default() {
     let decision = engine.evaluate(&tx);
     // Note: acceptance depends on op_return size vs profile limit
     // Permissive allows up to 80 bytes
-    assert!(decision.is_accepted() || matches!(
-        &decision,
-        PolicyDecision::Reject { reason: RejectionReason::OpReturnTooLarge { .. }, .. }
-    ));
+    assert!(
+        decision.is_accepted()
+            || matches!(
+                &decision,
+                PolicyDecision::Reject {
+                    reason: RejectionReason::OpReturnTooLarge { .. },
+                    ..
+                }
+            )
+    );
 }
 
 #[test]
@@ -420,8 +440,8 @@ fn test_426_strictness_levels() {
     let full_open = PolicyProfile::full_open();
 
     assert_eq!(bitcoin_pure.strictness(), 2); // T0+T1 only
-    assert_eq!(permissive.strictness(), 1);   // T0+T1+T2
-    assert_eq!(full_open.strictness(), 0);    // T0-T3
+    assert_eq!(permissive.strictness(), 1); // T0+T1+T2
+    assert_eq!(full_open.strictness(), 0); // T0-T3
 }
 
 #[test]
@@ -443,8 +463,8 @@ fn test_428_allows_data_methods() {
 
     // allows_data() returns true if T2+ allowed
     assert!(!bitcoin_pure.allows_data()); // Only T0+T1
-    assert!(permissive.allows_data());     // T0+T1+T2
-    assert!(full_open.allows_data());      // T0-T3
+    assert!(permissive.allows_data()); // T0+T1+T2
+    assert!(full_open.allows_data()); // T0-T3
 
     // allows_heavy_data() returns true if T3 allowed
     assert!(!bitcoin_pure.allows_heavy_data());

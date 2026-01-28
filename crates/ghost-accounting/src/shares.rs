@@ -187,7 +187,10 @@ impl RoundShares {
 
     /// Get nodes outside top 100 (for ledger credits)
     pub fn nodes_outside_top_100(&self) -> Vec<&NodeShareInfo> {
-        self.node_shares.values().filter(|n| !n.in_top_100).collect()
+        self.node_shares
+            .values()
+            .filter(|n| !n.in_top_100)
+            .collect()
     }
 
     /// Get miner count

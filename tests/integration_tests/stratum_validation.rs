@@ -52,7 +52,9 @@ fn validate_username(username: &str) -> Result<(), ValidationError> {
     if username.contains('/') || username.contains('\\') || username.contains("..") {
         return Err(ValidationError::PathTraversal("username".into()));
     }
-    let dangerous = ['`', '$', '|', ';', '&', '(', ')', '<', '>', '"', '\'', '{', '}', '[', ']'];
+    let dangerous = [
+        '`', '$', '|', ';', '&', '(', ')', '<', '>', '"', '\'', '{', '}', '[', ']',
+    ];
     if username.chars().any(|c| dangerous.contains(&c)) {
         return Err(ValidationError::InvalidChars("username".into()));
     }
@@ -76,7 +78,10 @@ fn validate_worker_name(name: &str) -> Result<(), ValidationError> {
     if name.len() > MAX_WORKER_NAME_LEN {
         return Err(ValidationError::TooLong(name.len(), MAX_WORKER_NAME_LEN));
     }
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(ValidationError::InvalidChars("worker_name".into()));
     }
     Ok(())
@@ -176,7 +181,10 @@ fn validate_share_params(
 
     // Extranonce2 can vary in length
     if extranonce2.len() > MAX_EXTRANONCE2_LEN * 2 {
-        return Err(ValidationError::TooLong(extranonce2.len(), MAX_EXTRANONCE2_LEN * 2));
+        return Err(ValidationError::TooLong(
+            extranonce2.len(),
+            MAX_EXTRANONCE2_LEN * 2,
+        ));
     }
     if !extranonce2.is_empty() && !extranonce2.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(ValidationError::InvalidHex("extranonce2".into()));
@@ -234,7 +242,12 @@ struct ValidatedShareParams {
 }
 
 impl ValidatedShareParams {
-    fn parse(job_id: &str, extranonce2: &str, ntime: &str, nonce: &str) -> Result<Self, ValidationError> {
+    fn parse(
+        job_id: &str,
+        extranonce2: &str,
+        ntime: &str,
+        nonce: &str,
+    ) -> Result<Self, ValidationError> {
         let params = validate_share_params(job_id, extranonce2, ntime, nonce)?;
         Ok(Self {
             job_id: params.job_id,
@@ -451,7 +464,8 @@ fn test_198_parse_share_params_extracts_nonce() {
 
 #[test]
 fn test_199_parse_share_params_preserves_job_id() {
-    let params = ValidatedShareParams::parse("abc123def", "00000001", "65432100", "deadbeef").unwrap();
+    let params =
+        ValidatedShareParams::parse("abc123def", "00000001", "65432100", "deadbeef").unwrap();
     assert_eq!(params.job_id, "abc123def");
 }
 
@@ -678,7 +692,7 @@ fn test_230_all_hex_digits_in_share_params() {
         "0123456789abcdef",
         "fedcba9876543210",
         "01234567",
-        "89abcdef"
+        "89abcdef",
     );
     assert!(result.is_ok());
 }

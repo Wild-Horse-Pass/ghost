@@ -77,9 +77,9 @@ impl JumpRiskTier {
     /// Get the rotation period in blocks
     pub fn rotation_blocks(&self) -> u32 {
         match self {
-            JumpRiskTier::Low => Self::BLOCKS_PER_DAY * 30,    // 30 days
+            JumpRiskTier::Low => Self::BLOCKS_PER_DAY * 30, // 30 days
             JumpRiskTier::Medium => Self::BLOCKS_PER_DAY * 14, // 14 days
-            JumpRiskTier::High => Self::BLOCKS_PER_DAY * 7,    // 7 days
+            JumpRiskTier::High => Self::BLOCKS_PER_DAY * 7, // 7 days
         }
     }
 
@@ -195,7 +195,8 @@ impl JumpSchedule {
 
     /// Get blocks until jump
     pub fn blocks_until_jump(&self, current_height: u32) -> u32 {
-        self.tier.blocks_until_jump(self.creation_height, current_height)
+        self.tier
+            .blocks_until_jump(self.creation_height, current_height)
     }
 
     /// Get urgency level
@@ -278,6 +279,7 @@ mod tests {
         assert!(!tier.should_warn(creation, warning_start - 1));
         assert!(tier.should_warn(creation, warning_start));
         assert!(tier.should_warn(creation, warning_start + 50));
-        assert!(!tier.should_warn(creation, creation + tier.rotation_blocks())); // Past deadline
+        assert!(!tier.should_warn(creation, creation + tier.rotation_blocks()));
+        // Past deadline
     }
 }

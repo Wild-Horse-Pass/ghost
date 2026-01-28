@@ -24,7 +24,10 @@
 //! 7. Economic Attacks - Fee manipulation, griefing
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, atomic::{AtomicU64, AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 // =============================================================================
@@ -219,7 +222,10 @@ mod state_machine_violations {
 
         // This is a vulnerability - Alice has 2/3 of the session
         // She could potentially control the outcome
-        println!("WARNING: Session has {} participants but only 2 unique", session.participants);
+        println!(
+            "WARNING: Session has {} participants but only 2 unique",
+            session.participants
+        );
 
         // Real implementation should track unique participants
         // For this test, we document the potential issue
@@ -275,7 +281,10 @@ mod cryptographic_misuse {
 
         impl NonceGenerator {
             fn new(seed: u64) -> Self {
-                Self { counter: 0, weak_seed: seed }
+                Self {
+                    counter: 0,
+                    weak_seed: seed,
+                }
             }
 
             // VULNERABLE: Deterministic nonce from counter
@@ -391,7 +400,11 @@ mod cryptographic_misuse {
 
         impl Point {
             fn identity() -> Self {
-                Self { x: [0u8; 32], y: [0u8; 32], is_valid: true }
+                Self {
+                    x: [0u8; 32],
+                    y: [0u8; 32],
+                    is_valid: true,
+                }
             }
 
             fn from_bytes(data: &[u8]) -> Result<Self, &'static str> {
@@ -411,7 +424,11 @@ mod cryptographic_misuse {
                     return Err("Invalid point encoding");
                 }
 
-                Ok(Self { x, y: [0u8; 32], is_valid: true })
+                Ok(Self {
+                    x,
+                    y: [0u8; 32],
+                    is_valid: true,
+                })
             }
 
             fn from_bytes_strict(data: &[u8]) -> Result<Self, &'static str> {
@@ -435,7 +452,11 @@ mod cryptographic_misuse {
                     return Err("Point not on curve");
                 }
 
-                Ok(Self { x, y: [0u8; 32], is_valid: true })
+                Ok(Self {
+                    x,
+                    y: [0u8; 32],
+                    is_valid: true,
+                })
             }
         }
 
@@ -445,7 +466,10 @@ mod cryptographic_misuse {
 
         // Vulnerable parser accepts it
         let result_vulnerable = Point::from_bytes(&malicious_point);
-        assert!(result_vulnerable.is_ok(), "Vulnerable parser accepts invalid points");
+        assert!(
+            result_vulnerable.is_ok(),
+            "Vulnerable parser accepts invalid points"
+        );
 
         // Strict parser should also accept (since we simulated curve check passing)
         // In real implementation with actual math, this would fail
@@ -499,7 +523,10 @@ mod cryptographic_misuse {
         let id3 = generate_strong_session_id(1, 100_000_000);
         let id4 = generate_strong_session_id(1, 100_000_000);
         let strong_matching = id3.iter().zip(id4.iter()).filter(|(a, b)| a == b).count();
-        println!("Strong IDs share {} of 32 bytes (expected ~0)", strong_matching);
+        println!(
+            "Strong IDs share {} of 32 bytes (expected ~0)",
+            strong_matching
+        );
 
         // Weak session IDs are predictable
         assert!(
@@ -527,9 +554,8 @@ mod arithmetic_edge_cases {
         let num_miners = 1000;
 
         // Method 1: Float percentage (DANGEROUS)
-        let float_method = |total: u64, share_pct: f64| -> u64 {
-            (total as f64 * share_pct / 100.0) as u64
-        };
+        let float_method =
+            |total: u64, share_pct: f64| -> u64 { (total as f64 * share_pct / 100.0) as u64 };
 
         // Method 2: Integer with remainder tracking (SAFE)
         let integer_method = |total: u64, numerator: u64, denominator: u64| -> u64 {
@@ -549,8 +575,14 @@ mod arithmetic_edge_cases {
         let float_remainder = total_reward.saturating_sub(float_distributed);
         let int_remainder = total_reward.saturating_sub(int_distributed);
 
-        println!("Float method: distributed={}, remainder={}", float_distributed, float_remainder);
-        println!("Integer method: distributed={}, remainder={}", int_distributed, int_remainder);
+        println!(
+            "Float method: distributed={}, remainder={}",
+            float_distributed, float_remainder
+        );
+        println!(
+            "Integer method: distributed={}, remainder={}",
+            int_distributed, int_remainder
+        );
 
         // Both methods lose some satoshis, but integer method is predictable
         assert!(
@@ -651,7 +683,9 @@ mod arithmetic_edge_cases {
 
         impl PayoutCalculator {
             fn new() -> Self {
-                Self { total_filtered_dust: 0 }
+                Self {
+                    total_filtered_dust: 0,
+                }
             }
 
             fn calculate_payout(&mut self, amount: u64) -> u64 {
@@ -686,13 +720,14 @@ mod arithmetic_edge_cases {
         }
 
         let stolen = calc.total_filtered_dust;
-        println!("Dust filtered: {} sats ({} BTC)", stolen, stolen as f64 / 100_000_000.0);
+        println!(
+            "Dust filtered: {} sats ({} BTC)",
+            stolen,
+            stolen as f64 / 100_000_000.0
+        );
 
         // Over time, this could be significant
-        assert!(
-            stolen > 0,
-            "Dust filtering without accounting loses funds"
-        );
+        assert!(stolen > 0, "Dust filtering without accounting loses funds");
 
         // Per block, this might not seem like much, but over 144 blocks/day:
         let daily_loss = stolen * 144;
@@ -736,7 +771,11 @@ mod arithmetic_edge_cases {
             let matches = ceiling >= proper;
             println!(
                 "{:5} | {:7} | {:12} | {} ({})",
-                nodes, ceiling, proper, if matches { "✓" } else { "✗" }, desc
+                nodes,
+                ceiling,
+                proper,
+                if matches { "✓" } else { "✗" },
+                desc
             );
 
             // The ceiling formula should always give >= 67% threshold
@@ -744,7 +783,8 @@ mod arithmetic_edge_cases {
             assert!(
                 threshold_pct >= 66.0,
                 "Threshold for {} nodes is only {:.1}%, need >= 67%",
-                nodes, threshold_pct
+                nodes,
+                threshold_pct
             );
         }
     }
@@ -890,7 +930,8 @@ mod race_conditions {
 
         // Final count should be 10
         assert_eq!(
-            session.votes.load(Ordering::SeqCst), 10,
+            session.votes.load(Ordering::SeqCst),
+            10,
             "All votes should be counted"
         );
     }
@@ -1128,7 +1169,11 @@ mod time_based_attacks {
         assert!(result.is_err(), "Block time before MTP should fail");
 
         // Block time too far in future
-        let result = validate_block_time(current_time + MAX_FUTURE_SECONDS + 1, median_time_past, current_time);
+        let result = validate_block_time(
+            current_time + MAX_FUTURE_SECONDS + 1,
+            median_time_past,
+            current_time,
+        );
         assert!(result.is_err(), "Block time too far in future should fail");
 
         // Attack: Miner sets time to max allowed future
@@ -1272,7 +1317,10 @@ mod resource_exhaustion {
             result
         }
 
-        fn hash_with_iterations_safe(data: &[u8], iterations: u32) -> Result<[u8; 32], &'static str> {
+        fn hash_with_iterations_safe(
+            data: &[u8],
+            iterations: u32,
+        ) -> Result<[u8; 32], &'static str> {
             if iterations > MAX_HASH_ITERATIONS {
                 return Err("Too many iterations requested");
             }
@@ -1346,7 +1394,10 @@ mod resource_exhaustion {
             }
         }
 
-        println!("Attacker accepted {} connections (limit: {})", accepted, MAX_CONNECTIONS_PER_IP);
+        println!(
+            "Attacker accepted {} connections (limit: {})",
+            accepted, MAX_CONNECTIONS_PER_IP
+        );
         assert_eq!(accepted, MAX_CONNECTIONS_PER_IP);
 
         // Legitimate users from other IPs should still be able to connect
@@ -1381,7 +1432,11 @@ mod economic_attacks {
         impl Chain {
             fn new() -> Self {
                 Self {
-                    blocks: vec![Block { height: 0, total_fees: 0, transactions: vec![] }],
+                    blocks: vec![Block {
+                        height: 0,
+                        total_fees: 0,
+                        transactions: vec![],
+                    }],
                     reorg_protection_depth: 6,
                 }
             }
@@ -1396,7 +1451,9 @@ mod economic_attacks {
                 }
 
                 // Calculate fees that could be stolen
-                let stealable_fees: u64 = self.blocks.iter()
+                let stealable_fees: u64 = self
+                    .blocks
+                    .iter()
                     .filter(|b| b.height > target_height)
                     .map(|b| b.total_fees)
                     .sum();
@@ -1520,7 +1577,7 @@ mod economic_attacks {
         let settlement = SettlementTx {
             epoch: 100,
             total_amount: 10_000_000_000, // 100 BTC
-            fee: 100_000, // 0.001 BTC
+            fee: 100_000,                 // 0.001 BTC
             outputs: vec![
                 ("addr1".to_string(), 5_000_000_000),
                 ("addr2".to_string(), 5_000_000_000),
@@ -1637,7 +1694,10 @@ mod economic_attacks {
             treasury_percent: 5.0,
             pool_fee_percent: 15.0,
         };
-        assert!(excessive_fee.validate().is_err(), "Should reject excessive pool fee");
+        assert!(
+            excessive_fee.validate().is_err(),
+            "Should reject excessive pool fee"
+        );
 
         // Attack: Percentages don't sum to 100
         let short_total = PayoutConfig {
@@ -1646,7 +1706,10 @@ mod economic_attacks {
             treasury_percent: 5.0,
             pool_fee_percent: 1.0,
         };
-        assert!(short_total.validate().is_err(), "Should reject incomplete distribution");
+        assert!(
+            short_total.validate().is_err(),
+            "Should reject incomplete distribution"
+        );
     }
 }
 

@@ -105,8 +105,7 @@ pub fn decrypt_key(encrypted: &[u8], password: &str) -> WalletResult<Vec<u8>> {
     let key = derive_key(password, salt)?;
 
     // Decrypt
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|_| LightWalletError::DecryptionFailed)?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| LightWalletError::DecryptionFailed)?;
 
     let nonce = Nonce::from_slice(nonce_bytes);
     let plaintext = cipher

@@ -105,7 +105,13 @@ impl WalletRegistry {
         conn.execute(
             "INSERT INTO wallets (wallet_id, pubkey, display_name, created_at, last_seen)
              VALUES (?, ?, ?, ?, ?)",
-            params![wallet_id.as_str(), pubkey.as_slice(), display_name, now, now],
+            params![
+                wallet_id.as_str(),
+                pubkey.as_slice(),
+                display_name,
+                now,
+                now
+            ],
         )?;
 
         Ok(())
@@ -175,10 +181,7 @@ impl WalletRegistry {
         let conn = self.conn.lock();
         let cutoff = chrono::Utc::now().timestamp() - 3600;
 
-        let deleted = conn.execute(
-            "DELETE FROM used_nonces WHERE used_at < ?",
-            [cutoff],
-        )?;
+        let deleted = conn.execute("DELETE FROM used_nonces WHERE used_at < ?", [cutoff])?;
 
         Ok(deleted)
     }
@@ -187,16 +190,18 @@ impl WalletRegistry {
     pub fn verify_proof(&self, proof: &WalletProof) -> GspResult<()> {
         // Check nonce hasn't been used
         if self.is_nonce_used(&proof.nonce)? {
-            return Err(GspError::InvalidCredentials("Nonce already used".to_string()));
+            return Err(GspError::InvalidCredentials(
+                "Nonce already used".to_string(),
+            ));
         }
 
         // Verify Schnorr signature
         verify_schnorr_proof(proof)?;
 
         // Mark nonce as used
-        let wallet_id = proof.wallet_id().map_err(|e| {
-            GspError::InvalidCredentials(format!("Invalid wallet ID: {}", e))
-        })?;
+        let wallet_id = proof
+            .wallet_id()
+            .map_err(|e| GspError::InvalidCredentials(format!("Invalid wallet ID: {}", e)))?;
         self.mark_nonce_used(&proof.nonce, &wallet_id)?;
 
         Ok(())
@@ -231,7 +236,9 @@ mod tests {
         assert!(!registry.is_registered(&wallet_id).unwrap());
 
         // Register
-        registry.register(&wallet_id, &pubkey, Some("Test Wallet")).unwrap();
+        registry
+            .register(&wallet_id, &pubkey, Some("Test Wallet"))
+            .unwrap();
 
         // Now registered
         assert!(registry.is_registered(&wallet_id).unwrap());

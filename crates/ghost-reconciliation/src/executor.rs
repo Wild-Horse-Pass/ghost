@@ -146,7 +146,8 @@ impl BatchExecutor {
 
     /// Check if we should form a batch now
     pub fn should_form_batch(&self) -> bool {
-        let oldest_age = self.oldest_pending_timestamp
+        let oldest_age = self
+            .oldest_pending_timestamp
             .map(|ts| {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -177,7 +178,9 @@ impl BatchExecutor {
         let settlements: Vec<Settlement> = self.pending_settlements.drain(..batch_size).collect();
 
         // Update pending tracking
-        self.pending_total_sats = self.pending_settlements.iter()
+        self.pending_total_sats = self
+            .pending_settlements
+            .iter()
             .map(|s| s.amount_sats())
             .sum();
         if self.pending_settlements.is_empty() {
@@ -250,7 +253,7 @@ impl BatchExecutor {
 
                 // Use lock_id if available, otherwise generate from txid:vout
                 let lock_id = input.lock_id.unwrap_or_else(|| {
-                    use sha2::{Sha256, Digest};
+                    use sha2::{Digest, Sha256};
                     let mut hasher = Sha256::new();
                     hasher.update(<bitcoin::Txid as AsRef<[u8]>>::as_ref(&input.txid));
                     hasher.update(&input.vout.to_le_bytes());
@@ -278,7 +281,9 @@ impl BatchExecutor {
         }
 
         // Calculate fees
-        let total_settlement_fees = self.current_batch_settlements.iter()
+        let total_settlement_fees = self
+            .current_batch_settlements
+            .iter()
             .map(|s| s.fee_sats())
             .sum::<u64>();
 
@@ -299,11 +304,11 @@ impl BatchExecutor {
         let batch_id = self.next_batch_id;
         self.next_batch_id += 1;
 
-        let state_root = batch.merkle_root()
-            .copied()
-            .ok_or_else(|| ReconciliationError::InvalidState(
-                "Batch in Ready state but missing merkle root".to_string()
-            ))?;
+        let state_root = batch.merkle_root().copied().ok_or_else(|| {
+            ReconciliationError::InvalidState(
+                "Batch in Ready state but missing merkle root".to_string(),
+            )
+        })?;
 
         let mut recon_tx = ReconciliationTx::new(batch_id, state_root, mining_fee);
 
@@ -369,7 +374,9 @@ impl BatchExecutor {
                 return Ok(());
             }
         }
-        Err(ReconciliationError::BatchNotFound { id: batch_id.to_string() })
+        Err(ReconciliationError::BatchNotFound {
+            id: batch_id.to_string(),
+        })
     }
 
     /// Mark batch as confirmed
@@ -384,7 +391,9 @@ impl BatchExecutor {
                 return Ok(());
             }
         }
-        Err(ReconciliationError::BatchNotFound { id: batch_id.to_string() })
+        Err(ReconciliationError::BatchNotFound {
+            id: batch_id.to_string(),
+        })
     }
 
     /// Finalize batch after dispute window
@@ -410,7 +419,9 @@ impl BatchExecutor {
                 return Ok(());
             }
         }
-        Err(ReconciliationError::BatchNotFound { id: batch_id.to_string() })
+        Err(ReconciliationError::BatchNotFound {
+            id: batch_id.to_string(),
+        })
     }
 
     /// Get current batch
@@ -479,10 +490,7 @@ mod tests {
 
     #[test]
     fn test_executor_creation() {
-        let executor = BatchExecutor::new(
-            Network::Regtest,
-            "bcrt1qtest".to_string(),
-        );
+        let executor = BatchExecutor::new(Network::Regtest, "bcrt1qtest".to_string());
         assert_eq!(executor.pending_count(), 0);
     }
 
@@ -492,17 +500,15 @@ mod tests {
 
     #[test]
     fn test_add_settlement() {
-        let mut executor = BatchExecutor::new(
-            Network::Regtest,
-            "bcrt1qtest".to_string(),
-        );
+        let mut executor = BatchExecutor::new(Network::Regtest, "bcrt1qtest".to_string());
 
         let settlement = Settlement::new(
             "ghost1abc".to_string(),
             test_lock_id(1),
             "bcrt1qoutput".to_string(),
             100_000,
-        ).unwrap();
+        )
+        .unwrap();
 
         executor.add_settlement(settlement).unwrap();
         assert_eq!(executor.pending_count(), 1);
@@ -510,10 +516,7 @@ mod tests {
 
     #[test]
     fn test_add_input() {
-        let mut executor = BatchExecutor::new(
-            Network::Regtest,
-            "bcrt1qtest".to_string(),
-        );
+        let mut executor = BatchExecutor::new(Network::Regtest, "bcrt1qtest".to_string());
 
         let input = ReconciliationInput {
             txid: test_txid(),
@@ -529,10 +532,7 @@ mod tests {
 
     #[test]
     fn test_should_form_batch_min_size() {
-        let mut executor = BatchExecutor::new(
-            Network::Regtest,
-            "bcrt1qtest".to_string(),
-        );
+        let mut executor = BatchExecutor::new(Network::Regtest, "bcrt1qtest".to_string());
 
         // Add less than minimum
         for i in 0..5 {
@@ -541,7 +541,8 @@ mod tests {
                 test_lock_id(i as u8),
                 format!("bcrt1qoutput{}", i),
                 100_000,
-            ).unwrap();
+            )
+            .unwrap();
             executor.add_settlement(settlement).unwrap();
         }
 
@@ -554,7 +555,8 @@ mod tests {
                 test_lock_id(i as u8),
                 format!("bcrt1qoutput{}", i),
                 100_000,
-            ).unwrap();
+            )
+            .unwrap();
             executor.add_settlement(settlement).unwrap();
         }
 

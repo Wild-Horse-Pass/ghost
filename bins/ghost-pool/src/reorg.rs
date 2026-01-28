@@ -35,17 +35,17 @@
 //! The shares from orphaned rounds are NOT lost - they can be carried forward
 //! to the next round if desired (configurable).
 
-use std::collections::VecDeque;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use parking_lot::RwLock;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
 use ghost_common::zmq::BlockEvent;
 use ghost_consensus::vote_handler::VoteHandler;
-use ghost_storage::Database;
 use ghost_storage::models::PayoutStatus;
+use ghost_storage::Database;
 
 /// Safely truncate a hash string for logging (returns up to 16 chars or full string if shorter)
 fn truncate_hash(hash: &str) -> &str {
@@ -219,7 +219,10 @@ impl ReorgHandler {
                         handler.clone().handle_event(event).await;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(skipped = n, "Reorg handler lagged behind - some events may have been missed");
+                        warn!(
+                            skipped = n,
+                            "Reorg handler lagged behind - some events may have been missed"
+                        );
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         info!("Block event channel closed - reorg handler stopping");
@@ -283,7 +286,9 @@ impl ReorgHandler {
         match self.db.mark_rounds_orphaned_by_hash(block_hash) {
             Ok(affected) => {
                 if affected > 0 {
-                    self.stats.rounds_orphaned.fetch_add(affected as u64, Ordering::Relaxed);
+                    self.stats
+                        .rounds_orphaned
+                        .fetch_add(affected as u64, Ordering::Relaxed);
                     warn!(
                         block_hash = %hash_display,
                         rounds_orphaned = affected,
@@ -315,7 +320,8 @@ impl ReorgHandler {
                 Ok(rounds) => {
                     for round in rounds {
                         if round.payout_status == PayoutStatus::Pending
-                            || round.payout_status == PayoutStatus::Approved {
+                            || round.payout_status == PayoutStatus::Approved
+                        {
                             // Cancel any pending votes for this round
                             if let Err(e) = vote_handler.cancel_proposal_for_round(round.round_id) {
                                 warn!(
@@ -327,8 +333,7 @@ impl ReorgHandler {
                                 cancelled += 1;
                                 info!(
                                     round_id = round.round_id,
-                                    reorg_depth,
-                                    "Cancelled payout proposal due to reorg"
+                                    reorg_depth, "Cancelled payout proposal due to reorg"
                                 );
                             }
                         }
@@ -345,7 +350,9 @@ impl ReorgHandler {
         }
 
         if cancelled > 0 {
-            self.stats.proposals_cancelled.fetch_add(cancelled, Ordering::Relaxed);
+            self.stats
+                .proposals_cancelled
+                .fetch_add(cancelled, Ordering::Relaxed);
         }
 
         // 3. Log reorg summary for monitoring

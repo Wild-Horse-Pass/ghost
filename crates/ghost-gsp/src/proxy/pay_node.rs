@@ -75,7 +75,11 @@ impl PayNodeProxy {
     }
 
     /// Get UTXOs for a wallet
-    pub async fn get_utxos(&self, ghost_id: &str, min_confirmations: u32) -> GspResult<Vec<UtxoInfo>> {
+    pub async fn get_utxos(
+        &self,
+        ghost_id: &str,
+        min_confirmations: u32,
+    ) -> GspResult<Vec<UtxoInfo>> {
         let _ = (ghost_id, min_confirmations);
 
         // TODO: Implement actual API call

@@ -36,8 +36,8 @@ pub const MAX_PASSWORD_LEN: usize = 128;
 pub const MAX_METHOD_LEN: usize = 32;
 pub const MAX_JOB_ID_LEN: usize = 32;
 pub const MAX_EXTRANONCE2_LEN: usize = 32; // 16 bytes hex max
-pub const MAX_NTIME_LEN: usize = 8;        // 4 bytes hex
-pub const MAX_NONCE_LEN: usize = 8;        // 4 bytes hex
+pub const MAX_NTIME_LEN: usize = 8; // 4 bytes hex
+pub const MAX_NONCE_LEN: usize = 8; // 4 bytes hex
 pub const MAX_USER_AGENT_LEN: usize = 256;
 
 /// Validation errors
@@ -95,7 +95,11 @@ fn validate_ascii_printable(s: &str, field: &'static str) -> Result<(), Validati
 }
 
 /// Validate a hex string
-fn validate_hex(s: &str, field: &'static str, len_range: RangeInclusive<usize>) -> Result<(), ValidationError> {
+fn validate_hex(
+    s: &str,
+    field: &'static str,
+    len_range: RangeInclusive<usize>,
+) -> Result<(), ValidationError> {
     if s.is_empty() {
         return Err(ValidationError::Empty(field));
     }
@@ -139,7 +143,9 @@ pub fn validate_username(username: &str) -> Result<&str, ValidationError> {
     }
 
     // No shell metacharacters
-    const SHELL_CHARS: &[char] = &['`', '$', '|', ';', '&', '>', '<', '!', '{', '}', '[', ']', '(', ')'];
+    const SHELL_CHARS: &[char] = &[
+        '`', '$', '|', ';', '&', '>', '<', '!', '{', '}', '[', ']', '(', ')',
+    ];
     if username.chars().any(|c| SHELL_CHARS.contains(&c)) {
         return Err(ValidationError::InvalidChars("username"));
     }
@@ -180,7 +186,10 @@ pub fn validate_worker_name(worker: &str) -> Result<&str, ValidationError> {
     validate_ascii_printable(worker, "worker_name")?;
 
     // Worker names should be alphanumeric with limited punctuation
-    if !worker.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !worker
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(ValidationError::InvalidChars("worker_name"));
     }
 
@@ -252,12 +261,12 @@ impl<'a> ValidatedShareParams<'a> {
         validate_share_params(job_id, extranonce2, ntime_hex, nonce_hex)?;
 
         // Parse ntime (already validated as 8 hex chars)
-        let ntime = u32::from_str_radix(ntime_hex, 16)
-            .map_err(|_| ValidationError::InvalidHex("ntime"))?;
+        let ntime =
+            u32::from_str_radix(ntime_hex, 16).map_err(|_| ValidationError::InvalidHex("ntime"))?;
 
         // Parse nonce (already validated as 8 hex chars)
-        let nonce = u32::from_str_radix(nonce_hex, 16)
-            .map_err(|_| ValidationError::InvalidHex("nonce"))?;
+        let nonce =
+            u32::from_str_radix(nonce_hex, 16).map_err(|_| ValidationError::InvalidHex("nonce"))?;
 
         Ok(Self {
             job_id,
@@ -323,27 +332,60 @@ mod tests {
     fn test_validate_username_invalid() {
         // Too long
         let long = "a".repeat(MAX_USERNAME_LEN + 1);
-        assert!(matches!(validate_username(&long), Err(ValidationError::TooLong(..))));
+        assert!(matches!(
+            validate_username(&long),
+            Err(ValidationError::TooLong(..))
+        ));
 
         // Path traversal
-        assert!(matches!(validate_username("../etc/passwd"), Err(ValidationError::PathTraversal(..))));
-        assert!(matches!(validate_username("foo/bar"), Err(ValidationError::PathTraversal(..))));
+        assert!(matches!(
+            validate_username("../etc/passwd"),
+            Err(ValidationError::PathTraversal(..))
+        ));
+        assert!(matches!(
+            validate_username("foo/bar"),
+            Err(ValidationError::PathTraversal(..))
+        ));
 
         // Shell metacharacters
-        assert!(matches!(validate_username("foo`whoami`"), Err(ValidationError::InvalidChars(..))));
-        assert!(matches!(validate_username("foo;rm -rf"), Err(ValidationError::InvalidChars(..))));
+        assert!(matches!(
+            validate_username("foo`whoami`"),
+            Err(ValidationError::InvalidChars(..))
+        ));
+        assert!(matches!(
+            validate_username("foo;rm -rf"),
+            Err(ValidationError::InvalidChars(..))
+        ));
         // Note: $(cat /etc/passwd) contains '/' which triggers PathTraversal first
-        assert!(matches!(validate_username("$(cat /etc/passwd)"), Err(ValidationError::PathTraversal(..))));
+        assert!(matches!(
+            validate_username("$(cat /etc/passwd)"),
+            Err(ValidationError::PathTraversal(..))
+        ));
         // Test shell chars without path chars
-        assert!(matches!(validate_username("$HOME"), Err(ValidationError::InvalidChars(..))));
-        assert!(matches!(validate_username("foo|bar"), Err(ValidationError::InvalidChars(..))));
+        assert!(matches!(
+            validate_username("$HOME"),
+            Err(ValidationError::InvalidChars(..))
+        ));
+        assert!(matches!(
+            validate_username("foo|bar"),
+            Err(ValidationError::InvalidChars(..))
+        ));
 
         // Empty
-        assert!(matches!(validate_username(""), Err(ValidationError::Empty(..))));
+        assert!(matches!(
+            validate_username(""),
+            Err(ValidationError::Empty(..))
+        ));
 
         // Control characters
-        assert!(matches!(validate_username("foo\x00bar"), Err(ValidationError::NullByte(..))));
-        assert!(matches!(validate_username("foo\nbar"), Err(ValidationError::ControlChars(..))));
+        assert!(matches!(
+            validate_username("foo\x00bar"),
+            Err(ValidationError::NullByte(..))
+        ));
+        assert!(matches!(
+            validate_username("foo\nbar"),
+            Err(ValidationError::ControlChars(..))
+        ));
     }
 
     #[test]
@@ -373,7 +415,8 @@ mod tests {
 
     #[test]
     fn test_validated_share_params() {
-        let params = ValidatedShareParams::parse("abc123", "00000001", "65432100", "deadbeef").unwrap();
+        let params =
+            ValidatedShareParams::parse("abc123", "00000001", "65432100", "deadbeef").unwrap();
         assert_eq!(params.job_id, "abc123");
         assert_eq!(params.ntime, 0x65432100);
         assert_eq!(params.nonce, 0xdeadbeef);

@@ -322,10 +322,7 @@ fn is_valid_recipient(recipient: &str) -> bool {
 /// Check if string is a valid Bitcoin address
 fn is_valid_bitcoin_address(address: &str) -> bool {
     // Bech32/bech32m (mainnet, testnet, regtest)
-    if address.starts_with("bc1")
-        || address.starts_with("tb1")
-        || address.starts_with("bcrt1")
-    {
+    if address.starts_with("bc1") || address.starts_with("tb1") || address.starts_with("bcrt1") {
         return address.len() >= 42 && address.len() <= 90;
     }
 
@@ -419,7 +416,9 @@ mod tests {
         assert!(is_valid_bitcoin_address(
             "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
         ));
-        assert!(is_valid_bitcoin_address("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"));
+        assert!(is_valid_bitcoin_address(
+            "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+        ));
 
         // Invalid addresses
         assert!(!is_valid_bitcoin_address("invalid"));

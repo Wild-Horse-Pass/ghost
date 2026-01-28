@@ -312,8 +312,8 @@ pub fn is_small_op_return(script: &Script) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoin::blockdata::script::Builder;
     use bitcoin::blockdata::opcodes;
+    use bitcoin::blockdata::script::Builder;
 
     #[test]
     fn test_detect_p2wpkh() {

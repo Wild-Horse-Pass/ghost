@@ -49,8 +49,8 @@ use clap::Parser;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn, Level};
@@ -97,8 +97,7 @@ async fn main() -> Result<()> {
         .with_target(false)
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set tracing subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
     info!("Starting SV1→SV2 Translator v{}", env!("CARGO_PKG_VERSION"));
     info!("SV1 listen: {}", args.sv1_listen);
@@ -146,7 +145,10 @@ impl Translator {
             }
 
             connection_count += 1;
-            info!("New SV1 connection from {} (total: {})", addr, connection_count);
+            info!(
+                "New SV1 connection from {} (total: {})",
+                addr, connection_count
+            );
 
             let sv2_upstream = self.sv2_upstream;
             tokio::spawn(async move {
@@ -233,7 +235,9 @@ async fn handle_connection(
                         &state_clone,
                         &sv1_to_sv2_tx_clone,
                         &sv2_to_sv1_tx_clone,
-                    ).await {
+                    )
+                    .await
+                    {
                         warn!(error = %e, "Failed to handle SV1 request");
                     }
                 }
@@ -284,12 +288,9 @@ async fn handle_connection(
             );
 
             // Translate SV2 to SV1 notifications
-            if let Err(e) = handle_sv2_message(
-                header.msg_type,
-                &payload,
-                &state_clone,
-                &sv2_to_sv1_tx,
-            ).await {
+            if let Err(e) =
+                handle_sv2_message(header.msg_type, &payload, &state_clone, &sv2_to_sv1_tx).await
+            {
                 warn!(error = %e, "Failed to handle SV2 message");
             }
         }
@@ -352,13 +353,22 @@ async fn handle_sv1_request(
             // Respond with subscription info
             let (extranonce1, extranonce2_size) = {
                 let state_guard = state.read();
-                (state_guard.extranonce1.clone(), state_guard.extranonce2_size)
+                (
+                    state_guard.extranonce1.clone(),
+                    state_guard.extranonce2_size,
+                )
             };
 
             let result = sv1::SubscribeResult {
                 subscriptions: vec![
-                    ("mining.notify".to_string(), "ae6812eb4cd7735a302a8a9dd95cf71f".to_string()),
-                    ("mining.set_difficulty".to_string(), "b4b6693b72a50c7116db18d6497cac52".to_string()),
+                    (
+                        "mining.notify".to_string(),
+                        "ae6812eb4cd7735a302a8a9dd95cf71f".to_string(),
+                    ),
+                    (
+                        "mining.set_difficulty".to_string(),
+                        "b4b6693b72a50c7116db18d6497cac52".to_string(),
+                    ),
                 ],
                 extranonce1,
                 extranonce2_size,
@@ -373,7 +383,9 @@ async fn handle_sv1_request(
 
         "mining.authorize" => {
             // Parse worker name and password
-            let worker = request.params.first()
+            let worker = request
+                .params
+                .first()
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
@@ -429,7 +441,8 @@ async fn handle_sv1_request(
             // Extract all needed data from state before awaiting
             let (channel_id, sv2_job_id, sequence_number) = {
                 let state_guard = state.read();
-                let job_id = state_guard.job_map
+                let job_id = state_guard
+                    .job_map
                     .get(&submit.job_id)
                     .copied()
                     .unwrap_or(0);
@@ -517,8 +530,10 @@ async fn handle_sv2_message(
         x if x == sv2::MessageType::OpenStandardMiningChannelSuccess as u8 => {
             // Parse channel ID and difficulty
             if payload.len() >= 8 {
-                let _request_id = u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                let channel_id = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+                let _request_id =
+                    u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                let channel_id =
+                    u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
 
                 // Update state and extract difficulty before awaiting
                 let difficulty = {
@@ -539,16 +554,20 @@ async fn handle_sv2_message(
             }
         }
 
-        x if x == sv2::MessageType::NewMiningJob as u8 || x == sv2::MessageType::NewExtendedMiningJob as u8 => {
+        x if x == sv2::MessageType::NewMiningJob as u8
+            || x == sv2::MessageType::NewExtendedMiningJob as u8 =>
+        {
             // Parse new job and convert to SV1 mining.notify
             // NewExtendedMiningJob layout:
             //   channel_id (4) + job_id (4) + future_job (1) + version (4) +
             //   version_rolling_allowed (1) + merkle_path (variable) +
             //   coinbase_tx_prefix (variable) + coinbase_tx_suffix (variable)
             if payload.len() >= 14 {
-                let sv2_job_id = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
+                let sv2_job_id =
+                    u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
                 let future_job = payload[8] != 0;
-                let version = u32::from_le_bytes([payload[9], payload[10], payload[11], payload[12]]);
+                let version =
+                    u32::from_le_bytes([payload[9], payload[10], payload[11], payload[12]]);
 
                 // Parse variable-length fields (simplified - real impl needs proper SV2 parsing)
                 let mut offset = 14; // Skip version_rolling_allowed byte
@@ -603,10 +622,13 @@ async fn handle_sv2_message(
                     let id = state_guard.next_job_id.fetch_add(1, Ordering::SeqCst);
                     let job_str = format!("{:x}", id);
                     state_guard.job_map.insert(job_str.clone(), sv2_job_id);
-                    state_guard.reverse_job_map.insert(sv2_job_id, job_str.clone());
+                    state_guard
+                        .reverse_job_map
+                        .insert(sv2_job_id, job_str.clone());
                     state_guard.coinbase_prefix = coinbase_prefix.clone();
                     state_guard.coinbase_suffix = coinbase_suffix.clone();
-                    state_guard.merkle_path = merkle_branches.iter()
+                    state_guard.merkle_path = merkle_branches
+                        .iter()
                         .filter_map(|h| {
                             let bytes = hex::decode(h).ok()?;
                             if bytes.len() == 32 {
@@ -677,8 +699,10 @@ async fn handle_sv2_message(
             // SetNewPrevHash layout: channel_id (4) + job_id (4) + prev_hash (32) + min_ntime (4) + nbits (4)
             if payload.len() >= 48 {
                 let prev_hash_bytes = &payload[8..40];
-                let min_ntime = u32::from_le_bytes([payload[40], payload[41], payload[42], payload[43]]);
-                let nbits = u32::from_le_bytes([payload[44], payload[45], payload[46], payload[47]]);
+                let min_ntime =
+                    u32::from_le_bytes([payload[40], payload[41], payload[42], payload[43]]);
+                let nbits =
+                    u32::from_le_bytes([payload[44], payload[45], payload[46], payload[47]]);
 
                 // Convert prev_hash to SV1 format (reversed byte order, hex-encoded)
                 let prev_hash_reversed: Vec<u8> = prev_hash_bytes.iter().rev().cloned().collect();
@@ -726,14 +750,18 @@ async fn handle_sv2_message(
                 let json = serde_json::to_string(&difficulty_notification)?;
                 sv1_tx.send(json).await?;
 
-                debug!(difficulty = difficulty, "Set new difficulty from SV2 target");
+                debug!(
+                    difficulty = difficulty,
+                    "Set new difficulty from SV2 target"
+                );
             }
         }
 
         x if x == sv2::MessageType::SubmitSharesSuccess as u8 => {
             // SubmitSharesSuccess layout: channel_id (4) + last_seq_num (4) + new_submits_accepted (4) + new_shares_sum (8)
             if payload.len() >= 20 {
-                let new_submits = u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
+                let new_submits =
+                    u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
                 debug!(accepted = new_submits, "Shares accepted");
             }
         }
@@ -779,7 +807,8 @@ fn rand_u32() -> u32 {
 fn target_to_difficulty(target_bytes: &[u8]) -> f64 {
     // pool_target_1 = 2^224 * 0xffff
     // This is the target for difficulty 1
-    const POOL_TARGET_1: f64 = 26959535291011309493156476344723991336010898738574164086137773096960.0;
+    const POOL_TARGET_1: f64 =
+        26959535291011309493156476344723991336010898738574164086137773096960.0;
 
     // Convert target bytes (little-endian 256-bit) to f64
     // We only need the most significant non-zero bytes for approximation
@@ -826,7 +855,11 @@ mod sv1 {
 
     impl Response {
         pub fn success(id: Option<serde_json::Value>, result: serde_json::Value) -> Self {
-            Self { id, result, error: None }
+            Self {
+                id,
+                result,
+                error: None,
+            }
         }
 
         pub fn error(id: Option<serde_json::Value>, code: i32, message: String) -> Self {
@@ -862,7 +895,10 @@ mod sv1 {
     impl SubscribeResult {
         pub fn to_json(&self) -> serde_json::Value {
             serde_json::json!([
-                self.subscriptions.iter().map(|(a, b)| serde_json::json!([a, b])).collect::<Vec<_>>(),
+                self.subscriptions
+                    .iter()
+                    .map(|(a, b)| serde_json::json!([a, b]))
+                    .collect::<Vec<_>>(),
                 self.extranonce1,
                 self.extranonce2_size
             ])
@@ -984,7 +1020,7 @@ mod sv2 {
     /// SetupConnection message
     #[derive(Debug, Clone)]
     pub struct SetupConnection {
-        pub protocol: u8,        // 0 = Mining Protocol
+        pub protocol: u8, // 0 = Mining Protocol
         pub min_version: u16,
         pub max_version: u16,
         pub flags: u32,

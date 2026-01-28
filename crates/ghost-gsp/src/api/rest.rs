@@ -27,7 +27,9 @@ use std::sync::Arc;
 use axum::{extract::State, Json};
 use tracing::info;
 
-use ghost_gsp_proto::{RegisterRequest, RegisterResponse, SessionRequest, SessionResponse, PROTOCOL_VERSION};
+use ghost_gsp_proto::{
+    RegisterRequest, RegisterResponse, SessionRequest, SessionResponse, PROTOCOL_VERSION,
+};
 
 use crate::error::{GspError, GspResult};
 use crate::server::GspState;
@@ -84,13 +86,15 @@ pub async fn register(
     Json(req): Json<RegisterRequest>,
 ) -> GspResult<Json<RegisterResponse>> {
     // Validate proof structure
-    req.proof.validate_structure().map_err(|e| {
-        GspError::BadRequest(format!("Invalid proof: {}", e))
-    })?;
+    req.proof
+        .validate_structure()
+        .map_err(|e| GspError::BadRequest(format!("Invalid proof: {}", e)))?;
 
     // Check timestamp
     if !req.proof.is_timestamp_valid() {
-        return Err(GspError::BadRequest("Proof timestamp out of range".to_string()));
+        return Err(GspError::BadRequest(
+            "Proof timestamp out of range".to_string(),
+        ));
     }
 
     // Verify action
@@ -99,9 +103,10 @@ pub async fn register(
     }
 
     // Get wallet ID
-    let wallet_id = req.proof.wallet_id().map_err(|e| {
-        GspError::BadRequest(format!("Invalid wallet ID: {}", e))
-    })?;
+    let wallet_id = req
+        .proof
+        .wallet_id()
+        .map_err(|e| GspError::BadRequest(format!("Invalid wallet ID: {}", e)))?;
 
     // Check if already registered
     if state.registry.is_registered(&wallet_id)? {
@@ -109,15 +114,18 @@ pub async fn register(
     }
 
     // Get public key bytes
-    let pubkey = req.proof.public_key_bytes().map_err(|e| {
-        GspError::BadRequest(format!("Invalid public key: {}", e))
-    })?;
+    let pubkey = req
+        .proof
+        .public_key_bytes()
+        .map_err(|e| GspError::BadRequest(format!("Invalid public key: {}", e)))?;
 
     // Verify signature
     state.registry.verify_proof(&req.proof)?;
 
     // Register wallet
-    state.registry.register(&wallet_id, &pubkey, req.display_name.as_deref())?;
+    state
+        .registry
+        .register(&wallet_id, &pubkey, req.display_name.as_deref())?;
 
     info!(wallet_id = %wallet_id, "Wallet registered");
 
@@ -134,13 +142,15 @@ pub async fn create_session(
     Json(req): Json<SessionRequest>,
 ) -> GspResult<Json<SessionResponse>> {
     // Validate proof structure
-    req.proof.validate_structure().map_err(|e| {
-        GspError::BadRequest(format!("Invalid proof: {}", e))
-    })?;
+    req.proof
+        .validate_structure()
+        .map_err(|e| GspError::BadRequest(format!("Invalid proof: {}", e)))?;
 
     // Check timestamp
     if !req.proof.is_timestamp_valid() {
-        return Err(GspError::BadRequest("Proof timestamp out of range".to_string()));
+        return Err(GspError::BadRequest(
+            "Proof timestamp out of range".to_string(),
+        ));
     }
 
     // Verify action
@@ -149,9 +159,10 @@ pub async fn create_session(
     }
 
     // Get wallet ID
-    let wallet_id = req.proof.wallet_id().map_err(|e| {
-        GspError::BadRequest(format!("Invalid wallet ID: {}", e))
-    })?;
+    let wallet_id = req
+        .proof
+        .wallet_id()
+        .map_err(|e| GspError::BadRequest(format!("Invalid wallet ID: {}", e)))?;
 
     // Check if registered
     if !state.registry.is_registered(&wallet_id)? {

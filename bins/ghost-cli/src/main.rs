@@ -356,7 +356,11 @@ impl ApiClient {
             .context("Failed to parse API response")
     }
 
-    async fn post<T: for<'de> Deserialize<'de>>(&self, path: &str, body: &impl Serialize) -> Result<T> {
+    async fn post<T: for<'de> Deserialize<'de>>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T> {
         let url = format!("{}/api/v1{}", self.base_url, path);
         let response = self
             .client
@@ -389,10 +393,7 @@ impl ApiClient {
             anyhow::bail!("API error: {}", response.status());
         }
 
-        response
-            .text()
-            .await
-            .context("Failed to read API response")
+        response.text().await.context("Failed to read API response")
     }
 }
 
@@ -412,28 +413,63 @@ async fn cmd_status(client: &ApiClient, format: OutputFormat) -> Result<()> {
             println!();
             println!("  {} {}", "Version:".cyan(), status.version);
             println!("  {} {}", "Node ID:".cyan(), &status.node_id[..16]);
-            println!("  {} {}", "Status:".cyan(),
-                if status.status == "healthy" { status.status.green() } else { status.status.red() });
-            println!("  {} {}s", "Uptime:".cyan(), format_duration(status.uptime_secs));
+            println!(
+                "  {} {}",
+                "Status:".cyan(),
+                if status.status == "healthy" {
+                    status.status.green()
+                } else {
+                    status.status.red()
+                }
+            );
+            println!(
+                "  {} {}s",
+                "Uptime:".cyan(),
+                format_duration(status.uptime_secs)
+            );
             println!();
             println!("{}", "--- Bitcoin ---".yellow());
-            println!("  {} {}", "Connected:".cyan(),
-                if status.bitcoin_connected { "Yes".green() } else { "No".red() });
+            println!(
+                "  {} {}",
+                "Connected:".cyan(),
+                if status.bitcoin_connected {
+                    "Yes".green()
+                } else {
+                    "No".red()
+                }
+            );
             println!("  {} {}", "Block Height:".cyan(), status.block_height);
             println!();
             println!("{}", "--- Mining ---".yellow());
-            println!("  {} {}", "Miners Connected:".cyan(), status.miners_connected);
+            println!(
+                "  {} {}",
+                "Miners Connected:".cyan(),
+                status.miners_connected
+            );
             println!("  {} {}", "Miners Active:".cyan(), status.miners_active);
             println!("  {} {}", "Current Round:".cyan(), status.current_round);
-            println!("  {} {}", "Shares (this round):".cyan(), status.shares_this_round);
-            println!("  {} {:.2} TH/s", "Hashrate:".cyan(), status.hashrate_estimate / 1e12);
+            println!(
+                "  {} {}",
+                "Shares (this round):".cyan(),
+                status.shares_this_round
+            );
+            println!(
+                "  {} {:.2} TH/s",
+                "Hashrate:".cyan(),
+                status.hashrate_estimate / 1e12
+            );
             println!("  {} {}", "Blocks Found:".cyan(), status.blocks_found_total);
         }
     }
     Ok(())
 }
 
-async fn cmd_miner_list(client: &ApiClient, format: OutputFormat, active: bool, limit: usize) -> Result<()> {
+async fn cmd_miner_list(
+    client: &ApiClient,
+    format: OutputFormat,
+    active: bool,
+    limit: usize,
+) -> Result<()> {
     let path = if active {
         format!("/miners?active=true&limit={}", limit)
     } else {
@@ -450,7 +486,10 @@ async fn cmd_miner_list(client: &ApiClient, format: OutputFormat, active: bool, 
             if miners.is_empty() {
                 println!("{}", "No miners connected".yellow());
             } else {
-                println!("{}", format!("=== {} Miners ===", miners.len()).green().bold());
+                println!(
+                    "{}",
+                    format!("=== {} Miners ===", miners.len()).green().bold()
+                );
                 let table = Table::new(&miners).to_string();
                 println!("{}", table);
             }
@@ -481,7 +520,9 @@ async fn cmd_round_current(client: &ApiClient, format: OutputFormat) -> Result<(
 }
 
 async fn cmd_payout_pending(client: &ApiClient, format: OutputFormat, limit: usize) -> Result<()> {
-    let payouts: Vec<PayoutInfo> = client.get(&format!("/payouts/pending?limit={}", limit)).await?;
+    let payouts: Vec<PayoutInfo> = client
+        .get(&format!("/payouts/pending?limit={}", limit))
+        .await?;
 
     match format {
         OutputFormat::Json => {
@@ -491,7 +532,12 @@ async fn cmd_payout_pending(client: &ApiClient, format: OutputFormat, limit: usi
             if payouts.is_empty() {
                 println!("{}", "No pending payouts".yellow());
             } else {
-                println!("{}", format!("=== {} Pending Payouts ===", payouts.len()).green().bold());
+                println!(
+                    "{}",
+                    format!("=== {} Pending Payouts ===", payouts.len())
+                        .green()
+                        .bold()
+                );
                 let table = Table::new(&payouts).to_string();
                 println!("{}", table);
             }
@@ -521,9 +567,17 @@ async fn cmd_consensus_status(client: &ApiClient, format: OutputFormat) -> Resul
             println!();
             println!("  {} {}", "Connected Peers:".cyan(), status.connected_peers);
             println!("  {} {}", "Elder Nodes:".cyan(), status.elder_count);
-            println!("  {} {:.1}%", "Participation:".cyan(), status.participation_percent);
+            println!(
+                "  {} {:.1}%",
+                "Participation:".cyan(),
+                status.participation_percent
+            );
             println!("  {} {}", "Last Vote:".cyan(), status.last_vote_time);
-            println!("  {} {}", "Pending Proposals:".cyan(), status.pending_proposals);
+            println!(
+                "  {} {}",
+                "Pending Proposals:".cyan(),
+                status.pending_proposals
+            );
         }
     }
     Ok(())
@@ -540,7 +594,12 @@ async fn cmd_consensus_peers(client: &ApiClient, format: OutputFormat) -> Result
             if peers.is_empty() {
                 println!("{}", "No peers connected".yellow());
             } else {
-                println!("{}", format!("=== {} Connected Peers ===", peers.len()).green().bold());
+                println!(
+                    "{}",
+                    format!("=== {} Connected Peers ===", peers.len())
+                        .green()
+                        .bold()
+                );
                 let table = Table::new(&peers).to_string();
                 println!("{}", table);
             }
@@ -728,16 +787,29 @@ async fn main() -> Result<()> {
             }
             MinerCommands::Kick { miner_id, reason } => {
                 let body = serde_json::json!({ "reason": reason });
-                let _: serde_json::Value = client.post(&format!("/admin/miners/{}/kick", miner_id), &body).await?;
+                let _: serde_json::Value = client
+                    .post(&format!("/admin/miners/{}/kick", miner_id), &body)
+                    .await?;
                 println!("{}", format!("Miner {} kicked", miner_id).yellow());
             }
-            MinerCommands::Ban { target, duration, reason } => {
+            MinerCommands::Ban {
+                target,
+                duration,
+                reason,
+            } => {
                 let body = serde_json::json!({ "duration_hours": duration, "reason": reason });
-                let _: serde_json::Value = client.post(&format!("/admin/ban/{}", target), &body).await?;
-                println!("{}", format!("Banned {} for {} hours", target, duration).red());
+                let _: serde_json::Value = client
+                    .post(&format!("/admin/ban/{}", target), &body)
+                    .await?;
+                println!(
+                    "{}",
+                    format!("Banned {} for {} hours", target, duration).red()
+                );
             }
             MinerCommands::Unban { target } => {
-                let _: serde_json::Value = client.post(&format!("/admin/unban/{}", target), &()).await?;
+                let _: serde_json::Value = client
+                    .post(&format!("/admin/unban/{}", target), &())
+                    .await?;
                 println!("{}", format!("Unbanned {}", target).green());
             }
         },
@@ -745,7 +817,8 @@ async fn main() -> Result<()> {
         Commands::Round(cmd) => match cmd {
             RoundCommands::Current => cmd_round_current(&client, cli.format).await?,
             RoundCommands::History { count } => {
-                let rounds: Vec<RoundInfo> = client.get(&format!("/rounds?limit={}", count)).await?;
+                let rounds: Vec<RoundInfo> =
+                    client.get(&format!("/rounds?limit={}", count)).await?;
                 match cli.format {
                     OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&rounds)?),
                     OutputFormat::Text => {
@@ -771,7 +844,8 @@ async fn main() -> Result<()> {
                 cmd_payout_pending(&client, cli.format, limit).await?
             }
             PayoutCommands::History { count } => {
-                let payouts: Vec<PayoutInfo> = client.get(&format!("/payouts?limit={}", count)).await?;
+                let payouts: Vec<PayoutInfo> =
+                    client.get(&format!("/payouts?limit={}", count)).await?;
                 match cli.format {
                     OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&payouts)?),
                     OutputFormat::Text => {
@@ -792,7 +866,8 @@ async fn main() -> Result<()> {
             }
             PayoutCommands::Process { dry_run } => {
                 let body = serde_json::json!({ "dry_run": dry_run });
-                let result: serde_json::Value = client.post("/admin/payouts/process", &body).await?;
+                let result: serde_json::Value =
+                    client.post("/admin/payouts/process", &body).await?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
             }
         },
@@ -801,7 +876,9 @@ async fn main() -> Result<()> {
             ConsensusCommands::Status => cmd_consensus_status(&client, cli.format).await?,
             ConsensusCommands::Peers => cmd_consensus_peers(&client, cli.format).await?,
             ConsensusCommands::Votes { count } => {
-                let votes: serde_json::Value = client.get(&format!("/consensus/votes?limit={}", count)).await?;
+                let votes: serde_json::Value = client
+                    .get(&format!("/consensus/votes?limit={}", count))
+                    .await?;
                 println!("{}", serde_json::to_string_pretty(&votes)?);
             }
             ConsensusCommands::Elders => {

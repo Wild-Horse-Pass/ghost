@@ -1,12 +1,12 @@
 //! Network support demo
 
-use ghost_light_wallet::{LightWallet, WalletConfig};
 use bitcoin::Network;
+use ghost_light_wallet::{LightWallet, WalletConfig};
 use std::path::PathBuf;
 
 fn main() {
     let mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    
+
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║        GHOST LIGHT WALLET - NETWORK SUPPORT                  ║");
     println!("╚══════════════════════════════════════════════════════════════╝\n");
@@ -35,7 +35,7 @@ fn main() {
                 println!("│ Network:   {:?}", wallet.network());
                 println!("│ Ghost ID:  {}...", &wallet.ghost_id().unwrap()[..40]);
                 println!("│ Wallet ID: {}", wallet.wallet_id().unwrap());
-                println!("│ Status:    ✓ Working", );
+                println!("│ Status:    ✓ Working",);
                 println!("└─────────────────────────────────────────────────────────────┘\n");
             }
             Err(e) => {

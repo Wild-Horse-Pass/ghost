@@ -10,7 +10,7 @@
 //! - Silent Payment keys
 
 use ghost_common::identity::{
-    hash_message, verify_signature, verify_node_id_pow, NodeIdentity, NodeIdProof,
+    hash_message, verify_node_id_pow, verify_signature, NodeIdProof, NodeIdentity,
     NODE_ID_POW_DIFFICULTY,
 };
 use std::collections::HashSet;
@@ -376,7 +376,11 @@ fn test_030_verify_node_id_pow_function() {
     let identity = NodeIdentity::generate();
     let proof = identity.pow_proof().unwrap();
 
-    assert!(verify_node_id_pow(&identity.node_id(), proof, NODE_ID_POW_DIFFICULTY));
+    assert!(verify_node_id_pow(
+        &identity.node_id(),
+        proof,
+        NODE_ID_POW_DIFFICULTY
+    ));
 }
 
 // =============================================================================

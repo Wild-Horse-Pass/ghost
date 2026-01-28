@@ -25,10 +25,10 @@
 //! Implements gossip-based peer discovery via PUB/SUB on port 8559.
 //! Periodically broadcasts known peers and merges received peer lists.
 
-use std::sync::Arc;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 use ghost_common::error::GhostResult;
@@ -206,22 +206,14 @@ mod tests {
     #[test]
     fn test_discovery_handler_creation() {
         let peers = Arc::new(PeerManager::new([1u8; 32], 100));
-        let handler = DiscoveryHandler::new(
-            [1u8; 32],
-            "tcp://127.0.0.1:8559".to_string(),
-            peers,
-        );
+        let handler = DiscoveryHandler::new([1u8; 32], "tcp://127.0.0.1:8559".to_string(), peers);
         assert_eq!(handler.known_peer_count(), 0);
     }
 
     #[test]
     fn test_add_known_peer() {
         let peers = Arc::new(PeerManager::new([1u8; 32], 100));
-        let handler = DiscoveryHandler::new(
-            [1u8; 32],
-            "tcp://127.0.0.1:8559".to_string(),
-            peers,
-        );
+        let handler = DiscoveryHandler::new([1u8; 32], "tcp://127.0.0.1:8559".to_string(), peers);
 
         handler.add_known_peer([2u8; 32], "tcp://192.168.1.2:8559".to_string());
         assert_eq!(handler.known_peer_count(), 1);

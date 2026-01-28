@@ -112,18 +112,10 @@ impl PayoutCalculator {
         let node_pool = remaining_subsidy - miner_pool;
 
         // 5. Calculate miner payouts (top 200)
-        result.miner_payouts = self.calculate_miner_payouts(
-            shares,
-            miner_pool,
-            miner_addresses,
-        );
+        result.miner_payouts = self.calculate_miner_payouts(shares, miner_pool, miner_addresses);
 
         // 6. Calculate node payouts (top 100)
-        result.node_payouts = self.calculate_node_payouts(
-            shares,
-            node_pool,
-            node_addresses,
-        );
+        result.node_payouts = self.calculate_node_payouts(shares, node_pool, node_addresses);
 
         // 7. Add treasury payout entry
         if result.treasury_amount >= self.dust_threshold {
@@ -233,10 +225,7 @@ impl PayoutCalculator {
         let top_nodes = shares.top_100_nodes();
 
         // Limit to max outputs
-        let nodes_to_pay: Vec<_> = top_nodes
-            .into_iter()
-            .take(self.max_node_outputs)
-            .collect();
+        let nodes_to_pay: Vec<_> = top_nodes.into_iter().take(self.max_node_outputs).collect();
 
         for node_info in nodes_to_pay {
             let share_percent = shares.node_share_percent(&node_info.node_id);
@@ -247,7 +236,10 @@ impl PayoutCalculator {
             }
 
             // Find node's address
-            if let Some((_, address)) = node_addresses.iter().find(|(id, _)| *id == node_info.node_id) {
+            if let Some((_, address)) = node_addresses
+                .iter()
+                .find(|(id, _)| *id == node_info.node_id)
+            {
                 payouts.push(PayoutEntry {
                     address: address.clone(),
                     amount,
@@ -403,10 +395,7 @@ mod tests {
             ("miner2".to_string(), vec![2u8; 20]),
         ];
 
-        let node_addresses = vec![
-            ([1u8; 32], vec![3u8; 20]),
-            ([2u8; 32], vec![4u8; 20]),
-        ];
+        let node_addresses = vec![([1u8; 32], vec![3u8; 20]), ([2u8; 32], vec![4u8; 20])];
 
         let result = calculator.calculate_payouts(
             &shares,
@@ -414,7 +403,7 @@ mod tests {
             1_000_000,   // 0.01 BTC fees
             &miner_addresses,
             &node_addresses,
-            [1u8; 32], // Block builder
+            [1u8; 32],     // Block builder
             vec![5u8; 20], // Treasury
         );
 

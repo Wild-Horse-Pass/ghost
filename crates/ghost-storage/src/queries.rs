@@ -205,7 +205,8 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: PayoutStatus::from_str(&status_str).unwrap_or(PayoutStatus::Active),
+                        payout_status: PayoutStatus::from_str(&status_str)
+                            .unwrap_or(PayoutStatus::Active),
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
                     })
@@ -233,7 +234,14 @@ impl Database {
                     block_hash = ?1, winning_miner = ?2, found_by_node = ?3,
                     subsidy_sats = ?4, tx_fees_sats = ?5, payout_status = 'pending'
                  WHERE round_id = ?6",
-                params![block_hash, winning_miner, found_by_node, subsidy_sats, tx_fees_sats, round_id],
+                params![
+                    block_hash,
+                    winning_miner,
+                    found_by_node,
+                    subsidy_sats,
+                    tx_fees_sats,
+                    round_id
+                ],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
@@ -276,13 +284,14 @@ impl Database {
     pub fn mark_rounds_orphaned_by_hash(&self, block_hash: &str) -> GhostResult<usize> {
         self.with_connection(|conn| {
             // Only orphan rounds that are pending/approved/broadcast - not already confirmed
-            let affected = conn.execute(
-                "UPDATE rounds SET payout_status = 'orphaned'
+            let affected = conn
+                .execute(
+                    "UPDATE rounds SET payout_status = 'orphaned'
                  WHERE block_hash = ?1
                    AND payout_status IN ('pending', 'approved', 'broadcast')",
-                params![block_hash],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
+                    params![block_hash],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(affected)
         })
     }
@@ -312,7 +321,8 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: PayoutStatus::from_str(&status_str).unwrap_or(PayoutStatus::Active),
+                        payout_status: PayoutStatus::from_str(&status_str)
+                            .unwrap_or(PayoutStatus::Active),
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
                     })
@@ -350,7 +360,8 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: PayoutStatus::from_str(&status_str).unwrap_or(PayoutStatus::Active),
+                        payout_status: PayoutStatus::from_str(&status_str)
+                            .unwrap_or(PayoutStatus::Active),
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
                     })
@@ -403,9 +414,7 @@ impl Database {
 
     /// Get a node by ID
     pub fn get_node(&self, node_id: &str) -> GhostResult<Option<NodeRecord>> {
-        self.with_connection(|conn| {
-            get_node_internal(conn, node_id)
-        })
+        self.with_connection(|conn| get_node_internal(conn, node_id))
     }
 
     /// Get all elders (ordered by registration)
@@ -704,11 +713,7 @@ impl Database {
     }
 
     /// Confirm an elder bond (called when UTXO is confirmed on-chain)
-    pub fn confirm_elder_bond(
-        &self,
-        node_id: &str,
-        confirmation_height: u64,
-    ) -> GhostResult<bool> {
+    pub fn confirm_elder_bond(&self, node_id: &str, confirmation_height: u64) -> GhostResult<bool> {
         let now = chrono::Utc::now().timestamp();
 
         self.with_connection(|conn| {
@@ -749,11 +754,7 @@ impl Database {
     }
 
     /// Mark an elder bond as spent (slashed or withdrawn)
-    pub fn spend_elder_bond(
-        &self,
-        node_id: &str,
-        spent_txid: &str,
-    ) -> GhostResult<()> {
+    pub fn spend_elder_bond(&self, node_id: &str, spent_txid: &str) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
 
         self.with_connection(|conn| {
@@ -865,11 +866,9 @@ impl Database {
     pub fn get_elder_count(&self) -> GhostResult<u32> {
         self.with_connection(|conn| {
             let count: u32 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM nodes WHERE is_elder = 1",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT COUNT(*) FROM nodes WHERE is_elder = 1", [], |row| {
+                    row.get(0)
+                })
                 .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(count)
         })
@@ -1040,7 +1039,11 @@ impl Database {
     }
 
     /// Update node's payout address
-    pub fn update_node_payout_address(&self, node_id: &str, payout_address: &str) -> GhostResult<()> {
+    pub fn update_node_payout_address(
+        &self,
+        node_id: &str,
+        payout_address: &str,
+    ) -> GhostResult<()> {
         self.with_connection(|conn| {
             conn.execute(
                 "UPDATE nodes SET payout_address = ?1 WHERE node_id = ?2",
@@ -1207,11 +1210,9 @@ impl Database {
     pub fn kv_get(&self, key: &str) -> GhostResult<Option<String>> {
         self.with_connection(|conn| {
             let value: Option<String> = conn
-                .query_row(
-                    "SELECT value FROM kv_store WHERE key = ?1",
-                    [key],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT value FROM kv_store WHERE key = ?1", [key], |row| {
+                    row.get(0)
+                })
                 .optional()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(value)
@@ -1309,7 +1310,10 @@ impl Database {
     }
 
     /// Get all Ghost Locks for an owner
-    pub fn get_ghost_locks_by_owner(&self, owner_ghost_id: &str) -> GhostResult<Vec<GhostLockRecord>> {
+    pub fn get_ghost_locks_by_owner(
+        &self,
+        owner_ghost_id: &str,
+    ) -> GhostResult<Vec<GhostLockRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -1333,7 +1337,10 @@ impl Database {
     }
 
     /// Get active Ghost Locks for an owner
-    pub fn get_active_ghost_locks(&self, owner_ghost_id: &str) -> GhostResult<Vec<GhostLockRecord>> {
+    pub fn get_active_ghost_locks(
+        &self,
+        owner_ghost_id: &str,
+    ) -> GhostResult<Vec<GhostLockRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -1433,7 +1440,11 @@ impl Database {
     }
 
     /// Update Ghost Lock next jump height
-    pub fn update_ghost_lock_jump_height(&self, lock_id: &str, next_jump_height: u32) -> GhostResult<()> {
+    pub fn update_ghost_lock_jump_height(
+        &self,
+        lock_id: &str,
+        next_jump_height: u32,
+    ) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
         self.with_connection(|conn| {
             conn.execute(
@@ -1708,7 +1719,11 @@ impl Database {
     }
 
     /// Update Wraith round status
-    pub fn update_wraith_round_status(&self, round_id: &str, status: WraithStatus) -> GhostResult<()> {
+    pub fn update_wraith_round_status(
+        &self,
+        round_id: &str,
+        status: WraithStatus,
+    ) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
         self.with_connection(|conn| {
             conn.execute(
@@ -1777,7 +1792,10 @@ impl Database {
     }
 
     /// Get a reconciliation batch by ID
-    pub fn get_reconciliation_batch(&self, batch_id: &str) -> GhostResult<Option<ReconciliationRecord>> {
+    pub fn get_reconciliation_batch(
+        &self,
+        batch_id: &str,
+    ) -> GhostResult<Option<ReconciliationRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -1865,7 +1883,8 @@ fn reconciliation_from_row(row: &rusqlite::Row) -> rusqlite::Result<Reconciliati
         l1_txid: row.get(5)?,
         l1_block_height: row.get(6)?,
         dispute_deadline: row.get(7)?,
-        status: ReconciliationStatus::from_str(&status_str).unwrap_or(ReconciliationStatus::Pending),
+        status: ReconciliationStatus::from_str(&status_str)
+            .unwrap_or(ReconciliationStatus::Pending),
         created_at: row.get(9)?,
         finalized_at: row.get(10)?,
     })
@@ -2195,7 +2214,8 @@ fn payout_from_row(row: &rusqlite::Row) -> rusqlite::Result<PayoutRecord> {
         id: Some(row.get(0)?),
         round_id: row.get(1)?,
         recipient_id: row.get(2)?,
-        recipient_type: RecipientType::from_str(&recipient_type_str).unwrap_or(RecipientType::Miner),
+        recipient_type: RecipientType::from_str(&recipient_type_str)
+            .unwrap_or(RecipientType::Miner),
         address: row.get(4)?,
         amount_sats: row.get(5)?,
         txid: row.get(6)?,
@@ -2319,7 +2339,8 @@ mod tests {
         assert_eq!(fetched.state, GhostLockState::Pending);
 
         // Update funding
-        db.update_ghost_lock_funding("lock123", "txid123", 0).unwrap();
+        db.update_ghost_lock_funding("lock123", "txid123", 0)
+            .unwrap();
         let fetched = db.get_ghost_lock("lock123").unwrap().unwrap();
         assert_eq!(fetched.state, GhostLockState::Active);
         assert_eq!(fetched.funding_txid, Some("txid123".to_string()));
@@ -2393,7 +2414,8 @@ mod tests {
         let fetched = db.get_wraith_round("wraith123").unwrap().unwrap();
         assert_eq!(fetched.phase, WraithPhase::Registration);
 
-        db.update_wraith_round_phase("wraith123", WraithPhase::Split).unwrap();
+        db.update_wraith_round_phase("wraith123", WraithPhase::Split)
+            .unwrap();
         let fetched = db.get_wraith_round("wraith123").unwrap().unwrap();
         assert_eq!(fetched.phase, WraithPhase::Split);
 
@@ -2425,7 +2447,8 @@ mod tests {
         let fetched = db.get_reconciliation_batch("batch123").unwrap().unwrap();
         assert_eq!(fetched.participant_count, 10);
 
-        db.update_reconciliation_l1_submitted("batch123", "txid456", 800100, 800244).unwrap();
+        db.update_reconciliation_l1_submitted("batch123", "txid456", 800100, 800244)
+            .unwrap();
         let fetched = db.get_reconciliation_batch("batch123").unwrap().unwrap();
         assert_eq!(fetched.status, ReconciliationStatus::Submitted);
         assert_eq!(fetched.l1_txid, Some("txid456".to_string()));

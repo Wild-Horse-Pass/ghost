@@ -202,7 +202,9 @@ fn byte_to_network(byte: u8) -> WalletResult<Network> {
         1 => Ok(Network::Testnet),
         2 => Ok(Network::Signet),
         3 => Ok(Network::Regtest),
-        _ => Err(LightWalletError::KeyDerivation("Invalid network byte".to_string())),
+        _ => Err(LightWalletError::KeyDerivation(
+            "Invalid network byte".to_string(),
+        )),
     }
 }
 
@@ -236,7 +238,10 @@ mod tests {
         let imported = MasterKey::from_export(export).unwrap();
 
         assert_eq!(key.ghost_id().to_string(), imported.ghost_id().to_string());
-        assert_eq!(key.wallet_id().to_string(), imported.wallet_id().to_string());
+        assert_eq!(
+            key.wallet_id().to_string(),
+            imported.wallet_id().to_string()
+        );
     }
 
     #[test]

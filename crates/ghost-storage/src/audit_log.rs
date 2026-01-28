@@ -186,7 +186,10 @@ impl AuditLog {
                 Ok(hash) => Ok(hash),
                 Err(rusqlite::Error::QueryReturnedNoRows) => {
                     // Genesis hash for empty log
-                    Ok("0000000000000000000000000000000000000000000000000000000000000000".to_string())
+                    Ok(
+                        "0000000000000000000000000000000000000000000000000000000000000000"
+                            .to_string(),
+                    )
                 }
                 Err(e) => Err(GhostError::Database(e.to_string())),
             }
@@ -276,8 +279,8 @@ impl AuditLog {
         target: Option<&str>,
         details: impl Serialize,
     ) -> GhostResult<i64> {
-        let details_json = serde_json::to_value(details)
-            .map_err(|e| GhostError::Serialization(e.to_string()))?;
+        let details_json =
+            serde_json::to_value(details).map_err(|e| GhostError::Serialization(e.to_string()))?;
         self.append(event_type, actor, target, details_json)
     }
 
@@ -291,21 +294,22 @@ impl AuditLog {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            let mut expected_prev_hash = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+            let mut expected_prev_hash =
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string();
             let mut total_entries = 0u64;
             let mut broken_at: Option<i64> = None;
 
             let rows = stmt
                 .query_map([], |row| {
                     Ok((
-                        row.get::<_, i64>(0)?,       // id
-                        row.get::<_, i64>(1)?,       // timestamp
-                        row.get::<_, String>(2)?,    // event_type
-                        row.get::<_, String>(3)?,    // actor
+                        row.get::<_, i64>(0)?,            // id
+                        row.get::<_, i64>(1)?,            // timestamp
+                        row.get::<_, String>(2)?,         // event_type
+                        row.get::<_, String>(3)?,         // actor
                         row.get::<_, Option<String>>(4)?, // target
-                        row.get::<_, String>(5)?,    // details
-                        row.get::<_, String>(6)?,    // prev_hash
-                        row.get::<_, String>(7)?,    // entry_hash
+                        row.get::<_, String>(5)?,         // details
+                        row.get::<_, String>(6)?,         // prev_hash
+                        row.get::<_, String>(7)?,         // entry_hash
                     ))
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -385,8 +389,11 @@ impl AuditLog {
                     Ok(AuditEntry {
                         id: row.get(0)?,
                         timestamp: row.get(1)?,
-                        event_type: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(2)?))
-                            .unwrap_or(AuditEventType::ManualIntervention),
+                        event_type: serde_json::from_str(&format!(
+                            "\"{}\"",
+                            row.get::<_, String>(2)?
+                        ))
+                        .unwrap_or(AuditEventType::ManualIntervention),
                         actor: row.get(3)?,
                         target: row.get(4)?,
                         details: serde_json::from_str(&row.get::<_, String>(5)?)
@@ -460,8 +467,11 @@ impl AuditLog {
                     Ok(AuditEntry {
                         id: row.get(0)?,
                         timestamp: row.get(1)?,
-                        event_type: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(2)?))
-                            .unwrap_or(AuditEventType::ManualIntervention),
+                        event_type: serde_json::from_str(&format!(
+                            "\"{}\"",
+                            row.get::<_, String>(2)?
+                        ))
+                        .unwrap_or(AuditEventType::ManualIntervention),
                         actor: row.get(3)?,
                         target: row.get(4)?,
                         details: serde_json::from_str(&row.get::<_, String>(5)?)

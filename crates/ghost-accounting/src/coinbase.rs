@@ -23,8 +23,8 @@
 //! Coinbase transaction construction
 
 use bitcoin::{
-    absolute::LockTime, transaction::Version, Amount, OutPoint, ScriptBuf, Sequence,
-    Transaction, TxIn, TxOut, Witness,
+    absolute::LockTime, transaction::Version, Amount, OutPoint, ScriptBuf, Sequence, Transaction,
+    TxIn, TxOut, Witness,
 };
 use tracing::info;
 
@@ -190,7 +190,9 @@ impl CoinbaseBuilder {
         // First, try to parse as UTF-8 address string
         if let Ok(addr_str) = std::str::from_utf8(address) {
             // Try to parse as Bitcoin address
-            if let Ok(addr) = addr_str.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>() {
+            if let Ok(addr) =
+                addr_str.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+            {
                 // Return the script pubkey without network validation
                 // (validation happens at transaction broadcast time)
                 return Ok(addr.assume_checked().script_pubkey());
@@ -229,8 +231,14 @@ impl CoinbaseAllocation {
     /// Create from payout result
     pub fn from_payout_result(payouts: &PayoutResult) -> Self {
         Self {
-            treasury: payouts.treasury_entry.as_ref().map(|e| (e.address.clone(), e.amount)),
-            tx_fees: payouts.tx_fee_entry.as_ref().map(|e| (e.address.clone(), e.amount)),
+            treasury: payouts
+                .treasury_entry
+                .as_ref()
+                .map(|e| (e.address.clone(), e.amount)),
+            tx_fees: payouts
+                .tx_fee_entry
+                .as_ref()
+                .map(|e| (e.address.clone(), e.amount)),
             node_rewards: payouts
                 .node_payouts
                 .iter()

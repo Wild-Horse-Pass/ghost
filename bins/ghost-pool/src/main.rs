@@ -46,9 +46,9 @@ use ghost_common::identity::NodeIdentity;
 use ghost_common::rpc::BitcoinRpc;
 use ghost_common::types::{ConsensusResult, NodeCapabilities};
 use ghost_common::zmq::{ZmqConfig, ZmqSubscriber};
+use ghost_consensus::health_handler::HealthPingHandler;
 use ghost_consensus::mesh::{MeshConfig, MeshNetwork};
 use ghost_consensus::message::MessageType;
-use ghost_consensus::health_handler::HealthPingHandler;
 use ghost_consensus::vote_handler::{BroadcastFn, ExecuteFn, VoteHandler};
 use ghost_consensus::voting::VotingManager;
 use ghost_policy::PolicyProfile;
@@ -58,7 +58,9 @@ use ghost_verification::{start_server, RpcArchiveHandler, VerificationState};
 use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler};
 use ghost_pool::reorg::{ReorgConfig, ReorgHandler};
 use ghost_pool::round::{RoundConfig, RoundEvent, RoundManager};
-use ghost_pool::stratum::{JobNotification, StratumConfig, StratumEvent, StratumServer, VardiffController};
+use ghost_pool::stratum::{
+    JobNotification, StratumConfig, StratumEvent, StratumServer, VardiffController,
+};
 use ghost_pool::template::{TemplateConfig, TemplateEvent, TemplateProcessor};
 
 /// Ghost Pool - Decentralized Bitcoin Mining Pool
@@ -147,8 +149,7 @@ async fn main() -> Result<()> {
         .with_line_number(false)
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set tracing subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
     // Expand data directory
     let data_dir = expand_path(&args.data_dir)?;
@@ -183,7 +184,10 @@ async fn main() -> Result<()> {
     }
 
     info!("╔══════════════════════════════════════════════════════════════╗");
-    info!("║              Ghost Pool v{}                           ║", env!("CARGO_PKG_VERSION"));
+    info!(
+        "║              Ghost Pool v{}                           ║",
+        env!("CARGO_PKG_VERSION")
+    );
     info!("║          Decentralized Bitcoin Mining Pool                   ║");
     info!("╚══════════════════════════════════════════════════════════════╝");
     info!("Node ID: {}", identity.node_id_short());
@@ -211,7 +215,10 @@ async fn main() -> Result<()> {
         ));
     }
 
-    info!("Configuration validated ({} warning(s))", validation.warnings.len());
+    info!(
+        "Configuration validated ({} warning(s))",
+        validation.warnings.len()
+    );
 
     // Override config with CLI args
     let rpc_host = args.rpc_host.as_ref().unwrap_or(&config.bitcoin.rpc_host);
@@ -254,7 +261,11 @@ async fn main() -> Result<()> {
         ghost_common::config::PolicyProfile::FullOpen => PolicyProfile::full_open(),
         ghost_common::config::PolicyProfile::Custom => PolicyProfile::permissive(),
     };
-    info!("Policy profile: {} (allows up to T{})", policy.name, policy.highest_allowed_tier().map(|t| t as u8).unwrap_or(0));
+    info!(
+        "Policy profile: {} (allows up to T{})",
+        policy.name,
+        policy.highest_allowed_tier().map(|t| t as u8).unwrap_or(0)
+    );
 
     // Setup capabilities - initially with elder_status = false
     // We'll update after registering with the database
@@ -262,7 +273,10 @@ async fn main() -> Result<()> {
         archive_mode: config.storage.archive_mode,
         ghost_pay: config.ghost_pay.is_some(),
         public_mining: config.network.public_mining,
-        bitcoin_pure: matches!(config.policy.profile, ghost_common::config::PolicyProfile::BitcoinPure),
+        bitcoin_pure: matches!(
+            config.policy.profile,
+            ghost_common::config::PolicyProfile::BitcoinPure
+        ),
         elder_status: false,
     };
 
@@ -273,22 +287,34 @@ async fn main() -> Result<()> {
     let display_name = config.identity.display_name.as_deref();
     let capabilities_str = format!(
         "archive:{},ghost_pay:{},public_mining:{},bitcoin_pure:{}",
-        capabilities.archive_mode, capabilities.ghost_pay,
-        capabilities.public_mining, capabilities.bitcoin_pure
+        capabilities.archive_mode,
+        capabilities.ghost_pay,
+        capabilities.public_mining,
+        capabilities.bitcoin_pure
     );
 
-    match db.register_node_with_elder_check(&node_id_hex, public_address, display_name, &capabilities_str) {
+    match db.register_node_with_elder_check(
+        &node_id_hex,
+        public_address,
+        display_name,
+        &capabilities_str,
+    ) {
         Ok((is_elder, elder_order)) => {
             capabilities.elder_status = is_elder;
             if is_elder {
                 info!("Node registered as Elder #{}", elder_order.unwrap_or(0));
             } else {
-                info!("Node registered (non-elder, {} elders already exist)",
-                    db.get_elder_count().unwrap_or(0));
+                info!(
+                    "Node registered (non-elder, {} elders already exist)",
+                    db.get_elder_count().unwrap_or(0)
+                );
             }
         }
         Err(e) => {
-            warn!("Failed to register node for elder check: {} - defaulting to non-elder", e);
+            warn!(
+                "Failed to register node for elder check: {} - defaulting to non-elder",
+                e
+            );
         }
     }
 
@@ -299,10 +325,7 @@ async fn main() -> Result<()> {
 
     // Initialize round manager
     let round_config = RoundConfig::default();
-    let round_manager = Arc::new(RoundManager::new(
-        identity.node_id(),
-        round_config,
-    ));
+    let round_manager = Arc::new(RoundManager::new(identity.node_id(), round_config));
 
     // Initialize template processor with treasury and pool payout addresses from config
     // Pool payout address defaults to treasury address if not explicitly configured separately
@@ -332,14 +355,15 @@ async fn main() -> Result<()> {
 
     // Initialize P2P mesh
     let mesh_config = MeshConfig {
-        public_address: config.network.public_address.clone().unwrap_or_else(|| "127.0.0.1".to_string()),
+        public_address: config
+            .network
+            .public_address
+            .clone()
+            .unwrap_or_else(|| "127.0.0.1".to_string()),
         ports: config.network.p2p.clone(),
         ..Default::default()
     };
-    let mesh = Arc::new(MeshNetwork::new(
-        Arc::clone(&identity),
-        mesh_config,
-    ));
+    let mesh = Arc::new(MeshNetwork::new(Arc::clone(&identity), mesh_config));
 
     // Initialize consensus voting
     let voting_manager = Arc::new(VotingManager::new(100)); // 100 max sessions
@@ -357,7 +381,11 @@ async fn main() -> Result<()> {
     let tp_for_execute = Arc::clone(&template_processor);
     let execute_fn: ExecuteFn = Arc::new(move |result: ConsensusResult| {
         match result {
-            ConsensusResult::Approved { proposal_hash, approval_count, total_nodes } => {
+            ConsensusResult::Approved {
+                proposal_hash,
+                approval_count,
+                total_nodes,
+            } => {
                 info!(
                     hash = %hex::encode(&proposal_hash[..8]),
                     approvals = approval_count,
@@ -368,7 +396,12 @@ async fn main() -> Result<()> {
                 // The template processor will use this when building the next block
                 tp_for_execute.set_approved_payout(proposal_hash);
             }
-            ConsensusResult::Rejected { proposal_hash, rejection_count, reason, .. } => {
+            ConsensusResult::Rejected {
+                proposal_hash,
+                rejection_count,
+                reason,
+                ..
+            } => {
                 warn!(
                     hash = %hex::encode(&proposal_hash[..8]),
                     rejections = rejection_count,
@@ -376,7 +409,12 @@ async fn main() -> Result<()> {
                     "Payout consensus rejected"
                 );
             }
-            ConsensusResult::Timeout { proposal_hash, approvals, rejections, .. } => {
+            ConsensusResult::Timeout {
+                proposal_hash,
+                approvals,
+                rejections,
+                ..
+            } => {
                 warn!(
                     hash = %hex::encode(&proposal_hash[..8]),
                     approvals = approvals,
@@ -395,7 +433,7 @@ async fn main() -> Result<()> {
     let vote_handler = Arc::new(
         VoteHandler::new(Arc::clone(&identity), Arc::clone(&voting_manager))
             .with_broadcaster(broadcast_fn)
-            .with_executor(execute_fn)
+            .with_executor(execute_fn),
     );
 
     // Populate elders from database for BFT voting
@@ -411,7 +449,10 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            info!("Registered {} elders from database for BFT voting", elders.len());
+            info!(
+                "Registered {} elders from database for BFT voting",
+                elders.len()
+            );
         }
         Err(e) => {
             warn!("Failed to load elders for voting: {}", e);
@@ -422,10 +463,15 @@ async fn main() -> Result<()> {
     // (elder_status is just a capability flag indicating uptime/reliability, not a voting requirement)
     vote_handler.add_elder(identity.node_id());
     info!("Registered self as BFT voter");
-    info!("Initial voters for BFT: {} (peer discovery will add more from HealthPing)", vote_handler.elder_count());
+    info!(
+        "Initial voters for BFT: {} (peer discovery will add more from HealthPing)",
+        vote_handler.elder_count()
+    );
 
     // Register vote handler with mesh for incoming vote messages
-    mesh.register_handler(Arc::clone(&vote_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
+    mesh.register_handler(
+        Arc::clone(&vote_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>
+    );
 
     // Create and register health ping handler for peer tracking and voter discovery
     // ALL active nodes participate in BFT consensus - the callback registers discovered nodes as voters
@@ -435,30 +481,40 @@ async fn main() -> Result<()> {
     });
     let health_handler = Arc::new(
         HealthPingHandler::new(Arc::clone(mesh.peers()), Some(Arc::clone(&db)))
-            .with_elder_callback(voter_callback)
+            .with_elder_callback(voter_callback),
     );
-    mesh.register_handler(Arc::clone(&health_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
+    mesh.register_handler(
+        Arc::clone(&health_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>
+    );
 
     // Create and register discovery handler for peer gossip
     // This enables nodes to discover peers beyond just seed nodes
-    let public_address = config.network.public_address.clone().unwrap_or_else(|| "".to_string());
+    let public_address = config
+        .network
+        .public_address
+        .clone()
+        .unwrap_or_else(|| "".to_string());
     let mesh_for_connect = Arc::clone(&mesh);
-    let connect_callback: ghost_consensus::discovery_handler::ConnectCallback = Arc::new(move |addr| {
-        let mesh_clone = Arc::clone(&mesh_for_connect);
-        tokio::spawn(async move {
-            if let Err(e) = mesh_clone.connect_peer(&addr).await {
-                tracing::debug!(addr = %addr, error = %e, "Failed to connect to discovered peer");
-            }
-        });
-    });
+    let connect_callback: ghost_consensus::discovery_handler::ConnectCallback = Arc::new(
+        move |addr| {
+            let mesh_clone = Arc::clone(&mesh_for_connect);
+            tokio::spawn(async move {
+                if let Err(e) = mesh_clone.connect_peer(&addr).await {
+                    tracing::debug!(addr = %addr, error = %e, "Failed to connect to discovered peer");
+                }
+            });
+        },
+    );
     let discovery_handler = Arc::new(
         ghost_consensus::DiscoveryHandler::new(
             identity.node_id(),
             public_address.clone(),
             Arc::clone(mesh.peers()),
-        ).with_connect_callback(connect_callback)
+        )
+        .with_connect_callback(connect_callback),
     );
-    mesh.register_handler(Arc::clone(&discovery_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
+    mesh.register_handler(Arc::clone(&discovery_handler)
+        as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
 
     // Create shutdown channel
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -529,14 +585,12 @@ async fn main() -> Result<()> {
             block_hash: [0u8; 32],
             block_height: height.max(800_000), // Ensure valid height
             proposer: identity_for_test.node_id(),
-            miner_payouts: vec![
-                PayoutEntry {
-                    address: b"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_vec(), // Signet address
-                    amount: 100_000_000, // 1 BTC test
-                    recipient_id: [1u8; 32],
-                    payout_type: PayoutType::Mining,
-                },
-            ],
+            miner_payouts: vec![PayoutEntry {
+                address: b"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_vec(), // Signet address
+                amount: 100_000_000,                                             // 1 BTC test
+                recipient_id: [1u8; 32],
+                payout_type: PayoutType::Mining,
+            }],
             node_payouts: vec![],
             treasury_amount: 1_000_000, // 0.01 BTC
             tx_fees: 500_000,
@@ -636,7 +690,10 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         ss_vardiff.run_vardiff_loop(vc).await;
     });
-    info!("Vardiff controller started (target {}s between shares)", vardiff_target_secs);
+    info!(
+        "Vardiff controller started (target {}s between shares)",
+        vardiff_target_secs
+    );
 
     // Start P2P mesh
     let m = Arc::clone(&mesh);
@@ -679,10 +736,10 @@ async fn main() -> Result<()> {
             let discovery_msg = discovery_for_broadcast.get_discovery_message();
 
             // Broadcast it
-            match mesh_for_discovery.broadcast_message(
-                ghost_consensus::MessageType::Discovery,
-                &discovery_msg,
-            ).await {
+            match mesh_for_discovery
+                .broadcast_message(ghost_consensus::MessageType::Discovery, &discovery_msg)
+                .await
+            {
                 Ok(sent) => {
                     if sent > 0 {
                         tracing::debug!(
@@ -787,7 +844,11 @@ async fn main() -> Result<()> {
                         ss_notify.notify_new_job(job).await;
                     }
                 }
-                TemplateEvent::TransactionsFiltered { original_count, filtered_count, removed_fees } => {
+                TemplateEvent::TransactionsFiltered {
+                    original_count,
+                    filtered_count,
+                    removed_fees,
+                } => {
                     info!(
                         original = original_count,
                         filtered = filtered_count,
@@ -851,7 +912,11 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         while let Ok(event) = round_events.recv().await {
             match event {
-                RoundEvent::BlockFound { round_id, block_hash, miner_id } => {
+                RoundEvent::BlockFound {
+                    round_id,
+                    block_hash,
+                    miner_id,
+                } => {
                     info!(
                         round = round_id,
                         hash = %hex::encode(&block_hash[..8]),
@@ -895,7 +960,11 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                RoundEvent::ShareSubmitted { round_id: _, miner_id: _, work: _ } => {
+                RoundEvent::ShareSubmitted {
+                    round_id: _,
+                    miner_id: _,
+                    work: _,
+                } => {
                     // Log periodically, not every share
                 }
                 _ => {}
@@ -921,7 +990,10 @@ async fn main() -> Result<()> {
                         miner_id: miner_id.clone(),
                     });
                 }
-                StratumEvent::BlockFound { miner_id, block_hash } => {
+                StratumEvent::BlockFound {
+                    miner_id,
+                    block_hash,
+                } => {
                     info!(miner = %miner_id, hash = %block_hash, "Block found by miner!");
                     ws_for_stratum.broadcast(ghost_verification::WsEvent::BlockFound {
                         height: 0, // Would need to get from round manager
@@ -929,7 +1001,12 @@ async fn main() -> Result<()> {
                         miner_id: miner_id.clone(),
                     });
                 }
-                StratumEvent::ShareSubmitted { miner_id, difficulty, accepted, .. } => {
+                StratumEvent::ShareSubmitted {
+                    miner_id,
+                    difficulty,
+                    accepted,
+                    ..
+                } => {
                     ws_for_stratum.broadcast(ghost_verification::WsEvent::ShareSubmitted {
                         miner_id: miner_id.clone(),
                         difficulty,

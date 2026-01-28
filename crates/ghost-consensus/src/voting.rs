@@ -393,7 +393,11 @@ impl VotingManager {
         }
 
         if count > 0 {
-            info!(round_id, sessions_cancelled = count, "Cancelled voting sessions due to reorg");
+            info!(
+                round_id,
+                sessions_cancelled = count,
+                "Cancelled voting sessions due to reorg"
+            );
         }
 
         count
@@ -440,13 +444,7 @@ mod tests {
             eligible.insert([i as u8; 32]);
         }
 
-        VotingSession::new(
-            1,
-            [0u8; 32],
-            VoteType::PayoutApproval,
-            eligible,
-            5000,
-        )
+        VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000)
     }
 
     #[test]

@@ -164,9 +164,11 @@ impl PolicyEngine {
 
         // Check specific feature restrictions
         if !self.profile.allow_inscriptions {
-            if classification.features.iter().any(|f| {
-                matches!(f, ghost_buds::DetectedFeature::InscriptionEnvelope)
-            }) {
+            if classification
+                .features
+                .iter()
+                .any(|f| matches!(f, ghost_buds::DetectedFeature::InscriptionEnvelope))
+            {
                 self.stats.rejected_inscription += 1;
                 return PolicyDecision::Reject {
                     reason: RejectionReason::InscriptionsNotAllowed,
@@ -176,9 +178,11 @@ impl PolicyEngine {
         }
 
         if !self.profile.allow_runes {
-            if classification.features.iter().any(|f| {
-                matches!(f, ghost_buds::DetectedFeature::RunesRunestone)
-            }) {
+            if classification
+                .features
+                .iter()
+                .any(|f| matches!(f, ghost_buds::DetectedFeature::RunesRunestone))
+            {
                 self.stats.rejected_runes += 1;
                 return PolicyDecision::Reject {
                     reason: RejectionReason::RunesNotAllowed,
@@ -188,9 +192,11 @@ impl PolicyEngine {
         }
 
         if !self.profile.allow_brc20 {
-            if classification.features.iter().any(|f| {
-                matches!(f, ghost_buds::DetectedFeature::Brc20Pattern)
-            }) {
+            if classification
+                .features
+                .iter()
+                .any(|f| matches!(f, ghost_buds::DetectedFeature::Brc20Pattern))
+            {
                 self.stats.rejected_brc20 += 1;
                 return PolicyDecision::Reject {
                     reason: RejectionReason::Brc20NotAllowed,
@@ -216,10 +222,7 @@ impl PolicyEngine {
 
     /// Filter a list of transactions
     pub fn filter<'a>(&mut self, transactions: &'a [Transaction]) -> Vec<&'a Transaction> {
-        transactions
-            .iter()
-            .filter(|tx| self.allows(tx))
-            .collect()
+        transactions.iter().filter(|tx| self.allows(tx)).collect()
     }
 
     /// Filter and sort by priority
@@ -420,9 +423,8 @@ impl PolicyStats {
 mod tests {
     use super::*;
     use bitcoin::{
-        absolute::LockTime, transaction::Version, Amount, ScriptBuf, Sequence,
-        TxIn, TxOut, Witness,
-        blockdata::script::Builder,
+        absolute::LockTime, blockdata::script::Builder, transaction::Version, Amount, ScriptBuf,
+        Sequence, TxIn, TxOut, Witness,
     };
 
     /// Create a P2WPKH script (OP_0 <20-byte-hash>)
@@ -458,9 +460,7 @@ mod tests {
     /// Create a non-coinbase outpoint
     fn non_coinbase_outpoint() -> bitcoin::OutPoint {
         use bitcoin::hashes::Hash;
-        let txid = bitcoin::Txid::from_raw_hash(
-            bitcoin::hashes::sha256d::Hash::hash(&[1u8])
-        );
+        let txid = bitcoin::Txid::from_raw_hash(bitcoin::hashes::sha256d::Hash::hash(&[1u8]));
         bitcoin::OutPoint { txid, vout: 0 }
     }
 

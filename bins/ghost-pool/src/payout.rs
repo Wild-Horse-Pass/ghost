@@ -33,9 +33,7 @@ use tracing::{debug, info, warn};
 
 use ghost_common::error::GhostResult;
 use ghost_common::identity::NodeIdentity;
-use ghost_common::types::{
-    NodeId, PayoutEntry, PayoutProposal, PayoutType, RoundId,
-};
+use ghost_common::types::{NodeId, PayoutEntry, PayoutProposal, PayoutType, RoundId};
 use ghost_consensus::vote_handler::VoteHandler;
 use ghost_storage::Database;
 
@@ -96,7 +94,11 @@ pub struct PayoutProposalCreator {
 
 impl PayoutProposalCreator {
     pub fn new(identity: Arc<NodeIdentity>, config: PayoutConfig, db: Arc<Database>) -> Self {
-        Self { identity, config, db }
+        Self {
+            identity,
+            config,
+            db,
+        }
     }
 
     /// Create a payout proposal from block found data
@@ -279,7 +281,10 @@ impl PayoutProposalCreator {
         }
 
         // Fallback: return empty (will be filtered out by proposal validator)
-        debug!(miner_id, "Miner payout address not found - will be filtered from proposal");
+        debug!(
+            miner_id,
+            "Miner payout address not found - will be filtered from proposal"
+        );
         Ok(Vec::new())
     }
 
@@ -317,7 +322,10 @@ impl PayoutHandler {
         vote_handler: Arc<VoteHandler>,
     ) -> Self {
         let creator = PayoutProposalCreator::new(identity, config, db);
-        Self { creator, vote_handler }
+        Self {
+            creator,
+            vote_handler,
+        }
     }
 
     /// Handle a block found event by creating and submitting a payout proposal
@@ -375,14 +383,8 @@ mod tests {
             winning_miner_id: "miner1".to_string(),
             subsidy_sats: 625_000_000, // 6.25 BTC
             tx_fees_sats: 10_000_000,  // 0.1 BTC
-            miner_work: vec![
-                ("miner1".to_string(), 100.0),
-                ("miner2".to_string(), 50.0),
-            ],
-            node_shares: vec![
-                ([1u8; 32], 10),
-                ([2u8; 32], 5),
-            ],
+            miner_work: vec![("miner1".to_string(), 100.0), ("miner2".to_string(), 50.0)],
+            node_shares: vec![([1u8; 32], 10), ([2u8; 32], 5)],
         };
 
         assert_eq!(data.round_id, 1);

@@ -70,7 +70,11 @@ pub enum ReconciliationError {
     InsufficientSettlements { have: usize, need: usize },
 
     #[error("Insufficient funds for {ghost_id}: required {required}, available {available}")]
-    InsufficientFunds { ghost_id: String, required: u64, available: u64 },
+    InsufficientFunds {
+        ghost_id: String,
+        required: u64,
+        available: u64,
+    },
 
     #[error("Invalid state: {0}")]
     InvalidState(String),

@@ -233,8 +233,8 @@ impl ProposalCrypto {
         let key = generate_random_key();
 
         // Encrypt content with AES-256-GCM
-        let plaintext = serde_json::to_vec(content)
-            .map_err(|e| ProposalError::Serialization(e.to_string()))?;
+        let plaintext =
+            serde_json::to_vec(content).map_err(|e| ProposalError::Serialization(e.to_string()))?;
 
         let nonce = generate_random_nonce();
         let ciphertext = aes_gcm_encrypt(&key, &nonce, &plaintext)?;
@@ -245,17 +245,24 @@ impl ProposalCrypto {
         // Map shares to nodes
         let mut node_shares = HashMap::new();
         for (i, node_id) in voting_nodes.iter().enumerate() {
-            node_shares.insert(*node_id, SecretShare {
-                index: shares[i].0,
-                value: shares[i].1,
-                node_id: *node_id,
-            });
+            node_shares.insert(
+                *node_id,
+                SecretShare {
+                    index: shares[i].0,
+                    value: shares[i].1,
+                    node_id: *node_id,
+                },
+            );
         }
 
         let content_hash = content.content_hash();
 
         let proposal = EncryptedProposal {
-            id: EncryptedProposal::calculate_id(&ciphertext, content.round_id, content.block_height),
+            id: EncryptedProposal::calculate_id(
+                &ciphertext,
+                content.round_id,
+                content.block_height,
+            ),
             round_id: content.round_id,
             block_height: content.block_height,
             ciphertext,
@@ -312,7 +319,8 @@ impl ProposalCrypto {
 
         let mut pending = self.pending.write();
 
-        let (proposal, shares) = pending.get_mut(proposal_id)
+        let (proposal, shares) = pending
+            .get_mut(proposal_id)
             .ok_or_else(|| ProposalError::NotFound(hex::encode(&proposal_id[..8])))?;
 
         // Check if share already submitted from this node
@@ -388,9 +396,7 @@ impl ProposalCrypto {
         }
 
         // Reconstruct key from shares
-        let share_data: Vec<(u8, [u8; 32])> = shares.iter()
-            .map(|s| (s.index, s.value))
-            .collect();
+        let share_data: Vec<(u8, [u8; 32])> = shares.iter().map(|s| (s.index, s.value)).collect();
 
         let key = shamir_combine(&share_data, proposal.threshold as usize)?;
 
@@ -405,7 +411,7 @@ impl ProposalCrypto {
         let actual_hash = content.content_hash();
         if actual_hash != proposal.content_hash {
             return Err(ProposalError::Decryption(
-                "Content hash mismatch - proposal may be corrupted".into()
+                "Content hash mismatch - proposal may be corrupted".into(),
             ));
         }
 
@@ -424,7 +430,9 @@ impl ProposalCrypto {
 
     /// Get pending proposal status
     pub fn get_pending_status(&self, proposal_id: &[u8; 32]) -> Option<(u8, u8)> {
-        self.pending.read().get(proposal_id)
+        self.pending
+            .read()
+            .get(proposal_id)
             .map(|(p, s)| (s.len() as u8, p.threshold))
     }
 
@@ -475,34 +483,44 @@ fn generate_random_nonce() -> [u8; 12] {
 }
 
 /// AES-256-GCM encryption
-fn aes_gcm_encrypt(key: &[u8; 32], nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>, ProposalError> {
+fn aes_gcm_encrypt(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, ProposalError> {
     use aes_gcm::{
         aead::{Aead, KeyInit},
         Aes256Gcm, Nonce,
     };
 
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| ProposalError::Encryption(e.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|e| ProposalError::Encryption(e.to_string()))?;
 
     let nonce = Nonce::from_slice(nonce);
 
-    cipher.encrypt(nonce, plaintext)
+    cipher
+        .encrypt(nonce, plaintext)
         .map_err(|e| ProposalError::Encryption(e.to_string()))
 }
 
 /// AES-256-GCM decryption
-fn aes_gcm_decrypt(key: &[u8; 32], nonce: &[u8; 12], ciphertext: &[u8]) -> Result<Vec<u8>, ProposalError> {
+fn aes_gcm_decrypt(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, ProposalError> {
     use aes_gcm::{
         aead::{Aead, KeyInit},
         Aes256Gcm, Nonce,
     };
 
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| ProposalError::Decryption(e.to_string()))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|e| ProposalError::Decryption(e.to_string()))?;
 
     let nonce = Nonce::from_slice(nonce);
 
-    cipher.decrypt(nonce, ciphertext)
+    cipher
+        .decrypt(nonce, ciphertext)
         .map_err(|e| ProposalError::Decryption(e.to_string()))
 }
 
@@ -582,7 +600,11 @@ mod gf256 {
 }
 
 /// Split a 256-bit secret into n shares with threshold k
-fn shamir_split(secret: &[u8; 32], k: usize, n: usize) -> Result<Vec<(u8, [u8; 32])>, ProposalError> {
+fn shamir_split(
+    secret: &[u8; 32],
+    k: usize,
+    n: usize,
+) -> Result<Vec<(u8, [u8; 32])>, ProposalError> {
     if k < 2 || k > n || n > MAX_SHARES {
         return Err(ProposalError::InvalidThreshold(format!(
             "Invalid k={}, n={}",
@@ -630,9 +652,7 @@ fn shamir_combine(shares: &[(u8, [u8; 32])], k: usize) -> Result<[u8; 32], Propo
 
     // Reconstruct each byte independently
     for byte_idx in 0..32 {
-        let points: Vec<(u8, u8)> = shares.iter()
-            .map(|(x, y)| (*x, y[byte_idx]))
-            .collect();
+        let points: Vec<(u8, u8)> = shares.iter().map(|(x, y)| (*x, y[byte_idx])).collect();
 
         secret[byte_idx] = gf256::lagrange_interpolate(&points);
     }
@@ -666,10 +686,9 @@ mod tests {
     #[test]
     fn test_shamir_split_combine() {
         let secret: [u8; 32] = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
         ];
 
         // 3-of-5 sharing
@@ -752,25 +771,25 @@ mod tests {
         let content = ProposalContent {
             round_id: 100,
             block_height: 800000,
-            payouts: vec![
-                PayoutEntry {
-                    address: vec![0x00, 0x14, 0xab, 0xcd],
-                    amount: 500000,
-                    recipient_id: [1u8; 32],
-                    payout_type: ghost_common::types::PayoutType::Mining,
-                },
-            ],
+            payouts: vec![PayoutEntry {
+                address: vec![0x00, 0x14, 0xab, 0xcd],
+                amount: 500000,
+                recipient_id: [1u8; 32],
+                payout_type: ghost_common::types::PayoutType::Mining,
+            }],
             total_sats: 1000000,
             treasury_address: vec![0x00, 0x14, 0xef],
             padding: vec![],
         };
 
         // Create 5 voting nodes
-        let nodes: Vec<NodeId> = (1..=5).map(|i| {
-            let mut id = [0u8; 32];
-            id[0] = i;
-            id
-        }).collect();
+        let nodes: Vec<NodeId> = (1..=5)
+            .map(|i| {
+                let mut id = [0u8; 32];
+                id[0] = i;
+                id
+            })
+            .collect();
 
         // Encrypt with 67% threshold (4 of 5)
         let (proposal, shares) = crypto.encrypt_proposal(&content, &nodes, 67).unwrap();
@@ -817,11 +836,13 @@ mod tests {
             padding: vec![],
         };
 
-        let nodes: Vec<NodeId> = (1..=5).map(|i| {
-            let mut id = [0u8; 32];
-            id[0] = i;
-            id
-        }).collect();
+        let nodes: Vec<NodeId> = (1..=5)
+            .map(|i| {
+                let mut id = [0u8; 32];
+                id[0] = i;
+                id
+            })
+            .collect();
 
         let (proposal, shares) = crypto.encrypt_proposal(&content, &nodes, 60).unwrap();
         crypto.register_proposal(proposal.clone()).unwrap();

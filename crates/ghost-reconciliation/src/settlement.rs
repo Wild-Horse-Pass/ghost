@@ -23,7 +23,7 @@
 //! Settlement types and management
 
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 use crate::error::{ReconciliationError, ReconciliationResult};
 use crate::MIN_SETTLEMENT_SATS;
@@ -50,9 +50,7 @@ impl SettlementState {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            SettlementState::Finalized
-                | SettlementState::Rejected
-                | SettlementState::Cancelled
+            SettlementState::Finalized | SettlementState::Rejected | SettlementState::Cancelled
         )
     }
 
@@ -282,9 +280,7 @@ impl Settlement {
     /// Mark as rejected
     pub fn mark_rejected(&mut self) -> ReconciliationResult<()> {
         if self.state == SettlementState::Finalized {
-            return Err(ReconciliationError::AlreadyFinalized {
-                id: self.id_hex(),
-            });
+            return Err(ReconciliationError::AlreadyFinalized { id: self.id_hex() });
         }
 
         self.state = SettlementState::Rejected;
@@ -329,7 +325,8 @@ mod tests {
             test_lock_id(),
             "bc1qtest".to_string(),
             100_000,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(settlement.state(), SettlementState::Pending);
         assert_eq!(settlement.amount_sats(), 100_000);
@@ -357,7 +354,8 @@ mod tests {
             test_lock_id(),
             "bc1qtest".to_string(),
             100_000,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Pending -> Batched
         settlement.mark_batched([0u8; 32], vec![]).unwrap();
@@ -379,7 +377,8 @@ mod tests {
             test_lock_id(),
             "bc1qtest".to_string(),
             100_000,
-        ).unwrap();
+        )
+        .unwrap();
 
         settlement.cancel().unwrap();
         assert_eq!(settlement.state(), SettlementState::Cancelled);

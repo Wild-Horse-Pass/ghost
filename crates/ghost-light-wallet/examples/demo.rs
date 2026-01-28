@@ -1,7 +1,7 @@
 //! Ghost Light Wallet Demo
 
-use ghost_light_wallet::{LightWallet, WalletConfig};
 use bitcoin::Network;
+use ghost_light_wallet::{LightWallet, WalletConfig};
 
 fn main() {
     println!("╔══════════════════════════════════════════════════════════════╗");

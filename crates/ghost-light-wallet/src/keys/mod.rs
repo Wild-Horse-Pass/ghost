@@ -26,4 +26,4 @@ pub mod master;
 mod storage;
 
 pub use master::{MasterKey, MasterKeyExport};
-pub use storage::{encrypt_key, decrypt_key};
+pub use storage::{decrypt_key, encrypt_key};

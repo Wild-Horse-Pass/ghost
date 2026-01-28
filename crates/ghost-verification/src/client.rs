@@ -263,7 +263,10 @@ impl VerificationClient {
 
         // Stratum verification
         if result.claimed_capabilities.public_mining {
-            match self.verify_stratum(node_address, StratumProtocol::Sv2).await {
+            match self
+                .verify_stratum(node_address, StratumProtocol::Sv2)
+                .await
+            {
                 Ok(resp) => result.stratum_verified = resp.success && resp.connected,
                 Err(e) => result.errors.push(format!("Stratum: {}", e)),
             }

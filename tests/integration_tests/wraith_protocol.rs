@@ -10,13 +10,12 @@ use std::time::{Duration, Instant};
 
 // Real imports from wraith-protocol
 use wraith_protocol::{
-    WraithSession, ParticipantTier, WraithDenomination, SessionState,
-    TimeoutAction, Phase,
-    entry_timing::{EntryConfig, EntryScheduler, EntryTimingError},
     coordinator_redundancy::{
-        CoordinatorPool, CoordinatorInfo, CoordinatorStatus, RotationPolicy,
-        RotationReason, PoolError,
+        CoordinatorInfo, CoordinatorPool, CoordinatorStatus, PoolError, RotationPolicy,
+        RotationReason,
     },
+    entry_timing::{EntryConfig, EntryScheduler, EntryTimingError},
+    ParticipantTier, Phase, SessionState, TimeoutAction, WraithDenomination, WraithSession,
 };
 
 // =============================================================================
@@ -26,10 +25,7 @@ use wraith_protocol::{
 
 #[test]
 fn test_429_create_session_with_tier_parameters() {
-    let session = WraithSession::new(
-        ParticipantTier::Standard,
-        WraithDenomination::Small,
-    );
+    let session = WraithSession::new(ParticipantTier::Standard, WraithDenomination::Small);
 
     assert_eq!(session.tier().min_participants(), 500);
     assert_eq!(session.denomination().output_sats(), 1_000_000);
@@ -37,12 +33,12 @@ fn test_429_create_session_with_tier_parameters() {
 
 #[test]
 fn test_430_session_initial_state() {
-    let session = WraithSession::new(
-        ParticipantTier::Express,
-        WraithDenomination::Small,
-    );
+    let session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
 
-    assert!(matches!(session.state(), SessionState::WaitingForParticipants));
+    assert!(matches!(
+        session.state(),
+        SessionState::WaitingForParticipants
+    ));
 }
 
 #[test]
@@ -60,18 +56,15 @@ fn test_431_minimum_participants_by_tier() {
 #[test]
 fn test_432_denomination_outputs() {
     // Real WraithDenomination values (no XL variant)
-    assert_eq!(WraithDenomination::Micro.output_sats(), 10_000);      // 0.0001 BTC
-    assert_eq!(WraithDenomination::Small.output_sats(), 1_000_000);   // 0.01 BTC
+    assert_eq!(WraithDenomination::Micro.output_sats(), 10_000); // 0.0001 BTC
+    assert_eq!(WraithDenomination::Small.output_sats(), 1_000_000); // 0.01 BTC
     assert_eq!(WraithDenomination::Medium.output_sats(), 10_000_000); // 0.1 BTC
     assert_eq!(WraithDenomination::Large.output_sats(), 100_000_000); // 1 BTC
 }
 
 #[test]
 fn test_433_add_participant_to_session() {
-    let mut session = WraithSession::new(
-        ParticipantTier::Express,
-        WraithDenomination::Small,
-    );
+    let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
 
     assert_eq!(session.participant_count(), 0);
     assert!(session.add_participant());
@@ -98,10 +91,7 @@ fn test_434_session_can_start_when_min_reached() {
 
 #[test]
 fn test_435_session_start_transitions_state() {
-    let mut session = WraithSession::new(
-        ParticipantTier::Express,
-        WraithDenomination::Small,
-    );
+    let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
 
     for _ in 0..25 {
         session.add_participant();
@@ -113,10 +103,7 @@ fn test_435_session_start_transitions_state() {
 
 #[test]
 fn test_436_session_start_fails_without_minimum() {
-    let mut session = WraithSession::new(
-        ParticipantTier::Express,
-        WraithDenomination::Small,
-    );
+    let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
 
     session.add_participant();
     let result = session.start_collecting();
@@ -125,10 +112,7 @@ fn test_436_session_start_fails_without_minimum() {
 
 #[test]
 fn test_437_phase_progression() {
-    let mut session = WraithSession::new(
-        ParticipantTier::Express,
-        WraithDenomination::Small,
-    );
+    let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
 
     // Fill session
     for _ in 0..25 {
@@ -555,10 +539,7 @@ fn test_463_session_state_variants() {
 #[test]
 fn test_464_phase_ordering() {
     // Real Phase from wraith-protocol
-    let phases = vec![
-        Phase::Split,
-        Phase::Merge,
-    ];
+    let phases = vec![Phase::Split, Phase::Merge];
 
     assert_eq!(phases.len(), 2);
 }
@@ -566,16 +547,16 @@ fn test_464_phase_ordering() {
 #[test]
 fn test_465_coordinator_creates_session() {
     // Test that we can create sessions from a coordinator context
-    let session = WraithSession::new(
-        ParticipantTier::Express,
-        WraithDenomination::Small,
-    );
+    let session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
 
     // Session should have an ID
     let session_id = session.session_id();
     assert_eq!(session_id.len(), 32);
 
     // Should be in waiting state
-    assert!(matches!(session.state(), SessionState::WaitingForParticipants));
+    assert!(matches!(
+        session.state(),
+        SessionState::WaitingForParticipants
+    ));
     assert!(session.state().can_accept_participants());
 }

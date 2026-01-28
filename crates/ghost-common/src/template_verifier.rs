@@ -75,7 +75,9 @@ pub enum TemplateVerifyError {
     #[error("Cross-verification failed: primary height {primary}, secondary height {secondary}")]
     HeightMismatch { primary: u64, secondary: u64 },
 
-    #[error("Cross-verification failed: primary prevhash {primary}, secondary prevhash {secondary}")]
+    #[error(
+        "Cross-verification failed: primary prevhash {primary}, secondary prevhash {secondary}"
+    )]
     PrevHashMismatch { primary: String, secondary: String },
 
     #[error("Cross-verification failed: fee difference {diff} exceeds threshold {threshold}")]
@@ -392,7 +394,10 @@ impl TemplateVerifier {
     }
 
     /// Sum and verify fees
-    fn verify_fees(&self, transactions: &[TemplateTransaction]) -> Result<u64, TemplateVerifyError> {
+    fn verify_fees(
+        &self,
+        transactions: &[TemplateTransaction],
+    ) -> Result<u64, TemplateVerifyError> {
         let total: u64 = transactions.iter().map(|t| t.fee).sum();
         Ok(total)
     }

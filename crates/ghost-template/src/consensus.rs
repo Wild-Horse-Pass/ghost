@@ -26,7 +26,7 @@
 //! Before a block is mined, the payout proposal must reach consensus.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 use crate::FilteredTemplate;
 
@@ -85,11 +85,7 @@ pub struct ConsensusTemplate {
 
 impl ConsensusTemplate {
     /// Create a new consensus template
-    pub fn new(
-        template: FilteredTemplate,
-        round_id: u64,
-        timeout_secs: u64,
-    ) -> Self {
+    pub fn new(template: FilteredTemplate, round_id: u64, timeout_secs: u64) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -217,7 +213,11 @@ pub struct PayoutProposal {
 
 impl PayoutProposal {
     /// Create from consensus template
-    pub fn from_template(template: &ConsensusTemplate, payouts: Vec<PayoutEntry>, pool_fee: u64) -> Self {
+    pub fn from_template(
+        template: &ConsensusTemplate,
+        payouts: Vec<PayoutEntry>,
+        pool_fee: u64,
+    ) -> Self {
         Self {
             hash: template.proposal_hash,
             height: template.height(),

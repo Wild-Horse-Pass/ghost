@@ -84,9 +84,8 @@ pub struct TemplateTransaction {
 impl TemplateTransaction {
     /// Decode the transaction
     pub fn decode(&self) -> Result<Transaction, bitcoin::consensus::encode::Error> {
-        let bytes = hex::decode(&self.data).map_err(|_| {
-            bitcoin::consensus::encode::Error::ParseFailed("Invalid hex")
-        })?;
+        let bytes = hex::decode(&self.data)
+            .map_err(|_| bitcoin::consensus::encode::Error::ParseFailed("Invalid hex"))?;
         bitcoin::consensus::deserialize(&bytes)
     }
 
@@ -192,7 +191,12 @@ impl TemplateStats {
     /// Calculate stats from filtered template
     pub fn from_filtered(template: &FilteredTemplate) -> Self {
         let original_total_fee: u64 = template.original.transactions.iter().map(|t| t.fee).sum();
-        let original_total_weight: u64 = template.original.transactions.iter().map(|t| t.weight).sum();
+        let original_total_weight: u64 = template
+            .original
+            .transactions
+            .iter()
+            .map(|t| t.weight)
+            .sum();
 
         let original_avg_fee_rate = if original_total_weight > 0 {
             original_total_fee as f64 / (original_total_weight as f64 / 4.0)

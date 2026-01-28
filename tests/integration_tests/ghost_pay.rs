@@ -162,7 +162,8 @@ fn test_659_channel_funding_confirmed() {
         .unwrap();
 
     // Simulate funding tx confirmed
-    pool.confirm_funding(&channel.channel_id, "txid123", 6).unwrap();
+    pool.confirm_funding(&channel.channel_id, "txid123", 6)
+        .unwrap();
 
     let updated = pool.get_channel(&channel.channel_id).unwrap();
     assert_eq!(updated.state, ChannelState::Open);
@@ -445,12 +446,7 @@ fn test_676_htlc_max_count() {
     // Add maximum allowed HTLCs
     for i in 0..483 {
         // LN spec max
-        let result = pool.add_htlc(
-            &channel_id,
-            1_000,
-            [i as u8; 32],
-            Duration::from_secs(3600),
-        );
+        let result = pool.add_htlc(&channel_id, 1_000, [i as u8; 32], Duration::from_secs(3600));
         if result.is_err() {
             // Should fail at some point due to in-flight limit
             assert!(i > 0);
@@ -828,14 +824,24 @@ impl GhostPayPool {
     }
 
     fn get_channel(&self, channel_id: &str) -> Option<Channel> {
-        self.channels.iter().find(|c| c.channel_id == channel_id).cloned()
+        self.channels
+            .iter()
+            .find(|c| c.channel_id == channel_id)
+            .cloned()
     }
 
     fn get_channel_mut(&mut self, channel_id: &str) -> Option<&mut Channel> {
-        self.channels.iter_mut().find(|c| c.channel_id == channel_id)
+        self.channels
+            .iter_mut()
+            .find(|c| c.channel_id == channel_id)
     }
 
-    fn confirm_funding(&mut self, channel_id: &str, _txid: &str, _confirmations: u32) -> Result<(), String> {
+    fn confirm_funding(
+        &mut self,
+        channel_id: &str,
+        _txid: &str,
+        _confirmations: u32,
+    ) -> Result<(), String> {
         if let Some(channel) = self.get_channel_mut(channel_id) {
             channel.state = ChannelState::Open;
             Ok(())
@@ -850,7 +856,9 @@ impl GhostPayPool {
         amount: u64,
         direction: PaymentDirection,
     ) -> Result<(), String> {
-        let channel = self.get_channel_mut(channel_id).ok_or("channel not found")?;
+        let channel = self
+            .get_channel_mut(channel_id)
+            .ok_or("channel not found")?;
 
         if channel.state != ChannelState::Open {
             return Err("channel not open".into());
@@ -897,7 +905,9 @@ impl GhostPayPool {
         payment_hash: [u8; 32],
         timeout: Duration,
     ) -> Result<Htlc, String> {
-        let channel = self.get_channel_mut(channel_id).ok_or("channel not found")?;
+        let channel = self
+            .get_channel_mut(channel_id)
+            .ok_or("channel not found")?;
 
         if amount < channel.min_htlc_value {
             return Err("amount below minimum".into());
@@ -936,7 +946,9 @@ impl GhostPayPool {
         htlc_id: u64,
         preimage: [u8; 32],
     ) -> Result<(), String> {
-        let channel = self.get_channel_mut(channel_id).ok_or("channel not found")?;
+        let channel = self
+            .get_channel_mut(channel_id)
+            .ok_or("channel not found")?;
         let htlc = channel
             .htlcs
             .iter_mut()
@@ -958,7 +970,9 @@ impl GhostPayPool {
         htlc_id: u64,
         _reason: FailureReason,
     ) -> Result<(), String> {
-        let channel = self.get_channel_mut(channel_id).ok_or("channel not found")?;
+        let channel = self
+            .get_channel_mut(channel_id)
+            .ok_or("channel not found")?;
         let htlc = channel
             .htlcs
             .iter_mut()
@@ -975,7 +989,9 @@ impl GhostPayPool {
     }
 
     fn close_channel(&mut self, channel_id: &str, _close_type: CloseType) -> Result<(), String> {
-        let channel = self.get_channel_mut(channel_id).ok_or("channel not found")?;
+        let channel = self
+            .get_channel_mut(channel_id)
+            .ok_or("channel not found")?;
 
         if channel.state == ChannelState::Closed {
             return Err("already closed".into());
@@ -1016,8 +1032,15 @@ impl GhostPayPool {
         self.close_channel(channel_id, CloseType::Mutual)
     }
 
-    fn confirm_close(&mut self, channel_id: &str, _txid: &str, _confirmations: u32) -> Result<(), String> {
-        let channel = self.get_channel_mut(channel_id).ok_or("channel not found")?;
+    fn confirm_close(
+        &mut self,
+        channel_id: &str,
+        _txid: &str,
+        _confirmations: u32,
+    ) -> Result<(), String> {
+        let channel = self
+            .get_channel_mut(channel_id)
+            .ok_or("channel not found")?;
         channel.state = ChannelState::Closed;
         Ok(())
     }

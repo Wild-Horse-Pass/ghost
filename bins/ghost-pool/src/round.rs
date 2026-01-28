@@ -109,10 +109,8 @@ pub struct RoundManager {
 impl RoundManager {
     /// Create a new round manager
     pub fn new(our_node_id: NodeId, config: RoundConfig) -> Self {
-        let difficulty = DifficultyCalculator::new(
-            config.share_difficulty,
-            config.network_difficulty,
-        );
+        let difficulty =
+            DifficultyCalculator::new(config.share_difficulty, config.network_difficulty);
 
         let (event_tx, _) = broadcast::channel(1000);
 
@@ -190,7 +188,12 @@ impl RoundManager {
     }
 
     /// Submit a share
-    pub fn submit_share(&self, miner_id: &str, difficulty: f64, share_hash: [u8; 32]) -> Result<ShareSubmitResult, ShareError> {
+    pub fn submit_share(
+        &self,
+        miner_id: &str,
+        difficulty: f64,
+        share_hash: [u8; 32],
+    ) -> Result<ShareSubmitResult, ShareError> {
         let round_id = *self.current_round.read();
         if round_id == 0 {
             return Err(ShareError::NoActiveRound);
@@ -214,7 +217,9 @@ impl RoundManager {
         // Check for duplicate share submission
         {
             let mut submitted = self.submitted_shares.write();
-            let round_shares = submitted.entry(round_id).or_insert_with(std::collections::HashSet::new);
+            let round_shares = submitted
+                .entry(round_id)
+                .or_insert_with(std::collections::HashSet::new);
             if !round_shares.insert(share_hash) {
                 return Err(ShareError::DuplicateShare);
             }
@@ -225,7 +230,9 @@ impl RoundManager {
 
         // Add to round
         let mut rounds = self.rounds.write();
-        let round = rounds.get_mut(&round_id).ok_or(ShareError::RoundNotFound(round_id))?;
+        let round = rounds
+            .get_mut(&round_id)
+            .ok_or(ShareError::RoundNotFound(round_id))?;
 
         if round.miner_shares.len() >= self.config.max_shares_per_round {
             return Err(ShareError::RoundFull);
@@ -335,7 +342,11 @@ impl RoundManager {
             total_node_shares: round.total_node_shares,
             miner_count: round.miner_count(),
             node_count: round.node_count(),
-            top_miners: round.top_miners(10).into_iter().map(|(id, w)| (id.to_string(), w)).collect(),
+            top_miners: round
+                .top_miners(10)
+                .into_iter()
+                .map(|(id, w)| (id.to_string(), w))
+                .collect(),
         };
 
         info!(
@@ -383,7 +394,10 @@ impl RoundManager {
     pub fn update_difficulty(&self, network_difficulty: f64) {
         let mut diff = self.difficulty.write();
         diff.network_difficulty = network_difficulty;
-        info!(difficulty = network_difficulty, "Updated network difficulty");
+        info!(
+            difficulty = network_difficulty,
+            "Updated network difficulty"
+        );
     }
 
     /// Update share difficulty

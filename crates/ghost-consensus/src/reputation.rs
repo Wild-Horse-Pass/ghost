@@ -81,7 +81,10 @@ impl BadBehavior {
 
     /// Should this immediately trigger investigation?
     pub fn is_suspicious(&self) -> bool {
-        matches!(self, BadBehavior::InvalidSignature | BadBehavior::ProtocolViolation)
+        matches!(
+            self,
+            BadBehavior::InvalidSignature | BadBehavior::ProtocolViolation
+        )
     }
 }
 
@@ -180,13 +183,15 @@ impl PeerReputation {
         let recent_window = Duration::from_secs(60);
 
         // Count recent bad behaviors by type
-        let recent: Vec<_> = self.recent_bad
+        let recent: Vec<_> = self
+            .recent_bad
             .iter()
             .filter(|(_, t)| now.duration_since(*t) < recent_window)
             .collect();
 
         // Multiple signature failures in short time = likely attack
-        let sig_failures = recent.iter()
+        let sig_failures = recent
+            .iter()
             .filter(|(b, _)| matches!(b, BadBehavior::InvalidSignature))
             .count();
         if sig_failures >= 2 {
@@ -194,7 +199,8 @@ impl PeerReputation {
         }
 
         // Many protocol violations = possibly fuzzing
-        let protocol_violations = recent.iter()
+        let protocol_violations = recent
+            .iter()
             .filter(|(b, _)| matches!(b, BadBehavior::ProtocolViolation))
             .count();
         if protocol_violations >= 5 {
@@ -323,7 +329,8 @@ impl ReputationManager {
 
     /// Get peer reputation score
     pub fn get_score(&self, node_id: &NodeId) -> u8 {
-        self.peers.read()
+        self.peers
+            .read()
             .get(node_id)
             .map(|r| r.score)
             .unwrap_or(INITIAL_REPUTATION)
@@ -334,7 +341,8 @@ impl ReputationManager {
         if self.is_banned(node_id) {
             return false;
         }
-        self.peers.read()
+        self.peers
+            .read()
             .get(node_id)
             .map(|r| r.is_trusted())
             .unwrap_or(false)
@@ -342,7 +350,8 @@ impl ReputationManager {
 
     /// Get all trusted peers
     pub fn get_trusted_peers(&self) -> Vec<NodeId> {
-        self.peers.read()
+        self.peers
+            .read()
             .iter()
             .filter(|(_, r)| r.is_trusted())
             .map(|(id, _)| *id)

@@ -25,7 +25,7 @@
 //! Commitments are published to Bitcoin to anchor L2 settlement batches.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 /// L1 Commitment - Published to Bitcoin
 #[derive(Debug, Clone)]
@@ -154,8 +154,7 @@ impl L1Commitment {
 
         let settlement_count = u32::from_le_bytes([data[46], data[47], data[48], data[49]]);
         let total_amount_sats = u64::from_le_bytes([
-            data[50], data[51], data[52], data[53],
-            data[54], data[55], data[56], data[57],
+            data[50], data[51], data[52], data[53], data[54], data[55], data[56], data[57],
         ]);
 
         Some(PartialCommitment {
@@ -196,12 +195,7 @@ mod tests {
 
     #[test]
     fn test_commitment_creation() {
-        let commitment = L1Commitment::new(
-            [1u8; 32],
-            [2u8; 32],
-            100,
-            10_000_000_000,
-        );
+        let commitment = L1Commitment::new([1u8; 32], [2u8; 32], 100, 10_000_000_000);
 
         assert_eq!(commitment.settlement_count, 100);
         assert_eq!(commitment.total_amount_sats, 10_000_000_000);
@@ -209,12 +203,7 @@ mod tests {
 
     #[test]
     fn test_op_return_encoding() {
-        let commitment = L1Commitment::new(
-            [1u8; 32],
-            [2u8; 32],
-            100,
-            10_000_000_000,
-        );
+        let commitment = L1Commitment::new([1u8; 32], [2u8; 32], 100, 10_000_000_000);
 
         let encoded = commitment.encode_op_return();
         assert!(encoded.len() <= 80); // OP_RETURN limit
@@ -225,12 +214,7 @@ mod tests {
 
     #[test]
     fn test_commitment_hash() {
-        let commitment = L1Commitment::new(
-            [1u8; 32],
-            [2u8; 32],
-            100,
-            10_000_000_000,
-        );
+        let commitment = L1Commitment::new([1u8; 32], [2u8; 32], 100, 10_000_000_000);
 
         let hash = commitment.hash();
         assert_ne!(hash, [0u8; 32]);

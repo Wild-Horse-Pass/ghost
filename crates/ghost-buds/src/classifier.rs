@@ -28,8 +28,7 @@ use bitcoin::Transaction;
 use tracing::{debug, trace};
 
 use crate::detector::{
-    contains_brc20_pattern, is_inscription_envelope, is_runes_script,
-    PatternDetector,
+    contains_brc20_pattern, is_inscription_envelope, is_runes_script, PatternDetector,
 };
 use crate::tier::{BudsTier, ClassificationReason, ClassificationResult, DetectedFeature};
 use crate::transaction::ClassifiedTransaction;
@@ -297,11 +296,7 @@ impl BudsClassifier {
     }
 
     /// Classify a transaction and wrap with metadata
-    pub fn classify_full(
-        &self,
-        tx: &Transaction,
-        fee: Option<u64>,
-    ) -> ClassifiedTransaction {
+    pub fn classify_full(&self, tx: &Transaction, fee: Option<u64>) -> ClassifiedTransaction {
         let classification = self.classify(tx);
         ClassifiedTransaction::new(tx, classification, fee)
     }
@@ -424,9 +419,8 @@ impl PolicyPreset {
 mod tests {
     use super::*;
     use bitcoin::{
-        absolute::LockTime, transaction::Version, Amount, ScriptBuf, Sequence,
-        TxIn, TxOut, Witness,
-        blockdata::script::Builder,
+        absolute::LockTime, blockdata::script::Builder, transaction::Version, Amount, ScriptBuf,
+        Sequence, TxIn, TxOut, Witness,
     };
 
     /// Create a P2WPKH script (OP_0 <20-byte-hash>)
@@ -466,9 +460,7 @@ mod tests {
         // - previous_output is null (all-zeros txid, vout=0xffffffff)
         // We just need a non-null previous_output
         use bitcoin::hashes::Hash;
-        let txid = bitcoin::Txid::from_raw_hash(
-            bitcoin::hashes::sha256d::Hash::hash(&[1u8])
-        );
+        let txid = bitcoin::Txid::from_raw_hash(bitcoin::hashes::sha256d::Hash::hash(&[1u8]));
         bitcoin::OutPoint { txid, vout: 0 }
     }
 
@@ -519,7 +511,10 @@ mod tests {
         let result = classifier.classify(&tx);
 
         assert_eq!(result.tier, BudsTier::T0);
-        assert!(matches!(result.reason, ClassificationReason::StandardPayment));
+        assert!(matches!(
+            result.reason,
+            ClassificationReason::StandardPayment
+        ));
     }
 
     #[test]
@@ -529,7 +524,10 @@ mod tests {
         let result = classifier.classify(&tx);
 
         assert_eq!(result.tier, BudsTier::T2);
-        assert!(matches!(result.reason, ClassificationReason::SmallOpReturn { .. }));
+        assert!(matches!(
+            result.reason,
+            ClassificationReason::SmallOpReturn { .. }
+        ));
     }
 
     #[test]
@@ -539,7 +537,10 @@ mod tests {
         let result = classifier.classify(&tx);
 
         assert_eq!(result.tier, BudsTier::T3);
-        assert!(matches!(result.reason, ClassificationReason::LargeOpReturn { .. }));
+        assert!(matches!(
+            result.reason,
+            ClassificationReason::LargeOpReturn { .. }
+        ));
     }
 
     #[test]

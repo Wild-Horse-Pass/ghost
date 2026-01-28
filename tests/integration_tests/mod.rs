@@ -43,25 +43,25 @@
 //! cargo test --test integration edge_cases
 //! ```
 
-pub mod cryptography;
-pub mod config_validation;
-pub mod stratum_validation;
-pub mod consensus_voting;
-pub mod buds_classification;
-pub mod wraith_protocol;
-pub mod security;
-pub mod rpc_client;
-pub mod policy_enforcement;
 pub mod block_template;
-pub mod storage;
-pub mod ghost_pay;
-pub mod round_management;
-pub mod edge_cases;
-pub mod pool_cycle;
+pub mod buds_classification;
+pub mod config_validation;
 pub mod consensus;
+pub mod consensus_voting;
+pub mod cryptography;
+pub mod edge_cases;
 pub mod fund_safety;
-pub mod historical_bugs;
-pub mod hypothetical_bugs;
-pub mod stratum_payout_consensus;
+pub mod ghost_pay;
 pub mod gsp;
 pub mod helpers;
+pub mod historical_bugs;
+pub mod hypothetical_bugs;
+pub mod policy_enforcement;
+pub mod pool_cycle;
+pub mod round_management;
+pub mod rpc_client;
+pub mod security;
+pub mod storage;
+pub mod stratum_payout_consensus;
+pub mod stratum_validation;
+pub mod wraith_protocol;

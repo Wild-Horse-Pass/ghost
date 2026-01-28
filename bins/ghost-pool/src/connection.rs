@@ -55,9 +55,9 @@ pub struct ConnectionLimits {
 impl Default for ConnectionLimits {
     fn default() -> Self {
         Self {
-            max_per_ip: 100,                          // Reasonable for NAT/mining farms
+            max_per_ip: 100, // Reasonable for NAT/mining farms
             max_total: 10_000,
-            max_message_size: 4096,                   // Stratum messages are small
+            max_message_size: 4096, // Stratum messages are small
             max_messages_per_sec: 50,
             max_auth_failures: 3,
             ban_duration: Duration::from_secs(3600), // 1 hour ban
@@ -378,7 +378,8 @@ impl ConnectionTracker {
         {
             let mut trackers = self.ip_trackers.write();
             trackers.retain(|_ip, tracker| {
-                tracker.connections > 0 || tracker.last_activity.elapsed() < Duration::from_secs(3600)
+                tracker.connections > 0
+                    || tracker.last_activity.elapsed() < Duration::from_secs(3600)
             });
         }
     }

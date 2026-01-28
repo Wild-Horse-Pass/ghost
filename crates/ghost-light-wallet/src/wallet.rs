@@ -126,7 +126,11 @@ pub struct LightWallet {
 
 impl LightWallet {
     /// Create a new wallet from mnemonic
-    pub fn from_mnemonic(mnemonic: &str, password: &str, config: WalletConfig) -> WalletResult<Self> {
+    pub fn from_mnemonic(
+        mnemonic: &str,
+        password: &str,
+        config: WalletConfig,
+    ) -> WalletResult<Self> {
         // Create data directory
         std::fs::create_dir_all(&config.data_dir)?;
 
@@ -244,7 +248,9 @@ impl LightWallet {
     /// Refresh balance from GSP
     pub async fn refresh_balance(&self) -> WalletResult<WalletBalance> {
         let client_guard = self.gsp_client.read();
-        let client = client_guard.as_ref().ok_or(LightWalletError::NotConnected)?;
+        let client = client_guard
+            .as_ref()
+            .ok_or(LightWalletError::NotConnected)?;
 
         let balance = client.get_balance().await?;
 

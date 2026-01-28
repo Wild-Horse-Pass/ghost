@@ -23,7 +23,7 @@
 //! Settlement rules and validation
 
 use crate::error::{ReconciliationError, ReconciliationResult};
-use crate::{MIN_SETTLEMENT_SATS, DISPUTE_WINDOW_BLOCKS};
+use crate::{DISPUTE_WINDOW_BLOCKS, MIN_SETTLEMENT_SATS};
 
 /// Validate a settlement request
 pub fn validate_settlement(
@@ -166,7 +166,7 @@ impl Default for DisputeRules {
     fn default() -> Self {
         Self {
             window_blocks: DISPUTE_WINDOW_BLOCKS,
-            min_bond_sats: 100_000, // 0.001 BTC
+            min_bond_sats: 100_000,       // 0.001 BTC
             evidence_deadline_blocks: 36, // ~6 hours
         }
     }
@@ -179,32 +179,16 @@ mod tests {
     #[test]
     fn test_validate_settlement() {
         // Valid settlement
-        assert!(validate_settlement(
-            "ghost1abc",
-            "bc1qtest",
-            100_000
-        ).is_ok());
+        assert!(validate_settlement("ghost1abc", "bc1qtest", 100_000).is_ok());
 
         // Below minimum
-        assert!(validate_settlement(
-            "ghost1abc",
-            "bc1qtest",
-            1_000
-        ).is_err());
+        assert!(validate_settlement("ghost1abc", "bc1qtest", 1_000).is_err());
 
         // Invalid ghost ID
-        assert!(validate_settlement(
-            "invalid",
-            "bc1qtest",
-            100_000
-        ).is_err());
+        assert!(validate_settlement("invalid", "bc1qtest", 100_000).is_err());
 
         // Empty address
-        assert!(validate_settlement(
-            "ghost1abc",
-            "",
-            100_000
-        ).is_err());
+        assert!(validate_settlement("ghost1abc", "", 100_000).is_err());
     }
 
     #[test]

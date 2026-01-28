@@ -231,37 +231,42 @@ fn ui(f: &mut Frame, app: &App) {
         .split(f.size());
 
     // Header
-    let header = Paragraph::new(Text::from(vec![
-        Line::from(vec![
-            Span::styled(
-                " ◆ GHOST WALLET ",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" │ "),
-            Span::styled(
-                match &app.wallet {
-                    Some(w) => match w.status() {
-                        WalletStatus::Connected => "● Connected",
-                        WalletStatus::Disconnected => "○ Disconnected",
-                        WalletStatus::Connecting => "◐ Connecting...",
-                        WalletStatus::Reconnecting => "◐ Reconnecting...",
-                    },
-                    None => "○ No Wallet",
+    let header = Paragraph::new(Text::from(vec![Line::from(vec![
+        Span::styled(
+            " ◆ GHOST WALLET ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" │ "),
+        Span::styled(
+            match &app.wallet {
+                Some(w) => match w.status() {
+                    WalletStatus::Connected => "● Connected",
+                    WalletStatus::Disconnected => "○ Disconnected",
+                    WalletStatus::Connecting => "◐ Connecting...",
+                    WalletStatus::Reconnecting => "◐ Reconnecting...",
                 },
-                Style::default().fg(match &app.wallet {
-                    Some(w) if w.status() == WalletStatus::Connected => Color::Green,
-                    _ => Color::Yellow,
-                }),
-            ),
-        ]),
-    ]))
+                None => "○ No Wallet",
+            },
+            Style::default().fg(match &app.wallet {
+                Some(w) if w.status() == WalletStatus::Connected => Color::Green,
+                _ => Color::Yellow,
+            }),
+        ),
+    ])]))
     .block(Block::default().borders(Borders::ALL));
     f.render_widget(header, chunks[0]);
 
     // Tabs
-    let titles = vec!["[1]Dashboard", "[2]Send", "[3]Receive", "[4]History", "[5]Locks", "[6]Settings"];
+    let titles = vec![
+        "[1]Dashboard",
+        "[2]Send",
+        "[3]Receive",
+        "[4]History",
+        "[5]Locks",
+        "[6]Settings",
+    ];
     let tabs = Tabs::new(titles)
         .select(match app.current_tab {
             Tab::Dashboard => 0,
@@ -318,10 +323,7 @@ fn render_dashboard(app: &App) -> Paragraph<'static> {
         Line::from(vec![
             Span::raw("  Balance: "),
             Span::styled(
-                format!(
-                    "{} sats",
-                    balance.map(|b| b.confirmed).unwrap_or(0)
-                ),
+                format!("{} sats", balance.map(|b| b.confirmed).unwrap_or(0)),
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
@@ -331,10 +333,7 @@ fn render_dashboard(app: &App) -> Paragraph<'static> {
         Line::from(vec![
             Span::raw("  Unconfirmed: "),
             Span::styled(
-                format!(
-                    "{} sats",
-                    balance.map(|b| b.unconfirmed).unwrap_or(0)
-                ),
+                format!("{} sats", balance.map(|b| b.unconfirmed).unwrap_or(0)),
                 Style::default().fg(Color::Yellow),
             ),
         ]),

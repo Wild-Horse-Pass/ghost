@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 // Real merkle functions from ghost-template crate
 use ghost_template::{
-    compute_merkle_root, compute_merkle_branch, verify_merkle_branch,
-    double_sha256, MerkleTreeBuilder,
+    compute_merkle_branch, compute_merkle_root, double_sha256, verify_merkle_branch,
+    MerkleTreeBuilder,
 };
 
 // =============================================================================
@@ -23,7 +23,8 @@ use ghost_template::{
 fn test_501_template_creation() {
     let template = BlockTemplate {
         version: 536870912,
-        previousblockhash: "0000000000000000000123456789abcdef0123456789abcdef0123456789abcd".to_string(),
+        previousblockhash: "0000000000000000000123456789abcdef0123456789abcdef0123456789abcd"
+            .to_string(),
         transactions: vec![],
         coinbasevalue: 625000000,
         target: "0000000000000000000000000000000000000000000000000000ffff00000000".to_string(),
@@ -44,16 +45,14 @@ fn test_501_template_creation() {
 #[test]
 fn test_502_template_with_transactions() {
     let template = BlockTemplate {
-        transactions: vec![
-            TemplateTransaction {
-                data: "01000000...".to_string(),
-                txid: "abc123...".to_string(),
-                hash: "abc123...".to_string(),
-                fee: 1000,
-                sigops: 4,
-                weight: 800,
-            },
-        ],
+        transactions: vec![TemplateTransaction {
+            data: "01000000...".to_string(),
+            txid: "abc123...".to_string(),
+            hash: "abc123...".to_string(),
+            fee: 1000,
+            sigops: 4,
+            weight: 800,
+        }],
         ..Default::default()
     };
 
@@ -171,18 +170,14 @@ fn test_510_template_mintime_curtime_order() {
 
 #[test]
 fn test_511_coinbase_version_4() {
-    let coinbase = CoinbaseBuilder::new()
-        .version(4)
-        .build();
+    let coinbase = CoinbaseBuilder::new().version(4).build();
 
     assert_eq!(coinbase.version(), 4);
 }
 
 #[test]
 fn test_512_coinbase_height_in_script() {
-    let coinbase = CoinbaseBuilder::new()
-        .height(800_000)
-        .build();
+    let coinbase = CoinbaseBuilder::new().height(800_000).build();
 
     // Height should be serialized in coinbase scriptsig
     let scriptsig = coinbase.scriptsig();
@@ -191,9 +186,7 @@ fn test_512_coinbase_height_in_script() {
 
 #[test]
 fn test_513_coinbase_extranonce_space() {
-    let coinbase = CoinbaseBuilder::new()
-        .extranonce_size(8)
-        .build();
+    let coinbase = CoinbaseBuilder::new().extranonce_size(8).build();
 
     // Coinbase should have space for extranonce
     assert!(coinbase.scriptsig_len() >= 8);
@@ -212,9 +205,7 @@ fn test_514_coinbase_witness_commitment() {
 
 #[test]
 fn test_515_coinbase_pool_tag() {
-    let coinbase = CoinbaseBuilder::new()
-        .pool_tag("GhostPool")
-        .build();
+    let coinbase = CoinbaseBuilder::new().pool_tag("GhostPool").build();
 
     let scriptsig = coinbase.scriptsig();
     assert!(scriptsig.contains_ascii("GhostPool"));
@@ -408,7 +399,8 @@ fn test_530c_merkle_branch_all_indices() {
         let branch = compute_merkle_branch(&txids, i);
         assert!(
             verify_merkle_branch(txid, &root, &branch, i),
-            "Failed to verify branch for index {}", i
+            "Failed to verify branch for index {}",
+            i
         );
     }
 }
@@ -747,7 +739,10 @@ impl ScriptSig {
     }
 
     fn contains_ascii(&self, s: &str) -> bool {
-        self.pool_tag.as_ref().map(|t| t.contains(s)).unwrap_or(false)
+        self.pool_tag
+            .as_ref()
+            .map(|t| t.contains(s))
+            .unwrap_or(false)
     }
 }
 
@@ -888,8 +883,8 @@ impl VarDiff {
             return self.current;
         }
 
-        let avg_time: f64 = self.shares.iter().map(|d| d.as_secs_f64()).sum::<f64>()
-            / self.shares.len() as f64;
+        let avg_time: f64 =
+            self.shares.iter().map(|d| d.as_secs_f64()).sum::<f64>() / self.shares.len() as f64;
 
         let ratio = self.target_time.as_secs_f64() / avg_time;
         let new_diff = (self.current * ratio).clamp(self.minimum, self.maximum);

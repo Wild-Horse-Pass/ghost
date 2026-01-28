@@ -204,9 +204,8 @@ impl NodeIdentity {
             ));
         }
 
-        let key_bytes = fs::read(path).map_err(|e| {
-            GhostError::InvalidKey(format!("Failed to read key file: {}", e))
-        })?;
+        let key_bytes = fs::read(path)
+            .map_err(|e| GhostError::InvalidKey(format!("Failed to read key file: {}", e)))?;
 
         // Support both legacy (32 bytes) and new format (44 bytes with PoW)
         if key_bytes.len() != 32 && key_bytes.len() != 44 {
@@ -294,7 +293,7 @@ impl NodeIdentity {
             let public_key = verifying_key.to_bytes();
             if !proof.verify(&public_key, NODE_ID_POW_DIFFICULTY) {
                 return Err(GhostError::InvalidKey(
-                    "PoW proof does not match public key".into()
+                    "PoW proof does not match public key".into(),
                 ));
             }
         }
@@ -429,11 +428,7 @@ pub fn verify_signature(
 
 /// Verify a remote node_id has valid proof-of-work
 /// This should be checked when accepting elder registrations
-pub fn verify_node_id_pow(
-    node_id: &NodeId,
-    proof: &NodeIdProof,
-    required_difficulty: u32,
-) -> bool {
+pub fn verify_node_id_pow(node_id: &NodeId, proof: &NodeIdProof, required_difficulty: u32) -> bool {
     proof.verify(node_id, required_difficulty)
 }
 
@@ -528,11 +523,29 @@ mod tests {
     #[test]
     fn test_pow_leading_zeros() {
         // 0x00 has 8 leading zeros
-        assert_eq!(NodeIdProof::leading_zeros(&[0, 0, 0, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), 24);
+        assert_eq!(
+            NodeIdProof::leading_zeros(&[
+                0, 0, 0, 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0
+            ]),
+            24
+        );
         // 0x0f has 4 leading zeros
-        assert_eq!(NodeIdProof::leading_zeros(&[0x0f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), 4);
+        assert_eq!(
+            NodeIdProof::leading_zeros(&[
+                0x0f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0
+            ]),
+            4
+        );
         // 0x80 has 0 leading zeros
-        assert_eq!(NodeIdProof::leading_zeros(&[0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), 0);
+        assert_eq!(
+            NodeIdProof::leading_zeros(&[
+                0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0
+            ]),
+            0
+        );
     }
 
     #[test]
@@ -608,7 +621,11 @@ mod tests {
         let identity = NodeIdentity::generate();
         let proof = identity.pow_proof().unwrap();
 
-        assert!(verify_node_id_pow(&identity.node_id(), proof, NODE_ID_POW_DIFFICULTY));
+        assert!(verify_node_id_pow(
+            &identity.node_id(),
+            proof,
+            NODE_ID_POW_DIFFICULTY
+        ));
     }
 
     #[test]
@@ -617,7 +634,11 @@ mod tests {
         let node_id_hex = identity.node_id_hex();
         let proof_hex = identity.pow_proof_hex().unwrap();
 
-        assert!(verify_node_id_pow_hex(&node_id_hex, &proof_hex, NODE_ID_POW_DIFFICULTY));
+        assert!(verify_node_id_pow_hex(
+            &node_id_hex,
+            &proof_hex,
+            NODE_ID_POW_DIFFICULTY
+        ));
     }
 
     #[test]

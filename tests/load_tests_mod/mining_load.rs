@@ -64,7 +64,8 @@ impl LoadTestMiner {
     }
 
     fn set_difficulty(&self, diff: f64) {
-        self.difficulty.store((diff * 1000.0) as u64, Ordering::SeqCst);
+        self.difficulty
+            .store((diff * 1000.0) as u64, Ordering::SeqCst);
     }
 
     fn work(&self) -> u64 {
@@ -104,7 +105,8 @@ pub fn run_mining_load_test(config: LoadTestConfig) -> LoadTestResults {
 
     // Track share submission latencies
     let latencies: Arc<RwLock<Vec<u64>>> = Arc::new(RwLock::new(Vec::with_capacity(
-        (config.miner_count as f64 * config.shares_per_second * config.duration_secs as f64) as usize,
+        (config.miner_count as f64 * config.shares_per_second * config.duration_secs as f64)
+            as usize,
     )));
 
     // Simulate share submissions
@@ -131,7 +133,10 @@ pub fn run_mining_load_test(config: LoadTestConfig) -> LoadTestResults {
     let duration = start.elapsed();
 
     // Calculate results
-    let total_shares: u64 = miners.iter().map(|m| m.shares_submitted.load(Ordering::SeqCst)).sum();
+    let total_shares: u64 = miners
+        .iter()
+        .map(|m| m.shares_submitted.load(Ordering::SeqCst))
+        .sum();
     let total_work: u64 = miners.iter().map(|m| m.work()).sum();
 
     let latency_data = latencies.read();
@@ -148,7 +153,10 @@ pub fn run_mining_load_test(config: LoadTestConfig) -> LoadTestResults {
         0
     } else {
         let p99_idx = (sorted_latencies.len() as f64 * 0.99) as usize;
-        sorted_latencies.get(p99_idx.min(sorted_latencies.len() - 1)).copied().unwrap_or(0)
+        sorted_latencies
+            .get(p99_idx.min(sorted_latencies.len() - 1))
+            .copied()
+            .unwrap_or(0)
     };
 
     LoadTestResults {
@@ -253,7 +261,10 @@ mod tests {
         println!("  Duration: {:?}", results.duration);
 
         // Performance assertions
-        assert!(results.shares_per_second > 50.0, "Should achieve >50 shares/sec");
+        assert!(
+            results.shares_per_second > 50.0,
+            "Should achieve >50 shares/sec"
+        );
         assert!(results.avg_latency_us < 1000, "Avg latency should be <1ms");
     }
 

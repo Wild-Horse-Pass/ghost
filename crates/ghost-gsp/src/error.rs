@@ -129,31 +129,45 @@ impl From<std::io::Error> for GspError {
 impl IntoResponse for GspError {
     fn into_response(self) -> Response {
         let (status, error_code, message) = match &self {
-            GspError::Config(msg) => (StatusCode::INTERNAL_SERVER_ERROR, "CONFIG_ERROR", msg.clone()),
-            GspError::InvalidBindAddress(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "INVALID_BIND_ADDRESS", msg.clone())
-            }
-            GspError::Unauthorized => {
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", "Authentication required".to_string())
-            }
+            GspError::Config(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "CONFIG_ERROR",
+                msg.clone(),
+            ),
+            GspError::InvalidBindAddress(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INVALID_BIND_ADDRESS",
+                msg.clone(),
+            ),
+            GspError::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
+                "Authentication required".to_string(),
+            ),
             GspError::InvalidCredentials(msg) => {
                 (StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS", msg.clone())
             }
-            GspError::SessionExpired => {
-                (StatusCode::UNAUTHORIZED, "SESSION_EXPIRED", "Session has expired".to_string())
-            }
+            GspError::SessionExpired => (
+                StatusCode::UNAUTHORIZED,
+                "SESSION_EXPIRED",
+                "Session has expired".to_string(),
+            ),
             GspError::InvalidToken(msg) => (StatusCode::UNAUTHORIZED, "INVALID_TOKEN", msg.clone()),
-            GspError::WalletNotRegistered => {
-                (StatusCode::NOT_FOUND, "WALLET_NOT_REGISTERED", "Wallet not registered".to_string())
-            }
+            GspError::WalletNotRegistered => (
+                StatusCode::NOT_FOUND,
+                "WALLET_NOT_REGISTERED",
+                "Wallet not registered".to_string(),
+            ),
             GspError::WalletAlreadyRegistered => (
                 StatusCode::CONFLICT,
                 "WALLET_ALREADY_REGISTERED",
                 "Wallet already registered".to_string(),
             ),
-            GspError::SignatureVerification(msg) => {
-                (StatusCode::UNAUTHORIZED, "SIGNATURE_VERIFICATION_FAILED", msg.clone())
-            }
+            GspError::SignatureVerification(msg) => (
+                StatusCode::UNAUTHORIZED,
+                "SIGNATURE_VERIFICATION_FAILED",
+                msg.clone(),
+            ),
             GspError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
             GspError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
             GspError::RateLimitExceeded => (
@@ -161,21 +175,23 @@ impl IntoResponse for GspError {
                 "RATE_LIMIT_EXCEEDED",
                 "Rate limit exceeded".to_string(),
             ),
-            GspError::PayNodeUnavailable(msg) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "PAY_NODE_UNAVAILABLE", msg.clone())
-            }
-            GspError::PayNodeError(msg) => {
-                (StatusCode::BAD_GATEWAY, "PAY_NODE_ERROR", msg.clone())
-            }
-            GspError::Database(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "DATABASE_ERROR", msg.clone())
-            }
-            GspError::Internal(msg) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", msg.clone())
-            }
-            GspError::Protocol(e) => {
-                (StatusCode::BAD_REQUEST, "PROTOCOL_ERROR", e.to_string())
-            }
+            GspError::PayNodeUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "PAY_NODE_UNAVAILABLE",
+                msg.clone(),
+            ),
+            GspError::PayNodeError(msg) => (StatusCode::BAD_GATEWAY, "PAY_NODE_ERROR", msg.clone()),
+            GspError::Database(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "DATABASE_ERROR",
+                msg.clone(),
+            ),
+            GspError::Internal(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                msg.clone(),
+            ),
+            GspError::Protocol(e) => (StatusCode::BAD_REQUEST, "PROTOCOL_ERROR", e.to_string()),
         };
 
         let body = serde_json::json!({

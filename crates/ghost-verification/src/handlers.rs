@@ -71,34 +71,34 @@ impl RpcArchiveHandler {
         let result = tokio::task::block_in_place(|| {
             let handle = tokio::runtime::Handle::current();
             handle.block_on(async move {
-            // Get block header first (lightweight)
-            match rpc.get_block_header(&hash).await {
-                Ok(header) => {
-                    // Now get full block for tx count
-                    let block_json = rpc.get_block(&hash, 1).await?;
-                    let tx_count = block_json
-                        .get("nTx")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(header.n_tx) as usize;
+                // Get block header first (lightweight)
+                match rpc.get_block_header(&hash).await {
+                    Ok(header) => {
+                        // Now get full block for tx count
+                        let block_json = rpc.get_block(&hash, 1).await?;
+                        let tx_count = block_json
+                            .get("nTx")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(header.n_tx) as usize;
 
-                    Ok(Some(BlockData {
-                        hash: header.hash,
-                        height: header.height,
-                        timestamp: header.time,
-                        tx_count,
-                        merkle_root: header.merkleroot,
-                    }))
-                }
-                Err(e) => {
-                    // Check if it's a "not found" error
-                    if e.to_string().contains("-5") || e.to_string().contains("not found") {
-                        Ok(None)
-                    } else {
-                        Err(e)
+                        Ok(Some(BlockData {
+                            hash: header.hash,
+                            height: header.height,
+                            timestamp: header.time,
+                            tx_count,
+                            merkle_root: header.merkleroot,
+                        }))
+                    }
+                    Err(e) => {
+                        // Check if it's a "not found" error
+                        if e.to_string().contains("-5") || e.to_string().contains("not found") {
+                            Ok(None)
+                        } else {
+                            Err(e)
+                        }
                     }
                 }
-            }
-        })
+            })
         });
 
         result
@@ -113,68 +113,66 @@ impl RpcArchiveHandler {
         let result = tokio::task::block_in_place(|| {
             let handle = tokio::runtime::Handle::current();
             handle.block_on(async move {
-            match rpc.get_raw_transaction(&txid, true).await {
-                Ok(tx_json) => {
-                    let block_hash = tx_json
-                        .get("blockhash")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                match rpc.get_raw_transaction(&txid, true).await {
+                    Ok(tx_json) => {
+                        let block_hash = tx_json
+                            .get("blockhash")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
 
-                    let size = tx_json
-                        .get("size")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0) as usize;
+                        let size =
+                            tx_json.get("size").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
-                    let vin = tx_json
-                        .get("vin")
-                        .and_then(|v| v.as_array())
-                        .map(|a| a.len())
-                        .unwrap_or(0);
+                        let vin = tx_json
+                            .get("vin")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
 
-                    let vout = tx_json
-                        .get("vout")
-                        .and_then(|v| v.as_array())
-                        .map(|a| a.len())
-                        .unwrap_or(0);
+                        let vout = tx_json
+                            .get("vout")
+                            .and_then(|v| v.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
 
-                    // Get block to find tx index
-                    let tx_index = if !block_hash.is_empty() {
-                        if let Ok(block) = rpc.get_block(&block_hash, 1).await {
-                            block
-                                .get("tx")
-                                .and_then(|v| v.as_array())
-                                .and_then(|txs| {
-                                    txs.iter().position(|t| {
-                                        t.as_str().map(|s| s == txid).unwrap_or(false)
+                        // Get block to find tx index
+                        let tx_index = if !block_hash.is_empty() {
+                            if let Ok(block) = rpc.get_block(&block_hash, 1).await {
+                                block
+                                    .get("tx")
+                                    .and_then(|v| v.as_array())
+                                    .and_then(|txs| {
+                                        txs.iter().position(|t| {
+                                            t.as_str().map(|s| s == txid).unwrap_or(false)
+                                        })
                                     })
-                                })
-                                .unwrap_or(0)
+                                    .unwrap_or(0)
+                            } else {
+                                0
+                            }
                         } else {
                             0
-                        }
-                    } else {
-                        0
-                    };
+                        };
 
-                    Ok(Some(TxData {
-                        txid,
-                        block_hash,
-                        tx_index,
-                        size,
-                        input_count: vin,
-                        output_count: vout,
-                    }))
-                }
-                Err(e) => {
-                    if e.to_string().contains("-5") || e.to_string().contains("not found") {
-                        Ok(None)
-                    } else {
-                        Err(e)
+                        Ok(Some(TxData {
+                            txid,
+                            block_hash,
+                            tx_index,
+                            size,
+                            input_count: vin,
+                            output_count: vout,
+                        }))
+                    }
+                    Err(e) => {
+                        if e.to_string().contains("-5") || e.to_string().contains("not found") {
+                            Ok(None)
+                        } else {
+                            Err(e)
+                        }
                     }
                 }
-            }
-        })
+            })
         });
 
         result
@@ -258,16 +256,20 @@ impl StratumVerifier {
         let connect_latency = start.elapsed();
 
         // Send mining.subscribe request
-        let subscribe_request = r#"{"id":1,"method":"mining.subscribe","params":["ghost-verify/1.0"]}"#;
+        let subscribe_request =
+            r#"{"id":1,"method":"mining.subscribe","params":["ghost-verify/1.0"]}"#;
         let request_with_newline = format!("{}\n", subscribe_request);
 
         let (mut reader, mut writer) = stream.into_split();
 
         // Write request
-        timeout(self.timeout, writer.write_all(request_with_newline.as_bytes()))
-            .await
-            .map_err(|_| GhostError::Timeout("Write timed out".to_string()))?
-            .map_err(|e| GhostError::Internal(format!("Write failed: {}", e)))?;
+        timeout(
+            self.timeout,
+            writer.write_all(request_with_newline.as_bytes()),
+        )
+        .await
+        .map_err(|_| GhostError::Timeout("Write timed out".to_string()))?
+        .map_err(|e| GhostError::Internal(format!("Write failed: {}", e)))?;
 
         // Read response
         let mut buf = vec![0u8; 4096];
@@ -287,7 +289,8 @@ impl StratumVerifier {
         let is_valid = response.contains("\"result\"") && response.contains("\"id\"");
 
         // Try to extract subscription details
-        let subscription_id = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response) {
+        let subscription_id = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response)
+        {
             json.get("result")
                 .and_then(|r| r.as_array())
                 .and_then(|a| a.first())
@@ -314,7 +317,11 @@ impl StratumVerifier {
             connect_latency,
             total_latency,
             subscription_id,
-            error: if is_valid { None } else { Some("Invalid response".to_string()) },
+            error: if is_valid {
+                None
+            } else {
+                Some("Invalid response".to_string())
+            },
         })
     }
 
@@ -341,10 +348,9 @@ impl StratumVerifier {
         // Send a minimal noise protocol initiator message
         // This is the first 32 bytes of a noise NK handshake
         let initiator_hello: [u8; 32] = [
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
         ];
 
         let (mut reader, mut writer) = stream.into_split();
@@ -377,7 +383,7 @@ impl StratumVerifier {
             Ok(Ok(n)) if n > 0 => true,
             Ok(Ok(_)) => true, // Connection closed is also valid (failed handshake)
             Ok(Err(_)) => true, // Read error after connect is also valid
-            Err(_) => true, // Timeout could mean server is processing
+            Err(_) => true,    // Timeout could mean server is processing
         };
 
         debug!(
@@ -496,13 +502,7 @@ mod tests {
 
     #[test]
     fn test_ghostpay_handler() {
-        let handler = GhostPayL2Handler::new(
-            true,
-            || 100,
-            || 5,
-            |_| Ok(50_000),
-            true,
-        );
+        let handler = GhostPayL2Handler::new(true, || 100, || 5, |_| Ok(50_000), true);
 
         assert!(handler.is_enabled());
         assert_eq!(handler.get_virtual_block(), 100);

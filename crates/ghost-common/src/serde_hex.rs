@@ -143,9 +143,7 @@ mod tests {
 
     #[test]
     fn test_bytes32_roundtrip() {
-        let original = TestStruct32 {
-            data: [0xab; 32],
-        };
+        let original = TestStruct32 { data: [0xab; 32] };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: TestStruct32 = serde_json::from_str(&json).unwrap();
         assert_eq!(original, decoded);
@@ -153,9 +151,7 @@ mod tests {
 
     #[test]
     fn test_bytes64_roundtrip() {
-        let original = TestStruct64 {
-            data: [0xcd; 64],
-        };
+        let original = TestStruct64 { data: [0xcd; 64] };
         let json = serde_json::to_string(&original).unwrap();
         let decoded: TestStruct64 = serde_json::from_str(&json).unwrap();
         assert_eq!(original, decoded);

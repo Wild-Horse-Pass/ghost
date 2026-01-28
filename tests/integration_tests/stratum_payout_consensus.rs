@@ -50,11 +50,7 @@ fn test_proposal_hash(round_id: u64, block_height: u64) -> [u8; 32] {
 }
 
 /// Create a signed vote
-fn create_signed_vote(
-    identity: &NodeIdentity,
-    proposal_hash: &[u8; 32],
-    approve: bool,
-) -> Vote {
+fn create_signed_vote(identity: &NodeIdentity, proposal_hash: &[u8; 32], approve: bool) -> Vote {
     let signature = identity.sign_hash(proposal_hash);
     Vote::new(identity.node_id(), approve, signature)
 }
@@ -104,14 +100,11 @@ fn test_share_recording_flow() {
     let round_id = 1;
     let block_height = 850_000u64;
 
-    db.create_round(&test_round(round_id, block_height)).unwrap();
+    db.create_round(&test_round(round_id, block_height))
+        .unwrap();
 
     // Submit shares from multiple miners
-    let miners = vec![
-        ("miner_1", 100.0),
-        ("miner_2", 150.0),
-        ("miner_3", 75.0),
-    ];
+    let miners = vec![("miner_1", 100.0), ("miner_2", 150.0), ("miner_3", 75.0)];
 
     for (miner_id, difficulty) in &miners {
         db.insert_share(&test_share(round_id, miner_id, *difficulty))
@@ -177,22 +170,26 @@ fn test_payout_status_transitions() {
     db.create_round(&test_round(round_id, 850_000)).unwrap();
 
     // Active → Pending (proposal created)
-    db.update_round_status(round_id, PayoutStatus::Pending).unwrap();
+    db.update_round_status(round_id, PayoutStatus::Pending)
+        .unwrap();
     let round = db.get_round(round_id).unwrap().unwrap();
     assert_eq!(round.payout_status, PayoutStatus::Pending);
 
     // Pending → Approved (consensus reached)
-    db.update_round_status(round_id, PayoutStatus::Approved).unwrap();
+    db.update_round_status(round_id, PayoutStatus::Approved)
+        .unwrap();
     let round = db.get_round(round_id).unwrap().unwrap();
     assert_eq!(round.payout_status, PayoutStatus::Approved);
 
     // Approved → Broadcast (tx sent)
-    db.update_round_status(round_id, PayoutStatus::Broadcast).unwrap();
+    db.update_round_status(round_id, PayoutStatus::Broadcast)
+        .unwrap();
     let round = db.get_round(round_id).unwrap().unwrap();
     assert_eq!(round.payout_status, PayoutStatus::Broadcast);
 
     // Broadcast → Confirmed (tx confirmed)
-    db.update_round_status(round_id, PayoutStatus::Confirmed).unwrap();
+    db.update_round_status(round_id, PayoutStatus::Confirmed)
+        .unwrap();
     let round = db.get_round(round_id).unwrap().unwrap();
     assert_eq!(round.payout_status, PayoutStatus::Confirmed);
 }
@@ -236,7 +233,10 @@ fn test_voting_session_with_real_signatures() {
     let result = session.add_vote(vote);
 
     // Should be decided now (4/5 = 80% > 67%)
-    assert!(matches!(result, VoteResult::Decided(ConsensusResult::Approved { .. })));
+    assert!(matches!(
+        result,
+        VoteResult::Decided(ConsensusResult::Approved { .. })
+    ));
 }
 
 #[test]
@@ -264,7 +264,10 @@ fn test_voting_rejection_threshold() {
 
     // Should be rejected
     assert!(session.result.is_some());
-    assert!(matches!(session.result, Some(ConsensusResult::Rejected { .. })));
+    assert!(matches!(
+        session.result,
+        Some(ConsensusResult::Rejected { .. })
+    ));
 }
 
 #[test]
@@ -363,7 +366,8 @@ fn test_complete_share_to_consensus_flow() {
     let round_id = 1;
     let block_height = 850_000u64;
 
-    db.create_round(&test_round(round_id, block_height)).unwrap();
+    db.create_round(&test_round(round_id, block_height))
+        .unwrap();
 
     // Multiple miners submit shares
     let miner_difficulties = vec![
@@ -382,10 +386,18 @@ fn test_complete_share_to_consensus_flow() {
     let block_hash = "00000000000000000002abcd1234567890abcdef";
 
     // Add another share from bob that found the block
-    db.insert_share(&test_share(round_id, "miner_bob", 200.0)).unwrap();
-
-    db.update_round_block_found(round_id, block_hash, "miner_bob", "node_123", 312_500_000, 50_000_000)
+    db.insert_share(&test_share(round_id, "miner_bob", 200.0))
         .unwrap();
+
+    db.update_round_block_found(
+        round_id,
+        block_hash,
+        "miner_bob",
+        "node_123",
+        312_500_000,
+        50_000_000,
+    )
+    .unwrap();
     db.end_round(round_id, now_millis()).unwrap();
 
     // === Phase 4: Calculate Payouts ===
@@ -425,7 +437,8 @@ fn test_complete_share_to_consensus_flow() {
 
     // === Phase 5: Create Payout Proposal ===
     // Update status to pending (proposal created)
-    db.update_round_status(round_id, PayoutStatus::Pending).unwrap();
+    db.update_round_status(round_id, PayoutStatus::Pending)
+        .unwrap();
 
     let proposal_hash = test_proposal_hash(round_id, block_height);
 
@@ -445,13 +458,17 @@ fn test_complete_share_to_consensus_flow() {
 
         if i == 3 {
             // 4th vote should trigger approval
-            assert!(matches!(result, VoteResult::Decided(ConsensusResult::Approved { .. })));
+            assert!(matches!(
+                result,
+                VoteResult::Decided(ConsensusResult::Approved { .. })
+            ));
         }
     }
 
     // === Phase 7: Finalize Payout ===
     // Update status to approved
-    db.update_round_status(round_id, PayoutStatus::Approved).unwrap();
+    db.update_round_status(round_id, PayoutStatus::Approved)
+        .unwrap();
 
     let round = db.get_round(round_id).unwrap().unwrap();
     assert_eq!(round.payout_status, PayoutStatus::Approved);
@@ -488,7 +505,10 @@ fn test_consensus_with_minimum_voters() {
     // Vote 3 - approved (3/3 = 100%)
     let vote3 = create_signed_vote(&voters[2], &proposal_hash, true);
     let result3 = session.add_vote(vote3);
-    assert!(matches!(result3, VoteResult::Decided(ConsensusResult::Approved { .. })));
+    assert!(matches!(
+        result3,
+        VoteResult::Decided(ConsensusResult::Approved { .. })
+    ));
 }
 
 #[test]
@@ -574,7 +594,10 @@ fn test_large_voter_set() {
 
         if i == 14 {
             // 15th vote should trigger approval
-            assert!(matches!(result, VoteResult::Decided(ConsensusResult::Approved { .. })));
+            assert!(matches!(
+                result,
+                VoteResult::Decided(ConsensusResult::Approved { .. })
+            ));
         }
     }
 }
@@ -593,7 +616,8 @@ fn test_round_orphaned_by_reorg() {
     db.create_round(&round).unwrap();
 
     // Simulate reorg - mark as orphaned
-    db.update_round_status(round_id, PayoutStatus::Orphaned).unwrap();
+    db.update_round_status(round_id, PayoutStatus::Orphaned)
+        .unwrap();
 
     let round = db.get_round(round_id).unwrap().unwrap();
     assert_eq!(round.payout_status, PayoutStatus::Orphaned);
@@ -608,7 +632,8 @@ fn test_miner_work_aggregation() {
 
     // Same miner submits multiple shares
     for _ in 0..10 {
-        db.insert_share(&test_share(round_id, "miner_a", 5.0)).unwrap();
+        db.insert_share(&test_share(round_id, "miner_a", 5.0))
+            .unwrap();
     }
 
     // Get miner work
@@ -624,10 +649,14 @@ fn test_round_miners_distribution() {
     db.create_round(&test_round(round_id, 850_000)).unwrap();
 
     // Different miners with different work amounts
-    db.insert_share(&test_share(round_id, "miner_a", 100.0)).unwrap();
-    db.insert_share(&test_share(round_id, "miner_b", 200.0)).unwrap();
-    db.insert_share(&test_share(round_id, "miner_c", 50.0)).unwrap();
-    db.insert_share(&test_share(round_id, "miner_a", 50.0)).unwrap(); // Another from miner_a
+    db.insert_share(&test_share(round_id, "miner_a", 100.0))
+        .unwrap();
+    db.insert_share(&test_share(round_id, "miner_b", 200.0))
+        .unwrap();
+    db.insert_share(&test_share(round_id, "miner_c", 50.0))
+        .unwrap();
+    db.insert_share(&test_share(round_id, "miner_a", 50.0))
+        .unwrap(); // Another from miner_a
 
     // Get round miners
     let miners = db.get_round_miners(round_id).unwrap();

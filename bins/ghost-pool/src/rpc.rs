@@ -81,8 +81,8 @@ pub const ALLOWED_METHODS: &[&str] = &[
     "mining.authorize",
     "mining.submit",
     "mining.extranonce.subscribe",
-    "mining.get_transactions",  // Optional
-    "mining.configure",         // Stratum V2 extension
+    "mining.get_transactions", // Optional
+    "mining.configure",        // Stratum V2 extension
 ];
 
 /// Parsed JSON-RPC request
@@ -104,7 +104,8 @@ impl RpcRequest {
             "id": id,
             "result": result,
             "error": null
-        }).to_string()
+        })
+        .to_string()
     }
 
     /// Create a JSON-RPC error response
@@ -114,7 +115,8 @@ impl RpcRequest {
             "id": id,
             "result": null,
             "error": [code, message, null]
-        }).to_string()
+        })
+        .to_string()
     }
 }
 
@@ -130,9 +132,9 @@ fn json_depth(value: &Value) -> usize {
 /// Validate a JSON value doesn't contain excessively long strings
 fn validate_string_lengths(value: &Value, path: &str) -> Result<(), RpcError> {
     match value {
-        Value::String(s) if s.len() > MAX_PARAM_STRING_LEN => {
-            Err(RpcError::ParamTooLong(Box::leak(path.to_string().into_boxed_str())))
-        }
+        Value::String(s) if s.len() > MAX_PARAM_STRING_LEN => Err(RpcError::ParamTooLong(
+            Box::leak(path.to_string().into_boxed_str()),
+        )),
         Value::Array(arr) => {
             for (i, v) in arr.iter().enumerate() {
                 validate_string_lengths(v, &format!("{}[{}]", path, i))?;
@@ -158,8 +160,8 @@ pub fn parse_request(line: &str) -> Result<RpcRequest, RpcError> {
     }
 
     // 2. Parse JSON
-    let value: Value = serde_json::from_str(line)
-        .map_err(|e| RpcError::InvalidJson(e.to_string()))?;
+    let value: Value =
+        serde_json::from_str(line).map_err(|e| RpcError::InvalidJson(e.to_string()))?;
 
     // 3. Depth check
     let depth = json_depth(&value);
@@ -208,7 +210,11 @@ pub fn parse_request(line: &str) -> Result<RpcRequest, RpcError> {
 }
 
 /// Helper to extract string parameter
-pub fn get_string_param(params: &[Value], index: usize, name: &'static str) -> Result<String, RpcError> {
+pub fn get_string_param(
+    params: &[Value],
+    index: usize,
+    name: &'static str,
+) -> Result<String, RpcError> {
     params
         .get(index)
         .and_then(|v| v.as_str())
@@ -225,7 +231,11 @@ pub fn get_optional_string_param(params: &[Value], index: usize) -> Option<Strin
 }
 
 /// Helper to extract array parameter
-pub fn get_array_param(params: &[Value], index: usize, name: &'static str) -> Result<Vec<Value>, RpcError> {
+pub fn get_array_param(
+    params: &[Value],
+    index: usize,
+    name: &'static str,
+) -> Result<Vec<Value>, RpcError> {
     params
         .get(index)
         .and_then(|v| v.as_array())
@@ -259,7 +269,8 @@ pub fn notification(method: &str, params: Value) -> String {
         "id": null,
         "method": method,
         "params": params
-    }).to_string()
+    })
+    .to_string()
 }
 
 /// Create mining.set_difficulty notification
@@ -317,7 +328,10 @@ mod tests {
 
     #[test]
     fn test_reject_oversized() {
-        let json = format!(r#"{{"id": 1, "method": "mining.subscribe", "params": ["{}"]}}"#, "x".repeat(5000));
+        let json = format!(
+            r#"{{"id": 1, "method": "mining.subscribe", "params": ["{}"]}}"#,
+            "x".repeat(5000)
+        );
         let result = parse_request(&json);
         assert!(matches!(result, Err(RpcError::MessageTooLarge(_))));
     }
@@ -340,7 +354,10 @@ mod tests {
     #[test]
     fn test_reject_too_many_params() {
         let params: Vec<i32> = (0..20).collect();
-        let json = format!(r#"{{"id": 1, "method": "mining.subscribe", "params": {:?}}}"#, params);
+        let json = format!(
+            r#"{{"id": 1, "method": "mining.subscribe", "params": {:?}}}"#,
+            params
+        );
         let result = parse_request(&json);
         assert!(matches!(result, Err(RpcError::TooManyParams(_))));
     }

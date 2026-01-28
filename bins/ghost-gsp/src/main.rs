@@ -236,7 +236,10 @@ async fn main() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber)?;
 
-    info!("Starting Ghost Service Provider v{}", env!("CARGO_PKG_VERSION"));
+    info!(
+        "Starting Ghost Service Provider v{}",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Load configuration file
     let config_file = if args.config.exists() {
@@ -248,22 +251,12 @@ async fn main() -> Result<()> {
     };
 
     // Build configuration (CLI args override config file)
-    let listen_str = args
-        .listen
-        .unwrap_or(config_file.server.listen);
-    let listen_addr: SocketAddr = listen_str
-        .parse()
-        .expect("Invalid listen address");
-    let network_str = args
-        .network
-        .unwrap_or(config_file.server.network);
+    let listen_str = args.listen.unwrap_or(config_file.server.listen);
+    let listen_addr: SocketAddr = listen_str.parse().expect("Invalid listen address");
+    let network_str = args.network.unwrap_or(config_file.server.network);
     let network = parse_network(&network_str);
-    let data_dir = args
-        .data_dir
-        .unwrap_or(config_file.storage.data_dir);
-    let pay_node_url = args
-        .pay_node_url
-        .unwrap_or(config_file.proxy.pay_node_url);
+    let data_dir = args.data_dir.unwrap_or(config_file.storage.data_dir);
+    let pay_node_url = args.pay_node_url.unwrap_or(config_file.proxy.pay_node_url);
     let jwt_secret: Vec<u8> = args
         .jwt_secret
         .or(config_file.security.jwt_secret)

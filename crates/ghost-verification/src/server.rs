@@ -22,20 +22,22 @@
 
 //! Verification server
 
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use axum::http::{Method, HeaderValue};
 use axum::extract::DefaultBodyLimit;
-use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
-use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer, key_extractor::SmartIpKeyExtractor};
-use tracing::info;
+use axum::http::{HeaderValue, Method};
 use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::identity::NodeIdentity;
 use ghost_common::rpc::BitcoinRpc;
 use ghost_common::types::NodeCapabilities;
 use ghost_policy::{PolicyEngine, PolicyProfile};
 use ghost_storage::Database;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::net::TcpListener;
+use tower_governor::{
+    governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
+};
+use tower_http::cors::CorsLayer;
+use tracing::info;
 
 use crate::challenge::*;
 use crate::routes::create_router;
@@ -63,11 +65,11 @@ impl Default for DashboardConfig {
     fn default() -> Self {
         Self {
             ghost_mode: true,
-            archive_mode: true,      // enabled by default
-            ghost_pay: true,         // enabled by default
-            public_mining: true,     // enabled by default
-            bitcoin_pure: true,      // enabled by default
-            elder: false,            // set per-node
+            archive_mode: true,  // enabled by default
+            ghost_pay: true,     // enabled by default
+            public_mining: true, // enabled by default
+            bitcoin_pure: true,  // enabled by default
+            elder: false,        // set per-node
             elder_slot: None,
             mempool_profile: "permissive".to_string(),
             template_profile: "default".to_string(),
@@ -215,9 +217,7 @@ impl VerificationState {
     ) -> Option<SignedResponse<T>> {
         let identity = self.identity.as_ref()?;
 
-        let sign_fn = |message: &[u8]| -> [u8; 64] {
-            identity.sign(message)
-        };
+        let sign_fn = |message: &[u8]| -> [u8; 64] { identity.sign(message) };
 
         Some(SignedResponse::new(
             payload,
@@ -274,13 +274,19 @@ impl VerificationState {
     }
 
     /// Set archive handler
-    pub fn with_archive_handler(mut self, handler: impl ArchiveHandler + Send + Sync + 'static) -> Self {
+    pub fn with_archive_handler(
+        mut self,
+        handler: impl ArchiveHandler + Send + Sync + 'static,
+    ) -> Self {
         self.archive_handler = Some(Box::new(handler));
         self
     }
 
     /// Set GhostPay handler
-    pub fn with_ghostpay_handler(mut self, handler: impl GhostPayHandler + Send + Sync + 'static) -> Self {
+    pub fn with_ghostpay_handler(
+        mut self,
+        handler: impl GhostPayHandler + Send + Sync + 'static,
+    ) -> Self {
         self.ghostpay_handler = Some(Box::new(handler));
         self
     }
@@ -293,7 +299,10 @@ impl VerificationState {
 
     /// Check if GSP is enabled
     pub fn gsp_enabled(&self) -> bool {
-        self.gsp_handler.as_ref().map(|h| h.is_enabled()).unwrap_or(false)
+        self.gsp_handler
+            .as_ref()
+            .map(|h| h.is_enabled())
+            .unwrap_or(false)
     }
 
     /// Get GSP info for watchdog
@@ -336,7 +345,10 @@ impl VerificationState {
     }
 
     /// Verify archive challenge
-    pub async fn verify_archive(&self, challenge: ArchiveChallenge) -> GhostResult<ArchiveResponse> {
+    pub async fn verify_archive(
+        &self,
+        challenge: ArchiveChallenge,
+    ) -> GhostResult<ArchiveResponse> {
         if !self.capabilities.archive_mode {
             return Ok(ArchiveResponse {
                 success: false,
@@ -346,21 +358,22 @@ impl VerificationState {
             });
         }
 
-        let handler = self.archive_handler.as_ref().ok_or_else(|| {
-            GhostError::VerificationFailed {
-                capability: "archive".to_string(),
-                reason: "Archive handler not configured".to_string(),
-            }
-        })?;
+        let handler =
+            self.archive_handler
+                .as_ref()
+                .ok_or_else(|| GhostError::VerificationFailed {
+                    capability: "archive".to_string(),
+                    reason: "Archive handler not configured".to_string(),
+                })?;
 
         match challenge.challenge_type {
             ChallengeType::ArchiveBlock => {
-                let hash = challenge.block_hash.ok_or_else(|| {
-                    GhostError::VerificationFailed {
+                let hash = challenge
+                    .block_hash
+                    .ok_or_else(|| GhostError::VerificationFailed {
                         capability: "archive".to_string(),
                         reason: "Block hash required".to_string(),
-                    }
-                })?;
+                    })?;
 
                 let block_data = handler.get_block(&hash)?;
 
@@ -372,12 +385,12 @@ impl VerificationState {
                 })
             }
             ChallengeType::ArchiveTx => {
-                let txid = challenge.txid.ok_or_else(|| {
-                    GhostError::VerificationFailed {
+                let txid = challenge
+                    .txid
+                    .ok_or_else(|| GhostError::VerificationFailed {
                         capability: "archive".to_string(),
                         reason: "Transaction ID required".to_string(),
-                    }
-                })?;
+                    })?;
 
                 let tx_data = handler.get_transaction(&txid)?;
 
@@ -400,12 +413,11 @@ impl VerificationState {
     /// Verify policy challenge
     pub async fn verify_policy(&self, challenge: PolicyChallenge) -> GhostResult<PolicyResponse> {
         // Decode transaction hex
-        let tx_bytes = hex::decode(&challenge.tx_hex).map_err(|e| {
-            GhostError::VerificationFailed {
+        let tx_bytes =
+            hex::decode(&challenge.tx_hex).map_err(|e| GhostError::VerificationFailed {
                 capability: "policy".to_string(),
                 reason: format!("Invalid transaction hex: {}", e),
-            }
-        })?;
+            })?;
 
         let tx: bitcoin::Transaction = bitcoin::consensus::deserialize(&tx_bytes).map_err(|e| {
             GhostError::VerificationFailed {
@@ -424,14 +436,20 @@ impl VerificationState {
                 Some(PolicyClassification {
                     tier: classification.tier.to_string(),
                     reason: classification.reason.to_string(),
-                    features: classification.features.iter().map(|f| f.to_string()).collect(),
+                    features: classification
+                        .features
+                        .iter()
+                        .map(|f| f.to_string())
+                        .collect(),
                 })
             }
         };
 
         let (accepted, rejection_reason) = match &decision {
             ghost_policy::PolicyDecision::Accept { .. } => (true, None),
-            ghost_policy::PolicyDecision::Reject { reason, .. } => (false, Some(reason.to_string())),
+            ghost_policy::PolicyDecision::Reject { reason, .. } => {
+                (false, Some(reason.to_string()))
+            }
         };
 
         Ok(PolicyResponse {
@@ -445,7 +463,10 @@ impl VerificationState {
     }
 
     /// Verify stratum challenge
-    pub async fn verify_stratum(&self, challenge: StratumChallenge) -> GhostResult<StratumResponse> {
+    pub async fn verify_stratum(
+        &self,
+        challenge: StratumChallenge,
+    ) -> GhostResult<StratumResponse> {
         if !self.capabilities.public_mining {
             return Ok(StratumResponse {
                 success: false,
@@ -490,7 +511,10 @@ impl VerificationState {
     }
 
     /// Verify GhostPay challenge
-    pub async fn verify_ghostpay(&self, challenge: GhostPayChallenge) -> GhostResult<GhostPayResponse> {
+    pub async fn verify_ghostpay(
+        &self,
+        challenge: GhostPayChallenge,
+    ) -> GhostResult<GhostPayResponse> {
         if !self.capabilities.ghost_pay {
             return Ok(GhostPayResponse {
                 success: false,
@@ -569,7 +593,7 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
             .burst_size(50)
             .key_extractor(SmartIpKeyExtractor)
             .finish()
-            .expect("valid governor config")
+            .expect("valid governor config"),
     );
 
     let governor_limiter = governor_conf.limiter().clone();
@@ -587,7 +611,9 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
     // - CORS: restrict to allowed origins
     // - Request body limit: 1MB max to prevent DoS
     let app = create_router(state)
-        .layer(GovernorLayer { config: governor_conf })
+        .layer(GovernorLayer {
+            config: governor_conf,
+        })
         .layer(cors)
         .layer(DefaultBodyLimit::max(1024 * 1024)); // 1MB limit
 
@@ -598,9 +624,12 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
         .await
         .map_err(|e| GhostError::Internal(format!("Failed to bind: {}", e)))?;
 
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .await
-        .map_err(|e| GhostError::Internal(format!("Server error: {}", e)))?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .map_err(|e| GhostError::Internal(format!("Server error: {}", e)))?;
 
     Ok(())
 }

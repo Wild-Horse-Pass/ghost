@@ -26,4 +26,4 @@ mod client;
 mod failover;
 
 pub use client::GspClient;
-pub use failover::{GspFailover, GspEndpoint};
+pub use failover::{GspEndpoint, GspFailover};

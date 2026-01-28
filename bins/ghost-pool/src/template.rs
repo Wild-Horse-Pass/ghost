@@ -66,7 +66,7 @@ impl Default for TemplateConfig {
             min_fee_rate: 1.0,
             target_weight: 3_992_000, // ~99% of 4MW limit
             coinbase_extra: "/Ghost/".to_string(),
-            treasury_address: String::new(), // Must be configured
+            treasury_address: String::new(),    // Must be configured
             pool_payout_address: String::new(), // Must be configured
             network: BitcoinNetwork::Mainnet,
         }
@@ -157,11 +157,7 @@ pub struct TemplateProcessor {
 
 impl TemplateProcessor {
     /// Create a new template processor
-    pub fn new(
-        config: TemplateConfig,
-        rpc: Arc<BitcoinRpc>,
-        policy: PolicyProfile,
-    ) -> Self {
+    pub fn new(config: TemplateConfig, rpc: Arc<BitcoinRpc>, policy: PolicyProfile) -> Self {
         let (event_tx, _) = broadcast::channel(100);
 
         Self {
@@ -366,7 +362,11 @@ impl TemplateProcessor {
             // Treasury
             if prop.treasury_amount > 0 {
                 coinbase2.extend_from_slice(&prop.treasury_amount.to_le_bytes());
-                self.encode_address_script(&mut coinbase2, &self.config.treasury_address, "treasury");
+                self.encode_address_script(
+                    &mut coinbase2,
+                    &self.config.treasury_address,
+                    "treasury",
+                );
             }
 
             debug!(
@@ -382,7 +382,11 @@ impl TemplateProcessor {
 
             // Single pool reward output
             coinbase2.extend_from_slice(&total_value.to_le_bytes());
-            self.encode_address_script(&mut coinbase2, &self.config.pool_payout_address, "pool_payout");
+            self.encode_address_script(
+                &mut coinbase2,
+                &self.config.pool_payout_address,
+                "pool_payout",
+            );
         }
 
         // Witness commitment output (0-value OP_RETURN with commitment)
@@ -424,7 +428,9 @@ impl TemplateProcessor {
     fn encode_script(&self, buf: &mut Vec<u8>, address: &[u8]) {
         // Try to parse as address string and get script pubkey
         if let Ok(addr_str) = std::str::from_utf8(address) {
-            if let Ok(addr) = addr_str.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>() {
+            if let Ok(addr) =
+                addr_str.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+            {
                 let script = addr.assume_checked().script_pubkey();
                 let script_bytes = script.as_bytes();
                 self.encode_varint(buf, script_bytes.len());
@@ -487,9 +493,9 @@ impl TemplateProcessor {
         *self.running.write() = true;
         info!("Template processor started");
 
-        let mut interval = tokio::time::interval(
-            std::time::Duration::from_millis(self.config.refresh_interval_ms)
-        );
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(
+            self.config.refresh_interval_ms,
+        ));
 
         while *self.running.read() {
             interval.tick().await;
@@ -521,13 +527,19 @@ impl TemplateProcessor {
         };
 
         // Fetch template from Bitcoin Core
-        let template = self.rpc.get_block_template(rules).await
+        let template = self
+            .rpc
+            .get_block_template(rules)
+            .await
             .map_err(|e| anyhow::anyhow!("RPC error: {}", e))?;
 
         // Check if template changed
         let should_update = {
             let current = self.current_work.read();
-            current.as_ref().map(|w| w.height != template.height).unwrap_or(true)
+            current
+                .as_ref()
+                .map(|w| w.height != template.height)
+                .unwrap_or(true)
         };
 
         if !should_update {
@@ -611,7 +623,10 @@ impl TemplateProcessor {
     }
 
     /// Filter transactions according to policy
-    fn filter_transactions(&self, transactions: &[TemplateTransaction]) -> (Vec<TemplateTransaction>, FilterStats) {
+    fn filter_transactions(
+        &self,
+        transactions: &[TemplateTransaction],
+    ) -> (Vec<TemplateTransaction>, FilterStats) {
         let original_count = transactions.len();
         let mut kept = Vec::with_capacity(original_count);
         let mut removed_fees = 0u64;
@@ -783,7 +798,11 @@ impl TemplateProcessor {
         coinbase2.extend_from_slice(&value.to_le_bytes());
 
         // Pool payout script
-        self.encode_address_script(&mut coinbase2, &self.config.pool_payout_address, "pool_payout_legacy");
+        self.encode_address_script(
+            &mut coinbase2,
+            &self.config.pool_payout_address,
+            "pool_payout_legacy",
+        );
 
         // Witness commitment output (if present) - this IS part of txid serialization
         let mut witness_data = WitnessData::default();
@@ -937,14 +956,20 @@ impl TemplateProcessor {
         header: &[u8],
     ) -> anyhow::Result<()> {
         // Get current work state for transaction data
-        let work = self.current_work.read().clone()
+        let work = self
+            .current_work
+            .read()
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("No active work state"))?;
 
         // === BLOCK VALIDATION BEFORE SUBMISSION ===
 
         // 1. Validate header length
         if header.len() != 80 {
-            return Err(anyhow::anyhow!("Invalid header length: {} (expected 80)", header.len()));
+            return Err(anyhow::anyhow!(
+                "Invalid header length: {} (expected 80)",
+                header.len()
+            ));
         }
 
         // 2. Validate previous block hash matches template
@@ -979,10 +1004,8 @@ impl TemplateProcessor {
         // 4. Convert non-witness coinbase to witness serialization
         // The coinbase passed in is non-witness format (for TXID computation)
         // We need to add marker, flag, and witness data for block submission
-        let coinbase_witness = self.convert_to_witness_serialization(
-            coinbase_non_witness,
-            &work.witness_data,
-        )?;
+        let coinbase_witness =
+            self.convert_to_witness_serialization(coinbase_non_witness, &work.witness_data)?;
 
         // Assemble the full block
         let mut block_data = Vec::new();
@@ -1026,12 +1049,20 @@ impl TemplateProcessor {
 
         if block_data.len() < MIN_BLOCK_SIZE {
             error!(size = block_data.len(), "Block too small");
-            return Err(anyhow::anyhow!("Block too small: {} bytes (minimum {})", block_data.len(), MIN_BLOCK_SIZE));
+            return Err(anyhow::anyhow!(
+                "Block too small: {} bytes (minimum {})",
+                block_data.len(),
+                MIN_BLOCK_SIZE
+            ));
         }
 
         if total_weight > MAX_BLOCK_WEIGHT {
             error!(weight = total_weight, "Block weight exceeds limit");
-            return Err(anyhow::anyhow!("Block weight {} exceeds maximum {}", total_weight, MAX_BLOCK_WEIGHT));
+            return Err(anyhow::anyhow!(
+                "Block weight {} exceeds maximum {}",
+                total_weight,
+                MAX_BLOCK_WEIGHT
+            ));
         }
 
         let block_hex = hex::encode(&block_data);
@@ -1077,11 +1108,8 @@ mod tests {
     #[test]
     fn test_height_encoding() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
-        let processor = TemplateProcessor::new(
-            TemplateConfig::default(),
-            rpc,
-            PolicyProfile::permissive(),
-        );
+        let processor =
+            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive());
 
         // Test various heights
         assert_eq!(processor.encode_height(0), vec![0x01, 0x00]);
@@ -1093,11 +1121,8 @@ mod tests {
     #[test]
     fn test_reverse_hex() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
-        let processor = TemplateProcessor::new(
-            TemplateConfig::default(),
-            rpc,
-            PolicyProfile::permissive(),
-        );
+        let processor =
+            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive());
 
         let hex = "0102030405060708";
         let reversed = processor.reverse_hex(hex);
@@ -1107,11 +1132,8 @@ mod tests {
     #[test]
     fn test_witness_conversion() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
-        let processor = TemplateProcessor::new(
-            TemplateConfig::default(),
-            rpc,
-            PolicyProfile::permissive(),
-        );
+        let processor =
+            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive());
 
         // Create a minimal non-witness coinbase:
         // version(4) | input_count(1) | prev_hash(32) | prev_index(4) | scriptsig_len(1) | scriptsig(4) | sequence(4) | output_count(1) | value(8) | scriptpubkey_len(1) | scriptpubkey(22) | locktime(4)
@@ -1135,7 +1157,9 @@ mod tests {
             nonce: [0u8; 32],
         };
 
-        let witness = processor.convert_to_witness_serialization(&non_witness, &witness_data).unwrap();
+        let witness = processor
+            .convert_to_witness_serialization(&non_witness, &witness_data)
+            .unwrap();
 
         // Witness serialization should be:
         // version(4) | marker(1) | flag(1) | rest... | witness_stack
@@ -1178,6 +1202,6 @@ mod tests {
 
         // coinbase2 should end with locktime (4 bytes), NOT witness data
         let len = coinbase2.len();
-        assert_eq!(&coinbase2[len-4..], &[0x00, 0x00, 0x00, 0x00]); // locktime = 0
+        assert_eq!(&coinbase2[len - 4..], &[0x00, 0x00, 0x00, 0x00]); // locktime = 0
     }
 }

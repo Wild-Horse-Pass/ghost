@@ -91,7 +91,9 @@ fn is_transient_error(error: &GhostError) -> bool {
                 "cannot start a transaction within a transaction",
                 "disk I/O error",
             ];
-            transient_patterns.iter().any(|pattern| msg.contains(pattern))
+            transient_patterns
+                .iter()
+                .any(|pattern| msg.contains(pattern))
         }
         _ => false,
     }
@@ -194,8 +196,7 @@ impl Database {
     pub fn in_memory() -> GhostResult<Self> {
         debug!("Creating in-memory database");
 
-        let conn = Connection::open_in_memory()
-            .map_err(|e| GhostError::Database(e.to_string()))?;
+        let conn = Connection::open_in_memory().map_err(|e| GhostError::Database(e.to_string()))?;
 
         Self::initialize_connection(&conn)?;
 
@@ -390,11 +391,7 @@ impl Database {
         self.with_connection(|conn| {
             // Find the minimum round ID to keep
             let current_round: Option<u64> = conn
-                .query_row(
-                    "SELECT MAX(round_id) FROM rounds",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT MAX(round_id) FROM rounds", [], |row| row.get(0))
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let Some(current) = current_round else {
@@ -403,18 +400,15 @@ impl Database {
 
             let min_round_to_keep = current.saturating_sub(keep_rounds);
 
-            let deleted = conn.execute(
-                "DELETE FROM shares WHERE round_id < ?1",
-                [min_round_to_keep],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
+            let deleted = conn
+                .execute(
+                    "DELETE FROM shares WHERE round_id < ?1",
+                    [min_round_to_keep],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
 
             if deleted > 0 {
-                info!(
-                    deleted,
-                    min_round = min_round_to_keep,
-                    "Pruned old shares"
-                );
+                info!(deleted, min_round = min_round_to_keep, "Pruned old shares");
             }
 
             Ok(deleted)
@@ -469,11 +463,9 @@ impl Database {
         self.with_connection(|conn| {
             let cutoff = chrono::Utc::now().timestamp() - (keep_days as i64 * 86400);
 
-            let deleted = conn.execute(
-                "DELETE FROM health_pings WHERE timestamp < ?1",
-                [cutoff],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
+            let deleted = conn
+                .execute("DELETE FROM health_pings WHERE timestamp < ?1", [cutoff])
+                .map_err(|e| GhostError::Database(e.to_string()))?;
 
             if deleted > 0 {
                 info!(deleted, keep_days, "Pruned old health pings");
@@ -489,11 +481,7 @@ impl Database {
     pub fn prune_old_votes(&self, keep_rounds: u64) -> GhostResult<usize> {
         self.with_connection(|conn| {
             let current_round: Option<u64> = conn
-                .query_row(
-                    "SELECT MAX(round_id) FROM rounds",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT MAX(round_id) FROM rounds", [], |row| row.get(0))
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let Some(current) = current_round else {
@@ -502,11 +490,9 @@ impl Database {
 
             let min_round_to_keep = current.saturating_sub(keep_rounds);
 
-            let deleted = conn.execute(
-                "DELETE FROM votes WHERE round_id < ?1",
-                [min_round_to_keep],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
+            let deleted = conn
+                .execute("DELETE FROM votes WHERE round_id < ?1", [min_round_to_keep])
+                .map_err(|e| GhostError::Database(e.to_string()))?;
 
             if deleted > 0 {
                 info!(deleted, min_round = min_round_to_keep, "Pruned old votes");
@@ -571,7 +557,7 @@ pub struct MaintenanceConfig {
 impl Default for MaintenanceConfig {
     fn default() -> Self {
         Self {
-            keep_rounds: 1000, // Keep ~1000 rounds of data
+            keep_rounds: 1000,        // Keep ~1000 rounds of data
             keep_health_ping_days: 7, // 7 days of health pings
             force_optimize: false,
         }

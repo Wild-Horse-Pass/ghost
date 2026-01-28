@@ -90,7 +90,8 @@ impl Transaction {
                 return Err("bad-txns-vout-toolarge");
             }
             // Check for overflow after addition (the 2010 bug fix)
-            total = total.checked_add(output.value)
+            total = total
+                .checked_add(output.value)
                 .ok_or("bad-txns-txouttotal-toolarge")?;
             if !money_range(total) {
                 return Err("bad-txns-txouttotal-toolarge");
@@ -118,7 +119,9 @@ struct UtxoSet {
 
 impl UtxoSet {
     fn new() -> Self {
-        Self { coins: HashMap::new() }
+        Self {
+            coins: HashMap::new(),
+        }
     }
 
     fn add_coin(&mut self, outpoint: OutPoint, output: TxOut) {
@@ -135,7 +138,9 @@ impl UtxoSet {
 
     /// Check if all inputs exist in UTXO set
     fn have_inputs(&self, tx: &Transaction) -> bool {
-        tx.vin.iter().all(|input| self.coins.contains_key(&input.prevout))
+        tx.vin
+            .iter()
+            .all(|input| self.coins.contains_key(&input.prevout))
     }
 }
 
@@ -169,7 +174,7 @@ fn check_transaction(tx: &Transaction) -> ValidationResult {
 
     // Check output values and total (2010 bug prevention)
     match tx.get_value_out() {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(e) => return ValidationResult::Invalid(e.to_string()),
     }
 
@@ -246,13 +251,22 @@ mod overflow_bug_2010 {
         let tx = Transaction {
             version: 1,
             vin: vec![TxIn {
-                prevout: OutPoint { txid: [1u8; 32], vout: 0 },
+                prevout: OutPoint {
+                    txid: [1u8; 32],
+                    vout: 0,
+                },
                 script_sig: vec![],
                 sequence: 0xFFFFFFFF,
             }],
             vout: vec![
-                TxOut { value: overflow_value, script_pubkey: vec![] },
-                TxOut { value: overflow_value, script_pubkey: vec![] },
+                TxOut {
+                    value: overflow_value,
+                    script_pubkey: vec![],
+                },
+                TxOut {
+                    value: overflow_value,
+                    script_pubkey: vec![],
+                },
             ],
             locktime: 0,
         };
@@ -261,11 +275,17 @@ mod overflow_bug_2010 {
         // This would have passed in 2010
         let sum_vulnerable: i64 = overflow_value.wrapping_add(overflow_value);
         println!("Vulnerable sum: {} satoshis", sum_vulnerable);
-        println!("This would appear as: {} BTC", sum_vulnerable as f64 / COIN as f64);
+        println!(
+            "This would appear as: {} BTC",
+            sum_vulnerable as f64 / COIN as f64
+        );
 
         // Demonstrate the overflow
         assert!(sum_vulnerable < 0, "Overflow produces negative sum");
-        assert!(sum_vulnerable < MAX_MONEY, "Negative sum passes MAX_MONEY check");
+        assert!(
+            sum_vulnerable < MAX_MONEY,
+            "Negative sum passes MAX_MONEY check"
+        );
 
         // The FIXED check (current ghost-core behavior)
         let result = check_transaction(&tx);
@@ -289,18 +309,25 @@ mod overflow_bug_2010 {
         let tx = Transaction {
             version: 1,
             vin: vec![TxIn {
-                prevout: OutPoint { txid: [1u8; 32], vout: 0 },
+                prevout: OutPoint {
+                    txid: [1u8; 32],
+                    vout: 0,
+                },
                 script_sig: vec![],
                 sequence: 0xFFFFFFFF,
             }],
-            vout: vec![
-                TxOut { value: MAX_MONEY, script_pubkey: vec![] },
-            ],
+            vout: vec![TxOut {
+                value: MAX_MONEY,
+                script_pubkey: vec![],
+            }],
             locktime: 0,
         };
 
         let result = check_transaction(&tx);
-        assert!(result.is_valid(), "MAX_MONEY in single output should be valid");
+        assert!(
+            result.is_valid(),
+            "MAX_MONEY in single output should be valid"
+        );
     }
 
     /// Boundary test: MAX_MONEY + 1 is invalid
@@ -309,13 +336,17 @@ mod overflow_bug_2010 {
         let tx = Transaction {
             version: 1,
             vin: vec![TxIn {
-                prevout: OutPoint { txid: [1u8; 32], vout: 0 },
+                prevout: OutPoint {
+                    txid: [1u8; 32],
+                    vout: 0,
+                },
                 script_sig: vec![],
                 sequence: 0xFFFFFFFF,
             }],
-            vout: vec![
-                TxOut { value: MAX_MONEY + 1, script_pubkey: vec![] },
-            ],
+            vout: vec![TxOut {
+                value: MAX_MONEY + 1,
+                script_pubkey: vec![],
+            }],
             locktime: 0,
         };
 
@@ -331,19 +362,31 @@ mod overflow_bug_2010 {
         let tx = Transaction {
             version: 1,
             vin: vec![TxIn {
-                prevout: OutPoint { txid: [1u8; 32], vout: 0 },
+                prevout: OutPoint {
+                    txid: [1u8; 32],
+                    vout: 0,
+                },
                 script_sig: vec![],
                 sequence: 0xFFFFFFFF,
             }],
             vout: vec![
-                TxOut { value: half_max + 1, script_pubkey: vec![] },
-                TxOut { value: half_max + 1, script_pubkey: vec![] },
+                TxOut {
+                    value: half_max + 1,
+                    script_pubkey: vec![],
+                },
+                TxOut {
+                    value: half_max + 1,
+                    script_pubkey: vec![],
+                },
             ],
             locktime: 0,
         };
 
         let result = check_transaction(&tx);
-        assert!(!result.is_valid(), "Sum exceeding MAX_MONEY should be rejected");
+        assert!(
+            !result.is_valid(),
+            "Sum exceeding MAX_MONEY should be rejected"
+        );
     }
 
     /// Test: Negative output value
@@ -352,18 +395,25 @@ mod overflow_bug_2010 {
         let tx = Transaction {
             version: 1,
             vin: vec![TxIn {
-                prevout: OutPoint { txid: [1u8; 32], vout: 0 },
+                prevout: OutPoint {
+                    txid: [1u8; 32],
+                    vout: 0,
+                },
                 script_sig: vec![],
                 sequence: 0xFFFFFFFF,
             }],
-            vout: vec![
-                TxOut { value: -1, script_pubkey: vec![] },
-            ],
+            vout: vec![TxOut {
+                value: -1,
+                script_pubkey: vec![],
+            }],
             locktime: 0,
         };
 
         let result = check_transaction(&tx);
-        assert!(!result.is_valid(), "Negative output value should be rejected");
+        assert!(
+            !result.is_valid(),
+            "Negative output value should be rejected"
+        );
     }
 
     /// Test: Multiple outputs that cumulatively overflow
@@ -375,14 +425,19 @@ mod overflow_bug_2010 {
         let tx = Transaction {
             version: 1,
             vin: vec![TxIn {
-                prevout: OutPoint { txid: [1u8; 32], vout: 0 },
+                prevout: OutPoint {
+                    txid: [1u8; 32],
+                    vout: 0,
+                },
                 script_sig: vec![],
                 sequence: 0xFFFFFFFF,
             }],
-            vout: (0..15).map(|_| TxOut {
-                value: per_output,
-                script_pubkey: vec![],
-            }).collect(),
+            vout: (0..15)
+                .map(|_| TxOut {
+                    value: per_output,
+                    script_pubkey: vec![],
+                })
+                .collect(),
             locktime: 0,
         };
 
@@ -401,19 +456,27 @@ mod overflow_bug_2010 {
         let tx = Transaction {
             version: 1,
             vin: vec![TxIn {
-                prevout: OutPoint { txid: [0u8; 32], vout: 0xFFFFFFFF }, // Coinbase
+                prevout: OutPoint {
+                    txid: [0u8; 32],
+                    vout: 0xFFFFFFFF,
+                }, // Coinbase
                 script_sig: vec![],
                 sequence: 0xFFFFFFFF,
             }],
-            vout: (0..num_miners).map(|_| TxOut {
-                value: per_miner,
-                script_pubkey: vec![],
-            }).collect(),
+            vout: (0..num_miners)
+                .map(|_| TxOut {
+                    value: per_miner,
+                    script_pubkey: vec![],
+                })
+                .collect(),
             locktime: 0,
         };
 
         let result = check_transaction(&tx);
-        assert!(result.is_valid(), "Normal payout distribution should be valid");
+        assert!(
+            result.is_valid(),
+            "Normal payout distribution should be valid"
+        );
 
         // Verify total doesn't exceed reward
         let total_out = tx.get_value_out().unwrap();
@@ -455,24 +518,29 @@ mod bdb_fork_2013 {
                 },
                 vout: 0,
             };
-            utxo.add_coin(outpoint, TxOut {
-                value: 10_000, // 0.0001 BTC each
-                script_pubkey: vec![],
-            });
+            utxo.add_coin(
+                outpoint,
+                TxOut {
+                    value: 10_000, // 0.0001 BTC each
+                    script_pubkey: vec![],
+                },
+            );
         }
 
         // Create consolidation transaction spending all inputs
         let tx = Transaction {
             version: 1,
-            vin: (0..LARGE_INPUT_COUNT).map(|i| {
-                let mut txid = [0u8; 32];
-                txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
-                TxIn {
-                    prevout: OutPoint { txid, vout: 0 },
-                    script_sig: vec![],
-                    sequence: 0xFFFFFFFF,
-                }
-            }).collect(),
+            vin: (0..LARGE_INPUT_COUNT)
+                .map(|i| {
+                    let mut txid = [0u8; 32];
+                    txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+                    TxIn {
+                        prevout: OutPoint { txid, vout: 0 },
+                        script_sig: vec![],
+                        sequence: 0xFFFFFFFF,
+                    }
+                })
+                .collect(),
             vout: vec![TxOut {
                 value: (10_000 * LARGE_INPUT_COUNT as i64) - 10_000, // Minus fee
                 script_pubkey: vec![],
@@ -482,12 +550,21 @@ mod bdb_fork_2013 {
 
         // Check transaction validity
         let result1 = check_transaction(&tx);
-        assert!(result1.is_valid(), "Large input tx should pass basic checks");
+        assert!(
+            result1.is_valid(),
+            "Large input tx should pass basic checks"
+        );
 
         let result2 = check_tx_inputs(&tx, &utxo);
-        assert!(result2.is_valid(), "Large input tx should pass input checks");
+        assert!(
+            result2.is_valid(),
+            "Large input tx should pass input checks"
+        );
 
-        println!("Successfully validated tx with {} inputs", LARGE_INPUT_COUNT);
+        println!(
+            "Successfully validated tx with {} inputs",
+            LARGE_INPUT_COUNT
+        );
     }
 
     /// Test: Consistent behavior regardless of input order
@@ -506,24 +583,29 @@ mod bdb_fork_2013 {
                 },
                 vout: 0,
             };
-            utxo.add_coin(outpoint, TxOut {
-                value: 50_000,
-                script_pubkey: vec![],
-            });
+            utxo.add_coin(
+                outpoint,
+                TxOut {
+                    value: 50_000,
+                    script_pubkey: vec![],
+                },
+            );
         }
 
         // Create transaction with inputs in forward order
         let tx_forward = Transaction {
             version: 1,
-            vin: (0..input_count).map(|i| {
-                let mut txid = [0u8; 32];
-                txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
-                TxIn {
-                    prevout: OutPoint { txid, vout: 0 },
-                    script_sig: vec![],
-                    sequence: 0xFFFFFFFF,
-                }
-            }).collect(),
+            vin: (0..input_count)
+                .map(|i| {
+                    let mut txid = [0u8; 32];
+                    txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+                    TxIn {
+                        prevout: OutPoint { txid, vout: 0 },
+                        script_sig: vec![],
+                        sequence: 0xFFFFFFFF,
+                    }
+                })
+                .collect(),
             vout: vec![TxOut {
                 value: 50_000 * input_count as i64 - 1000,
                 script_pubkey: vec![],
@@ -534,15 +616,18 @@ mod bdb_fork_2013 {
         // Create transaction with inputs in reverse order
         let tx_reverse = Transaction {
             version: 1,
-            vin: (0..input_count).rev().map(|i| {
-                let mut txid = [0u8; 32];
-                txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
-                TxIn {
-                    prevout: OutPoint { txid, vout: 0 },
-                    script_sig: vec![],
-                    sequence: 0xFFFFFFFF,
-                }
-            }).collect(),
+            vin: (0..input_count)
+                .rev()
+                .map(|i| {
+                    let mut txid = [0u8; 32];
+                    txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+                    TxIn {
+                        prevout: OutPoint { txid, vout: 0 },
+                        script_sig: vec![],
+                        sequence: 0xFFFFFFFF,
+                    }
+                })
+                .collect(),
             vout: vec![TxOut {
                 value: 50_000 * input_count as i64 - 1000,
                 script_pubkey: vec![],
@@ -565,11 +650,17 @@ mod bdb_fork_2013 {
         let mut utxo = UtxoSet::new();
 
         // Add initial UTXO
-        let initial_outpoint = OutPoint { txid: [0u8; 32], vout: 0 };
-        utxo.add_coin(initial_outpoint, TxOut {
-            value: 100_000_000, // 1 BTC
-            script_pubkey: vec![],
-        });
+        let initial_outpoint = OutPoint {
+            txid: [0u8; 32],
+            vout: 0,
+        };
+        utxo.add_coin(
+            initial_outpoint,
+            TxOut {
+                value: 100_000_000, // 1 BTC
+                script_pubkey: vec![],
+            },
+        );
 
         // Transaction chain where each spends the previous
         let mut prev_outpoint = initial_outpoint;
@@ -616,7 +707,10 @@ mod bdb_fork_2013 {
         }
 
         assert!(all_valid, "All transactions in chain should be valid");
-        println!("Successfully processed chain of {} transactions", chain_length);
+        println!(
+            "Successfully processed chain of {} transactions",
+            chain_length
+        );
     }
 
     /// Ghost Pool specific: Test UTXO consolidation for payouts
@@ -639,29 +733,32 @@ mod bdb_fork_2013 {
             };
             // Small amounts: 1000-10000 sats each
             let value = 1000 + (i as i64 % 9000);
-            utxo.add_coin(outpoint, TxOut {
-                value,
-                script_pubkey: vec![],
-            });
+            utxo.add_coin(
+                outpoint,
+                TxOut {
+                    value,
+                    script_pubkey: vec![],
+                },
+            );
         }
 
         // Calculate total available
-        let total_available: i64 = (0..output_count)
-            .map(|i| 1000 + (i as i64 % 9000))
-            .sum();
+        let total_available: i64 = (0..output_count).map(|i| 1000 + (i as i64 % 9000)).sum();
 
         // Create consolidation transaction
         let tx = Transaction {
             version: 1,
-            vin: (0..output_count).map(|i| {
-                let mut txid = [0u8; 32];
-                txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
-                TxIn {
-                    prevout: OutPoint { txid, vout: 0 },
-                    script_sig: vec![],
-                    sequence: 0xFFFFFFFF,
-                }
-            }).collect(),
+            vin: (0..output_count)
+                .map(|i| {
+                    let mut txid = [0u8; 32];
+                    txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+                    TxIn {
+                        prevout: OutPoint { txid, vout: 0 },
+                        script_sig: vec![],
+                        sequence: 0xFFFFFFFF,
+                    }
+                })
+                .collect(),
             vout: vec![TxOut {
                 value: total_available - 5000, // Minus consolidation fee
                 script_pubkey: vec![],
@@ -706,10 +803,13 @@ mod inflation_bug_2018 {
             txid: [0xAB; 32],
             vout: 0,
         };
-        utxo.add_coin(victim_outpoint, TxOut {
-            value: 100_000_000, // 1 BTC
-            script_pubkey: vec![],
-        });
+        utxo.add_coin(
+            victim_outpoint,
+            TxOut {
+                value: 100_000_000, // 1 BTC
+                script_pubkey: vec![],
+            },
+        );
 
         // ATTACK: Spend the same input TWICE to get 2 BTC from 1 BTC
         let malicious_tx = Transaction {
@@ -790,15 +890,17 @@ mod inflation_bug_2018 {
         // Create transaction with many unique inputs
         let tx_unique = Transaction {
             version: 1,
-            vin: (0..input_count).map(|i| {
-                let mut txid = [0u8; 32];
-                txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
-                TxIn {
-                    prevout: OutPoint { txid, vout: 0 },
-                    script_sig: vec![],
-                    sequence: 0xFFFFFFFF,
-                }
-            }).collect(),
+            vin: (0..input_count)
+                .map(|i| {
+                    let mut txid = [0u8; 32];
+                    txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+                    TxIn {
+                        prevout: OutPoint { txid, vout: 0 },
+                        script_sig: vec![],
+                        sequence: 0xFFFFFFFF,
+                    }
+                })
+                .collect(),
             vout: vec![TxOut {
                 value: 100_000,
                 script_pubkey: vec![],
@@ -828,30 +930,72 @@ mod inflation_bug_2018 {
     /// Test: Duplicate at various positions
     #[test]
     fn test_015_duplicate_at_different_positions() {
-        let duplicate_outpoint = OutPoint { txid: [0xFF; 32], vout: 0 };
+        let duplicate_outpoint = OutPoint {
+            txid: [0xFF; 32],
+            vout: 0,
+        };
 
         // Test duplicate at beginning
         let tx_begin = Transaction {
             version: 1,
             vin: vec![
-                TxIn { prevout: duplicate_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
-                TxIn { prevout: duplicate_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
-                TxIn { prevout: OutPoint { txid: [1u8; 32], vout: 0 }, script_sig: vec![], sequence: 0xFFFFFFFF },
+                TxIn {
+                    prevout: duplicate_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxIn {
+                    prevout: duplicate_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxIn {
+                    prevout: OutPoint {
+                        txid: [1u8; 32],
+                        vout: 0,
+                    },
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
             ],
-            vout: vec![TxOut { value: 100_000, script_pubkey: vec![] }],
+            vout: vec![TxOut {
+                value: 100_000,
+                script_pubkey: vec![],
+            }],
             locktime: 0,
         };
-        assert!(!check_transaction(&tx_begin).is_valid(), "Duplicate at beginning");
+        assert!(
+            !check_transaction(&tx_begin).is_valid(),
+            "Duplicate at beginning"
+        );
 
         // Test duplicate at end
         let tx_end = Transaction {
             version: 1,
             vin: vec![
-                TxIn { prevout: OutPoint { txid: [1u8; 32], vout: 0 }, script_sig: vec![], sequence: 0xFFFFFFFF },
-                TxIn { prevout: duplicate_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
-                TxIn { prevout: duplicate_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
+                TxIn {
+                    prevout: OutPoint {
+                        txid: [1u8; 32],
+                        vout: 0,
+                    },
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxIn {
+                    prevout: duplicate_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxIn {
+                    prevout: duplicate_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
             ],
-            vout: vec![TxOut { value: 100_000, script_pubkey: vec![] }],
+            vout: vec![TxOut {
+                value: 100_000,
+                script_pubkey: vec![],
+            }],
             locktime: 0,
         };
         assert!(!check_transaction(&tx_end).is_valid(), "Duplicate at end");
@@ -860,30 +1004,76 @@ mod inflation_bug_2018 {
         let tx_separated = Transaction {
             version: 1,
             vin: vec![
-                TxIn { prevout: duplicate_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
-                TxIn { prevout: OutPoint { txid: [1u8; 32], vout: 0 }, script_sig: vec![], sequence: 0xFFFFFFFF },
-                TxIn { prevout: OutPoint { txid: [2u8; 32], vout: 0 }, script_sig: vec![], sequence: 0xFFFFFFFF },
-                TxIn { prevout: duplicate_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
+                TxIn {
+                    prevout: duplicate_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxIn {
+                    prevout: OutPoint {
+                        txid: [1u8; 32],
+                        vout: 0,
+                    },
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxIn {
+                    prevout: OutPoint {
+                        txid: [2u8; 32],
+                        vout: 0,
+                    },
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxIn {
+                    prevout: duplicate_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
             ],
-            vout: vec![TxOut { value: 100_000, script_pubkey: vec![] }],
+            vout: vec![TxOut {
+                value: 100_000,
+                script_pubkey: vec![],
+            }],
             locktime: 0,
         };
-        assert!(!check_transaction(&tx_separated).is_valid(), "Duplicate separated");
+        assert!(
+            !check_transaction(&tx_separated).is_valid(),
+            "Duplicate separated"
+        );
     }
 
     /// Test: Triple spend (same input three times)
     #[test]
     fn test_016_triple_spend_same_input() {
-        let triple_outpoint = OutPoint { txid: [0xAA; 32], vout: 0 };
+        let triple_outpoint = OutPoint {
+            txid: [0xAA; 32],
+            vout: 0,
+        };
 
         let tx = Transaction {
             version: 1,
             vin: vec![
-                TxIn { prevout: triple_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
-                TxIn { prevout: triple_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
-                TxIn { prevout: triple_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
+                TxIn {
+                    prevout: triple_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxIn {
+                    prevout: triple_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxIn {
+                    prevout: triple_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
             ],
-            vout: vec![TxOut { value: 300_000_000, script_pubkey: vec![] }],
+            vout: vec![TxOut {
+                value: 300_000_000,
+                script_pubkey: vec![],
+            }],
             locktime: 0,
         };
 
@@ -904,15 +1094,29 @@ mod inflation_bug_2018 {
         let malicious_tx = Transaction {
             version: 1,
             vin: vec![
-                TxIn { prevout: coinbase_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
-                TxIn { prevout: coinbase_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
+                TxIn {
+                    prevout: coinbase_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxIn {
+                    prevout: coinbase_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
             ],
-            vout: vec![TxOut { value: 625_000_000, script_pubkey: vec![] }], // 6.25 BTC
+            vout: vec![TxOut {
+                value: 625_000_000,
+                script_pubkey: vec![],
+            }], // 6.25 BTC
             locktime: 0,
         };
 
         let result = check_transaction(&malicious_tx);
-        assert!(!result.is_valid(), "Double-spending coinbase must be rejected");
+        assert!(
+            !result.is_valid(),
+            "Double-spending coinbase must be rejected"
+        );
     }
 }
 
@@ -928,17 +1132,34 @@ mod combined_attacks {
     #[test]
     fn test_018_overflow_plus_duplicate() {
         let overflow_value: i64 = 0x7FFFFFFFFFFFF800_u64 as i64;
-        let duplicate_outpoint = OutPoint { txid: [0xFF; 32], vout: 0 };
+        let duplicate_outpoint = OutPoint {
+            txid: [0xFF; 32],
+            vout: 0,
+        };
 
         let tx = Transaction {
             version: 1,
             vin: vec![
-                TxIn { prevout: duplicate_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
-                TxIn { prevout: duplicate_outpoint, script_sig: vec![], sequence: 0xFFFFFFFF },
+                TxIn {
+                    prevout: duplicate_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
+                TxIn {
+                    prevout: duplicate_outpoint,
+                    script_sig: vec![],
+                    sequence: 0xFFFFFFFF,
+                },
             ],
             vout: vec![
-                TxOut { value: overflow_value, script_pubkey: vec![] },
-                TxOut { value: overflow_value, script_pubkey: vec![] },
+                TxOut {
+                    value: overflow_value,
+                    script_pubkey: vec![],
+                },
+                TxOut {
+                    value: overflow_value,
+                    script_pubkey: vec![],
+                },
             ],
             locktime: 0,
         };
@@ -948,9 +1169,9 @@ mod combined_attacks {
 
         // Should catch EITHER the duplicate OR the overflow (or both)
         if let ValidationResult::Invalid(reason) = result {
-            let catches_something = reason.contains("duplicate") ||
-                                   reason.contains("toolarge") ||
-                                   reason.contains("overflow");
+            let catches_something = reason.contains("duplicate")
+                || reason.contains("toolarge")
+                || reason.contains("overflow");
             assert!(catches_something, "Should catch at least one attack vector");
         }
     }
@@ -961,28 +1182,36 @@ mod combined_attacks {
         let num_inputs = 1000;
         let duplicate_position_a = 100;
         let duplicate_position_b = 900;
-        let duplicate_outpoint = OutPoint { txid: [0xDE; 32], vout: 0 };
+        let duplicate_outpoint = OutPoint {
+            txid: [0xDE; 32],
+            vout: 0,
+        };
 
         let tx = Transaction {
             version: 1,
-            vin: (0..num_inputs).map(|i| {
-                if i == duplicate_position_a || i == duplicate_position_b {
-                    TxIn {
-                        prevout: duplicate_outpoint,
-                        script_sig: vec![],
-                        sequence: 0xFFFFFFFF,
+            vin: (0..num_inputs)
+                .map(|i| {
+                    if i == duplicate_position_a || i == duplicate_position_b {
+                        TxIn {
+                            prevout: duplicate_outpoint,
+                            script_sig: vec![],
+                            sequence: 0xFFFFFFFF,
+                        }
+                    } else {
+                        let mut txid = [0u8; 32];
+                        txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
+                        TxIn {
+                            prevout: OutPoint { txid, vout: 0 },
+                            script_sig: vec![],
+                            sequence: 0xFFFFFFFF,
+                        }
                     }
-                } else {
-                    let mut txid = [0u8; 32];
-                    txid[0..8].copy_from_slice(&(i as u64).to_le_bytes());
-                    TxIn {
-                        prevout: OutPoint { txid, vout: 0 },
-                        script_sig: vec![],
-                        sequence: 0xFFFFFFFF,
-                    }
-                }
-            }).collect(),
-            vout: vec![TxOut { value: 100_000, script_pubkey: vec![] }],
+                })
+                .collect(),
+            vout: vec![TxOut {
+                value: 100_000,
+                script_pubkey: vec![],
+            }],
             locktime: 0,
         };
 
@@ -1001,23 +1230,35 @@ mod combined_attacks {
         let no_inputs = Transaction {
             version: 1,
             vin: vec![],
-            vout: vec![TxOut { value: 100_000, script_pubkey: vec![] }],
+            vout: vec![TxOut {
+                value: 100_000,
+                script_pubkey: vec![],
+            }],
             locktime: 0,
         };
-        assert!(!check_transaction(&no_inputs).is_valid(), "No inputs should fail");
+        assert!(
+            !check_transaction(&no_inputs).is_valid(),
+            "No inputs should fail"
+        );
 
         // No outputs
         let no_outputs = Transaction {
             version: 1,
             vin: vec![TxIn {
-                prevout: OutPoint { txid: [1u8; 32], vout: 0 },
+                prevout: OutPoint {
+                    txid: [1u8; 32],
+                    vout: 0,
+                },
                 script_sig: vec![],
                 sequence: 0xFFFFFFFF,
             }],
             vout: vec![],
             locktime: 0,
         };
-        assert!(!check_transaction(&no_outputs).is_valid(), "No outputs should fail");
+        assert!(
+            !check_transaction(&no_outputs).is_valid(),
+            "No outputs should fail"
+        );
 
         // Both empty
         let empty = Transaction {
@@ -1026,7 +1267,10 @@ mod combined_attacks {
             vout: vec![],
             locktime: 0,
         };
-        assert!(!check_transaction(&empty).is_valid(), "Empty transaction should fail");
+        assert!(
+            !check_transaction(&empty).is_valid(),
+            "Empty transaction should fail"
+        );
     }
 }
 
@@ -1043,12 +1287,12 @@ mod ghost_pay_l2 {
     fn test_021_wraith_output_values_safe() {
         // Wraith protocol uses fixed denominations
         let denominations: Vec<i64> = vec![
-            1_000,        // 0.00001 BTC
-            10_000,       // 0.0001 BTC
-            100_000,      // 0.001 BTC
-            1_000_000,    // 0.01 BTC
-            10_000_000,   // 0.1 BTC
-            100_000_000,  // 1 BTC
+            1_000,       // 0.00001 BTC
+            10_000,      // 0.0001 BTC
+            100_000,     // 0.001 BTC
+            1_000_000,   // 0.01 BTC
+            10_000_000,  // 0.1 BTC
+            100_000_000, // 1 BTC
         ];
 
         for denom in &denominations {
@@ -1059,13 +1303,18 @@ mod ghost_pay_l2 {
             assert!(
                 money_range(total),
                 "Wraith denomination {} * {} participants = {} should be in range",
-                denom, max_participants, total
+                denom,
+                max_participants,
+                total
             );
         }
 
         // Even maximum denomination with maximum participants
         let max_total = denominations.last().unwrap() * 100;
-        assert!(max_total < MAX_MONEY, "Max Wraith total should be well under MAX_MONEY");
+        assert!(
+            max_total < MAX_MONEY,
+            "Max Wraith total should be well under MAX_MONEY"
+        );
     }
 
     /// Test: Reconciliation batch can't have duplicate settlements
@@ -1082,10 +1331,7 @@ mod ghost_pay_l2 {
 
         // Add settlements
         let ghost_ids = [
-            [1u8; 32],
-            [2u8; 32],
-            [3u8; 32],
-            [1u8; 32], // DUPLICATE!
+            [1u8; 32], [2u8; 32], [3u8; 32], [1u8; 32], // DUPLICATE!
         ];
 
         let mut duplicates_found = false;
@@ -1096,7 +1342,10 @@ mod ghost_pay_l2 {
             }
         }
 
-        assert!(duplicates_found, "Should detect duplicate Ghost ID in batch");
+        assert!(
+            duplicates_found,
+            "Should detect duplicate Ghost ID in batch"
+        );
     }
 
     /// Test: L2 balance can't overflow
@@ -1109,8 +1358,10 @@ mod ghost_pay_l2 {
         let credit: u64 = 1;
 
         let new_balance = balance.checked_add(credit);
-        assert!(new_balance.is_none() || new_balance.unwrap() > MAX_MONEY as u64,
-            "Balance overflow should be detected");
+        assert!(
+            new_balance.is_none() || new_balance.unwrap() > MAX_MONEY as u64,
+            "Balance overflow should be detected"
+        );
     }
 
     /// Test: Ghost Lock output values validated

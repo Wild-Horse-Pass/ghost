@@ -49,7 +49,11 @@ pub enum ZmqNotification {
     /// Raw transaction data
     RawTx(Vec<u8>),
     /// Sequence number notification
-    Sequence { hash: String, label: char, mempool_seq: u64 },
+    Sequence {
+        hash: String,
+        label: char,
+        mempool_seq: u64,
+    },
 }
 
 /// ZMQ subscriber configuration
@@ -181,7 +185,8 @@ impl ZmqSubscriber {
                         let _ = block_tx.send(hash);
                     },
                     &mut shutdown_rx,
-                ).await;
+                )
+                .await;
             });
         }
 
@@ -199,7 +204,8 @@ impl ZmqSubscriber {
                         let _ = tx_tx.send(hash);
                     },
                     &mut shutdown_rx,
-                ).await;
+                )
+                .await;
             });
         }
 
@@ -211,11 +217,7 @@ impl ZmqSubscriber {
             let mut shutdown_rx = shutdown_tx.subscribe();
 
             tokio::spawn(async move {
-                Self::run_sequence_subscriber(
-                    &endpoint,
-                    block_event_tx,
-                    &mut shutdown_rx,
-                ).await;
+                Self::run_sequence_subscriber(&endpoint, block_event_tx, &mut shutdown_rx).await;
             });
         }
 
@@ -275,7 +277,10 @@ impl ZmqSubscriber {
     ) where
         F: Fn(&[u8]) + Send + 'static,
     {
-        info!("Connecting ZMQ subscriber to {} for topic {}", endpoint, topic);
+        info!(
+            "Connecting ZMQ subscriber to {} for topic {}",
+            endpoint, topic
+        );
 
         // Create ZMQ socket
         let mut socket = zeromq::SubSocket::new();
@@ -292,7 +297,10 @@ impl ZmqSubscriber {
             return;
         }
 
-        info!("ZMQ subscriber connected to {} for topic {}", endpoint, topic);
+        info!(
+            "ZMQ subscriber connected to {} for topic {}",
+            endpoint, topic
+        );
 
         // Message loop
         loop {
@@ -331,7 +339,10 @@ impl ZmqSubscriber {
         block_event_tx: broadcast::Sender<BlockEvent>,
         shutdown_rx: &mut broadcast::Receiver<()>,
     ) {
-        info!("Connecting ZMQ subscriber to {} for sequence (reorg detection)", endpoint);
+        info!(
+            "Connecting ZMQ subscriber to {} for sequence (reorg detection)",
+            endpoint
+        );
 
         let mut socket = zeromq::SubSocket::new();
 

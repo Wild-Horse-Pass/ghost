@@ -169,6 +169,7 @@ mod tests {
     fn test_fill_percentage() {
         assert!((ParticipantTier::Express.fill_percentage(12) - 48.0).abs() < 0.1);
         assert!((ParticipantTier::Express.fill_percentage(25) - 100.0).abs() < 0.1);
-        assert!((ParticipantTier::Express.fill_percentage(30) - 100.0).abs() < 0.1); // Capped at 100%
+        assert!((ParticipantTier::Express.fill_percentage(30) - 100.0).abs() < 0.1);
+        // Capped at 100%
     }
 }

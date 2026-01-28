@@ -64,10 +64,7 @@ impl GhostKeys {
     }
 
     /// Create from existing secret keys
-    pub fn from_secrets(
-        scan_secret: SecretKey,
-        spend_secret: SecretKey,
-    ) -> Self {
+    pub fn from_secrets(scan_secret: SecretKey, spend_secret: SecretKey) -> Self {
         let secp = Secp256k1::new();
         let scan_pubkey = PublicKey::from_secret_key(&secp, &scan_secret);
         let spend_pubkey = PublicKey::from_secret_key(&secp, &spend_secret);
@@ -181,7 +178,7 @@ impl GhostKeys {
     /// This is used to create new Ghost Locks. Each lock gets a unique
     /// key derived from the spend key.
     pub fn derive_lock_pubkey(&self, index: u32) -> [u8; 33] {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let secp = Secp256k1::new();
 
@@ -208,7 +205,7 @@ impl GhostKeys {
     ///
     /// Recovery keys are used for timelock recovery paths.
     pub fn derive_recovery_pubkey(&self, index: u32) -> [u8; 33] {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let secp = Secp256k1::new();
 
@@ -233,7 +230,7 @@ impl GhostKeys {
 
     /// Derive the secret key for a specific lock index
     pub fn derive_lock_secret(&self, index: u32) -> Result<SecretKey, GhostKeyError> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         // Same tweak as derive_lock_pubkey
         let mut hasher = Sha256::new();
@@ -248,7 +245,7 @@ impl GhostKeys {
 
     /// Derive the recovery secret key for a specific lock index
     pub fn derive_recovery_secret(&self, index: u32) -> Result<SecretKey, GhostKeyError> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         // Same tweak as derive_recovery_pubkey
         let mut hasher = Sha256::new();
@@ -296,7 +293,9 @@ impl TryFrom<GhostKeysExport> for GhostKeys {
             .map_err(|e| GhostKeyError::InvalidSecretKey(e.to_string()))?;
 
         if scan_bytes.len() != 32 || spend_bytes.len() != 32 {
-            return Err(GhostKeyError::InvalidSecretKey("Invalid key length".to_string()));
+            return Err(GhostKeyError::InvalidSecretKey(
+                "Invalid key length".to_string(),
+            ));
         }
 
         let scan_array: [u8; 32] = scan_bytes.try_into().unwrap();

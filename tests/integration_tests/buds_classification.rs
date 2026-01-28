@@ -6,14 +6,12 @@
 //! - T2: Data anchoring (OP_RETURN ≤80 bytes, Lightning)
 //! - T3: Heavy data (inscriptions, Runes, BRC-20)
 
-use ghost_buds::{
-    BudsClassifier, BudsTier, ClassificationReason, DetectedFeature, PolicyPreset, FilteredCount,
-};
 use bitcoin::{
-    absolute::LockTime, transaction::Version, Amount, ScriptBuf, Sequence,
-    Transaction, TxIn, TxOut, Witness,
-    blockdata::script::Builder,
-    hashes::Hash,
+    absolute::LockTime, blockdata::script::Builder, hashes::Hash, transaction::Version, Amount,
+    ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
+};
+use ghost_buds::{
+    BudsClassifier, BudsTier, ClassificationReason, DetectedFeature, FilteredCount, PolicyPreset,
 };
 
 // =============================================================================
@@ -46,9 +44,10 @@ fn create_p2tr_script() -> ScriptBuf {
 
 /// Create a P2SH script (OP_HASH160 <20-byte-hash> OP_EQUAL)
 fn create_p2sh_script() -> ScriptBuf {
-    let bytes = vec![0xa9, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                    0x00, 0x00, 0x87];
+    let bytes = vec![
+        0xa9, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x87,
+    ];
     ScriptBuf::from(bytes)
 }
 
@@ -72,9 +71,7 @@ fn create_op_return_script(data_size: usize) -> ScriptBuf {
 
 /// Create a non-coinbase outpoint
 fn non_coinbase_outpoint() -> bitcoin::OutPoint {
-    let txid = bitcoin::Txid::from_raw_hash(
-        bitcoin::hashes::sha256d::Hash::hash(&[1u8])
-    );
+    let txid = bitcoin::Txid::from_raw_hash(bitcoin::hashes::sha256d::Hash::hash(&[1u8]));
     bitcoin::OutPoint { txid, vout: 0 }
 }
 
@@ -195,7 +192,10 @@ fn test_301_simple_payment_classified_as_t0() {
     let result = classifier.classify(&tx);
 
     assert_eq!(result.tier, BudsTier::T0);
-    assert!(matches!(result.reason, ClassificationReason::StandardPayment));
+    assert!(matches!(
+        result.reason,
+        ClassificationReason::StandardPayment
+    ));
 }
 
 #[test]
@@ -267,7 +267,10 @@ fn test_310_small_op_return_classified_as_t2() {
     let result = classifier.classify(&tx);
 
     assert_eq!(result.tier, BudsTier::T2);
-    assert!(matches!(result.reason, ClassificationReason::SmallOpReturn { .. }));
+    assert!(matches!(
+        result.reason,
+        ClassificationReason::SmallOpReturn { .. }
+    ));
 }
 
 #[test]
@@ -372,7 +375,10 @@ fn test_314_large_op_return_classified_as_t3() {
     let result = classifier.classify(&tx);
 
     assert_eq!(result.tier, BudsTier::T3);
-    assert!(matches!(result.reason, ClassificationReason::LargeOpReturn { .. }));
+    assert!(matches!(
+        result.reason,
+        ClassificationReason::LargeOpReturn { .. }
+    ));
 }
 
 #[test]
@@ -382,7 +388,10 @@ fn test_315_large_witness_classified_as_t3() {
     let result = classifier.classify(&tx);
 
     assert_eq!(result.tier, BudsTier::T3);
-    assert!(matches!(result.reason, ClassificationReason::LargeWitness { .. }));
+    assert!(matches!(
+        result.reason,
+        ClassificationReason::LargeWitness { .. }
+    ));
 }
 
 #[test]
@@ -433,7 +442,9 @@ fn test_317_multiple_large_witness_inputs() {
         input: vec![
             TxIn {
                 previous_output: bitcoin::OutPoint {
-                    txid: bitcoin::Txid::from_raw_hash(bitcoin::hashes::sha256d::Hash::hash(&[1u8])),
+                    txid: bitcoin::Txid::from_raw_hash(bitcoin::hashes::sha256d::Hash::hash(&[
+                        1u8,
+                    ])),
                     vout: 0,
                 },
                 script_sig: ScriptBuf::new(),
@@ -442,7 +453,9 @@ fn test_317_multiple_large_witness_inputs() {
             },
             TxIn {
                 previous_output: bitcoin::OutPoint {
-                    txid: bitcoin::Txid::from_raw_hash(bitcoin::hashes::sha256d::Hash::hash(&[2u8])),
+                    txid: bitcoin::Txid::from_raw_hash(bitcoin::hashes::sha256d::Hash::hash(&[
+                        2u8,
+                    ])),
                     vout: 0,
                 },
                 script_sig: ScriptBuf::new(),

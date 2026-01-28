@@ -312,10 +312,11 @@ async fn cmd_init(config: WalletConfig, recover: bool) -> Result<()> {
 
     let mnemonic = if recover {
         // Recover from mnemonic
-        println!("{}", style("Enter your 12 or 24 word recovery phrase:").bold());
-        let input: String = Input::new()
-            .with_prompt("Mnemonic")
-            .interact_text()?;
+        println!(
+            "{}",
+            style("Enter your 12 or 24 word recovery phrase:").bold()
+        );
+        let input: String = Input::new().with_prompt("Mnemonic").interact_text()?;
         input
     } else {
         // Generate new mnemonic
@@ -323,7 +324,12 @@ async fn cmd_init(config: WalletConfig, recover: bool) -> Result<()> {
         let mnemonic = ghost_light_wallet::keys::MasterKey::generate_mnemonic()?;
 
         println!();
-        println!("{}", style("IMPORTANT: Write down these words and keep them safe!").bold().red());
+        println!(
+            "{}",
+            style("IMPORTANT: Write down these words and keep them safe!")
+                .bold()
+                .red()
+        );
         println!("{}", style("This is your wallet recovery phrase:").yellow());
         println!();
         println!("  {}", style(mnemonic.to_string()).green());
@@ -336,7 +342,10 @@ async fn cmd_init(config: WalletConfig, recover: bool) -> Result<()> {
             .interact()?;
 
         if !confirmed {
-            println!("{}", style("Please write down your recovery phrase before continuing.").red());
+            println!(
+                "{}",
+                style("Please write down your recovery phrase before continuing.").red()
+            );
             return Ok(());
         }
 
@@ -359,10 +368,7 @@ async fn cmd_init(config: WalletConfig, recover: bool) -> Result<()> {
 
     // Create wallet with progress
     let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")?,
-    );
+    pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
     pb.set_message("Creating wallet...");
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
@@ -371,12 +377,18 @@ async fn cmd_init(config: WalletConfig, recover: bool) -> Result<()> {
     pb.finish_with_message("Wallet created!");
 
     println!();
-    println!("{}", style("Wallet initialized successfully!").bold().green());
+    println!(
+        "{}",
+        style("Wallet initialized successfully!").bold().green()
+    );
     println!();
     println!("Ghost ID: {}", style(wallet.ghost_id()?).cyan());
     println!("Network: {:?}", wallet.network());
     println!();
-    println!("Run {} to see your balance.", style("ghost-wallet balance").cyan());
+    println!(
+        "Run {} to see your balance.",
+        style("ghost-wallet balance").cyan()
+    );
 
     Ok(())
 }
@@ -389,10 +401,7 @@ async fn cmd_balance(config: WalletConfig, refresh: bool) -> Result<()> {
     let balance = if refresh {
         // Connect to GSP and refresh
         let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("{spinner:.green} {msg}")?,
-        );
+        pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
         pb.set_message("Connecting to GSP...");
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
@@ -461,10 +470,7 @@ async fn cmd_send(
     }
 
     let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg}")?,
-    );
+    pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
     pb.set_message("Connecting to GSP...");
     pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
@@ -477,19 +483,12 @@ async fn cmd_send(
     pb.finish_with_message("Payment functionality coming soon!");
 
     println!();
-    println!(
-        "{}",
-        style("Payment sent successfully!").bold().green()
-    );
+    println!("{}", style("Payment sent successfully!").bold().green());
 
     Ok(())
 }
 
-async fn cmd_receive(
-    config: WalletConfig,
-    address_type: &str,
-    label: Option<&str>,
-) -> Result<()> {
+async fn cmd_receive(config: WalletConfig, address_type: &str, label: Option<&str>) -> Result<()> {
     let password = rpassword::prompt_password("Enter wallet password: ")?;
     let wallet = LightWallet::open(&password, config)?;
 
@@ -498,7 +497,10 @@ async fn cmd_receive(
         "silent" => ghost_light_wallet::payments::AddressType::SilentPayment,
         "taproot" => ghost_light_wallet::payments::AddressType::Taproot,
         _ => {
-            println!("{}", style("Unknown address type. Using Ghost Pay.").yellow());
+            println!(
+                "{}",
+                style("Unknown address type. Using Ghost Pay.").yellow()
+            );
             ghost_light_wallet::payments::AddressType::GhostPay
         }
     };
@@ -573,7 +575,10 @@ async fn cmd_lock(config: WalletConfig, action: LockCommands) -> Result<()> {
             println!("{}", style("Request Jump").bold().red());
             println!("Lock ID: {}", lock_id);
             println!("Target:  {}", target);
-            println!("Priority: {}", if high_priority { "HIGH" } else { "Normal" });
+            println!(
+                "Priority: {}",
+                if high_priority { "HIGH" } else { "Normal" }
+            );
             println!();
             println!("Jump functionality coming soon!");
         }
@@ -592,7 +597,10 @@ async fn cmd_info(config: WalletConfig) -> Result<()> {
     println!("Ghost ID:  {}", style(wallet.ghost_id()?).green());
     println!("Network:   {:?}", wallet.network());
     println!("Status:    {:?}", wallet.status());
-    println!("Locked:    {}", if wallet.is_locked() { "Yes" } else { "No" });
+    println!(
+        "Locked:    {}",
+        if wallet.is_locked() { "Yes" } else { "No" }
+    );
     println!("Data Dir:  {}", wallet.config().data_dir.display());
     println!();
 

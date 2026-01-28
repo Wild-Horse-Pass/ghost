@@ -32,8 +32,8 @@
 //! - Standardized transaction formats
 
 use ghost_common::rpc::{
-    BatchFeeEstimate, BitcoinRpc, CombinedPsbtResult, DerivedAddress,
-    ReconciliationInputRpc, ReconciliationOutputRpc,
+    BatchFeeEstimate, BitcoinRpc, CombinedPsbtResult, DerivedAddress, ReconciliationInputRpc,
+    ReconciliationOutputRpc,
 };
 
 use crate::batch::Batch;
@@ -210,9 +210,7 @@ impl ReconciliationRpcBuilder {
             .map_err(|e| ReconciliationError::L1TransactionError(e.to_string()))?;
 
         // Extract confirmations from the response
-        Ok(tx_info
-            .get("confirmations")
-            .and_then(|c| c.as_i64()))
+        Ok(tx_info.get("confirmations").and_then(|c| c.as_i64()))
     }
 }
 
@@ -305,12 +303,10 @@ pub fn batch_to_rpc_data(
         // Get inputs for this settlement's source
         let source_inputs = available_inputs
             .get(settlement.source_ghost_id())
-            .ok_or_else(|| {
-                ReconciliationError::InsufficientFunds {
-                    available: 0,
-                    required: amount,
-                    ghost_id: settlement.source_ghost_id().to_string(),
-                }
+            .ok_or_else(|| ReconciliationError::InsufficientFunds {
+                available: 0,
+                required: amount,
+                ghost_id: settlement.source_ghost_id().to_string(),
             })?;
 
         // Collect enough inputs to cover the settlement

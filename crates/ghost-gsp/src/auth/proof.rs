@@ -34,18 +34,18 @@ pub fn verify_schnorr_proof(proof: &WalletProof) -> GspResult<bool> {
     let secp = Secp256k1::verification_only();
 
     // Get public key
-    let pubkey_bytes = proof.public_key_bytes().map_err(|e| {
-        GspError::SignatureVerification(format!("Invalid public key: {}", e))
-    })?;
+    let pubkey_bytes = proof
+        .public_key_bytes()
+        .map_err(|e| GspError::SignatureVerification(format!("Invalid public key: {}", e)))?;
 
     let pubkey = XOnlyPublicKey::from_slice(&pubkey_bytes).map_err(|e| {
         GspError::SignatureVerification(format!("Invalid X-only public key: {}", e))
     })?;
 
     // Get signature
-    let sig_bytes = proof.signature_bytes().map_err(|e| {
-        GspError::SignatureVerification(format!("Invalid signature: {}", e))
-    })?;
+    let sig_bytes = proof
+        .signature_bytes()
+        .map_err(|e| GspError::SignatureVerification(format!("Invalid signature: {}", e)))?;
 
     let signature = Signature::from_slice(&sig_bytes).map_err(|e| {
         GspError::SignatureVerification(format!("Invalid Schnorr signature: {}", e))
@@ -56,9 +56,10 @@ pub fn verify_schnorr_proof(proof: &WalletProof) -> GspResult<bool> {
     let message = Message::from_digest(msg_hash);
 
     // Verify signature
-    secp.verify_schnorr(&signature, &message, &pubkey).map_err(|e| {
-        GspError::SignatureVerification(format!("Signature verification failed: {}", e))
-    })?;
+    secp.verify_schnorr(&signature, &message, &pubkey)
+        .map_err(|e| {
+            GspError::SignatureVerification(format!("Signature verification failed: {}", e))
+        })?;
 
     Ok(true)
 }

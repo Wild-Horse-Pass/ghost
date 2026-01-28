@@ -51,8 +51,8 @@ use tracing::{debug, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use ghost_common::constants::{
-    COORDINATOR_HEARTBEAT_SECS, CONVERGENCE_MAX_ITERATIONS, CONVERGENCE_MIGRATION_THRESHOLD,
-    CONVERGENCE_TEST_INTERVAL_SECS, FIRE_PING_TIMEOUT_MS,
+    CONVERGENCE_MAX_ITERATIONS, CONVERGENCE_MIGRATION_THRESHOLD, CONVERGENCE_TEST_INTERVAL_SECS,
+    COORDINATOR_HEARTBEAT_SECS, FIRE_PING_TIMEOUT_MS,
 };
 use ghost_common::types::{CapacityState, NodeCapabilities};
 
@@ -101,8 +101,7 @@ async fn main() -> Result<()> {
         .with_target(false)
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("Failed to set tracing subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
 
     info!("Starting Ghost Coordinator v{}", env!("CARGO_PKG_VERSION"));
 
@@ -126,7 +125,8 @@ async fn main() -> Result<()> {
     if args.enable_convergence {
         let state_clone = Arc::clone(&state);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(CONVERGENCE_TEST_INTERVAL_SECS));
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(CONVERGENCE_TEST_INTERVAL_SECS));
             loop {
                 interval.tick().await;
                 state_clone.run_convergence_test().await;
@@ -184,7 +184,11 @@ impl CoordinatorState {
     /// Register or update a node
     fn register_node(&self, info: NodeInfo) {
         let mut nodes = self.nodes.write();
-        info!("Registering node: {} at {}", info.node_id_short(), info.address);
+        info!(
+            "Registering node: {} at {}",
+            info.node_id_short(),
+            info.address
+        );
         nodes.insert(info.node_id.clone(), info);
     }
 
@@ -217,7 +221,10 @@ impl CoordinatorState {
         let mut scored: Vec<_> = healthy
             .into_iter()
             .map(|n| {
-                let latency_score = n.latency_ms.map(|l| 1.0 - (l as f64 / 1000.0).min(1.0)).unwrap_or(0.5);
+                let latency_score = n
+                    .latency_ms
+                    .map(|l| 1.0 - (l as f64 / 1000.0).min(1.0))
+                    .unwrap_or(0.5);
                 let load_score = 1.0 - n.capacity_state.load_penalty();
                 let capability_score = n.capabilities.total_shares() as f64 / 15.0;
 
@@ -397,7 +404,8 @@ impl CoordinatorState {
 
     /// Calculate total latency cost across all nodes
     fn calculate_total_cost(&self, nodes: &[NodeInfo]) -> f64 {
-        nodes.iter()
+        nodes
+            .iter()
             .map(|n| {
                 let latency = n.latency_ms.unwrap_or(500) as f64;
                 let load = n.miner_count as f64;
@@ -409,7 +417,8 @@ impl CoordinatorState {
     /// Get current miner assignments
     fn get_current_assignments(&self) -> Vec<MinerAssignment> {
         let nodes = self.nodes.read();
-        nodes.values()
+        nodes
+            .values()
             .map(|n| MinerAssignment {
                 node_id: n.node_id.clone(),
                 miner_count: n.miner_count,
@@ -418,11 +427,16 @@ impl CoordinatorState {
     }
 
     /// Propose swaps to improve distribution
-    fn propose_swaps(&self, current: &[MinerAssignment], nodes: &[NodeInfo]) -> Vec<MinerAssignment> {
+    fn propose_swaps(
+        &self,
+        current: &[MinerAssignment],
+        nodes: &[NodeInfo],
+    ) -> Vec<MinerAssignment> {
         let mut proposed = current.to_vec();
 
         // Find overloaded and underloaded nodes
-        let avg_load = proposed.iter().map(|a| a.miner_count).sum::<u32>() as f64 / proposed.len() as f64;
+        let avg_load =
+            proposed.iter().map(|a| a.miner_count).sum::<u32>() as f64 / proposed.len() as f64;
 
         for assignment in &mut proposed {
             let node = nodes.iter().find(|n| n.node_id == assignment.node_id);
@@ -440,8 +454,13 @@ impl CoordinatorState {
     }
 
     /// Calculate cost for a proposed assignment
-    fn calculate_assignment_cost(&self, assignments: &[MinerAssignment], nodes: &[NodeInfo]) -> f64 {
-        assignments.iter()
+    fn calculate_assignment_cost(
+        &self,
+        assignments: &[MinerAssignment],
+        nodes: &[NodeInfo],
+    ) -> f64 {
+        assignments
+            .iter()
             .map(|a| {
                 let node = nodes.iter().find(|n| n.node_id == a.node_id);
                 let latency = node.and_then(|n| n.latency_ms).unwrap_or(500) as f64;
@@ -499,9 +518,7 @@ async fn health_handler() -> impl IntoResponse {
     }))
 }
 
-async fn list_nodes_handler(
-    State(state): State<Arc<CoordinatorState>>,
-) -> impl IntoResponse {
+async fn list_nodes_handler(State(state): State<Arc<CoordinatorState>>) -> impl IntoResponse {
     let nodes = state.get_nodes();
     Json(serde_json::json!({
         "nodes": nodes,
@@ -635,9 +652,7 @@ async fn fire_ping_handler(
 // ============================================================================
 
 /// API v1 stats handler - aggregated pool statistics
-async fn api_stats_handler(
-    State(state): State<Arc<CoordinatorState>>,
-) -> impl IntoResponse {
+async fn api_stats_handler(State(state): State<Arc<CoordinatorState>>) -> impl IntoResponse {
     let nodes = state.get_nodes();
     let healthy_nodes = state.get_healthy_nodes();
 
@@ -655,31 +670,32 @@ async fn api_stats_handler(
 }
 
 /// API v1 nodes handler - node list for website display
-async fn api_nodes_handler(
-    State(state): State<Arc<CoordinatorState>>,
-) -> impl IntoResponse {
+async fn api_nodes_handler(State(state): State<Arc<CoordinatorState>>) -> impl IntoResponse {
     let nodes = state.get_nodes();
 
-    let formatted_nodes: Vec<_> = nodes.iter().map(|n| {
-        let load_percent = if n.max_miners > 0 {
-            (n.miner_count as f64 / n.max_miners as f64 * 100.0) as u32
-        } else {
-            0
-        };
+    let formatted_nodes: Vec<_> = nodes
+        .iter()
+        .map(|n| {
+            let load_percent = if n.max_miners > 0 {
+                (n.miner_count as f64 / n.max_miners as f64 * 100.0) as u32
+            } else {
+                0
+            };
 
-        serde_json::json!({
-            "node_id": n.node_id,
-            "host": n.address.split(':').next().unwrap_or(&n.address),
-            "port": n.address.split(':').nth(1).unwrap_or("8080"),
-            "region": "europe",
-            "miner_count": n.miner_count,
-            "max_miners": n.max_miners,
-            "load_percent": load_percent,
-            "latency_ms": n.latency_ms,
-            "accepting_miners": n.is_healthy() && n.miner_count < n.max_miners,
-            "capabilities": n.capabilities
+            serde_json::json!({
+                "node_id": n.node_id,
+                "host": n.address.split(':').next().unwrap_or(&n.address),
+                "port": n.address.split(':').nth(1).unwrap_or("8080"),
+                "region": "europe",
+                "miner_count": n.miner_count,
+                "max_miners": n.max_miners,
+                "load_percent": load_percent,
+                "latency_ms": n.latency_ms,
+                "accepting_miners": n.is_healthy() && n.miner_count < n.max_miners,
+                "capabilities": n.capabilities
+            })
         })
-    }).collect();
+        .collect();
 
     Json(serde_json::json!({
         "nodes": formatted_nodes,

@@ -142,16 +142,18 @@ pub struct StratumConfig {
 impl Default for StratumConfig {
     fn default() -> Self {
         Self {
-            listen_addr: "0.0.0.0:3333".parse().expect("valid socket address constant"),
+            listen_addr: "0.0.0.0:3333"
+                .parse()
+                .expect("valid socket address constant"),
             max_connections: 10000,
             connection_timeout_secs: 300,
             initial_difficulty: 1000.0,
             min_difficulty: 100.0,
             max_difficulty: 1_000_000.0,
             vardiff_target_secs: 10.0,
-            max_shares_per_second: 10, // Max 10 shares per second
-            rate_limit_burst: 20,       // Allow burst of 20 shares
-            ban_duration_secs: 300,     // 5 minute ban
+            max_shares_per_second: 10,   // Max 10 shares per second
+            rate_limit_burst: 20,        // Allow burst of 20 shares
+            ban_duration_secs: 300,      // 5 minute ban
             invalid_share_threshold: 10, // Ban after 10 invalid shares
         }
     }
@@ -161,14 +163,9 @@ impl Default for StratumConfig {
 #[derive(Debug, Clone)]
 pub enum StratumEvent {
     /// Miner connected
-    MinerConnected {
-        miner_id: String,
-        addr: SocketAddr,
-    },
+    MinerConnected { miner_id: String, addr: SocketAddr },
     /// Miner disconnected
-    MinerDisconnected {
-        miner_id: String,
-    },
+    MinerDisconnected { miner_id: String },
     /// Share submitted
     ShareSubmitted {
         miner_id: String,
@@ -301,7 +298,9 @@ impl RateLimiter {
 
         // Remove stale bucket entries (older than 1 hour)
         let one_hour_ago = now.saturating_sub(3600);
-        self.buckets.write().retain(|_, (_, last_refill)| *last_refill > one_hour_ago);
+        self.buckets
+            .write()
+            .retain(|_, (_, last_refill)| *last_refill > one_hour_ago);
     }
 
     /// Remove rate limit tracking for a miner
@@ -401,9 +400,12 @@ impl CachedJob {
         use sha2::{Digest, Sha256};
 
         // 1. Build complete coinbase transaction
-        let coinbase_hex = format!("{}{}{}{}", self.coinbase1, extranonce1, extranonce2, self.coinbase2);
-        let coinbase_bytes = hex::decode(&coinbase_hex)
-            .map_err(|e| format!("Invalid coinbase hex: {}", e))?;
+        let coinbase_hex = format!(
+            "{}{}{}{}",
+            self.coinbase1, extranonce1, extranonce2, self.coinbase2
+        );
+        let coinbase_bytes =
+            hex::decode(&coinbase_hex).map_err(|e| format!("Invalid coinbase hex: {}", e))?;
 
         // 2. Double SHA256 the coinbase to get coinbase hash
         let coinbase_hash = {
@@ -414,8 +416,8 @@ impl CachedJob {
         // 3. Compute merkle root from coinbase hash and merkle branches
         let mut current_hash: [u8; 32] = coinbase_hash.into();
         for branch in &self.merkle_branches {
-            let branch_bytes = hex::decode(branch)
-                .map_err(|e| format!("Invalid merkle branch: {}", e))?;
+            let branch_bytes =
+                hex::decode(branch).map_err(|e| format!("Invalid merkle branch: {}", e))?;
             if branch_bytes.len() != 32 {
                 return Err("Invalid merkle branch length".to_string());
             }
@@ -434,16 +436,14 @@ impl CachedJob {
         let mut header = [0u8; 80];
 
         // Version (4 bytes, little-endian)
-        let version_bytes = hex::decode(&self.version)
-            .map_err(|_| "Invalid version hex")?;
+        let version_bytes = hex::decode(&self.version).map_err(|_| "Invalid version hex")?;
         if version_bytes.len() != 4 {
             return Err("Invalid version length".to_string());
         }
         header[0..4].copy_from_slice(&version_bytes);
 
         // Previous block hash (32 bytes)
-        let prev_hash_bytes = hex::decode(&self.prev_hash)
-            .map_err(|_| "Invalid prev_hash hex")?;
+        let prev_hash_bytes = hex::decode(&self.prev_hash).map_err(|_| "Invalid prev_hash hex")?;
         if prev_hash_bytes.len() != 32 {
             return Err("Invalid prev_hash length".to_string());
         }
@@ -453,24 +453,21 @@ impl CachedJob {
         header[36..68].copy_from_slice(&current_hash);
 
         // nTime (4 bytes, little-endian)
-        let ntime_bytes = hex::decode(ntime)
-            .map_err(|_| "Invalid ntime hex")?;
+        let ntime_bytes = hex::decode(ntime).map_err(|_| "Invalid ntime hex")?;
         if ntime_bytes.len() != 4 {
             return Err("Invalid ntime length".to_string());
         }
         header[68..72].copy_from_slice(&ntime_bytes);
 
         // nBits (4 bytes)
-        let nbits_bytes = hex::decode(&self.nbits)
-            .map_err(|_| "Invalid nbits hex")?;
+        let nbits_bytes = hex::decode(&self.nbits).map_err(|_| "Invalid nbits hex")?;
         if nbits_bytes.len() != 4 {
             return Err("Invalid nbits length".to_string());
         }
         header[72..76].copy_from_slice(&nbits_bytes);
 
         // Nonce (4 bytes, little-endian)
-        let nonce_bytes = hex::decode(nonce)
-            .map_err(|_| "Invalid nonce hex")?;
+        let nonce_bytes = hex::decode(nonce).map_err(|_| "Invalid nonce hex")?;
         if nonce_bytes.len() != 4 {
             return Err("Invalid nonce length".to_string());
         }
@@ -523,7 +520,8 @@ impl StratumServer {
 
         // Enforce size limit
         while cache.len() > MAX_CACHED_JOBS {
-            if let Some(oldest_key) = cache.iter()
+            if let Some(oldest_key) = cache
+                .iter()
                 .min_by_key(|(_, v)| v.created_at)
                 .map(|(k, _)| k.clone())
             {
@@ -698,32 +696,35 @@ impl StratumServer {
         let request: serde_json::Value = serde_json::from_str(line)?;
 
         let id = request.get("id").cloned();
-        let method = request
-            .get("method")
-            .and_then(|m| m.as_str())
-            .unwrap_or("");
-        let params = request.get("params").cloned().unwrap_or(serde_json::json!([]));
+        let method = request.get("method").and_then(|m| m.as_str()).unwrap_or("");
+        let params = request
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::json!([]));
 
         match method {
             "mining.subscribe" => {
                 let result = serde_json::json!([
-                    [["mining.notify", extranonce1], ["mining.set_difficulty", extranonce1]],
+                    [
+                        ["mining.notify", extranonce1],
+                        ["mining.set_difficulty", extranonce1]
+                    ],
                     extranonce1,
-                    4  // extranonce2 size
+                    4 // extranonce2 size
                 ]);
 
-                Ok(Some(serde_json::json!({
-                    "id": id,
-                    "result": result,
-                    "error": null
-                }).to_string()))
+                Ok(Some(
+                    serde_json::json!({
+                        "id": id,
+                        "result": result,
+                        "error": null
+                    })
+                    .to_string(),
+                ))
             }
 
             "mining.authorize" => {
-                let username = params
-                    .get(0)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
+                let username = params.get(0).and_then(|v| v.as_str()).unwrap_or("unknown");
                 let _password = params.get(1).and_then(|v| v.as_str()).unwrap_or("");
 
                 // Parse username as "address.worker" format (industry standard)
@@ -791,11 +792,14 @@ impl StratumServer {
                 let msg = format!("{}\n", diff_msg);
                 let _ = stream.write_all(msg.as_bytes()).await;
 
-                Ok(Some(serde_json::json!({
-                    "id": id,
-                    "result": true,
-                    "error": null
-                }).to_string()))
+                Ok(Some(
+                    serde_json::json!({
+                        "id": id,
+                        "result": true,
+                        "error": null
+                    })
+                    .to_string(),
+                ))
             }
 
             "mining.submit" => {
@@ -819,29 +823,38 @@ impl StratumServer {
 
                 if ntime_parsed > current_time + MAX_FUTURE_TIME_SECS {
                     debug!(miner = %username, ntime = ntime_parsed, current = current_time, "Share ntime too far in future");
-                    return Ok(Some(serde_json::json!({
-                        "id": id,
-                        "result": false,
-                        "error": [20, "ntime too far in future", null]
-                    }).to_string()));
+                    return Ok(Some(
+                        serde_json::json!({
+                            "id": id,
+                            "result": false,
+                            "error": [20, "ntime too far in future", null]
+                        })
+                        .to_string(),
+                    ));
                 }
 
                 if ntime_parsed < current_time.saturating_sub(MAX_PAST_TIME_SECS) {
                     debug!(miner = %username, ntime = ntime_parsed, current = current_time, "Share ntime too old");
-                    return Ok(Some(serde_json::json!({
-                        "id": id,
-                        "result": false,
-                        "error": [20, "ntime too old", null]
-                    }).to_string()));
+                    return Ok(Some(
+                        serde_json::json!({
+                            "id": id,
+                            "result": false,
+                            "error": [20, "ntime too old", null]
+                        })
+                        .to_string(),
+                    ));
                 }
 
                 if ntime_parsed < GENESIS_TIME {
                     debug!(miner = %username, ntime = ntime_parsed, "Share ntime before Bitcoin genesis");
-                    return Ok(Some(serde_json::json!({
-                        "id": id,
-                        "result": false,
-                        "error": [20, "invalid ntime", null]
-                    }).to_string()));
+                    return Ok(Some(
+                        serde_json::json!({
+                            "id": id,
+                            "result": false,
+                            "error": [20, "invalid ntime", null]
+                        })
+                        .to_string(),
+                    ));
                 }
 
                 let miner_key = miner_id.clone().unwrap_or_default();
@@ -849,11 +862,14 @@ impl StratumServer {
                 // Rate limiting check
                 if !self.rate_limiter.check_share(&miner_key) {
                     debug!(miner = %username, "Share rate limited");
-                    return Ok(Some(serde_json::json!({
-                        "id": id,
-                        "result": false,
-                        "error": [25, "rate limited", null]
-                    }).to_string()));
+                    return Ok(Some(
+                        serde_json::json!({
+                            "id": id,
+                            "result": false,
+                            "error": [25, "rate limited", null]
+                        })
+                        .to_string(),
+                    ));
                 }
 
                 // Get cached job for verification
@@ -861,11 +877,14 @@ impl StratumServer {
                     Some(job) => job,
                     None => {
                         debug!(miner = %username, job_id = %job_id, "Unknown or expired job");
-                        return Ok(Some(serde_json::json!({
-                            "id": id,
-                            "result": false,
-                            "error": [21, "job not found", null]
-                        }).to_string()));
+                        return Ok(Some(
+                            serde_json::json!({
+                                "id": id,
+                                "result": false,
+                                "error": [21, "job not found", null]
+                            })
+                            .to_string(),
+                        ));
                     }
                 };
 
@@ -880,7 +899,12 @@ impl StratumServer {
                 // Verify the share by reconstructing and hashing the block header
                 // This is CRITICAL for security - we must verify the hash was actually
                 // computed from the correct block header, not just trust the miner
-                let share_hash = match cached_job.verify_share(extranonce1, extranonce2, ntime_hex, nonce) {
+                let share_hash = match cached_job.verify_share(
+                    extranonce1,
+                    extranonce2,
+                    ntime_hex,
+                    nonce,
+                ) {
                     Ok(hash) => hash,
                     Err(e) => {
                         warn!(miner = %username, error = %e, "Share verification failed");
@@ -888,15 +912,19 @@ impl StratumServer {
                         if let Some(conn) = self.miners.write().get_mut(&miner_key) {
                             conn.invalid_shares += 1;
                             if conn.invalid_shares >= self.config.invalid_share_threshold {
-                                self.rate_limiter.ban_ip(conn.addr.ip(), "too many invalid shares");
+                                self.rate_limiter
+                                    .ban_ip(conn.addr.ip(), "too many invalid shares");
                                 warn!(miner = %username, addr = %conn.addr, "Miner banned for too many invalid shares");
                             }
                         }
-                        return Ok(Some(serde_json::json!({
-                            "id": id,
-                            "result": false,
-                            "error": [20, format!("invalid share: {}", e), null]
-                        }).to_string()));
+                        return Ok(Some(
+                            serde_json::json!({
+                                "id": id,
+                                "result": false,
+                                "error": [20, format!("invalid share: {}", e), null]
+                            })
+                            .to_string(),
+                        ));
                     }
                 };
 
@@ -941,11 +969,14 @@ impl StratumServer {
                 match result {
                     Ok(_) => {
                         debug!(miner = %username, "Share accepted");
-                        Ok(Some(serde_json::json!({
-                            "id": id,
-                            "result": true,
-                            "error": null
-                        }).to_string()))
+                        Ok(Some(
+                            serde_json::json!({
+                                "id": id,
+                                "result": true,
+                                "error": null
+                            })
+                            .to_string(),
+                        ))
                     }
                     Err(e) => {
                         debug!(miner = %username, error = %e, "Share rejected");
@@ -962,12 +993,16 @@ impl StratumServer {
                         };
 
                         if should_ban {
-                            self.rate_limiter.ban_ip(addr.ip(), "too many invalid shares");
-                            return Ok(Some(serde_json::json!({
-                                "id": id,
-                                "result": false,
-                                "error": [24, "banned: too many invalid shares", null]
-                            }).to_string()));
+                            self.rate_limiter
+                                .ban_ip(addr.ip(), "too many invalid shares");
+                            return Ok(Some(
+                                serde_json::json!({
+                                    "id": id,
+                                    "result": false,
+                                    "error": [24, "banned: too many invalid shares", null]
+                                })
+                                .to_string(),
+                            ));
                         }
 
                         let error_msg = match e {
@@ -977,30 +1012,37 @@ impl StratumServer {
                             ShareError::InvalidShareHash => "invalid hash",
                             _ => "unknown error",
                         };
-                        Ok(Some(serde_json::json!({
-                            "id": id,
-                            "result": false,
-                            "error": [20, error_msg, null]
-                        }).to_string()))
+                        Ok(Some(
+                            serde_json::json!({
+                                "id": id,
+                                "result": false,
+                                "error": [20, error_msg, null]
+                            })
+                            .to_string(),
+                        ))
                     }
                 }
             }
 
-            "mining.extranonce.subscribe" => {
-                Ok(Some(serde_json::json!({
+            "mining.extranonce.subscribe" => Ok(Some(
+                serde_json::json!({
                     "id": id,
                     "result": true,
                     "error": null
-                }).to_string()))
-            }
+                })
+                .to_string(),
+            )),
 
             _ => {
                 debug!(method = %method, "Unknown stratum method");
-                Ok(Some(serde_json::json!({
-                    "id": id,
-                    "result": null,
-                    "error": [20, "unknown method", null]
-                }).to_string()))
+                Ok(Some(
+                    serde_json::json!({
+                        "id": id,
+                        "result": null,
+                        "error": [20, "unknown method", null]
+                    })
+                    .to_string(),
+                ))
             }
         }
     }
@@ -1092,10 +1134,8 @@ impl StratumServer {
     /// Update difficulty for a specific miner (vardiff)
     pub fn update_miner_difficulty(&self, miner_id: &str, new_difficulty: f64) {
         if let Some(conn) = self.miners.write().get_mut(miner_id) {
-            conn.difficulty = new_difficulty.clamp(
-                self.config.min_difficulty,
-                self.config.max_difficulty,
-            );
+            conn.difficulty =
+                new_difficulty.clamp(self.config.min_difficulty, self.config.max_difficulty);
         }
     }
 
@@ -1123,7 +1163,10 @@ impl StratumServer {
         loop {
             tokio::time::sleep(cleanup_interval).await;
             self.cleanup_rate_limiter();
-            debug!(banned_ips = self.banned_ip_count(), "Rate limiter cleanup completed");
+            debug!(
+                banned_ips = self.banned_ip_count(),
+                "Rate limiter cleanup completed"
+            );
         }
     }
 }
@@ -1206,8 +1249,7 @@ impl VardiffController {
         if shares < 3 {
             // If no shares in 2x target time, reduce difficulty
             if elapsed_secs > self.config.vardiff_target_secs * 2.0 * 3.0 {
-                let new_diff = (current_difficulty * 0.5)
-                    .max(self.config.min_difficulty);
+                let new_diff = (current_difficulty * 0.5).max(self.config.min_difficulty);
                 return Some(new_diff);
             }
             return None;
@@ -1254,7 +1296,9 @@ impl VardiffController {
         let now = chrono::Utc::now().timestamp() as u64;
 
         self.last_adjust.write().insert(miner_id.to_string(), now);
-        self.shares_since_adjust.write().insert(miner_id.to_string(), 0);
+        self.shares_since_adjust
+            .write()
+            .insert(miner_id.to_string(), 0);
     }
 
     /// Remove tracking for a disconnected miner
@@ -1280,7 +1324,8 @@ impl StratumServer {
 
             // Collect miners and their difficulties
             let miners: Vec<(String, f64)> = {
-                self.miners.read()
+                self.miners
+                    .read()
                     .iter()
                     .filter(|(_, conn)| conn.authorized)
                     .map(|(id, conn)| (id.clone(), conn.difficulty))
@@ -1288,7 +1333,9 @@ impl StratumServer {
             };
 
             for (miner_id, current_difficulty) in miners {
-                if let Some(new_difficulty) = controller.calculate_adjustment(&miner_id, current_difficulty) {
+                if let Some(new_difficulty) =
+                    controller.calculate_adjustment(&miner_id, current_difficulty)
+                {
                     // Update miner difficulty
                     self.update_miner_difficulty(&miner_id, new_difficulty);
 
@@ -1371,25 +1418,37 @@ mod tests {
     #[test]
     fn test_is_valid_bitcoin_address_legacy_mainnet() {
         // Legacy P2PKH (starts with 1)
-        assert!(is_valid_bitcoin_address("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"));
+        assert!(is_valid_bitcoin_address(
+            "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+        ));
         // Legacy P2SH (starts with 3)
-        assert!(is_valid_bitcoin_address("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"));
+        assert!(is_valid_bitcoin_address(
+            "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"
+        ));
     }
 
     #[test]
     fn test_is_valid_bitcoin_address_bech32_mainnet() {
         // Bech32 P2WPKH (bc1q)
-        assert!(is_valid_bitcoin_address("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"));
+        assert!(is_valid_bitcoin_address(
+            "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
+        ));
         // Bech32m P2TR (bc1p)
-        assert!(is_valid_bitcoin_address("bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"));
+        assert!(is_valid_bitcoin_address(
+            "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"
+        ));
     }
 
     #[test]
     fn test_is_valid_bitcoin_address_testnet() {
         // Testnet bech32
-        assert!(is_valid_bitcoin_address("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"));
+        assert!(is_valid_bitcoin_address(
+            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+        ));
         // Testnet legacy
-        assert!(is_valid_bitcoin_address("mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn"));
+        assert!(is_valid_bitcoin_address(
+            "mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn"
+        ));
     }
 
     #[test]
@@ -1399,8 +1458,12 @@ mod tests {
         // Too short
         assert!(!is_valid_bitcoin_address("bc1q"));
         // Invalid prefix (doesn't start with any valid prefix)
-        assert!(!is_valid_bitcoin_address("xyz123456789012345678901234567890"));
+        assert!(!is_valid_bitcoin_address(
+            "xyz123456789012345678901234567890"
+        ));
         // Just garbage (avoid starting with n/m which are testnet prefixes)
-        assert!(!is_valid_bitcoin_address("invalid_bitcoin_address_here!!!!!"));
+        assert!(!is_valid_bitcoin_address(
+            "invalid_bitcoin_address_here!!!!!"
+        ));
     }
 }

@@ -193,7 +193,11 @@ impl<B: L1Broadcaster> SettlementBroadcaster<B> {
                 let status = self.check_confirmation(txid)?;
 
                 match status {
-                    ConfirmationStatus::Confirmed { block_height, confirmations, .. } => {
+                    ConfirmationStatus::Confirmed {
+                        block_height,
+                        confirmations,
+                        ..
+                    } => {
                         if confirmations >= self.min_confirmations {
                             batch.mark_confirmed(block_height)?;
                             Ok(BatchLifecycleStatus::Confirmed {
@@ -207,12 +211,10 @@ impl<B: L1Broadcaster> SettlementBroadcaster<B> {
                             })
                         }
                     }
-                    ConfirmationStatus::Pending => {
-                        Ok(BatchLifecycleStatus::WaitingConfirmations {
-                            current: 0,
-                            required: self.min_confirmations,
-                        })
-                    }
+                    ConfirmationStatus::Pending => Ok(BatchLifecycleStatus::WaitingConfirmations {
+                        current: 0,
+                        required: self.min_confirmations,
+                    }),
                 }
             }
 
@@ -225,7 +227,11 @@ impl<B: L1Broadcaster> SettlementBroadcaster<B> {
                 let status = self.check_confirmation(txid)?;
 
                 match status {
-                    ConfirmationStatus::Confirmed { finalized, dispute_blocks_remaining, .. } => {
+                    ConfirmationStatus::Confirmed {
+                        finalized,
+                        dispute_blocks_remaining,
+                        ..
+                    } => {
                         if finalized {
                             batch.mark_finalized()?;
                             Ok(BatchLifecycleStatus::Finalized)
@@ -238,25 +244,19 @@ impl<B: L1Broadcaster> SettlementBroadcaster<B> {
                     ConfirmationStatus::Pending => {
                         // This shouldn't happen if we're in Confirming state
                         Err(ReconciliationError::InvalidState(
-                            "Confirming batch transaction not found".to_string()
+                            "Confirming batch transaction not found".to_string(),
                         ))
                     }
                 }
             }
 
-            BatchState::Finalized => {
-                Ok(BatchLifecycleStatus::Finalized)
-            }
+            BatchState::Finalized => Ok(BatchLifecycleStatus::Finalized),
 
-            BatchState::Rejected => {
-                Ok(BatchLifecycleStatus::Rejected)
-            }
+            BatchState::Rejected => Ok(BatchLifecycleStatus::Rejected),
 
-            BatchState::Collecting => {
-                Err(ReconciliationError::InvalidState(
-                    "Cannot process batch in Collecting state".to_string()
-                ))
-            }
+            BatchState::Collecting => Err(ReconciliationError::InvalidState(
+                "Cannot process batch in Collecting state".to_string(),
+            )),
         }
     }
 }
@@ -302,7 +302,10 @@ pub enum BatchLifecycleStatus {
     /// Waiting for confirmations
     WaitingConfirmations { current: u32, required: u32 },
     /// Confirmed on L1
-    Confirmed { block_height: u32, confirmations: u32 },
+    Confirmed {
+        block_height: u32,
+        confirmations: u32,
+    },
     /// In dispute window
     InDisputeWindow { blocks_remaining: u32 },
     /// Fully finalized
@@ -359,7 +362,12 @@ mod tests {
         let settlement = SettlementBroadcaster::new(broadcaster);
         let status = settlement.check_confirmation("abc123").unwrap();
 
-        let ConfirmationStatus::Confirmed { confirmations, finalized, .. } = status else {
+        let ConfirmationStatus::Confirmed {
+            confirmations,
+            finalized,
+            ..
+        } = status
+        else {
             panic!("Expected Confirmed status, got {:?}", status);
         };
         assert_eq!(confirmations, 11);
@@ -377,7 +385,12 @@ mod tests {
         let settlement = SettlementBroadcaster::new(broadcaster);
         let status = settlement.check_confirmation("abc123").unwrap();
 
-        let ConfirmationStatus::Confirmed { finalized, dispute_blocks_remaining, .. } = status else {
+        let ConfirmationStatus::Confirmed {
+            finalized,
+            dispute_blocks_remaining,
+            ..
+        } = status
+        else {
             panic!("Expected Confirmed status, got {:?}", status);
         };
         assert!(finalized);

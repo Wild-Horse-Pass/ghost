@@ -32,7 +32,7 @@ use bitcoin::secp256k1::XOnlyPublicKey;
 use bitcoin::{Address, Network, ScriptBuf, Txid};
 
 use crate::blind::{
-    BlindedChallenge, BlindSignatureResponse, CoordinatorSigner, PublicNonce, UnblindedToken,
+    BlindSignatureResponse, BlindedChallenge, CoordinatorSigner, PublicNonce, UnblindedToken,
 };
 use crate::denomination::WraithDenomination;
 use crate::error::WraithError;
@@ -199,11 +199,7 @@ impl WraithCoordinator {
     }
 
     /// Submit input UTXO for a participant
-    pub fn submit_input(
-        &mut self,
-        ghost_id: &str,
-        input: WraithInput,
-    ) -> Result<(), WraithError> {
+    pub fn submit_input(&mut self, ghost_id: &str, input: WraithInput) -> Result<(), WraithError> {
         let participant = self.participants.get_mut(ghost_id).ok_or_else(|| {
             WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id))
         })?;
@@ -345,9 +341,9 @@ impl WraithCoordinator {
     /// Check if ready to build Phase 1 transaction
     pub fn ready_for_phase1(&self) -> bool {
         // Need all participants to have inputs and verified tokens
-        self.participants.values().all(|p| {
-            p.input.is_some() && p.tokens.len() == SPLIT_RATIO
-        })
+        self.participants
+            .values()
+            .all(|p| p.input.is_some() && p.tokens.len() == SPLIT_RATIO)
     }
 
     /// Build Phase 1 (split) transaction
@@ -404,7 +400,10 @@ impl WraithCoordinator {
         self.phase1_tx = Some(tx);
 
         // Safe: we just assigned Some(tx) above
-        Ok(self.phase1_tx.as_ref().expect("phase1_tx was just assigned"))
+        Ok(self
+            .phase1_tx
+            .as_ref()
+            .expect("phase1_tx was just assigned"))
     }
 
     /// Record Phase 1 signature from participant
@@ -435,9 +434,8 @@ impl WraithCoordinator {
             WraithError::PhaseError("No broadcast function configured".to_string())
         })?;
 
-        let txid_str = broadcast_fn(tx_hex).map_err(|e| {
-            WraithError::TransactionError(format!("Broadcast failed: {}", e))
-        })?;
+        let txid_str = broadcast_fn(tx_hex)
+            .map_err(|e| WraithError::TransactionError(format!("Broadcast failed: {}", e)))?;
 
         // Update phase state
         if let Some(ref mut phase1) = self.session.phase1_mut() {
@@ -450,9 +448,10 @@ impl WraithCoordinator {
             .map_err(|e| WraithError::TransactionError(format!("Invalid txid: {}", e)))?;
 
         // Store Phase 1 outputs for Phase 2 inputs (with script pubkeys from built tx)
-        let phase1_tx = self.phase1_tx.as_ref().ok_or_else(|| {
-            WraithError::PhaseError("Phase 1 transaction not built".to_string())
-        })?;
+        let phase1_tx = self
+            .phase1_tx
+            .as_ref()
+            .ok_or_else(|| WraithError::PhaseError("Phase 1 transaction not built".to_string()))?;
 
         let intermediate_amount = self.session.denomination().intermediate_sats();
 
@@ -482,9 +481,18 @@ impl WraithCoordinator {
     /// Check if ready for Phase 2
     pub fn ready_for_phase2(&self) -> bool {
         // Need Phase 1 confirmed and all final addresses submitted
-        matches!(self.session.state(), SessionState::WaitingPhase1Confirmation)
-            && self.session.phase1().map(|p| p.state() == PhaseState::Confirmed).unwrap_or(false)
-            && self.participants.values().all(|p| p.final_address.is_some())
+        matches!(
+            self.session.state(),
+            SessionState::WaitingPhase1Confirmation
+        ) && self
+            .session
+            .phase1()
+            .map(|p| p.state() == PhaseState::Confirmed)
+            .unwrap_or(false)
+            && self
+                .participants
+                .values()
+                .all(|p| p.final_address.is_some())
     }
 
     /// Build Phase 2 (merge) transaction
@@ -540,7 +548,10 @@ impl WraithCoordinator {
         self.phase2_tx = Some(tx);
 
         // Safe: we just assigned Some(tx) above
-        Ok(self.phase2_tx.as_ref().expect("phase2_tx was just assigned"))
+        Ok(self
+            .phase2_tx
+            .as_ref()
+            .expect("phase2_tx was just assigned"))
     }
 
     /// Record Phase 2 signature from participant
@@ -570,9 +581,8 @@ impl WraithCoordinator {
             WraithError::PhaseError("No broadcast function configured".to_string())
         })?;
 
-        let txid_str = broadcast_fn(tx_hex).map_err(|e| {
-            WraithError::TransactionError(format!("Broadcast failed: {}", e))
-        })?;
+        let txid_str = broadcast_fn(tx_hex)
+            .map_err(|e| WraithError::TransactionError(format!("Broadcast failed: {}", e)))?;
 
         // Update phase state
         if let Some(ref mut phase2) = self.session.phase2_mut() {
@@ -608,13 +618,17 @@ impl WraithCoordinator {
     ///
     /// Returns the txid of the Phase 2 transaction if it has been broadcast.
     pub fn phase2_txid(&self) -> Option<Txid> {
-        self.phase2_tx.as_ref().map(|tx| tx.transaction.compute_txid())
+        self.phase2_tx
+            .as_ref()
+            .map(|tx| tx.transaction.compute_txid())
     }
 
     /// Check if Phase 1 needs confirmation (has been broadcast but not confirmed)
     pub fn phase1_needs_confirmation(&self) -> bool {
         let has_broadcast = !self.phase1_outputs.is_empty();
-        let is_confirmed = self.session.phase1()
+        let is_confirmed = self
+            .session
+            .phase1()
             .map(|p| p.state() == PhaseState::Confirmed)
             .unwrap_or(false);
         has_broadcast && !is_confirmed
@@ -622,10 +636,14 @@ impl WraithCoordinator {
 
     /// Check if Phase 2 needs confirmation (has been broadcast but not confirmed)
     pub fn phase2_needs_confirmation(&self) -> bool {
-        let has_broadcast = self.session.phase2()
+        let has_broadcast = self
+            .session
+            .phase2()
             .map(|p| p.txid().is_some())
             .unwrap_or(false);
-        let is_confirmed = self.session.phase2()
+        let is_confirmed = self
+            .session
+            .phase2()
             .map(|p| p.state() == PhaseState::Confirmed)
             .unwrap_or(false);
         has_broadcast && !is_confirmed
@@ -675,10 +693,7 @@ impl WraithCoordinator {
                     .collect();
                 self.session.refund();
                 Ok(TimeoutAction::Refunded {
-                    reason: format!(
-                        "{} participant(s) didn't submit inputs",
-                        missing.len()
-                    ),
+                    reason: format!("{} participant(s) didn't submit inputs", missing.len()),
                     participant_count: self.participants.len(),
                 })
             }
@@ -738,7 +753,9 @@ impl WraithCoordinator {
     /// Get session created timestamp
     pub fn created_at(&self) -> u64 {
         // Session stores this internally
-        self.session.timeout_at().saturating_sub(crate::DEFAULT_TIMEOUT_SECS)
+        self.session
+            .timeout_at()
+            .saturating_sub(crate::DEFAULT_TIMEOUT_SECS)
     }
 }
 
@@ -773,7 +790,10 @@ mod tests {
         );
 
         assert_eq!(coord.participant_count(), 0);
-        assert!(matches!(coord.state(), SessionState::WaitingForParticipants));
+        assert!(matches!(
+            coord.state(),
+            SessionState::WaitingForParticipants
+        ));
     }
 
     #[test]

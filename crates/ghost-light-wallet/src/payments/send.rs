@@ -167,7 +167,8 @@ pub async fn sign_and_submit(
     );
 
     // Sign the transaction using the sighash
-    let sighash_bytes = prepared.sighash_bytes()
+    let sighash_bytes = prepared
+        .sighash_bytes()
         .map_err(|e| LightWalletError::SigningFailed(format!("Invalid sighash: {}", e)))?;
     let signature = signing::sign_data(master_key, &sighash_bytes)?;
 

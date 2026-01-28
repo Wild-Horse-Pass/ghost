@@ -337,10 +337,7 @@ impl CoordinatorSigner {
     /// Verify a final unblinded signature
     ///
     /// This is standard Schnorr verification: s'*G = R' + c*X
-    pub fn verify_signature(
-        &self,
-        token: &UnblindedToken,
-    ) -> Result<bool, WraithError> {
+    pub fn verify_signature(&self, token: &UnblindedToken) -> Result<bool, WraithError> {
         let secp = Secp256k1::new();
 
         // Check key ID
@@ -349,9 +346,8 @@ impl CoordinatorSigner {
         }
 
         // Parse signature components
-        let r_prime = PublicKey::from_slice(&token.nonce_point).map_err(|e| {
-            WraithError::InvalidSignature(format!("Invalid nonce point: {}", e))
-        })?;
+        let r_prime = PublicKey::from_slice(&token.nonce_point)
+            .map_err(|e| WraithError::InvalidSignature(format!("Invalid nonce point: {}", e)))?;
 
         let s_prime = SecretKey::from_slice(&token.signature_scalar).map_err(|e| {
             WraithError::InvalidSignature(format!("Invalid signature scalar: {}", e))
@@ -368,11 +364,14 @@ impl CoordinatorSigner {
             .map_err(|e| WraithError::InvalidSignature(format!("Invalid challenge: {}", e)))?;
 
         // Compute c*X
-        let c_x = self.public_key.mul_tweak(&secp, &Scalar::from(c_scalar))
+        let c_x = self
+            .public_key
+            .mul_tweak(&secp, &Scalar::from(c_scalar))
             .map_err(|e| WraithError::PhaseError(format!("Point multiply failed: {}", e)))?;
 
         // Compute R' + c*X
-        let expected = r_prime.combine(&c_x)
+        let expected = r_prime
+            .combine(&c_x)
             .map_err(|e| WraithError::PhaseError(format!("Point add failed: {}", e)))?;
 
         Ok(s_g == expected)
@@ -439,13 +438,16 @@ impl BlindingContext {
 
         // Compute R' = R + α*G + β*X
         let alpha_g = PublicKey::from_secret_key(&secp, &alpha);
-        let beta_x = coordinator_pubkey.mul_tweak(&secp, &Scalar::from(beta))
+        let beta_x = coordinator_pubkey
+            .mul_tweak(&secp, &Scalar::from(beta))
             .map_err(|e| WraithError::PhaseError(format!("Point multiply failed: {}", e)))?;
 
-        let r_plus_alpha = original_nonce.combine(&alpha_g)
+        let r_plus_alpha = original_nonce
+            .combine(&alpha_g)
             .map_err(|e| WraithError::PhaseError(format!("Point add failed: {}", e)))?;
 
-        let blinded_nonce = r_plus_alpha.combine(&beta_x)
+        let blinded_nonce = r_plus_alpha
+            .combine(&beta_x)
             .map_err(|e| WraithError::PhaseError(format!("Point add failed: {}", e)))?;
 
         Ok(Self {
@@ -471,7 +473,8 @@ impl BlindingContext {
             .map_err(|e| WraithError::InvalidSignature(format!("Invalid challenge hash: {}", e)))?;
 
         // Compute c' = c + β
-        let c_prime = c_scalar.add_tweak(&Scalar::from(self.beta))
+        let c_prime = c_scalar
+            .add_tweak(&Scalar::from(self.beta))
             .map_err(|e| WraithError::PhaseError(format!("Scalar add failed: {}", e)))?;
 
         Ok(BlindedChallenge {
@@ -498,7 +501,8 @@ impl BlindingContext {
             .map_err(|e| WraithError::InvalidSignature(format!("Invalid signature: {}", e)))?;
 
         // Compute s' = s + α
-        let s_prime = s.add_tweak(&Scalar::from(self.alpha))
+        let s_prime = s
+            .add_tweak(&Scalar::from(self.alpha))
             .map_err(|e| WraithError::PhaseError(format!("Scalar add failed: {}", e)))?;
 
         Ok(UnblindedToken {
@@ -585,9 +589,8 @@ impl TokenVerifier {
         }
 
         // Parse signature components
-        let r_prime = PublicKey::from_slice(&token.nonce_point).map_err(|e| {
-            WraithError::InvalidSignature(format!("Invalid nonce point: {}", e))
-        })?;
+        let r_prime = PublicKey::from_slice(&token.nonce_point)
+            .map_err(|e| WraithError::InvalidSignature(format!("Invalid nonce point: {}", e)))?;
 
         let s_prime = SecretKey::from_slice(&token.signature_scalar).map_err(|e| {
             WraithError::InvalidSignature(format!("Invalid signature scalar: {}", e))
@@ -603,11 +606,14 @@ impl TokenVerifier {
             .map_err(|e| WraithError::InvalidSignature(format!("Invalid challenge: {}", e)))?;
 
         // Compute c*X
-        let c_x = self.coordinator_pubkey.mul_tweak(&secp, &Scalar::from(c_scalar))
+        let c_x = self
+            .coordinator_pubkey
+            .mul_tweak(&secp, &Scalar::from(c_scalar))
             .map_err(|e| WraithError::PhaseError(format!("Point multiply failed: {}", e)))?;
 
         // Compute R' + c*X
-        let expected = r_prime.combine(&c_x)
+        let expected = r_prime
+            .combine(&c_x)
             .map_err(|e| WraithError::PhaseError(format!("Point add failed: {}", e)))?;
 
         Ok(s_g == expected)
@@ -659,11 +665,7 @@ mod tests {
         let nonce = signer.create_nonce();
 
         // Step 2: Participant creates blinding context
-        let context = BlindingContext::new(
-            message.clone(),
-            signer.public_key(),
-            &nonce,
-        ).unwrap();
+        let context = BlindingContext::new(message.clone(), signer.public_key(), &nonce).unwrap();
 
         // Step 3: Participant creates blinded challenge
         let blinded_challenge = context.create_blinded_challenge().unwrap();

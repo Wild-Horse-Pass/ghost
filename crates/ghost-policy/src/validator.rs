@@ -214,8 +214,7 @@ impl TransactionValidator {
             }
 
             // Optionally include individual results
-            if self.include_individual_results
-                && result.results.len() < self.max_individual_results
+            if self.include_individual_results && result.results.len() < self.max_individual_results
             {
                 result.results.push(validation);
             }
@@ -298,9 +297,8 @@ impl ProfileComparison {
 mod tests {
     use super::*;
     use bitcoin::{
-        absolute::LockTime, transaction::Version, Amount, ScriptBuf, Sequence,
-        TxIn, TxOut, Witness,
-        blockdata::script::Builder,
+        absolute::LockTime, blockdata::script::Builder, transaction::Version, Amount, ScriptBuf,
+        Sequence, TxIn, TxOut, Witness,
     };
 
     /// Create a P2WPKH script (OP_0 <20-byte-hash>)
@@ -336,9 +334,7 @@ mod tests {
     /// Create a non-coinbase outpoint
     fn non_coinbase_outpoint() -> bitcoin::OutPoint {
         use bitcoin::hashes::Hash;
-        let txid = bitcoin::Txid::from_raw_hash(
-            bitcoin::hashes::sha256d::Hash::hash(&[1u8])
-        );
+        let txid = bitcoin::Txid::from_raw_hash(bitcoin::hashes::sha256d::Hash::hash(&[1u8]));
         bitcoin::OutPoint { txid, vout: 0 }
     }
 

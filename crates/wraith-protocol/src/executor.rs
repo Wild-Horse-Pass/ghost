@@ -28,8 +28,8 @@ use bitcoin::absolute::LockTime;
 use bitcoin::script::{Builder, PushBytesBuf};
 use bitcoin::transaction::Version;
 use bitcoin::{
-    Address, Amount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
-    opcodes,
+    opcodes, Address, Amount, Network, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut,
+    Txid, Witness,
 };
 use std::str::FromStr;
 

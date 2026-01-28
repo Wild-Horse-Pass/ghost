@@ -186,7 +186,10 @@ mod tests {
 
     #[test]
     fn test_from_sats() {
-        assert_eq!(Denomination::from_sats(1_000_000), Some(Denomination::Small));
+        assert_eq!(
+            Denomination::from_sats(1_000_000),
+            Some(Denomination::Small)
+        );
         assert_eq!(Denomination::from_sats(500_000), None);
     }
 
@@ -196,10 +199,7 @@ mod tests {
             Denomination::closest_for_amount(1_500_000),
             Some(Denomination::Small)
         );
-        assert_eq!(
-            Denomination::closest_for_amount(5_000),
-            None
-        );
+        assert_eq!(Denomination::closest_for_amount(5_000), None);
     }
 
     #[test]
@@ -207,14 +207,23 @@ mod tests {
         let result = optimal_denominations(111_000_000);
 
         // Should break into 1 Large + 1 Medium + 1 Small
-        assert!(result.iter().any(|(d, c)| *d == Denomination::Large && *c == 1));
-        assert!(result.iter().any(|(d, c)| *d == Denomination::Medium && *c == 1));
-        assert!(result.iter().any(|(d, c)| *d == Denomination::Small && *c == 1));
+        assert!(result
+            .iter()
+            .any(|(d, c)| *d == Denomination::Large && *c == 1));
+        assert!(result
+            .iter()
+            .any(|(d, c)| *d == Denomination::Medium && *c == 1));
+        assert!(result
+            .iter()
+            .any(|(d, c)| *d == Denomination::Small && *c == 1));
     }
 
     #[test]
     fn test_count_in_amount() {
         assert_eq!(Denomination::Small.count_in_amount(5_500_000), 5);
-        assert_eq!(Denomination::Small.remainder_from_amount(5_500_000), 500_000);
+        assert_eq!(
+            Denomination::Small.remainder_from_amount(5_500_000),
+            500_000
+        );
     }
 }

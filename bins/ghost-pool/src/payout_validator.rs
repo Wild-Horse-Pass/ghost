@@ -163,11 +163,13 @@ fn validate_basic_sanity(
     }
 
     // Subsidy and fees must match
-    let claimed_total = proposal.subsidy
+    let claimed_total = proposal
+        .subsidy
         .checked_add(proposal.tx_fees)
         .ok_or(PayoutValidationError::Overflow("claimed total"))?;
 
-    let actual_total = context.subsidy
+    let actual_total = context
+        .subsidy
         .checked_add(context.fees)
         .ok_or(PayoutValidationError::Overflow("actual total"))?;
 
@@ -198,7 +200,8 @@ fn validate_amounts(
     context: &BlockContext,
 ) -> Result<(), PayoutValidationError> {
     // Calculate available funds
-    let available = context.subsidy
+    let available = context
+        .subsidy
         .checked_add(context.fees)
         .ok_or(PayoutValidationError::Overflow("available funds"))?;
 
@@ -256,7 +259,11 @@ fn validate_amounts(
 
 /// Validate all output addresses/scripts
 fn validate_addresses(proposal: &PayoutProposal) -> Result<(), PayoutValidationError> {
-    for payout in proposal.miner_payouts.iter().chain(proposal.node_payouts.iter()) {
+    for payout in proposal
+        .miner_payouts
+        .iter()
+        .chain(proposal.node_payouts.iter())
+    {
         // Skip zero-amount payouts
         if payout.amount == 0 {
             continue;
@@ -279,8 +286,14 @@ fn validate_output_script(script: &[u8]) -> Result<(), PayoutValidationError> {
     // Standard script types and their expected lengths
     match script.len() {
         // P2PKH: OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG
-        25 if script[0] == 0x76 && script[1] == 0xa9 && script[2] == 0x14
-            && script[23] == 0x88 && script[24] == 0xac => Ok(()),
+        25 if script[0] == 0x76
+            && script[1] == 0xa9
+            && script[2] == 0x14
+            && script[23] == 0x88
+            && script[24] == 0xac =>
+        {
+            Ok(())
+        }
 
         // P2SH: OP_HASH160 <20 bytes> OP_EQUAL
         23 if script[0] == 0xa9 && script[1] == 0x14 && script[22] == 0x87 => Ok(()),
@@ -311,7 +324,11 @@ fn validate_output_script(script: &[u8]) -> Result<(), PayoutValidationError> {
 fn validate_no_duplicates(proposal: &PayoutProposal) -> Result<(), PayoutValidationError> {
     let mut seen = HashSet::new();
 
-    for payout in proposal.miner_payouts.iter().chain(proposal.node_payouts.iter()) {
+    for payout in proposal
+        .miner_payouts
+        .iter()
+        .chain(proposal.node_payouts.iter())
+    {
         // Skip zero amounts
         if payout.amount == 0 {
             continue;
@@ -368,8 +385,8 @@ mod tests {
 
     fn test_context() -> BlockContext {
         BlockContext {
-            subsidy: 625_000_000,  // 6.25 BTC
-            fees: 10_000_000,      // 0.1 BTC
+            subsidy: 625_000_000, // 6.25 BTC
+            fees: 10_000_000,     // 0.1 BTC
             height: 800_000,
             block_hash: [1u8; 32],
             round_id: 1,
@@ -422,7 +439,10 @@ mod tests {
         let context = test_context();
 
         let result = validate_payout_proposal(&proposal, &context);
-        assert!(matches!(result, Err(PayoutValidationError::ExceedsAvailable { .. })));
+        assert!(matches!(
+            result,
+            Err(PayoutValidationError::ExceedsAvailable { .. })
+        ));
     }
 
     #[test]
@@ -452,7 +472,10 @@ mod tests {
         let context = test_context();
 
         let result = validate_payout_proposal(&proposal, &context);
-        assert!(matches!(result, Err(PayoutValidationError::InvalidScript(_))));
+        assert!(matches!(
+            result,
+            Err(PayoutValidationError::InvalidScript(_))
+        ));
     }
 
     #[test]
@@ -462,7 +485,10 @@ mod tests {
         let context = test_context();
 
         let result = validate_payout_proposal(&proposal, &context);
-        assert!(matches!(result, Err(PayoutValidationError::DuplicateRecipient(_))));
+        assert!(matches!(
+            result,
+            Err(PayoutValidationError::DuplicateRecipient(_))
+        ));
     }
 
     #[test]
@@ -476,7 +502,10 @@ mod tests {
         let context = test_context();
 
         let result = validate_payout_proposal(&proposal, &context);
-        assert!(matches!(result, Err(PayoutValidationError::TooManyOutputs(_))));
+        assert!(matches!(
+            result,
+            Err(PayoutValidationError::TooManyOutputs(_))
+        ));
     }
 
     #[test]

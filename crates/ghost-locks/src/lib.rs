@@ -63,11 +63,13 @@ mod script;
 mod state;
 mod timelock;
 
-pub use denomination::{Denomination, optimal_denominations};
+pub use denomination::{optimal_denominations, Denomination};
 pub use error::GhostLockError;
 pub use jump::JumpRiskTier;
 pub use lock::{GhostLock, GhostLockData};
-pub use script::{build_lock_script, build_recovery_script, compute_output_key, ghost_lock_id, to_x_only};
+pub use script::{
+    build_lock_script, build_recovery_script, compute_output_key, ghost_lock_id, to_x_only,
+};
 pub use state::{LockState, StateTransition};
 pub use timelock::TimelockTier;
 
