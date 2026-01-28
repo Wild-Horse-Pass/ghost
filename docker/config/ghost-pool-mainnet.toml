@@ -1,0 +1,72 @@
+# Ghost Pool Configuration for Docker - MAINNET
+#
+# IMPORTANT: This is a MAINNET configuration template.
+# Review all settings carefully before deploying.
+# Environment variables are substituted at runtime.
+
+[identity]
+key_path = "/etc/ghost/node.key"
+display_name = "Ghost Pool (Mainnet)"
+
+[bitcoin]
+# Bitcoin Core mainnet settings
+rpc_host = "bitcoind"
+rpc_port = 8332
+rpc_user = "${BITCOIN_RPC_USER:-ghostrpc}"
+rpc_password = "${BITCOIN_RPC_PASSWORD}"  # REQUIRED - set in .env
+network = "mainnet"
+zmq_hashblock = "tcp://bitcoind:28332"
+zmq_hashtx = "tcp://bitcoind:28333"
+
+[network]
+# IMPORTANT: Set your public address for external connections
+public_address = "${PUBLIC_ADDRESS}"
+sv2_port = 34255
+sv1_port = 3333
+http_port = 8080
+max_miners = 1000
+public_mining = true
+
+[network.p2p]
+share_propagation = 8555
+block_announcement = 8556
+consensus_voting = 8557
+health_monitoring = 8558
+discovery = 8559
+elder_management = 8560
+payout_proposal = 8561
+payout_transaction = 8562
+
+# Bootstrap seed nodes for peer discovery
+# IMPORTANT: Add at least 2-3 seed nodes before mainnet launch
+seed_nodes = [
+    # Add mainnet seed nodes here, e.g.:
+    # "seed1.bitcoinghost.org:8559",
+    # "seed2.bitcoinghost.org:8559",
+    # "seed3.bitcoinghost.org:8559",
+]
+
+[policy]
+# Bitcoin Pure - only financial transactions (T0-T1)
+profile = "bitcoin_pure"
+
+[storage]
+db_path = "/var/lib/ghost/data"
+wal_mode = true
+archive_mode = true
+prune_height = 0
+
+[pool]
+# IMPORTANT: Set your mainnet treasury address (bc1p...)
+treasury_address = "${TREASURY_ADDRESS}"  # REQUIRED - must be bc1p... address
+treasury_fee_percent = 1.0
+min_payout_sats = 10000
+
+[ghost_pay]
+enabled = true
+virtual_block_secs = 10
+epoch_blocks = 100
+transfer_fee_bps = 10
+min_transfer_fee_sats = 100
+wraith_enabled = true
+wraith_fee_percent = 0.5

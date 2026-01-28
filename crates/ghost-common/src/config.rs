@@ -1,0 +1,916 @@
+//|======================================================================================================================|
+//|                                                                                                                      |
+//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+//|       ░              ░                                                                                               |
+//|----------------------------------------------------------------------------------------------------------------------|
+//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|----------------------------------------------------------------------------------------------------------------------|
+//| PROJECT: Bitcoin Ghost                                                                                               |
+//| REPO: https://github.com/bitcoin-ghost                                                                               |
+//| WEB: https://bitcoinghost.org/                                                                                       |
+//| LICENSE: MIT                                                                                                         |
+//| FILE: config.rs                                                                                                      |
+//|======================================================================================================================|
+
+//! Configuration structures for Bitcoin Ghost v1.4
+//!
+//! All node and pool configuration is defined here.
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+use crate::constants::*;
+
+/// Main node configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeConfig {
+    /// Node identity configuration
+    pub identity: IdentityConfig,
+    /// Bitcoin Core RPC configuration
+    pub bitcoin: BitcoinConfig,
+    /// Network configuration
+    pub network: NetworkConfig,
+    /// Policy configuration
+    pub policy: PolicyConfig,
+    /// Storage configuration
+    pub storage: StorageConfig,
+    /// Pool configuration (treasury, fees)
+    pub pool: PoolConfig,
+    /// Ghost Pay L2 configuration (optional)
+    pub ghost_pay: Option<GhostPayConfig>,
+    /// Coordinator configuration (optional, for coordinator nodes)
+    pub coordinator: Option<CoordinatorConfig>,
+}
+
+impl Default for NodeConfig {
+    fn default() -> Self {
+        Self {
+            identity: IdentityConfig::default(),
+            bitcoin: BitcoinConfig::default(),
+            network: NetworkConfig::default(),
+            policy: PolicyConfig::default(),
+            storage: StorageConfig::default(),
+            pool: PoolConfig::default(),
+            ghost_pay: None,
+            coordinator: None,
+        }
+    }
+}
+
+/// Configuration validation error
+#[derive(Debug, Clone)]
+pub struct ConfigValidationError {
+    /// Field path that failed validation
+    pub field: String,
+    /// Error message
+    pub message: String,
+    /// Whether this is a warning (can continue) or error (must stop)
+    pub is_warning: bool,
+}
+
+impl std::fmt::Display for ConfigValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let prefix = if self.is_warning { "WARNING" } else { "ERROR" };
+        write!(f, "[{}] {}: {}", prefix, self.field, self.message)
+    }
+}
+
+/// Result of configuration validation
+#[derive(Debug, Default)]
+pub struct ConfigValidationResult {
+    /// Errors that prevent startup
+    pub errors: Vec<ConfigValidationError>,
+    /// Warnings that allow startup but should be addressed
+    pub warnings: Vec<ConfigValidationError>,
+}
+
+impl ConfigValidationResult {
+    /// Check if validation passed (no errors)
+    pub fn is_valid(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Get all issues (errors and warnings combined)
+    pub fn all_issues(&self) -> impl Iterator<Item = &ConfigValidationError> {
+        self.errors.iter().chain(self.warnings.iter())
+    }
+
+    fn add_error(&mut self, field: &str, message: &str) {
+        self.errors.push(ConfigValidationError {
+            field: field.to_string(),
+            message: message.to_string(),
+            is_warning: false,
+        });
+    }
+
+    fn add_warning(&mut self, field: &str, message: &str) {
+        self.warnings.push(ConfigValidationError {
+            field: field.to_string(),
+            message: message.to_string(),
+            is_warning: true,
+        });
+    }
+}
+
+impl NodeConfig {
+    /// Validate the configuration
+    ///
+    /// Returns validation result with any errors and warnings found.
+    pub fn validate(&self) -> ConfigValidationResult {
+        let mut result = ConfigValidationResult::default();
+
+        // Validate pool configuration
+        self.validate_pool(&mut result);
+
+        // Validate Bitcoin RPC configuration
+        self.validate_bitcoin(&mut result);
+
+        // Validate network configuration
+        self.validate_network(&mut result);
+
+        // Validate storage configuration
+        self.validate_storage(&mut result);
+
+        // Validate Ghost Pay configuration (if enabled)
+        if let Some(ref gp) = self.ghost_pay {
+            self.validate_ghost_pay(gp, &mut result);
+        }
+
+        // Validate coordinator configuration (if present)
+        if let Some(ref coord) = self.coordinator {
+            self.validate_coordinator(coord, &mut result);
+        }
+
+        result
+    }
+
+    fn validate_pool(&self, result: &mut ConfigValidationResult) {
+        // Treasury address validation
+        if self.pool.treasury_address.is_empty() {
+            result.add_warning(
+                "pool.treasury_address",
+                "Treasury address not configured - pool fee collection disabled",
+            );
+        } else {
+            // Basic bech32 validation
+            let addr = &self.pool.treasury_address;
+            let valid_prefix = match self.bitcoin.network {
+                BitcoinNetwork::Mainnet => addr.starts_with("bc1"),
+                BitcoinNetwork::Signet | BitcoinNetwork::Testnet => addr.starts_with("tb1"),
+                BitcoinNetwork::Regtest => addr.starts_with("bcrt1"),
+            };
+            if !valid_prefix {
+                result.add_error(
+                    "pool.treasury_address",
+                    &format!(
+                        "Invalid address prefix for {} network",
+                        format!("{:?}", self.bitcoin.network).to_lowercase()
+                    ),
+                );
+            }
+        }
+
+        // Fee percentage validation
+        if self.pool.treasury_fee_percent < 0.0 || self.pool.treasury_fee_percent > 100.0 {
+            result.add_error(
+                "pool.treasury_fee_percent",
+                "Must be between 0 and 100",
+            );
+        }
+        if self.pool.treasury_fee_percent > 10.0 {
+            result.add_warning(
+                "pool.treasury_fee_percent",
+                &format!("High pool fee of {}%", self.pool.treasury_fee_percent),
+            );
+        }
+
+        // Minimum payout validation
+        const DUST_LIMIT: u64 = 546;
+        if self.pool.min_payout_sats < DUST_LIMIT {
+            result.add_error(
+                "pool.min_payout_sats",
+                &format!("Must be at least {} sats (dust limit)", DUST_LIMIT),
+            );
+        }
+    }
+
+    fn validate_bitcoin(&self, result: &mut ConfigValidationResult) {
+        // RPC credentials
+        if self.bitcoin.rpc_user.is_empty() {
+            result.add_error("bitcoin.rpc_user", "RPC username not configured");
+        }
+        if self.bitcoin.rpc_password.is_empty() {
+            result.add_error("bitcoin.rpc_password", "RPC password not configured");
+        }
+        if self.bitcoin.rpc_user == "bitcoin" && self.bitcoin.rpc_password == "bitcoin" {
+            result.add_warning(
+                "bitcoin.rpc_user/rpc_password",
+                "Using default credentials - change in production",
+            );
+        }
+
+        // Port validation
+        if self.bitcoin.rpc_port == 0 {
+            result.add_error("bitcoin.rpc_port", "Invalid port 0");
+        }
+
+        // Network-port mismatch warning
+        let expected_port = self.bitcoin.network.default_rpc_port();
+        if self.bitcoin.rpc_port != expected_port {
+            result.add_warning(
+                "bitcoin.rpc_port",
+                &format!(
+                    "Port {} differs from default {} for {:?}",
+                    self.bitcoin.rpc_port, expected_port, self.bitcoin.network
+                ),
+            );
+        }
+
+        // ZMQ endpoints
+        if self.bitcoin.zmq_hashblock.is_none() {
+            result.add_warning(
+                "bitcoin.zmq_hashblock",
+                "ZMQ hashblock not configured - will poll for new blocks",
+            );
+        }
+    }
+
+    fn validate_network(&self, result: &mut ConfigValidationResult) {
+        // Check for port conflicts
+        let ports = [
+            ("sv2_port", self.network.sv2_port),
+            ("sv1_port", self.network.sv1_port),
+            ("http_port", self.network.http_port),
+            ("p2p.share_propagation", self.network.p2p.share_propagation),
+            ("p2p.block_announcement", self.network.p2p.block_announcement),
+            ("p2p.consensus_voting", self.network.p2p.consensus_voting),
+            ("p2p.health_monitoring", self.network.p2p.health_monitoring),
+            ("p2p.discovery", self.network.p2p.discovery),
+            ("p2p.elder_management", self.network.p2p.elder_management),
+            ("p2p.payout_proposal", self.network.p2p.payout_proposal),
+            ("p2p.payout_transaction", self.network.p2p.payout_transaction),
+        ];
+
+        // Check for zero ports
+        for (name, port) in &ports {
+            if *port == 0 {
+                result.add_error(&format!("network.{}", name), "Invalid port 0");
+            }
+        }
+
+        // Check for duplicates
+        for i in 0..ports.len() {
+            for j in (i + 1)..ports.len() {
+                if ports[i].1 == ports[j].1 && ports[i].1 != 0 {
+                    result.add_error(
+                        &format!("network.{} / network.{}", ports[i].0, ports[j].0),
+                        &format!("Port conflict: both use port {}", ports[i].1),
+                    );
+                }
+            }
+        }
+
+        // Max miners validation
+        if self.network.max_miners == 0 {
+            result.add_warning("network.max_miners", "Set to 0 - no miners can connect");
+        }
+
+        // Public mining without public address
+        if self.network.public_mining && self.network.public_address.is_none() {
+            result.add_warning(
+                "network.public_address",
+                "Public mining enabled but no public address configured",
+            );
+        }
+
+        // MANDATORY: Signing key required for public mining
+        if self.network.public_mining {
+            match &self.network.signing_key {
+                None => {
+                    result.add_error(
+                        "network.signing_key",
+                        "signing_key is REQUIRED when public_mining is enabled. \
+                         Generate with: ghostd --generate-signing-key",
+                    );
+                }
+                Some(key) => {
+                    // Validate signing key format (64 hex chars = 32 bytes)
+                    if key.len() != 64 {
+                        result.add_error(
+                            "network.signing_key",
+                            &format!(
+                                "signing_key must be exactly 64 hex characters (32 bytes), got {}",
+                                key.len()
+                            ),
+                        );
+                    } else if !key.chars().all(|c| c.is_ascii_hexdigit()) {
+                        result.add_error(
+                            "network.signing_key",
+                            "signing_key must contain only hexadecimal characters (0-9, a-f, A-F)",
+                        );
+                    }
+                }
+            }
+        }
+
+        // Validate seed nodes use secure protocols for remote connections
+        for (i, seed) in self.network.seed_nodes.iter().enumerate() {
+            // Allow localhost without TLS for development
+            let is_localhost = seed.starts_with("127.0.0.1")
+                || seed.starts_with("localhost")
+                || seed.starts_with("::1")
+                || seed.contains("://127.0.0.1")
+                || seed.contains("://localhost")
+                || seed.contains("://[::1]");
+
+            // If it's a URL, check for HTTP vs HTTPS
+            if seed.starts_with("http://") && !is_localhost {
+                result.add_error(
+                    &format!("network.seed_nodes[{}]", i),
+                    &format!(
+                        "Insecure HTTP URL for remote seed node: {}. Use HTTPS or TCP for P2P.",
+                        seed
+                    ),
+                );
+            }
+
+            // Warn about insecure localhost (defense in depth)
+            if seed.starts_with("http://") && is_localhost {
+                result.add_warning(
+                    &format!("network.seed_nodes[{}]", i),
+                    "Using HTTP for localhost seed node. Consider HTTPS for defense in depth.",
+                );
+            }
+        }
+    }
+
+    fn validate_storage(&self, result: &mut ConfigValidationResult) {
+        // Check db_path is not empty
+        if self.storage.db_path.as_os_str().is_empty() {
+            result.add_error("storage.db_path", "Database path not configured");
+        }
+
+        // Archive mode warning
+        if self.storage.archive_mode && self.storage.prune_height > 0 {
+            result.add_warning(
+                "storage.archive_mode / storage.prune_height",
+                "Both archive mode and pruning enabled - archive mode takes precedence",
+            );
+        }
+    }
+
+    fn validate_ghost_pay(&self, gp: &GhostPayConfig, result: &mut ConfigValidationResult) {
+        if !gp.enabled {
+            return;
+        }
+
+        // Virtual block time
+        if gp.virtual_block_secs == 0 {
+            result.add_error("ghost_pay.virtual_block_secs", "Cannot be 0");
+        }
+        if gp.virtual_block_secs < 10 {
+            result.add_warning(
+                "ghost_pay.virtual_block_secs",
+                "Very short virtual block time may cause issues",
+            );
+        }
+
+        // Epoch blocks
+        if gp.epoch_blocks == 0 {
+            result.add_error("ghost_pay.epoch_blocks", "Cannot be 0");
+        }
+
+        // Transfer fee
+        if gp.transfer_fee_bps > 1000 {
+            result.add_warning(
+                "ghost_pay.transfer_fee_bps",
+                &format!("High transfer fee of {} basis points ({}%)", gp.transfer_fee_bps, gp.transfer_fee_bps as f64 / 100.0),
+            );
+        }
+
+        // Wraith fee
+        if gp.wraith_enabled && (gp.wraith_fee_percent < 0.0 || gp.wraith_fee_percent > 10.0) {
+            result.add_error(
+                "ghost_pay.wraith_fee_percent",
+                "Must be between 0 and 10",
+            );
+        }
+    }
+
+    fn validate_coordinator(&self, coord: &CoordinatorConfig, result: &mut ConfigValidationResult) {
+        // Port validation
+        if coord.port == 0 {
+            result.add_error("coordinator.port", "Invalid port 0");
+        }
+
+        // Check for conflict with network ports
+        if coord.port == self.network.sv2_port
+            || coord.port == self.network.sv1_port
+            || coord.port == self.network.http_port
+        {
+            result.add_error(
+                "coordinator.port",
+                &format!("Port {} conflicts with network ports", coord.port),
+            );
+        }
+
+        // Heartbeat interval
+        if coord.heartbeat_secs == 0 {
+            result.add_error("coordinator.heartbeat_secs", "Cannot be 0");
+        }
+
+        // Fire ping timeout
+        if coord.fire_ping_timeout_ms < 100 {
+            result.add_warning(
+                "coordinator.fire_ping_timeout_ms",
+                "Very short timeout may cause false timeouts",
+            );
+        }
+
+        // Convergence threshold
+        if coord.convergence_threshold <= 0.0 || coord.convergence_threshold >= 1.0 {
+            result.add_error(
+                "coordinator.convergence_threshold",
+                "Must be between 0 and 1 (exclusive)",
+            );
+        }
+    }
+}
+
+/// Identity configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentityConfig {
+    /// Path to Ed25519 private key file
+    pub key_path: PathBuf,
+    /// Node display name (optional)
+    pub display_name: Option<String>,
+}
+
+impl Default for IdentityConfig {
+    fn default() -> Self {
+        Self {
+            key_path: PathBuf::from("~/.ghost/node.key"),
+            display_name: None,
+        }
+    }
+}
+
+/// Bitcoin Core RPC configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BitcoinConfig {
+    /// RPC host
+    pub rpc_host: String,
+    /// RPC port
+    pub rpc_port: u16,
+    /// RPC username
+    pub rpc_user: String,
+    /// RPC password
+    pub rpc_password: String,
+    /// Network (mainnet, signet, testnet)
+    pub network: BitcoinNetwork,
+    /// ZMQ hashblock endpoint
+    pub zmq_hashblock: Option<String>,
+    /// ZMQ hashtx endpoint
+    pub zmq_hashtx: Option<String>,
+    /// ZMQ sequence endpoint (for reorg detection)
+    pub zmq_sequence: Option<String>,
+}
+
+impl Default for BitcoinConfig {
+    fn default() -> Self {
+        Self {
+            rpc_host: "127.0.0.1".to_string(),
+            rpc_port: BITCOIN_RPC_PORT_SIGNET,
+            rpc_user: "bitcoin".to_string(),
+            rpc_password: "bitcoin".to_string(),
+            network: BitcoinNetwork::Signet,
+            zmq_hashblock: Some(format!("tcp://127.0.0.1:{}", ZMQ_HASHBLOCK_PORT)),
+            zmq_hashtx: Some(format!("tcp://127.0.0.1:{}", ZMQ_HASHTX_PORT)),
+            zmq_sequence: Some(format!("tcp://127.0.0.1:{}", ZMQ_SEQUENCE_PORT)),
+        }
+    }
+}
+
+/// Bitcoin network type
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BitcoinNetwork {
+    Mainnet,
+    Signet,
+    Testnet,
+    Regtest,
+}
+
+impl BitcoinNetwork {
+    pub fn default_rpc_port(&self) -> u16 {
+        match self {
+            Self::Mainnet => BITCOIN_RPC_PORT_MAINNET,
+            Self::Signet => BITCOIN_RPC_PORT_SIGNET,
+            Self::Testnet => 18332,
+            Self::Regtest => 18443,
+        }
+    }
+
+    pub fn default_p2p_port(&self) -> u16 {
+        match self {
+            Self::Mainnet => BITCOIN_P2P_PORT_MAINNET,
+            Self::Signet => BITCOIN_P2P_PORT_SIGNET,
+            Self::Testnet => 18333,
+            Self::Regtest => 18444,
+        }
+    }
+}
+
+/// Network configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    /// Public IP address or hostname
+    pub public_address: Option<String>,
+    /// SV2 Stratum port
+    pub sv2_port: u16,
+    /// SV1 Stratum port (translator)
+    pub sv1_port: u16,
+    /// HTTP API port
+    pub http_port: u16,
+    /// P2P consensus ports
+    pub p2p: P2PPortConfig,
+    /// Seed nodes for P2P discovery
+    pub seed_nodes: Vec<String>,
+    /// Maximum connected miners
+    pub max_miners: u32,
+    /// Enable public mining (accept external miners)
+    pub public_mining: bool,
+    /// Signing key for message authentication (REQUIRED for public_mining)
+    /// Must be 64 hex characters (32 bytes). Generate with: ghostd --generate-signing-key
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<String>,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            public_address: None,
+            sv2_port: SV2_STRATUM_PORT,
+            sv1_port: SV1_STRATUM_PORT,
+            http_port: HTTP_API_PORT,
+            p2p: P2PPortConfig::default(),
+            seed_nodes: Vec::new(),
+            max_miners: 1000,
+            public_mining: false,
+            signing_key: None,
+        }
+    }
+}
+
+/// P2P consensus port configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct P2PPortConfig {
+    /// Share propagation port
+    pub share_propagation: u16,
+    /// Block announcement port
+    pub block_announcement: u16,
+    /// Consensus voting port
+    pub consensus_voting: u16,
+    /// Health monitoring port
+    pub health_monitoring: u16,
+    /// Discovery port
+    pub discovery: u16,
+    /// Elder management port
+    pub elder_management: u16,
+    /// Payout proposal port
+    pub payout_proposal: u16,
+    /// Payout transaction port
+    pub payout_transaction: u16,
+}
+
+impl Default for P2PPortConfig {
+    fn default() -> Self {
+        Self {
+            share_propagation: SHARE_PROPAGATION_PORT,
+            block_announcement: BLOCK_ANNOUNCEMENT_PORT,
+            consensus_voting: CONSENSUS_VOTING_PORT,
+            health_monitoring: HEALTH_MONITORING_PORT,
+            discovery: DISCOVERY_PORT,
+            elder_management: ELDER_MANAGEMENT_PORT,
+            payout_proposal: PAYOUT_PROPOSAL_PORT,
+            payout_transaction: PAYOUT_TRANSACTION_PORT,
+        }
+    }
+}
+
+/// Policy configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyConfig {
+    /// Policy profile name
+    pub profile: PolicyProfile,
+    /// Custom policy settings (overrides profile defaults)
+    pub custom: Option<CustomPolicyConfig>,
+}
+
+impl Default for PolicyConfig {
+    fn default() -> Self {
+        Self {
+            profile: PolicyProfile::Permissive,
+            custom: None,
+        }
+    }
+}
+
+/// Built-in policy profiles
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyProfile {
+    /// Only T0 + T1 transactions (financial-only)
+    BitcoinPure,
+    /// T0 + T1 + T2 (most common)
+    Permissive,
+    /// Accept all valid transactions (T0-T3)
+    FullOpen,
+    /// Custom policy rules
+    Custom,
+}
+
+/// Custom policy configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomPolicyConfig {
+    /// Allowed BUDS tiers
+    pub allowed_tiers: Vec<BudsTier>,
+    /// Maximum OP_RETURN size (0 = none allowed)
+    pub max_op_return_size: usize,
+    /// Maximum witness size per input
+    pub max_witness_per_input: usize,
+    /// Maximum outputs per transaction
+    pub max_tx_outputs: usize,
+    /// Maximum transaction size
+    pub max_tx_size: usize,
+    /// Allow Ordinals/inscriptions
+    pub allow_inscriptions: bool,
+    /// Allow Runes
+    pub allow_runes: bool,
+}
+
+impl Default for CustomPolicyConfig {
+    fn default() -> Self {
+        Self {
+            allowed_tiers: vec![BudsTier::T0, BudsTier::T1, BudsTier::T2],
+            max_op_return_size: MAX_OP_RETURN_SMALL_BYTES,
+            max_witness_per_input: MAX_WITNESS_BYTES_PER_INPUT,
+            max_tx_outputs: MAX_TX_OUTPUTS_BITCOIN_PURE,
+            max_tx_size: MAX_TX_SIZE_BITCOIN_PURE,
+            allow_inscriptions: false,
+            allow_runes: false,
+        }
+    }
+}
+
+/// BUDS transaction tier
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BudsTier {
+    /// Core financial transactions
+    T0,
+    /// Extended financial (multisig, timelocks)
+    T1,
+    /// Data-anchoring (small OP_RETURN)
+    T2,
+    /// Heavy data (inscriptions, large witness)
+    T3,
+}
+
+/// Storage configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConfig {
+    /// Database directory path
+    pub db_path: PathBuf,
+    /// Enable WAL mode for SQLite
+    pub wal_mode: bool,
+    /// Enable archive mode (full history)
+    pub archive_mode: bool,
+    /// Pruning height (blocks to keep, 0 = no pruning)
+    pub prune_height: u64,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            db_path: PathBuf::from("~/.ghost/data"),
+            wal_mode: true,
+            archive_mode: false,
+            prune_height: 0,
+        }
+    }
+}
+
+/// Ghost Pay L2 configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhostPayConfig {
+    /// Enable Ghost Pay
+    pub enabled: bool,
+    /// Virtual block time (seconds)
+    pub virtual_block_secs: u64,
+    /// Epoch length (virtual blocks)
+    pub epoch_blocks: u64,
+    /// Transfer fee (basis points)
+    pub transfer_fee_bps: u64,
+    /// Minimum transfer fee (satoshis)
+    pub min_transfer_fee_sats: u64,
+    /// Enable Wraith mixing
+    pub wraith_enabled: bool,
+    /// Wraith mixing fee (percentage)
+    pub wraith_fee_percent: f64,
+}
+
+impl Default for GhostPayConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            virtual_block_secs: L2_VIRTUAL_BLOCK_SECS,
+            epoch_blocks: L2_EPOCH_BLOCKS,
+            transfer_fee_bps: GHOSTPAY_FEE_BPS,
+            min_transfer_fee_sats: GHOSTPAY_MIN_FEE_SATS,
+            wraith_enabled: true,
+            wraith_fee_percent: WRAITH_FEE_PERCENT,
+        }
+    }
+}
+
+/// Coordinator configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoordinatorConfig {
+    /// Coordinator port
+    pub port: u16,
+    /// Heartbeat interval (seconds)
+    pub heartbeat_secs: u64,
+    /// Fire Ping timeout (milliseconds)
+    pub fire_ping_timeout_ms: u64,
+    /// Enable gradient descent convergence fallback
+    pub convergence_enabled: bool,
+    /// Convergence test interval (seconds)
+    pub convergence_interval_secs: u64,
+    /// Convergence migration threshold (improvement required)
+    pub convergence_threshold: f64,
+    /// Maximum convergence iterations
+    pub convergence_max_iterations: usize,
+}
+
+impl Default for CoordinatorConfig {
+    fn default() -> Self {
+        Self {
+            port: COORDINATOR_PORT,
+            heartbeat_secs: COORDINATOR_HEARTBEAT_SECS,
+            fire_ping_timeout_ms: FIRE_PING_TIMEOUT_MS,
+            convergence_enabled: true,
+            convergence_interval_secs: CONVERGENCE_TEST_INTERVAL_SECS,
+            convergence_threshold: CONVERGENCE_MIGRATION_THRESHOLD,
+            convergence_max_iterations: CONVERGENCE_MAX_ITERATIONS,
+        }
+    }
+}
+
+/// Pool configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolConfig {
+    /// Treasury address for pool fees (bech32 format)
+    pub treasury_address: String,
+    /// Treasury fee percentage (0-100)
+    pub treasury_fee_percent: f64,
+    /// Minimum payout threshold (satoshis)
+    pub min_payout_sats: u64,
+    /// Payout frequency (blocks)
+    pub payout_interval_blocks: u64,
+}
+
+impl PoolConfig {
+    /// Validate pool configuration
+    ///
+    /// Returns an error if required fields are missing or invalid.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.treasury_address.is_empty() {
+            return Err("treasury_address must be configured".to_string());
+        }
+        if self.treasury_fee_percent < 0.0 || self.treasury_fee_percent > 100.0 {
+            return Err(format!(
+                "treasury_fee_percent must be between 0 and 100, got {}",
+                self.treasury_fee_percent
+            ));
+        }
+        if self.min_payout_sats == 0 {
+            return Err("min_payout_sats must be greater than 0".to_string());
+        }
+        Ok(())
+    }
+}
+
+impl Default for PoolConfig {
+    fn default() -> Self {
+        Self {
+            // Default placeholder - MUST be configured in production
+            treasury_address: String::new(),
+            treasury_fee_percent: 2.0,  // 2% pool fee
+            min_payout_sats: 100_000,   // 0.001 BTC minimum
+            payout_interval_blocks: 100,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = NodeConfig::default();
+        assert_eq!(config.network.sv2_port, SV2_STRATUM_PORT);
+        assert_eq!(config.bitcoin.network, BitcoinNetwork::Signet);
+    }
+
+    #[test]
+    fn test_network_ports() {
+        assert_eq!(BitcoinNetwork::Mainnet.default_rpc_port(), 8332);
+        assert_eq!(BitcoinNetwork::Signet.default_rpc_port(), 38332);
+    }
+
+    #[test]
+    fn test_policy_profiles() {
+        let config = PolicyConfig {
+            profile: PolicyProfile::BitcoinPure,
+            custom: None,
+        };
+        assert_eq!(config.profile, PolicyProfile::BitcoinPure);
+    }
+
+    #[test]
+    fn test_signing_key_required_for_public_mining() {
+        let mut config = NodeConfig::default();
+        config.network.public_mining = true;
+        config.network.signing_key = None;
+
+        let result = config.validate();
+        assert!(!result.is_valid());
+        assert!(result.errors.iter().any(|e| e.field == "network.signing_key"));
+    }
+
+    #[test]
+    fn test_signing_key_valid_format() {
+        let mut config = NodeConfig::default();
+        config.network.public_mining = true;
+        // 64 hex chars = valid 32-byte key
+        config.network.signing_key = Some(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
+        );
+
+        let result = config.validate();
+        // Should not have signing_key error (may have other errors like missing treasury)
+        assert!(!result.errors.iter().any(|e|
+            e.field == "network.signing_key" && e.message.contains("REQUIRED")
+        ));
+    }
+
+    #[test]
+    fn test_signing_key_invalid_length() {
+        let mut config = NodeConfig::default();
+        config.network.public_mining = true;
+        // Too short
+        config.network.signing_key = Some("0123456789abcdef".to_string());
+
+        let result = config.validate();
+        assert!(!result.is_valid());
+        assert!(result.errors.iter().any(|e|
+            e.field == "network.signing_key" && e.message.contains("64 hex")
+        ));
+    }
+
+    #[test]
+    fn test_signing_key_invalid_chars() {
+        let mut config = NodeConfig::default();
+        config.network.public_mining = true;
+        // Contains non-hex chars (g, h, i, j)
+        config.network.signing_key = Some(
+            "ghij456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string()
+        );
+
+        let result = config.validate();
+        assert!(!result.is_valid());
+        assert!(result.errors.iter().any(|e|
+            e.field == "network.signing_key" && e.message.contains("hexadecimal")
+        ));
+    }
+
+    #[test]
+    fn test_signing_key_not_required_private_mining() {
+        let mut config = NodeConfig::default();
+        config.network.public_mining = false;
+        config.network.signing_key = None;
+
+        let result = config.validate();
+        // Should not have signing_key error when public_mining is disabled
+        assert!(!result.errors.iter().any(|e| e.field == "network.signing_key"));
+    }
+}

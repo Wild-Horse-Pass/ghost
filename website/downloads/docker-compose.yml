@@ -1,0 +1,74 @@
+# Bitcoin Ghost Pool - Docker Compose
+#
+# Quick Start:
+#   1. Copy .env.example to .env and edit settings
+#   2. docker-compose up -d
+#   3. View logs: docker-compose logs -f ghost-pool
+#
+# Ports:
+#   - 3333: Stratum V1 (miners connect here)
+#   - 8080: API/Dashboard
+#   - 34255: Stratum V2
+
+version: '3.8'
+
+services:
+  # Bitcoin Core (signet)
+  bitcoind:
+    image: ghcr.io/bitcoin-ghost/ghost-core:latest
+    container_name: ghost-bitcoind
+    restart: unless-stopped
+    volumes:
+      - bitcoin-data:/root/.bitcoin
+    ports:
+      - "38333:38333"    # P2P (signet)
+    networks:
+      - ghost-network
+    environment:
+      - BITCOIN_NETWORK=${BITCOIN_NETWORK:-signet}
+      - BITCOIN_RPC_USER=${BITCOIN_RPC_USER:-ghost}
+      - BITCOIN_RPC_PASSWORD=${BITCOIN_RPC_PASSWORD:-ghostpass}
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-signet", "getblockchaininfo"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # Ghost Pool
+  ghost-pool:
+    image: ghcr.io/bitcoin-ghost/ghost-pool:latest
+    container_name: ghost-pool
+    restart: unless-stopped
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    volumes:
+      - ghost-data:/var/lib/ghost
+    ports:
+      - "34255:34255"    # Stratum V2
+      - "3333:3333"      # Stratum V1
+      - "8080:8080"      # HTTP API
+    networks:
+      - ghost-network
+    environment:
+      - BITCOIN_RPC_HOST=bitcoind
+      - BITCOIN_RPC_PORT=38332
+      - BITCOIN_RPC_USER=${BITCOIN_RPC_USER:-ghost}
+      - BITCOIN_RPC_PASSWORD=${BITCOIN_RPC_PASSWORD:-ghostpass}
+      - BITCOIN_NETWORK=${BITCOIN_NETWORK:-signet}
+      - TREASURY_ADDRESS=${TREASURY_ADDRESS}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  ghost-network:
+    driver: bridge
+
+volumes:
+  bitcoin-data:
+  ghost-data:

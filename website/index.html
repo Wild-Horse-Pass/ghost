@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bitcoin Ghost - Decentralized Mining Pool</title>
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-card: #1a1a24;
+            --text-primary: #e0e0e0;
+            --text-secondary: #888;
+            --accent: #00d4aa;
+            --accent-dim: #00a088;
+            --success: #00d4aa;
+            --warning: #ffa500;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 0;
+            border-bottom: 1px solid var(--bg-card);
+            margin-bottom: 2rem;
+        }
+        .logo { font-size: 1.5rem; font-weight: bold; color: var(--accent); text-decoration: none; }
+        .logo span { color: var(--text-primary); }
+        nav a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            margin-left: 2rem;
+            transition: color 0.2s;
+        }
+        nav a:hover, nav a.active { color: var(--accent); }
+
+        /* Hero Section */
+        .hero {
+            text-align: center;
+            padding: 4rem 0;
+        }
+        .hero h1 {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+        .hero h1 .ghost { color: var(--accent); }
+        .hero .tagline {
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+        }
+        .hero-buttons {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .btn {
+            display: inline-block;
+            padding: 1rem 2rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: bold;
+            transition: all 0.2s;
+        }
+        .btn-primary {
+            background: var(--accent);
+            color: var(--bg-primary);
+        }
+        .btn-primary:hover { background: var(--accent-dim); }
+        .btn-secondary {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border: 1px solid var(--bg-card);
+        }
+        .btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin: 3rem 0;
+        }
+        .stat-card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 1.5rem;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--accent);
+        }
+        .stat-label {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-top: 0.5rem;
+        }
+
+        /* Features */
+        .features {
+            margin: 4rem 0;
+        }
+        .features h2 {
+            text-align: center;
+            color: var(--accent);
+            margin-bottom: 2rem;
+            font-size: 1.8rem;
+        }
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+        }
+        .feature-card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 2rem;
+        }
+        .feature-icon {
+            font-size: 2rem;
+            margin-bottom: 1rem;
+        }
+        .feature-card h3 {
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+        .feature-card p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        /* Quick Start */
+        .quickstart {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 2rem;
+            margin: 3rem 0;
+        }
+        .quickstart h2 {
+            color: var(--accent);
+            margin-bottom: 1.5rem;
+            text-align: center;
+        }
+        .quickstart-code {
+            background: var(--bg-secondary);
+            padding: 1.5rem;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 1rem 0;
+        }
+        .quickstart-code code {
+            color: var(--accent);
+        }
+        .quickstart p {
+            text-align: center;
+            color: var(--text-secondary);
+        }
+        .quickstart a {
+            color: var(--accent);
+        }
+
+        /* Nodes Table */
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+        }
+        .card h2 {
+            color: var(--accent);
+            margin-bottom: 1rem;
+            font-size: 1.3rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid var(--bg-secondary);
+        }
+        th { color: var(--text-secondary); font-weight: normal; }
+        tr:hover { background: var(--bg-secondary); }
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 0.5rem;
+        }
+        .status-online { background: var(--success); }
+        .status-offline { background: #ff4444; }
+        .progress-bar {
+            background: var(--bg-secondary);
+            border-radius: 4px;
+            height: 8px;
+            overflow: hidden;
+            width: 100px;
+        }
+        .progress-fill {
+            height: 100%;
+            background: var(--accent);
+            transition: width 0.3s;
+        }
+        .progress-fill.warning { background: var(--warning); }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--bg-card);
+            margin-top: 3rem;
+        }
+        footer a { color: var(--accent); text-decoration: none; }
+        footer a:hover { text-decoration: underline; }
+
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-secondary);
+        }
+
+        @media (max-width: 768px) {
+            .hero h1 { font-size: 2rem; }
+            nav a { margin-left: 1rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <a href="/" class="logo">Bitcoin <span>Ghost</span></a>
+            <nav>
+                <a href="/" class="active">Home</a>
+                <a href="/install.html">Install</a>
+                <a href="/pool.html">Pool Stats</a>
+                <a href="/miner.html">Miner Stats</a>
+            </nav>
+        </header>
+
+        <section class="hero">
+            <h1>Bitcoin <span class="ghost">Ghost</span></h1>
+            <p class="tagline">Decentralized Mining Pool with Stratum V2 Support</p>
+            <div class="hero-buttons">
+                <a href="/install.html" class="btn btn-primary">Start Mining</a>
+                <a href="/pool.html" class="btn btn-secondary">View Pool Stats</a>
+                <a href="https://github.com/anthropics/bitcoin-ghost" class="btn btn-secondary">GitHub</a>
+            </div>
+        </section>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="stat-hashrate">-</div>
+                <div class="stat-label">Pool Hashrate</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-miners">-</div>
+                <div class="stat-label">Active Miners</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-nodes">-</div>
+                <div class="stat-label">Online Nodes</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-blocks">-</div>
+                <div class="stat-label">Blocks Found</div>
+            </div>
+        </div>
+
+        <section class="features">
+            <h2>Why Bitcoin Ghost?</h2>
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">&#9889;</div>
+                    <h3>Stratum V2 Native</h3>
+                    <p>Full Stratum V2 support with job negotiation, reducing bandwidth and increasing efficiency. SV1 translation layer for legacy miners.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#127760;</div>
+                    <h3>Decentralized Nodes</h3>
+                    <p>Multiple independent nodes across regions. Smart routing connects you to the best node for your location automatically.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#128274;</div>
+                    <h3>Non-Custodial</h3>
+                    <p>Your keys, your coins. Payouts go directly to your address. No accounts required, just point your miner and earn.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#128200;</div>
+                    <h3>Transparent</h3>
+                    <p>Open source pool software. Real-time stats and complete payout history. 1% pool fee goes to development.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#128187;</div>
+                    <h3>Easy Setup</h3>
+                    <p>One-line installer, Docker support, or binary downloads. Get mining in minutes with sensible defaults.</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">&#128736;</div>
+                    <h3>Operator Friendly</h3>
+                    <p>Run your own node to serve your miners. Local dashboard, swarm management, and full API access.</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="quickstart">
+            <h2>Quick Start</h2>
+            <div class="quickstart-code">
+                <code>curl -sSL https://bitcoinghost.org/install.sh | bash</code>
+            </div>
+            <p>Or configure your existing miner:</p>
+            <div class="quickstart-code">
+                <code>Pool: stratum+tcp://pool.bitcoinghost.org:3333<br>
+Worker: &lt;your_btc_address&gt;<br>
+Password: x</code>
+            </div>
+            <p style="margin-top: 1rem;"><a href="/install.html">View detailed installation guide →</a></p>
+        </section>
+
+        <div class="card">
+            <h2>Active Nodes</h2>
+            <table id="nodes-table">
+                <thead>
+                    <tr>
+                        <th>Status</th>
+                        <th>Node ID</th>
+                        <th>Region</th>
+                        <th>Miners</th>
+                        <th>Load</th>
+                    </tr>
+                </thead>
+                <tbody id="nodes-body">
+                    <tr><td colspan="5" class="loading">Loading nodes...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <footer>
+            <p>Bitcoin Ghost Network - Decentralized Mining Infrastructure</p>
+            <p style="margin-top: 0.5rem;">
+                <a href="https://github.com/anthropics/bitcoin-ghost">GitHub</a> |
+                <a href="/api/v1/stats">API</a> |
+                <a href="/pool.html">Pool Stats</a> |
+                <a href="/miner.html">Miner Stats</a>
+            </p>
+            <p style="font-size: 0.8rem; margin-top: 1rem; color: var(--text-secondary);">
+                Running on Signet testnet | 1% fee to treasury
+            </p>
+        </footer>
+    </div>
+
+    <script>
+        const API_BASE = '';
+
+        function formatHashrate(th) {
+            if (th >= 1000) return (th / 1000).toFixed(2) + ' PH/s';
+            if (th >= 1) return th.toFixed(2) + ' TH/s';
+            return (th * 1000).toFixed(2) + ' GH/s';
+        }
+
+        function formatRegion(region) {
+            const regions = {
+                'north_america': 'North America',
+                'south_america': 'South America',
+                'europe': 'Europe',
+                'asia': 'Asia',
+                'oceania': 'Oceania',
+                'africa': 'Africa'
+            };
+            return regions[region] || region || 'Unknown';
+        }
+
+        async function updateStats() {
+            try {
+                const response = await fetch(API_BASE + '/api/v1/stats');
+                const data = await response.json();
+
+                document.getElementById('stat-nodes').textContent = data.online_nodes || 0;
+                document.getElementById('stat-miners').textContent = data.active_sessions || 0;
+                document.getElementById('stat-hashrate').textContent = formatHashrate(data.pool_hashrate_th || 0);
+                document.getElementById('stat-blocks').textContent = data.blocks_found || 0;
+
+            } catch (error) {
+                console.error('Failed to fetch stats:', error);
+            }
+        }
+
+        async function updateNodes() {
+            const tbody = document.getElementById('nodes-body');
+
+            try {
+                const response = await fetch(API_BASE + '/api/v1/nodes');
+                const data = await response.json();
+
+                if (!data.nodes || data.nodes.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="loading">No nodes registered yet</td></tr>';
+                    return;
+                }
+
+                tbody.innerHTML = data.nodes.map(node => `
+                    <tr>
+                        <td>
+                            <span class="status-dot ${node.accepting_miners ? 'status-online' : 'status-offline'}"></span>
+                            ${node.accepting_miners ? 'Online' : 'Full'}
+                        </td>
+                        <td style="font-family: monospace; font-size: 0.85rem;">${node.node_id.substring(0, 12)}...</td>
+                        <td>${formatRegion(node.region)}</td>
+                        <td>${node.miner_count} / ${node.max_miners}</td>
+                        <td>
+                            <div class="progress-bar">
+                                <div class="progress-fill ${node.load_percent > 80 ? 'warning' : ''}" style="width: ${node.load_percent}%;"></div>
+                            </div>
+                        </td>
+                    </tr>
+                `).join('');
+
+            } catch (error) {
+                console.error('Failed to fetch nodes:', error);
+                tbody.innerHTML = '<tr><td colspan="5" class="loading">Failed to load nodes</td></tr>';
+            }
+        }
+
+        // Initial load
+        updateStats();
+        updateNodes();
+
+        // Auto-refresh every 30 seconds
+        setInterval(() => {
+            updateStats();
+            updateNodes();
+        }, 30000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,169 @@
+# Bitcoin Ghost v1.4 - Example Configuration
+#
+# Copy this file to /etc/ghost/config.toml or ~/.ghost/config.toml
+# and customize for your environment.
+
+# =============================================================================
+# Node Identity
+# =============================================================================
+[identity]
+# Path to Ed25519 private key file
+# Generate with: ghost-cli key generate --output ~/.ghost/node.key
+key_path = "~/.ghost/node.key"
+
+# Optional display name for this node
+display_name = "my-ghost-node"
+
+# =============================================================================
+# Bitcoin Core Connection
+# =============================================================================
+[bitcoin]
+# Bitcoin Core RPC host
+rpc_host = "127.0.0.1"
+
+# RPC port (8332=mainnet, 38332=signet, 18332=testnet, 18443=regtest)
+rpc_port = 8332
+
+# RPC credentials (must match bitcoin.conf)
+rpc_user = "ghostrpc"
+rpc_password = "CHANGE_THIS_SECURE_PASSWORD"
+
+# Network: mainnet, signet, testnet, regtest
+network = "mainnet"
+
+# ZMQ endpoints for real-time notifications (optional but recommended)
+zmq_hashblock = "tcp://127.0.0.1:28332"
+zmq_hashtx = "tcp://127.0.0.1:28333"
+
+# =============================================================================
+# Network Configuration
+# =============================================================================
+[network]
+# Public address for external connections (hostname or IP)
+# Leave empty for private pool
+public_address = "pool.example.com"
+
+# Stratum V2 port for miners
+sv2_port = 34255
+
+# Stratum V1 port (used by translator for legacy miners)
+sv1_port = 3333
+
+# HTTP API port for monitoring and management
+http_port = 8080
+
+# Maximum number of connected miners
+max_miners = 1000
+
+# Allow external miners to connect
+public_mining = true
+
+# Seed nodes for P2P discovery
+# Add known Ghost Pool nodes for mesh network bootstrap
+# Format: ["host:port", ...] - uses port 8559 (discovery port)
+seed_nodes = [
+    # Signet test nodes (uncomment for signet testing)
+    # "83.136.251.162:8559",   # VM1 London
+    # "85.9.198.212:8559",     # VM2 Frankfurt
+    # "213.163.207.46:8559",   # VM3 Amsterdam
+    # "95.111.221.169:8559",   # VM4 NYC
+]
+
+# P2P consensus mesh ports
+[network.p2p]
+share_propagation = 8555
+block_announcement = 8556
+consensus_voting = 8557
+health_monitoring = 8558
+discovery = 8559
+elder_management = 8560
+payout_proposal = 8561
+payout_transaction = 8562
+
+# =============================================================================
+# Mining Policy
+# =============================================================================
+[policy]
+# Policy profile:
+#   bitcoin_pure  - T0 only (financial transactions only)
+#   permissive    - T0 + T1 + T2 (most common)
+#   full_open     - All tiers including inscriptions
+#   custom        - Use custom settings below
+profile = "bitcoin_pure"
+
+# Custom policy settings (only used when profile = "custom")
+# [policy.custom]
+# allowed_tiers = ["T0", "T1", "T2"]
+# max_op_return_size = 80
+# max_witness_per_input = 10000
+# max_tx_outputs = 200
+# max_tx_size = 100000
+# allow_inscriptions = false
+# allow_runes = false
+
+# =============================================================================
+# Storage
+# =============================================================================
+[storage]
+# Database directory
+db_path = "~/.ghost/data"
+
+# Enable WAL mode for better concurrency (recommended)
+wal_mode = true
+
+# Archive mode - keep full history (for nodes with ARCHIVE_MODE capability)
+archive_mode = true
+
+# Prune old data after N blocks (0 = no pruning)
+prune_height = 0
+
+# =============================================================================
+# Pool Configuration
+# =============================================================================
+[pool]
+# Treasury P2TR address for pool fees
+# IMPORTANT: Use a secure address you control!
+treasury_address = "bc1p..."
+
+# Pool fee percentage (1.0 = 1%)
+treasury_fee_percent = 1.0
+
+# Minimum payout amount in satoshis (must be > 546 dust limit)
+min_payout_sats = 10000
+
+# =============================================================================
+# Ghost Pay L2 (Enabled by default)
+# =============================================================================
+# L2 instant payments with Wraith Protocol mixing
+
+[ghost_pay]
+enabled = true
+
+# Virtual block time in seconds (faster than L1)
+virtual_block_secs = 10
+
+# Epoch length in virtual blocks before L1 settlement
+epoch_blocks = 100
+
+# Transfer fee in basis points (10 = 0.1%)
+transfer_fee_bps = 10
+
+# Minimum transfer fee in satoshis
+min_transfer_fee_sats = 100
+
+# Enable Wraith Protocol mixing
+wraith_enabled = true
+
+# Wraith mixing fee percentage
+wraith_fee_percent = 0.5
+
+# =============================================================================
+# Coordinator (Optional)
+# =============================================================================
+# Uncomment to run as a miner coordinator/load balancer
+
+# [coordinator]
+# port = 8333
+# heartbeat_secs = 30
+# fire_ping_timeout_ms = 5000
+# convergence_threshold = 0.67

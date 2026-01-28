@@ -1,0 +1,46 @@
+# Prometheus Configuration for Bitcoin Ghost Monitoring
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files: []
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Ghost Pool metrics
+  - job_name: 'ghost-pool'
+    static_configs:
+      - targets: ['ghost-pool:8080']
+    metrics_path: '/api/v1/metrics'
+    scrape_interval: 10s
+
+  # Ghost Pay metrics (if enabled)
+  - job_name: 'ghost-pay'
+    static_configs:
+      - targets: ['ghost-pay:8081']
+    metrics_path: '/api/v1/metrics'
+    scrape_interval: 10s
+
+  # Ghost Coordinator metrics (if enabled)
+  - job_name: 'ghost-coordinator'
+    static_configs:
+      - targets: ['ghost-coordinator:8333']
+    metrics_path: '/api/v1/metrics'
+    scrape_interval: 10s
+
+  # Bitcoin Core (if exposed)
+  - job_name: 'bitcoind'
+    static_configs:
+      - targets: ['bitcoind:8332']
+    metrics_path: '/metrics'
+    scrape_interval: 30s

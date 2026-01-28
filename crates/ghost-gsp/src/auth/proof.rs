@@ -1,0 +1,95 @@
+//|======================================================================================================================|
+//|                                                                                                                      |
+//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+//|       ░              ░                                                                                               |
+//|----------------------------------------------------------------------------------------------------------------------|
+//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|----------------------------------------------------------------------------------------------------------------------|
+//| PROJECT: Bitcoin Ghost                                                                                               |
+//| REPO: https://github.com/bitcoin-ghost                                                                               |
+//| WEB: https://bitcoinghost.org/                                                                                       |
+//| LICENSE: MIT                                                                                                         |
+//| FILE: auth/proof.rs                                                                                                  |
+//|======================================================================================================================|
+
+//! WalletProof verification using Schnorr signatures
+
+use bitcoin::secp256k1::{schnorr::Signature, Message, Secp256k1, XOnlyPublicKey};
+use sha2::{Digest, Sha256};
+
+use ghost_gsp_proto::WalletProof;
+
+use crate::error::{GspError, GspResult};
+
+/// Verify a Schnorr signature proof
+pub fn verify_schnorr_proof(proof: &WalletProof) -> GspResult<bool> {
+    let secp = Secp256k1::verification_only();
+
+    // Get public key
+    let pubkey_bytes = proof.public_key_bytes().map_err(|e| {
+        GspError::SignatureVerification(format!("Invalid public key: {}", e))
+    })?;
+
+    let pubkey = XOnlyPublicKey::from_slice(&pubkey_bytes).map_err(|e| {
+        GspError::SignatureVerification(format!("Invalid X-only public key: {}", e))
+    })?;
+
+    // Get signature
+    let sig_bytes = proof.signature_bytes().map_err(|e| {
+        GspError::SignatureVerification(format!("Invalid signature: {}", e))
+    })?;
+
+    let signature = Signature::from_slice(&sig_bytes).map_err(|e| {
+        GspError::SignatureVerification(format!("Invalid Schnorr signature: {}", e))
+    })?;
+
+    // Create message hash (BIP-340 style)
+    let msg_hash = tagged_hash("GhostGSP/proof", proof.message.as_bytes());
+    let message = Message::from_digest(msg_hash);
+
+    // Verify signature
+    secp.verify_schnorr(&signature, &message, &pubkey).map_err(|e| {
+        GspError::SignatureVerification(format!("Signature verification failed: {}", e))
+    })?;
+
+    Ok(true)
+}
+
+/// Create a BIP-340 style tagged hash
+fn tagged_hash(tag: &str, msg: &[u8]) -> [u8; 32] {
+    let tag_hash = Sha256::digest(tag.as_bytes());
+
+    let mut hasher = Sha256::new();
+    hasher.update(&tag_hash);
+    hasher.update(&tag_hash);
+    hasher.update(msg);
+
+    hasher.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tagged_hash() {
+        let hash = tagged_hash("test", b"message");
+        assert_eq!(hash.len(), 32);
+
+        // Same input should give same output
+        let hash2 = tagged_hash("test", b"message");
+        assert_eq!(hash, hash2);
+
+        // Different tag should give different output
+        let hash3 = tagged_hash("other", b"message");
+        assert_ne!(hash, hash3);
+    }
+}

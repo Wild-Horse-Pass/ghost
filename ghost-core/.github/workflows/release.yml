@@ -1,0 +1,337 @@
+# Copyright (c) 2025 The Bitcoin Ghost developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or https://opensource.org/license/mit.
+
+name: Release Binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+jobs:
+  # =============================================================================
+  # Linux x86_64 Build
+  # =============================================================================
+  linux-x64:
+    name: Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libtool autotools-dev automake \
+            pkg-config bsdmainutils python3 libssl-dev libevent-dev \
+            libboost-all-dev libzmq3-dev libminiupnpc-dev libnatpmp-dev \
+            libsqlite3-dev
+
+      - name: Build Ghost Core
+        run: |
+          mkdir build && cd build
+          cmake .. -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_BENCH=OFF \
+            -DENABLE_IPC=OFF -DENABLE_WALLET=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build . -j$(nproc)
+
+      - name: Run smoke tests
+        run: |
+          ./build/bin/ghostd --version
+          ./build/bin/ghost-cli --version
+          ./build/bin/ghost-tx --version || true
+          ./build/bin/ghost-wallet --version || true
+
+      - name: Package binaries
+        run: |
+          mkdir -p ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64/bin
+          cp build/bin/ghostd ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64/bin/
+          cp build/bin/ghost-cli ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64/bin/
+          cp build/bin/ghost-tx ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64/bin/ || true
+          cp build/bin/ghost-wallet ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64/bin/ || true
+          cp README.md ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64/
+          cp COPYING ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64/
+          cp doc/ghost-protocol.md ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64/ || true
+          tar -czvf ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64.tar.gz \
+            ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64/
+
+      - name: Upload release asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64.tar.gz
+          asset_name: ghost-core-${{ env.RELEASE_TAG }}-linux-x86_64.tar.gz
+          tag: ${{ env.RELEASE_TAG }}
+
+  # =============================================================================
+  # Linux ARM64 Build (cross-compile)
+  # =============================================================================
+  linux-arm64:
+    name: Linux ARM64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libtool autotools-dev automake \
+            pkg-config bsdmainutils python3 g++-aarch64-linux-gnu
+
+      - name: Build depends
+        run: |
+          cd depends
+          make HOST=aarch64-linux-gnu -j$(nproc)
+
+      - name: Build Ghost Core
+        run: |
+          mkdir build && cd build
+          cmake .. --toolchain ../depends/aarch64-linux-gnu/toolchain.cmake \
+            -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_BENCH=OFF \
+            -DENABLE_IPC=OFF -DENABLE_WALLET=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build . -j$(nproc)
+
+      - name: Verify binaries
+        run: |
+          file build/bin/ghostd | grep -i aarch64
+          file build/bin/ghost-cli | grep -i aarch64
+
+      - name: Package binaries
+        run: |
+          mkdir -p ghost-core-${{ env.RELEASE_TAG }}-linux-aarch64/bin
+          cp build/bin/ghostd ghost-core-${{ env.RELEASE_TAG }}-linux-aarch64/bin/
+          cp build/bin/ghost-cli ghost-core-${{ env.RELEASE_TAG }}-linux-aarch64/bin/
+          cp build/bin/ghost-tx ghost-core-${{ env.RELEASE_TAG }}-linux-aarch64/bin/ || true
+          cp build/bin/ghost-wallet ghost-core-${{ env.RELEASE_TAG }}-linux-aarch64/bin/ || true
+          cp README.md ghost-core-${{ env.RELEASE_TAG }}-linux-aarch64/
+          cp COPYING ghost-core-${{ env.RELEASE_TAG }}-linux-aarch64/
+          tar -czvf ghost-core-${{ env.RELEASE_TAG }}-linux-aarch64.tar.gz \
+            ghost-core-${{ env.RELEASE_TAG }}-linux-aarch64/
+
+      - name: Upload release asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ghost-core-${{ env.RELEASE_TAG }}-linux-aarch64.tar.gz
+          asset_name: ghost-core-${{ env.RELEASE_TAG }}-linux-aarch64.tar.gz
+          tag: ${{ env.RELEASE_TAG }}
+
+  # =============================================================================
+  # macOS ARM64 Build
+  # =============================================================================
+  macos-arm64:
+    name: macOS ARM64
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install dependencies
+        run: |
+          brew install automake libtool boost pkg-config libevent \
+            miniupnpc libnatpmp zeromq sqlite
+
+      - name: Build Ghost Core
+        run: |
+          mkdir build && cd build
+          cmake .. -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_BENCH=OFF \
+            -DENABLE_IPC=OFF -DENABLE_WALLET=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build . -j$(sysctl -n hw.ncpu)
+
+      - name: Run smoke tests
+        run: |
+          ./build/bin/ghostd --version
+          ./build/bin/ghost-cli --version
+
+      - name: Package binaries
+        run: |
+          mkdir -p ghost-core-${{ env.RELEASE_TAG }}-macos-arm64/bin
+          cp build/bin/ghostd ghost-core-${{ env.RELEASE_TAG }}-macos-arm64/bin/
+          cp build/bin/ghost-cli ghost-core-${{ env.RELEASE_TAG }}-macos-arm64/bin/
+          cp build/bin/ghost-tx ghost-core-${{ env.RELEASE_TAG }}-macos-arm64/bin/ || true
+          cp build/bin/ghost-wallet ghost-core-${{ env.RELEASE_TAG }}-macos-arm64/bin/ || true
+          cp README.md ghost-core-${{ env.RELEASE_TAG }}-macos-arm64/
+          cp COPYING ghost-core-${{ env.RELEASE_TAG }}-macos-arm64/
+          tar -czvf ghost-core-${{ env.RELEASE_TAG }}-macos-arm64.tar.gz \
+            ghost-core-${{ env.RELEASE_TAG }}-macos-arm64/
+
+      - name: Upload release asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ghost-core-${{ env.RELEASE_TAG }}-macos-arm64.tar.gz
+          asset_name: ghost-core-${{ env.RELEASE_TAG }}-macos-arm64.tar.gz
+          tag: ${{ env.RELEASE_TAG }}
+
+  # =============================================================================
+  # macOS x86_64 Build
+  # =============================================================================
+  macos-x64:
+    name: macOS x86_64
+    runs-on: macos-13
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install dependencies
+        run: |
+          brew install automake libtool boost pkg-config libevent \
+            miniupnpc libnatpmp zeromq sqlite
+
+      - name: Build Ghost Core
+        run: |
+          mkdir build && cd build
+          cmake .. -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_BENCH=OFF \
+            -DENABLE_IPC=OFF -DENABLE_WALLET=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build . -j$(sysctl -n hw.ncpu)
+
+      - name: Run smoke tests
+        run: |
+          ./build/bin/ghostd --version
+          ./build/bin/ghost-cli --version
+
+      - name: Package binaries
+        run: |
+          mkdir -p ghost-core-${{ env.RELEASE_TAG }}-macos-x86_64/bin
+          cp build/bin/ghostd ghost-core-${{ env.RELEASE_TAG }}-macos-x86_64/bin/
+          cp build/bin/ghost-cli ghost-core-${{ env.RELEASE_TAG }}-macos-x86_64/bin/
+          cp build/bin/ghost-tx ghost-core-${{ env.RELEASE_TAG }}-macos-x86_64/bin/ || true
+          cp build/bin/ghost-wallet ghost-core-${{ env.RELEASE_TAG }}-macos-x86_64/bin/ || true
+          cp README.md ghost-core-${{ env.RELEASE_TAG }}-macos-x86_64/
+          cp COPYING ghost-core-${{ env.RELEASE_TAG }}-macos-x86_64/
+          tar -czvf ghost-core-${{ env.RELEASE_TAG }}-macos-x86_64.tar.gz \
+            ghost-core-${{ env.RELEASE_TAG }}-macos-x86_64/
+
+      - name: Upload release asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ghost-core-${{ env.RELEASE_TAG }}-macos-x86_64.tar.gz
+          asset_name: ghost-core-${{ env.RELEASE_TAG }}-macos-x86_64.tar.gz
+          tag: ${{ env.RELEASE_TAG }}
+
+  # =============================================================================
+  # Windows x86_64 Build (cross-compile)
+  # =============================================================================
+  windows-x64:
+    name: Windows x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libtool autotools-dev automake \
+            pkg-config bsdmainutils python3 g++-mingw-w64-x86-64-posix nsis
+
+      - name: Build depends
+        run: |
+          cd depends
+          make HOST=x86_64-w64-mingw32 -j$(nproc)
+
+      - name: Build Ghost Core
+        run: |
+          mkdir build && cd build
+          cmake .. --toolchain ../depends/x86_64-w64-mingw32/toolchain.cmake \
+            -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_BENCH=OFF \
+            -DENABLE_IPC=OFF -DENABLE_WALLET=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build . -j$(nproc)
+
+      - name: Verify binaries
+        run: |
+          file build/bin/ghostd.exe | grep -i "PE32+"
+          file build/bin/ghost-cli.exe | grep -i "PE32+"
+
+      - name: Package binaries
+        run: |
+          mkdir -p ghost-core-${{ env.RELEASE_TAG }}-windows-x86_64
+          cp build/bin/ghostd.exe ghost-core-${{ env.RELEASE_TAG }}-windows-x86_64/
+          cp build/bin/ghost-cli.exe ghost-core-${{ env.RELEASE_TAG }}-windows-x86_64/
+          cp build/bin/ghost-tx.exe ghost-core-${{ env.RELEASE_TAG }}-windows-x86_64/ || true
+          cp build/bin/ghost-wallet.exe ghost-core-${{ env.RELEASE_TAG }}-windows-x86_64/ || true
+          cp README.md ghost-core-${{ env.RELEASE_TAG }}-windows-x86_64/
+          cp COPYING ghost-core-${{ env.RELEASE_TAG }}-windows-x86_64/
+          zip -r ghost-core-${{ env.RELEASE_TAG }}-windows-x86_64.zip \
+            ghost-core-${{ env.RELEASE_TAG }}-windows-x86_64/
+
+      - name: Upload release asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: ghost-core-${{ env.RELEASE_TAG }}-windows-x86_64.zip
+          asset_name: ghost-core-${{ env.RELEASE_TAG }}-windows-x86_64.zip
+          tag: ${{ env.RELEASE_TAG }}
+
+  # =============================================================================
+  # Create SHA256SUMS
+  # =============================================================================
+  checksums:
+    name: Generate Checksums
+    runs-on: ubuntu-latest
+    needs: [linux-x64, linux-arm64, macos-arm64, macos-x64, windows-x64]
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+        continue-on-error: true
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p release-assets
+          gh release download ${{ env.RELEASE_TAG }} \
+            --repo ${{ github.repository }} \
+            --dir release-assets \
+            --pattern "ghost-core-*" || true
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd release-assets
+          sha256sum ghost-core-* > SHA256SUMS || true
+          cat SHA256SUMS
+
+      - name: Upload SHA256SUMS
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: release-assets/SHA256SUMS
+          asset_name: SHA256SUMS
+          tag: ${{ env.RELEASE_TAG }}
+        continue-on-error: true

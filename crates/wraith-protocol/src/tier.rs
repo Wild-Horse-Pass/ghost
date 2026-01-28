@@ -1,0 +1,174 @@
+//|======================================================================================================================|
+//|                                                                                                                      |
+//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+//|       ░              ░                                                                                               |
+//|----------------------------------------------------------------------------------------------------------------------|
+//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|----------------------------------------------------------------------------------------------------------------------|
+//| PROJECT: Bitcoin Ghost                                                                                               |
+//| REPO: https://github.com/bitcoin-ghost                                                                               |
+//| WEB: https://bitcoinghost.org/                                                                                       |
+//| LICENSE: MIT                                                                                                         |
+//| FILE: tier.rs                                                                                                        |
+//|======================================================================================================================|
+
+//! Participant tiers for Wraith sessions
+//!
+//! Different tiers trade off between anonymity set size and wait time.
+
+use serde::{Deserialize, Serialize};
+
+/// Participant tier for Wraith mixing sessions
+///
+/// Higher tiers have larger anonymity sets but longer wait times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ParticipantTier {
+    /// 25 participants - fastest, moderate anonymity
+    Express,
+    /// 50 participants - quick, good anonymity
+    Quick,
+    /// 100 participants - small batch, better anonymity
+    Small,
+    /// 250 participants - medium batch, strong anonymity
+    Medium,
+    /// 500 participants - standard batch, very strong anonymity
+    Standard,
+    /// 750 participants - large batch, excellent anonymity
+    Large,
+    /// 1000 participants - whale batch, maximum anonymity
+    Whale,
+}
+
+impl ParticipantTier {
+    /// Get the minimum number of participants for this tier
+    pub fn min_participants(&self) -> usize {
+        match self {
+            ParticipantTier::Express => 25,
+            ParticipantTier::Quick => 50,
+            ParticipantTier::Small => 100,
+            ParticipantTier::Medium => 250,
+            ParticipantTier::Standard => 500,
+            ParticipantTier::Large => 750,
+            ParticipantTier::Whale => 1000,
+        }
+    }
+
+    /// Get the maximum participants (20% over minimum)
+    pub fn max_participants(&self) -> usize {
+        (self.min_participants() as f64 * 1.2) as usize
+    }
+
+    /// Get the tier name
+    pub fn name(&self) -> &'static str {
+        match self {
+            ParticipantTier::Express => "Express",
+            ParticipantTier::Quick => "Quick",
+            ParticipantTier::Small => "Small",
+            ParticipantTier::Medium => "Medium",
+            ParticipantTier::Standard => "Standard",
+            ParticipantTier::Large => "Large",
+            ParticipantTier::Whale => "Whale",
+        }
+    }
+
+    /// Get the tier description
+    pub fn description(&self) -> &'static str {
+        match self {
+            ParticipantTier::Express => "Fastest mixing, moderate anonymity (25 participants)",
+            ParticipantTier::Quick => "Quick mixing, good anonymity (50 participants)",
+            ParticipantTier::Small => "Small batch, better anonymity (100 participants)",
+            ParticipantTier::Medium => "Medium batch, strong anonymity (250 participants)",
+            ParticipantTier::Standard => "Standard batch, very strong anonymity (500 participants)",
+            ParticipantTier::Large => "Large batch, excellent anonymity (750 participants)",
+            ParticipantTier::Whale => "Maximum batch, maximum anonymity (1000 participants)",
+        }
+    }
+
+    /// Get the expected wait time in approximate hours
+    pub fn expected_wait_hours(&self) -> u32 {
+        match self {
+            ParticipantTier::Express => 1,
+            ParticipantTier::Quick => 4,
+            ParticipantTier::Small => 12,
+            ParticipantTier::Medium => 24,
+            ParticipantTier::Standard => 48,
+            ParticipantTier::Large => 72,
+            ParticipantTier::Whale => 168, // 1 week
+        }
+    }
+
+    /// Get all tiers
+    pub fn all() -> &'static [ParticipantTier] {
+        &[
+            ParticipantTier::Express,
+            ParticipantTier::Quick,
+            ParticipantTier::Small,
+            ParticipantTier::Medium,
+            ParticipantTier::Standard,
+            ParticipantTier::Large,
+            ParticipantTier::Whale,
+        ]
+    }
+
+    /// Check if participant count meets minimum
+    pub fn meets_minimum(&self, count: usize) -> bool {
+        count >= self.min_participants()
+    }
+
+    /// Calculate fill percentage
+    pub fn fill_percentage(&self, count: usize) -> f64 {
+        (count as f64 / self.min_participants() as f64 * 100.0).min(100.0)
+    }
+}
+
+impl Default for ParticipantTier {
+    fn default() -> Self {
+        ParticipantTier::Standard
+    }
+}
+
+impl std::fmt::Display for ParticipantTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.description())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_min_participants() {
+        assert_eq!(ParticipantTier::Express.min_participants(), 25);
+        assert_eq!(ParticipantTier::Standard.min_participants(), 500);
+        assert_eq!(ParticipantTier::Whale.min_participants(), 1000);
+    }
+
+    #[test]
+    fn test_max_participants() {
+        // 20% over minimum
+        assert_eq!(ParticipantTier::Express.max_participants(), 30);
+        assert_eq!(ParticipantTier::Standard.max_participants(), 600);
+    }
+
+    #[test]
+    fn test_meets_minimum() {
+        assert!(ParticipantTier::Express.meets_minimum(25));
+        assert!(!ParticipantTier::Express.meets_minimum(24));
+    }
+
+    #[test]
+    fn test_fill_percentage() {
+        assert!((ParticipantTier::Express.fill_percentage(12) - 48.0).abs() < 0.1);
+        assert!((ParticipantTier::Express.fill_percentage(25) - 100.0).abs() < 0.1);
+        assert!((ParticipantTier::Express.fill_percentage(30) - 100.0).abs() < 0.1); // Capped at 100%
+    }
+}

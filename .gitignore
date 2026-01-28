@@ -1,0 +1,47 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Cargo lock for libraries (keep for binaries)
+# Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+
+# Keys and secrets
+*.key
+*.pem
+!examples/*.key
+
+# Node modules (for any JS tooling)
+node_modules/
+
+# Test artifacts
+*.profraw
+coverage/
+
+# Wallet data (local testing)
+wallet-data/
+
+# Zone.Identifier files (Windows)
+*:Zone.Identifier

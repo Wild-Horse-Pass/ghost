@@ -1,0 +1,17 @@
+# Ghost Coordinator Configuration for Docker (Wraith Protocol)
+
+[identity]
+key_path = "/etc/ghost/node.key"
+display_name = "Wraith Coordinator (Docker)"
+
+[coordinator]
+port = 8333
+heartbeat_secs = 30
+fire_ping_timeout_ms = 5000
+convergence_threshold = 0.67
+max_sessions = 100
+session_timeout_secs = 300
+
+[storage]
+db_path = "/var/lib/ghost/data"
+wal_mode = true

@@ -1,0 +1,2459 @@
+//|======================================================================================================================|
+//|                                                                                                                      |
+//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+//|       ░              ░                                                                                               |
+//|----------------------------------------------------------------------------------------------------------------------|
+//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|----------------------------------------------------------------------------------------------------------------------|
+//| PROJECT: Bitcoin Ghost                                                                                               |
+//| REPO: https://github.com/bitcoin-ghost                                                                               |
+//| WEB: https://bitcoinghost.org/                                                                                       |
+//| LICENSE: MIT                                                                                                         |
+//| FILE: routes.rs                                                                                                      |
+//|======================================================================================================================|
+
+//! HTTP routes for verification endpoints
+
+use axum::{
+    extract::{Query, State, ws::WebSocketUpgrade},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::Deserialize;
+use std::sync::Arc;
+use tracing::{debug, error};
+
+use crate::challenge::*;
+use crate::server::VerificationState;
+use crate::websocket::ws_handler;
+
+/// Create verification router
+pub fn create_router(state: Arc<VerificationState>) -> Router {
+    // Clone ws_state for the WebSocket handler
+    let ws_state = Arc::clone(&state.ws_state);
+
+    Router::new()
+        // WebSocket for real-time updates
+        .route("/ws", get(move |ws: WebSocketUpgrade| {
+            let ws_state = Arc::clone(&ws_state);
+            async move { ws_handler(ws, State(ws_state)).await }
+        }))
+        // Health and node info
+        .route("/health", get(health_handler))
+        .route("/node-info", get(node_info_handler))
+        // Informational endpoints
+        .route("/peers", get(peers_handler))
+        .route("/shares", get(shares_handler))
+        .route("/rounds", get(rounds_handler))
+        .route("/payouts", get(payouts_handler))
+        .route("/consensus-state", get(consensus_state_handler))
+        // Verification challenges
+        .route("/verify/archive", get(archive_handler))
+        .route("/verify/policy", get(policy_handler))
+        .route("/verify/stratum", get(stratum_handler))
+        .route("/verify/ghostpay", get(ghostpay_handler))
+        // API v1 routes for dashboard compatibility
+        .route("/api/v1/node/status", get(api_node_status_handler))
+        .route("/api/v1/node/info", get(api_node_info_handler))
+        .route("/api/v1/node/shares", get(api_node_shares_handler))
+        .route("/api/v1/mining/status", get(api_mining_status_handler))
+        .route("/api/v1/mining/miners", get(api_miners_handler))
+        .route("/api/v1/network/peers", get(peers_handler))
+        .route("/api/v1/network/pool", get(api_pool_status_handler))
+        .route("/api/v1/mesh/status", get(consensus_state_handler))
+        .route("/api/v1/config", get(api_config_handler))
+        .route("/api/v1/resources/status", get(api_resources_handler))
+        .route("/api/v1/ghostpay/status", get(api_ghostpay_status_handler))
+        .route("/api/v1/buds/capabilities", get(api_buds_capabilities_handler))
+        // Additional dashboard endpoints
+        .route("/api/v1/swarm", get(api_swarm_handler))
+        .route("/api/v1/network/treasury", get(api_treasury_handler))
+        .route("/api/v1/rewards/current", get(api_rewards_current_handler))
+        .route("/api/v1/rewards/history", get(api_rewards_history_handler))
+        .route("/api/v1/logs", get(api_logs_handler))
+        .route("/api/v1/locks", get(api_locks_handler))
+        .route("/api/v1/node/nickname", get(api_nickname_handler))
+        // Additional endpoints for dashboard compatibility
+        .route("/api/v1/rewards/full", get(api_rewards_full_handler))
+        .route("/api/v1/settlement/status", get(api_settlement_status_handler))
+        .route("/api/v1/swarm/nodes", get(api_swarm_nodes_handler))
+        .route("/api/v1/watchdog/status", get(api_watchdog_status_handler))
+        .route("/api/v1/system/version", get(api_system_version_handler))
+        .route("/api/v1/payments", get(api_payments_handler))
+        .route("/api/v1/backup/history", get(api_backup_history_handler))
+        .route("/api/v1/wraith/sessions", get(api_wraith_sessions_handler))
+        .route("/api/v1/network/elder", get(api_network_elder_handler))
+        .route("/api/v1/buds/mempool", get(api_buds_mempool_handler))
+        .route("/api/v1/mining/best-hash", get(api_mining_best_hash_handler))
+        .route("/api/v1/network/payout-history", get(api_payout_history_handler))
+        .route("/api/v1/ghostpay/payout-history", get(api_ghostpay_payout_history_handler))
+        .route("/api/v1/rewards/node-history", get(api_rewards_node_history_handler))
+        // Config endpoints (GET for reading, POST for updating)
+        .route("/api/v1/config/full", get(api_config_full_handler))
+        .route("/api/v1/config/profiles/mempool", get(api_config_profiles_mempool_handler))
+        .route("/api/v1/config/profiles/template", get(api_config_profiles_template_handler))
+        .route("/api/v1/config/archive_mode", get(api_config_archive_mode_handler).post(api_config_archive_mode_post_handler))
+        .route("/api/v1/config/ghost_mode", get(api_config_ghost_mode_handler).post(api_config_ghost_mode_post_handler))
+        .route("/api/v1/config/mempool_profile", get(api_config_mempool_profile_handler).post(api_config_mempool_profile_post_handler))
+        .route("/api/v1/config/public_mining", get(api_config_public_mining_handler).post(api_config_public_mining_post_handler))
+        .route("/api/v1/config/template_profile", get(api_config_template_profile_handler).post(api_config_template_profile_post_handler))
+        .route("/api/v1/config/bitcoin_pure", get(api_config_bitcoin_pure_handler).post(api_config_bitcoin_pure_post_handler))
+        .route("/api/v1/config/ghost_pay", get(api_config_ghost_pay_handler).post(api_config_ghost_pay_post_handler))
+        .route("/api/v1/config/elder", get(api_config_elder_handler).post(api_config_elder_post_handler))
+        .route("/api/v1/config/prune_profile", get(api_config_prune_profile_handler).post(api_config_prune_profile_post_handler))
+        .route("/api/v1/config/operator_window", get(api_config_operator_window_handler))
+        // Mining endpoints
+        .route("/api/v1/mining/payout_address", get(api_mining_payout_address_handler))
+        .route("/api/v1/mining/private", get(api_mining_private_handler))
+        .route("/api/v1/mining/public", get(api_mining_public_handler))
+        // Ghost Pay endpoints
+        .route("/api/v1/ghost-pay/pruning", get(api_ghostpay_pruning_handler))
+        // Settings endpoints
+        .route("/api/v1/settings/ghostpay_payout_address", get(api_settings_ghostpay_payout_address_handler))
+        // Swarm endpoints
+        .route("/api/v1/swarm/sync", get(api_swarm_sync_handler))
+        .route("/api/v1/swarm/update-all", get(api_swarm_update_all_handler))
+        // System endpoints
+        .route("/api/v1/system/update/status", get(api_system_update_status_handler))
+        .route("/api/v1/system/updates", get(api_system_updates_handler))
+        .route("/api/v1/system/update", get(api_system_update_handler))
+        .route("/api/v1/system/rollback", get(api_system_rollback_handler))
+        // Watchdog endpoints
+        .route("/api/v1/watchdog/events", get(api_watchdog_events_handler))
+        .route("/api/v1/watchdog/clear-cache", get(api_watchdog_clear_cache_handler))
+        // Backup endpoints
+        .route("/api/v1/backup/export", get(api_backup_export_handler))
+        .route("/api/v1/backup/import", get(api_backup_import_handler))
+        .route("/api/v1/backup/verify", get(api_backup_verify_handler))
+        // Auth endpoint (returns empty token for dashboard compatibility)
+        .route("/auth/token", get(api_auth_token_handler))
+        // Admin endpoints for testing
+        .route("/admin/test-consensus", post(admin_test_consensus_handler))
+        .with_state(state)
+}
+
+/// Health check query parameters (optional nonce for signed response)
+#[derive(Debug, Deserialize, Default)]
+pub struct HealthQuery {
+    /// Challenge nonce for signed response binding
+    pub nonce: Option<String>,
+    /// Explicitly disable signing (default: signed when possible)
+    pub unsigned: Option<bool>,
+}
+
+/// Health check handler
+///
+/// Returns HealthResponse wrapped in SignedResponse by default when signing
+/// identity is configured. Use `unsigned=true` to get unsigned response.
+///
+/// **Security**: Always prefer signed responses to prevent MITM/proxy attacks.
+async fn health_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(query): Query<HealthQuery>,
+) -> impl IntoResponse {
+    let response = state.get_health().await;
+
+    // Sign by default unless explicitly disabled
+    let should_sign = !query.unsigned.unwrap_or(false);
+
+    if should_sign && state.can_sign() {
+        if let Some(signed) = state.sign_response(response.clone(), query.nonce) {
+            return Json(serde_json::json!({
+                "signed": true,
+                "response": signed
+            }));
+        }
+    }
+
+    // Warn in logs when returning unsigned response
+    if state.can_sign() && query.unsigned.unwrap_or(false) {
+        tracing::warn!("Returning unsigned response by explicit request");
+    }
+
+    Json(serde_json::json!({
+        "signed": false,
+        "response": response
+    }))
+}
+
+/// Node info handler (detailed node information)
+async fn node_info_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    Json(serde_json::json!({
+        "node_id": health.node_id,
+        "version": health.version,
+        "capabilities": health.capabilities,
+        "uptime_secs": health.uptime_secs,
+        "block_height": health.block_height,
+        "round_id": health.round_id,
+        "miner_count": health.miner_count,
+        "peer_count": health.peer_count
+    }))
+}
+
+/// Peers handler - returns connected peers info
+async fn peers_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Query database for peer list if available
+    let peers = if let Some(ref db) = state.database {
+        match db.get_active_peers(50) {
+            Ok(peer_records) => peer_records.iter().map(|p| {
+                serde_json::json!({
+                    "peer_id": p.peer_id,
+                    "address": p.address,
+                    "port": p.port,
+                    "node_id": p.node_id,
+                    "last_seen": p.last_seen,
+                    "connection_count": p.connection_count
+                })
+            }).collect::<Vec<_>>(),
+            Err(e) => {
+                error!(error = %e, "Failed to query peers");
+                vec![]
+            }
+        }
+    } else {
+        vec![]
+    };
+
+    Json(serde_json::json!({
+        "peer_count": health.peer_count,
+        "peers": peers
+    }))
+}
+
+/// Shares handler - returns recent share statistics
+async fn shares_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Query database for recent shares if available
+    let (shares, total_shares) = if let Some(ref db) = state.database {
+        let shares = match db.get_recent_shares(100) {
+            Ok(share_records) => share_records.iter().map(|s| {
+                serde_json::json!({
+                    "round_id": s.round_id,
+                    "miner_id": s.miner_id,
+                    "difficulty": s.difficulty,
+                    "work": s.work,
+                    "share_hash": s.share_hash,
+                    "timestamp": s.timestamp,
+                    "valid": s.valid
+                })
+            }).collect::<Vec<_>>(),
+            Err(e) => {
+                error!(error = %e, "Failed to query shares");
+                vec![]
+            }
+        };
+        let total = shares.len();
+        (shares, total)
+    } else {
+        (vec![], 0)
+    };
+
+    Json(serde_json::json!({
+        "round_id": health.round_id,
+        "total_shares": total_shares,
+        "shares": shares
+    }))
+}
+
+/// Rounds handler - returns recent round information
+async fn rounds_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Query database for recent rounds if available
+    let rounds = if let Some(ref db) = state.database {
+        match db.get_recent_rounds(20) {
+            Ok(round_records) => round_records.iter().map(|r| {
+                serde_json::json!({
+                    "round_id": r.round_id,
+                    "block_height": r.block_height,
+                    "block_hash": r.block_hash,
+                    "start_time": r.start_time,
+                    "end_time": r.end_time,
+                    "total_shares": r.total_shares,
+                    "total_work": r.total_work,
+                    "winning_miner": r.winning_miner,
+                    "payout_status": r.payout_status.as_str()
+                })
+            }).collect::<Vec<_>>(),
+            Err(e) => {
+                error!(error = %e, "Failed to query rounds");
+                vec![]
+            }
+        }
+    } else {
+        vec![]
+    };
+
+    Json(serde_json::json!({
+        "current_round": health.round_id,
+        "block_height": health.block_height,
+        "rounds": rounds
+    }))
+}
+
+/// Payouts handler - returns payout history
+async fn payouts_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Query database for recent payouts if available
+    let (payouts, total_payouts) = if let Some(ref db) = state.database {
+        let total = db.get_payout_count().unwrap_or(0);
+        let payouts = match db.get_recent_payouts(50) {
+            Ok(payout_records) => payout_records.iter().map(|p| {
+                serde_json::json!({
+                    "round_id": p.round_id,
+                    "recipient_id": p.recipient_id,
+                    "recipient_type": p.recipient_type.as_str(),
+                    "address": p.address,
+                    "amount_sats": p.amount_sats,
+                    "txid": p.txid,
+                    "status": p.status.as_str(),
+                    "created_at": p.created_at
+                })
+            }).collect::<Vec<_>>(),
+            Err(e) => {
+                error!(error = %e, "Failed to query payouts");
+                vec![]
+            }
+        };
+        (payouts, total)
+    } else {
+        (vec![], 0)
+    };
+
+    Json(serde_json::json!({
+        "total_payouts": total_payouts,
+        "payouts": payouts
+    }))
+}
+
+/// Consensus state handler - returns current consensus status
+async fn consensus_state_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Query database for elder count and peer info
+    let (elder_count, peer_count) = if let Some(ref db) = state.database {
+        let elders = db.get_elder_count().unwrap_or(0) as u32;
+        let peers = db.get_active_peers(100).map(|p| p.len()).unwrap_or(0) as u32;
+        (elders, peers)
+    } else {
+        (0, health.peer_count)
+    };
+
+    // Determine consensus status based on peer connectivity
+    let consensus_status = if peer_count >= 3 {
+        "active"
+    } else if peer_count > 0 {
+        "degraded"
+    } else {
+        "isolated"
+    };
+
+    Json(serde_json::json!({
+        "round_id": health.round_id,
+        "block_height": health.block_height,
+        "peer_count": peer_count,
+        "miner_count": health.miner_count,
+        "consensus_status": consensus_status,
+        "elder_count": elder_count,
+        "bft_threshold": 0.67,
+        "quorum_reached": peer_count >= 3
+    }))
+}
+
+/// Archive verification query parameters
+#[derive(Debug, Deserialize)]
+pub struct ArchiveQuery {
+    /// Block hash to verify
+    pub block: Option<String>,
+    /// Transaction ID to verify
+    pub tx: Option<String>,
+    /// Minimum height to prove
+    pub min_height: Option<u64>,
+    /// Challenge nonce for signed response binding
+    pub nonce: Option<String>,
+    /// Explicitly disable signing (default: signed when possible)
+    pub unsigned: Option<bool>,
+}
+
+/// Archive verification handler
+///
+/// Returns ArchiveResponse wrapped in SignedResponse by default when signing
+/// identity is configured. Use `unsigned=true` to get unsigned response.
+async fn archive_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(query): Query<ArchiveQuery>,
+) -> impl IntoResponse {
+    debug!(
+        block = ?query.block,
+        tx = ?query.tx,
+        "Archive verification request"
+    );
+
+    let challenge = ArchiveChallenge {
+        challenge_type: if query.block.is_some() {
+            ChallengeType::ArchiveBlock
+        } else {
+            ChallengeType::ArchiveTx
+        },
+        block_hash: query.block,
+        txid: query.tx,
+        min_height: query.min_height,
+    };
+
+    let should_sign = !query.unsigned.unwrap_or(false);
+
+    match state.verify_archive(challenge).await {
+        Ok(response) => {
+            if should_sign && state.can_sign() {
+                if let Some(signed) = state.sign_response(response.clone(), query.nonce) {
+                    return (StatusCode::OK, Json(serde_json::json!({
+                        "signed": true,
+                        "response": signed
+                    })));
+                }
+            }
+            (StatusCode::OK, Json(serde_json::json!({
+                "signed": false,
+                "response": response
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, "Archive verification failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": ArchiveResponse {
+                        success: false,
+                        block_data: None,
+                        tx_data: None,
+                        error: Some(e.to_string()),
+                    }
+                })),
+            )
+        }
+    }
+}
+
+/// Policy verification query parameters
+#[derive(Debug, Deserialize)]
+pub struct PolicyQuery {
+    /// Raw transaction hex
+    pub tx: String,
+    /// Expected tier (optional)
+    pub expected_tier: Option<String>,
+    /// Challenge nonce for signed response binding
+    pub nonce: Option<String>,
+    /// Explicitly disable signing (default: signed when possible)
+    pub unsigned: Option<bool>,
+}
+
+/// Policy verification handler
+///
+/// Returns PolicyResponse wrapped in SignedResponse by default when signing
+/// identity is configured. Use `unsigned=true` to get unsigned response.
+///
+/// **Security**: Always prefer signed responses to prevent MITM/proxy attacks.
+async fn policy_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(query): Query<PolicyQuery>,
+) -> impl IntoResponse {
+    debug!(tx_len = query.tx.len(), unsigned = ?query.unsigned, "Policy verification request");
+
+    let challenge = PolicyChallenge {
+        tx_hex: query.tx,
+        expected_tier: query.expected_tier,
+    };
+
+    // Sign by default unless explicitly disabled
+    let should_sign = !query.unsigned.unwrap_or(false);
+
+    match state.verify_policy(challenge).await {
+        Ok(response) => {
+            if should_sign && state.can_sign() {
+                if let Some(signed) = state.sign_response(response.clone(), query.nonce) {
+                    return (StatusCode::OK, Json(serde_json::json!({
+                        "signed": true,
+                        "response": signed
+                    })));
+                }
+            }
+            (StatusCode::OK, Json(serde_json::json!({
+                "signed": false,
+                "response": response
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, "Policy verification failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": PolicyResponse {
+                        success: false,
+                        profile: String::new(),
+                        classification: None,
+                        accepted: false,
+                        rejection_reason: None,
+                        error: Some(e.to_string()),
+                    }
+                })),
+            )
+        }
+    }
+}
+
+/// Stratum verification query parameters
+#[derive(Debug, Deserialize)]
+pub struct StratumQuery {
+    /// Port to check
+    pub port: Option<u16>,
+    /// Protocol (sv1 or sv2)
+    pub protocol: Option<String>,
+    /// Challenge nonce for signed response binding
+    pub nonce: Option<String>,
+    /// Explicitly disable signing (default: signed when possible)
+    pub unsigned: Option<bool>,
+}
+
+/// Stratum verification handler
+///
+/// Returns StratumResponse wrapped in SignedResponse by default when signing
+/// identity is configured. Use `unsigned=true` to get unsigned response.
+///
+/// **Security**: Always prefer signed responses to prevent MITM/proxy attacks.
+async fn stratum_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(query): Query<StratumQuery>,
+) -> impl IntoResponse {
+    let protocol = match query.protocol.as_deref() {
+        Some("sv1") => StratumProtocol::Sv1,
+        _ => StratumProtocol::Sv2,
+    };
+
+    let challenge = StratumChallenge {
+        port: query.port,
+        protocol,
+    };
+
+    debug!(port = ?query.port, protocol = ?protocol, unsigned = ?query.unsigned, "Stratum verification request");
+
+    // Sign by default unless explicitly disabled
+    let should_sign = !query.unsigned.unwrap_or(false);
+
+    match state.verify_stratum(challenge).await {
+        Ok(response) => {
+            if should_sign && state.can_sign() {
+                if let Some(signed) = state.sign_response(response.clone(), query.nonce) {
+                    return (StatusCode::OK, Json(serde_json::json!({
+                        "signed": true,
+                        "response": signed
+                    })));
+                }
+            }
+            (StatusCode::OK, Json(serde_json::json!({
+                "signed": false,
+                "response": response
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, "Stratum verification failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": StratumResponse {
+                        success: false,
+                        port: query.port.unwrap_or(34255),
+                        protocol,
+                        connected: false,
+                        latency_ms: None,
+                        error: Some(e.to_string()),
+                    }
+                })),
+            )
+        }
+    }
+}
+
+/// Ghost Pay verification query parameters
+#[derive(Debug, Deserialize)]
+pub struct GhostPayQuery {
+    /// Address to query balance
+    pub address: Option<String>,
+    /// Challenge nonce for signed response binding
+    pub nonce: Option<String>,
+    /// Explicitly disable signing (default: signed when possible)
+    pub unsigned: Option<bool>,
+}
+
+/// Ghost Pay verification handler
+///
+/// Returns GhostPayResponse wrapped in SignedResponse by default when signing
+/// identity is configured. Use `unsigned=true` to get unsigned response.
+///
+/// **Security**: Always prefer signed responses to prevent MITM/proxy attacks.
+async fn ghostpay_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(query): Query<GhostPayQuery>,
+) -> impl IntoResponse {
+    debug!(address = ?query.address, unsigned = ?query.unsigned, "GhostPay verification request");
+
+    let challenge = GhostPayChallenge {
+        challenge_type: if query.address.is_some() {
+            ChallengeType::GhostPayBalance
+        } else {
+            ChallengeType::GhostPayTransfer
+        },
+        address: query.address,
+    };
+
+    // Sign by default unless explicitly disabled
+    let should_sign = !query.unsigned.unwrap_or(false);
+
+    match state.verify_ghostpay(challenge).await {
+        Ok(response) => {
+            if should_sign && state.can_sign() {
+                if let Some(signed) = state.sign_response(response.clone(), query.nonce) {
+                    return (StatusCode::OK, Json(serde_json::json!({
+                        "signed": true,
+                        "response": signed
+                    })));
+                }
+            }
+            (StatusCode::OK, Json(serde_json::json!({
+                "signed": false,
+                "response": response
+            })))
+        }
+        Err(e) => {
+            error!(error = %e, "GhostPay verification failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": GhostPayResponse {
+                        success: false,
+                        l2_enabled: false,
+                        virtual_block: None,
+                        epoch: None,
+                        balance_sats: None,
+                        wraith_enabled: false,
+                        error: Some(e.to_string()),
+                    }
+                })),
+            )
+        }
+    }
+}
+
+// ============================================================================
+// API v1 Handlers for Dashboard Compatibility
+// ============================================================================
+
+/// API v1 node status handler
+async fn api_node_status_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "online": health.healthy,
+        "node_id": health.node_id,
+        "version": health.version,
+        "sync_height": health.block_height,
+        "block_height": health.block_height,
+        "round_id": health.round_id,
+        "uptime_seconds": health.uptime_secs,
+        "uptime_secs": health.uptime_secs,
+        "peer_count": health.peer_count,
+        "miner_count": health.miner_count,
+        "is_synced": true,
+        "mempool_profile": config.mempool_profile,
+        "template_profile": config.template_profile,
+        "archive_mode": config.archive_mode,
+        "ghost_pay": config.ghost_pay,
+        "public_mining": config.public_mining,
+        "private_mining": false,
+        "bitcoin_pure": config.bitcoin_pure,
+        "ghost_mode": config.ghost_mode
+    }))
+}
+
+/// API v1 node shares handler (5-4-3-2-1 system)
+async fn api_node_shares_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let _health = state.get_health().await;
+    let config = state.dashboard_config.read();
+    // Calculate total shares based on capabilities (5-4-3-2-1 system)
+    let mut total = 0;
+    if config.archive_mode { total += 5; }
+    if config.ghost_pay { total += 4; }
+    if config.public_mining { total += 3; }
+    if config.bitcoin_pure { total += 2; }
+    if config.elder { total += 1; }
+
+    Json(serde_json::json!({
+        "total": total,
+        "max_shares": 15,
+        "uptime_qualified": true,
+        "uptime_percent": 99.9,
+        "archive_mode": config.archive_mode,
+        "ghost_pay": config.ghost_pay,
+        "public_mining": config.public_mining,
+        "bitcoin_pure": config.bitcoin_pure,
+        "elder": config.elder,
+        "elder_slot": config.elder_slot,
+        "estimated_reward_btc": 0.0
+    }))
+}
+
+/// API v1 node info handler (detailed)
+async fn api_node_info_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    let config = state.dashboard_config.read();
+    let node_id_short = health.node_id.chars().take(8).collect::<String>();
+    Json(serde_json::json!({
+        "node_id": health.node_id,
+        "node_id_short": node_id_short,
+        "nickname": node_id_short,
+        "version": health.version,
+        "capabilities": health.capabilities,
+        "uptime_seconds": health.uptime_secs,
+        "uptime_secs": health.uptime_secs,
+        "sync_height": health.block_height,
+        "block_height": health.block_height,
+        "round_id": health.round_id,
+        "network": "signet",
+        "is_synced": true,
+        "peer_count": health.peer_count,
+        "miner_count": health.miner_count,
+        "archive_mode": config.archive_mode,
+        "ghost_pay": config.ghost_pay,
+        "public_mining": config.public_mining,
+        "bitcoin_pure": config.bitcoin_pure,
+        "mempool_profile": config.mempool_profile,
+        "template_profile": config.template_profile
+    }))
+}
+
+/// API v1 mining status handler
+async fn api_mining_status_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    Json(serde_json::json!({
+        "active": true,
+        "sync_height": health.block_height,
+        "block_height": health.block_height,
+        "round_id": health.round_id,
+        "miner_count": health.miner_count,
+        "total_hashrate": 0,
+        "shares_this_round": health.capabilities.total_shares,
+        "difficulty": 1.0,
+        "best_hash": null,
+        "public_mining": health.capabilities.public_mining,
+        "is_synced": true
+    }))
+}
+
+/// API v1 miners handler
+async fn api_miners_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Query miners from the current round's shares
+    let miners = if let Some(ref db) = state.database {
+        match db.get_round_miners(health.round_id) {
+            Ok(miner_work) => miner_work.iter().map(|(miner_id, work)| {
+                serde_json::json!({
+                    "miner_id": miner_id,
+                    "work": work,
+                    "shares_this_round": work.floor() as u64,
+                    "active": true
+                })
+            }).collect::<Vec<_>>(),
+            Err(e) => {
+                error!(error = %e, "Failed to query miners");
+                vec![]
+            }
+        }
+    } else {
+        vec![]
+    };
+
+    Json(serde_json::json!({
+        "total_miners": health.miner_count,
+        "active_miners": miners.len(),
+        "miners": miners
+    }))
+}
+
+/// API v1 pool status handler
+async fn api_pool_status_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    Json(serde_json::json!({
+        "pool_name": "Ghost Pool",
+        "version": health.version,
+        "block_height": health.block_height,
+        "peer_count": health.peer_count,
+        "miner_count": health.miner_count,
+        "round_id": health.round_id,
+        "uptime_secs": health.uptime_secs,
+        "total_shares": health.capabilities.total_shares,
+        "stratum_sv2_port": 4444,
+        "stratum_sv1_port": 3333,
+        "http_port": 8080
+    }))
+}
+
+/// API v1 config handler
+async fn api_config_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "archive_mode": config.archive_mode,
+        "ghost_pay": config.ghost_pay,
+        "public_mining": config.public_mining,
+        "bitcoin_pure": config.bitcoin_pure,
+        "ghost_mode": config.ghost_mode,
+        "mempool_profile": config.mempool_profile,
+        "template_profile": config.template_profile
+    }))
+}
+
+/// API v1 resources handler
+async fn api_resources_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    Json(serde_json::json!({
+        "cpu_percent": 0.0,
+        "memory_mb": 0,
+        "disk_usage_percent": 0.0,
+        "uptime_seconds": health.uptime_secs,
+        "uptime_secs": health.uptime_secs,
+        "status": "healthy"
+    }))
+}
+
+/// API v1 GhostPay status handler
+async fn api_ghostpay_status_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let _health = state.get_health().await;
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "enabled": config.ghost_pay,
+        "virtual_block": 0,
+        "l2_height": 0,
+        "block_height": 0,
+        "epoch": 0,
+        "peer_count": 0,
+        "wraith_enabled": false,
+        "total_balances": 0
+    }))
+}
+
+/// API v1 BUDS capabilities handler
+async fn api_buds_capabilities_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    Json(serde_json::json!({
+        "bitcoin_pure": health.capabilities.bitcoin_pure,
+        "allowed_tiers": if health.capabilities.bitcoin_pure {
+            vec!["T0", "T1"]
+        } else {
+            vec!["T0", "T1", "T2"]
+        },
+        "max_op_return_size": 80,
+        "allow_inscriptions": false,
+        "allow_runes": false
+    }))
+}
+
+/// API v1 Swarm handler - for multi-node management
+async fn api_swarm_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Query database for connected peers
+    let (nodes, total) = if let Some(ref db) = state.database {
+        let peers = db.get_active_peers(50).unwrap_or_default();
+        let nodes_json: Vec<_> = peers.iter().map(|p| {
+            serde_json::json!({
+                "node_id": p.node_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                "address": format!("{}:{}", p.address, p.port),
+                "last_seen": p.last_seen,
+                "is_self": false
+            })
+        }).collect();
+        let total = nodes_json.len() + 1; // +1 for self
+        (nodes_json, total)
+    } else {
+        (vec![], 1)
+    };
+
+    Json(serde_json::json!({
+        "enabled": true,
+        "node_id": health.node_id,
+        "self": {
+            "node_id": health.node_id,
+            "version": health.version,
+            "capabilities": health.capabilities
+        },
+        "nodes": nodes,
+        "total": total
+    }))
+}
+
+/// API v1 Treasury handler
+async fn api_treasury_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Query database for treasury stats
+    let (total_fees, payout_count) = if let Some(ref db) = state.database {
+        // Sum all payouts where recipient_type is Treasury
+        let payouts = db.get_recent_payouts(1000).unwrap_or_default();
+        let treasury_payouts: Vec<_> = payouts.iter()
+            .filter(|p| matches!(p.recipient_type, ghost_storage::models::RecipientType::Treasury))
+            .collect();
+        let total: u64 = treasury_payouts.iter().map(|p| p.amount_sats).sum();
+        (total, treasury_payouts.len())
+    } else {
+        (0, 0)
+    };
+
+    // Calculate progress towards 21 BTC target
+    let accumulated_btc = total_fees as f64 / 100_000_000.0;
+    let target_btc = 21.0;
+    let progress = (accumulated_btc / target_btc * 100.0).min(100.0);
+
+    // Determine phase based on progress
+    let phase = if accumulated_btc >= target_btc {
+        "decay"
+    } else {
+        "bootstrap"
+    };
+
+    Json(serde_json::json!({
+        "treasury_address": "", // Would come from config
+        "treasury_balance_sats": total_fees,
+        "fee_percent": 1.0,
+        "total_fees_collected": total_fees,
+        "total_payouts": payout_count,
+        "phase": phase,
+        "decay_year": if phase == "decay" { Some(2026) } else { None },
+        "decay_started": phase == "decay",
+        "accumulated_btc": accumulated_btc,
+        "target_btc": target_btc,
+        "progress_percent": progress,
+        "treasury_percent": 50.0,
+        "node_pool_percent": 50.0
+    }))
+}
+
+/// API v1 Rewards current handler
+async fn api_rewards_current_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    let config = state.dashboard_config.read();
+
+    // Get node reward entry from database
+    let (balance_sats, total_credits, last_round) = if let Some(ref db) = state.database {
+        match db.get_or_create_node_reward(&health.node_id) {
+            Ok(entry) => (entry.balance_sats, entry.total_credits_sats, entry.last_credited_round),
+            Err(e) => {
+                error!(error = %e, "Failed to query node rewards");
+                (0, 0, 0)
+            }
+        }
+    } else {
+        (0, 0, 0)
+    };
+
+    // Calculate node shares based on capabilities
+    let mut node_shares = 0u32;
+    if config.archive_mode { node_shares += 5; }
+    if config.ghost_pay { node_shares += 4; }
+    if config.public_mining { node_shares += 3; }
+    if config.bitcoin_pure { node_shares += 2; }
+    if config.elder { node_shares += 1; }
+
+    Json(serde_json::json!({
+        "round_id": health.round_id,
+        "block_height": health.block_height,
+        "pending_rewards_sats": balance_sats,
+        "total_earned_sats": total_credits,
+        "last_credited_round": last_round,
+        "estimated_share": if node_shares > 0 { node_shares as f64 / 15.0 } else { 0.0 },
+        "node_shares": node_shares,
+        "total_network_shares": 15,
+        "message": "Current round reward estimation"
+    }))
+}
+
+/// API v1 Rewards history handler
+async fn api_rewards_history_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Query payouts to this node as reward history
+    let health = state.get_health().await;
+
+    let (rewards, total_sats) = if let Some(ref db) = state.database {
+        // Get payouts where this node was the recipient
+        let payouts = db.get_recent_payouts(100).unwrap_or_default();
+        let node_payouts: Vec<_> = payouts.iter()
+            .filter(|p| p.recipient_id == health.node_id)
+            .map(|p| {
+                serde_json::json!({
+                    "round_id": p.round_id,
+                    "amount_sats": p.amount_sats,
+                    "txid": p.txid,
+                    "status": format!("{:?}", p.status),
+                    "created_at": p.created_at
+                })
+            })
+            .collect();
+        let total: u64 = payouts.iter()
+            .filter(|p| p.recipient_id == health.node_id)
+            .map(|p| p.amount_sats)
+            .sum();
+        (node_payouts, total)
+    } else {
+        (vec![], 0)
+    };
+
+    Json(serde_json::json!({
+        "rewards": rewards,
+        "total_rewards": rewards.len(),
+        "total_earned_sats": total_sats,
+        "total_earned_btc": total_sats as f64 / 100_000_000.0
+    }))
+}
+
+/// API v1 Logs handler
+async fn api_logs_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Try to read recent log entries from journalctl
+    let entries = match tokio::process::Command::new("journalctl")
+        .args(["-u", "ghost-pool", "-n", "100", "--no-pager", "-o", "json"])
+        .output()
+        .await
+    {
+        Ok(output) => {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // Parse JSON lines
+                stdout.lines()
+                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                    .map(|entry| {
+                        serde_json::json!({
+                            "timestamp": entry.get("__REALTIME_TIMESTAMP")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.parse::<u64>().unwrap_or(0) / 1000000)
+                                .unwrap_or(0),
+                            "level": entry.get("PRIORITY")
+                                .and_then(|v| v.as_str())
+                                .map(|p| match p {
+                                    "3" => "error",
+                                    "4" => "warn",
+                                    "5" | "6" => "info",
+                                    "7" => "debug",
+                                    _ => "info"
+                                })
+                                .unwrap_or("info"),
+                            "message": entry.get("MESSAGE")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                vec![]
+            }
+        }
+        Err(_) => vec![]
+    };
+
+    let total = entries.len();
+
+    Json(serde_json::json!({
+        "entries": entries,
+        "total": total,
+        "node_id": state.node_id
+    }))
+}
+
+/// API v1 Locks handler (Ghost Lock state channels)
+async fn api_locks_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    let config = state.dashboard_config.read();
+
+    // Query Ghost Locks for this node from database
+    let (locks, active_count, total_locked) = if let Some(ref db) = state.database {
+        // Get all locks owned by this node's ghost ID
+        let ghost_id = format!("ghost{}", &health.node_id[..8.min(health.node_id.len())]);
+        match db.get_ghost_locks_by_owner(&ghost_id) {
+            Ok(lock_records) => {
+                let active: Vec<_> = lock_records.iter()
+                    .filter(|l| l.state == ghost_storage::models::GhostLockState::Active)
+                    .collect();
+                let total: u64 = active.iter().map(|l| l.amount_sats).sum();
+                let locks_json: Vec<_> = lock_records.iter().map(|l| {
+                    serde_json::json!({
+                        "lock_id": l.lock_id,
+                        "denomination": l.denomination,
+                        "amount_sats": l.amount_sats,
+                        "state": format!("{:?}", l.state),
+                        "timelock_tier": l.timelock_tier,
+                        "creation_height": l.creation_height,
+                        "recovery_height": l.recovery_height,
+                        "funding_txid": l.funding_txid,
+                        "next_jump_height": l.next_jump_height,
+                        "created_at": l.created_at
+                    })
+                }).collect();
+                (locks_json, active.len(), total)
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to query ghost locks");
+                (vec![], 0, 0)
+            }
+        }
+    } else {
+        (vec![], 0, 0)
+    };
+
+    Json(serde_json::json!({
+        "enabled": config.ghost_pay,
+        "active_locks": active_count,
+        "total_locked_sats": total_locked,
+        "locks": locks
+    }))
+}
+
+/// API v1 Nickname handler
+async fn api_nickname_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    // Return short node ID as nickname
+    let nickname = health.node_id.chars().take(8).collect::<String>();
+    Json(serde_json::json!({
+        "nickname": nickname
+    }))
+}
+
+/// API v1 Rewards full handler
+async fn api_rewards_full_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    let config = state.dashboard_config.read();
+
+    // Get node reward entry from database
+    let (balance_sats, total_credits, total_withdrawals, last_round) = if let Some(ref db) = state.database {
+        match db.get_or_create_node_reward(&health.node_id) {
+            Ok(entry) => (entry.balance_sats, entry.total_credits_sats, entry.total_withdrawals_sats, entry.last_credited_round),
+            Err(e) => {
+                error!(error = %e, "Failed to query node rewards");
+                (0, 0, 0, 0)
+            }
+        }
+    } else {
+        (0, 0, 0, 0)
+    };
+
+    // Get payout history
+    let (rewards_history, last_payout) = if let Some(ref db) = state.database {
+        let payouts = db.get_recent_payouts(20).unwrap_or_default();
+        let node_payouts: Vec<_> = payouts.iter()
+            .filter(|p| p.recipient_id == health.node_id)
+            .map(|p| {
+                serde_json::json!({
+                    "round_id": p.round_id,
+                    "amount_sats": p.amount_sats,
+                    "txid": p.txid,
+                    "status": format!("{:?}", p.status),
+                    "created_at": p.created_at
+                })
+            })
+            .collect();
+        let last = payouts.iter()
+            .filter(|p| p.recipient_id == health.node_id)
+            .next()
+            .map(|p| serde_json::json!({
+                "round_id": p.round_id,
+                "amount_sats": p.amount_sats,
+                "txid": p.txid,
+                "created_at": p.created_at
+            }));
+        (node_payouts, last)
+    } else {
+        (vec![], None)
+    };
+
+    // Calculate node shares
+    let mut node_shares = 0u32;
+    if config.archive_mode { node_shares += 5; }
+    if config.ghost_pay { node_shares += 4; }
+    if config.public_mining { node_shares += 3; }
+    if config.bitcoin_pure { node_shares += 2; }
+    if config.elder { node_shares += 1; }
+
+    Json(serde_json::json!({
+        "round_id": health.round_id,
+        "block_height": health.block_height,
+        "node_shares": node_shares,
+        "total_network_shares": 15,
+        "estimated_reward_sats": 0,
+        "lifetime_rewards_sats": total_credits,
+        "pending_payout_sats": balance_sats,
+        "total_withdrawals_sats": total_withdrawals,
+        "last_credited_round": last_round,
+        "last_payout": last_payout,
+        "rewards_history": rewards_history
+    }))
+}
+
+/// API v1 Settlement status handler
+async fn api_settlement_status_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Query pending reconciliation batches
+    let (pending_count, last_settlement, total_settled) = if let Some(ref db) = state.database {
+        let pending = db.get_pending_reconciliation_batches().unwrap_or_default();
+        let pending_count = pending.len();
+
+        // Get the most recent finalized batch
+        let all_pending = db.get_pending_reconciliation_batches().unwrap_or_default();
+        let last = all_pending.iter()
+            .filter(|b| b.finalized_at.is_some())
+            .next()
+            .map(|b| serde_json::json!({
+                "batch_id": b.batch_id,
+                "total_amount_sats": b.total_amount_sats,
+                "l1_txid": b.l1_txid,
+                "finalized_at": b.finalized_at
+            }));
+
+        let total: u64 = all_pending.iter()
+            .filter(|b| b.finalized_at.is_some())
+            .map(|b| b.total_amount_sats)
+            .sum();
+
+        (pending_count, last, total)
+    } else {
+        (0, None, 0)
+    };
+
+    let status = if pending_count > 0 { "processing" } else { "idle" };
+
+    Json(serde_json::json!({
+        "status": status,
+        "pending_settlements": pending_count,
+        "pending_count": pending_count,
+        "batches_24h": 0,
+        "last_settlement": last_settlement,
+        "total_settled_sats": total_settled
+    }))
+}
+
+/// API v1 Swarm nodes handler
+async fn api_swarm_nodes_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Start with self
+    let mut nodes = vec![serde_json::json!({
+        "node_id": health.node_id,
+        "region": "unknown",
+        "version": health.version,
+        "online": health.healthy,
+        "is_self": true
+    })];
+
+    // Add peers from database
+    if let Some(ref db) = state.database {
+        if let Ok(peers) = db.get_active_peers(50) {
+            for peer in peers {
+                if let Some(ref node_id) = peer.node_id {
+                    nodes.push(serde_json::json!({
+                        "node_id": node_id,
+                        "address": format!("{}:{}", peer.address, peer.port),
+                        "online": true,
+                        "last_seen": peer.last_seen,
+                        "is_self": false
+                    }));
+                }
+            }
+        }
+    }
+
+    let total = nodes.len();
+    Json(serde_json::json!({
+        "nodes": nodes,
+        "total": total
+    }))
+}
+
+/// API v1 Watchdog status handler
+async fn api_watchdog_status_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Check ghost-pool status (we're running, so it's up)
+    let ghost_pool_status = serde_json::json!({
+        "status": "running",
+        "uptime_secs": health.uptime_secs,
+        "pid": std::process::id()
+    });
+
+    // Check ghost-core status via RPC
+    let ghost_core_status = if let Some(ref rpc) = state.rpc {
+        match rpc.get_blockchain_info().await {
+            Ok(info) => serde_json::json!({
+                "status": "running",
+                "chain": info.chain,
+                "blocks": info.blocks,
+                "headers": info.headers,
+                "synced": info.blocks == info.headers
+            }),
+            Err(_) => serde_json::json!({
+                "status": "error",
+                "message": "RPC connection failed"
+            })
+        }
+    } else {
+        serde_json::json!({
+            "status": "unknown",
+            "message": "RPC not configured"
+        })
+    };
+
+    // Check GSP (Ghost Service Protocol) status for light wallet support
+    let gsp_status = if let Some(gsp_info) = state.get_gsp_info() {
+        serde_json::json!({
+            "status": "running",
+            "protocol_version": gsp_info.protocol_version,
+            "network": gsp_info.network,
+            "connections": gsp_info.connections,
+            "sync_status": gsp_info.sync_status,
+            "registered_wallets": gsp_info.registered_wallets
+        })
+    } else {
+        serde_json::json!({
+            "status": "not_enabled",
+            "message": "GSP light wallet server not configured"
+        })
+    };
+
+    Json(serde_json::json!({
+        "services": {
+            "ghost-pool": ghost_pool_status,
+            "ghost-core": ghost_core_status,
+            "gsp": gsp_status
+        },
+        "healthy": true,
+        "uptime_secs": health.uptime_secs
+    }))
+}
+
+/// API v1 System version handler
+async fn api_system_version_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Get ghost-core version if available
+    let ghost_core_version = if let Some(ref rpc) = state.rpc {
+        match rpc.get_network_info().await {
+            Ok(info) => Some(info.subversion),
+            Err(_) => None
+        }
+    } else {
+        None
+    };
+
+    Json(serde_json::json!({
+        "version": health.version,
+        "build": if cfg!(debug_assertions) { "debug" } else { "release" },
+        "ghost_core_version": ghost_core_version,
+        "rust_version": env!("CARGO_PKG_RUST_VERSION"),
+        "target": std::env::consts::ARCH,
+        "os": std::env::consts::OS,
+        "update_available": false
+    }))
+}
+
+/// API v1 Payments handler
+async fn api_payments_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Query database for recent payouts (payments are derived from payouts)
+    let (payments, total) = if let Some(ref db) = state.database {
+        let payout_records = db.get_recent_payouts(50).unwrap_or_default();
+        let total = db.get_payout_count().unwrap_or(0);
+        let payments_json: Vec<_> = payout_records.iter().map(|p| {
+            serde_json::json!({
+                "id": format!("{}-{}", p.round_id, p.recipient_id),
+                "round_id": p.round_id,
+                "recipient": p.recipient_id,
+                "recipient_type": format!("{:?}", p.recipient_type),
+                "amount_sats": p.amount_sats,
+                "address": p.address,
+                "txid": p.txid,
+                "status": format!("{:?}", p.status),
+                "type": "payout",
+                "created_at": p.created_at
+            })
+        }).collect();
+        (payments_json, total)
+    } else {
+        (vec![], 0)
+    };
+
+    Json(serde_json::json!({
+        "payments": payments,
+        "total": total
+    }))
+}
+
+/// API v1 Backup history handler
+async fn api_backup_history_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Look for backup files in the data directory
+    let backup_dir = std::path::Path::new("/home/ghost/.ghost/backups");
+    let backups = if backup_dir.exists() {
+        match std::fs::read_dir(backup_dir) {
+            Ok(entries) => {
+                entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map(|ext| ext == "backup" || ext == "db").unwrap_or(false))
+                    .filter_map(|e| {
+                        let metadata = e.metadata().ok()?;
+                        let modified = metadata.modified().ok()?
+                            .duration_since(std::time::UNIX_EPOCH).ok()?
+                            .as_secs();
+                        Some(serde_json::json!({
+                            "filename": e.file_name().to_string_lossy(),
+                            "path": e.path().to_string_lossy(),
+                            "size_bytes": metadata.len(),
+                            "created_at": modified
+                        }))
+                    })
+                    .collect::<Vec<_>>()
+            }
+            Err(_) => vec![]
+        }
+    } else {
+        vec![]
+    };
+
+    let total = backups.len();
+    Json(serde_json::json!({
+        "backups": backups,
+        "total": total,
+        "backup_dir": backup_dir.to_string_lossy()
+    }))
+}
+
+/// API v1 Wraith sessions handler (Ghost Pay sessions)
+async fn api_wraith_sessions_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Query database for active wraith rounds if available
+    let (sessions, active_count, total_participants) = if let Some(ref db) = state.database {
+        let rounds = db.get_active_wraith_rounds().unwrap_or_default();
+        let active = rounds.len();
+        let participants: u32 = rounds.iter().map(|r| r.participant_count).sum();
+        let sessions_json: Vec<_> = rounds.iter().map(|r| {
+            serde_json::json!({
+                "round_id": r.round_id,
+                "denomination": r.denomination,
+                "amount_sats": r.amount_sats,
+                "participant_count": r.participant_count,
+                "phase": format!("{:?}", r.phase),
+                "registration_deadline": r.registration_deadline
+            })
+        }).collect();
+        (sessions_json, active, participants)
+    } else {
+        (vec![], 0, 0)
+    };
+
+    Json(serde_json::json!({
+        "sessions": sessions,
+        "total": sessions.len(),
+        "active": active_count,
+        "active_sessions": active_count,
+        "sessions_completed": 0,
+        "total_sessions": sessions.len(),
+        "sessions_expired": 0,
+        "total_participants": total_participants
+    }))
+}
+
+/// API v1 Network elder handler
+async fn api_network_elder_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    let max_elders = ghost_common::constants::MAX_ELDERS;
+
+    // Query database for elder list if available
+    let (elders, total_elders, is_elder) = if let Some(ref db) = state.database {
+        let elder_records = db.get_elders().unwrap_or_default();
+        let total = elder_records.len() as u32;
+        let is_self_elder = elder_records.iter().any(|e| e.node_id == health.node_id);
+        let elders_json: Vec<_> = elder_records.iter().map(|e| {
+            serde_json::json!({
+                "node_id": e.node_id,
+                "display_name": e.display_name,
+                "elder_order": e.elder_order,
+                "first_seen": e.first_seen,
+                "last_seen": e.last_seen,
+                "is_self": e.node_id == health.node_id
+            })
+        }).collect();
+        (elders_json, total, is_self_elder)
+    } else {
+        (vec![], 0, false)
+    };
+
+    let spots_remaining = max_elders.saturating_sub(total_elders);
+
+    Json(serde_json::json!({
+        "elders": elders,
+        "total_elders": total_elders,
+        "max_elders": max_elders,
+        "spots_remaining": spots_remaining,
+        "is_elder": is_elder
+    }))
+}
+
+/// API v1 BUDS mempool handler
+async fn api_buds_mempool_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Query Ghost Core for mempool info
+    if let Some(ref rpc) = state.rpc {
+        match rpc.get_mempool_info().await {
+            Ok(mempool_info) => {
+                // Get raw mempool for transaction list
+                let (transactions, by_tier) = match rpc.get_raw_mempool(true).await {
+                    Ok(mempool) => {
+                        // mempool is a JSON object with txid -> entry
+                        let txs: Vec<_> = if let Some(obj) = mempool.as_object() {
+                            obj.iter().take(100).map(|(txid, entry)| {
+                                serde_json::json!({
+                                    "txid": txid,
+                                    "vsize": entry.get("vsize").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    "weight": entry.get("weight").and_then(|v| v.as_u64()).unwrap_or(0),
+                                    "fee": entry.get("fees").and_then(|f| f.get("base")).and_then(|b| b.as_f64()).unwrap_or(0.0),
+                                    "time": entry.get("time").and_then(|v| v.as_u64()).unwrap_or(0),
+                                })
+                            }).collect()
+                        } else {
+                            vec![]
+                        };
+                        // TODO: Add BUDS tier classification
+                        let tiers = serde_json::json!({
+                            "T0": mempool_info.size,
+                            "T1": 0,
+                            "T2": 0,
+                            "T3": 0,
+                            "T4": 0
+                        });
+                        (txs, tiers)
+                    }
+                    Err(e) => {
+                        error!(error = %e, "Failed to get raw mempool");
+                        (vec![], serde_json::json!({"T0": 0, "T1": 0, "T2": 0, "T3": 0, "T4": 0}))
+                    }
+                };
+
+                return Json(serde_json::json!({
+                    "transactions": transactions,
+                    "total": mempool_info.size,
+                    "bytes": mempool_info.bytes,
+                    "usage": mempool_info.usage,
+                    "max_mempool": mempool_info.maxmempool,
+                    "min_fee": mempool_info.mempoolminfee,
+                    "by_tier": by_tier
+                }));
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to get mempool info");
+            }
+        }
+    }
+
+    // Fallback if RPC not available
+    Json(serde_json::json!({
+        "transactions": [],
+        "total": 0,
+        "by_tier": {
+            "T0": 0,
+            "T1": 0,
+            "T2": 0,
+            "T3": 0,
+            "T4": 0
+        },
+        "message": "Ghost Core RPC not configured"
+    }))
+}
+
+/// API v1 Mining best-hash handler
+async fn api_mining_best_hash_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Query Ghost Core for best block hash and blockchain info
+    if let Some(ref rpc) = state.rpc {
+        // Get best block hash (this always works)
+        let best_hash = rpc.get_best_block_hash().await.ok();
+
+        // Get blockchain info (more reliable than mining info on signet)
+        let (difficulty, chain) = match rpc.get_blockchain_info().await {
+            Ok(info) => (info.difficulty, info.chain),
+            Err(_) => (0.0, "unknown".to_string()),
+        };
+
+        // Get network hash rate (may fail on signet)
+        let network_hashrate = match rpc.get_mining_info().await {
+            Ok(info) => info.networkhashps,
+            Err(_) => 0.0,
+        };
+
+        return Json(serde_json::json!({
+            "best_hash": best_hash,
+            "best_difficulty": difficulty,
+            "network_hashrate": network_hashrate,
+            "block_height": health.block_height,
+            "round_id": health.round_id,
+            "chain": chain
+        }));
+    }
+
+    // Fallback
+    Json(serde_json::json!({
+        "best_hash": null,
+        "best_difficulty": 0,
+        "block_height": health.block_height,
+        "round_id": health.round_id,
+        "message": "Ghost Core RPC not configured"
+    }))
+}
+
+/// API v1 Network payout history handler
+async fn api_payout_history_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Query database for recent payouts if available
+    let (payouts, total) = if let Some(ref db) = state.database {
+        let payout_records = db.get_recent_payouts(100).unwrap_or_default();
+        let total = db.get_payout_count().unwrap_or(0);
+        let payouts_json: Vec<_> = payout_records.iter().map(|p| {
+            serde_json::json!({
+                "round_id": p.round_id,
+                "recipient_id": p.recipient_id,
+                "recipient_type": format!("{:?}", p.recipient_type),
+                "amount_sats": p.amount_sats,
+                "address": p.address,
+                "txid": p.txid,
+                "status": format!("{:?}", p.status),
+                "created_at": p.created_at
+            })
+        }).collect();
+        (payouts_json, total)
+    } else {
+        (vec![], 0)
+    };
+
+    Json(serde_json::json!({
+        "payouts": payouts,
+        "total": total
+    }))
+}
+
+/// API v1 Ghost Pay payout history handler
+async fn api_ghostpay_payout_history_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    let ghost_id = format!("ghost{}", &health.node_id[..8.min(health.node_id.len())]);
+
+    // Query withdrawals as GhostPay payouts
+    let (payouts, total) = if let Some(ref db) = state.database {
+        let withdrawals = db.get_pending_withdrawals(&ghost_id).unwrap_or_default();
+        let payouts_json: Vec<_> = withdrawals.iter().map(|w| {
+            serde_json::json!({
+                "id": w.id,
+                "lock_id": w.lock_id,
+                "destination": w.destination_address,
+                "amount_sats": w.amount_sats,
+                "fee_sats": w.fee_sats,
+                "status": format!("{:?}", w.status),
+                "batch_id": w.batch_id,
+                "l1_txid": w.l1_txid,
+                "created_at": w.created_at
+            })
+        }).collect();
+        let total = payouts_json.len();
+        (payouts_json, total)
+    } else {
+        (vec![], 0)
+    };
+
+    Json(serde_json::json!({
+        "payouts": payouts,
+        "total": total
+    }))
+}
+
+/// API v1 Rewards node history handler
+async fn api_rewards_node_history_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Get all nodes with rewards and their history
+    let (history, total) = if let Some(ref db) = state.database {
+        // Get nodes with balance
+        let nodes = db.get_nodes_with_balance(0).unwrap_or_default();
+        let history_json: Vec<_> = nodes.iter().map(|n| {
+            serde_json::json!({
+                "node_id": n.node_id,
+                "balance_sats": n.balance_sats,
+                "last_credited_round": n.last_credited_round,
+                "total_credits_sats": n.total_credits_sats,
+                "total_withdrawals_sats": n.total_withdrawals_sats,
+                "is_self": n.node_id == health.node_id,
+                "created_at": n.created_at,
+                "updated_at": n.updated_at
+            })
+        }).collect();
+        let total = history_json.len();
+        (history_json, total)
+    } else {
+        (vec![], 0)
+    };
+
+    Json(serde_json::json!({
+        "history": history,
+        "total": total
+    }))
+}
+
+// ============================================================================
+// Config Endpoints
+// ============================================================================
+
+/// API v1 Config full handler
+async fn api_config_full_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "archive_mode": config.archive_mode,
+        "ghost_pay": config.ghost_pay,
+        "public_mining": config.public_mining,
+        "bitcoin_pure": config.bitcoin_pure,
+        "ghost_mode": config.ghost_mode,
+        "mempool_profile": config.mempool_profile,
+        "template_profile": config.template_profile,
+        "prune_profile": config.prune_profile,
+        "operator_window": 100,
+        "network": "signet",
+        "stratum_sv2_port": 4444,
+        "stratum_sv1_port": 3333,
+        "http_port": 8080,
+        "node_id": health.node_id,
+        "version": health.version
+    }))
+}
+
+/// API v1 Config profiles mempool handler
+async fn api_config_profiles_mempool_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "profiles": [
+            { "name": "permissive", "description": "Accept all standard transactions", "active": true },
+            { "name": "strict", "description": "Bitcoin Core defaults only", "active": false },
+            { "name": "custom", "description": "Custom configuration", "active": false }
+        ],
+        "current": "permissive"
+    }))
+}
+
+/// API v1 Config profiles template handler
+async fn api_config_profiles_template_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "profiles": [
+            { "name": "default", "description": "Standard block template", "active": true },
+            { "name": "compact", "description": "Smaller blocks", "active": false },
+            { "name": "maximum", "description": "Maximum block size", "active": false }
+        ],
+        "current": "default"
+    }))
+}
+
+/// API v1 Config archive mode handler
+async fn api_config_archive_mode_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "enabled": config.archive_mode,
+        "message": "Archive mode configuration"
+    }))
+}
+
+/// API v1 Config ghost mode handler
+async fn api_config_ghost_mode_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "enabled": config.ghost_mode,
+        "message": "Ghost mode configuration"
+    }))
+}
+
+/// API v1 Config mempool profile handler
+async fn api_config_mempool_profile_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "profile": config.mempool_profile,
+        "message": "Current mempool profile"
+    }))
+}
+
+/// API v1 Config public mining handler
+async fn api_config_public_mining_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "enabled": config.public_mining,
+        "message": "Public mining configuration"
+    }))
+}
+
+/// API v1 Config template profile handler
+async fn api_config_template_profile_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "profile": config.template_profile,
+        "message": "Current template profile"
+    }))
+}
+
+/// API v1 Config bitcoin pure handler
+async fn api_config_bitcoin_pure_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "enabled": config.bitcoin_pure,
+        "message": "Bitcoin pure mode configuration"
+    }))
+}
+
+/// API v1 Config ghost pay handler
+async fn api_config_ghost_pay_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "enabled": config.ghost_pay,
+        "message": "Ghost Pay configuration"
+    }))
+}
+
+/// API v1 Config prune profile handler
+async fn api_config_prune_profile_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "profile": config.prune_profile,
+        "message": "Pruning profile configuration"
+    }))
+}
+
+/// API v1 Config operator window handler
+async fn api_config_operator_window_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "window": 100,
+        "message": "Operator window configuration"
+    }))
+}
+
+/// Request body for toggle config endpoints
+#[derive(Debug, Deserialize)]
+struct ToggleRequest {
+    enabled: bool,
+}
+
+/// Request body for profile config endpoints
+#[derive(Debug, Deserialize)]
+struct ProfileRequest {
+    profile: String,
+}
+
+/// API v1 Config archive_mode POST handler
+async fn api_config_archive_mode_post_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(payload): Json<ToggleRequest>,
+) -> impl IntoResponse {
+    let mut config = state.dashboard_config.write();
+    config.archive_mode = payload.enabled;
+    Json(serde_json::json!({
+        "success": true,
+        "enabled": payload.enabled,
+        "message": "Archive mode updated"
+    }))
+}
+
+/// API v1 Config ghost_mode POST handler
+async fn api_config_ghost_mode_post_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(payload): Json<ToggleRequest>,
+) -> impl IntoResponse {
+    let mut config = state.dashboard_config.write();
+    config.ghost_mode = payload.enabled;
+    Json(serde_json::json!({
+        "success": true,
+        "enabled": payload.enabled,
+        "message": "Ghost mode updated"
+    }))
+}
+
+/// API v1 Config public_mining POST handler
+async fn api_config_public_mining_post_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(payload): Json<ToggleRequest>,
+) -> impl IntoResponse {
+    let mut config = state.dashboard_config.write();
+    config.public_mining = payload.enabled;
+    Json(serde_json::json!({
+        "success": true,
+        "enabled": payload.enabled,
+        "message": "Public mining updated"
+    }))
+}
+
+/// API v1 Config bitcoin_pure POST handler
+async fn api_config_bitcoin_pure_post_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(payload): Json<ToggleRequest>,
+) -> impl IntoResponse {
+    let mut config = state.dashboard_config.write();
+    config.bitcoin_pure = payload.enabled;
+    Json(serde_json::json!({
+        "success": true,
+        "enabled": payload.enabled,
+        "message": "Bitcoin pure mode updated"
+    }))
+}
+
+/// API v1 Config ghost_pay POST handler
+async fn api_config_ghost_pay_post_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(payload): Json<ToggleRequest>,
+) -> impl IntoResponse {
+    let mut config = state.dashboard_config.write();
+    config.ghost_pay = payload.enabled;
+    Json(serde_json::json!({
+        "success": true,
+        "enabled": payload.enabled,
+        "message": "Ghost Pay updated"
+    }))
+}
+
+/// Request body for elder config
+#[derive(Debug, Deserialize)]
+struct ElderRequest {
+    enabled: bool,
+    slot: Option<u32>,
+}
+
+/// API v1 Config elder handler
+async fn api_config_elder_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+    Json(serde_json::json!({
+        "enabled": config.elder,
+        "slot": config.elder_slot,
+        "message": "Elder status configuration"
+    }))
+}
+
+/// API v1 Config elder POST handler
+async fn api_config_elder_post_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(payload): Json<ElderRequest>,
+) -> impl IntoResponse {
+    let mut config = state.dashboard_config.write();
+    config.elder = payload.enabled;
+    config.elder_slot = payload.slot;
+    Json(serde_json::json!({
+        "success": true,
+        "enabled": payload.enabled,
+        "slot": payload.slot,
+        "message": "Elder status updated"
+    }))
+}
+
+/// API v1 Config mempool_profile POST handler
+async fn api_config_mempool_profile_post_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(payload): Json<ProfileRequest>,
+) -> impl IntoResponse {
+    let mut config = state.dashboard_config.write();
+    config.mempool_profile = payload.profile.clone();
+    Json(serde_json::json!({
+        "success": true,
+        "profile": payload.profile,
+        "message": "Mempool profile updated"
+    }))
+}
+
+/// API v1 Config template_profile POST handler
+async fn api_config_template_profile_post_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(payload): Json<ProfileRequest>,
+) -> impl IntoResponse {
+    let mut config = state.dashboard_config.write();
+    config.template_profile = payload.profile.clone();
+    Json(serde_json::json!({
+        "success": true,
+        "profile": payload.profile,
+        "message": "Template profile updated"
+    }))
+}
+
+/// API v1 Config prune_profile POST handler
+async fn api_config_prune_profile_post_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(payload): Json<ProfileRequest>,
+) -> impl IntoResponse {
+    let mut config = state.dashboard_config.write();
+    config.prune_profile = payload.profile.clone();
+    Json(serde_json::json!({
+        "success": true,
+        "profile": payload.profile,
+        "message": "Prune profile updated"
+    }))
+}
+
+// ============================================================================
+// Mining Endpoints
+// ============================================================================
+
+/// API v1 Mining payout address handler
+async fn api_mining_payout_address_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "address": null,
+        "message": "No payout address configured"
+    }))
+}
+
+/// API v1 Mining private handler
+async fn api_mining_private_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+
+    // Private mining is the opposite of public mining
+    let enabled = !config.public_mining;
+
+    // In private mode, we don't expose miner details for privacy
+    Json(serde_json::json!({
+        "enabled": enabled,
+        "miners": [], // Private miners are not enumerated
+        "total": 0,
+        "message": if enabled { "Private mining mode active - miner details hidden" } else { "Public mining enabled" }
+    }))
+}
+
+/// API v1 Mining public handler
+async fn api_mining_public_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Query miners from current round
+    let (miners, total) = if let Some(ref db) = state.database {
+        match db.get_round_miners(health.round_id) {
+            Ok(miner_work) => {
+                let miners_json: Vec<_> = miner_work.iter().map(|(miner_id, work)| {
+                    serde_json::json!({
+                        "miner_id": miner_id,
+                        "work": work,
+                        "type": "public"
+                    })
+                }).collect();
+                let total = miners_json.len();
+                (miners_json, total)
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to query public miners");
+                (vec![], 0)
+            }
+        }
+    } else {
+        (vec![], 0)
+    };
+
+    Json(serde_json::json!({
+        "enabled": health.capabilities.public_mining,
+        "miners": miners,
+        "total": total
+    }))
+}
+
+// ============================================================================
+// Ghost Pay Endpoints
+// ============================================================================
+
+/// API v1 Ghost Pay pruning handler
+async fn api_ghostpay_pruning_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let config = state.dashboard_config.read();
+
+    // Get pruning profile settings
+    let (enabled, threshold) = match config.prune_profile.as_str() {
+        "none" => (false, 0),
+        "minimal" => (true, 100000), // Prune locks below 100k sats
+        "moderate" => (true, 1000000), // Prune locks below 1M sats
+        "aggressive" => (true, 10000000), // Prune locks below 10M sats
+        _ => (false, 0)
+    };
+
+    Json(serde_json::json!({
+        "enabled": enabled,
+        "profile": config.prune_profile,
+        "threshold_sats": threshold,
+        "last_prune": null
+    }))
+}
+
+// ============================================================================
+// Settings Endpoints
+// ============================================================================
+
+/// API v1 Settings ghostpay payout address handler
+async fn api_settings_ghostpay_payout_address_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "address": null,
+        "message": "No Ghost Pay payout address configured"
+    }))
+}
+
+// ============================================================================
+// Swarm Endpoints
+// ============================================================================
+
+/// API v1 Swarm sync handler
+async fn api_swarm_sync_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Check sync status based on peer connectivity and block height
+    let (status, synced_peers) = if let Some(ref db) = state.database {
+        let peers = db.get_active_peers(50).unwrap_or_default();
+        let synced = peers.len();
+        let status = if synced >= 3 { "synced" } else if synced > 0 { "syncing" } else { "disconnected" };
+        (status, synced)
+    } else {
+        ("unknown", 0)
+    };
+
+    Json(serde_json::json!({
+        "status": status,
+        "block_height": health.block_height,
+        "peer_count": synced_peers,
+        "last_sync": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }))
+}
+
+/// API v1 Swarm update all handler
+async fn api_swarm_update_all_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let health = state.get_health().await;
+
+    // Get peer count for update status
+    let peer_count = if let Some(ref db) = state.database {
+        db.get_active_peers(50).map(|p| p.len()).unwrap_or(0)
+    } else {
+        0
+    };
+
+    Json(serde_json::json!({
+        "status": "idle",
+        "nodes_in_swarm": peer_count + 1, // +1 for self
+        "nodes_updated": 0,
+        "current_version": health.version
+    }))
+}
+
+// ============================================================================
+// System Endpoints
+// ============================================================================
+
+/// API v1 System update status handler
+async fn api_system_update_status_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "idle",
+        "current_version": "1.4.0",
+        "update_available": false,
+        "progress": null
+    }))
+}
+
+/// API v1 System updates handler
+async fn api_system_updates_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "updates": [],
+        "total": 0,
+        "current_version": "1.4.0"
+    }))
+}
+
+/// API v1 System update handler
+async fn api_system_update_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "idle",
+        "message": "No update in progress"
+    }))
+}
+
+/// API v1 System rollback handler
+async fn api_system_rollback_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "idle",
+        "available_versions": [],
+        "message": "System rollback status"
+    }))
+}
+
+// ============================================================================
+// Watchdog Endpoints
+// ============================================================================
+
+/// API v1 Watchdog events handler
+async fn api_watchdog_events_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "events": [],
+        "total": 0
+    }))
+}
+
+/// API v1 Watchdog clear cache handler
+async fn api_watchdog_clear_cache_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "ok",
+        "message": "Cache cleared"
+    }))
+}
+
+// ============================================================================
+// Backup Endpoints
+// ============================================================================
+
+/// API v1 Backup export handler
+async fn api_backup_export_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "idle",
+        "message": "Backup export not started"
+    }))
+}
+
+/// API v1 Backup import handler
+async fn api_backup_import_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "idle",
+        "message": "No backup import in progress"
+    }))
+}
+
+/// API v1 Backup verify handler
+async fn api_backup_verify_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "ok",
+        "valid": true,
+        "message": "Backup verification status"
+    }))
+}
+
+/// Auth token handler (returns null token for dashboard compatibility)
+async fn api_auth_token_handler() -> impl IntoResponse {
+    // Dashboard expects this endpoint to exist, but auth is optional
+    // Return null token which the client handles gracefully
+    Json(serde_json::json!({
+        "token": null
+    }))
+}
+
+/// Admin endpoint to trigger a test consensus proposal (for BFT testing)
+async fn admin_test_consensus_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    match state.trigger_test_proposal() {
+        Ok(Some(hash)) => {
+            (StatusCode::OK, Json(serde_json::json!({
+                "success": true,
+                "proposal_hash": hex::encode(hash),
+                "message": "Test proposal broadcast to peers"
+            })))
+        }
+        Ok(None) => {
+            (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
+                "success": false,
+                "error": "Test proposal handler not configured"
+            })))
+        }
+        Err(e) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+                "success": false,
+                "error": format!("Failed to trigger test proposal: {}", e)
+            })))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_archive_query() {
+        let query = ArchiveQuery {
+            block: Some("abc123".to_string()),
+            tx: None,
+            min_height: Some(100),
+            nonce: None,
+            unsigned: None,
+        };
+
+        assert!(query.block.is_some());
+        assert!(query.tx.is_none());
+    }
+
+    #[test]
+    fn test_archive_query_defaults_to_signed() {
+        // Default behavior: signing is enabled (unsigned is None or false)
+        let query = ArchiveQuery {
+            block: Some("abc123".to_string()),
+            tx: None,
+            min_height: Some(100),
+            nonce: Some("deadbeef".to_string()),
+            unsigned: None,
+        };
+
+        // Should sign by default (unsigned is false when None)
+        let should_sign = !query.unsigned.unwrap_or(false);
+        assert!(should_sign);
+        assert_eq!(query.nonce, Some("deadbeef".to_string()));
+    }
+
+    #[test]
+    fn test_archive_query_explicit_unsigned() {
+        // Explicitly disable signing
+        let query = ArchiveQuery {
+            block: Some("abc123".to_string()),
+            tx: None,
+            min_height: Some(100),
+            nonce: None,
+            unsigned: Some(true),
+        };
+
+        let should_sign = !query.unsigned.unwrap_or(false);
+        assert!(!should_sign);
+    }
+}

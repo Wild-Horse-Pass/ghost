@@ -1,0 +1,250 @@
+# Bitcoin Ghost v1.4 - Docker Compose Stack
+#
+# Usage:
+#   Development: docker-compose up -d
+#   Production:  docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Services:
+#   - bitcoind: Bitcoin Core (ghost-core fork)
+#   - ghost-pool: Mining pool node
+#   - translator: SV1 to SV2 protocol translator
+#   - ghost-pay: L2 instant payments (optional)
+#   - ghost-coordinator: Wraith Protocol coordinator (optional)
+#   - prometheus: Metrics collection
+#   - grafana: Metrics visualization
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # Bitcoin Core (ghost-core)
+  # ============================================================================
+  bitcoind:
+    image: ghcr.io/bitcoin-ghost/ghost-core:latest
+    container_name: ghost-bitcoind
+    restart: unless-stopped
+    volumes:
+      - bitcoin-data:/root/.bitcoin
+      - ./config/bitcoin.conf:/root/.bitcoin/bitcoin.conf:ro
+    ports:
+      - "8333:8333"      # P2P (mainnet)
+      - "38333:38333"    # P2P (signet)
+    expose:
+      - "8332"           # RPC (internal only)
+      - "28332"          # ZMQ hashblock
+      - "28333"          # ZMQ hashtx
+    networks:
+      - ghost-network
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-rpcuser=${BITCOIN_RPC_USER}", "-rpcpassword=${BITCOIN_RPC_PASSWORD}", "getblockchaininfo"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    environment:
+      - BITCOIN_RPC_USER=${BITCOIN_RPC_USER:-ghostrpc}
+      - BITCOIN_RPC_PASSWORD=${BITCOIN_RPC_PASSWORD:-changeme}
+
+  # ============================================================================
+  # Ghost Pool - Main Mining Pool Node
+  # ============================================================================
+  ghost-pool:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: ghost-pool
+    image: bitcoin-ghost/ghost-pool:${VERSION:-latest}
+    container_name: ghost-pool
+    restart: unless-stopped
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    volumes:
+      - ghost-data:/var/lib/ghost
+      - ghost-config:/etc/ghost
+      - ./config/ghost-pool.toml:/etc/ghost/config.toml:ro
+    ports:
+      - "34255:34255"    # Stratum V2
+      - "3333:3333"      # Stratum V1 (via translator)
+      - "8080:8080"      # HTTP API
+      - "8555-8562:8555-8562"  # P2P consensus mesh
+    networks:
+      - ghost-network
+    environment:
+      - BITCOIN_RPC_HOST=bitcoind
+      - BITCOIN_RPC_PORT=8332
+      - BITCOIN_RPC_USER=${BITCOIN_RPC_USER:-ghostrpc}
+      - BITCOIN_RPC_PASSWORD=${BITCOIN_RPC_PASSWORD:-changeme}
+      - BITCOIN_NETWORK=${BITCOIN_NETWORK:-signet}
+      - TREASURY_ADDRESS=${TREASURY_ADDRESS:-}
+      - TREASURY_FEE_PERCENT=${TREASURY_FEE_PERCENT:-1.0}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  # ============================================================================
+  # Translator - SV1 to SV2 Protocol Bridge
+  # ============================================================================
+  translator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: translator
+    image: bitcoin-ghost/translator:${VERSION:-latest}
+    container_name: ghost-translator
+    restart: unless-stopped
+    depends_on:
+      ghost-pool:
+        condition: service_healthy
+    ports:
+      - "3334:3333"      # SV1 listen port (external)
+    networks:
+      - ghost-network
+    environment:
+      - SV2_UPSTREAM_HOST=ghost-pool
+      - SV2_UPSTREAM_PORT=34255
+      - SV1_LISTEN_PORT=3333
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    profiles:
+      - sv1
+
+  # ============================================================================
+  # Ghost Pay - L2 Instant Payments (Optional)
+  # ============================================================================
+  ghost-pay:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: ghost-pay
+    image: bitcoin-ghost/ghost-pay:${VERSION:-latest}
+    container_name: ghost-pay
+    restart: unless-stopped
+    depends_on:
+      ghost-pool:
+        condition: service_healthy
+    volumes:
+      - ghostpay-data:/var/lib/ghost
+      - ./config/ghost-pay.toml:/etc/ghost/config.toml:ro
+    ports:
+      - "8081:8081"      # L2 API
+    networks:
+      - ghost-network
+    environment:
+      - POOL_HOST=ghost-pool
+      - POOL_PORT=8080
+      - VIRTUAL_BLOCK_SECS=${VIRTUAL_BLOCK_SECS:-10}
+      - EPOCH_BLOCKS=${EPOCH_BLOCKS:-100}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    profiles:
+      - l2
+
+  # ============================================================================
+  # Ghost Coordinator - Wraith Protocol (Optional)
+  # ============================================================================
+  ghost-coordinator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: ghost-coordinator
+    image: bitcoin-ghost/ghost-coordinator:${VERSION:-latest}
+    container_name: ghost-coordinator
+    restart: unless-stopped
+    depends_on:
+      ghost-pool:
+        condition: service_healthy
+    volumes:
+      - coordinator-data:/var/lib/ghost
+      - ./config/ghost-coordinator.toml:/etc/ghost/config.toml:ro
+    ports:
+      - "8333:8333"      # Coordinator API
+    networks:
+      - ghost-network
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    profiles:
+      - wraith
+
+  # ============================================================================
+  # Prometheus - Metrics Collection
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: ghost-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - ghost-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    profiles:
+      - monitoring
+
+  # ============================================================================
+  # Grafana - Metrics Visualization
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: ghost-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - ghost-network
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-piechart-panel
+    profiles:
+      - monitoring
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  ghost-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  bitcoin-data:
+    driver: local
+  ghost-data:
+    driver: local
+  ghost-config:
+    driver: local
+  ghostpay-data:
+    driver: local
+  coordinator-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
