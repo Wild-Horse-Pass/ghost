@@ -43,10 +43,9 @@
 //! - Can operate as an I2P destination (eepsite) for inbound
 
 use std::fmt;
-use std::io::{self, ErrorKind};
+use std::io::{self};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::RwLock;
@@ -320,6 +319,7 @@ pub struct Transport {
 }
 
 /// I2P SAM session state
+#[allow(dead_code)]
 struct I2pSession {
     /// Our destination (base64)
     destination: String,

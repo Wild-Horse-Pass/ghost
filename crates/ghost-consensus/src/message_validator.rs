@@ -29,7 +29,6 @@ use thiserror::Error;
 use tracing::warn;
 
 use ghost_common::identity::verify_signature;
-use ghost_common::types::NodeId;
 
 use crate::message::{MessageEnvelope, MessageType};
 

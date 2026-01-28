@@ -29,7 +29,7 @@ use std::collections::HashSet;
 use thiserror::Error;
 use tracing::warn;
 
-use ghost_common::types::{PayoutEntry, PayoutProposal, PayoutType};
+use ghost_common::types::PayoutProposal;
 
 /// Dust threshold in satoshis (Bitcoin Core default)
 pub const DUST_THRESHOLD: u64 = 546;

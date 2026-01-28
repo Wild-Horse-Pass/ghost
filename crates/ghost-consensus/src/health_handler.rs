@@ -27,7 +27,7 @@
 
 use async_trait::async_trait;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use ghost_common::error::GhostResult;
 use ghost_common::types::NodeId;

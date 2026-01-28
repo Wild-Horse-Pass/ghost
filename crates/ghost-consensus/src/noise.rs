@@ -243,6 +243,7 @@ impl Default for NoiseConfig {
 }
 
 /// Noise session state for handshake
+#[allow(dead_code)]
 pub struct NoiseSession {
     /// Our static keypair
     keypair: NoiseKeypair,

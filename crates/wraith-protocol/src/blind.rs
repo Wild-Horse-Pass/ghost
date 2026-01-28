@@ -93,6 +93,7 @@ mod bytes33_hex {
 }
 
 // Custom serde for [u8; 64] using hex encoding
+#[allow(dead_code)]
 mod bytes64_hex {
     use super::*;
 
@@ -147,6 +148,7 @@ fn compute_challenge(pubkey: &PublicKey, nonce_point: &PublicKey, message: &[u8]
 /// The coordinator must keep track of (k, R) for each signing session.
 /// This is sent to participants who want to obtain a blind signature.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SigningNonce {
     /// The secret nonce scalar (must be kept secret!)
     secret_nonce: SecretKey,
@@ -397,6 +399,7 @@ impl CoordinatorSigner {
 /// Stores the blinding factors needed to unblind the signature.
 /// Must be kept secret by the participant until unblinding is complete.
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct BlindingContext {
     /// Random blinding scalar α (alpha)
     alpha: SecretKey,

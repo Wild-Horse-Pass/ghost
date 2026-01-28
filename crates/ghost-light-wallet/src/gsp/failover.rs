@@ -96,6 +96,7 @@ impl GspEndpoint {
 }
 
 /// Multi-GSP failover manager
+#[allow(dead_code)]
 pub struct GspFailover {
     /// Available endpoints
     endpoints: Arc<RwLock<Vec<GspEndpoint>>>,

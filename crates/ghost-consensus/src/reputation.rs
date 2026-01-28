@@ -30,7 +30,7 @@
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use ghost_common::types::NodeId;
 

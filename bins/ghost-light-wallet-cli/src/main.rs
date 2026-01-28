@@ -55,9 +55,9 @@ use anyhow::Result;
 use bitcoin::Network;
 use clap::{Parser, Subcommand};
 use console::style;
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Confirm, Input};
 use indicatif::{ProgressBar, ProgressStyle};
-use tracing::{info, Level};
+use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 use ghost_light_wallet::{LightWallet, WalletConfig};

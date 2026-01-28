@@ -33,7 +33,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 use ghost_common::error::{GhostError, GhostResult};
 

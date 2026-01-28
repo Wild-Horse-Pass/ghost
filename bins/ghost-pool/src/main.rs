@@ -632,7 +632,7 @@ async fn main() -> Result<()> {
     });
 
     // Clone ws_state for event handlers before moving verification_state
-    let verification_state_for_ws = Arc::clone(&verification_state);
+    let _verification_state_for_ws = Arc::clone(&verification_state);
     let ws_for_stratum = Arc::clone(&verification_state.ws_state);
 
     let http_port = config.network.http_port;
@@ -1013,7 +1013,6 @@ async fn main() -> Result<()> {
                         valid: accepted,
                     });
                 }
-                _ => {}
             }
         }
     });

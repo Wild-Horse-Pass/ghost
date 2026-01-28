@@ -20,6 +20,9 @@
 //| FILE: lib.rs                                                                                                         |
 //|======================================================================================================================|
 
+// Allow dead code for stub implementations pending completion
+#![allow(dead_code)]
+
 //! Ghost Light Wallet - Privacy-preserving light wallet for Ghost Pay
 //!
 //! This crate provides a light wallet implementation that connects to
