@@ -93,11 +93,11 @@ jobs:
 
   # Minimum Supported Rust Version
   msrv:
-    name: MSRV (1.80)
+    name: MSRV
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.80
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
 
