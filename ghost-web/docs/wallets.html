@@ -1,0 +1,520 @@
+<!--
+|======================================================================================================================|
+|                                                                                                                      |
+|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+|       ░              ░                                                                                               |
+|----------------------------------------------------------------------------------------------------------------------|
+|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+|----------------------------------------------------------------------------------------------------------------------|
+| PROJECT: Bitcoin Ghost                                                                                               |
+| REPO: https://github.com/bitcoin-ghost                                                                               |
+| WEB: https://bitcoinghost.org/                                                                                       |
+| LICENSE: MIT                                                                                                         |
+| FILE: wallets.html                                                                            |
+|======================================================================================================================|
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wallets | Documentation | Bitcoin Ghost</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --black: #050505; --darker: #0a0a0a; --gray-900: #141414; --gray-800: #1a1a1a;
+      --gray-700: #242424; --gray-600: #333333; --gray-500: #4a4a4a; --gray-400: #666666;
+      --gray-300: #888888; --gray-200: #aaaaaa; --gray-100: #cccccc; --white: #f0f0f0;
+      --orange: #f7931a; --orange-light: #ffb347; --cyan: #00d4ff; --green: #00ff88;
+      --font-display: 'Outfit', system-ui, sans-serif; --font-mono: 'Geist Mono', monospace;
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font-display); background: var(--black); color: var(--gray-100); line-height: 1.7; }
+    ::selection { background: var(--orange); color: var(--black); }
+    
+    nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 16px 0; background: rgba(5, 5, 5, 0.9); backdrop-filter: blur(20px); border-bottom: 1px solid var(--gray-800); }
+    .nav-inner { display: flex; align-items: center; justify-content: space-between; max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+    .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--white); }
+    .logo-icon { width: 40px; height: 40px; border-radius: 10px; overflow: hidden; }
+    .logo-icon img { width: 100%; height: 100%; object-fit: contain; }
+    .logo-text { font-weight: 700; font-size: 20px; }
+    .logo-text span { color: var(--orange); }
+    .nav-links { display: flex; gap: 8px; }
+    .nav-links a { color: var(--gray-300); text-decoration: none; padding: 8px 16px; font-size: 14px; font-weight: 500; border-radius: 8px; transition: all 0.2s; }
+    .nav-links a:hover { color: var(--white); background: var(--gray-800); }
+    .nav-right { display: flex; align-items: center; gap: 12px; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; font-family: var(--font-display); font-size: 14px; font-weight: 600; border-radius: 8px; text-decoration: none; transition: all 0.2s; }
+    .btn-primary { background: var(--orange); color: var(--black); }
+    .btn-primary:hover { background: var(--orange-light); }
+    .btn-ghost { background: transparent; color: var(--gray-300); padding: 8px 12px; }
+    .btn-ghost:hover { color: var(--white); }
+    
+    .doc-layout { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; padding-top: 73px; }
+    .doc-sidebar { background: var(--darker); border-right: 1px solid var(--gray-800); padding: 32px 24px; position: sticky; top: 73px; height: calc(100vh - 73px); overflow-y: auto; }
+    .sidebar-section { margin-bottom: 28px; }
+    .sidebar-title { font-size: 11px; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; }
+    .sidebar-links { display: flex; flex-direction: column; gap: 4px; }
+    .sidebar-link { color: var(--gray-400); text-decoration: none; font-size: 14px; padding: 6px 12px; border-radius: 6px; transition: all 0.15s; }
+    .sidebar-link:hover { color: var(--white); background: var(--gray-800); }
+    .sidebar-link.active { color: var(--orange); background: rgba(247, 147, 26, 0.1); }
+    .sidebar-back { display: flex; align-items: center; gap: 8px; color: var(--gray-400); text-decoration: none; font-size: 13px; margin-bottom: 24px; padding: 8px 12px; border-radius: 6px; transition: all 0.15s; }
+    .sidebar-back:hover { color: var(--white); background: var(--gray-800); }
+    
+    .doc-content { padding: 48px 64px; max-width: 900px; }
+    .doc-header { margin-bottom: 48px; }
+    .doc-header h1 { font-size: 40px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 16px; }
+    .doc-header p { font-size: 18px; color: var(--gray-400); }
+    
+    .doc-section { margin-bottom: 56px; }
+    .doc-section h2 { font-size: 28px; font-weight: 700; color: var(--white); margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--gray-800); }
+    .doc-section h3 { font-size: 20px; font-weight: 600; color: var(--white); margin: 32px 0 16px; }
+    .doc-section p { color: var(--gray-300); margin-bottom: 16px; }
+    .doc-section ul, .doc-section ol { margin: 16px 0; padding-left: 24px; }
+    .doc-section li { color: var(--gray-300); margin-bottom: 8px; }
+    .doc-section a { color: var(--orange); text-decoration: none; }
+    .doc-section a:hover { text-decoration: underline; }
+    
+    .code-block { background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 12px; padding: 20px 24px; margin: 20px 0; overflow-x: auto; }
+    .code-block code { font-family: var(--font-mono); font-size: 13px; color: var(--green); white-space: pre; }
+    .code-block .comment { color: var(--gray-500); }
+    .code-block .prompt { color: var(--gray-400); }
+    .code-block .output { color: var(--cyan); }
+    
+    .info-box { background: rgba(0, 212, 255, 0.1); border: 1px solid rgba(0, 212, 255, 0.3); border-radius: 12px; padding: 20px 24px; margin: 24px 0; }
+    .info-box-title { font-weight: 600; color: var(--cyan); margin-bottom: 8px; }
+    .info-box-content { font-size: 14px; color: var(--gray-300); }
+    
+    .warning-box { background: rgba(247, 147, 26, 0.1); border: 1px solid rgba(247, 147, 26, 0.3); border-radius: 12px; padding: 20px 24px; margin: 24px 0; }
+    .warning-box-title { font-weight: 600; color: var(--orange); margin-bottom: 8px; }
+    .warning-box-content { font-size: 14px; color: var(--gray-300); }
+    
+    table { width: 100%; border-collapse: collapse; margin: 24px 0; }
+    th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid var(--gray-800); font-size: 14px; }
+    th { font-weight: 600; color: var(--gray-400); text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; }
+    td { color: var(--gray-300); }
+    td:first-child { color: var(--white); font-weight: 500; }
+    .highlight { color: var(--green); font-weight: 600; }
+    .planned { color: var(--orange); }
+    .muted { color: var(--gray-500); }
+    
+    .wallet-card { background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 28px; margin: 24px 0; }
+    .wallet-card-header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+    .wallet-card-icon { width: 56px; height: 56px; background: var(--gray-800); border-radius: 14px; display: flex; align-items: center; justify-content: center; font-size: 28px; }
+    .wallet-card-title { font-size: 22px; font-weight: 700; color: var(--white); }
+    .wallet-card-status { font-size: 12px; padding: 4px 10px; border-radius: 4px; font-weight: 600; }
+    .wallet-card-status.available { background: rgba(0, 255, 136, 0.15); color: var(--green); }
+    .wallet-card-status.planned { background: rgba(247, 147, 26, 0.15); color: var(--orange); }
+    .wallet-card-desc { color: var(--gray-400); margin-bottom: 16px; }
+    .wallet-card-features { display: flex; flex-wrap: wrap; gap: 8px; }
+    .wallet-feature { font-size: 12px; padding: 6px 12px; background: var(--gray-800); border-radius: 6px; color: var(--gray-300); }
+    
+    .tui-preview { background: var(--black); border: 1px solid var(--gray-700); border-radius: 12px; padding: 20px; margin: 20px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.5; }
+    .tui-preview .header { color: var(--orange); font-weight: 600; }
+    .tui-preview .menu { color: var(--cyan); }
+    .tui-preview .value { color: var(--green); }
+    .tui-preview .label { color: var(--gray-400); }
+    
+    @media (max-width: 900px) {
+      .doc-layout { grid-template-columns: 1fr; }
+      .doc-sidebar { display: none; }
+      .doc-content { padding: 32px 24px; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="nav-inner">
+      <a href="../index.html" class="logo">
+        <div class="logo-icon"><img src="../logo.png" alt="Bitcoin Ghost"></div>
+        <div class="logo-text">Bitcoin<span>Ghost</span></div>
+      </a>
+      <div class="nav-links">
+        <a href="../index.html">Home</a>
+        <a href="../network.html">Network</a>
+        <a href="../how-it-works.html">How It Works</a>
+        <a href="../economics.html">Economics</a>
+      </div>
+      <div class="nav-right">
+        <a href="https://github.com/bitcoin-ghost" class="btn btn-ghost" target="_blank">
+          <svg style="width:20px;height:20px;" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+        <a href="../get-started.html" class="btn btn-primary">Get Started</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="doc-layout">
+    <aside class="doc-sidebar">
+      <a href="index.html" class="sidebar-back">← All Docs</a>
+      
+      <div class="sidebar-section">
+        <div class="sidebar-title">On This Page</div>
+        <div class="sidebar-links">
+          <a href="#overview" class="sidebar-link active">Overview</a>
+          <a href="#tui-cli" class="sidebar-link">TUI CLI Wallet</a>
+          <a href="#desktop-gui" class="sidebar-link">Desktop GUI</a>
+          <a href="#ghost-tap" class="sidebar-link">Ghost Tap (Mobile)</a>
+          <a href="#hardware" class="sidebar-link">Hardware Wallets</a>
+          <a href="#comparison" class="sidebar-link">Comparison</a>
+        </div>
+      </div>
+      
+      <div class="sidebar-section">
+        <div class="sidebar-title">Related</div>
+        <div class="sidebar-links">
+          <a href="ghost-pay.html" class="sidebar-link">Ghost Pay</a>
+          <a href="node-dashboard.html" class="sidebar-link">Node Dashboard</a>
+        </div>
+      </div>
+    </aside>
+
+    <main class="doc-content">
+      <header class="doc-header">
+        <h1>Wallets</h1>
+        <p>Multiple ways to send and receive Ghost payments — from command line to mobile NFC.</p>
+      </header>
+
+      <section class="doc-section" id="overview">
+        <h2>Overview</h2>
+        <p>Ghost offers several wallet options for different use cases:</p>
+        
+        <table>
+          <tr>
+            <th>Wallet</th>
+            <th>Platform</th>
+            <th>Best For</th>
+            <th>Status</th>
+          </tr>
+          <tr>
+            <td><a href="wallet-light-cli.html">Light Wallet CLI</a></td>
+            <td>Linux, macOS, Windows</td>
+            <td>Users without full node, GSP-connected</td>
+            <td class="active">Available</td>
+          </tr>
+          <tr>
+            <td><a href="wallet-tui.html">Node TUI Wallet</a></td>
+            <td>Linux, macOS, Windows</td>
+            <td>Node operators, power users</td>
+            <td class="active">Available</td>
+          </tr>
+          <tr>
+            <td>Desktop GUI</td>
+            <td>Linux, macOS, Windows</td>
+            <td>Everyday use</td>
+            <td class="planned">Planned</td>
+          </tr>
+          <tr>
+            <td>Ghost Tap</td>
+            <td>iOS, Android</td>
+            <td>Mobile payments, NFC</td>
+            <td class="planned">Planned</td>
+          </tr>
+          <tr>
+            <td>Hardware</td>
+            <td>Coldcard, Ledger, etc.</td>
+            <td>Cold storage</td>
+            <td class="planned">Planned</td>
+          </tr>
+        </table>
+        
+        <div class="info-box">
+          <div class="info-box-title">All Wallets Share</div>
+          <div class="info-box-content">BIP-39 seed phrases, Ghost Pay integration, silent payments support, and the ability to settle to regular Bitcoin addresses at any time.</div>
+        </div>
+      </section>
+
+      <section class="doc-section" id="tui-cli">
+        <h2>TUI CLI Wallet</h2>
+        
+        <div class="wallet-card">
+          <div class="wallet-card-header">
+            <div class="wallet-card-icon">⌨️</div>
+            <div>
+              <div class="wallet-card-title">ghost-wallet</div>
+              <span class="wallet-card-status planned">In Development</span>
+            </div>
+          </div>
+          <div class="wallet-card-desc">A terminal-based wallet with a beautiful TUI (Text User Interface). Full keyboard navigation, no mouse required.</div>
+          <div class="wallet-card-features">
+            <span class="wallet-feature">Terminal UI</span>
+            <span class="wallet-feature">SSH-friendly</span>
+            <span class="wallet-feature">Headless servers</span>
+            <span class="wallet-feature">Scriptable</span>
+          </div>
+        </div>
+        
+        <h3>Installation</h3>
+        <div class="code-block"><code><span class="comment"># Install via cargo</span>
+cargo install ghost-wallet
+
+<span class="comment"># Or download binary</span>
+curl -sSL https://get.bitcoinghost.org/wallet.sh | bash</code></div>
+        
+        <h3>Interface Preview</h3>
+        <div class="tui-preview">
+<span class="header">┌─────────────────────────────────────────────────────────┐</span>
+<span class="header">│                    Ghost Wallet v1.0                    │</span>
+<span class="header">├─────────────────────────────────────────────────────────┤</span>
+<span class="label">│ Balance:</span> <span class="value">0.12345678 BTC</span>                               <span class="label">│</span>
+<span class="label">│ Ghost Pay:</span> <span class="value">0.05000000 BTC</span> <span class="label">(locked)</span>                    <span class="label">│</span>
+<span class="header">├─────────────────────────────────────────────────────────┤</span>
+<span class="menu">│ [S]end  [R]eceive  [H]istory  [L]ock  [Se]ttle  [Q]uit │</span>
+<span class="header">└─────────────────────────────────────────────────────────┘</span>
+        </div>
+        
+        <h3>Basic Commands</h3>
+        <div class="code-block"><code><span class="comment"># Create new wallet</span>
+<span class="prompt">$</span> ghost-wallet create
+<span class="output">Generated new wallet. Backup your seed phrase!</span>
+
+<span class="comment"># Check balance</span>
+<span class="prompt">$</span> ghost-wallet balance
+<span class="output">Bitcoin:   0.12345678 BTC</span>
+<span class="output">Ghost Pay: 0.05000000 BTC (locked)</span>
+<span class="output">Total:     0.17345678 BTC</span>
+
+<span class="comment"># Send payment</span>
+<span class="prompt">$</span> ghost-wallet send ghost1abc...def 0.01
+<span class="output">Payment sent! Confirms in ~10 seconds.</span>
+
+<span class="comment"># Generate receive address</span>
+<span class="prompt">$</span> ghost-wallet receive
+<span class="output">ghost1xyz...789</span>
+
+<span class="comment"># Lock funds to Ghost Pay</span>
+<span class="prompt">$</span> ghost-wallet lock 0.1
+<span class="output">Locking 0.1 BTC to Ghost Pay vault...</span>
+
+<span class="comment"># Settle back to Bitcoin</span>
+<span class="prompt">$</span> ghost-wallet settle 0.05 bc1q...
+<span class="output">Settlement initiated. ~10 min for confirmation.</span></code></div>
+        
+        <h3>Interactive Mode</h3>
+        <p>Run <code>ghost-wallet</code> without arguments to enter interactive TUI mode. Navigate with arrow keys, select with Enter.</p>
+      </section>
+
+      <section class="doc-section" id="desktop-gui">
+        <h2>Desktop GUI</h2>
+        
+        <div class="wallet-card">
+          <div class="wallet-card-header">
+            <div class="wallet-card-icon">🖥️</div>
+            <div>
+              <div class="wallet-card-title">Ghost Wallet Desktop</div>
+              <span class="wallet-card-status planned">Planned</span>
+            </div>
+          </div>
+          <div class="wallet-card-desc">A native desktop application with a modern interface. Built with Tauri for small size and native performance.</div>
+          <div class="wallet-card-features">
+            <span class="wallet-feature">Native UI</span>
+            <span class="wallet-feature">macOS / Windows / Linux</span>
+            <span class="wallet-feature">QR codes</span>
+            <span class="wallet-feature">Address book</span>
+          </div>
+        </div>
+        
+        <h3>Features</h3>
+        <ul>
+          <li><strong>One-click install</strong> — Download, install, run</li>
+          <li><strong>Visual transaction history</strong> — See all payments with details</li>
+          <li><strong>QR code scanning</strong> — Use your webcam to scan addresses</li>
+          <li><strong>Contact management</strong> — Save frequently used addresses</li>
+          <li><strong>Multi-wallet support</strong> — Manage multiple wallets</li>
+          <li><strong>Dark/light themes</strong> — Match your system preferences</li>
+        </ul>
+        
+        <h3>Security</h3>
+        <ul>
+          <li>Keys encrypted at rest with your password</li>
+          <li>Optional hardware wallet integration</li>
+          <li>Automatic lock after inactivity</li>
+          <li>No telemetry or analytics</li>
+        </ul>
+      </section>
+
+      <section class="doc-section" id="ghost-tap">
+        <h2>Ghost Tap (Mobile)</h2>
+        
+        <div class="wallet-card">
+          <div class="wallet-card-header">
+            <div class="wallet-card-icon">📱</div>
+            <div>
+              <div class="wallet-card-title">Ghost Tap</div>
+              <span class="wallet-card-status planned">Planned</span>
+            </div>
+          </div>
+          <div class="wallet-card-desc">Mobile wallet with NFC tap-to-pay. Pay at supported merchants by tapping your phone.</div>
+          <div class="wallet-card-features">
+            <span class="wallet-feature">iOS</span>
+            <span class="wallet-feature">Android</span>
+            <span class="wallet-feature">NFC payments</span>
+            <span class="wallet-feature">Biometric auth</span>
+          </div>
+        </div>
+        
+        <h3>NFC Payments</h3>
+        <p>Ghost Tap uses NFC (Near Field Communication) for tap-to-pay:</p>
+        <ol>
+          <li>Merchant displays amount on their terminal</li>
+          <li>You tap your phone to the terminal</li>
+          <li>Authenticate with Face ID / fingerprint</li>
+          <li>Payment confirms in ~10 seconds</li>
+        </ol>
+        
+        <h3>Security Model</h3>
+        <ul>
+          <li><strong>Secure Enclave (iOS)</strong> — Keys never leave secure hardware</li>
+          <li><strong>StrongBox (Android)</strong> — Hardware-backed key storage</li>
+          <li><strong>Biometric required</strong> — Every payment needs authentication</li>
+          <li><strong>Spending limits</strong> — Set daily/per-transaction limits</li>
+        </ul>
+        
+        <div class="warning-box">
+          <div class="warning-box-title">Hot Wallet Warning</div>
+          <div class="warning-box-content">Ghost Tap is a hot wallet designed for spending money, not storing savings. Keep only what you need for daily spending. Use cold storage for larger amounts.</div>
+        </div>
+      </section>
+
+      <section class="doc-section" id="hardware">
+        <h2>Hardware Wallets</h2>
+        
+        <div class="wallet-card">
+          <div class="wallet-card-header">
+            <div class="wallet-card-icon">🔐</div>
+            <div>
+              <div class="wallet-card-title">Hardware Support</div>
+              <span class="wallet-card-status planned">Planned</span>
+            </div>
+          </div>
+          <div class="wallet-card-desc">Use your existing hardware wallet for Ghost payments. Keys never leave the device.</div>
+          <div class="wallet-card-features">
+            <span class="wallet-feature">Coldcard</span>
+            <span class="wallet-feature">Ledger</span>
+            <span class="wallet-feature">Trezor</span>
+            <span class="wallet-feature">Air-gapped</span>
+          </div>
+        </div>
+        
+        <h3>Supported Devices</h3>
+        <table>
+          <tr>
+            <th>Device</th>
+            <th>Connection</th>
+            <th>Status</th>
+          </tr>
+          <tr>
+            <td>Coldcard Mk4</td>
+            <td>USB, SD card (air-gapped)</td>
+            <td class="planned">Planned</td>
+          </tr>
+          <tr>
+            <td>Ledger Nano S/X</td>
+            <td>USB, Bluetooth</td>
+            <td class="planned">Planned</td>
+          </tr>
+          <tr>
+            <td>Trezor Model T/One</td>
+            <td>USB</td>
+            <td class="planned">Planned</td>
+          </tr>
+          <tr>
+            <td>SeedSigner</td>
+            <td>QR codes (air-gapped)</td>
+            <td class="planned">Planned</td>
+          </tr>
+        </table>
+        
+        <h3>How It Works</h3>
+        <ol>
+          <li>Connect hardware wallet to Ghost Wallet (desktop or CLI)</li>
+          <li>Ghost Wallet prepares the transaction</li>
+          <li>Hardware wallet displays and signs</li>
+          <li>Signed transaction broadcast to network</li>
+        </ol>
+        <p>Your private keys never leave the hardware device.</p>
+      </section>
+
+      <section class="doc-section" id="comparison">
+        <h2>Comparison</h2>
+        
+        <table>
+          <tr>
+            <th>Feature</th>
+            <th>TUI CLI</th>
+            <th>Desktop</th>
+            <th>Ghost Tap</th>
+            <th>Hardware</th>
+          </tr>
+          <tr>
+            <td>Ghost Pay</td>
+            <td class="highlight">✓</td>
+            <td class="highlight">✓</td>
+            <td class="highlight">✓</td>
+            <td class="highlight">✓</td>
+          </tr>
+          <tr>
+            <td>Silent Payments</td>
+            <td class="highlight">✓</td>
+            <td class="highlight">✓</td>
+            <td class="highlight">✓</td>
+            <td class="highlight">✓</td>
+          </tr>
+          <tr>
+            <td>NFC Tap-to-Pay</td>
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+            <td class="highlight">✓</td>
+            <td class="muted">—</td>
+          </tr>
+          <tr>
+            <td>Air-gapped</td>
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+            <td class="highlight">✓</td>
+          </tr>
+          <tr>
+            <td>SSH-friendly</td>
+            <td class="highlight">✓</td>
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+          </tr>
+          <tr>
+            <td>Scriptable</td>
+            <td class="highlight">✓</td>
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+            <td class="muted">—</td>
+          </tr>
+          <tr>
+            <td>Best for</td>
+            <td>Servers</td>
+            <td>Daily use</td>
+            <td>Spending</td>
+            <td>Savings</td>
+          </tr>
+        </table>
+        
+        <div class="info-box">
+          <div class="info-box-title">Recommendation</div>
+          <div class="info-box-content">Most users should use <strong>Desktop GUI</strong> for everyday payments, <strong>Hardware wallet</strong> for savings, and optionally <strong>Ghost Tap</strong> for mobile spending money.</div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

@@ -155,6 +155,118 @@ impl Database {
             Ok(miners)
         })
     }
+
+    /// Search miners by ID/address (partial match) and get their stats
+    pub fn search_miners(&self, query: &str) -> GhostResult<Vec<MinerSearchResult>> {
+        self.with_connection(|conn| {
+            let search_pattern = format!("%{}%", query);
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        miner_id,
+                        COUNT(*) as total_shares,
+                        SUM(work) as total_work,
+                        SUM(CASE WHEN valid = 1 THEN 1 ELSE 0 END) as valid_shares,
+                        MIN(timestamp) as first_seen,
+                        MAX(timestamp) as last_seen,
+                        AVG(difficulty) as avg_difficulty
+                     FROM shares
+                     WHERE miner_id LIKE ?1
+                     GROUP BY miner_id
+                     ORDER BY total_work DESC
+                     LIMIT 50",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let results = stmt
+                .query_map([&search_pattern], |row| {
+                    Ok(MinerSearchResult {
+                        miner_id: row.get(0)?,
+                        total_shares: row.get(1)?,
+                        total_work: row.get(2)?,
+                        valid_shares: row.get(3)?,
+                        first_seen: row.get(4)?,
+                        last_seen: row.get(5)?,
+                        avg_difficulty: row.get(6)?,
+                    })
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(results)
+        })
+    }
+
+    /// Get detailed stats for a specific miner
+    pub fn get_miner_stats(&self, miner_id: &str) -> GhostResult<Option<MinerDetailedStats>> {
+        self.with_connection(|conn| {
+            // Get aggregate stats
+            let stats: Option<MinerDetailedStats> = conn
+                .query_row(
+                    "SELECT
+                        miner_id,
+                        COUNT(*) as total_shares,
+                        SUM(work) as total_work,
+                        SUM(CASE WHEN valid = 1 THEN 1 ELSE 0 END) as valid_shares,
+                        SUM(CASE WHEN valid = 0 THEN 1 ELSE 0 END) as invalid_shares,
+                        MIN(timestamp) as first_seen,
+                        MAX(timestamp) as last_seen,
+                        AVG(difficulty) as avg_difficulty,
+                        COUNT(DISTINCT round_id) as rounds_participated
+                     FROM shares
+                     WHERE miner_id = ?1
+                     GROUP BY miner_id",
+                    params![miner_id],
+                    |row| {
+                        Ok(MinerDetailedStats {
+                            miner_id: row.get(0)?,
+                            total_shares: row.get(1)?,
+                            total_work: row.get(2)?,
+                            valid_shares: row.get(3)?,
+                            invalid_shares: row.get(4)?,
+                            first_seen: row.get(5)?,
+                            last_seen: row.get(6)?,
+                            avg_difficulty: row.get(7)?,
+                            rounds_participated: row.get(8)?,
+                            recent_shares: vec![],
+                        })
+                    },
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            // Get recent shares if miner exists
+            if let Some(mut stats) = stats {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT round_id, difficulty, work, timestamp, valid
+                         FROM shares WHERE miner_id = ?1
+                         ORDER BY timestamp DESC LIMIT 10",
+                    )
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                let recent = stmt
+                    .query_map([miner_id], |row| {
+                        Ok(RecentShare {
+                            round_id: row.get(0)?,
+                            difficulty: row.get(1)?,
+                            work: row.get(2)?,
+                            timestamp: row.get(3)?,
+                            valid: row.get(4)?,
+                        })
+                    })
+                    .map_err(|e| GhostError::Database(e.to_string()))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                stats.recent_shares = recent;
+                Ok(Some(stats))
+            } else {
+                Ok(None)
+            }
+        })
+    }
 }
 
 // =============================================================================

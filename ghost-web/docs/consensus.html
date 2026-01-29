@@ -1,0 +1,408 @@
+<!--
+|======================================================================================================================|
+|                                                                                                                      |
+|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+|       ░              ░                                                                                               |
+|----------------------------------------------------------------------------------------------------------------------|
+|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+|----------------------------------------------------------------------------------------------------------------------|
+| PROJECT: Bitcoin Ghost                                                                                               |
+| REPO: https://github.com/bitcoin-ghost                                                                               |
+| WEB: https://bitcoinghost.org/                                                                                       |
+| LICENSE: MIT                                                                                                         |
+| FILE: consensus.html                                                                          |
+|======================================================================================================================|
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Consensus & Protocol | Documentation | Bitcoin Ghost</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --black: #050505; --darker: #0a0a0a; --gray-900: #141414; --gray-800: #1a1a1a;
+      --gray-700: #242424; --gray-600: #333333; --gray-500: #4a4a4a; --gray-400: #666666;
+      --gray-300: #888888; --gray-200: #aaaaaa; --gray-100: #cccccc; --white: #f0f0f0;
+      --orange: #f7931a; --orange-light: #ffb347; --cyan: #00d4ff; --green: #00ff88;
+      --font-display: 'Outfit', system-ui, sans-serif; --font-mono: 'Geist Mono', monospace;
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font-display); background: var(--black); color: var(--gray-100); line-height: 1.7; }
+    ::selection { background: var(--orange); color: var(--black); }
+    
+    nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 16px 0; background: rgba(5, 5, 5, 0.9); backdrop-filter: blur(20px); border-bottom: 1px solid var(--gray-800); }
+    .nav-inner { display: flex; align-items: center; justify-content: space-between; max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+    .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--white); }
+    .logo-icon { width: 40px; height: 40px; border-radius: 10px; overflow: hidden; }
+    .logo-icon img { width: 100%; height: 100%; object-fit: contain; }
+    .logo-text { font-weight: 700; font-size: 20px; }
+    .logo-text span { color: var(--orange); }
+    .nav-links { display: flex; gap: 8px; }
+    .nav-links a { color: var(--gray-300); text-decoration: none; padding: 8px 16px; font-size: 14px; font-weight: 500; border-radius: 8px; transition: all 0.2s; }
+    .nav-links a:hover { color: var(--white); background: var(--gray-800); }
+    .nav-right { display: flex; align-items: center; gap: 12px; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; font-family: var(--font-display); font-size: 14px; font-weight: 600; border-radius: 8px; text-decoration: none; transition: all 0.2s; }
+    .btn-primary { background: var(--orange); color: var(--black); }
+    .btn-primary:hover { background: var(--orange-light); }
+    .btn-ghost { background: transparent; color: var(--gray-300); padding: 8px 12px; }
+    .btn-ghost:hover { color: var(--white); }
+    
+    .doc-layout { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; padding-top: 73px; }
+    .doc-sidebar { background: var(--darker); border-right: 1px solid var(--gray-800); padding: 32px 24px; position: sticky; top: 73px; height: calc(100vh - 73px); overflow-y: auto; }
+    .sidebar-section { margin-bottom: 28px; }
+    .sidebar-title { font-size: 11px; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; }
+    .sidebar-links { display: flex; flex-direction: column; gap: 4px; }
+    .sidebar-link { color: var(--gray-400); text-decoration: none; font-size: 14px; padding: 6px 12px; border-radius: 6px; transition: all 0.15s; }
+    .sidebar-link:hover { color: var(--white); background: var(--gray-800); }
+    .sidebar-link.active { color: var(--orange); background: rgba(247, 147, 26, 0.1); }
+    .sidebar-back { display: flex; align-items: center; gap: 8px; color: var(--gray-400); text-decoration: none; font-size: 13px; margin-bottom: 24px; padding: 8px 12px; border-radius: 6px; transition: all 0.15s; }
+    .sidebar-back:hover { color: var(--white); background: var(--gray-800); }
+    
+    .doc-content { padding: 48px 64px; max-width: 900px; }
+    .doc-header { margin-bottom: 48px; }
+    .doc-header h1 { font-size: 40px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 16px; }
+    .doc-header p { font-size: 18px; color: var(--gray-400); }
+    
+    .doc-section { margin-bottom: 56px; }
+    .doc-section h2 { font-size: 28px; font-weight: 700; color: var(--white); margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--gray-800); }
+    .doc-section h3 { font-size: 20px; font-weight: 600; color: var(--white); margin: 32px 0 16px; }
+    .doc-section p { color: var(--gray-300); margin-bottom: 16px; }
+    .doc-section ul, .doc-section ol { margin: 16px 0; padding-left: 24px; }
+    .doc-section li { color: var(--gray-300); margin-bottom: 8px; }
+    
+    .code-block { background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 12px; padding: 20px 24px; margin: 20px 0; overflow-x: auto; }
+    .code-block code { font-family: var(--font-mono); font-size: 13px; color: var(--green); white-space: pre; }
+    .code-block .comment { color: var(--gray-500); }
+    
+    .info-box { background: rgba(0, 212, 255, 0.1); border: 1px solid rgba(0, 212, 255, 0.3); border-radius: 12px; padding: 20px 24px; margin: 24px 0; }
+    .info-box-title { font-weight: 600; color: var(--cyan); margin-bottom: 8px; }
+    .info-box-content { font-size: 14px; color: var(--gray-300); }
+    
+    .warning-box { background: rgba(247, 147, 26, 0.1); border: 1px solid rgba(247, 147, 26, 0.3); border-radius: 12px; padding: 20px 24px; margin: 24px 0; }
+    .warning-box-title { font-weight: 600; color: var(--orange); margin-bottom: 8px; }
+    .warning-box-content { font-size: 14px; color: var(--gray-300); }
+    
+    table { width: 100%; border-collapse: collapse; margin: 24px 0; }
+    th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid var(--gray-800); font-size: 14px; }
+    th { font-weight: 600; color: var(--gray-400); text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; }
+    td { color: var(--gray-300); }
+    td:first-child { color: var(--white); font-weight: 500; }
+    .highlight { color: var(--green); font-weight: 600; }
+    
+    .protocol-diagram { background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 12px; padding: 24px; margin: 24px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.6; color: var(--cyan); }
+    
+    @media (max-width: 900px) {
+      .doc-layout { grid-template-columns: 1fr; }
+      .doc-sidebar { display: none; }
+      .doc-content { padding: 32px 24px; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="nav-inner">
+      <a href="../index.html" class="logo">
+        <div class="logo-icon"><img src="../logo.png" alt="Bitcoin Ghost"></div>
+        <div class="logo-text">Bitcoin<span>Ghost</span></div>
+      </a>
+      <div class="nav-links">
+        <a href="../index.html">Home</a>
+        <a href="../network.html">Network</a>
+        <a href="../how-it-works.html">How It Works</a>
+        <a href="../economics.html">Economics</a>
+      </div>
+      <div class="nav-right">
+        <a href="https://github.com/bitcoin-ghost" class="btn btn-ghost" target="_blank">
+          <svg style="width:20px;height:20px;" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+        <a href="../get-started.html" class="btn btn-primary">Get Started</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="doc-layout">
+    <aside class="doc-sidebar">
+      <a href="index.html" class="sidebar-back">← All Docs</a>
+      
+      <div class="sidebar-section">
+        <div class="sidebar-title">On This Page</div>
+        <div class="sidebar-links">
+          <a href="#overview" class="sidebar-link active">Overview</a>
+          <a href="#network" class="sidebar-link">Network Topology</a>
+          <a href="#zmq" class="sidebar-link">ZMQ Protocol</a>
+          <a href="#share-consensus" class="sidebar-link">Share Consensus</a>
+          <a href="#payout-consensus" class="sidebar-link">Payout Consensus</a>
+          <a href="#bft" class="sidebar-link">Byzantine Fault Tolerance</a>
+          <a href="#attacks" class="sidebar-link">Attack Resistance</a>
+        </div>
+      </div>
+      
+      <div class="sidebar-section">
+        <div class="sidebar-title">Related</div>
+        <div class="sidebar-links">
+          <a href="ghost-pool.html" class="sidebar-link">Ghost Pool</a>
+          <a href="elder-system.html" class="sidebar-link">Elder System</a>
+        </div>
+      </div>
+    </aside>
+
+    <main class="doc-content">
+      <header class="doc-header">
+        <h1>Consensus & Protocol</h1>
+        <p>How Ghost nodes reach agreement on shares, payouts, and Elder status without centralization.</p>
+      </header>
+
+      <section class="doc-section" id="overview">
+        <h2>Overview</h2>
+        <p>Ghost uses a decentralized consensus mechanism to coordinate mining pool operations across all nodes. Key consensus types:</p>
+        
+        <ul>
+          <li><strong>Share Consensus</strong> — Agreement on valid shares during a round</li>
+          <li><strong>Payout Consensus</strong> — Agreement on reward distribution when block found</li>
+          <li><strong>Elder Consensus</strong> — Agreement on Elder status and revocation</li>
+          <li><strong>Treasury Consensus</strong> — Agreement on treasury threshold and decay state</li>
+        </ul>
+        
+        <div class="info-box">
+          <div class="info-box-title">Byzantine Fault Tolerant</div>
+          <div class="info-box-content">Ghost consensus tolerates up to 33% malicious nodes. The system requires 67% supermajority for critical decisions, ensuring honest nodes always win.</div>
+        </div>
+      </section>
+
+      <section class="doc-section" id="network">
+        <h2>Network Topology</h2>
+        <p>Ghost uses a <strong>full mesh network</strong> where every node connects to every other node:</p>
+        
+        <div class="protocol-diagram">
+          Ghost Network (Full Mesh)
+          
+              Node A ◄────► Node B
+                 ▲            ▲
+                 │            │
+                 ▼            ▼
+              Node D ◄────► Node C
+        </div>
+        
+        <h3>Port Assignments</h3>
+        <table>
+          <tr>
+            <th>Port</th>
+            <th>Purpose</th>
+            <th>Pattern</th>
+          </tr>
+          <tr>
+            <td>8555</td>
+            <td>Share Propagation</td>
+            <td>PUB/SUB</td>
+          </tr>
+          <tr>
+            <td>8556</td>
+            <td>Block Announcements</td>
+            <td>PUB/SUB</td>
+          </tr>
+          <tr>
+            <td>8557</td>
+            <td>Consensus Voting</td>
+            <td>DEALER/ROUTER</td>
+          </tr>
+          <tr>
+            <td>8558</td>
+            <td>Health Monitoring</td>
+            <td>PUB/SUB</td>
+          </tr>
+          <tr>
+            <td>8559</td>
+            <td>Discovery Service</td>
+            <td>REQ/REP</td>
+          </tr>
+          <tr>
+            <td>8560</td>
+            <td>Elder Management</td>
+            <td>PUB/SUB</td>
+          </tr>
+        </table>
+      </section>
+
+      <section class="doc-section" id="zmq">
+        <h2>ZMQ Protocol</h2>
+        <p>Ghost uses ZeroMQ for low-latency peer-to-peer communication:</p>
+        
+        <h3>Why ZMQ?</h3>
+        <ul>
+          <li><strong>Low latency</strong> — 1-50ms vs 50-200ms for libp2p</li>
+          <li><strong>Proven reliability</strong> — Used by Bitcoin Core</li>
+          <li><strong>Multiple patterns</strong> — PUB-SUB, DEALER-ROUTER, REQ-REP</li>
+          <li><strong>Simple implementation</strong> — Easy to debug</li>
+        </ul>
+        
+        <h3>Message Format</h3>
+        <div class="code-block"><code>GhostMessage {
+  version: u8,              <span class="comment">// Protocol version</span>
+  msg_type: MessageType,    <span class="comment">// Share, Block, Vote, etc.</span>
+  timestamp: u64,           <span class="comment">// Unix timestamp (ms)</span>
+  sender_id: [u8; 32],      <span class="comment">// Node ID</span>
+  payload: Vec&lt;u8&gt;,         <span class="comment">// Serialized message</span>
+  signature: Vec&lt;u8&gt;,       <span class="comment">// secp256k1 signature</span>
+}</code></div>
+        
+        <p>All messages are signed with secp256k1 signatures to prevent forgery.</p>
+      </section>
+
+      <section class="doc-section" id="share-consensus">
+        <h2>Share Consensus</h2>
+        <p>How nodes agree on valid shares:</p>
+        
+        <h3>Share Validation Rules</h3>
+        <ol>
+          <li>Hash meets pool difficulty target</li>
+          <li>Derived from valid block template</li>
+          <li>Timestamp within 30 seconds</li>
+          <li>Node signature valid</li>
+          <li>Not a duplicate</li>
+        </ol>
+        
+        <h3>Propagation Flow</h3>
+        <div class="code-block"><code>Miner submits share to Node A
+        ↓
+Node A validates locally
+        ↓
+Node A broadcasts ShareProof (port 8555)
+        ↓ (1-50ms)
+All nodes receive via SUB socket
+        ↓
+Each node validates independently
+        ↓
+Each node adds to local share ledger</code></div>
+        
+        <h3>Merkle Commitment</h3>
+        <p>Every 60 seconds, nodes broadcast a commitment of their share ledger:</p>
+        <div class="code-block"><code>ShareCommitment {
+  node_id: [u8; 32],
+  round_id: [u8; 32],
+  merkle_root: [u8; 32],    <span class="comment">// Root of share tree</span>
+  share_count: u64,
+  signature: Vec&lt;u8&gt;,
+}</code></div>
+        <p>If merkle roots don't match, nodes sync their differences.</p>
+      </section>
+
+      <section class="doc-section" id="payout-consensus">
+        <h2>Payout Consensus</h2>
+        <p>When a block is found, nodes must agree on payouts:</p>
+        
+        <h3>Consensus Flow</h3>
+        <div class="code-block"><code>Block found by Node A
+        ↓
+Node A submits block to Bitcoin network (immediate)
+        ↓
+Node A broadcasts BlockFound (port 8556)
+        ↓
+All nodes freeze share ledgers
+        ↓
+All nodes calculate PayoutProposal
+        ↓ (1-2 seconds)
+All nodes broadcast proposals (port 8561)
+        ↓
+All nodes vote on proposals (port 8557)
+        ↓ (5 second timeout)
+67% consensus reached → PayoutTransaction created
+        ↓
+OR no 67% → median calculation used</code></div>
+        
+        <h3>67% Supermajority</h3>
+        <p>Payout proposals require 67% agreement. If achieved:</p>
+        <ul>
+          <li>Winning proposal is accepted</li>
+          <li>Finding node creates payout transaction</li>
+          <li>All nodes verify and relay to Bitcoin network</li>
+        </ul>
+        
+        <h3>Median Fallback</h3>
+        <p>If no proposal gets 67%, nodes calculate the median:</p>
+        <ul>
+          <li>For each miner, take median of all proposed amounts</li>
+          <li>For each node, take median of all proposed rewards</li>
+          <li>Use median values as the consensus payout</li>
+        </ul>
+        <p>This ensures payouts always happen, even without perfect agreement.</p>
+      </section>
+
+      <section class="doc-section" id="bft">
+        <h2>Byzantine Fault Tolerance</h2>
+        <p>Ghost consensus is designed to resist Byzantine (malicious) nodes:</p>
+        
+        <h3>Safety Guarantees</h3>
+        <table>
+          <tr>
+            <th>Property</th>
+            <th>Guarantee</th>
+          </tr>
+          <tr>
+            <td>Share Consensus</td>
+            <td>All honest nodes agree on valid shares if 67% are honest</td>
+          </tr>
+          <tr>
+            <td>Payout Consensus</td>
+            <td>Correct payouts enforced by honest majority</td>
+          </tr>
+          <tr>
+            <td>Elder Consensus</td>
+            <td>Elder list immutable, revocation requires 67% witness</td>
+          </tr>
+          <tr>
+            <td>Liveness</td>
+            <td>System never deadlocks (median fallback)</td>
+          </tr>
+        </table>
+        
+        <h3>Cryptographic Security</h3>
+        <ul>
+          <li><strong>secp256k1 signatures</strong> — All messages authenticated</li>
+          <li><strong>Merkle proofs</strong> — Share inclusion verifiable</li>
+          <li><strong>Hash chains</strong> — State history tamper-proof</li>
+        </ul>
+      </section>
+
+      <section class="doc-section" id="attacks">
+        <h2>Attack Resistance</h2>
+        
+        <h3>Fake Shares Attack</h3>
+        <p><strong>Attack:</strong> Malicious node broadcasts invalid shares.</p>
+        <p><strong>Defense:</strong> All nodes validate shares independently. Invalid shares are rejected. Repeated violations → peer banned.</p>
+        
+        <h3>Payout Manipulation Attack</h3>
+        <p><strong>Attack:</strong> Malicious nodes propose inflated payouts for themselves.</p>
+        <p><strong>Defense:</strong> 67% honest majority overrules bad proposals. Median fallback prevents deadlock.</p>
+        
+        <h3>Elder Sybil Attack</h3>
+        <p><strong>Attack:</strong> Attacker registers many nodes to dominate Elder slots.</p>
+        <p><strong>Defense:</strong> Only first 101 nodes become Elders. One-time event at launch. Deterministic ordering by (timestamp, hash) prevents manipulation.</p>
+        
+        <h3>Network Partition Attack</h3>
+        <p><strong>Attack:</strong> Attacker splits network to cause disagreement.</p>
+        <p><strong>Defense:</strong> Full mesh topology with multiple connection paths. Periodic state verification. Self-healing when partition heals.</p>
+        
+        <div class="warning-box">
+          <div class="warning-box-title">33% Limit</div>
+          <div class="warning-box-content">If more than 33% of nodes are malicious, consensus guarantees break down. This is a fundamental limit of BFT systems. Ghost relies on economic incentives (node rewards) to keep the majority honest.</div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

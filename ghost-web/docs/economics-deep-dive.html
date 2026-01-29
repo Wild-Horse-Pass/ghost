@@ -1,0 +1,454 @@
+<!--
+|======================================================================================================================|
+|                                                                                                                      |
+|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+|       ░              ░                                                                                               |
+|----------------------------------------------------------------------------------------------------------------------|
+|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+|----------------------------------------------------------------------------------------------------------------------|
+| PROJECT: Bitcoin Ghost                                                                                               |
+| REPO: https://github.com/bitcoin-ghost                                                                               |
+| WEB: https://bitcoinghost.org/                                                                                       |
+| LICENSE: MIT                                                                                                         |
+| FILE: economics-deep-dive.html                                                                |
+|======================================================================================================================|
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Economics Deep-Dive | Documentation | Bitcoin Ghost</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --black: #050505; --darker: #0a0a0a; --gray-900: #141414; --gray-800: #1a1a1a;
+      --gray-700: #242424; --gray-600: #333333; --gray-500: #4a4a4a; --gray-400: #666666;
+      --gray-300: #888888; --gray-200: #aaaaaa; --gray-100: #cccccc; --white: #f0f0f0;
+      --orange: #f7931a; --orange-light: #ffb347; --cyan: #00d4ff; --green: #00ff88;
+      --font-display: 'Outfit', system-ui, sans-serif; --font-mono: 'Geist Mono', monospace;
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font-display); background: var(--black); color: var(--gray-100); line-height: 1.7; }
+    ::selection { background: var(--orange); color: var(--black); }
+    
+    nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 16px 0; background: rgba(5, 5, 5, 0.9); backdrop-filter: blur(20px); border-bottom: 1px solid var(--gray-800); }
+    .nav-inner { display: flex; align-items: center; justify-content: space-between; max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+    .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--white); }
+    .logo-icon { width: 40px; height: 40px; border-radius: 10px; overflow: hidden; }
+    .logo-icon img { width: 100%; height: 100%; object-fit: contain; }
+    .logo-text { font-weight: 700; font-size: 20px; }
+    .logo-text span { color: var(--orange); }
+    .nav-links { display: flex; gap: 8px; }
+    .nav-links a { color: var(--gray-300); text-decoration: none; padding: 8px 16px; font-size: 14px; font-weight: 500; border-radius: 8px; transition: all 0.2s; }
+    .nav-links a:hover { color: var(--white); background: var(--gray-800); }
+    .nav-right { display: flex; align-items: center; gap: 12px; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; font-family: var(--font-display); font-size: 14px; font-weight: 600; border-radius: 8px; text-decoration: none; transition: all 0.2s; }
+    .btn-primary { background: var(--orange); color: var(--black); }
+    .btn-primary:hover { background: var(--orange-light); }
+    .btn-ghost { background: transparent; color: var(--gray-300); padding: 8px 12px; }
+    .btn-ghost:hover { color: var(--white); }
+    
+    .doc-layout { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; padding-top: 73px; }
+    .doc-sidebar { background: var(--darker); border-right: 1px solid var(--gray-800); padding: 32px 24px; position: sticky; top: 73px; height: calc(100vh - 73px); overflow-y: auto; }
+    .sidebar-section { margin-bottom: 28px; }
+    .sidebar-title { font-size: 11px; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; }
+    .sidebar-links { display: flex; flex-direction: column; gap: 4px; }
+    .sidebar-link { color: var(--gray-400); text-decoration: none; font-size: 14px; padding: 6px 12px; border-radius: 6px; transition: all 0.15s; }
+    .sidebar-link:hover { color: var(--white); background: var(--gray-800); }
+    .sidebar-link.active { color: var(--orange); background: rgba(247, 147, 26, 0.1); }
+    .sidebar-back { display: flex; align-items: center; gap: 8px; color: var(--gray-400); text-decoration: none; font-size: 13px; margin-bottom: 24px; padding: 8px 12px; border-radius: 6px; transition: all 0.15s; }
+    .sidebar-back:hover { color: var(--white); background: var(--gray-800); }
+    
+    .doc-content { padding: 48px 64px; max-width: 900px; }
+    .doc-header { margin-bottom: 48px; }
+    .doc-header h1 { font-size: 40px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 16px; }
+    .doc-header p { font-size: 18px; color: var(--gray-400); }
+    
+    .doc-section { margin-bottom: 56px; }
+    .doc-section h2 { font-size: 28px; font-weight: 700; color: var(--white); margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--gray-800); }
+    .doc-section h3 { font-size: 20px; font-weight: 600; color: var(--white); margin: 32px 0 16px; }
+    .doc-section p { color: var(--gray-300); margin-bottom: 16px; }
+    .doc-section ul, .doc-section ol { margin: 16px 0; padding-left: 24px; }
+    .doc-section li { color: var(--gray-300); margin-bottom: 8px; }
+    
+    .formula-block { background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 12px; padding: 24px; margin: 24px 0; font-family: var(--font-mono); }
+    .formula-block .formula { color: var(--cyan); font-size: 15px; margin-bottom: 12px; }
+    .formula-block .where { color: var(--gray-400); font-size: 13px; }
+    .formula-block .var { color: var(--orange); }
+    
+    .info-box { background: rgba(0, 212, 255, 0.1); border: 1px solid rgba(0, 212, 255, 0.3); border-radius: 12px; padding: 20px 24px; margin: 24px 0; }
+    .info-box-title { font-weight: 600; color: var(--cyan); margin-bottom: 8px; }
+    .info-box-content { font-size: 14px; color: var(--gray-300); }
+    
+    table { width: 100%; border-collapse: collapse; margin: 24px 0; }
+    th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid var(--gray-800); font-size: 14px; }
+    th { font-weight: 600; color: var(--gray-400); text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; }
+    td { color: var(--gray-300); }
+    td:first-child { color: var(--white); font-weight: 500; }
+    .highlight { color: var(--green); font-weight: 600; }
+    
+    .timeline-bar { display: flex; margin: 32px 0; border-radius: 8px; overflow: hidden; height: 40px; }
+    .timeline-segment { display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: var(--black); }
+    .timeline-legend { display: flex; gap: 24px; margin-top: 12px; flex-wrap: wrap; }
+    .legend-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--gray-400); }
+    .legend-dot { width: 12px; height: 12px; border-radius: 3px; }
+    
+    @media (max-width: 900px) {
+      .doc-layout { grid-template-columns: 1fr; }
+      .doc-sidebar { display: none; }
+      .doc-content { padding: 32px 24px; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="nav-inner">
+      <a href="../index.html" class="logo">
+        <div class="logo-icon"><img src="../logo.png" alt="Bitcoin Ghost"></div>
+        <div class="logo-text">Bitcoin<span>Ghost</span></div>
+      </a>
+      <div class="nav-links">
+        <a href="../index.html">Home</a>
+        <a href="../network.html">Network</a>
+        <a href="../how-it-works.html">How It Works</a>
+        <a href="../economics.html">Economics</a>
+      </div>
+      <div class="nav-right">
+        <a href="https://github.com/bitcoin-ghost" class="btn btn-ghost" target="_blank">
+          <svg style="width:20px;height:20px;" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+        <a href="../get-started.html" class="btn btn-primary">Get Started</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="doc-layout">
+    <aside class="doc-sidebar">
+      <a href="index.html" class="sidebar-back">← All Docs</a>
+      
+      <div class="sidebar-section">
+        <div class="sidebar-title">On This Page</div>
+        <div class="sidebar-links">
+          <a href="#overview" class="sidebar-link active">Overview</a>
+          <a href="#pool-fee" class="sidebar-link">Pool Fee Structure</a>
+          <a href="#miner-payouts" class="sidebar-link">Miner Payouts</a>
+          <a href="#node-shares" class="sidebar-link">Node Share System</a>
+          <a href="#treasury" class="sidebar-link">Treasury & Decay</a>
+          <a href="#ossification" class="sidebar-link">Ossification</a>
+          <a href="#examples" class="sidebar-link">Worked Examples</a>
+        </div>
+      </div>
+      
+      <div class="sidebar-section">
+        <div class="sidebar-title">Related</div>
+        <div class="sidebar-links">
+          <a href="elder-system.html" class="sidebar-link">Elder System</a>
+          <a href="ghost-pool.html" class="sidebar-link">Ghost Pool</a>
+        </div>
+      </div>
+    </aside>
+
+    <main class="doc-content">
+      <header class="doc-header">
+        <h1>Economics Deep-Dive</h1>
+        <p>Complete breakdown of Ghost's economic model — share formulas, payout math, treasury mechanics, and the path to ossification.</p>
+      </header>
+
+      <section class="doc-section" id="overview">
+        <h2>Overview</h2>
+        <p>Ghost economics are designed around three principles:</p>
+        <ol>
+          <li><strong>Miners first</strong> — 99% of subsidy + 100% of fees go to miners</li>
+          <li><strong>Sustainable node incentives</strong> — Behavior-based rewards, not speculation</li>
+          <li><strong>Path to zero governance</strong> — Treasury decays to 0%, system ossifies</li>
+        </ol>
+        
+        <div class="info-box">
+          <div class="info-box-title">No New Token</div>
+          <div class="info-box-content">Ghost introduces no new token. All rewards come from Bitcoin block subsidies and transaction fees. There's no inflation, no pre-mine, no ICO.</div>
+        </div>
+      </section>
+
+      <section class="doc-section" id="pool-fee">
+        <h2>Pool Fee Structure</h2>
+        <p>Ghost Pool charges a <strong>fixed 1% fee on the block subsidy only</strong>. Transaction fees are never touched.</p>
+        
+        <h3>Fee Distribution</h3>
+        <div class="formula-block">
+          <div class="formula">pool_fee = block_subsidy × 0.01</div>
+          <div class="where">Currently: 3.125 BTC × 0.01 = <span class="var">0.03125 BTC</span> per block</div>
+        </div>
+        
+        <p>The 1% fee is split between Treasury and Node Reward Pool:</p>
+        
+        <table>
+          <tr>
+            <th>Phase</th>
+            <th>Treasury</th>
+            <th>Node Reward Pool</th>
+          </tr>
+          <tr>
+            <td>Before 21 BTC threshold</td>
+            <td>0.5%</td>
+            <td>0.5%</td>
+          </tr>
+          <tr>
+            <td>Year 1 of decay</td>
+            <td>0.4%</td>
+            <td>0.6%</td>
+          </tr>
+          <tr>
+            <td>Year 2 of decay</td>
+            <td>0.3%</td>
+            <td>0.7%</td>
+          </tr>
+          <tr>
+            <td>Year 3 of decay</td>
+            <td>0.2%</td>
+            <td>0.8%</td>
+          </tr>
+          <tr>
+            <td>Year 4 of decay</td>
+            <td>0.1%</td>
+            <td>0.9%</td>
+          </tr>
+          <tr>
+            <td>Year 5+ (ossified)</td>
+            <td class="highlight">0%</td>
+            <td class="highlight">1.0%</td>
+          </tr>
+        </table>
+      </section>
+
+      <section class="doc-section" id="miner-payouts">
+        <h2>Miner Payouts</h2>
+        
+        <h3>Subsidy Distribution</h3>
+        <p>Miners receive 99% of the block subsidy, distributed by hashrate contribution:</p>
+        
+        <div class="formula-block">
+          <div class="formula">miner_subsidy = (miner_shares / total_round_shares) × (block_subsidy × 0.99)</div>
+          <div class="where">Where <span class="var">miner_shares</span> = shares submitted by this miner this round</div>
+        </div>
+        
+        <h3>Transaction Fees</h3>
+        <p>The miner whose share found the block receives <strong>100% of transaction fees</strong>:</p>
+        
+        <div class="formula-block">
+          <div class="formula">winning_miner_total = miner_subsidy + block_tx_fees</div>
+          <div class="where">Only the block-finding miner gets <span class="var">block_tx_fees</span></div>
+        </div>
+        
+        <div class="info-box">
+          <div class="info-box-title">Why TX fees to winning miner?</div>
+          <div class="info-box-content">The node that builds the template chooses which transactions to include. Giving them 100% of fees incentivizes building high-fee templates. This is unlike traditional pools that split fees across all miners.</div>
+        </div>
+      </section>
+
+      <section class="doc-section" id="node-shares">
+        <h2>Node Share System</h2>
+        <p>Nodes earn 0-15 shares based on behavior. Shares determine your portion of the Node Reward Pool. The Gatekeeper prerequisite (95% uptime over 7 days) must be met before any shares are awarded.</p>
+        
+        <h3>Share Types</h3>
+        <table>
+          <tr>
+            <th>Share Type</th>
+            <th>Points</th>
+            <th>Requirement</th>
+          </tr>
+          <tr>
+            <td>Archive Mode</td>
+            <td>+5</td>
+            <td>Store full blockchain history</td>
+          </tr>
+          <tr>
+            <td>Ghost Pay</td>
+            <td>+4</td>
+            <td>Process Ghost Pay settlements</td>
+          </tr>
+          <tr>
+            <td>Public Mining</td>
+            <td>+3</td>
+            <td>Accept public Stratum connections</td>
+          </tr>
+          <tr>
+            <td>Bitcoin Pure</td>
+            <td>+2</td>
+            <td>Run Bitcoin Core, maintain UTXO set</td>
+          </tr>
+          <tr>
+            <td>Elder Status</td>
+            <td>+1</td>
+            <td>One of first 101 nodes</td>
+          </tr>
+          <tr>
+            <td><strong>Maximum</strong></td>
+            <td><strong>15</strong></td>
+            <td></td>
+          </tr>
+        </table>
+        
+        <h3>Node Reward Formula</h3>
+        <div class="formula-block">
+          <div class="formula">node_reward = (your_shares / total_network_shares) × node_reward_pool</div>
+          <div class="where">Where <span class="var">node_reward_pool</span> = block_subsidy × (0.005 to 0.01)</div>
+        </div>
+        
+        <h3>Example Calculation</h3>
+        <p>If you have 12 shares and the network has 1000 total shares:</p>
+        <div class="formula-block">
+          <div class="formula">node_reward = (12 / 1000) × 0.015625 BTC = 0.0001875 BTC</div>
+          <div class="where">Per block, assuming 0.5% pool fee allocation to nodes</div>
+        </div>
+      </section>
+
+      <section class="doc-section" id="treasury">
+        <h2>Treasury & Decay</h2>
+        
+        <h3>Treasury Threshold</h3>
+        <p>The Treasury accumulates until it reaches <strong>21 BTC</strong>. This is a hard cap — once reached, the decay begins automatically.</p>
+        
+        <div class="formula-block">
+          <div class="formula">treasury_allocation = block_subsidy × 0.005 (until 21 BTC reached)</div>
+          <div class="where">At current subsidy: 0.015625 BTC per block → ~134 blocks/day → ~42 days to 1 BTC</div>
+        </div>
+        
+        <h3>5-Year Decay</h3>
+        <p>Once 21 BTC is reached, Treasury allocation decays over 5 years:</p>
+        
+        <div class="timeline-bar">
+          <div class="timeline-segment" style="width: 20%; background: var(--orange);">Y1: 0.4%</div>
+          <div class="timeline-segment" style="width: 20%; background: #d97706;">Y2: 0.3%</div>
+          <div class="timeline-segment" style="width: 20%; background: #b45309;">Y3: 0.2%</div>
+          <div class="timeline-segment" style="width: 20%; background: #92400e;">Y4: 0.1%</div>
+          <div class="timeline-segment" style="width: 20%; background: var(--green); color: var(--black);">Y5+: 0%</div>
+        </div>
+        <div class="timeline-legend">
+          <div class="legend-item"><div class="legend-dot" style="background: var(--orange);"></div>Treasury allocation</div>
+          <div class="legend-item"><div class="legend-dot" style="background: var(--green);"></div>Ossified (no treasury)</div>
+        </div>
+        
+        <h3>Treasury Usage</h3>
+        <p>Treasury funds can only be used for:</p>
+        <ul>
+          <li>Development and engineering</li>
+          <li>Security audits</li>
+          <li>Infrastructure costs</li>
+          <li>Legal and operational requirements</li>
+        </ul>
+        <p>There is no governance voting or political mechanism. Treasury usage is pre-defined and transparent.</p>
+      </section>
+
+      <section class="doc-section" id="ossification">
+        <h2>Ossification</h2>
+        <p>After the 5-year decay completes, Ghost enters its <strong>final state</strong>:</p>
+        
+        <table>
+          <tr>
+            <th>Parameter</th>
+            <th>Final Value</th>
+          </tr>
+          <tr>
+            <td>Pool Fee</td>
+            <td>1% (unchanged)</td>
+          </tr>
+          <tr>
+            <td>Treasury Allocation</td>
+            <td class="highlight">0%</td>
+          </tr>
+          <tr>
+            <td>Node Reward Pool</td>
+            <td class="highlight">1%</td>
+          </tr>
+          <tr>
+            <td>Governance</td>
+            <td class="highlight">Dissolved</td>
+          </tr>
+        </table>
+        
+        <p>In the ossified state:</p>
+        <ul>
+          <li>No more development funding</li>
+          <li>No more governance decisions</li>
+          <li>No more changes to economic parameters</li>
+          <li>Ghost becomes permanent, neutral infrastructure</li>
+        </ul>
+        
+        <div class="info-box">
+          <div class="info-box-title">Why Ossification?</div>
+          <div class="info-box-content">Governance is a liability. By designing Ghost to become governance-free, we eliminate the risk of capture, politics, and drift from original principles. The system simply runs, forever, as designed.</div>
+        </div>
+      </section>
+
+      <section class="doc-section" id="examples">
+        <h2>Worked Examples</h2>
+        
+        <h3>Example 1: Block Found</h3>
+        <p>A block is found with 3.125 BTC subsidy and 0.5 BTC in fees. The round had 10,000 miner shares.</p>
+        
+        <div class="formula-block">
+          <div class="formula">
+Pool fee:         3.125 × 0.01     = 0.03125 BTC
+Treasury:         0.03125 × 0.5    = 0.015625 BTC  
+Node Reward Pool: 0.03125 × 0.5    = 0.015625 BTC
+Miner Pool:       3.125 × 0.99     = 3.09375 BTC
+
+Miner A (1000 shares, block finder):
+  Subsidy: (1000/10000) × 3.09375  = 0.309375 BTC
+  TX Fees: 0.5 BTC
+  Total:   0.809375 BTC
+
+Miner B (500 shares):
+  Subsidy: (500/10000) × 3.09375   = 0.1546875 BTC
+  TX Fees: 0 (not block finder)
+  Total:   0.1546875 BTC
+          </div>
+        </div>
+        
+        <h3>Example 2: Node Rewards</h3>
+        <p>Network has 100 nodes with total 1200 shares. Your node has 14 shares.</p>
+        
+        <div class="formula-block">
+          <div class="formula">
+Node Reward Pool: 0.015625 BTC (per block)
+
+Your reward: (14/1200) × 0.015625 = 0.000182 BTC per block
+
+At 144 blocks/day:
+  Daily:   0.000182 × 144 = 0.0262 BTC
+  Monthly: 0.0262 × 30    = 0.786 BTC
+          </div>
+        </div>
+        
+        <h3>Example 3: Elder Advantage</h3>
+        <p>Comparing Elder vs non-Elder node with same configuration (14 shares vs 15 shares):</p>
+
+        <div class="formula-block">
+          <div class="formula">
+Network: 100 nodes, 1400 total shares
+
+Non-Elder (14 shares): (14/1400) × 0.015625 = 0.00015625 BTC/block
+Elder (15 shares):     (15/1400) × 0.015625 = 0.00016741 BTC/block
+
+Elder advantage: ~7.1% more per block
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

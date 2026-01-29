@@ -1,0 +1,872 @@
+<!--
+|======================================================================================================================|
+|                                                                                                                      |
+|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+|       ░              ░                                                                                               |
+|----------------------------------------------------------------------------------------------------------------------|
+|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+|----------------------------------------------------------------------------------------------------------------------|
+| PROJECT: Bitcoin Ghost                                                                                               |
+| REPO: https://github.com/bitcoin-ghost                                                                               |
+| WEB: https://bitcoinghost.org/                                                                                       |
+| LICENSE: MIT                                                                                                         |
+| FILE: how-it-works.html                                                                       |
+|======================================================================================================================|
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How It Works | Bitcoin Ghost</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --black: #050505;
+      --darker: #0a0a0a;
+      --dark: #0f0f0f;
+      --gray-900: #141414;
+      --gray-800: #1a1a1a;
+      --gray-700: #242424;
+      --gray-600: #333333;
+      --gray-500: #4a4a4a;
+      --gray-400: #666666;
+      --gray-300: #888888;
+      --gray-200: #aaaaaa;
+      --gray-100: #cccccc;
+      --white: #f0f0f0;
+      --orange: #f7931a;
+      --orange-light: #ffb347;
+      --cyan: #00d4ff;
+      --green: #00ff88;
+      --font-display: 'Outfit', system-ui, sans-serif;
+      --font-mono: 'Geist Mono', monospace;
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font-display); background: var(--black); color: var(--gray-100); line-height: 1.6; }
+    ::selection { background: var(--orange); color: var(--black); }
+    
+    /* Nav */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      padding: 16px 0;
+      background: rgba(5, 5, 5, 0.9);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--gray-800);
+    }
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--white);
+    }
+    .logo-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .logo-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    .logo-text {
+      font-weight: 700;
+      font-size: 20px;
+    }
+    .logo-text span {
+      color: var(--orange);
+    }
+    .nav-links {
+      display: flex;
+      gap: 8px;
+    }
+    .nav-links a {
+      color: var(--gray-300);
+      text-decoration: none;
+      padding: 8px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 8px;
+      transition: all 0.2s;
+    }
+    .nav-links a:hover {
+      color: var(--white);
+      background: var(--gray-800);
+    }
+    .nav-links a.active {
+      color: var(--orange);
+    }
+    .nav-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      font-family: var(--font-display);
+      font-size: 14px;
+      font-weight: 600;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: all 0.2s;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary {
+      background: var(--orange);
+      color: var(--black);
+    }
+    .btn-primary:hover {
+      background: var(--orange-light);
+    }
+    .btn-secondary {
+      background: var(--gray-800);
+      color: var(--white);
+    }
+    .btn-secondary:hover {
+      background: var(--gray-700);
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--gray-300);
+      padding: 8px 12px;
+    }
+    .btn-ghost:hover {
+      color: var(--white);
+    }
+    
+    /* Page Header */
+    .page-header {
+      padding: 140px 24px 60px;
+      text-align: center;
+      background: linear-gradient(180deg, var(--gray-900) 0%, var(--black) 100%);
+    }
+    .page-header h1 {
+      font-size: clamp(36px, 6vw, 56px);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      margin-bottom: 16px;
+    }
+    .page-header h1 span {
+      background: linear-gradient(135deg, var(--orange), var(--orange-light));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .page-header p {
+      font-size: 18px;
+      color: var(--gray-400);
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    
+    /* Container */
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+    
+    /* Section */
+    section {
+      padding: 80px 24px;
+    }
+    .section-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--orange);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-size: clamp(28px, 4vw, 40px);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+      color: var(--white);
+    }
+    .section-subtitle {
+      font-size: 17px;
+      color: var(--gray-400);
+      max-width: 700px;
+      line-height: 1.7;
+    }
+    
+    /* Overview Diagram */
+    .overview-section {
+      background: var(--darker);
+      border-top: 1px solid var(--gray-800);
+      border-bottom: 1px solid var(--gray-800);
+    }
+    .flow-diagram {
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      gap: 0;
+      margin-top: 48px;
+      flex-wrap: wrap;
+    }
+    .flow-box {
+      background: var(--gray-900);
+      border: 1px solid var(--gray-800);
+      border-radius: 16px;
+      padding: 32px 28px;
+      text-align: center;
+      min-width: 160px;
+      flex: 1;
+      max-width: 200px;
+    }
+    .flow-box.ghost {
+      background: linear-gradient(135deg, rgba(247, 147, 26, 0.12) 0%, var(--gray-900) 100%);
+      border-color: rgba(247, 147, 26, 0.4);
+    }
+    .flow-box-icon {
+      font-size: 32px;
+      margin-bottom: 12px;
+    }
+    .flow-box-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--white);
+      margin-bottom: 6px;
+    }
+    .flow-box-desc {
+      font-size: 13px;
+      color: var(--gray-400);
+    }
+    .flow-arrow {
+      display: flex;
+      align-items: center;
+      padding: 0 8px;
+      color: var(--gray-500);
+      font-size: 24px;
+    }
+    
+    /* Component Section */
+    .component-section {
+      border-bottom: 1px solid var(--gray-800);
+    }
+    .component-grid {
+      display: grid;
+      grid-template-columns: 1fr 1.2fr;
+      gap: 60px;
+      align-items: center;
+      margin-top: 48px;
+    }
+    .component-grid.reverse {
+      grid-template-columns: 1.2fr 1fr;
+    }
+    .component-grid.reverse .component-content {
+      order: 2;
+    }
+    .component-grid.reverse .component-visual {
+      order: 1;
+    }
+    .component-content h3 {
+      font-size: 24px;
+      font-weight: 700;
+      color: var(--white);
+      margin-bottom: 16px;
+    }
+    .component-content p {
+      color: var(--gray-300);
+      margin-bottom: 16px;
+      line-height: 1.7;
+    }
+    .component-content ul {
+      list-style: none;
+      margin-top: 20px;
+    }
+    .component-content li {
+      padding: 8px 0;
+      padding-left: 24px;
+      position: relative;
+      color: var(--gray-300);
+    }
+    .component-content li::before {
+      content: "✓";
+      position: absolute;
+      left: 0;
+      color: var(--green);
+      font-weight: 600;
+    }
+    .component-visual {
+      background: var(--gray-900);
+      border: 1px solid var(--gray-800);
+      border-radius: 20px;
+      padding: 32px;
+    }
+    
+    /* Comparison Table */
+    .comparison-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .comparison-table th,
+    .comparison-table td {
+      padding: 16px 20px;
+      text-align: left;
+      border-bottom: 1px solid var(--gray-800);
+    }
+    .comparison-table th {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--gray-400);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .comparison-table td {
+      font-size: 14px;
+      color: var(--gray-300);
+    }
+    .comparison-table td:first-child {
+      color: var(--white);
+      font-weight: 500;
+    }
+    .comparison-table .highlight {
+      color: var(--green);
+      font-weight: 600;
+    }
+    .comparison-table .muted {
+      color: var(--gray-500);
+    }
+    
+    /* Info Cards */
+    .info-cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+      margin-top: 48px;
+    }
+    .info-card {
+      background: var(--gray-900);
+      border: 1px solid var(--gray-800);
+      border-radius: 16px;
+      padding: 28px;
+    }
+    .info-card-icon {
+      font-size: 28px;
+      margin-bottom: 16px;
+    }
+    .info-card-title {
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--white);
+      margin-bottom: 8px;
+    }
+    .info-card-desc {
+      font-size: 14px;
+      color: var(--gray-400);
+      line-height: 1.6;
+    }
+    
+    /* Ghost Pay Section */
+    .ghost-pay-flow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      margin: 48px 0;
+      flex-wrap: wrap;
+    }
+    .pay-step {
+      text-align: center;
+      flex: 1;
+      min-width: 160px;
+      max-width: 220px;
+    }
+    .pay-step-num {
+      width: 48px;
+      height: 48px;
+      background: var(--orange);
+      color: var(--black);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      font-weight: 700;
+      margin: 0 auto 16px;
+    }
+    .pay-step-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--white);
+      margin-bottom: 8px;
+    }
+    .pay-step-desc {
+      font-size: 14px;
+      color: var(--gray-400);
+    }
+    .pay-arrow {
+      color: var(--gray-500);
+      font-size: 24px;
+    }
+    
+    /* Callout */
+    .callout {
+      background: rgba(247, 147, 26, 0.1);
+      border: 1px solid rgba(247, 147, 26, 0.3);
+      border-radius: 16px;
+      padding: 24px 28px;
+      margin: 32px 0;
+    }
+    .callout-title {
+      font-weight: 600;
+      color: var(--orange);
+      margin-bottom: 8px;
+    }
+    .callout-content {
+      font-size: 15px;
+      color: var(--gray-300);
+      line-height: 1.6;
+    }
+    
+    /* CTA Section */
+    .cta-section {
+      text-align: center;
+      background: radial-gradient(ellipse at 50% 100%, rgba(247, 147, 26, 0.08) 0%, transparent 60%);
+    }
+    .cta-box {
+      background: var(--gray-900);
+      border: 1px solid var(--gray-800);
+      border-radius: 24px;
+      padding: 60px 40px;
+      max-width: 700px;
+      margin: 0 auto;
+    }
+    .cta-title {
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+    .cta-desc {
+      font-size: 16px;
+      color: var(--gray-400);
+      margin-bottom: 32px;
+    }
+    .cta-buttons {
+      display: flex;
+      gap: 16px;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    
+    /* Footer */
+    footer {
+      padding: 48px 24px 32px;
+      background: var(--darker);
+      border-top: 1px solid var(--gray-800);
+    }
+    .footer-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .footer-left {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }
+    .footer-links {
+      display: flex;
+      gap: 24px;
+    }
+    .footer-links a {
+      color: var(--gray-500);
+      text-decoration: none;
+      font-size: 14px;
+    }
+    .footer-links a:hover {
+      color: var(--gray-300);
+    }
+    .footer-right {
+      font-size: 13px;
+      color: var(--gray-500);
+    }
+    
+    /* Responsive */
+    @media (max-width: 900px) {
+      .component-grid,
+      .component-grid.reverse {
+        grid-template-columns: 1fr;
+        gap: 32px;
+      }
+      .component-grid.reverse .component-content,
+      .component-grid.reverse .component-visual {
+        order: unset;
+      }
+      .info-cards {
+        grid-template-columns: 1fr;
+      }
+      .flow-diagram {
+        flex-direction: column;
+        align-items: center;
+      }
+      .flow-arrow {
+        transform: rotate(90deg);
+        padding: 8px 0;
+      }
+      .flow-box {
+        max-width: 280px;
+        width: 100%;
+      }
+    }
+    @media (max-width: 600px) {
+      .nav-links {
+        display: none;
+      }
+      .ghost-pay-flow {
+        flex-direction: column;
+      }
+      .pay-arrow {
+        transform: rotate(90deg);
+      }
+      .footer-inner {
+        flex-direction: column;
+        gap: 16px;
+        text-align: center;
+      }
+      .footer-left {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Nav -->
+  <nav>
+    <div class="nav-inner">
+      <a href="index.html" class="logo">
+        <div class="logo-icon">
+          <img src="logo.png" alt="Bitcoin Ghost">
+        </div>
+        <div class="logo-text">Bitcoin<span>Ghost</span></div>
+      </a>
+      <div class="nav-links">
+        <a href="index.html">Home</a>
+        <a href="network.html">Network</a>
+        <a href="how-it-works.html" class="active">How It Works</a>
+        <a href="economics.html">Economics</a>
+        <a href="docs/index.html">Docs</a>
+      </div>
+      <div class="nav-right">
+        <a href="https://github.com/bitcoin-ghost" class="btn btn-ghost" target="_blank">
+          <svg style="width:20px;height:20px;" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+        <a href="get-started.html" class="btn btn-primary">Get Started</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Header -->
+  <header class="page-header">
+    <h1>How It <span>Works</span></h1>
+    <p>Ghost adds incentives and privacy on top of Bitcoin — without changing the protocol.</p>
+  </header>
+
+  <!-- Overview -->
+  <section class="overview-section">
+    <div class="container">
+      <div style="text-align: center;">
+        <div class="section-label">The Stack</div>
+        <h2 class="section-title">Everything settles to Bitcoin</h2>
+        <p class="section-subtitle" style="margin: 0 auto;">Ghost is a complete infrastructure layer. Payments start on Bitcoin, flow through Ghost for speed and privacy, and settle back to Bitcoin.</p>
+      </div>
+      
+      <div class="flow-diagram">
+        <div class="flow-box">
+          <div class="flow-box-icon">₿</div>
+          <div class="flow-box-title">Bitcoin</div>
+          <div class="flow-box-desc">L1 Settlement</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box ghost">
+          <div class="flow-box-icon">🖥️</div>
+          <div class="flow-box-title">Ghost Core</div>
+          <div class="flow-box-desc">Your Node</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box ghost">
+          <div class="flow-box-icon">⛏️</div>
+          <div class="flow-box-title">Ghost Pool</div>
+          <div class="flow-box-desc">Decentralized Mining</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box ghost">
+          <div class="flow-box-icon">⚡</div>
+          <div class="flow-box-title">Ghost Pay</div>
+          <div class="flow-box-desc">Fast Payments</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-box">
+          <div class="flow-box-icon">₿</div>
+          <div class="flow-box-title">Bitcoin</div>
+          <div class="flow-box-desc">L1 Settlement</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Ghost Core -->
+  <section class="component-section">
+    <div class="container">
+      <div class="component-grid">
+        <div class="component-content">
+          <div class="section-label">Component 01</div>
+          <h3>Ghost Core</h3>
+          <p>A Bitcoin Core fork that stays consensus-compatible. Ghost Core validates the same blocks, follows the same rules, and speaks the same protocol as every other Bitcoin node.</p>
+          <p>The difference? You control your node's policy. Choose what transactions to relay, what data to store, and how to build blocks.</p>
+          <ul>
+            <li>100% Bitcoin consensus compatible</li>
+            <li>Custom mempool and relay policies</li>
+            <li>BUDS data classification system</li>
+            <li>Ghost Mode for private operation</li>
+            <li>Flexible pruning (VW/OW/AW windows)</li>
+          </ul>
+        </div>
+        <div class="component-visual">
+          <table class="comparison-table">
+            <tr>
+              <th>Feature</th>
+              <th>Bitcoin Core</th>
+              <th>Ghost Core</th>
+            </tr>
+            <tr>
+              <td>Consensus</td>
+              <td>Bitcoin</td>
+              <td>Bitcoin (same)</td>
+            </tr>
+            <tr>
+              <td>Mempool Policy</td>
+              <td>Fixed</td>
+              <td class="highlight">Configurable</td>
+            </tr>
+            <tr>
+              <td>Block Templates</td>
+              <td>Standard</td>
+              <td class="highlight">Custom profiles</td>
+            </tr>
+            <tr>
+              <td>Privacy Mode</td>
+              <td class="muted">None</td>
+              <td class="highlight">Ghost Mode</td>
+            </tr>
+            <tr>
+              <td>Node Rewards</td>
+              <td class="muted">None</td>
+              <td class="highlight">Up to 15 shares</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Ghost Pool -->
+  <section class="component-section">
+    <div class="container">
+      <div class="component-grid reverse">
+        <div class="component-content">
+          <div class="section-label">Component 02</div>
+          <h3>Ghost Pool</h3>
+          <p><strong>Every Ghost node is its own mining pool.</strong></p>
+          <p>No centralized pool operator. No middleman taking fees. No censorship risk. When a miner connected to your node finds a block, you keep 100% of the transaction fees.</p>
+          <p>For miners, it looks like any other pool — same Stratum protocol, same familiar setup. The difference is in who controls the block template: you do.</p>
+          <ul>
+            <li>Standard Stratum V1/V2 protocol</li>
+            <li>1% fee on block subsidy only</li>
+            <li>100% of TX fees go to winning node</li>
+            <li>Decentralized share consensus</li>
+            <li>No censorship possible</li>
+          </ul>
+        </div>
+        <div class="component-visual">
+          <table class="comparison-table">
+            <tr>
+              <th>Feature</th>
+              <th>Traditional Pool</th>
+              <th>Ghost Pool</th>
+            </tr>
+            <tr>
+              <td>Operator</td>
+              <td>Centralized</td>
+              <td class="highlight">You</td>
+            </tr>
+            <tr>
+              <td>Fee</td>
+              <td>2-4%</td>
+              <td class="highlight">1% subsidy only</td>
+            </tr>
+            <tr>
+              <td>TX Fees</td>
+              <td>Pool keeps</td>
+              <td class="highlight">100% to node</td>
+            </tr>
+            <tr>
+              <td>Block Template</td>
+              <td>Pool decides</td>
+              <td class="highlight">You decide</td>
+            </tr>
+            <tr>
+              <td>Censorship</td>
+              <td>Possible</td>
+              <td class="highlight">Impossible</td>
+            </tr>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Ghost Pay -->
+  <section class="component-section">
+    <div class="container">
+      <div style="text-align: center;">
+        <div class="section-label">Component 03</div>
+        <h2 class="section-title">Ghost Pay</h2>
+        <p class="section-subtitle" style="margin: 0 auto;">Fast, private payments that settle to Bitcoin. No channels. No liquidity management. No routing failures.</p>
+      </div>
+      
+      <div class="ghost-pay-flow">
+        <div class="pay-step">
+          <div class="pay-step-num">1</div>
+          <div class="pay-step-title">Lock</div>
+          <div class="pay-step-desc">Lock Bitcoin once on L1. This creates your spending capacity.</div>
+        </div>
+        <div class="pay-arrow">→</div>
+        <div class="pay-step">
+          <div class="pay-step-num">2</div>
+          <div class="pay-step-title">Send</div>
+          <div class="pay-step-desc">Send instant private payments. Confirms in ~10 seconds.</div>
+        </div>
+        <div class="pay-arrow">→</div>
+        <div class="pay-step">
+          <div class="pay-step-num">3</div>
+          <div class="pay-step-title">Settle</div>
+          <div class="pay-step-desc">Settle back to Bitcoin anytime. Your keys, your coins.</div>
+        </div>
+      </div>
+      
+      <div class="callout">
+        <div class="callout-title">Not Lightning. Simpler.</div>
+        <div class="callout-content">Lightning requires opening channels, finding routes, and managing liquidity. Ghost Pay works more like cash — lock it once, spend freely, settle when ready. No channel management, no routing failures, no inbound liquidity problems.</div>
+      </div>
+      
+      <div class="info-cards">
+        <div class="info-card">
+          <div class="info-card-icon">🔒</div>
+          <div class="info-card-title">Silent Payments</div>
+          <div class="info-card-desc">Receive payments without revealing your address. Every payment creates a unique stealth address.</div>
+        </div>
+        <div class="info-card">
+          <div class="info-card-icon">👻</div>
+          <div class="info-card-title">Privacy by Default</div>
+          <div class="info-card-desc">Amounts hidden with ZK proofs. No one can see how much you're sending.</div>
+        </div>
+        <div class="info-card">
+          <div class="info-card-icon">📴</div>
+          <div class="info-card-title">Offline Receive</div>
+          <div class="info-card-desc">Receive payments even when offline. Claim them when you reconnect.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Why This Matters -->
+  <section style="background: var(--darker); border-top: 1px solid var(--gray-800); border-bottom: 1px solid var(--gray-800);">
+    <div class="container">
+      <div style="text-align: center;">
+        <div class="section-label">The Point</div>
+        <h2 class="section-title">Why this matters</h2>
+      </div>
+      
+      <div class="info-cards">
+        <div class="info-card">
+          <div class="info-card-icon">🔗</div>
+          <div class="info-card-title">Decentralize Mining</div>
+          <div class="info-card-desc">Mining pools are centralized chokepoints. Ghost eliminates them. Every node is sovereign.</div>
+        </div>
+        <div class="info-card">
+          <div class="info-card-icon">💰</div>
+          <div class="info-card-title">Incentivize Nodes</div>
+          <div class="info-card-desc">Running a node costs money. Ghost makes it pay. Archive nodes, validators, and early adopters earn rewards.</div>
+        </div>
+        <div class="info-card">
+          <div class="info-card-icon">🛡️</div>
+          <div class="info-card-title">Enable Privacy</div>
+          <div class="info-card-desc">Bitcoin is transparent by default. Ghost adds privacy options without breaking consensus.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-section">
+    <div class="container">
+      <div class="cta-box">
+        <h2 class="cta-title">Understand the economics</h2>
+        <p class="cta-desc">See exactly how rewards work — no new tokens, just Bitcoin.</p>
+        <div class="cta-buttons">
+          <a href="economics.html" class="btn btn-primary">See the Economics →</a>
+          <a href="get-started.html" class="btn btn-secondary">Get Started</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-left">
+        <a href="index.html" class="logo">
+          <div class="logo-icon">
+            <img src="logo.png" alt="Bitcoin Ghost">
+          </div>
+          <div class="logo-text">Bitcoin<span>Ghost</span></div>
+        </a>
+        <div class="footer-links">
+          <a href="https://github.com/bitcoin-ghost" target="_blank">GitHub</a>
+          <a href="docs/index.html">Docs</a>
+          <a href="economics.html">Economics</a>
+        </div>
+      </div>
+      <div class="footer-right">
+        © 2026 Bitcoin Ghost. Open source under MIT License.
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

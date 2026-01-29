@@ -1,0 +1,481 @@
+<!--
+|======================================================================================================================|
+|                                                                                                                      |
+|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+|       ░              ░                                                                                               |
+|----------------------------------------------------------------------------------------------------------------------|
+|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+|----------------------------------------------------------------------------------------------------------------------|
+| PROJECT: Bitcoin Ghost                                                                                               |
+| REPO: https://github.com/bitcoin-ghost                                                                               |
+| WEB: https://bitcoinghost.org/                                                                                       |
+| LICENSE: MIT                                                                                                         |
+| FILE: ghost-core.html                                                                         |
+|======================================================================================================================|
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ghost Core | Documentation | Bitcoin Ghost</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --black: #050505; --darker: #0a0a0a; --gray-900: #141414; --gray-800: #1a1a1a;
+      --gray-700: #242424; --gray-600: #333333; --gray-500: #4a4a4a; --gray-400: #666666;
+      --gray-300: #888888; --gray-200: #aaaaaa; --gray-100: #cccccc; --white: #f0f0f0;
+      --orange: #f7931a; --orange-light: #ffb347; --cyan: #00d4ff; --green: #00ff88;
+      --font-display: 'Outfit', system-ui, sans-serif; --font-mono: 'Geist Mono', monospace;
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font-display); background: var(--black); color: var(--gray-100); line-height: 1.7; }
+    ::selection { background: var(--orange); color: var(--black); }
+    
+    nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 16px 0; background: rgba(5, 5, 5, 0.9); backdrop-filter: blur(20px); border-bottom: 1px solid var(--gray-800); }
+    .nav-inner { display: flex; align-items: center; justify-content: space-between; max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+    .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--white); }
+    .logo-icon { width: 40px; height: 40px; border-radius: 10px; overflow: hidden; }
+    .logo-icon img { width: 100%; height: 100%; object-fit: contain; }
+    .logo-text { font-weight: 700; font-size: 20px; }
+    .logo-text span { color: var(--orange); }
+    .nav-links { display: flex; gap: 8px; }
+    .nav-links a { color: var(--gray-300); text-decoration: none; padding: 8px 16px; font-size: 14px; font-weight: 500; border-radius: 8px; transition: all 0.2s; }
+    .nav-links a:hover { color: var(--white); background: var(--gray-800); }
+    .nav-right { display: flex; align-items: center; gap: 12px; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; font-family: var(--font-display); font-size: 14px; font-weight: 600; border-radius: 8px; text-decoration: none; transition: all 0.2s; }
+    .btn-primary { background: var(--orange); color: var(--black); }
+    .btn-primary:hover { background: var(--orange-light); }
+    .btn-ghost { background: transparent; color: var(--gray-300); padding: 8px 12px; }
+    .btn-ghost:hover { color: var(--white); }
+    
+    .doc-layout { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; padding-top: 73px; }
+    
+    .doc-sidebar { background: var(--darker); border-right: 1px solid var(--gray-800); padding: 32px 24px; position: sticky; top: 73px; height: calc(100vh - 73px); overflow-y: auto; }
+    .sidebar-section { margin-bottom: 28px; }
+    .sidebar-title { font-size: 11px; font-weight: 600; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; }
+    .sidebar-links { display: flex; flex-direction: column; gap: 4px; }
+    .sidebar-link { color: var(--gray-400); text-decoration: none; font-size: 14px; padding: 6px 12px; border-radius: 6px; transition: all 0.15s; }
+    .sidebar-link:hover { color: var(--white); background: var(--gray-800); }
+    .sidebar-link.active { color: var(--orange); background: rgba(247, 147, 26, 0.1); }
+    .sidebar-back { display: flex; align-items: center; gap: 8px; color: var(--gray-400); text-decoration: none; font-size: 13px; margin-bottom: 24px; padding: 8px 12px; border-radius: 6px; transition: all 0.15s; }
+    .sidebar-back:hover { color: var(--white); background: var(--gray-800); }
+    
+    .doc-content { padding: 48px 64px; max-width: 900px; }
+    .doc-header { margin-bottom: 48px; }
+    .doc-header h1 { font-size: 40px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 16px; }
+    .doc-header p { font-size: 18px; color: var(--gray-400); }
+    
+    .doc-section { margin-bottom: 56px; }
+    .doc-section h2 { font-size: 28px; font-weight: 700; color: var(--white); margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--gray-800); }
+    .doc-section h3 { font-size: 20px; font-weight: 600; color: var(--white); margin: 32px 0 16px; }
+    .doc-section p { color: var(--gray-300); margin-bottom: 16px; }
+    .doc-section ul, .doc-section ol { margin: 16px 0; padding-left: 24px; }
+    .doc-section li { color: var(--gray-300); margin-bottom: 8px; }
+    .doc-section a { color: var(--orange); text-decoration: none; }
+    .doc-section a:hover { text-decoration: underline; }
+    
+    .code-block { background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 12px; padding: 20px 24px; margin: 20px 0; overflow-x: auto; }
+    .code-block code { font-family: var(--font-mono); font-size: 13px; color: var(--green); white-space: pre; }
+    .code-block .comment { color: var(--gray-500); }
+    .code-block .key { color: var(--cyan); }
+    .code-block .value { color: var(--orange); }
+    
+    .info-box { background: rgba(0, 212, 255, 0.1); border: 1px solid rgba(0, 212, 255, 0.3); border-radius: 12px; padding: 20px 24px; margin: 24px 0; }
+    .info-box-title { font-weight: 600; color: var(--cyan); margin-bottom: 8px; }
+    .info-box-content { font-size: 14px; color: var(--gray-300); }
+    
+    .warning-box { background: rgba(247, 147, 26, 0.1); border: 1px solid rgba(247, 147, 26, 0.3); border-radius: 12px; padding: 20px 24px; margin: 24px 0; }
+    .warning-box-title { font-weight: 600; color: var(--orange); margin-bottom: 8px; }
+    .warning-box-content { font-size: 14px; color: var(--gray-300); }
+    
+    table { width: 100%; border-collapse: collapse; margin: 24px 0; }
+    th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid var(--gray-800); font-size: 14px; }
+    th { font-weight: 600; color: var(--gray-400); text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; }
+    td { color: var(--gray-300); }
+    td:first-child { color: var(--white); font-weight: 500; }
+    
+    @media (max-width: 900px) {
+      .doc-layout { grid-template-columns: 1fr; }
+      .doc-sidebar { display: none; }
+      .doc-content { padding: 32px 24px; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="nav-inner">
+      <a href="../index.html" class="logo">
+        <div class="logo-icon"><img src="../logo.png" alt="Bitcoin Ghost"></div>
+        <div class="logo-text">Bitcoin<span>Ghost</span></div>
+      </a>
+      <div class="nav-links">
+        <a href="../index.html">Home</a>
+        <a href="../network.html">Network</a>
+        <a href="../how-it-works.html">How It Works</a>
+        <a href="../economics.html">Economics</a>
+      </div>
+      <div class="nav-right">
+        <a href="https://github.com/bitcoin-ghost" class="btn btn-ghost" target="_blank">
+          <svg style="width:20px;height:20px;" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+        <a href="../get-started.html" class="btn btn-primary">Get Started</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="doc-layout">
+    <aside class="doc-sidebar">
+      <a href="index.html" class="sidebar-back">← All Docs</a>
+      
+      <div class="sidebar-section">
+        <div class="sidebar-title">On This Page</div>
+        <div class="sidebar-links">
+          <a href="#overview" class="sidebar-link active">Overview</a>
+          <a href="#consensus" class="sidebar-link">Consensus Compatibility</a>
+          <a href="#buds" class="sidebar-link">BUDS Classification</a>
+          <a href="#pruning" class="sidebar-link">Pruning Windows</a>
+          <a href="#mempool" class="sidebar-link">Mempool Profiles</a>
+          <a href="#templates" class="sidebar-link">Template Profiles</a>
+          <a href="#ghost-mode" class="sidebar-link">Ghost Mode</a>
+          <a href="#configuration" class="sidebar-link">Configuration</a>
+        </div>
+      </div>
+      
+      <div class="sidebar-section">
+        <div class="sidebar-title">Related</div>
+        <div class="sidebar-links">
+          <a href="ghost-pool.html" class="sidebar-link">Ghost Pool</a>
+          <a href="node-dashboard.html" class="sidebar-link">Node Dashboard</a>
+        </div>
+      </div>
+    </aside>
+
+    <main class="doc-content">
+      <header class="doc-header">
+        <h1>Ghost Core</h1>
+        <p>The Bitcoin Core fork that powers Ghost. 100% consensus-compatible with full operator policy control.</p>
+      </header>
+
+      <section class="doc-section" id="overview">
+        <h2>Overview</h2>
+        <p>Ghost Core is a fork of Bitcoin Core that maintains full consensus compatibility while adding operator-level policy controls. This means:</p>
+        <ul>
+          <li>Ghost Core validates all Bitcoin blocks exactly like Bitcoin Core</li>
+          <li>Ghost Core nodes are indistinguishable from regular Bitcoin nodes on the network</li>
+          <li>Ghost Core adds policy-layer features that don't affect consensus</li>
+          <li>You can switch between Bitcoin Core and Ghost Core without resyncing</li>
+        </ul>
+        
+        <div class="info-box">
+          <div class="info-box-title">What "consensus-compatible" means</div>
+          <div class="info-box-content">Ghost Core will always accept any valid Bitcoin block and reject any invalid one. The differences are in what transactions your node relays, what data it stores, and what blocks it builds — all policy-layer decisions that don't affect network consensus.</div>
+        </div>
+      </section>
+
+      <section class="doc-section" id="consensus">
+        <h2>Consensus Compatibility</h2>
+        <p>Ghost Core does <strong>not</strong> modify any consensus rules:</p>
+        <ul>
+          <li>Block validation rules</li>
+          <li>Transaction validation rules</li>
+          <li>Script execution</li>
+          <li>Witness handling</li>
+          <li>Chain selection (longest valid chain)</li>
+          <li>Proof-of-work verification</li>
+          <li>UTXO semantics</li>
+        </ul>
+        <p>All differences are in policy — what your node chooses to relay, store, and build into blocks.</p>
+      </section>
+
+      <section class="doc-section" id="buds">
+        <h2>BUDS Classification</h2>
+        <div class="warning-box">
+          <div class="warning-box-title">Planned Feature</div>
+          <div class="warning-box-content">BUDS is a proposed specification currently in design. The tier system described below is not yet implemented in the codebase.</div>
+        </div>
+        <p><strong>BUDS (Bitcoin Unified Data Standard)</strong> is Ghost's proposed system for classifying transaction data into tiers based on importance.</p>
+        
+        <h3>Tier Definitions</h3>
+        <table>
+          <tr>
+            <th>Tier</th>
+            <th>Name</th>
+            <th>Description</th>
+            <th>Examples</th>
+          </tr>
+          <tr>
+            <td style="color: var(--green);">T0</td>
+            <td>Consensus-Critical</td>
+            <td>Required for block validation</td>
+            <td>Inputs, outputs, signatures</td>
+          </tr>
+          <tr>
+            <td style="color: var(--cyan);">T1</td>
+            <td>Economic/System</td>
+            <td>Required for economic function</td>
+            <td>Amounts, script pubkeys</td>
+          </tr>
+          <tr>
+            <td style="color: var(--orange);">T2</td>
+            <td>Metadata/Application</td>
+            <td>Structured application data</td>
+            <td>Ordinals, BRC-20, timestamps</td>
+          </tr>
+          <tr>
+            <td style="color: var(--gray-400);">T3</td>
+            <td>Unknown/Obfuscated</td>
+            <td>Unstructured or encrypted data</td>
+            <td>Random OP_RETURN, encrypted blobs</td>
+          </tr>
+        </table>
+        
+        <h3>BUDS Components</h3>
+        <ul>
+          <li><strong>Labels</strong> — Semantic meaning (e.g., "ordinal.inscription", "brc20.deploy")</li>
+          <li><strong>Surfaces</strong> — Location in transaction (e.g., "witness.stack[0]", "output[2].script")</li>
+          <li><strong>Regions</strong> — Byte ranges within surfaces</li>
+          <li><strong>Tags</strong> — Labels attached to regions</li>
+          <li><strong>ARBDA</strong> — Worst-tier dominance score for the transaction</li>
+        </ul>
+        
+        <p>Ghost uses BUDS for pruning decisions, mempool filtering, and template construction — but BUDS itself is never consensus-binding.</p>
+      </section>
+
+      <section class="doc-section" id="pruning">
+        <h2>Pruning Windows</h2>
+        <div class="warning-box">
+          <div class="warning-box-title">Planned Feature</div>
+          <div class="warning-box-content">The 3-window pruning model is a proposed design. Currently, Ghost uses standard Bitcoin Core pruning modes.</div>
+        </div>
+        <p>Ghost proposes a 3-window pruning model that balances storage efficiency with data availability:</p>
+        
+        <h3>Validator Window (VW)</h3>
+        <ul>
+          <li><strong>Size:</strong> 576 blocks (~4 days)</li>
+          <li><strong>Configurable:</strong> No (fixed)</li>
+          <li><strong>Pruning:</strong> None — full retention required</li>
+          <li><strong>Purpose:</strong> Reorg safety, validation context</li>
+        </ul>
+        
+        <h3>Operator Window (OW)</h3>
+        <ul>
+          <li><strong>Size:</strong> Configurable (default 2016 blocks, ~2 weeks)</li>
+          <li><strong>Configurable:</strong> Yes</li>
+          <li><strong>Pruning:</strong> BUDS-based tier pruning allowed</li>
+          <li><strong>Purpose:</strong> Operator-controlled retention</li>
+        </ul>
+        
+        <p>Default OW pruning policy:</p>
+        <div class="code-block"><code><span class="comment"># Keep T0, T1, T2 — prune only T3</span>
+<span class="key">prune_tiers</span>=<span class="value">T3</span></code></div>
+        
+        <h3>Archive Window (AW)</h3>
+        <ul>
+          <li><strong>Size:</strong> Infinite</li>
+          <li><strong>Configurable:</strong> Enable/disable</li>
+          <li><strong>Pruning:</strong> None — full chain history</li>
+          <li><strong>Purpose:</strong> Historical audit, Ghost Pay recovery</li>
+        </ul>
+        
+        <div class="warning-box">
+          <div class="warning-box-title">Archive Mode Storage</div>
+          <div class="warning-box-content">Archive mode requires 2+ TB of storage and growing. Enable only if you have the capacity. Archive nodes earn +5 shares in the reward system.</div>
+        </div>
+      </section>
+
+      <section class="doc-section" id="mempool">
+        <h2>Mempool Profiles</h2>
+        <div class="warning-box">
+          <div class="warning-box-title">Planned Feature</div>
+          <div class="warning-box-content">Mempool profiles are a proposed feature. Currently, Ghost uses standard Bitcoin Core mempool behavior.</div>
+        </div>
+        <p>Mempool profiles will control which transactions your node accepts and relays:</p>
+        
+        <table>
+          <tr>
+            <th>Profile</th>
+            <th>Accepts</th>
+            <th>Use Case</th>
+          </tr>
+          <tr>
+            <td>standard</td>
+            <td>All standard transactions</td>
+            <td>Bitcoin Core behavior</td>
+          </tr>
+          <tr>
+            <td>strict</td>
+            <td>T0 + T1 only</td>
+            <td>Maximum privacy, minimal metadata</td>
+          </tr>
+          <tr>
+            <td>clean</td>
+            <td>T0 + T1 only, aggressive filtering</td>
+            <td>No inscriptions, no OP_RETURN data</td>
+          </tr>
+          <tr>
+            <td>structured</td>
+            <td>T0 + T1 + T2</td>
+            <td>Allow structured metadata</td>
+          </tr>
+          <tr>
+            <td>pure</td>
+            <td>Only "pure" Bitcoin transactions</td>
+            <td>Filter non-monetary uses</td>
+          </tr>
+          <tr>
+            <td>ghost</td>
+            <td>Local only, no relay</td>
+            <td>Private mempool (Ghost Mode)</td>
+          </tr>
+        </table>
+        
+        <div class="code-block"><code><span class="comment"># Set mempool profile</span>
+<span class="key">mempool_profile</span>=<span class="value">structured</span></code></div>
+      </section>
+
+      <section class="doc-section" id="templates">
+        <h2>Template Profiles</h2>
+        <div class="warning-box">
+          <div class="warning-box-title">Planned Feature</div>
+          <div class="warning-box-content">Template profiles are a proposed feature. Currently, Ghost uses standard Bitcoin Core block template generation.</div>
+        </div>
+        <p>Template profiles will control how your node builds blocks for mining:</p>
+        
+        <table>
+          <tr>
+            <th>Profile</th>
+            <th>Behavior</th>
+            <th>Use Case</th>
+          </tr>
+          <tr>
+            <td>standard</td>
+            <td>Bitcoin Core default</td>
+            <td>Maximum compatibility</td>
+          </tr>
+          <tr>
+            <td>max_fee</td>
+            <td>Maximize fee revenue</td>
+            <td>Default for most miners</td>
+          </tr>
+          <tr>
+            <td>strict</td>
+            <td>T0 + T1 only</td>
+            <td>No metadata in blocks</td>
+          </tr>
+          <tr>
+            <td>clean</td>
+            <td>Filter inscriptions, spam</td>
+            <td>"Clean" blocks</td>
+          </tr>
+          <tr>
+            <td>structured</td>
+            <td>Allow T2, filter T3</td>
+            <td>Structured apps allowed</td>
+          </tr>
+          <tr>
+            <td>pure</td>
+            <td>Only monetary transactions</td>
+            <td>Bitcoin purist</td>
+          </tr>
+          <tr>
+            <td>ghost</td>
+            <td>Private template, hidden contents</td>
+            <td>Requires Ghost Mode</td>
+          </tr>
+        </table>
+        
+        <div class="code-block"><code><span class="comment"># Set template profile</span>
+<span class="key">template_profile</span>=<span class="value">max_fee</span></code></div>
+      </section>
+
+      <section class="doc-section" id="ghost-mode">
+        <h2>Ghost Mode</h2>
+        <div class="warning-box">
+          <div class="warning-box-title">Planned Feature</div>
+          <div class="warning-box-content">Ghost Mode is a proposed feature currently in design. Not yet implemented.</div>
+        </div>
+        <p>Ghost Mode will make your node "invisible" on the network while remaining fully functional:</p>
+        
+        <h3>Behavior Changes</h3>
+        <ul>
+          <li>No transaction relay (tx INV disabled)</li>
+          <li>Private local-only mempool</li>
+          <li>Blocks-only peer connections</li>
+          <li>Template contents hidden from peers</li>
+          <li>Minimal inbound connections</li>
+        </ul>
+        
+        <h3>What Still Works</h3>
+        <ul>
+          <li>Block validation and sync</li>
+          <li>Local mining and block submission</li>
+          <li>Submitting found blocks to the network</li>
+          <li>Connection to Ghost Pool</li>
+        </ul>
+        
+        <div class="warning-box">
+          <div class="warning-box-title">Ghost Mode Privacy</div>
+          <div class="warning-box-content">Ghost Mode status is never broadcast to the network. Only you and your local Ghost Pool instance know it's enabled. Other nodes see you as a normal blocks-only peer.</div>
+        </div>
+        
+        <div class="code-block"><code><span class="comment"># Enable Ghost Mode</span>
+<span class="key">ghostmode</span>=<span class="value">1</span></code></div>
+      </section>
+
+      <section class="doc-section" id="configuration">
+        <h2>Configuration</h2>
+        <p>Full example configuration file:</p>
+        
+        <div class="code-block"><code><span class="comment"># /etc/ghost/ghost.conf</span>
+
+<span class="comment"># Network</span>
+<span class="key">mainnet</span>=<span class="value">1</span>
+<span class="key">listen</span>=<span class="value">1</span>
+
+<span class="comment"># Ghost Mode (0=off, 1=on)</span>
+<span class="key">ghostmode</span>=<span class="value">0</span>
+
+<span class="comment"># Archive Mode (0=off, 1=on)</span>
+<span class="key">archive</span>=<span class="value">0</span>
+
+<span class="comment"># Pruning Windows</span>
+<span class="key">prune_vw</span>=<span class="value">576</span>           <span class="comment"># Fixed, cannot change</span>
+<span class="key">prune_ow</span>=<span class="value">2016</span>          <span class="comment"># Configurable</span>
+<span class="key">prune_tiers</span>=<span class="value">T3</span>         <span class="comment"># Tiers to prune in OW</span>
+
+<span class="comment"># Mempool Profile</span>
+<span class="key">mempool_profile</span>=<span class="value">structured</span>
+
+<span class="comment"># Template Profile</span>
+<span class="key">template_profile</span>=<span class="value">max_fee</span>
+
+<span class="comment"># RPC (for local access)</span>
+<span class="key">rpcuser</span>=<span class="value">ghostrpc</span>
+<span class="key">rpcpassword</span>=<span class="value">your_secure_password</span>
+<span class="key">rpcbind</span>=<span class="value">127.0.0.1</span>
+
+<span class="comment"># ZMQ (for Ghost Pool)</span>
+<span class="key">zmqpubhashblock</span>=<span class="value">tcp://127.0.0.1:28332</span>
+<span class="key">zmqpubrawtx</span>=<span class="value">tcp://127.0.0.1:28333</span>
+
+<span class="comment"># Data directory</span>
+<span class="key">datadir</span>=<span class="value">/var/lib/ghost/data</span></code></div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>

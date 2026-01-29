@@ -791,6 +791,69 @@ impl WithdrawalStatus {
     }
 }
 
+// =============================================================================
+// MINER SEARCH MODELS
+// =============================================================================
+
+/// Miner search result (summary)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinerSearchResult {
+    /// Miner ID (worker name)
+    pub miner_id: String,
+    /// Total shares submitted (all time)
+    pub total_shares: u64,
+    /// Total work contributed
+    pub total_work: f64,
+    /// Valid shares count
+    pub valid_shares: u64,
+    /// First share timestamp
+    pub first_seen: i64,
+    /// Last share timestamp
+    pub last_seen: i64,
+    /// Average difficulty
+    pub avg_difficulty: f64,
+}
+
+/// Detailed miner statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MinerDetailedStats {
+    /// Miner ID (worker name)
+    pub miner_id: String,
+    /// Total shares submitted (all time)
+    pub total_shares: u64,
+    /// Total work contributed
+    pub total_work: f64,
+    /// Valid shares count
+    pub valid_shares: u64,
+    /// Invalid shares count
+    pub invalid_shares: u64,
+    /// First share timestamp
+    pub first_seen: i64,
+    /// Last share timestamp
+    pub last_seen: i64,
+    /// Average difficulty
+    pub avg_difficulty: f64,
+    /// Number of rounds participated
+    pub rounds_participated: u64,
+    /// Recent shares (last 10)
+    pub recent_shares: Vec<RecentShare>,
+}
+
+/// Recent share info
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentShare {
+    /// Round ID
+    pub round_id: u64,
+    /// Share difficulty
+    pub difficulty: f64,
+    /// Work value
+    pub work: f64,
+    /// Timestamp
+    pub timestamp: i64,
+    /// Whether share was valid
+    pub valid: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,929 @@
+<!--
+|======================================================================================================================|
+|                                                                                                                      |
+|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+|       ░              ░                                                                                               |
+|----------------------------------------------------------------------------------------------------------------------|
+|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+|----------------------------------------------------------------------------------------------------------------------|
+| PROJECT: Bitcoin Ghost                                                                                               |
+| REPO: https://github.com/bitcoin-ghost                                                                               |
+| WEB: https://bitcoinghost.org/                                                                                       |
+| LICENSE: MIT                                                                                                         |
+| FILE: why-ghost.html                                                                          |
+|======================================================================================================================|
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why Ghost? | Bitcoin Ghost</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --black: #050505;
+      --darker: #0a0a0a;
+      --dark: #0f0f0f;
+      --gray-900: #141414;
+      --gray-800: #1a1a1a;
+      --gray-700: #242424;
+      --gray-600: #333333;
+      --gray-500: #4a4a4a;
+      --gray-400: #666666;
+      --gray-300: #888888;
+      --gray-200: #aaaaaa;
+      --gray-100: #cccccc;
+      --white: #f0f0f0;
+      --orange: #f7931a;
+      --orange-light: #ffb347;
+      --orange-dark: #c77800;
+      --cyan: #00d4ff;
+      --green: #00ff88;
+      --font-display: 'Outfit', system-ui, sans-serif;
+      --font-mono: 'Geist Mono', monospace;
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font-display); background: var(--black); color: var(--gray-100); line-height: 1.7; }
+    ::selection { background: var(--orange); color: var(--black); }
+    
+    /* Nav */
+    nav {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 100;
+      padding: 16px 0;
+      background: rgba(5, 5, 5, 0.9);
+      backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--gray-800);
+    }
+    .nav-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      color: var(--white);
+    }
+    .logo-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .logo-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    .logo-text {
+      font-weight: 700;
+      font-size: 20px;
+    }
+    .logo-text span {
+      color: var(--orange);
+    }
+    .nav-links {
+      display: flex;
+      gap: 8px;
+    }
+    .nav-links a {
+      color: var(--gray-300);
+      text-decoration: none;
+      padding: 8px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 8px;
+      transition: all 0.2s;
+    }
+    .nav-links a:hover {
+      color: var(--white);
+      background: var(--gray-800);
+    }
+    .nav-links a.active {
+      color: var(--orange);
+    }
+    .nav-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 20px;
+      font-family: var(--font-display);
+      font-size: 14px;
+      font-weight: 600;
+      border-radius: 8px;
+      text-decoration: none;
+      transition: all 0.2s;
+      cursor: pointer;
+      border: none;
+    }
+    .btn-primary {
+      background: var(--orange);
+      color: var(--black);
+    }
+    .btn-primary:hover {
+      background: var(--orange-light);
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--gray-300);
+      padding: 8px 12px;
+    }
+    .btn-ghost:hover {
+      color: var(--white);
+    }
+
+    /* Hero */
+    .hero {
+      padding: 160px 24px 40px;
+      text-align: center;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    .hero-kicker {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--orange);
+      background: rgba(247, 147, 26, 0.1);
+      border: 1px solid rgba(247, 147, 26, 0.3);
+      padding: 6px 14px;
+      border-radius: 20px;
+      margin-bottom: 24px;
+    }
+    .hero h1 {
+      font-size: clamp(40px, 7vw, 64px);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.1;
+      margin-bottom: 40px;
+    }
+    .hero h1 .highlight {
+      color: var(--orange);
+    }
+    .hero-sub {
+      font-size: 20px;
+      color: var(--gray-300);
+      max-width: 700px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+
+    /* Main content */
+    .content {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 0 24px 100px;
+    }
+
+    /* The Problem */
+    .problem-section {
+      background: var(--gray-900);
+      border: 1px solid var(--gray-800);
+      border-radius: 20px;
+      padding: 48px;
+      margin-bottom: 80px;
+    }
+    .problem-section h2 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 24px;
+      color: var(--white);
+    }
+    .problem-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      margin-top: 32px;
+    }
+    .problem-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .problem-icon {
+      font-size: 20px;
+      line-height: 1.4;
+    }
+    .problem-text {
+      font-size: 15px;
+      color: var(--gray-300);
+    }
+    .problem-text strong {
+      color: var(--white);
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    /* Answer box */
+    .answer-box {
+      background: linear-gradient(135deg, rgba(247, 147, 26, 0.15) 0%, rgba(247, 147, 26, 0.05) 100%);
+      border: 1px solid rgba(247, 147, 26, 0.3);
+      border-radius: 16px;
+      padding: 32px;
+      margin: 48px 0;
+      text-align: center;
+    }
+    .answer-box p {
+      font-size: 20px;
+      color: var(--white);
+      font-weight: 500;
+      margin: 0;
+    }
+    .answer-box p span {
+      color: var(--orange);
+    }
+
+    /* Why Run section */
+    .why-run-section {
+      margin-bottom: 80px;
+    }
+    .why-run-section h2 {
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 24px;
+      color: var(--white);
+    }
+    .why-run-intro {
+      font-size: 17px;
+      color: var(--gray-300);
+      line-height: 1.8;
+      margin-bottom: 32px;
+    }
+    .how-it-works-box {
+      background: var(--gray-900);
+      border: 1px solid var(--gray-800);
+      border-radius: 16px;
+      padding: 32px;
+      margin-bottom: 24px;
+    }
+    .how-it-works-box h3 {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--white);
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .how-it-works-box h3 span {
+      font-size: 20px;
+    }
+    .how-it-works-list {
+      list-style: none;
+    }
+    .how-it-works-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--gray-800);
+      font-size: 15px;
+      color: var(--gray-300);
+    }
+    .how-it-works-list li:last-child {
+      border-bottom: none;
+    }
+    .step-num {
+      background: var(--orange);
+      color: var(--black);
+      font-weight: 700;
+      font-size: 12px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .source-highlight {
+      background: rgba(247, 147, 26, 0.1);
+      border: 1px solid rgba(247, 147, 26, 0.2);
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-top: 24px;
+    }
+    .source-highlight p {
+      font-size: 15px;
+      color: var(--gray-200);
+      margin: 0;
+    }
+    .source-highlight strong {
+      color: var(--orange);
+    }
+
+    /* Benefits */
+    .benefits-section {
+      margin-bottom: 80px;
+    }
+    .benefits-section h2 {
+      font-size: 32px;
+      font-weight: 700;
+      margin-bottom: 16px;
+      color: var(--white);
+    }
+    .benefits-intro {
+      font-size: 17px;
+      color: var(--gray-400);
+      margin-bottom: 40px;
+    }
+    .benefit-card {
+      background: var(--gray-900);
+      border: 1px solid var(--gray-800);
+      border-radius: 16px;
+      padding: 32px;
+      margin-bottom: 20px;
+      transition: all 0.2s;
+    }
+    .benefit-card:hover {
+      border-color: var(--gray-700);
+    }
+    .benefit-header {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .benefit-icon {
+      width: 48px;
+      height: 48px;
+      background: rgba(247, 147, 26, 0.1);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+    }
+    .benefit-title {
+      font-size: 20px;
+      font-weight: 600;
+      color: var(--white);
+    }
+    .benefit-desc {
+      color: var(--gray-300);
+      font-size: 15px;
+      line-height: 1.7;
+    }
+    .benefit-tags {
+      display: flex;
+      gap: 8px;
+      margin-top: 16px;
+      flex-wrap: wrap;
+    }
+    .benefit-tag {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 4px 10px;
+      background: var(--gray-800);
+      border-radius: 4px;
+      color: var(--gray-400);
+    }
+    .benefit-tag.green {
+      background: rgba(0, 255, 136, 0.1);
+      color: var(--green);
+    }
+
+    /* Operator gets */
+    .operator-section {
+      background: var(--darker);
+      border: 1px solid var(--gray-800);
+      border-radius: 20px;
+      padding: 48px;
+      margin-bottom: 80px;
+    }
+    .operator-section h2 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: var(--white);
+    }
+    .operator-section > p {
+      color: var(--gray-400);
+      margin-bottom: 32px;
+    }
+    .operator-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    .operator-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px;
+      background: var(--gray-900);
+      border-radius: 10px;
+    }
+    .operator-item .check {
+      color: var(--green);
+      font-size: 18px;
+    }
+    .operator-item span {
+      color: var(--gray-200);
+      font-size: 14px;
+    }
+
+    /* Trade-offs */
+    .tradeoffs-section {
+      margin-bottom: 80px;
+    }
+    .tradeoffs-section h2 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: var(--white);
+    }
+    .tradeoffs-section > p {
+      color: var(--gray-400);
+      margin-bottom: 32px;
+    }
+    .tradeoff-card {
+      background: var(--gray-900);
+      border: 1px solid var(--gray-800);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 16px;
+    }
+    .tradeoff-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .tradeoff-icon {
+      font-size: 18px;
+    }
+    .tradeoff-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--white);
+    }
+    .tradeoff-desc {
+      color: var(--gray-400);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .tradeoff-response {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--gray-800);
+      font-size: 13px;
+      color: var(--gray-300);
+    }
+    .tradeoff-response strong {
+      color: var(--orange);
+    }
+
+    /* What Ghost doesn't do */
+    .not-section {
+      background: var(--gray-900);
+      border: 1px solid var(--gray-800);
+      border-radius: 16px;
+      padding: 32px;
+      margin-bottom: 80px;
+    }
+    .not-section h3 {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--white);
+      margin-bottom: 20px;
+    }
+    .not-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .not-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--gray-400);
+    }
+    .not-item .x {
+      color: var(--gray-500);
+    }
+
+    /* Final CTA */
+    .final-section {
+      text-align: center;
+      padding: 60px 0;
+    }
+    .final-quote {
+      font-size: 24px;
+      font-weight: 600;
+      color: var(--white);
+      max-width: 600px;
+      margin: 0 auto 16px;
+      line-height: 1.4;
+    }
+    .final-sub {
+      color: var(--gray-400);
+      font-size: 16px;
+      margin-bottom: 32px;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--gray-800);
+      padding: 40px 24px;
+      text-align: center;
+      color: var(--gray-500);
+      font-size: 14px;
+    }
+    footer a {
+      color: var(--gray-400);
+      text-decoration: none;
+    }
+    footer a:hover {
+      color: var(--white);
+    }
+
+    @media (max-width: 768px) {
+      .nav-links { display: none; }
+      .hero { padding: 120px 24px 60px; }
+      .problem-section { padding: 32px 24px; }
+      .problem-grid { grid-template-columns: 1fr; }
+      .operator-section { padding: 32px 24px; }
+      .operator-grid { grid-template-columns: 1fr; }
+      .not-grid { grid-template-columns: 1fr; }
+    }
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--gray-800);
+      padding: 40px 24px;
+    }
+    .footer-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .footer-left {
+      display: flex;
+      align-items: center;
+      gap: 32px;
+    }
+    .footer-links {
+      display: flex;
+      gap: 24px;
+    }
+    .footer-links a {
+      color: var(--gray-400);
+      text-decoration: none;
+      font-size: 14px;
+    }
+    .footer-links a:hover {
+      color: var(--white);
+    }
+    .footer-right {
+      font-size: 13px;
+      color: var(--gray-500);
+    }
+    @media (max-width: 600px) {
+      .footer-inner {
+        flex-direction: column;
+        gap: 24px;
+        text-align: center;
+      }
+      .footer-left {
+        flex-direction: column;
+        gap: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="nav-inner">
+      <a href="index.html" class="logo">
+        <div class="logo-icon">
+          <img src="logo.png" alt="Bitcoin Ghost">
+        </div>
+        <div class="logo-text">Bitcoin<span>Ghost</span></div>
+      </a>
+      <div class="nav-links">
+        <a href="index.html">Home</a>
+        <a href="network.html">Network</a>
+        <a href="how-it-works.html">How It Works</a>
+        <a href="economics.html">Economics</a>
+        <a href="docs/index.html">Docs</a>
+      </div>
+      <div class="nav-right">
+        <a href="https://github.com/bitcoin-ghost" class="btn btn-ghost" target="_blank">
+          <svg style="width:20px;height:20px;" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+        <a href="get-started.html" class="btn btn-primary">Get Started</a>
+      </div>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <h1>Why should node operators <span class="highlight">work for free?</span></h1>
+    <p class="hero-sub">Bitcoin depends on infrastructure that nobody gets paid to run.<br>Ghost changes that — without changing Bitcoin.</p>
+  </section>
+
+  <div class="content">
+    
+    <!-- The Problem -->
+    <section class="problem-section">
+      <h2>Bitcoin has an incentive gap</h2>
+      <p style="color: var(--gray-300); font-size: 16px; line-height: 1.7;">
+        Miners get paid. Exchanges get paid. Wallet companies get paid. But the people running the actual infrastructure that makes Bitcoin work? They pay out of pocket.
+      </p>
+      
+      <div class="problem-grid">
+        <div class="problem-item">
+          <span class="problem-icon">📦</span>
+          <div class="problem-text">
+            <strong>Archive nodes</strong>
+            Store full history, serve new nodes, earn nothing
+          </div>
+        </div>
+        <div class="problem-item">
+          <span class="problem-icon">⛏️</span>
+          <div class="problem-text">
+            <strong>Mining endpoints</strong>
+            Provide low-latency access, earn nothing
+          </div>
+        </div>
+        <div class="problem-item">
+          <span class="problem-icon">🔒</span>
+          <div class="problem-text">
+            <strong>Policy nodes</strong>
+            Enforce mempool standards, earn nothing
+          </div>
+        </div>
+        <div class="problem-item">
+          <span class="problem-icon">🌍</span>
+          <div class="problem-text">
+            <strong>Geographic diversity</strong>
+            Decentralize the network, earn nothing
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="answer-box">
+      <p>Ghost doesn't change Bitcoin's rules.<br><span>It pays people for running better infrastructure.</span></p>
+    </div>
+
+    <!-- NEW SECTION: Why run a Ghost Node? -->
+    <section class="why-run-section">
+      <h2>Why run a Ghost Node?</h2>
+      <p class="why-run-intro">
+        Ghost node operators earn Bitcoin by providing valuable services to the network. This isn't a centralised payout system — it's a decentralised incentive layer where nodes verify each other's work and vote on rewards before every distribution.
+      </p>
+
+      <div class="how-it-works-box">
+        <h3><span>⚙️</span> How the reward system works</h3>
+        <ul class="how-it-works-list">
+          <li>
+            <span class="step-num">1</span>
+            <span>Nodes earn shares (up to 15) based on the services they provide — archive storage, public mining endpoints, policy enforcement, and more.</span>
+          </li>
+          <li>
+            <span class="step-num">2</span>
+            <span>Nodes continuously monitor their peers through health checks, verifying uptime, sync status, and service availability.</span>
+          </li>
+          <li>
+            <span class="step-num">3</span>
+            <span>When a block is found, nodes calculate payout proposals independently and broadcast them to the network.</span>
+          </li>
+          <li>
+            <span class="step-num">4</span>
+            <span>A 67% supermajority must agree on the payout distribution before any rewards are released — no single entity controls the outcome.</span>
+          </li>
+          <li>
+            <span class="step-num">5</span>
+            <span>Your reward is proportional to your shares versus total network shares. More services = larger share of the pool.</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="source-highlight" style="text-align: center;">
+        <p><strong>Where do rewards come from?</strong> Ghost Pool charges a 1% fee on block subsidies only — never on transaction fees. Half goes to a capped treasury (21 BTC max, then decays to zero), the other half flows directly to the Node Reward Pool. Miners keep 99% of subsidies. The node that the winning miner was connected to receives 100% of all transaction fees.</p>
+      </div>
+    </section>
+
+    <!-- What Ghost does for Bitcoin -->
+    <section class="benefits-section">
+      <h2>What a Ghost node does for Bitcoin</h2>
+      <p class="benefits-intro">When you maximize your node shares, you're not gaming a system — you're doing real work that strengthens the network.</p>
+
+      <div class="benefit-card">
+        <div class="benefit-header">
+          <div class="benefit-icon">🗄️</div>
+          <div class="benefit-title">Preserves Bitcoin's full history</div>
+        </div>
+        <p class="benefit-desc">
+          Archive nodes store the complete blockchain — every block, every transaction, since genesis. New nodes need this data to sync. Historical analysis depends on it. Ghost makes running an archive node economically rational instead of purely altruistic.
+        </p>
+        <div class="benefit-tags">
+          <span class="benefit-tag green">+5 shares</span>
+          <span class="benefit-tag">Archive Mode</span>
+        </div>
+      </div>
+
+      <div class="benefit-card">
+        <div class="benefit-header">
+          <div class="benefit-icon">⚡</div>
+          <div class="benefit-title">Decentralizes mining access</div>
+        </div>
+        <p class="benefit-desc">
+          Every Ghost node can offer public Stratum endpoints. This means miners anywhere can find low-latency connections without relying on a handful of mega-pools. Block construction spreads geographically. Censorship resistance improves. No protocol change required.
+        </p>
+        <div class="benefit-tags">
+          <span class="benefit-tag green">+3 shares</span>
+          <span class="benefit-tag">Public Mining</span>
+        </div>
+      </div>
+
+      <div class="benefit-card">
+        <div class="benefit-header">
+          <div class="benefit-icon">💎</div>
+          <div class="benefit-title">Reinforces money-first principles</div>
+        </div>
+        <p class="benefit-desc">
+          Nodes can opt into "pure" mempool and block policies — prioritizing monetary transactions over arbitrary data. This isn't censorship (anyone can still mine anything). It's economic expression of what Bitcoin should be used for. A freedom that already exists, now incentivized.
+        </p>
+        <div class="benefit-tags">
+          <span class="benefit-tag green">+2 shares</span>
+          <span class="benefit-tag">Bitcoin Pure Policy</span>
+        </div>
+      </div>
+
+      <div class="benefit-card">
+        <div class="benefit-header">
+          <div class="benefit-icon">👻</div>
+          <div class="benefit-title">Enables private payments without bloat</div>
+        </div>
+        <p class="benefit-desc">
+          Ghost Pay provides fast, private payments that settle back to Bitcoin. No new token. No block size increase. No consensus change. Activity happens off-chain, finality happens on-chain. Bitcoin stays lean while becoming more useful.
+        </p>
+        <div class="benefit-tags">
+          <span class="benefit-tag green">+4 shares</span>
+          <span class="benefit-tag">Ghost Pay</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- What operator gets -->
+    <section class="operator-section">
+      <h2>What you get</h2>
+      <p>In return for strengthening Bitcoin, you receive:</p>
+      
+      <div class="operator-grid">
+        <div class="operator-item">
+          <span class="check">✓</span>
+          <span>Share of mining pool rewards</span>
+        </div>
+        <div class="operator-item">
+          <span class="check">✓</span>
+          <span>Transaction fee bonuses</span>
+        </div>
+        <div class="operator-item">
+          <span class="check">✓</span>
+          <span>Ghost Pay settlement fees</span>
+        </div>
+        <div class="operator-item">
+          <span class="check">✓</span>
+          <span>All rewards paid in Bitcoin</span>
+        </div>
+        <div class="operator-item">
+          <span class="check">✓</span>
+          <span>Low hardware requirements</span>
+        </div>
+        <div class="operator-item">
+          <span class="check">✓</span>
+          <span>Minimal maintenance</span>
+        </div>
+        <div class="operator-item">
+          <span class="check">✓</span>
+          <span>Friendly dashboard UX</span>
+        </div>
+        <div class="operator-item">
+          <span class="check">✓</span>
+          <span>Run from anywhere</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Trade-offs -->
+    <section class="tradeoffs-section">
+      <h2>Trade-offs we chose</h2>
+      <p>Ghost isn't magic. Here's what you're signing up for:</p>
+
+      <div class="tradeoff-card">
+        <div class="tradeoff-header">
+          <span class="tradeoff-icon">⚖️</span>
+          <span class="tradeoff-title">More features = more complexity</span>
+        </div>
+        <p class="tradeoff-desc">
+          Ghost nodes can do more than standard Bitcoin Core nodes. That means more configuration options and more moving parts.
+        </p>
+        <div class="tradeoff-response">
+          <strong>Our approach:</strong> Sane defaults, one-click presets, and the option to run in "basic" mode. Complexity is available, not required.
+        </div>
+      </div>
+
+      <div class="tradeoff-card">
+        <div class="tradeoff-header">
+          <span class="tradeoff-icon">🧲</span>
+          <span class="tradeoff-title">Success creates influence</span>
+        </div>
+        <p class="tradeoff-desc">
+          If Ghost becomes widely used, it will have economic gravity. People might depend on it. That's influence, even if it's not control.
+        </p>
+        <div class="tradeoff-response">
+          <strong>Our approach:</strong> Open source, permissionless entry, no exclusive roles, treasury decay to zero. No capture points by design.
+        </div>
+      </div>
+
+      <div class="tradeoff-card">
+        <div class="tradeoff-header">
+          <span class="tradeoff-icon">💰</span>
+          <span class="tradeoff-title">Rewards vary by contribution</span>
+        </div>
+        <p class="tradeoff-desc">
+          Nodes that provide more services earn more. Nodes that don't want to enable features earn less. That's the whole point — but critics may call it "nudging."
+        </p>
+        <div class="tradeoff-response">
+          <strong>Our approach:</strong> Bitcoin already nudges behavior through fees and defaults. Ghost just makes incentives visible and voluntary.
+        </div>
+      </div>
+    </section>
+
+    <!-- What Ghost doesn't do -->
+    <section class="not-section">
+      <h3>What Ghost does NOT do</h3>
+      <div class="not-grid">
+        <div class="not-item"><span class="x">✕</span> Change Bitcoin consensus</div>
+        <div class="not-item"><span class="x">✕</span> Create inflation</div>
+        <div class="not-item"><span class="x">✕</span> Introduce a new token</div>
+        <div class="not-item"><span class="x">✕</span> Require permission</div>
+        <div class="not-item"><span class="x">✕</span> Force policy on others</div>
+        <div class="not-item"><span class="x">✕</span> Replace existing infrastructure</div>
+      </div>
+    </section>
+
+    <!-- Final CTA -->
+    <section class="final-section">
+      <p class="final-quote">"The 'negative' of Bitcoin Ghost is not that it harms Bitcoin — it's that it exposes how much unpaid work nodes already do."</p>
+      <p class="final-sub">Ghost is one answer to that uncomfortable truth. Participation is optional. Exit is always available. Bitcoin remains sovereign.</p>
+      <a href="get-started.html" class="btn btn-primary" style="padding: 14px 32px; font-size: 16px;">Start Running a Node</a>
+    </section>
+
+  </div>
+
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-left">
+        <a href="index.html" class="logo">
+          <div class="logo-icon">
+            <img src="logo.png" alt="Bitcoin Ghost">
+          </div>
+          <div class="logo-text">Bitcoin<span>Ghost</span></div>
+        </a>
+        <div class="footer-links">
+          <a href="https://github.com/bitcoin-ghost" target="_blank">GitHub</a>
+          <a href="docs/index.html">Docs</a>
+          <a href="economics.html">Economics</a>
+        </div>
+      </div>
+      <div class="footer-right">
+        © 2026 Bitcoin Ghost. Open source under MIT License.
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

@@ -73,6 +73,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/node/shares", get(api_node_shares_handler))
         .route("/api/v1/mining/status", get(api_mining_status_handler))
         .route("/api/v1/mining/miners", get(api_miners_handler))
+        .route("/api/v1/miners/search", get(api_miners_search_handler))
+        .route("/api/v1/miners/stats", get(api_miner_stats_handler))
         .route("/api/v1/network/peers", get(peers_handler))
         .route("/api/v1/network/pool", get(api_pool_status_handler))
         .route("/api/v1/mesh/status", get(consensus_state_handler))
@@ -922,6 +924,155 @@ async fn api_miners_handler(State(state): State<Arc<VerificationState>>) -> impl
         "active_miners": miners.len(),
         "miners": miners
     }))
+}
+
+/// Query parameters for miner search
+#[derive(Debug, Deserialize)]
+struct MinerSearchQuery {
+    /// Search query (worker name or address)
+    q: Option<String>,
+}
+
+/// Query parameters for miner stats
+#[derive(Debug, Deserialize)]
+struct MinerStatsQuery {
+    /// Miner ID to look up
+    miner_id: Option<String>,
+}
+
+/// API v1 miner search handler - search miners by worker name or address
+async fn api_miners_search_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(params): Query<MinerSearchQuery>,
+) -> impl IntoResponse {
+    let query = params.q.unwrap_or_default();
+
+    if query.is_empty() {
+        return Json(serde_json::json!({
+            "error": "Missing search query parameter 'q'",
+            "example": "/api/v1/miners/search?q=worker_name"
+        }));
+    }
+
+    if query.len() < 3 {
+        return Json(serde_json::json!({
+            "error": "Search query must be at least 3 characters",
+            "query": query
+        }));
+    }
+
+    let results = if let Some(ref db) = state.database {
+        match db.search_miners(&query) {
+            Ok(miners) => miners
+                .iter()
+                .map(|m| {
+                    // Calculate estimated hashrate from work and time
+                    let duration_secs = (m.last_seen - m.first_seen).max(1) as f64;
+                    let hashrate_ths = (m.total_work * m.avg_difficulty) / duration_secs / 1e12;
+
+                    serde_json::json!({
+                        "miner_id": m.miner_id,
+                        "total_shares": m.total_shares,
+                        "valid_shares": m.valid_shares,
+                        "total_work": m.total_work,
+                        "avg_difficulty": m.avg_difficulty,
+                        "first_seen": m.first_seen,
+                        "last_seen": m.last_seen,
+                        "estimated_hashrate_ths": format!("{:.4}", hashrate_ths),
+                        "active": (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64 - m.last_seen) < 600 // Active if seen in last 10 min
+                    })
+                })
+                .collect::<Vec<_>>(),
+            Err(e) => {
+                error!(error = %e, "Failed to search miners");
+                vec![]
+            }
+        }
+    } else {
+        vec![]
+    };
+
+    Json(serde_json::json!({
+        "query": query,
+        "count": results.len(),
+        "miners": results
+    }))
+}
+
+/// API v1 miner stats handler - get detailed stats for a specific miner
+async fn api_miner_stats_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(params): Query<MinerStatsQuery>,
+) -> impl IntoResponse {
+    let miner_id = params.miner_id.unwrap_or_default();
+
+    if miner_id.is_empty() {
+        return Json(serde_json::json!({
+            "error": "Missing miner_id parameter",
+            "example": "/api/v1/miners/stats?miner_id=address.worker"
+        }));
+    }
+
+    let stats = if let Some(ref db) = state.database {
+        match db.get_miner_stats(&miner_id) {
+            Ok(Some(s)) => {
+                // Calculate estimated hashrate
+                let duration_secs = (s.last_seen - s.first_seen).max(1) as f64;
+                let hashrate_ths = (s.total_work * s.avg_difficulty) / duration_secs / 1e12;
+                let acceptance_rate = if s.total_shares > 0 {
+                    (s.valid_shares as f64 / s.total_shares as f64) * 100.0
+                } else {
+                    0.0
+                };
+
+                serde_json::json!({
+                    "found": true,
+                    "miner_id": s.miner_id,
+                    "total_shares": s.total_shares,
+                    "valid_shares": s.valid_shares,
+                    "invalid_shares": s.invalid_shares,
+                    "acceptance_rate": format!("{:.2}%", acceptance_rate),
+                    "total_work": s.total_work,
+                    "avg_difficulty": s.avg_difficulty,
+                    "rounds_participated": s.rounds_participated,
+                    "first_seen": s.first_seen,
+                    "last_seen": s.last_seen,
+                    "estimated_hashrate_ths": format!("{:.4}", hashrate_ths),
+                    "active": (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64 - s.last_seen) < 600,
+                    "recent_shares": s.recent_shares.iter().map(|rs| {
+                        serde_json::json!({
+                            "round_id": rs.round_id,
+                            "difficulty": rs.difficulty,
+                            "work": rs.work,
+                            "timestamp": rs.timestamp,
+                            "valid": rs.valid
+                        })
+                    }).collect::<Vec<_>>()
+                })
+            }
+            Ok(None) => {
+                serde_json::json!({
+                    "found": false,
+                    "miner_id": miner_id,
+                    "message": "Miner not found"
+                })
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to get miner stats");
+                serde_json::json!({
+                    "error": "Database error",
+                    "miner_id": miner_id
+                })
+            }
+        }
+    } else {
+        serde_json::json!({
+            "error": "Database not available",
+            "miner_id": miner_id
+        })
+    };
+
+    Json(stats)
 }
 
 /// API v1 pool status handler
