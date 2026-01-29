@@ -30,6 +30,7 @@ description = "HTTP verification endpoints for Bitcoin Ghost node capabilities"
 
 [dependencies]
 ghost-common = { workspace = true }
+ghost-buds = { workspace = true }
 ghost-policy = { workspace = true }
 ghost-storage = { workspace = true }
 axum = { workspace = true }

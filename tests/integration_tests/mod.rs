@@ -49,6 +49,7 @@ pub mod config_validation;
 pub mod consensus;
 pub mod consensus_voting;
 pub mod cryptography;
+pub mod e2e;
 pub mod edge_cases;
 pub mod fund_safety;
 pub mod ghost_pay;

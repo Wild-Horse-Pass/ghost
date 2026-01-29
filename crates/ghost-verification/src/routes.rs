@@ -31,7 +31,9 @@ use axum::{
 };
 use serde::Deserialize;
 use std::sync::Arc;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
+
+use ghost_buds::{BudsClassifier, BudsTier};
 
 use crate::challenge::*;
 use crate::server::VerificationState;
@@ -1742,27 +1744,111 @@ async fn api_buds_mempool_handler(
                 // Get raw mempool for transaction list
                 let (transactions, by_tier) = match rpc.get_raw_mempool(true).await {
                     Ok(mempool) => {
+                        let classifier = BudsClassifier::new();
+                        let mut tier_counts = [0u64; 4]; // T0, T1, T2, T3
+
                         // mempool is a JSON object with txid -> entry
-                        let txs: Vec<_> = if let Some(obj) = mempool.as_object() {
-                            obj.iter().take(100).map(|(txid, entry)| {
-                                serde_json::json!({
-                                    "txid": txid,
-                                    "vsize": entry.get("vsize").and_then(|v| v.as_u64()).unwrap_or(0),
-                                    "weight": entry.get("weight").and_then(|v| v.as_u64()).unwrap_or(0),
-                                    "fee": entry.get("fees").and_then(|f| f.get("base")).and_then(|b| b.as_f64()).unwrap_or(0.0),
-                                    "time": entry.get("time").and_then(|v| v.as_u64()).unwrap_or(0),
-                                })
-                            }).collect()
+                        let txids: Vec<String> = if let Some(obj) = mempool.as_object() {
+                            obj.keys().take(100).cloned().collect()
                         } else {
                             vec![]
                         };
-                        // TODO: Add BUDS tier classification
+
+                        let mut txs = Vec::with_capacity(txids.len());
+
+                        for txid in &txids {
+                            let entry = mempool.get(txid);
+                            let vsize = entry
+                                .and_then(|e| e.get("vsize"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let weight = entry
+                                .and_then(|e| e.get("weight"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            let fee = entry
+                                .and_then(|e| e.get("fees"))
+                                .and_then(|f| f.get("base"))
+                                .and_then(|b| b.as_f64())
+                                .unwrap_or(0.0);
+                            let time = entry
+                                .and_then(|e| e.get("time"))
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+
+                            // Try to classify the transaction by fetching raw tx
+                            let (tier, tier_str, reason) =
+                                match rpc.get_raw_transaction(txid, false).await {
+                                    Ok(raw_value) => {
+                                        if let Some(hex) = raw_value.as_str() {
+                                            match hex::decode(hex) {
+                                                Ok(bytes) => {
+                                                    match bitcoin::consensus::deserialize::<
+                                                        bitcoin::Transaction,
+                                                    >(
+                                                        &bytes
+                                                    ) {
+                                                        Ok(tx) => {
+                                                            let result = classifier.classify(&tx);
+                                                            let tier = result.tier;
+                                                            tier_counts[tier.value() as usize] += 1;
+                                                            (
+                                                                Some(tier.value()),
+                                                                tier.to_string(),
+                                                                result.reason.to_string(),
+                                                            )
+                                                        }
+                                                        Err(e) => {
+                                                            warn!(txid, error = %e, "Failed to deserialize tx");
+                                                            (None, "unknown".to_string(), "decode error".to_string())
+                                                        }
+                                                    }
+                                                }
+                                                Err(e) => {
+                                                    warn!(txid, error = %e, "Failed to decode hex");
+                                                    (None, "unknown".to_string(), "hex error".to_string())
+                                                }
+                                            }
+                                        } else {
+                                            // Fallback: use heuristic based on weight
+                                            let tier = classify_by_weight_heuristic(weight);
+                                            tier_counts[tier.value() as usize] += 1;
+                                            (
+                                                Some(tier.value()),
+                                                tier.to_string(),
+                                                "weight heuristic".to_string(),
+                                            )
+                                        }
+                                    }
+                                    Err(_) => {
+                                        // Fallback: use heuristic based on weight
+                                        let tier = classify_by_weight_heuristic(weight);
+                                        tier_counts[tier.value() as usize] += 1;
+                                        (
+                                            Some(tier.value()),
+                                            tier.to_string(),
+                                            "weight heuristic".to_string(),
+                                        )
+                                    }
+                                };
+
+                            txs.push(serde_json::json!({
+                                "txid": txid,
+                                "vsize": vsize,
+                                "weight": weight,
+                                "fee": fee,
+                                "time": time,
+                                "tier": tier,
+                                "tier_name": tier_str,
+                                "classification_reason": reason,
+                            }));
+                        }
+
                         let tiers = serde_json::json!({
-                            "T0": mempool_info.size,
-                            "T1": 0,
-                            "T2": 0,
-                            "T3": 0,
-                            "T4": 0
+                            "T0": tier_counts[0],
+                            "T1": tier_counts[1],
+                            "T2": tier_counts[2],
+                            "T3": tier_counts[3]
                         });
                         (txs, tiers)
                     }
@@ -1770,7 +1856,7 @@ async fn api_buds_mempool_handler(
                         error!(error = %e, "Failed to get raw mempool");
                         (
                             vec![],
-                            serde_json::json!({"T0": 0, "T1": 0, "T2": 0, "T3": 0, "T4": 0}),
+                            serde_json::json!({"T0": 0, "T1": 0, "T2": 0, "T3": 0}),
                         )
                     }
                 };
@@ -1782,7 +1868,9 @@ async fn api_buds_mempool_handler(
                     "usage": mempool_info.usage,
                     "max_mempool": mempool_info.maxmempool,
                     "min_fee": mempool_info.mempoolminfee,
-                    "by_tier": by_tier
+                    "by_tier": by_tier,
+                    "sample_size": transactions.len(),
+                    "note": "Tier counts are based on sampled transactions"
                 }));
             }
             Err(e) => {
@@ -1799,11 +1887,25 @@ async fn api_buds_mempool_handler(
             "T0": 0,
             "T1": 0,
             "T2": 0,
-            "T3": 0,
-            "T4": 0
+            "T3": 0
         },
         "message": "Ghost Core RPC not configured"
     }))
+}
+
+/// Heuristic classification based on transaction weight
+/// Used as fallback when raw transaction data is unavailable
+fn classify_by_weight_heuristic(weight: u64) -> BudsTier {
+    // Standard transaction: ~400-600 weight units for simple P2WPKH
+    // Multisig/complex: ~1000-2000 weight units
+    // Data-heavy: >4000 weight units (inscriptions can be 100k+)
+    if weight > 4000 {
+        BudsTier::T3 // Heavy data
+    } else if weight > 1500 {
+        BudsTier::T1 // Extended financial
+    } else {
+        BudsTier::T0 // Standard payment
+    }
 }
 
 /// API v1 Mining best-hash handler

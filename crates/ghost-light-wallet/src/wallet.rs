@@ -306,6 +306,67 @@ impl LightWallet {
     pub fn is_locked(&self) -> bool {
         self.master_key.read().is_none()
     }
+
+    /// Generate a receive address
+    pub fn generate_address(
+        &self,
+        address_type: crate::payments::AddressType,
+    ) -> WalletResult<crate::payments::PaymentAddress> {
+        let key_guard = self.master_key.read();
+        let master_key = key_guard.as_ref().ok_or(LightWalletError::NotInitialized)?;
+        crate::payments::generate_address(master_key, address_type)
+    }
+
+    /// Prepare a payment
+    pub async fn prepare_payment(
+        &self,
+        recipient: &str,
+        amount_sats: u64,
+        use_wraith: bool,
+    ) -> WalletResult<ghost_gsp_proto::PreparedPayment> {
+        let key_guard = self.master_key.read();
+        let master_key = key_guard.as_ref().ok_or(LightWalletError::NotInitialized)?;
+
+        let client_guard = self.gsp_client.read();
+        let client = client_guard
+            .as_ref()
+            .ok_or(LightWalletError::NotConnected)?;
+
+        let request = if use_wraith {
+            crate::payments::PaymentRequest::wraith(recipient, amount_sats)
+        } else {
+            crate::payments::PaymentRequest::ghost_pay(recipient, amount_sats)
+        };
+
+        crate::payments::prepare_payment(client, master_key, &request).await
+    }
+
+    /// Sign and submit a prepared payment
+    pub async fn submit_payment(
+        &self,
+        prepared: &ghost_gsp_proto::PreparedPayment,
+    ) -> WalletResult<String> {
+        let key_guard = self.master_key.read();
+        let master_key = key_guard.as_ref().ok_or(LightWalletError::NotInitialized)?;
+
+        let client_guard = self.gsp_client.read();
+        let client = client_guard
+            .as_ref()
+            .ok_or(LightWalletError::NotConnected)?;
+
+        crate::payments::sign_and_submit(client, master_key, prepared).await
+    }
+
+    /// Send a payment (prepare, sign, and submit in one step)
+    pub async fn send_payment(
+        &self,
+        recipient: &str,
+        amount_sats: u64,
+        use_wraith: bool,
+    ) -> WalletResult<String> {
+        let prepared = self.prepare_payment(recipient, amount_sats, use_wraith).await?;
+        self.submit_payment(&prepared).await
+    }
 }
 
 #[cfg(test)]

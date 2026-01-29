@@ -1565,6 +1565,7 @@ dependencies = [
  "axum",
  "bitcoin",
  "futures",
+ "ghost-buds",
  "ghost-common",
  "ghost-policy",
  "ghost-storage",

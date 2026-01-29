@@ -444,7 +444,7 @@ async fn cmd_send(
     config: WalletConfig,
     recipient: &str,
     amount: u64,
-    _wraith: bool,
+    use_wraith: bool,
     memo: Option<&str>,
 ) -> Result<()> {
     let password = rpassword::prompt_password("Enter wallet password: ")?;
@@ -478,12 +478,24 @@ async fn cmd_send(
 
     pb.set_message("Preparing payment...");
 
-    // TODO: Implement actual payment flow
-    // For now, show placeholder
-    pb.finish_with_message("Payment functionality coming soon!");
+    // Prepare the payment
+    let prepared = wallet.prepare_payment(recipient, amount, use_wraith).await?;
+
+    pb.set_message(format!(
+        "Fee: {} sats. Signing transaction...",
+        prepared.fee_sats
+    ));
+
+    // Sign and submit
+    let payment_id = wallet.submit_payment(&prepared).await?;
+
+    pb.finish_with_message("Payment submitted!");
 
     println!();
     println!("{}", style("Payment sent successfully!").bold().green());
+    println!("Payment ID: {}", style(&payment_id).cyan());
+    println!("Amount: {} sats", style(amount).yellow());
+    println!("Fee: {} sats", style(prepared.fee_sats).dim());
 
     Ok(())
 }
@@ -505,22 +517,43 @@ async fn cmd_receive(config: WalletConfig, address_type: &str, label: Option<&st
         }
     };
 
-    // TODO: Get master key and generate address
-    // For now, show Ghost ID
-    let ghost_id = wallet.ghost_id()?;
+    // Generate address using the wallet's master key
+    let mut payment_address = wallet.generate_address(addr_type)?;
+
+    // Add label if provided
+    if let Some(l) = label {
+        payment_address.label = Some(l.to_string());
+    }
 
     println!();
     println!("{}", style("Receive Payment").bold().cyan());
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("Type:    {:?}", addr_type);
-    if let Some(l) = label {
+    println!("Type:    {:?}", payment_address.address_type);
+    if let Some(l) = &payment_address.label {
         println!("Label:   {}", l);
     }
     println!();
-    println!("Ghost ID:");
-    println!("  {}", style(&ghost_id).green().bold());
-    println!();
-    println!("Share this ID to receive Ghost Pay payments.");
+
+    match addr_type {
+        ghost_light_wallet::payments::AddressType::GhostPay => {
+            println!("Ghost ID:");
+            println!("  {}", style(&payment_address.address).green().bold());
+            println!();
+            println!("Share this ID to receive Ghost Pay payments.");
+        }
+        ghost_light_wallet::payments::AddressType::SilentPayment => {
+            println!("Silent Payment Address:");
+            println!("  {}", style(&payment_address.address).green().bold());
+            println!();
+            println!("Share this address to receive privacy-preserving on-chain payments.");
+        }
+        ghost_light_wallet::payments::AddressType::Taproot => {
+            println!("Taproot Address:");
+            println!("  {}", style(&payment_address.address).green().bold());
+            println!();
+            println!("Share this address to receive standard on-chain payments.");
+        }
+    }
     println!();
 
     Ok(())
