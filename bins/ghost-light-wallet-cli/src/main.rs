@@ -479,7 +479,9 @@ async fn cmd_send(
     pb.set_message("Preparing payment...");
 
     // Prepare the payment
-    let prepared = wallet.prepare_payment(recipient, amount, use_wraith).await?;
+    let prepared = wallet
+        .prepare_payment(recipient, amount, use_wraith)
+        .await?;
 
     pb.set_message(format!(
         "Fee: {} sats. Signing transaction...",

@@ -1777,50 +1777,49 @@ async fn api_buds_mempool_handler(
                                 .unwrap_or(0);
 
                             // Try to classify the transaction by fetching raw tx
-                            let (tier, tier_str, reason) =
-                                match rpc.get_raw_transaction(txid, false).await {
-                                    Ok(raw_value) => {
-                                        if let Some(hex) = raw_value.as_str() {
-                                            match hex::decode(hex) {
-                                                Ok(bytes) => {
-                                                    match bitcoin::consensus::deserialize::<
-                                                        bitcoin::Transaction,
-                                                    >(
-                                                        &bytes
-                                                    ) {
-                                                        Ok(tx) => {
-                                                            let result = classifier.classify(&tx);
-                                                            let tier = result.tier;
-                                                            tier_counts[tier.value() as usize] += 1;
-                                                            (
-                                                                Some(tier.value()),
-                                                                tier.to_string(),
-                                                                result.reason.to_string(),
-                                                            )
-                                                        }
-                                                        Err(e) => {
-                                                            warn!(txid, error = %e, "Failed to deserialize tx");
-                                                            (None, "unknown".to_string(), "decode error".to_string())
-                                                        }
+                            let (tier, tier_str, reason) = match rpc
+                                .get_raw_transaction(txid, false)
+                                .await
+                            {
+                                Ok(raw_value) => {
+                                    if let Some(hex) = raw_value.as_str() {
+                                        match hex::decode(hex) {
+                                            Ok(bytes) => {
+                                                match bitcoin::consensus::deserialize::<
+                                                    bitcoin::Transaction,
+                                                >(
+                                                    &bytes
+                                                ) {
+                                                    Ok(tx) => {
+                                                        let result = classifier.classify(&tx);
+                                                        let tier = result.tier;
+                                                        tier_counts[tier.value() as usize] += 1;
+                                                        (
+                                                            Some(tier.value()),
+                                                            tier.to_string(),
+                                                            result.reason.to_string(),
+                                                        )
+                                                    }
+                                                    Err(e) => {
+                                                        warn!(txid, error = %e, "Failed to deserialize tx");
+                                                        (
+                                                            None,
+                                                            "unknown".to_string(),
+                                                            "decode error".to_string(),
+                                                        )
                                                     }
                                                 }
-                                                Err(e) => {
-                                                    warn!(txid, error = %e, "Failed to decode hex");
-                                                    (None, "unknown".to_string(), "hex error".to_string())
-                                                }
                                             }
-                                        } else {
-                                            // Fallback: use heuristic based on weight
-                                            let tier = classify_by_weight_heuristic(weight);
-                                            tier_counts[tier.value() as usize] += 1;
-                                            (
-                                                Some(tier.value()),
-                                                tier.to_string(),
-                                                "weight heuristic".to_string(),
-                                            )
+                                            Err(e) => {
+                                                warn!(txid, error = %e, "Failed to decode hex");
+                                                (
+                                                    None,
+                                                    "unknown".to_string(),
+                                                    "hex error".to_string(),
+                                                )
+                                            }
                                         }
-                                    }
-                                    Err(_) => {
+                                    } else {
                                         // Fallback: use heuristic based on weight
                                         let tier = classify_by_weight_heuristic(weight);
                                         tier_counts[tier.value() as usize] += 1;
@@ -1830,7 +1829,18 @@ async fn api_buds_mempool_handler(
                                             "weight heuristic".to_string(),
                                         )
                                     }
-                                };
+                                }
+                                Err(_) => {
+                                    // Fallback: use heuristic based on weight
+                                    let tier = classify_by_weight_heuristic(weight);
+                                    tier_counts[tier.value() as usize] += 1;
+                                    (
+                                        Some(tier.value()),
+                                        tier.to_string(),
+                                        "weight heuristic".to_string(),
+                                    )
+                                }
+                            };
 
                             txs.push(serde_json::json!({
                                 "txid": txid,

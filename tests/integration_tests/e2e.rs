@@ -480,7 +480,9 @@ mod buds_classification {
 // ============================================================================
 
 mod wraith_protocol {
-    use wraith_protocol::{ParticipantTier, Phase, SessionState, WraithDenomination, WraithSession};
+    use wraith_protocol::{
+        ParticipantTier, Phase, SessionState, WraithDenomination, WraithSession,
+    };
 
     #[test]
     fn test_session_creation() {
@@ -537,8 +539,12 @@ mod wraith_protocol {
     #[test]
     fn test_participant_tiers() {
         // Larger tiers should have higher minimum participants
-        assert!(ParticipantTier::Small.min_participants() < ParticipantTier::Medium.min_participants());
-        assert!(ParticipantTier::Medium.min_participants() < ParticipantTier::Large.min_participants());
+        assert!(
+            ParticipantTier::Small.min_participants() < ParticipantTier::Medium.min_participants()
+        );
+        assert!(
+            ParticipantTier::Medium.min_participants() < ParticipantTier::Large.min_participants()
+        );
     }
 }
 

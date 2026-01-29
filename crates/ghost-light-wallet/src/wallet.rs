@@ -364,7 +364,9 @@ impl LightWallet {
         amount_sats: u64,
         use_wraith: bool,
     ) -> WalletResult<String> {
-        let prepared = self.prepare_payment(recipient, amount_sats, use_wraith).await?;
+        let prepared = self
+            .prepare_payment(recipient, amount_sats, use_wraith)
+            .await?;
         self.submit_payment(&prepared).await
     }
 }
