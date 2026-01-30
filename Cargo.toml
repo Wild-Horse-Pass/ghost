@@ -58,7 +58,7 @@ members = [
 # Use scripts/build-all-wallets.sh to build all wallet types.
 
 [workspace.package]
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 rust-version = "1.75"
 authors = ["Bitcoin Ghost Team"]
