@@ -1,4 +1,4 @@
-# Bitcoin Ghost v1.4
+# Bitcoin Ghost v1.5
 
 > **NOT READY FOR MAINNET** - This software is currently in development and testing. Use signet or regtest only. Mainnet use is not recommended at this time.
 
@@ -66,7 +66,8 @@
 | Feature | Description |
 |---------|-------------|
 | **Stratum V2** | Modern mining protocol with improved security, efficiency, and job negotiation |
-| **67% BFT Consensus** | Byzantine fault-tolerant payout agreement - no single point of failure |
+| **ZK-BFT Consensus** | Zero-knowledge Byzantine fault tolerance - cryptographic proofs replace trust |
+| **ZK State Proofs** | State root transitions verified via ZK proofs - fully trustless consensus |
 | **BUDS Classification** | Transaction filtering based on Bitcoin Use-case Differentiation System |
 | **Node Finder** | Discover and test latency to all available pool nodes |
 
@@ -75,6 +76,8 @@
 | Feature | Description |
 |---------|-------------|
 | **Ghost Pay L2** | Instant off-chain payments with periodic L1 settlement |
+| **Full ZK-BFT** | Zero-knowledge proofs for state transitions - validators verify proofs, never re-execute |
+| **Instant Finality** | Sub-second payment confirmation with cryptographic guarantees |
 | **Ghost Keys** | Silent Payment-style addresses - share once, receive unlimited times privately |
 | **Ghost Locks** | P2TR outputs with timelocked recovery paths - your funds are always safe |
 | **Wraith Protocol** | Two-phase CoinJoin mixing for transaction graph obfuscation |
@@ -142,7 +145,7 @@
 
 ```bash
 # Clone repository
-git clone https://github.com/bitcoin-ghost-v1.4/ghost.git
+git clone https://github.com/bitcoin-ghost/ghost.git
 cd ghost
 
 # Build all binaries
