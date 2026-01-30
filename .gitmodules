@@ -3,4 +3,4 @@
 	url = https://github.com/stratum-mining/sv2-apps.git
 [submodule "stratum"]
 	path = stratum
-	url = git@github.com:bitcoin-ghost/ghost-pool-protocol-.git
+	url = https://github.com/bitcoin-ghost/ghost-pool-protocol-.git
