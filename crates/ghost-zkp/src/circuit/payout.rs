@@ -85,9 +85,7 @@ impl<F: PrimeField> PayoutCircuit<F> {
         let mut miner_payout_vars = Vec::with_capacity(self.miner_payouts.len());
         for (i, payout) in self.miner_payouts.iter().enumerate() {
             let var = AllocatedNum::alloc(cs.namespace(|| format!("miner_payout_{}", i)), || {
-                payout
-                    .map(F::from)
-                    .ok_or(SynthesisError::AssignmentMissing)
+                payout.map(F::from).ok_or(SynthesisError::AssignmentMissing)
             })?;
 
             // Constrain to 64 bits (non-negative and bounded)
@@ -104,9 +102,7 @@ impl<F: PrimeField> PayoutCircuit<F> {
         let mut node_payout_vars = Vec::with_capacity(self.node_payouts.len());
         for (i, payout) in self.node_payouts.iter().enumerate() {
             let var = AllocatedNum::alloc(cs.namespace(|| format!("node_payout_{}", i)), || {
-                payout
-                    .map(F::from)
-                    .ok_or(SynthesisError::AssignmentMissing)
+                payout.map(F::from).ok_or(SynthesisError::AssignmentMissing)
             })?;
 
             // Constrain to 64 bits
@@ -347,7 +343,10 @@ mod tests {
         let mut cs = TestConstraintSystem::new();
         circuit.synthesize(&mut cs).unwrap();
 
-        assert!(cs.is_satisfied(), "Dummy circuit should satisfy constraints");
+        assert!(
+            cs.is_satisfied(),
+            "Dummy circuit should satisfy constraints"
+        );
     }
 
     #[test]
@@ -364,18 +363,16 @@ mod tests {
         let mut cs = TestConstraintSystem::new();
         circuit.synthesize(&mut cs).unwrap();
 
-        assert!(cs.is_satisfied(), "Large valid payout should satisfy constraints");
+        assert!(
+            cs.is_satisfied(),
+            "Large valid payout should satisfy constraints"
+        );
     }
 
     #[test]
     fn test_constraint_count() {
         // Track constraint count for performance
-        let circuit = PayoutCircuit::<Fr>::new(
-            1000,
-            vec![300, 200],
-            vec![300, 100],
-            100,
-        );
+        let circuit = PayoutCircuit::<Fr>::new(1000, vec![300, 200], vec![300, 100], 100);
 
         let mut cs = TestConstraintSystem::new();
         circuit.synthesize(&mut cs).unwrap();

@@ -1163,10 +1163,10 @@ async fn handle_subscribe_lock_state(
     );
 
     // Register subscription
-    conn_state.lock_state_subscriptions.push(lock_id.to_string());
-    state
-        .subscriptions
-        .subscribe_lock_state(wallet_id, lock_id);
+    conn_state
+        .lock_state_subscriptions
+        .push(lock_id.to_string());
+    state.subscriptions.subscribe_lock_state(wallet_id, lock_id);
 
     // Get current lock snapshot
     let snapshot = match state.pay_node.get_lock_state_snapshot(lock_id).await {

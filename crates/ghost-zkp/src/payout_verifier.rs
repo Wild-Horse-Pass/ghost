@@ -67,10 +67,7 @@ impl PayoutVerifier {
         }
 
         if proof.node_count as usize > self.max_nodes {
-            warn!(
-                "Too many nodes: {} > {}",
-                proof.node_count, self.max_nodes
-            );
+            warn!("Too many nodes: {} > {}", proof.node_count, self.max_nodes);
             return Ok(false);
         }
 
@@ -101,10 +98,7 @@ impl PayoutVerifier {
             return Ok(false);
         }
 
-        info!(
-            "Payout proof verified in {:?}",
-            start.elapsed()
-        );
+        info!("Payout proof verified in {:?}", start.elapsed());
 
         Ok(true)
     }
@@ -263,7 +257,10 @@ mod tests {
         proof.miner_sum = 999;
 
         let result = verifier.verify_detailed(&proof);
-        assert!(matches!(result, PayoutVerificationResult::SumMismatch { .. }));
+        assert!(matches!(
+            result,
+            PayoutVerificationResult::SumMismatch { .. }
+        ));
     }
 
     #[test]

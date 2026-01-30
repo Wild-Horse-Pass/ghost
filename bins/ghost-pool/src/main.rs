@@ -721,7 +721,8 @@ async fn main() -> Result<()> {
         let key_bytes = std::fs::read(&key_path)
             .map_err(|e| anyhow::anyhow!("Failed to read node key for TDP: {}", e))?;
 
-        let tdp_secret_key: [u8; 32] = key_bytes[..32].try_into()
+        let tdp_secret_key: [u8; 32] = key_bytes[..32]
+            .try_into()
             .expect("Node key must be at least 32 bytes");
 
         let mut tdp_config = TdpConfig::new(tdp_secret_key);

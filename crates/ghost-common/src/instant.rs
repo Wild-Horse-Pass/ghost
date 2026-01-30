@@ -53,10 +53,10 @@ use serde::{Deserialize, Serialize};
 
 /// Maximum instant payment by denomination tier
 /// Cap at Tiny (~$100) - larger amounts require confirmation
-pub const INSTANT_LIMIT_MICRO: u64 = 10_000;      // 10k sats (~$10)
-pub const INSTANT_LIMIT_TINY: u64 = 100_000;      // 100k sats (~$100) - MAX
-// Small, Medium, Large, XL all capped at Tiny limit for instant
-// Anything over $100 should wait for confirmation (~10 sec)
+pub const INSTANT_LIMIT_MICRO: u64 = 10_000; // 10k sats (~$10)
+pub const INSTANT_LIMIT_TINY: u64 = 100_000; // 100k sats (~$100) - MAX
+                                             // Small, Medium, Large, XL all capped at Tiny limit for instant
+                                             // Anything over $100 should wait for confirmation (~10 sec)
 
 /// Minimum confirmations for instant payment eligibility
 pub const MIN_CONFIRMATIONS_INSTANT: u32 = 6;
@@ -274,8 +274,8 @@ impl LockSnapshot {
         }
 
         // 5. Recovery window safe
-        let recovery_ratio = self.recovery_blocks_remaining as f32
-            / self.recovery_window_total.max(1) as f32;
+        let recovery_ratio =
+            self.recovery_blocks_remaining as f32 / self.recovery_window_total.max(1) as f32;
         if recovery_ratio >= MIN_RECOVERY_WINDOW_PERCENT {
             met.push(InstantCondition::RecoveryWindowSafe);
         } else {
@@ -336,7 +336,7 @@ impl LockSnapshot {
     /// Capped at 100k sats (~$100) regardless of lock size
     fn instant_limit_for_denomination(&self) -> u64 {
         match self.denomination.as_str() {
-            "Micro" => INSTANT_LIMIT_MICRO,  // 10k sats
+            "Micro" => INSTANT_LIMIT_MICRO, // 10k sats
             // Everything else caps at Tiny limit (~$100)
             "Tiny" | "Small" | "Medium" | "Large" | "XL" => INSTANT_LIMIT_TINY,
             _ => 0,
@@ -358,8 +358,8 @@ impl LockSnapshot {
         }
 
         // Lower confidence if recovery window is getting tight
-        let recovery_ratio = self.recovery_blocks_remaining as f32
-            / self.recovery_window_total.max(1) as f32;
+        let recovery_ratio =
+            self.recovery_blocks_remaining as f32 / self.recovery_window_total.max(1) as f32;
         if recovery_ratio < 0.7 {
             score *= recovery_ratio + 0.3;
         }
@@ -436,7 +436,9 @@ mod tests {
         let result = lock.check_instant(100_000, 200);
 
         assert!(!result.capable);
-        assert!(result.conditions_failed.contains(&InstantCondition::ActiveState));
+        assert!(result
+            .conditions_failed
+            .contains(&InstantCondition::ActiveState));
     }
 
     #[test]
@@ -447,7 +449,9 @@ mod tests {
         let result = lock.check_instant(100_000, 200);
 
         assert!(!result.capable);
-        assert!(result.conditions_failed.contains(&InstantCondition::SufficientConfirmations));
+        assert!(result
+            .conditions_failed
+            .contains(&InstantCondition::SufficientConfirmations));
     }
 
     #[test]
@@ -456,7 +460,9 @@ mod tests {
         let result = lock.check_instant(150_000, 200); // Over 100k limit
 
         assert!(!result.capable);
-        assert!(result.conditions_failed.contains(&InstantCondition::DenominationEligible));
+        assert!(result
+            .conditions_failed
+            .contains(&InstantCondition::DenominationEligible));
     }
 
     #[test]
@@ -467,7 +473,9 @@ mod tests {
         let result = lock.check_instant(100_000, 200);
 
         assert!(!result.capable);
-        assert!(result.conditions_failed.contains(&InstantCondition::LowJumpUrgency));
+        assert!(result
+            .conditions_failed
+            .contains(&InstantCondition::LowJumpUrgency));
     }
 
     #[test]
@@ -478,7 +486,9 @@ mod tests {
         let result = lock.check_instant(100_000, 200);
 
         assert!(!result.capable);
-        assert!(result.conditions_failed.contains(&InstantCondition::NoPendingL1));
+        assert!(result
+            .conditions_failed
+            .contains(&InstantCondition::NoPendingL1));
     }
 
     #[test]
@@ -489,7 +499,9 @@ mod tests {
         let result = lock.check_instant(100_000, 200);
 
         assert!(!result.capable);
-        assert!(result.conditions_failed.contains(&InstantCondition::SufficientBalance));
+        assert!(result
+            .conditions_failed
+            .contains(&InstantCondition::SufficientBalance));
     }
 
     #[test]
@@ -516,7 +528,9 @@ mod tests {
         // But not over 100k
         let result = lock.check_instant(150_000, 200);
         assert!(!result.capable);
-        assert!(result.conditions_failed.contains(&InstantCondition::DenominationEligible));
+        assert!(result
+            .conditions_failed
+            .contains(&InstantCondition::DenominationEligible));
     }
 
     #[test]

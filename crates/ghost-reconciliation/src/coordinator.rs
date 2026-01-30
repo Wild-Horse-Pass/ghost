@@ -159,21 +159,23 @@ impl SettlementCoordinator {
             .settlements
             .read()
             .values()
-            .filter(|s| {
-                s.state != CoordinatorState::Completed && s.state != CoordinatorState::Idle
-            })
+            .filter(|s| s.state != CoordinatorState::Completed && s.state != CoordinatorState::Idle)
             .count();
 
         if active_count >= self.max_concurrent {
             warn!(
                 epoch,
-                active_count, max = self.max_concurrent, "Too many concurrent settlements"
+                active_count,
+                max = self.max_concurrent,
+                "Too many concurrent settlements"
             );
             return Ok(None);
         }
 
         // Determine our role
-        let role = self.epoch_tracker.is_settler(&self.identity.node_id(), epoch)?;
+        let role = self
+            .epoch_tracker
+            .is_settler(&self.identity.node_id(), epoch)?;
 
         if role == SettlerRole::NotSettler {
             debug!(epoch, "We are not a settler for this epoch");
@@ -302,7 +304,8 @@ impl SettlementCoordinator {
 
     /// Check if we are the settler for an epoch
     pub fn is_settler_for_epoch(&self, epoch: u64) -> GhostResult<SettlerRole> {
-        self.epoch_tracker.is_settler(&self.identity.node_id(), epoch)
+        self.epoch_tracker
+            .is_settler(&self.identity.node_id(), epoch)
     }
 
     /// Verify a settler ID is authorized for an epoch

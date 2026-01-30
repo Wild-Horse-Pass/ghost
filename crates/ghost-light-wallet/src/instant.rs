@@ -45,8 +45,8 @@
 //! }
 //! ```
 
-use std::sync::Arc;
 use parking_lot::RwLock;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use ghost_common::instant::{InstantCapability, InstantReceipt, LockSnapshot};
@@ -211,9 +211,7 @@ impl InstantPaymentChecker {
 
         info!(
             sender_lock_id,
-            amount_sats,
-            settlement_block,
-            "Instant payment accepted"
+            amount_sats, settlement_block, "Instant payment accepted"
         );
 
         Ok(receipt)
@@ -241,7 +239,10 @@ impl InstantPaymentChecker {
         // return Ok(response.into());
 
         // Placeholder - GSP would provide this data
-        warn!(lock_id, "GSP lock query not yet implemented, using placeholder");
+        warn!(
+            lock_id,
+            "GSP lock query not yet implemented, using placeholder"
+        );
 
         Ok(LockSnapshot {
             lock_id: lock_id.to_string(),
@@ -309,7 +310,12 @@ impl InstantPaymentChecker {
         hasher.update(lock_id.as_bytes());
         hasher.update(&amount.to_le_bytes());
         hasher.update(&height.to_le_bytes());
-        hasher.update(&chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0).to_le_bytes());
+        hasher.update(
+            &chrono::Utc::now()
+                .timestamp_nanos_opt()
+                .unwrap_or(0)
+                .to_le_bytes(),
+        );
         hasher.finalize().into()
     }
 }

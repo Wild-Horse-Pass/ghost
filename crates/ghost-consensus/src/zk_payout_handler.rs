@@ -79,7 +79,7 @@ impl Default for ZkPayoutVoteHandlerConfig {
         Self {
             vote_timeout_ms: 60_000, // 60 seconds (longer than block voting)
             max_pending_proposals: 50,
-            min_validators: 4, // Minimum for BFT (3f+1 where f=1)
+            min_validators: 4,         // Minimum for BFT (3f+1 where f=1)
             bft_threshold_percent: 67, // 2/3 majority
         }
     }
@@ -271,7 +271,9 @@ impl ZkPayoutVoteHandler {
         if let Some(ref tracker) = self.epoch_tracker {
             let settler_role = tracker
                 .is_settler(&proposal.proposer, proposal.epoch)
-                .map_err(|_| ZkPayoutRejectionReason::Other("Failed to check settler".to_string()))?;
+                .map_err(|_| {
+                    ZkPayoutRejectionReason::Other("Failed to check settler".to_string())
+                })?;
 
             if settler_role == SettlerRole::NotSettler {
                 return Err(ZkPayoutRejectionReason::InvalidSettler);
@@ -284,7 +286,9 @@ impl ZkPayoutVoteHandler {
         if proposal.timestamp < now.saturating_sub(tolerance)
             || proposal.timestamp > now.saturating_add(tolerance)
         {
-            return Err(ZkPayoutRejectionReason::Other("Invalid timestamp".to_string()));
+            return Err(ZkPayoutRejectionReason::Other(
+                "Invalid timestamp".to_string(),
+            ));
         }
 
         // Proof must not be empty
@@ -306,11 +310,7 @@ impl ZkPayoutVoteHandler {
     }
 
     /// Verify the ZK proof and vote
-    fn verify_and_vote(
-        &self,
-        epoch: u64,
-        proposal: &ZkPayoutProposalMessage,
-    ) -> GhostResult<()> {
+    fn verify_and_vote(&self, epoch: u64, proposal: &ZkPayoutProposalMessage) -> GhostResult<()> {
         // Verify the ZK proof
         let proof_valid = if let Some(ref verify) = self.verify_fn {
             verify(
@@ -424,7 +424,9 @@ impl ZkPayoutVoteHandler {
             e.insert(
                 vote.rejection_reason
                     .clone()
-                    .unwrap_or(ZkPayoutRejectionReason::Other("No reason given".to_string())),
+                    .unwrap_or(ZkPayoutRejectionReason::Other(
+                        "No reason given".to_string(),
+                    )),
             );
             debug!(
                 epoch,
@@ -580,7 +582,9 @@ impl MessageHandler for ZkPayoutVoteHandler {
         match envelope.msg_type {
             MessageType::ZkPayoutProposal => {
                 let proposal: ZkPayoutProposalMessage = serde_json::from_slice(&envelope.payload)
-                    .map_err(|e| ghost_common::error::GhostError::Serialization(e.to_string()))?;
+                    .map_err(|e| {
+                    ghost_common::error::GhostError::Serialization(e.to_string())
+                })?;
                 self.handle_proposal(proposal)?;
             }
             MessageType::ZkPayoutVote => {

@@ -110,7 +110,10 @@ impl PayoutProver {
     /// Create a new payout prover
     #[instrument(skip_all, fields(max_miners, max_nodes))]
     pub fn new(max_miners: usize, max_nodes: usize) -> ZkResult<Self> {
-        info!("Creating payout prover for {} miners, {} nodes", max_miners, max_nodes);
+        info!(
+            "Creating payout prover for {} miners, {} nodes",
+            max_miners, max_nodes
+        );
         let start = Instant::now();
 
         // Generate unique prover ID
@@ -163,9 +166,9 @@ impl PayoutProver {
 
         // Use TestConstraintSystem to verify constraints
         let mut cs = TestConstraintSystem::<Fr>::new();
-        let outputs = circuit.synthesize(&mut cs).map_err(|e| {
-            ZkError::SynthesisError(format!("Circuit synthesis failed: {:?}", e))
-        })?;
+        let outputs = circuit
+            .synthesize(&mut cs)
+            .map_err(|e| ZkError::SynthesisError(format!("Circuit synthesis failed: {:?}", e)))?;
 
         if !cs.is_satisfied() {
             let unsatisfied = cs.which_is_unsatisfied();
@@ -175,7 +178,10 @@ impl PayoutProver {
             )));
         }
 
-        debug!("Circuit satisfied with {} constraints", cs.num_constraints());
+        debug!(
+            "Circuit satisfied with {} constraints",
+            cs.num_constraints()
+        );
 
         // Generate proof bytes
         let proof_bytes = self.generate_proof_bytes(witness, cs.num_constraints());

@@ -56,10 +56,10 @@ pub struct ZkVoteHandlerConfig {
 impl Default for ZkVoteHandlerConfig {
     fn default() -> Self {
         Self {
-            vote_timeout_ms: 30_000,        // 30 seconds
+            vote_timeout_ms: 30_000, // 30 seconds
             max_pending_proposals: 100,
-            min_validators: 4,              // Minimum for BFT (3f+1 where f=1)
-            bft_threshold_percent: 67,      // 2/3 majority
+            min_validators: 4,         // Minimum for BFT (3f+1 where f=1)
+            bft_threshold_percent: 67, // 2/3 majority
         }
     }
 }
@@ -163,7 +163,11 @@ impl ZkVoteHandler {
     pub fn set_state(&self, height: u64, state_root: [u8; 32]) {
         *self.current_height.write() = height;
         *self.current_state_root.write() = state_root;
-        info!(height, state_root = hex::encode(state_root), "ZK state updated");
+        info!(
+            height,
+            state_root = hex::encode(state_root),
+            "ZK state updated"
+        );
     }
 
     /// Get current state
@@ -249,7 +253,10 @@ impl ZkVoteHandler {
     }
 
     /// Validate a ZK block proposal
-    fn validate_proposal(&self, proposal: &ZkBlockProposalMessage) -> Result<(), ZkRejectionReason> {
+    fn validate_proposal(
+        &self,
+        proposal: &ZkBlockProposalMessage,
+    ) -> Result<(), ZkRejectionReason> {
         let current_height = *self.current_height.read();
         let current_state = *self.current_state_root.read();
 
@@ -284,7 +291,11 @@ impl ZkVoteHandler {
     fn verify_and_vote(&self, height: u64, proposal: &ZkBlockProposalMessage) -> GhostResult<()> {
         // Verify the ZK proof
         let proof_valid = if let Some(ref verify) = self.verify_fn {
-            verify(&proposal.proof, &proposal.prev_state_root, &proposal.new_state_root)
+            verify(
+                &proposal.proof,
+                &proposal.prev_state_root,
+                &proposal.new_state_root,
+            )
         } else {
             // No verifier set - accept by default (for testing)
             warn!("No ZK verifier set, accepting proof by default");
@@ -317,13 +328,16 @@ impl ZkVoteHandler {
             proposal_hash,
             approve,
             rejection_reason.clone(),
-            self.identity.sign(&ZkVoteMessage::new(
-                height,
-                proposal_hash,
-                approve,
-                rejection_reason.clone(),
-                [0u8; 64],
-            ).signing_message()),
+            self.identity.sign(
+                &ZkVoteMessage::new(
+                    height,
+                    proposal_hash,
+                    approve,
+                    rejection_reason.clone(),
+                    [0u8; 64],
+                )
+                .signing_message(),
+            ),
         );
 
         // Record our own vote
@@ -346,7 +360,10 @@ impl ZkVoteHandler {
 
         // Check if voter is eligible
         if !self.validators.read().contains(&voter) {
-            debug!(voter = hex::encode(&voter[..8]), "Vote from non-validator ignored");
+            debug!(
+                voter = hex::encode(&voter[..8]),
+                "Vote from non-validator ignored"
+            );
             return Ok(());
         }
 
@@ -373,14 +390,24 @@ impl ZkVoteHandler {
         // Record the vote
         if vote.approve {
             if state.approvals.insert(voter) {
-                debug!(height, voter = hex::encode(&voter[..8]), "Approval recorded");
+                debug!(
+                    height,
+                    voter = hex::encode(&voter[..8]),
+                    "Approval recorded"
+                );
             }
         } else {
             if let std::collections::hash_map::Entry::Vacant(e) = state.rejections.entry(voter) {
-                e.insert(vote.rejection_reason.clone().unwrap_or(ZkRejectionReason::Other(
-                    "No reason given".to_string(),
-                )));
-                debug!(height, voter = hex::encode(&voter[..8]), "Rejection recorded");
+                e.insert(
+                    vote.rejection_reason
+                        .clone()
+                        .unwrap_or(ZkRejectionReason::Other("No reason given".to_string())),
+                );
+                debug!(
+                    height,
+                    voter = hex::encode(&voter[..8]),
+                    "Rejection recorded"
+                );
             }
         }
 
@@ -548,8 +575,7 @@ impl ZkVoteHandler {
         if target_height >= current {
             debug!(
                 target_height,
-                current,
-                "Reorg target is at or above current height, no action needed"
+                current, "Reorg target is at or above current height, no action needed"
             );
             return Ok(());
         }
@@ -651,7 +677,11 @@ mod tests {
         Arc::new(NodeIdentity::generate())
     }
 
-    fn create_test_proposal(height: u64, prev_root: [u8; 32], new_root: [u8; 32]) -> ZkBlockProposalMessage {
+    fn create_test_proposal(
+        height: u64,
+        prev_root: [u8; 32],
+        new_root: [u8; 32],
+    ) -> ZkBlockProposalMessage {
         ZkBlockProposalMessage {
             height,
             prev_state_root: prev_root,

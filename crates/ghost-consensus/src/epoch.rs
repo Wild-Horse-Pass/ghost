@@ -145,7 +145,11 @@ impl EpochTracker {
         // Update current epoch
         self.update_epoch(height);
 
-        debug!(height, epoch = Self::epoch_for_height(height), "Recorded block proposer");
+        debug!(
+            height,
+            epoch = Self::epoch_for_height(height),
+            "Recorded block proposer"
+        );
         Ok(())
     }
 
@@ -336,7 +340,9 @@ mod tests {
         let proposer = [0xABu8; 32];
         let state_root = [0xCDu8; 32];
 
-        tracker.record_proposer(100, &proposer, &state_root).unwrap();
+        tracker
+            .record_proposer(100, &proposer, &state_root)
+            .unwrap();
 
         let retrieved = tracker.get_proposer_at(100).unwrap().unwrap();
         assert_eq!(retrieved, proposer);

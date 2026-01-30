@@ -53,18 +53,18 @@ use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
 // Use types from stratum-apps (stratum-core) consistently to avoid version conflicts
+use stratum_apps::network_helpers::noise_stream::NoiseTcpStream;
 use stratum_apps::stratum_core::{
+    binary_sv2::Seq0255,
     codec_sv2::{HandshakeRole, StandardSv2Frame},
+    common_messages_sv2::SetupConnectionSuccess,
+    framing_sv2::framing::Frame,
     noise_sv2::Responder,
     parsers_sv2::{AnyMessage, TemplateDistribution},
-    common_messages_sv2::SetupConnectionSuccess,
     template_distribution_sv2::{
         CoinbaseOutputConstraints, NewTemplate, SetNewPrevHash, SubmitSolution,
     },
-    binary_sv2::Seq0255,
-    framing_sv2::framing::Frame,
 };
-use stratum_apps::network_helpers::noise_stream::NoiseTcpStream;
 use stratum_apps::utils::protocol_message_type::{protocol_message_type, MessageType};
 
 use crate::template::{TemplateEvent, TemplateProcessor, WorkState};
@@ -107,8 +107,7 @@ impl TdpConfig {
     pub fn new(secret_key: [u8; 32]) -> Self {
         // Derive public key from secret key
         let secp = secp256k1::Secp256k1::new();
-        let secret = secp256k1::SecretKey::from_slice(&secret_key)
-            .expect("Invalid secret key");
+        let secret = secp256k1::SecretKey::from_slice(&secret_key).expect("Invalid secret key");
         let (x_only, _parity) = secret.public_key(&secp).x_only_public_key();
         let public_key = x_only.serialize();
 
@@ -203,11 +202,14 @@ impl TemplateDistributionServer {
 
     /// Run the TDP server
     pub async fn run(self) -> anyhow::Result<()> {
-        let addr: SocketAddr = format!("{}:{}", self.config.listen_addr, self.config.port)
-            .parse()?;
+        let addr: SocketAddr =
+            format!("{}:{}", self.config.listen_addr, self.config.port).parse()?;
 
         let listener = TcpListener::bind(addr).await?;
-        info!("TDP server listening on {} (Template Distribution Protocol)", addr);
+        info!(
+            "TDP server listening on {} (Template Distribution Protocol)",
+            addr
+        );
 
         let clients = Arc::clone(&self.clients);
         let template_id_counter = Arc::clone(&self.template_id_counter);
@@ -225,7 +227,9 @@ impl TemplateDistributionServer {
                         if let TemplateEvent::NewWork { job_id, height } = event {
                             debug!("TDP: New work event - job_id={}, height={}", job_id, height);
 
-                            if let Some(work_state) = template_processor_for_broadcast.current_work() {
+                            if let Some(work_state) =
+                                template_processor_for_broadcast.current_work()
+                            {
                                 let template_id = template_id_for_broadcast
                                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
@@ -233,7 +237,9 @@ impl TemplateDistributionServer {
                                     &clients_for_broadcast,
                                     &work_state,
                                     template_id,
-                                ).await {
+                                )
+                                .await
+                                {
                                     warn!("Failed to broadcast template: {}", e);
                                 }
                             }
@@ -259,10 +265,15 @@ impl TemplateDistributionServer {
                         continue;
                     }
 
-                    info!("New TDP client from {} ({}/{})",
-                          peer_addr, current_clients + 1, self.config.max_connections);
+                    info!(
+                        "New TDP client from {} ({}/{})",
+                        peer_addr,
+                        current_clients + 1,
+                        self.config.max_connections
+                    );
 
-                    let client_id = self.next_client_id
+                    let client_id = self
+                        .next_client_id
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
                     // Create Noise responder for this connection
@@ -282,7 +293,9 @@ impl TemplateDistributionServer {
                     let noise_stream = match NoiseTcpStream::<Message>::new(
                         socket,
                         HandshakeRole::Responder(responder),
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(ns) => {
                             info!("Noise handshake completed with {}", peer_addr);
                             ns
@@ -305,7 +318,9 @@ impl TemplateDistributionServer {
                             clients,
                             template_processor,
                             template_id_counter,
-                        ).await {
+                        )
+                        .await
+                        {
                             debug!("TDP client {} error: {}", peer_addr, e);
                         }
                     });
@@ -337,13 +352,16 @@ async fn handle_tdp_client(
     // Register client
     {
         let mut clients_guard = clients.write();
-        clients_guard.insert(client_id, TdpClient {
-            addr: peer_addr,
-            frame_tx: frame_tx.clone(),
-            setup_complete: false,
-            coinbase_constraints: None,
-            last_template_id: 0,
-        });
+        clients_guard.insert(
+            client_id,
+            TdpClient {
+                addr: peer_addr,
+                frame_tx: frame_tx.clone(),
+                setup_complete: false,
+                coinbase_constraints: None,
+                last_template_id: 0,
+            },
+        );
     }
 
     // Spawn writer task
@@ -357,7 +375,9 @@ async fn handle_tdp_client(
 
     // Handle SetupConnection first
     debug!("Waiting for SetupConnection from {}", peer_addr);
-    let frame = reader.read_frame().await
+    let frame = reader
+        .read_frame()
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to read SetupConnection: {:?}", e))?;
 
     // Extract Sv2Frame from the Frame enum
@@ -369,11 +389,16 @@ async fn handle_tdp_client(
     };
 
     // Parse and validate SetupConnection
-    let header = setup_frame.get_header()
+    let header = setup_frame
+        .get_header()
         .ok_or_else(|| anyhow::anyhow!("Missing frame header"))?;
 
-    debug!("Received frame from {}: ext_type={}, msg_type={}",
-           peer_addr, header.ext_type(), header.msg_type());
+    debug!(
+        "Received frame from {}: ext_type={}, msg_type={}",
+        peer_addr,
+        header.ext_type(),
+        header.msg_type()
+    );
 
     // Send SetupConnectionSuccess
     let success = SetupConnectionSuccess {
@@ -384,7 +409,9 @@ async fn handle_tdp_client(
         .try_into()
         .map_err(|_| anyhow::anyhow!("Failed to create SetupConnectionSuccess frame"))?;
 
-    frame_tx.send(response_frame).await
+    frame_tx
+        .send(response_frame)
+        .await
         .map_err(|_| anyhow::anyhow!("Channel closed"))?;
 
     info!("TDP client {} setup complete", peer_addr);
@@ -396,8 +423,7 @@ async fn handle_tdp_client(
 
     // Send initial template if available
     if let Some(work_state) = template_processor.current_work() {
-        let template_id = template_id_counter
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let template_id = template_id_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         send_new_template(&frame_tx, &work_state, template_id).await?;
         send_set_new_prev_hash(&frame_tx, &work_state, template_id).await?;
@@ -434,22 +460,31 @@ async fn handle_tdp_client(
                 match msg_type {
                     MessageType::TemplateDistribution => {
                         // Parse as TemplateDistribution message
-                        if let Ok(td_msg) = TemplateDistribution::try_from((header.msg_type(), sv2_frame.payload())) {
+                        if let Ok(td_msg) =
+                            TemplateDistribution::try_from((header.msg_type(), sv2_frame.payload()))
+                        {
                             handle_template_distribution_message(
                                 td_msg,
                                 client_id,
                                 &clients,
                                 &template_processor,
-                            ).await?;
+                            )
+                            .await?;
                         } else {
-                            warn!("Failed to parse TemplateDistribution message from {}", peer_addr);
+                            warn!(
+                                "Failed to parse TemplateDistribution message from {}",
+                                peer_addr
+                            );
                         }
                     }
                     MessageType::Common => {
                         debug!("Received Common message from {} (ignoring)", peer_addr);
                     }
                     _ => {
-                        warn!("Received unexpected message type {:?} from {}", msg_type, peer_addr);
+                        warn!(
+                            "Received unexpected message type {:?} from {}",
+                            msg_type, peer_addr
+                        );
                     }
                 }
             }
@@ -477,25 +512,35 @@ async fn handle_template_distribution_message(
 ) -> anyhow::Result<()> {
     match msg {
         TemplateDistribution::CoinbaseOutputConstraints(constraints) => {
-            info!("Received CoinbaseOutputConstraints from client {}", client_id);
+            info!(
+                "Received CoinbaseOutputConstraints from client {}",
+                client_id
+            );
             // Store constraints for this client
             if let Some(client) = clients.write().get_mut(&client_id) {
                 client.coinbase_constraints = Some(constraints);
             }
         }
         TemplateDistribution::RequestTransactionData(request) => {
-            debug!("Received RequestTransactionData for template {} from client {}",
-                   request.template_id, client_id);
+            debug!(
+                "Received RequestTransactionData for template {} from client {}",
+                request.template_id, client_id
+            );
             // TODO: Return full transaction data for the requested template
         }
         TemplateDistribution::SubmitSolution(solution) => {
-            info!("Received SubmitSolution from client {} (template_id={})",
-                  client_id, solution.template_id);
+            info!(
+                "Received SubmitSolution from client {} (template_id={})",
+                client_id, solution.template_id
+            );
             // This is the critical path - a valid block was found!
             handle_submit_solution(solution, template_processor).await?;
         }
         _ => {
-            debug!("Received other TemplateDistribution message from client {}", client_id);
+            debug!(
+                "Received other TemplateDistribution message from client {}",
+                client_id
+            );
         }
     }
     Ok(())
@@ -508,10 +553,7 @@ async fn handle_submit_solution(
 ) -> anyhow::Result<()> {
     info!(
         "Block solution received: template_id={}, version=0x{:08x}, ntime={}, nonce=0x{:08x}",
-        solution.template_id,
-        solution.version,
-        solution.header_timestamp,
-        solution.header_nonce
+        solution.template_id, solution.version, solution.header_timestamp, solution.header_nonce
     );
 
     // Get the work state for this template
@@ -522,7 +564,10 @@ async fn handle_submit_solution(
         // 2. Submit via Bitcoin Core RPC (submitblock)
         // 3. Update RoundManager for payout tracking
 
-        info!("Would submit block at height {} to Bitcoin Core", work_state.height);
+        info!(
+            "Would submit block at height {} to Bitcoin Core",
+            work_state.height
+        );
 
         // TODO: Implement actual block submission
         // template_processor.submit_block(solution).await?;
@@ -547,11 +592,14 @@ async fn send_new_template(
         template_id, work_state.height, template.future_template
     );
 
-    let frame: Sv2Frame = AnyMessage::TemplateDistribution(
-        TemplateDistribution::NewTemplate(template).into_static()
-    ).try_into().map_err(|_| anyhow::anyhow!("Failed to create frame"))?;
+    let frame: Sv2Frame =
+        AnyMessage::TemplateDistribution(TemplateDistribution::NewTemplate(template).into_static())
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("Failed to create frame"))?;
 
-    frame_tx.send(frame).await
+    frame_tx
+        .send(frame)
+        .await
         .map_err(|_| anyhow::anyhow!("Channel closed"))?;
 
     Ok(())
@@ -570,10 +618,14 @@ async fn send_set_new_prev_hash(
     );
 
     let frame: Sv2Frame = AnyMessage::TemplateDistribution(
-        TemplateDistribution::SetNewPrevHash(prev_hash).into_static()
-    ).try_into().map_err(|_| anyhow::anyhow!("Failed to create frame"))?;
+        TemplateDistribution::SetNewPrevHash(prev_hash).into_static(),
+    )
+    .try_into()
+    .map_err(|_| anyhow::anyhow!("Failed to create frame"))?;
 
-    frame_tx.send(frame).await
+    frame_tx
+        .send(frame)
+        .await
         .map_err(|_| anyhow::anyhow!("Channel closed"))?;
 
     Ok(())
@@ -600,8 +652,14 @@ async fn broadcast_template(
             continue; // Skip clients that haven't completed setup
         }
 
-        if send_new_template(&frame_tx, work_state, template_id).await.is_ok() {
-            if send_set_new_prev_hash(&frame_tx, work_state, template_id).await.is_ok() {
+        if send_new_template(&frame_tx, work_state, template_id)
+            .await
+            .is_ok()
+        {
+            if send_set_new_prev_hash(&frame_tx, work_state, template_id)
+                .await
+                .is_ok()
+            {
                 sent_count += 1;
             }
         } else {
@@ -631,18 +689,23 @@ fn create_new_template(
     use stratum_apps::stratum_core::binary_sv2::{B0255, B064K, U256};
 
     // Convert coinbase parts to the correct types
-    let coinbase_prefix: B0255<'static> = work_state.coinbase1.clone()
+    let coinbase_prefix: B0255<'static> = work_state
+        .coinbase1
+        .clone()
         .try_into()
         .map_err(|_| anyhow::anyhow!("Coinbase1 too long"))?;
 
     // coinbase2 (suffix) is not directly used in NewTemplate
     // The pool adds its own outputs based on CoinbaseOutputConstraints
-    let _coinbase_suffix: B064K<'static> = work_state.coinbase2.clone()
+    let _coinbase_suffix: B064K<'static> = work_state
+        .coinbase2
+        .clone()
         .try_into()
         .map_err(|_| anyhow::anyhow!("Coinbase2 too long"))?;
 
     // Convert merkle branches to Seq0255<U256>
-    let merkle_path: Vec<U256<'static>> = work_state.merkle_branches
+    let merkle_path: Vec<U256<'static>> = work_state
+        .merkle_branches
         .iter()
         .map(|branch| {
             U256::try_from(branch.clone())
@@ -662,7 +725,7 @@ fn create_new_template(
         coinbase_prefix,
         coinbase_tx_input_sequence: 0xffffffff,
         coinbase_tx_value_remaining: work_state.total_fees + get_block_subsidy(work_state.height),
-        coinbase_tx_outputs_count: 1, // Pool output
+        coinbase_tx_outputs_count: 1,                    // Pool output
         coinbase_tx_outputs: vec![].try_into().unwrap(), // Empty, pool adds its own
         coinbase_tx_locktime: 0,
         merkle_path: merkle_path_seq,
@@ -724,8 +787,7 @@ fn nbits_to_target_u256(nbits: u32) -> stratum_apps::stratum_core::binary_sv2::U
         }
     }
 
-    U256::try_from(target.to_vec())
-        .unwrap_or_else(|_| U256::try_from(vec![0u8; 32]).unwrap())
+    U256::try_from(target.to_vec()).unwrap_or_else(|_| U256::try_from(vec![0u8; 32]).unwrap())
 }
 
 /// Get block subsidy for a given height

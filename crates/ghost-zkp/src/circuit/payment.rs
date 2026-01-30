@@ -231,10 +231,7 @@ impl<F: PrimeField> PaymentCircuit<F> {
             let bit_value = value_bits.map(|v| ((v >> i) & 1) == 1);
 
             // Use AllocatedBit which has built-in boolean constraint
-            let bit = AllocatedBit::alloc(
-                cs.namespace(|| format!("bit_{}", i)),
-                bit_value,
-            )?;
+            let bit = AllocatedBit::alloc(cs.namespace(|| format!("bit_{}", i)), bit_value)?;
 
             bits.push(Boolean::from(bit));
         }
@@ -268,7 +265,10 @@ mod tests {
         let mut cs = TestConstraintSystem::new();
         let outputs = circuit.synthesize(&mut cs).unwrap();
 
-        assert!(cs.is_satisfied(), "Valid payment should satisfy constraints");
+        assert!(
+            cs.is_satisfied(),
+            "Valid payment should satisfy constraints"
+        );
 
         // Check computed values
         let sender_after = outputs.sender_after.get_value().unwrap();

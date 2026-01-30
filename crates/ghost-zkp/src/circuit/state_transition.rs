@@ -171,12 +171,13 @@ impl<F: PrimeField> PaymentStateTransitionCircuit<F> {
         })?;
 
         // Allocate recipient merkle data
-        let recipient_index_bits =
-            alloc_index_bits(cs.namespace(|| "recipient_index"), recipient_index, tree_depth)?;
-        let recipient_siblings_alloc = alloc_siblings(
-            cs.namespace(|| "recipient_siblings"),
-            &recipient_siblings,
+        let recipient_index_bits = alloc_index_bits(
+            cs.namespace(|| "recipient_index"),
+            recipient_index,
+            tree_depth,
         )?;
+        let recipient_siblings_alloc =
+            alloc_siblings(cs.namespace(|| "recipient_siblings"), &recipient_siblings)?;
 
         // Verify recipient's old balance is in intermediate_root
         let computed_intermediate_root = compute_root(
@@ -222,7 +223,6 @@ impl<F: PrimeField> PaymentStateTransitionCircuit<F> {
             recipient_after: payment_outputs.recipient_after,
         })
     }
-
 }
 
 /// Allocate index bits from a leaf index
@@ -317,8 +317,12 @@ fn select<F: PrimeField, CS: ConstraintSystem<F>>(
             Some(false) => F::ZERO,
             None => return Err(SynthesisError::AssignmentMissing),
         };
-        let if_true_val = if_true.get_value().ok_or(SynthesisError::AssignmentMissing)?;
-        let if_false_val = if_false.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+        let if_true_val = if_true
+            .get_value()
+            .ok_or(SynthesisError::AssignmentMissing)?;
+        let if_false_val = if_false
+            .get_value()
+            .ok_or(SynthesisError::AssignmentMissing)?;
 
         Ok(bit_val * (if_true_val - if_false_val) + if_false_val)
     })?;
@@ -358,7 +362,9 @@ fn simple_hash<F: PrimeField, CS: ConstraintSystem<F>>(
     let result = AllocatedNum::alloc(cs.namespace(|| "hash_result"), || {
         let l = left.get_value().ok_or(SynthesisError::AssignmentMissing)?;
         let r = right.get_value().ok_or(SynthesisError::AssignmentMissing)?;
-        let p = product.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+        let p = product
+            .get_value()
+            .ok_or(SynthesisError::AssignmentMissing)?;
         Ok(p + l + r)
     })?;
 

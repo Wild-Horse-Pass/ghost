@@ -178,8 +178,14 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/backup/history", get(api_backup_history_handler))
         .route("/api/v1/wraith/sessions", get(api_wraith_sessions_handler))
         .route("/api/v1/network/elder", get(api_network_elder_handler))
-        .route("/api/v1/network/public-nodes", get(api_public_nodes_handler))
-        .route("/api/v1/node/public-info", get(api_node_public_info_handler))
+        .route(
+            "/api/v1/network/public-nodes",
+            get(api_public_nodes_handler),
+        )
+        .route(
+            "/api/v1/node/public-info",
+            get(api_node_public_info_handler),
+        )
         .route("/api/v1/buds/mempool", get(api_buds_mempool_handler))
         .route(
             "/api/v1/mining/best-hash",
@@ -1719,7 +1725,9 @@ async fn api_swarm_nodes_handler(State(state): State<Arc<VerificationState>>) ->
 }
 
 /// API v1 Public nodes handler - returns list of peer addresses for node finder to query
-async fn api_public_nodes_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
+async fn api_public_nodes_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
     let _health = state.get_health().await; // Reserved for future health-based filtering
     let config = state.dashboard_config.read();
 
@@ -1727,7 +1735,10 @@ async fn api_public_nodes_handler(State(state): State<Arc<VerificationState>>) -
 
     // Add self if public mining is enabled
     if config.public_mining {
-        let host = config.stratum_host.clone().unwrap_or_else(|| "localhost".to_string());
+        let host = config
+            .stratum_host
+            .clone()
+            .unwrap_or_else(|| "localhost".to_string());
         let http_port = config.http_port.unwrap_or(8080);
         nodes.push(serde_json::json!({
             "host": host,
@@ -1758,7 +1769,9 @@ async fn api_public_nodes_handler(State(state): State<Arc<VerificationState>>) -
 }
 
 /// API v1 Node public info handler - returns this node's public mining info
-async fn api_node_public_info_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
+async fn api_node_public_info_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
     let health = state.get_health().await;
     let config = state.dashboard_config.read();
 

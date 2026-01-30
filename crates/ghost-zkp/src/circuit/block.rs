@@ -84,9 +84,7 @@ impl<F: PrimeField> BlockCircuit<F> {
     /// Parameters are generated once and reused for all blocks
     /// with the same max_txs configuration.
     pub fn dummy(max_txs: usize) -> Self {
-        let payments = (0..max_txs)
-            .map(|_| PaymentCircuit::<F>::dummy())
-            .collect();
+        let payments = (0..max_txs).map(|_| PaymentCircuit::<F>::dummy()).collect();
 
         Self {
             tx_count: 0,
@@ -144,8 +142,7 @@ impl<F: PrimeField> Circuit<F> for BlockCircuit<F> {
         })?;
 
         let new_root = AllocatedNum::alloc_input(cs.namespace(|| "new_state_root"), || {
-            self.new_state_root
-                .ok_or(SynthesisError::AssignmentMissing)
+            self.new_state_root.ok_or(SynthesisError::AssignmentMissing)
         })?;
 
         // Allocate tx_count as a witness (not public input - verifier knows block contents)
@@ -341,10 +338,7 @@ impl<F: PrimeField> BlockCircuitBuilder<F> {
     }
 
     /// Add a state transition to the block (full ZK mode)
-    pub fn add_state_transition(
-        mut self,
-        transition: PaymentStateTransitionCircuit<F>,
-    ) -> Self {
+    pub fn add_state_transition(mut self, transition: PaymentStateTransitionCircuit<F>) -> Self {
         self.state_transitions.push(transition);
         self.use_state_transitions = true;
         self
@@ -483,7 +477,10 @@ mod tests {
         circuit.synthesize(&mut cs).unwrap();
 
         // Log constraint count for performance tuning
-        println!("Constraints for 10-tx block (legacy): {}", cs.num_constraints());
+        println!(
+            "Constraints for 10-tx block (legacy): {}",
+            cs.num_constraints()
+        );
 
         // Should have reasonable constraint count
         // Each payment has ~BALANCE_BITS * 2 constraints for range proofs
@@ -520,7 +517,10 @@ mod tests {
         let mut cs = TestConstraintSystem::new();
         let result = circuit.synthesize(&mut cs);
 
-        assert!(result.is_ok(), "Dummy state transition circuit should synthesize");
+        assert!(
+            result.is_ok(),
+            "Dummy state transition circuit should synthesize"
+        );
         // Note: may not be satisfied due to dummy values
     }
 
@@ -588,7 +588,11 @@ mod tests {
         let wrong_final_root = Fr::from(999999u64);
 
         let transition = PaymentStateTransitionCircuit {
-            payment: PaymentCircuit::new(Some(sender_balance), Some(recipient_balance), Some(amount)),
+            payment: PaymentCircuit::new(
+                Some(sender_balance),
+                Some(recipient_balance),
+                Some(amount),
+            ),
             sender_index: Some(0),
             sender_siblings: vec![Some(sibling0), Some(hash_23)],
             recipient_index: Some(2),

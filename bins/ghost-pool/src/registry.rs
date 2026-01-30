@@ -151,8 +151,8 @@ impl RegistryClient {
 
         let secp = Secp256k1::new();
 
-        let secret_bytes = hex::decode(signing_key_hex)
-            .map_err(|e| format!("Invalid signing key hex: {}", e))?;
+        let secret_bytes =
+            hex::decode(signing_key_hex).map_err(|e| format!("Invalid signing key hex: {}", e))?;
 
         let secret_key = SecretKey::from_slice(&secret_bytes)
             .map_err(|e| format!("Invalid signing key: {}", e))?;
@@ -212,7 +212,12 @@ impl RegistryClient {
     }
 
     /// Create signable message for heartbeat
-    fn heartbeat_message(node_id: &str, miner_count: u32, load_percent: u8, timestamp: u64) -> String {
+    fn heartbeat_message(
+        node_id: &str,
+        miner_count: u32,
+        load_percent: u8,
+        timestamp: u64,
+    ) -> String {
         format!(
             "ghost:heartbeat:{}:{}:{}:{}",
             node_id, miner_count, load_percent, timestamp
@@ -264,7 +269,10 @@ impl RegistryClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("Registration failed with status {}: {}", status, body));
+            return Err(format!(
+                "Registration failed with status {}: {}",
+                status, body
+            ));
         }
 
         response
@@ -451,13 +459,8 @@ mod tests {
 
     #[test]
     fn test_registration_message() {
-        let msg = RegistryClient::registration_message(
-            "abc123",
-            "1.2.3.4",
-            3333,
-            34255,
-            1234567890,
-        );
+        let msg =
+            RegistryClient::registration_message("abc123", "1.2.3.4", 3333, 34255, 1234567890);
         assert_eq!(msg, "ghost:register:abc123:1.2.3.4:3333:34255:1234567890");
     }
 

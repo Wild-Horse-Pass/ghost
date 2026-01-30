@@ -581,13 +581,7 @@ mod tests {
 
     #[test]
     fn test_block_proof_creation() {
-        let proof = BlockProof::new(
-            100,
-            [1u8; 32],
-            [2u8; 32],
-            5,
-            vec![0u8; 128],
-        );
+        let proof = BlockProof::new(100, [1u8; 32], [2u8; 32], 5, vec![0u8; 128]);
 
         assert_eq!(proof.height, 100);
         assert_eq!(proof.tx_count, 5);
@@ -617,9 +611,9 @@ mod tests {
     #[test]
     fn test_payment_transition_insufficient_balance() {
         let witness = PaymentTransitionWitness::new(
-            50,   // sender only has 50
-            500,  // recipient balance
-            100,  // trying to send 100
+            50,  // sender only has 50
+            500, // recipient balance
+            100, // trying to send 100
             0,
             MerkleProof::new(0, vec![]),
             1,
@@ -633,26 +627,26 @@ mod tests {
     fn test_block_witness_v2() {
         let transitions = vec![
             PaymentTransitionWitness::new(
-                1000, 500, 100, 0,
+                1000,
+                500,
+                100,
+                0,
                 MerkleProof::new(0, vec![[0u8; 32]; 10]),
                 1,
                 MerkleProof::new(1, vec![[0u8; 32]; 10]),
             ),
             PaymentTransitionWitness::new(
-                2000, 300, 50, 2,
+                2000,
+                300,
+                50,
+                2,
                 MerkleProof::new(2, vec![[0u8; 32]; 10]),
                 3,
                 MerkleProof::new(3, vec![[0u8; 32]; 10]),
             ),
         ];
 
-        let witness = BlockWitnessV2::new(
-            1,
-            [1u8; 32],
-            [2u8; 32],
-            transitions,
-            10,
-        );
+        let witness = BlockWitnessV2::new(1, [1u8; 32], [2u8; 32], transitions, 10);
 
         assert_eq!(witness.height, 1);
         assert_eq!(witness.tx_count(), 2);
@@ -672,19 +666,16 @@ mod tests {
     #[test]
     fn test_block_witness_v2_to_legacy() {
         let transitions = vec![PaymentTransitionWitness::new(
-            1000, 500, 100, 0,
+            1000,
+            500,
+            100,
+            0,
             MerkleProof::new(0, vec![[0u8; 32]; 5]),
             1,
             MerkleProof::new(1, vec![[0u8; 32]; 5]),
         )];
 
-        let witness_v2 = BlockWitnessV2::new(
-            1,
-            [1u8; 32],
-            [2u8; 32],
-            transitions,
-            5,
-        );
+        let witness_v2 = BlockWitnessV2::new(1, [1u8; 32], [2u8; 32], transitions, 5);
 
         let legacy = witness_v2.to_legacy();
 

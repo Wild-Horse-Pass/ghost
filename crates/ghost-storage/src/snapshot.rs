@@ -162,8 +162,8 @@ impl SnapshotManager {
         balances: &HashMap<String, u64>,
     ) -> GhostResult<()> {
         let state_root_hex = hex::encode(state_root);
-        let balances_json =
-            serde_json::to_string(balances).map_err(|e| GhostError::Serialization(e.to_string()))?;
+        let balances_json = serde_json::to_string(balances)
+            .map_err(|e| GhostError::Serialization(e.to_string()))?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -295,13 +295,15 @@ impl SnapshotManager {
                 conn.execute(
                     "DELETE FROM state_snapshots WHERE height > ?1",
                     params![target_height as i64],
-                ).map_err(|e| GhostError::Database(e.to_string()))?;
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
 
                 // Delete block proposers above target height
                 conn.execute(
                     "DELETE FROM block_proposers WHERE height > ?1",
                     params![target_height as i64],
-                ).map_err(|e| GhostError::Database(e.to_string()))?;
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
 
                 Ok(())
             })?;
@@ -396,11 +398,10 @@ impl SnapshotManager {
     /// Get the latest snapshot height
     pub fn latest_snapshot_height(&self) -> GhostResult<Option<u64>> {
         self.db.with_connection(|conn| {
-            let result: Result<Option<i64>, _> = conn.query_row(
-                "SELECT MAX(height) FROM state_snapshots",
-                [],
-                |row| row.get(0),
-            );
+            let result: Result<Option<i64>, _> =
+                conn.query_row("SELECT MAX(height) FROM state_snapshots", [], |row| {
+                    row.get(0)
+                });
 
             match result {
                 Ok(Some(height)) => Ok(Some(height as u64)),

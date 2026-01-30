@@ -144,7 +144,6 @@ impl NodeConfig {
             self.validate_ghost_pay(gp, &mut result);
         }
 
-
         result
     }
 
@@ -404,7 +403,6 @@ impl NodeConfig {
             result.add_error("ghost_pay.wraith_fee_percent", "Must be between 0 and 10");
         }
     }
-
 }
 
 /// Identity configuration
@@ -702,7 +700,6 @@ impl Default for GhostPayConfig {
         }
     }
 }
-
 
 /// Geographic region for miner routing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

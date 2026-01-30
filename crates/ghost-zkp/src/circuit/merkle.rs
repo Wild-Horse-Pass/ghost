@@ -76,8 +76,12 @@ impl<F: PrimeField> MerkleCircuit<F> {
             .collect::<Result<Vec<_>, _>>()?;
 
         // Compute root by hashing up the tree
-        let computed_root =
-            self.compute_root(cs.namespace(|| "compute_root"), &leaf, &index_bits, &siblings)?;
+        let computed_root = self.compute_root(
+            cs.namespace(|| "compute_root"),
+            &leaf,
+            &index_bits,
+            &siblings,
+        )?;
 
         // Allocate expected root as public input
         let expected_root = AllocatedNum::alloc_input(cs.namespace(|| "expected_root"), || {
@@ -106,10 +110,8 @@ impl<F: PrimeField> MerkleCircuit<F> {
         let mut bits = Vec::with_capacity(depth);
         for i in 0..depth {
             let bit_value = ((index >> i) & 1) == 1;
-            let bit = AllocatedBit::alloc(
-                cs.namespace(|| format!("index_bit_{}", i)),
-                Some(bit_value),
-            )?;
+            let bit =
+                AllocatedBit::alloc(cs.namespace(|| format!("index_bit_{}", i)), Some(bit_value))?;
             bits.push(Boolean::from(bit));
         }
 
@@ -153,19 +155,9 @@ impl<F: PrimeField> MerkleCircuit<F> {
         // Select left and right based on bit
         // left = bit ? sibling : current
         // right = bit ? current : sibling
-        let left = Self::select(
-            cs.namespace(|| "select_left"),
-            sibling,
-            current,
-            bit,
-        )?;
+        let left = Self::select(cs.namespace(|| "select_left"), sibling, current, bit)?;
 
-        let right = Self::select(
-            cs.namespace(|| "select_right"),
-            current,
-            sibling,
-            bit,
-        )?;
+        let right = Self::select(cs.namespace(|| "select_right"), current, sibling, bit)?;
 
         // For simplicity, use a basic hash: H(left, right) = left * right + left + right
         // In production, use Poseidon or another ZK-friendly hash
@@ -196,8 +188,12 @@ impl<F: PrimeField> MerkleCircuit<F> {
                 Some(false) => F::ZERO,
                 None => return Err(SynthesisError::AssignmentMissing),
             };
-            let if_true_val = if_true.get_value().ok_or(SynthesisError::AssignmentMissing)?;
-            let if_false_val = if_false.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+            let if_true_val = if_true
+                .get_value()
+                .ok_or(SynthesisError::AssignmentMissing)?;
+            let if_false_val = if_false
+                .get_value()
+                .ok_or(SynthesisError::AssignmentMissing)?;
 
             Ok(bit_val * (if_true_val - if_false_val) + if_false_val)
         })?;
@@ -242,7 +238,9 @@ impl<F: PrimeField> MerkleCircuit<F> {
         let result = AllocatedNum::alloc(cs.namespace(|| "hash_result"), || {
             let l = left.get_value().ok_or(SynthesisError::AssignmentMissing)?;
             let r = right.get_value().ok_or(SynthesisError::AssignmentMissing)?;
-            let p = product.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+            let p = product
+                .get_value()
+                .ok_or(SynthesisError::AssignmentMissing)?;
             Ok(p + l + r)
         })?;
 
@@ -294,12 +292,8 @@ impl<F: PrimeField> MerkleUpdateCircuit<F> {
         let computed_old_root = old_circuit.synthesize(&mut cs.namespace(|| "old_inclusion"))?;
 
         // Compute new root with new leaf
-        let new_circuit = MerkleCircuit::new(
-            self.new_leaf,
-            self.leaf_index,
-            self.siblings,
-            self.new_root,
-        );
+        let new_circuit =
+            MerkleCircuit::new(self.new_leaf, self.leaf_index, self.siblings, self.new_root);
         let computed_new_root = new_circuit.synthesize(&mut cs.namespace(|| "new_root"))?;
 
         Ok((computed_old_root, computed_new_root))

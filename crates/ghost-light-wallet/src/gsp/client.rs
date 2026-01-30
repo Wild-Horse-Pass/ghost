@@ -31,10 +31,10 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
 
+use ghost_common::instant::LockSnapshot;
 use ghost_gsp_proto::{
     ClientMessage, InstantCapability, LockStateSnapshot, ServerMessage, SessionToken, WalletId,
 };
-use ghost_common::instant::LockSnapshot;
 
 /// Balance information from GSP
 #[derive(Debug, Clone, Default)]
@@ -70,7 +70,9 @@ pub struct GspClient {
     connected: Arc<RwLock<bool>>,
 
     /// Pending instant capability requests (lock_id -> response channel)
-    pending_instant_checks: Arc<RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>>>,
+    pending_instant_checks: Arc<
+        RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>>,
+    >,
 
     /// Lock state subscriptions (lock_id -> callback)
     lock_state_callbacks: Arc<RwLock<std::collections::HashMap<String, LockStateCallback>>>,
@@ -164,7 +166,11 @@ impl GspClient {
         mut read: futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         connected: Arc<RwLock<bool>>,
         _session_token: Arc<RwLock<Option<SessionToken>>>,
-        pending_instant_checks: Arc<RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>>>,
+        pending_instant_checks: Arc<
+            RwLock<
+                std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>,
+            >,
+        >,
         lock_state_callbacks: Arc<RwLock<std::collections::HashMap<String, LockStateCallback>>>,
         lock_snapshots: Arc<RwLock<std::collections::HashMap<String, LockStateSnapshot>>>,
     ) {
@@ -246,7 +252,11 @@ impl GspClient {
     /// Handle incoming server message with callbacks for instant payments
     async fn handle_server_message_with_callbacks(
         msg: ServerMessage,
-        pending_instant_checks: &Arc<RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>>>,
+        pending_instant_checks: &Arc<
+            RwLock<
+                std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>,
+            >,
+        >,
         lock_state_callbacks: &Arc<RwLock<std::collections::HashMap<String, LockStateCallback>>>,
         lock_snapshots: &Arc<RwLock<std::collections::HashMap<String, LockStateSnapshot>>>,
     ) {
@@ -263,7 +273,11 @@ impl GspClient {
                 error,
             } => {
                 if let Some(err) = error {
-                    warn!(lock_id = lock_id, error = err, "Instant capability check failed");
+                    warn!(
+                        lock_id = lock_id,
+                        error = err,
+                        "Instant capability check failed"
+                    );
                 }
 
                 // Build capability response
@@ -302,7 +316,9 @@ impl GspClient {
                 );
 
                 // Update cached snapshot
-                lock_snapshots.write().insert(lock_id.clone(), snapshot.clone());
+                lock_snapshots
+                    .write()
+                    .insert(lock_id.clone(), snapshot.clone());
 
                 // Notify callback if registered
                 if let Some(callback) = lock_state_callbacks.read().get(&lock_id) {

@@ -644,13 +644,7 @@ mod tests {
 
     #[test]
     fn test_zk_vote_message() {
-        let vote = ZkVoteMessage::new(
-            100,
-            [1u8; 32],
-            true,
-            None,
-            [0u8; 64],
-        );
+        let vote = ZkVoteMessage::new(100, [1u8; 32], true, None, [0u8; 64]);
 
         assert_eq!(vote.height, 100);
         assert!(vote.approve);

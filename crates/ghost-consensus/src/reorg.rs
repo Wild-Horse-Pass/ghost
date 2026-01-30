@@ -157,15 +157,17 @@ impl L2ForkDetector {
         drop(proposer_blocks);
 
         // Record the block
-        self.peer_blocks
-            .write()
-            .insert((height, block_hash), block);
+        self.peer_blocks.write().insert((height, block_hash), block);
 
         None
     }
 
     /// Detect if there's a fork between our chain and a peer's reported state
-    pub fn detect_fork(&self, their_height: u64, their_state_root: [u8; 32]) -> ForkDetectionResult {
+    pub fn detect_fork(
+        &self,
+        their_height: u64,
+        their_state_root: [u8; 32],
+    ) -> ForkDetectionResult {
         let our_chain = self.our_chain.read();
 
         // Check if they have a different state root at the same height
@@ -235,7 +237,9 @@ impl L2ForkDetector {
         let min_height = current_height - self.max_history;
 
         self.our_chain.write().retain(|h, _| *h >= min_height);
-        self.peer_blocks.write().retain(|(h, _), _| *h >= min_height);
+        self.peer_blocks
+            .write()
+            .retain(|(h, _), _| *h >= min_height);
         self.proposer_blocks
             .write()
             .retain(|(h, _), _| *h >= min_height);
@@ -331,10 +335,7 @@ pub struct PendingL1Tx {
 #[derive(Debug, Clone)]
 pub enum L1Event {
     /// New L1 block received
-    NewBlock {
-        height: u64,
-        hash: [u8; 32],
-    },
+    NewBlock { height: u64, hash: [u8; 32] },
     /// L1 reorg detected
     Reorg {
         from_height: u64,
@@ -349,10 +350,7 @@ pub enum L1Event {
         confirmations: u32,
     },
     /// Transaction reorged out
-    TxReorged {
-        txid: [u8; 32],
-        tx_type: L1TxType,
-    },
+    TxReorged { txid: [u8; 32], tx_type: L1TxType },
 }
 
 /// Tracks L1 chain state for reorg detection
@@ -651,7 +649,9 @@ mod tests {
         let events = monitor.process_block(100, [1u8; 32]);
 
         assert_eq!(monitor.tip_height(), 100);
-        assert!(events.iter().any(|e| matches!(e, L1Event::NewBlock { height: 100, .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, L1Event::NewBlock { height: 100, .. })));
     }
 
     #[test]
@@ -666,7 +666,13 @@ mod tests {
         // Reorg: different hash at height 101
         let events = monitor.process_block(101, [9u8; 32]);
 
-        assert!(events.iter().any(|e| matches!(e, L1Event::Reorg { from_height: 101, .. })));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            L1Event::Reorg {
+                from_height: 101,
+                ..
+            }
+        )));
     }
 
     #[test]
@@ -687,7 +693,10 @@ mod tests {
 
         // Initial status - partially confirmed
         let status = monitor.get_tx_status(&[1u8; 32]);
-        assert!(matches!(status, L1ConfirmationStatus::PartiallyConfirmed { confirmations: 1 }));
+        assert!(matches!(
+            status,
+            L1ConfirmationStatus::PartiallyConfirmed { confirmations: 1 }
+        ));
 
         // Process more blocks
         for height in 101..106 {
@@ -707,7 +716,7 @@ mod tests {
             pending_debits: 200,
         };
 
-        assert_eq!(balance.spendable(), 800);  // 1000 - 200
-        assert_eq!(balance.total(), 1300);     // 1000 + 500 - 200
+        assert_eq!(balance.spendable(), 800); // 1000 - 200
+        assert_eq!(balance.total(), 1300); // 1000 + 500 - 200
     }
 }

@@ -32,7 +32,9 @@ use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use ghost_common::instant::LockSnapshot;
-use ghost_gsp_proto::{GhostLockInfo, GhostLockStatus, LockStateSnapshot, TransactionInfo, UtxoInfo};
+use ghost_gsp_proto::{
+    GhostLockInfo, GhostLockStatus, LockStateSnapshot, TransactionInfo, UtxoInfo,
+};
 
 use crate::error::{GspError, GspResult};
 
@@ -750,19 +752,21 @@ impl PayNodeProxy {
         };
 
         // Calculate confirmations (approximate)
-        let confirmations = if lock.creation_height > 0 && current_height > lock.creation_height as u64 {
-            (current_height - lock.creation_height as u64) as u32
-        } else {
-            // Assume well-confirmed if we don't have creation height
-            10
-        };
+        let confirmations =
+            if lock.creation_height > 0 && current_height > lock.creation_height as u64 {
+                (current_height - lock.creation_height as u64) as u32
+            } else {
+                // Assume well-confirmed if we don't have creation height
+                10
+            };
 
         // Recovery blocks remaining
-        let recovery_blocks_remaining = if lock.recovery_height > 0 && current_height < lock.recovery_height as u64 {
-            (lock.recovery_height as u64 - current_height) as u32
-        } else {
-            26280 // Default: ~6 months of blocks remaining
-        };
+        let recovery_blocks_remaining =
+            if lock.recovery_height > 0 && current_height < lock.recovery_height as u64 {
+                (lock.recovery_height as u64 - current_height) as u32
+            } else {
+                26280 // Default: ~6 months of blocks remaining
+            };
 
         // Check mempool status
         // In production, this would query the mempool for pending transactions

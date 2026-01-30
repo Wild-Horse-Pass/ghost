@@ -137,10 +137,7 @@ impl BlockProver {
         // Build the circuit from witness
         let circuit = self.build_circuit(witness)?;
 
-        debug!(
-            "Circuit built with {} payments",
-            witness.transactions.len()
-        );
+        debug!("Circuit built with {} payments", witness.transactions.len());
 
         // Use TestConstraintSystem to verify all constraints are satisfied
         let mut cs = TestConstraintSystem::<Fr>::new();
@@ -156,7 +153,10 @@ impl BlockProver {
             )));
         }
 
-        debug!("Circuit satisfied with {} constraints", cs.num_constraints());
+        debug!(
+            "Circuit satisfied with {} constraints",
+            cs.num_constraints()
+        );
 
         // Generate proof bytes (hash of witness + constraints for now)
         // In production, this would be actual Groth16 proof bytes
@@ -456,12 +456,12 @@ mod tests {
         let transitions: Vec<PaymentTransitionWitness> = (0..tx_count)
             .map(|i| {
                 PaymentTransitionWitness::new(
-                    1000,                                                // sender balance
-                    500,                                                 // recipient balance
-                    100,                                                 // amount
-                    i as u64,                                            // sender index
-                    MerkleProof::new(i as u64, vec![[0u8; 32]; 10]),     // sender proof
-                    (i + 1) as u64,                                      // recipient index
+                    1000,                                                  // sender balance
+                    500,                                                   // recipient balance
+                    100,                                                   // amount
+                    i as u64,                                              // sender index
+                    MerkleProof::new(i as u64, vec![[0u8; 32]; 10]),       // sender proof
+                    (i + 1) as u64,                                        // recipient index
                     MerkleProof::new((i + 1) as u64, vec![[0u8; 32]; 10]), // recipient proof
                 )
             })
@@ -495,7 +495,11 @@ mod tests {
         let witness = create_test_witness(2);
 
         let proof = prover.prove(&witness);
-        assert!(proof.is_ok(), "Proof generation should succeed: {:?}", proof.err());
+        assert!(
+            proof.is_ok(),
+            "Proof generation should succeed: {:?}",
+            proof.err()
+        );
 
         let proof = proof.unwrap();
         assert_eq!(proof.height, 1);
@@ -604,7 +608,7 @@ mod tests {
 
         // Create witness with insufficient balance
         let transitions = vec![PaymentTransitionWitness::new(
-            50,  // Only 50
+            50, // Only 50
             500,
             100, // Trying to send 100
             0,
