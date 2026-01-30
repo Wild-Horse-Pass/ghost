@@ -22,11 +22,11 @@
 │            ▼                                       ▼                         │
 │   ┌────────────────────────────────────────────────────────────┐            │
 │   │                    MINING INFRASTRUCTURE                    │            │
-│   │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │            │
-│   │  │ GHOST POOL   │  │ COORDINATOR  │  │   TRANSLATOR     │  │            │
-│   │  │ Decentralized│  │ Fire Ping LB │  │   SV1 ↔ SV2      │  │            │
-│   │  │ Mining Pool  │  │              │  │                  │  │            │
-│   │  └──────────────┘  └──────────────┘  └──────────────────┘  │            │
+│   │  ┌──────────────────────────┐  ┌──────────────────────┐    │            │
+│   │  │       GHOST POOL         │  │     TRANSLATOR       │    │            │
+│   │  │   Decentralized Mining   │  │     SV1 ↔ SV2        │    │            │
+│   │  │         Pool             │  │                      │    │            │
+│   │  └──────────────────────────┘  └──────────────────────┘    │            │
 │   └────────────────────────────────────────────────────────────┘            │
 │                              │                                               │
 │                              ▼                                               │
@@ -68,7 +68,7 @@
 | **Stratum V2** | Modern mining protocol with improved security, efficiency, and job negotiation |
 | **67% BFT Consensus** | Byzantine fault-tolerant payout agreement - no single point of failure |
 | **BUDS Classification** | Transaction filtering based on Bitcoin Use-case Differentiation System |
-| **Fire Ping Load Balancing** | Latency-aware routing to optimal pool nodes |
+| **Node Finder** | Discover and test latency to all available pool nodes |
 
 ### Fast, Safe & Private Payments
 
@@ -122,7 +122,6 @@
 | `ghost-node` | Full Bitcoin node with Ghost enhancements |
 | `ghost-qt` | Desktop wallet with full node (Qt GUI) |
 | `ghost-pool` | Decentralized mining pool node |
-| `ghost-coordinator` | Load balancer with Fire Ping latency measurement |
 | `ghost-pay` | L2 payment node for instant off-chain transfers |
 | `ghost-gsp` | Ghost Service Provider for light wallets |
 | `ghost-cli` | Administration CLI for pool management |
@@ -309,7 +308,6 @@ ghost/
 │   ├── ghost-node/        # Enhanced full node
 │   ├── ghost-qt/          # Desktop wallet (Qt)
 │   ├── ghost-pool/        # Mining pool node
-│   ├── ghost-coordinator/ # Load balancer
 │   ├── ghost-pay/         # L2 payment node
 │   ├── ghost-gsp/         # GSP server
 │   ├── ghost-cli/         # Admin CLI

@@ -1,0 +1,773 @@
+//|======================================================================================================================|
+//|                                                                                                                      |
+//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+//|       ░              ░                                                                                               |
+//|----------------------------------------------------------------------------------------------------------------------|
+//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|----------------------------------------------------------------------------------------------------------------------|
+//| PROJECT: Bitcoin Ghost                                                                                               |
+//| REPO: https://github.com/bitcoin-ghost                                                                               |
+//| WEB: https://bitcoinghost.org/                                                                                       |
+//| LICENSE: MIT                                                                                                         |
+//| FILE: template_provider.rs                                                                                           |
+//|======================================================================================================================|
+
+//! Template Distribution Protocol (TDP) Server with Noise Encryption
+//!
+//! Implements the SV2 Template Distribution Protocol, allowing SRI pool to connect
+//! and receive block templates from ghost-pool. Uses Noise NX protocol for encryption.
+//!
+//! ```text
+//! Bitcoin Core → ghost-pool (TDP Server) → SRI Pool → SRI Translator → Miners
+//! ```
+//!
+//! # Protocol Messages
+//!
+//! - `NewTemplate`: Sent when a new block template is available
+//! - `SetNewPrevHash`: Sent immediately when a new block is found
+//! - `CoinbaseOutputConstraints`: Received from pool to specify coinbase limits
+//! - `SubmitSolution`: Received when pool finds a valid block
+//!
+//! # Security
+//!
+//! All connections use Noise NX handshake for encrypted, authenticated communication.
+//! The server has a keypair (authority key) and clients verify the server's identity.
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_channel::{unbounded, Sender};
+use parking_lot::RwLock;
+use tokio::net::TcpListener;
+use tokio::sync::broadcast;
+use tracing::{debug, error, info, warn};
+
+// Use types from stratum-apps (stratum-core) consistently to avoid version conflicts
+use stratum_apps::stratum_core::{
+    codec_sv2::{HandshakeRole, StandardSv2Frame},
+    noise_sv2::Responder,
+    parsers_sv2::{AnyMessage, TemplateDistribution},
+    common_messages_sv2::SetupConnectionSuccess,
+    template_distribution_sv2::{
+        CoinbaseOutputConstraints, NewTemplate, SetNewPrevHash, SubmitSolution,
+    },
+    binary_sv2::Seq0255,
+    framing_sv2::framing::Frame,
+};
+use stratum_apps::network_helpers::noise_stream::NoiseTcpStream;
+use stratum_apps::utils::protocol_message_type::{protocol_message_type, MessageType};
+
+use crate::template::{TemplateEvent, TemplateProcessor, WorkState};
+
+// ============================================================================
+// Type Aliases
+// ============================================================================
+
+/// The message type used for TDP communication
+type Message = AnyMessage<'static>;
+
+/// SV2 frame type
+type Sv2Frame = StandardSv2Frame<Message>;
+
+// ============================================================================
+// Configuration
+// ============================================================================
+
+/// TDP Server configuration
+#[derive(Debug, Clone)]
+pub struct TdpConfig {
+    /// Listen address
+    pub listen_addr: String,
+    /// Listen port (default: 8442)
+    pub port: u16,
+    /// Maximum concurrent connections
+    pub max_connections: usize,
+    /// Connection timeout (seconds)
+    pub timeout_secs: u64,
+    /// Certificate validity in seconds (for Noise handshake)
+    pub cert_validity_secs: u64,
+    /// Authority secret key (32 bytes)
+    pub authority_secret_key: [u8; 32],
+    /// Authority public key (derived from secret key)
+    pub authority_public_key: [u8; 32],
+}
+
+impl TdpConfig {
+    /// Create a new TDP config with the given secret key
+    pub fn new(secret_key: [u8; 32]) -> Self {
+        // Derive public key from secret key
+        let secp = secp256k1::Secp256k1::new();
+        let secret = secp256k1::SecretKey::from_slice(&secret_key)
+            .expect("Invalid secret key");
+        let (x_only, _parity) = secret.public_key(&secp).x_only_public_key();
+        let public_key = x_only.serialize();
+
+        Self {
+            listen_addr: "0.0.0.0".into(),
+            port: 8442,
+            max_connections: 10,
+            timeout_secs: 30,
+            cert_validity_secs: 86400, // 24 hours
+            authority_secret_key: secret_key,
+            authority_public_key: public_key,
+        }
+    }
+
+    /// Get the authority public key in base58 format (for SRI pool config)
+    pub fn authority_pubkey_base58(&self) -> String {
+        // Version prefix (1) + public key
+        let mut output = [0u8; 34];
+        output[0] = 1; // Version
+        output[1] = 0; // Padding
+        output[2..].copy_from_slice(&self.authority_public_key);
+        bs58::encode(&output).with_check().into_string()
+    }
+}
+
+impl Default for TdpConfig {
+    fn default() -> Self {
+        // Generate a random key for default (SHOULD be replaced with persistent key)
+        let mut secret_key = [0u8; 32];
+        getrandom::getrandom(&mut secret_key).expect("Failed to generate random key");
+        Self::new(secret_key)
+    }
+}
+
+// ============================================================================
+// Client State
+// ============================================================================
+
+/// Connected TDP client (SRI Pool)
+struct TdpClient {
+    /// Client address (stored for logging/debugging)
+    #[allow(dead_code)]
+    addr: SocketAddr,
+    /// Sender for outgoing frames
+    frame_tx: Sender<Sv2Frame>,
+    /// Whether setup connection is complete
+    setup_complete: bool,
+    /// Coinbase output constraints from client
+    coinbase_constraints: Option<CoinbaseOutputConstraints>,
+    /// Last template ID sent
+    last_template_id: u64,
+}
+
+// ============================================================================
+// Template Distribution Server
+// ============================================================================
+
+/// Template Distribution Protocol Server with Noise encryption
+pub struct TemplateDistributionServer {
+    /// Configuration
+    config: TdpConfig,
+    /// Template processor for work states
+    template_processor: Arc<TemplateProcessor>,
+    /// Connected clients
+    clients: Arc<RwLock<HashMap<u64, TdpClient>>>,
+    /// Next client ID
+    next_client_id: Arc<std::sync::atomic::AtomicU64>,
+    /// Template ID counter
+    template_id_counter: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl TemplateDistributionServer {
+    /// Create a new TDP server
+    pub fn new(
+        config: TdpConfig,
+        template_processor: Arc<TemplateProcessor>,
+        _shutdown_rx: broadcast::Receiver<()>,
+    ) -> Self {
+        info!(
+            "TDP authority public key: {}",
+            config.authority_pubkey_base58()
+        );
+
+        Self {
+            config,
+            template_processor,
+            clients: Arc::new(RwLock::new(HashMap::new())),
+            next_client_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            template_id_counter: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        }
+    }
+
+    /// Run the TDP server
+    pub async fn run(self) -> anyhow::Result<()> {
+        let addr: SocketAddr = format!("{}:{}", self.config.listen_addr, self.config.port)
+            .parse()?;
+
+        let listener = TcpListener::bind(addr).await?;
+        info!("TDP server listening on {} (Template Distribution Protocol)", addr);
+
+        let clients = Arc::clone(&self.clients);
+        let template_id_counter = Arc::clone(&self.template_id_counter);
+
+        // Spawn template broadcast task
+        let clients_for_broadcast = Arc::clone(&clients);
+        let template_id_for_broadcast = Arc::clone(&template_id_counter);
+        let template_processor_for_broadcast = Arc::clone(&self.template_processor);
+        let mut template_rx = self.template_processor.subscribe();
+
+        tokio::spawn(async move {
+            loop {
+                match template_rx.recv().await {
+                    Ok(event) => {
+                        if let TemplateEvent::NewWork { job_id, height } = event {
+                            debug!("TDP: New work event - job_id={}, height={}", job_id, height);
+
+                            if let Some(work_state) = template_processor_for_broadcast.current_work() {
+                                let template_id = template_id_for_broadcast
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+                                if let Err(e) = broadcast_template(
+                                    &clients_for_broadcast,
+                                    &work_state,
+                                    template_id,
+                                ).await {
+                                    warn!("Failed to broadcast template: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("TDP broadcast lagged by {} templates", n);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        info!("Template channel closed, stopping TDP broadcast");
+                        break;
+                    }
+                }
+            }
+        });
+
+        loop {
+            match listener.accept().await {
+                Ok((socket, peer_addr)) => {
+                    let current_clients = self.clients.read().len();
+                    if current_clients >= self.config.max_connections {
+                        warn!("TDP connection limit reached, rejecting {}", peer_addr);
+                        continue;
+                    }
+
+                    info!("New TDP client from {} ({}/{})",
+                          peer_addr, current_clients + 1, self.config.max_connections);
+
+                    let client_id = self.next_client_id
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+                    // Create Noise responder for this connection
+                    let responder = match Responder::from_authority_kp(
+                        &self.config.authority_public_key,
+                        &self.config.authority_secret_key,
+                        Duration::from_secs(self.config.cert_validity_secs),
+                    ) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            error!("Failed to create Noise responder: {:?}", e);
+                            continue;
+                        }
+                    };
+
+                    // Perform Noise handshake
+                    let noise_stream = match NoiseTcpStream::<Message>::new(
+                        socket,
+                        HandshakeRole::Responder(responder),
+                    ).await {
+                        Ok(ns) => {
+                            info!("Noise handshake completed with {}", peer_addr);
+                            ns
+                        }
+                        Err(e) => {
+                            error!("Noise handshake failed with {}: {:?}", peer_addr, e);
+                            continue;
+                        }
+                    };
+
+                    let clients = Arc::clone(&self.clients);
+                    let template_processor = Arc::clone(&self.template_processor);
+                    let template_id_counter = Arc::clone(&self.template_id_counter);
+
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_tdp_client(
+                            noise_stream,
+                            peer_addr,
+                            client_id,
+                            clients,
+                            template_processor,
+                            template_id_counter,
+                        ).await {
+                            debug!("TDP client {} error: {}", peer_addr, e);
+                        }
+                    });
+                }
+                Err(e) => {
+                    error!("Failed to accept TDP connection: {}", e);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Client Handler
+// ============================================================================
+
+/// Handle a single TDP client connection (after Noise handshake)
+async fn handle_tdp_client(
+    noise_stream: NoiseTcpStream<Message>,
+    peer_addr: SocketAddr,
+    client_id: u64,
+    clients: Arc<RwLock<HashMap<u64, TdpClient>>>,
+    template_processor: Arc<TemplateProcessor>,
+    template_id_counter: Arc<std::sync::atomic::AtomicU64>,
+) -> anyhow::Result<()> {
+    let (mut reader, mut writer) = noise_stream.into_split();
+    let (frame_tx, frame_rx) = unbounded::<Sv2Frame>();
+
+    // Register client
+    {
+        let mut clients_guard = clients.write();
+        clients_guard.insert(client_id, TdpClient {
+            addr: peer_addr,
+            frame_tx: frame_tx.clone(),
+            setup_complete: false,
+            coinbase_constraints: None,
+            last_template_id: 0,
+        });
+    }
+
+    // Spawn writer task
+    let writer_handle = tokio::spawn(async move {
+        while let Ok(frame) = frame_rx.recv().await {
+            if writer.write_frame(frame.into()).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Handle SetupConnection first
+    debug!("Waiting for SetupConnection from {}", peer_addr);
+    let frame = reader.read_frame().await
+        .map_err(|e| anyhow::anyhow!("Failed to read SetupConnection: {:?}", e))?;
+
+    // Extract Sv2Frame from the Frame enum
+    let setup_frame = match frame {
+        Frame::Sv2(sv2_frame) => sv2_frame,
+        Frame::HandShake(_) => {
+            return Err(anyhow::anyhow!("Received unexpected handshake frame"));
+        }
+    };
+
+    // Parse and validate SetupConnection
+    let header = setup_frame.get_header()
+        .ok_or_else(|| anyhow::anyhow!("Missing frame header"))?;
+
+    debug!("Received frame from {}: ext_type={}, msg_type={}",
+           peer_addr, header.ext_type(), header.msg_type());
+
+    // Send SetupConnectionSuccess
+    let success = SetupConnectionSuccess {
+        used_version: 2,
+        flags: 0,
+    };
+    let response_frame: Sv2Frame = AnyMessage::Common(success.into())
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Failed to create SetupConnectionSuccess frame"))?;
+
+    frame_tx.send(response_frame).await
+        .map_err(|_| anyhow::anyhow!("Channel closed"))?;
+
+    info!("TDP client {} setup complete", peer_addr);
+
+    // Mark client as setup complete
+    if let Some(client) = clients.write().get_mut(&client_id) {
+        client.setup_complete = true;
+    }
+
+    // Send initial template if available
+    if let Some(work_state) = template_processor.current_work() {
+        let template_id = template_id_counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        send_new_template(&frame_tx, &work_state, template_id).await?;
+        send_set_new_prev_hash(&frame_tx, &work_state, template_id).await?;
+
+        if let Some(client) = clients.write().get_mut(&client_id) {
+            client.last_template_id = template_id;
+        }
+    }
+
+    // Main read loop
+    loop {
+        match reader.read_frame().await {
+            Ok(frame) => {
+                // Extract Sv2Frame from Frame enum
+                let mut sv2_frame = match frame {
+                    Frame::Sv2(f) => f,
+                    Frame::HandShake(_) => {
+                        warn!("Received unexpected handshake frame from {}", peer_addr);
+                        continue;
+                    }
+                };
+
+                let header = match sv2_frame.get_header() {
+                    Some(h) => h,
+                    None => {
+                        warn!("Received frame without header from {}", peer_addr);
+                        continue;
+                    }
+                };
+
+                let msg_type = protocol_message_type(header.ext_type(), header.msg_type());
+                debug!("Received {:?} from {}", msg_type, peer_addr);
+
+                match msg_type {
+                    MessageType::TemplateDistribution => {
+                        // Parse as TemplateDistribution message
+                        if let Ok(td_msg) = TemplateDistribution::try_from((header.msg_type(), sv2_frame.payload())) {
+                            handle_template_distribution_message(
+                                td_msg,
+                                client_id,
+                                &clients,
+                                &template_processor,
+                            ).await?;
+                        } else {
+                            warn!("Failed to parse TemplateDistribution message from {}", peer_addr);
+                        }
+                    }
+                    MessageType::Common => {
+                        debug!("Received Common message from {} (ignoring)", peer_addr);
+                    }
+                    _ => {
+                        warn!("Received unexpected message type {:?} from {}", msg_type, peer_addr);
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("TDP read error from {}: {:?}", peer_addr, e);
+                break;
+            }
+        }
+    }
+
+    // Cleanup
+    writer_handle.abort();
+    clients.write().remove(&client_id);
+
+    info!("TDP client {} disconnected", peer_addr);
+    Ok(())
+}
+
+/// Handle incoming TemplateDistribution messages
+async fn handle_template_distribution_message(
+    msg: TemplateDistribution<'_>,
+    client_id: u64,
+    clients: &Arc<RwLock<HashMap<u64, TdpClient>>>,
+    template_processor: &Arc<TemplateProcessor>,
+) -> anyhow::Result<()> {
+    match msg {
+        TemplateDistribution::CoinbaseOutputConstraints(constraints) => {
+            info!("Received CoinbaseOutputConstraints from client {}", client_id);
+            // Store constraints for this client
+            if let Some(client) = clients.write().get_mut(&client_id) {
+                client.coinbase_constraints = Some(constraints);
+            }
+        }
+        TemplateDistribution::RequestTransactionData(request) => {
+            debug!("Received RequestTransactionData for template {} from client {}",
+                   request.template_id, client_id);
+            // TODO: Return full transaction data for the requested template
+        }
+        TemplateDistribution::SubmitSolution(solution) => {
+            info!("Received SubmitSolution from client {} (template_id={})",
+                  client_id, solution.template_id);
+            // This is the critical path - a valid block was found!
+            handle_submit_solution(solution, template_processor).await?;
+        }
+        _ => {
+            debug!("Received other TemplateDistribution message from client {}", client_id);
+        }
+    }
+    Ok(())
+}
+
+/// Handle a block solution submission
+async fn handle_submit_solution(
+    solution: SubmitSolution<'_>,
+    template_processor: &Arc<TemplateProcessor>,
+) -> anyhow::Result<()> {
+    info!(
+        "Block solution received: template_id={}, version=0x{:08x}, ntime={}, nonce=0x{:08x}",
+        solution.template_id,
+        solution.version,
+        solution.header_timestamp,
+        solution.header_nonce
+    );
+
+    // Get the work state for this template
+    if let Some(work_state) = template_processor.current_work() {
+        // Reconstruct and submit block
+        // In a full implementation:
+        // 1. Reconstruct the full block from template + solution
+        // 2. Submit via Bitcoin Core RPC (submitblock)
+        // 3. Update RoundManager for payout tracking
+
+        info!("Would submit block at height {} to Bitcoin Core", work_state.height);
+
+        // TODO: Implement actual block submission
+        // template_processor.submit_block(solution).await?;
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Message Sending Helpers
+// ============================================================================
+
+/// Send a NewTemplate message
+async fn send_new_template(
+    frame_tx: &Sender<Sv2Frame>,
+    work_state: &WorkState,
+    template_id: u64,
+) -> anyhow::Result<()> {
+    let template = create_new_template(work_state, template_id)?;
+    debug!(
+        "Sending NewTemplate: id={}, height={}, future_template={}",
+        template_id, work_state.height, template.future_template
+    );
+
+    let frame: Sv2Frame = AnyMessage::TemplateDistribution(
+        TemplateDistribution::NewTemplate(template).into_static()
+    ).try_into().map_err(|_| anyhow::anyhow!("Failed to create frame"))?;
+
+    frame_tx.send(frame).await
+        .map_err(|_| anyhow::anyhow!("Channel closed"))?;
+
+    Ok(())
+}
+
+/// Send a SetNewPrevHash message
+async fn send_set_new_prev_hash(
+    frame_tx: &Sender<Sv2Frame>,
+    work_state: &WorkState,
+    template_id: u64,
+) -> anyhow::Result<()> {
+    let prev_hash = create_set_new_prev_hash(work_state, template_id)?;
+    debug!(
+        "Sending SetNewPrevHash: template_id={}, ntime={}",
+        template_id, prev_hash.header_timestamp
+    );
+
+    let frame: Sv2Frame = AnyMessage::TemplateDistribution(
+        TemplateDistribution::SetNewPrevHash(prev_hash).into_static()
+    ).try_into().map_err(|_| anyhow::anyhow!("Failed to create frame"))?;
+
+    frame_tx.send(frame).await
+        .map_err(|_| anyhow::anyhow!("Channel closed"))?;
+
+    Ok(())
+}
+
+/// Broadcast a new template to all connected clients
+async fn broadcast_template(
+    clients: &Arc<RwLock<HashMap<u64, TdpClient>>>,
+    work_state: &WorkState,
+    template_id: u64,
+) -> anyhow::Result<()> {
+    // Collect senders while holding lock, then release before sending
+    let senders: Vec<(u64, Sender<Sv2Frame>, bool)> = {
+        let clients_guard = clients.read();
+        clients_guard
+            .iter()
+            .map(|(id, client)| (*id, client.frame_tx.clone(), client.setup_complete))
+            .collect()
+    };
+
+    let mut sent_count = 0;
+    for (client_id, frame_tx, setup_complete) in senders {
+        if !setup_complete {
+            continue; // Skip clients that haven't completed setup
+        }
+
+        if send_new_template(&frame_tx, work_state, template_id).await.is_ok() {
+            if send_set_new_prev_hash(&frame_tx, work_state, template_id).await.is_ok() {
+                sent_count += 1;
+            }
+        } else {
+            debug!("Failed to send template to client {}", client_id);
+        }
+    }
+
+    if sent_count > 0 {
+        info!(
+            "Broadcast template {} to {} TDP clients (height: {})",
+            template_id, sent_count, work_state.height
+        );
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Message Creation Helpers
+// ============================================================================
+
+/// Create a NewTemplate message from WorkState
+fn create_new_template(
+    work_state: &WorkState,
+    template_id: u64,
+) -> anyhow::Result<NewTemplate<'static>> {
+    use stratum_apps::stratum_core::binary_sv2::{B0255, B064K, U256};
+
+    // Convert coinbase parts to the correct types
+    let coinbase_prefix: B0255<'static> = work_state.coinbase1.clone()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Coinbase1 too long"))?;
+
+    // coinbase2 (suffix) is not directly used in NewTemplate
+    // The pool adds its own outputs based on CoinbaseOutputConstraints
+    let _coinbase_suffix: B064K<'static> = work_state.coinbase2.clone()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Coinbase2 too long"))?;
+
+    // Convert merkle branches to Seq0255<U256>
+    let merkle_path: Vec<U256<'static>> = work_state.merkle_branches
+        .iter()
+        .map(|branch| {
+            U256::try_from(branch.clone())
+                .unwrap_or_else(|_| U256::try_from(vec![0u8; 32]).unwrap())
+        })
+        .collect();
+
+    let merkle_path_seq: Seq0255<'static, U256<'static>> = merkle_path
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Too many merkle branches"))?;
+
+    Ok(NewTemplate {
+        template_id,
+        future_template: true, // Must be true for SRI pool to register initial template
+        version: work_state.version,
+        coinbase_tx_version: 2, // Standard coinbase version
+        coinbase_prefix,
+        coinbase_tx_input_sequence: 0xffffffff,
+        coinbase_tx_value_remaining: work_state.total_fees + get_block_subsidy(work_state.height),
+        coinbase_tx_outputs_count: 1, // Pool output
+        coinbase_tx_outputs: vec![].try_into().unwrap(), // Empty, pool adds its own
+        coinbase_tx_locktime: 0,
+        merkle_path: merkle_path_seq,
+    })
+}
+
+/// Create a SetNewPrevHash message from WorkState
+fn create_set_new_prev_hash(
+    work_state: &WorkState,
+    template_id: u64,
+) -> anyhow::Result<SetNewPrevHash<'static>> {
+    use stratum_apps::stratum_core::binary_sv2::U256;
+
+    // Parse prev_hash from hex string to bytes
+    let prev_hash_bytes = hex::decode(&work_state.prev_hash)
+        .map_err(|e| anyhow::anyhow!("Invalid prev_hash hex: {}", e))?;
+
+    let prev_hash: U256<'static> = prev_hash_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid prev_hash length"))?;
+
+    // Parse nbits from hex string
+    let nbits = u32::from_str_radix(&work_state.nbits, 16)
+        .map_err(|e| anyhow::anyhow!("Invalid nbits: {}", e))?;
+
+    Ok(SetNewPrevHash {
+        template_id,
+        prev_hash,
+        header_timestamp: work_state.ntime,
+        n_bits: nbits,
+        target: nbits_to_target_u256(nbits),
+    })
+}
+
+/// Convert nBits compact format to U256 target
+fn nbits_to_target_u256(nbits: u32) -> stratum_apps::stratum_core::binary_sv2::U256<'static> {
+    use stratum_apps::stratum_core::binary_sv2::U256;
+
+    let mut target = [0u8; 32];
+    let exponent = ((nbits >> 24) & 0xff) as usize;
+    let mantissa = nbits & 0x007fffff;
+
+    if exponent <= 3 {
+        let shift = 8 * (3 - exponent);
+        let value = mantissa >> shift;
+        target[0] = (value & 0xff) as u8;
+        target[1] = ((value >> 8) & 0xff) as u8;
+        target[2] = ((value >> 16) & 0xff) as u8;
+    } else {
+        let byte_offset = exponent - 3;
+        if byte_offset < 32 {
+            target[byte_offset] = (mantissa & 0xff) as u8;
+            if byte_offset + 1 < 32 {
+                target[byte_offset + 1] = ((mantissa >> 8) & 0xff) as u8;
+            }
+            if byte_offset + 2 < 32 {
+                target[byte_offset + 2] = ((mantissa >> 16) & 0xff) as u8;
+            }
+        }
+    }
+
+    U256::try_from(target.to_vec())
+        .unwrap_or_else(|_| U256::try_from(vec![0u8; 32]).unwrap())
+}
+
+/// Get block subsidy for a given height
+fn get_block_subsidy(height: u64) -> u64 {
+    let halvings = height / 210_000;
+    if halvings >= 64 {
+        return 0;
+    }
+    // Initial subsidy: 50 BTC = 5_000_000_000 satoshis
+    5_000_000_000u64 >> halvings
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tdp_config_default() {
+        let config = TdpConfig::default();
+        assert_eq!(config.port, 8442);
+        assert_eq!(config.max_connections, 10);
+        // Public key should be derivable
+        assert!(!config.authority_pubkey_base58().is_empty());
+    }
+
+    #[test]
+    fn test_tdp_config_with_key() {
+        let secret_key = [0x42u8; 32];
+        let config = TdpConfig::new(secret_key);
+        // Should generate consistent public key
+        let pubkey = config.authority_pubkey_base58();
+        assert!(pubkey.starts_with("9")); // Base58 encoding starts with specific chars
+    }
+
+    #[test]
+    fn test_block_subsidy() {
+        assert_eq!(get_block_subsidy(0), 5_000_000_000);
+        assert_eq!(get_block_subsidy(210_000), 2_500_000_000);
+        assert_eq!(get_block_subsidy(420_000), 1_250_000_000);
+    }
+}

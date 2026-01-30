@@ -356,6 +356,11 @@ impl MeshNetwork {
             MessageType::Discovery => self.config.ports.discovery,
             MessageType::ElderUpdate => self.config.ports.elder_management,
             MessageType::PayoutProposal => self.config.ports.payout_proposal,
+            // ZK-BFT messages use consensus voting port
+            MessageType::ZkBlockProposal
+            | MessageType::ZkVote
+            | MessageType::ZkPayoutProposal
+            | MessageType::ZkPayoutVote => self.config.ports.consensus_voting,
         };
         format!("tcp://{}:{}", host_only, base_port)
     }

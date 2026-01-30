@@ -21,46 +21,36 @@
 #|======================================================================================================================|
 
 [package]
-name = "ghost-coordinator"
+name = "ghost-stratum-common"
 version.workspace = true
 edition.workspace = true
-authors.workspace = true
+rust-version.workspace = true
 license.workspace = true
-description = "Ghost coordinator for miner assignment and load balancing"
-
-[[bin]]
-name = "ghost-coordinator"
-path = "src/main.rs"
+description = "Stratum V2 protocol wrapper for Bitcoin Ghost - re-exports stratum-sri types with Ghost-specific helpers"
 
 [dependencies]
-ghost-common = { workspace = true }
-ghost-storage = { workspace = true }
+# Stratum protocol crates (from stratum/ submodule)
+stratum-core = { path = "../../stratum/stratum-core", features = ["translation"] }
+
+# Re-export these for convenience (they're also in stratum-core but direct access is useful)
+sv1_api = { path = "../../stratum/sv1" }
+binary_sv2 = { path = "../../stratum/sv2/binary-sv2" }
+codec_sv2 = { path = "../../stratum/sv2/codec-sv2", features = ["noise_sv2"] }
+noise_sv2 = { path = "../../stratum/sv2/noise-sv2" }
+mining_sv2 = { path = "../../stratum/sv2/subprotocols/mining" }
+common_messages_sv2 = { path = "../../stratum/sv2/subprotocols/common-messages" }
+framing_sv2 = { path = "../../stratum/sv2/framing-sv2" }
+channels_sv2 = { path = "../../stratum/sv2/channels-sv2" }
 
 # Async runtime
-tokio = { workspace = true }
-
-# HTTP server
-axum = { workspace = true }
-tower = { workspace = true }
-tower-http = { workspace = true }
-reqwest = { workspace = true }
-
-# CLI
-clap = { workspace = true }
-
-# Serialization
-serde = { workspace = true }
-serde_json = { workspace = true }
-toml = { workspace = true }
-
-# Logging
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-
-# Error handling
-anyhow = { workspace = true }
-thiserror = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util", "sync", "rt"] }
+async-channel = "2.3"
 
 # Utilities
-chrono = { workspace = true }
-parking_lot = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }

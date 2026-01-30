@@ -131,7 +131,6 @@ Each Ghost Node runs:
 | `ghost-pool` | Mining pool with SV1 Stratum, consensus, accounting, verification | Yes |
 | `ghost-core` | Bitcoin Core v30.1 fork with Ghost Pay L1 integration | Yes |
 | `translator` | SV1→SV2 proxy for upstream SV2 pools (future use) | Optional |
-| `ghost-coordinator` | Stateless miner routing service | One per network |
 | `ghost-pay` | L2 payment network node | Optional |
 
 ### 3.2 ghost-pool
@@ -189,17 +188,7 @@ Protocol translation proxy (for future SV2 support). Features:
 
 **Note:** Currently ghost-pool natively supports SV1, so translator is optional for direct connections.
 
-### 3.5 ghost-coordinator
-
-Stateless miner routing service. Features:
-- Accepts initial miner connections
-- Probes latency to all pool nodes (Fire Ping)
-- Routes miner to optimal node via `client.reconnect`
-- Load balancing across nodes
-- Does NOT participate in consensus
-- Does NOT handle mining (no shares, no payouts)
-
-### 3.6 ghost-pay
+### 3.5 ghost-pay
 
 L2 payment network (optional). Features:
 - Instant off-chain payments
@@ -253,7 +242,6 @@ L2 payment network (optional). Features:
 | 3333 | TCP/JSON | ghost-pool | SV1 Stratum (miners) |
 | 34255 | TCP/Noise | (reserved) | SV2 Stratum (future use) |
 | 8080 | HTTP | ghost-pool | Verification API |
-| 8333 | TCP | ghost-coordinator | Initial miner connection |
 | 38333 | TCP | ghost-core | Bitcoin P2P (signet) |
 | 8333 | TCP | ghost-core | Bitcoin P2P (mainnet) |
 
@@ -1223,109 +1211,53 @@ struct SignedMessage {
 
 ---
 
-## 15. Coordinator (Miner Routing)
+## 15. Node Discovery
 
 ### 15.1 Purpose
 
-Route miners to optimal pool nodes based on:
-- Latency (lowest RTT)
-- Load (connection count)
-- Availability (health status)
+Help miners discover and connect to optimal pool nodes based on:
+- Latency (lowest RTT from miner's location)
+- Availability (node status: available/busy/full)
 
-### 15.2 Architecture
+### 15.2 Discovery Methods
 
-```
-Miner connects to coordinator:8333
-              │
-              ▼
-┌──────────────────────────┐
-│      Coordinator         │
-│                          │
-│  1. Fire Ping all nodes  │
-│  2. Calculate scores     │
-│  3. Select best node     │
-│  4. client.reconnect     │
-└──────────────────────────┘
-              │
-              ▼
-Miner reconnects to optimal node:3333
-```
+**1. Node Finder (Web Tool)**
+- Browser-based tool at `https://bitcoinghost.org/node-finder.html`
+- Discovers nodes from seed nodes and P2P network
+- Tests latency to each node's `/health` endpoint
+- Shows availability status without exposing exact capacity
+- Recommends best node based on availability and latency
 
-### 15.3 Fire Ping (Latency Probing)
+**2. Regional Subdomains**
+- `eu.pool.bitcoinghost.org:3333` - Europe
+- `us.pool.bitcoinghost.org:3333` - North America
+- `asia.pool.bitcoinghost.org:3333` - Asia-Pacific
 
-Multi-method RTT measurement:
-1. TCP SYN-ACK timing
-2. HTTP HEAD request
-3. Stratum ping (if supported)
+**3. Direct Connection**
+- Connect directly to any known pool node's Stratum port
 
-### 15.4 Gradient Descent Convergence (Fallback)
+### 15.3 Node Discovery API
 
-When Fire Ping fails (firewalled miners, NAT issues), use convergence:
+Pool nodes expose discovery endpoints:
 
 ```
-1. Miner connects to coordinator
-2. Fire Ping fails (no direct probing possible)
-3. FALLBACK: Gradient Descent Convergence
-   a. Assign miner to random node
-   b. Miner reports share latency to coordinator
-   c. Periodically try alternate node
-   d. Compare latencies
-   e. Migrate to better node if improvement > threshold
-   f. Repeat until convergence (no improvement found)
+GET /api/v1/network/public-nodes
+Returns: List of peer addresses for discovery
+
+GET /api/v1/node/public-info
+Returns: Node name, region, status, stratum endpoint
 ```
 
-**Why Gradient Descent?**
-- Firewalled miners can't be probed directly
-- But they CAN report their own experience
-- Over time, miner "walks" toward optimal node
-- Converges to local minimum latency
+**Status Values:**
+- `available` - Under 50% capacity, accepting miners
+- `busy` - 50-90% capacity, still accepting miners
+- `full` - Over 90% capacity, may reject new connections
 
-```
-Convergence Parameters:
-- Initial: Random assignment
-- Test interval: 5 minutes
-- Migration threshold: 20% improvement
-- Max iterations: 10 (then settled)
-```
+### 15.4 Security Considerations
 
-### 15.5 Scoring Algorithm
-
-```
-score = latency_ms × (1 + load_penalty)
-
-load_penalty:
-  HEALTHY (< 50%):     0.0
-  NORMAL (50-75%):     0.1
-  SOFT_LIMIT (75-90%): 0.3
-  HARD_LIMIT (> 90%):  1.0
-```
-
-### 15.5 Node Registration
-
-Pool nodes register with coordinator:
-
-```rust
-struct NodeRegistration {
-    node_id: [u8; 32],
-    addresses: Vec<String>,
-    stratum_port: u16,
-    capacity: u32,
-    current_miners: u32,
-}
-```
-
-### 15.6 Heartbeat Protocol
-
-Nodes send capacity updates every 30 seconds:
-
-```rust
-struct CapacityUpdate {
-    node_id: [u8; 32],
-    current_miners: u32,
-    capacity_state: CapacityState,
-    last_block_height: u64,
-}
-```
+- Exact capacity numbers are NOT exposed (prevents targeted attacks)
+- Only status (available/busy/full) is shown
+- Nodes can evict lowest-hashrate miners when at capacity
 
 ---
 
@@ -2006,15 +1938,13 @@ NEW (GOOD):
 ├── bin/
 │   ├── ghost-pool
 │   ├── ghost-core-launcher
-│   ├── translator
-│   └── ghost-coordinator
+│   └── translator
 └── lib/
     └── libbitcoin*.so
 
 /etc/ghost/
 ├── pool.toml
-├── translator.toml
-└── coordinator.toml
+└── translator.toml
 
 /home/ghost/.ghost/
 ├── ghost-core/

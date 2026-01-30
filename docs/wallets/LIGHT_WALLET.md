@@ -301,6 +301,70 @@ ghost-light-wallet-cli l2-deposit --amount 0.01
 ghost-light-wallet-cli l2-withdraw --amount 0.01
 ```
 
+## Instant Payments
+
+For small payments (~$100 or less), merchants can show "Confirmed" immediately using optimistic confirmation.
+
+### Check Instant Capability
+
+```bash
+# Check if a lock can do instant payments
+ghost-light-wallet-cli instant-check --lock lock_abc123
+
+# Output:
+# Lock: lock_abc123
+# Instant Capable: Yes
+# Max Instant: 100,000 sats
+# Confidence: 0.95
+# Valid Until Block: 847200
+```
+
+### Accept Instant Payment (Merchant)
+
+```bash
+# Accept an instant payment from a customer
+ghost-light-wallet-cli instant-accept --from lock_abc123 --amount 5000
+
+# Output:
+# ✓ Instant Payment Accepted
+# Payment ID: 0x1234abcd...
+# Amount: 5,000 sats
+# Confidence: 0.97
+# Settlement Block: 847201
+#
+# Show customer: "Confirmed ✓"
+```
+
+### Instant Payment Limits
+
+| Lock Type | Max Instant |
+|-----------|-------------|
+| Micro | 10,000 sats |
+| Tiny+ | 100,000 sats |
+
+### Monitor Lock State
+
+Subscribe to real-time lock state updates for instant payment monitoring:
+
+```bash
+# Subscribe to lock state changes
+ghost-light-wallet-cli subscribe-lock --lock lock_abc123
+
+# Output (real-time updates):
+# [12:00:01] Balance: 500,000 sats | Confirmations: 50 | Instant: Yes (max 100k)
+# [12:00:11] Balance: 495,000 sats | Confirmations: 50 | Instant: Yes (max 100k)
+# [12:00:21] Pending L2: 5,000 sats | Instant: No (pending payment)
+```
+
+### When to Use Instant Payments
+
+| Scenario | Recommendation |
+|----------|----------------|
+| Coffee shop (<$10) | Use instant |
+| Retail (<$100) | Use instant |
+| Large purchases (>$100) | Wait for confirmation |
+| High-value goods | Wait for L1 settlement |
+
 ## Transaction History
 
 ```bash

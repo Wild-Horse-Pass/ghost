@@ -56,12 +56,14 @@ use ghost_storage::Database;
 use ghost_verification::{start_server, RpcArchiveHandler, VerificationState};
 
 use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler};
+use ghost_pool::registry::RegistryClient;
 use ghost_pool::reorg::{ReorgConfig, ReorgHandler};
 use ghost_pool::round::{RoundConfig, RoundEvent, RoundManager};
 use ghost_pool::stratum::{
     JobNotification, StratumConfig, StratumEvent, StratumServer, VardiffController,
 };
 use ghost_pool::template::{TemplateConfig, TemplateEvent, TemplateProcessor};
+use ghost_pool::template_provider::{TdpConfig, TemplateDistributionServer};
 
 /// Ghost Pool - Decentralized Bitcoin Mining Pool
 #[derive(Parser, Debug)]
@@ -99,6 +101,18 @@ struct Args {
     /// Stratum listen port override
     #[arg(long)]
     stratum_port: Option<u16>,
+
+    /// Enable Template Distribution Protocol server (for SRI pool)
+    #[arg(long)]
+    tdp_enabled: bool,
+
+    /// TDP server port (default: 8442)
+    #[arg(long, default_value = "8442")]
+    tdp_port: u16,
+
+    /// Disable native stratum server (use when running with SRI pool via TDP)
+    #[arg(long)]
+    no_stratum: bool,
 }
 
 /// Pool state shared across components
@@ -658,42 +672,85 @@ async fn main() -> Result<()> {
     });
     info!("Template processor started");
 
-    // Start Stratum server
-    let ss = Arc::clone(&stratum_server);
-    let mut stratum_shutdown = shutdown_tx.subscribe();
-    tokio::spawn(async move {
-        tokio::select! {
-            result = ss.start() => {
-                if let Err(e) = result {
-                    error!(error = %e, "Stratum server error");
+    // Start Stratum server (unless disabled for TDP-only mode)
+    if !args.no_stratum {
+        let ss = Arc::clone(&stratum_server);
+        let mut stratum_shutdown = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            tokio::select! {
+                result = ss.start() => {
+                    if let Err(e) = result {
+                        error!(error = %e, "Stratum server error");
+                    }
                 }
+                _ = stratum_shutdown.recv() => {}
             }
-            _ = stratum_shutdown.recv() => {}
-        }
-    });
-    info!("Stratum server listening on port {}", stratum_port);
+        });
+        info!("Stratum server listening on port {}", stratum_port);
 
-    // Start vardiff controller
-    let vardiff_config = StratumConfig {
-        listen_addr: format!("0.0.0.0:{}", stratum_port)
-            .parse()
-            .expect("valid socket address from configured port"),
-        ..Default::default()
-    };
-    let vardiff_controller = Arc::new(VardiffController::new(vardiff_config));
+        // Start vardiff controller
+        let vardiff_config = StratumConfig {
+            listen_addr: format!("0.0.0.0:{}", stratum_port)
+                .parse()
+                .expect("valid socket address from configured port"),
+            ..Default::default()
+        };
+        let vardiff_controller = Arc::new(VardiffController::new(vardiff_config));
 
-    // Link vardiff controller to stratum server for share tracking
-    stratum_server.set_vardiff_controller(Arc::clone(&vardiff_controller));
+        // Link vardiff controller to stratum server for share tracking
+        stratum_server.set_vardiff_controller(Arc::clone(&vardiff_controller));
 
-    let ss_vardiff = Arc::clone(&stratum_server);
-    let vc = Arc::clone(&vardiff_controller);
-    tokio::spawn(async move {
-        ss_vardiff.run_vardiff_loop(vc).await;
-    });
-    info!(
-        "Vardiff controller started (target {}s between shares)",
-        vardiff_target_secs
-    );
+        let ss_vardiff = Arc::clone(&stratum_server);
+        let vc = Arc::clone(&vardiff_controller);
+        tokio::spawn(async move {
+            ss_vardiff.run_vardiff_loop(vc).await;
+        });
+        info!(
+            "Vardiff controller started (target {}s between shares)",
+            vardiff_target_secs
+        );
+    } else {
+        info!("Native stratum server disabled (using TDP for SRI pool integration)");
+    }
+
+    // Start Template Distribution Protocol server (for SRI pool integration)
+    if args.tdp_enabled {
+        // Load node key bytes for TDP Noise authentication
+        // The key file contains 32 bytes of private key (+ optional 12 bytes PoW proof)
+        let key_path = data_dir.join("node.key");
+        let key_bytes = std::fs::read(&key_path)
+            .map_err(|e| anyhow::anyhow!("Failed to read node key for TDP: {}", e))?;
+
+        let tdp_secret_key: [u8; 32] = key_bytes[..32].try_into()
+            .expect("Node key must be at least 32 bytes");
+
+        let mut tdp_config = TdpConfig::new(tdp_secret_key);
+        tdp_config.port = args.tdp_port;
+        tdp_config.max_connections = 10;
+        tdp_config.timeout_secs = 30;
+
+        info!(
+            "TDP authority public key: {} (use this in SRI pool config)",
+            tdp_config.authority_pubkey_base58()
+        );
+
+        let tdp_server = TemplateDistributionServer::new(
+            tdp_config,
+            Arc::clone(&template_processor),
+            shutdown_tx.subscribe(),
+        );
+
+        tokio::spawn(async move {
+            if let Err(e) = tdp_server.run().await {
+                error!(error = %e, "TDP server error");
+            }
+        });
+
+        info!(
+            "TDP server listening on port {} (Template Distribution Protocol for SRI pool)",
+            args.tdp_port
+        );
+    }
 
     // Start P2P mesh
     let m = Arc::clone(&mesh);
@@ -814,6 +871,10 @@ async fn main() -> Result<()> {
         if let Some(seq_ep) = sequence_endpoint {
             info!("ZMQ reorg detection connected to {}", seq_ep);
         }
+
+        // IMPORTANT: Keep zmq_subscriber alive for the lifetime of the program.
+        // If dropped, the shutdown channel closes and ZMQ tasks terminate immediately.
+        std::mem::forget(zmq_subscriber);
     }
 
     // Subscribe to template events for job notifications
@@ -1017,10 +1078,66 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start registry client for load balancer registration (if configured)
+    info!("Checking registry config: {:?}", config.registry.is_some());
+    if let Some(ref registry_config) = config.registry {
+        info!("Registry URL: {}", registry_config.url);
+        if !registry_config.url.is_empty() {
+            let host = config
+                .network
+                .public_address
+                .clone()
+                .unwrap_or_else(|| "".to_string());
+
+            if host.is_empty() {
+                warn!("Registry configured but network.public_address is not set - skipping registration");
+            } else if let Some(ref signing_key) = config.network.signing_key {
+                match RegistryClient::new(
+                    signing_key,
+                    registry_config.clone(),
+                    host,
+                    config.network.sv1_port,
+                    stratum_port, // sv2_port
+                    config.network.max_miners,
+                ) {
+                    Ok(registry_client) => {
+                        let ss_for_registry = Arc::clone(&stratum_server);
+                        let registry_shutdown = shutdown_tx.subscribe();
+                        tokio::spawn(async move {
+                            registry_client
+                                .start(
+                                    move || ss_for_registry.miner_count() as u32,
+                                    registry_shutdown,
+                                )
+                                .await;
+                        });
+
+                        info!(
+                            "Registry client started (heartbeat every {}s)",
+                            registry_config.heartbeat_interval_secs
+                        );
+                    }
+                    Err(e) => {
+                        error!("Failed to create registry client: {}", e);
+                    }
+                }
+            } else {
+                warn!("Registry configured but network.signing_key is not set - skipping registration");
+            }
+        }
+    }
+
     // Print startup summary
     info!("════════════════════════════════════════════════════════════════");
     info!("Ghost Pool is ready!");
-    info!("  Stratum:    0.0.0.0:{}", stratum_port);
+    if args.no_stratum {
+        info!("  Stratum:    disabled (TDP mode)");
+    } else {
+        info!("  Stratum:    0.0.0.0:{}", stratum_port);
+    }
+    if args.tdp_enabled {
+        info!("  TDP:        0.0.0.0:{}", args.tdp_port);
+    }
     info!("  HTTP API:   0.0.0.0:{}", http_port);
     info!("  Policy:     {}", policy.name);
     info!("  Shares:     {}/15", capabilities.total_shares());

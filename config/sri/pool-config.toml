@@ -1,0 +1,48 @@
+# Ghost Network - SRI Pool Configuration
+#
+# This pool connects to ghost-pool's Template Distribution Protocol (TDP) server
+# and accepts SV2 connections from translators/miners.
+#
+# Architecture:
+#   ghost-pool (TDP:8442) -> SRI Pool (SV2:34255) -> SRI Translator (SV1:3333) -> BitAxe
+
+# Pool identity keypair (Ed25519)
+# Generate new keypair with: openssl rand -hex 32
+authority_public_key = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+authority_secret_key = "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n"
+cert_validity_sec = 3600
+
+# Listen for SV2 miners/translators (port 34256 - different from ghost-pool's native stratum on 34255)
+listen_address = "0.0.0.0:34256"
+
+# Coinbase reward destination (signet address)
+# This is where block rewards are paid out
+# Format: addr(<signet_address>)
+coinbase_reward_script = "addr(tb1qa0sm0hxzj0x25rh8gw5xlzwlsfvvyz8u96w3p8)"
+
+# Pool identification
+server_id = 1
+pool_signature = "Ghost Network SRI Pool"
+
+# Difficulty settings
+# Shares per minute expected (used for vardiff calculation)
+shares_per_minute = 6.0
+# Batch size for share acknowledgments
+share_batch_size = 10
+
+# Protocol extensions
+supported_extensions = []
+required_extensions = []
+
+# Monitoring endpoint
+monitoring_address = "127.0.0.1:9090"
+
+# Log file (optional)
+# log_file = "/var/log/ghost/sri-pool.log"
+
+# Template Provider Configuration
+# Connects to ghost-pool's TDP server
+[template_provider_type.Sv2Tp]
+address = "127.0.0.1:8442"
+# ghost-pool's TDP authority public key (from --tdp-enabled startup logs)
+public_key = "9bRi8WdawJSqbhc4CjK9UDTCudaBxkNx1a6qaJ4yx5qjnrQgQDF"

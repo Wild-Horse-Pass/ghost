@@ -351,6 +351,101 @@ If L2 completely fails:
 4. Merchant withdraws in batches (low fees)
 ```
 
+## Instant Payments
+
+For small payments (~$100 or less), Ghost Pay supports **optimistic confirmation** - showing "Confirmed" immediately while actual settlement happens on the next virtual block.
+
+### How It Works
+
+```
+1. Customer initiates payment
+2. Merchant wallet checks sender's lock:
+   ├── Is lock Active?
+   ├── Has 6+ confirmations?
+   ├── No pending L1 transactions?
+   ├── Low jump urgency?
+   └── Sufficient balance?
+
+3. If all conditions pass:
+   └── Show "Confirmed ✓" immediately
+
+4. Settlement happens on next virtual block (~10 seconds)
+```
+
+### Instant Payment Conditions
+
+For a payment to qualify as instant, the sender's Ghost Lock must meet:
+
+| Condition | Requirement | Why |
+|-----------|-------------|-----|
+| Active State | Lock is active (not frozen/spent) | Basic validity |
+| Confirmations | 6+ L1 confirmations | Deep enough to trust |
+| Low Jump Urgency | < 50% through rotation window | Not about to rotate |
+| No Pending L1 | No mempool transactions | Can't double-spend |
+| No Pending L2 | No pending L2 transfers | Can't overspend |
+| Sufficient Balance | Balance >= amount | Has the funds |
+| Denomination | Micro or Tiny locks | Risk-appropriate |
+
+### Instant Payment Limits
+
+| Lock Denomination | Max Instant Payment |
+|-------------------|---------------------|
+| Micro (10k sats) | 10,000 sats |
+| Tiny (100k sats) | 100,000 sats |
+| Small+ | 100,000 sats (capped) |
+
+**Maximum instant payment is 100,000 sats (~$100)** regardless of lock size.
+
+### Confidence Scores
+
+Each instant capability check returns a confidence score:
+
+| Confidence | Display | Meaning |
+|------------|---------|---------|
+| 0.95+ | High | Very safe to accept |
+| 0.80-0.95 | Medium | Generally safe |
+| 0.50-0.80 | Low | Exercise caution |
+| < 0.50 | Not instant | Wait for confirmation |
+
+### Example: Coffee Shop
+
+```
+Customer: Pays 5,000 sats for coffee
+Merchant wallet:
+  ├── Checks sender lock: Active, 50 confirmations, low urgency
+  ├── Instant capable: Yes (max 100,000 sats, confidence 0.97)
+  └── Shows: "Confirmed ✓"
+
+Customer leaves with coffee
+Settlement happens ~10 seconds later
+```
+
+### Risk Model
+
+Instant payments are "optimistic" - the merchant trusts that:
+1. The sender won't double-spend (requires L1 tx + 6 confirmations)
+2. Settlement will complete (happens automatically)
+
+**Risk is capped at 100,000 sats** - appropriate for retail transactions.
+
+### For Merchants
+
+Enable instant payments in your wallet:
+
+```bash
+# Check if payment can be instant
+ghost-wallet check-instant --lock lock_abc123 --amount 5000
+
+# Accept instant payment
+ghost-wallet accept-instant --from lock_abc123 --amount 5000
+
+# Output:
+# ✓ Instant payment accepted
+# Payment ID: 0x1234...
+# Settlement block: 847201
+# Confidence: 0.97
+```
+
 ## Related Documentation
 
 - [Ghost Keys](GHOST_KEYS.md) - Recipient addresses

@@ -448,6 +448,159 @@ Response:
 }
 ```
 
+### Instant Payment API
+
+The GSP provides endpoints for instant (optimistic) payment support.
+
+#### Check Instant Capability
+
+```json
+{
+  "type": "CheckInstantCapability",
+  "lock_id": "lock_abc123",
+  "amount_sats": 50000
+}
+```
+
+Response:
+```json
+{
+  "type": "InstantCapabilityResult",
+  "lock_id": "lock_abc123",
+  "capable": true,
+  "max_instant_sats": 100000,
+  "confidence": 0.95,
+  "valid_until_height": 847200,
+  "conditions_met": 255,
+  "conditions_failed": 0,
+  "error": null
+}
+```
+
+#### Subscribe to Lock State
+
+Real-time updates when a lock's state changes (for instant payment monitoring):
+
+```json
+{
+  "type": "SubscribeLockState",
+  "lock_id": "lock_abc123"
+}
+```
+
+Response (initial snapshot):
+```json
+{
+  "type": "LockStateSubscribed",
+  "lock_id": "lock_abc123",
+  "snapshot": {
+    "state": "Active",
+    "balance_sats": 500000,
+    "confirmations": 50,
+    "jump_urgency": 0.05,
+    "in_mempool": false,
+    "pending_l2_sats": 0,
+    "max_instant_sats": 100000,
+    "current_height": 847100
+  }
+}
+```
+
+Push notification (on state change):
+```json
+{
+  "type": "LockStateUpdate",
+  "lock_id": "lock_abc123",
+  "snapshot": {
+    "state": "Active",
+    "balance_sats": 495000,
+    "confirmations": 51,
+    "jump_urgency": 0.05,
+    "in_mempool": false,
+    "pending_l2_sats": 0,
+    "max_instant_sats": 100000,
+    "current_height": 847101
+  },
+  "change_type": "balance_change",
+  "timestamp": 1706460000
+}
+```
+
+Change types: `balance_change`, `state_transition`, `confirmation`, `jump_urgency`, `mempool_change`, `pending_l2_change`
+
+#### Unsubscribe from Lock State
+
+```json
+{
+  "type": "UnsubscribeLockState",
+  "lock_id": "lock_abc123"
+}
+```
+
+Response:
+```json
+{
+  "type": "LockStateUnsubscribed",
+  "lock_id": "lock_abc123"
+}
+```
+
+#### Accept Instant Payment (Merchant)
+
+```json
+{
+  "type": "AcceptInstantPayment",
+  "sender_lock_id": "lock_abc123",
+  "amount_sats": 5000,
+  "proof": {
+    "public_key": "02abc...",
+    "signature": "3045...",
+    "challenge": "merchant-challenge",
+    "timestamp": 1706460000
+  }
+}
+```
+
+Response:
+```json
+{
+  "type": "InstantPaymentAccepted",
+  "payment_id": "0x1234abcd...",
+  "sender_lock_id": "lock_abc123",
+  "amount_sats": 5000,
+  "settlement_block": 847201,
+  "confidence": 0.97,
+  "timestamp": 1706460000
+}
+```
+
+Settlement notification (sent when payment settles):
+```json
+{
+  "type": "InstantPaymentSettled",
+  "payment_id": "0x1234abcd...",
+  "settled_at_height": 847201,
+  "success": true
+}
+```
+
+### Instant Payment Conditions
+
+The GSP evaluates 8 conditions for instant capability:
+
+| Bit | Condition | Description |
+|-----|-----------|-------------|
+| 0 | ActiveState | Lock is in Active state |
+| 1 | SufficientConfirmations | 6+ L1 confirmations |
+| 2 | DenominationEligible | Micro/Tiny denomination |
+| 3 | LowJumpUrgency | < 50% through rotation |
+| 4 | RecoveryWindowSafe | > 50% recovery remaining |
+| 5 | NoPendingL1 | No mempool transactions |
+| 6 | NoPendingL2 | No pending L2 payments |
+| 7 | SufficientBalance | Balance >= amount |
+
+The `conditions_met` and `conditions_failed` fields are bitmaps of these conditions.
+
 ## Rate Limiting
 
 GSP implements rate limiting to prevent abuse:

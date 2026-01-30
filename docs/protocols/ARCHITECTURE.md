@@ -35,36 +35,30 @@ System design and component overview for Bitcoin Ghost.
 ## High-Level Overview
 
 ```
-                                ┌─────────────────┐
-                                │   Coordinator   │
-                                │  (Miner Routing)│
-                                └────────┬────────┘
-                                         │ Routes miners to
-                                         │ optimal nodes
-                ┌────────────────────────┼────────────────────────┐
-                │                        │                        │
-       ┌────────▼────────┐      ┌────────▼────────┐      ┌────────▼────────┐
-       │   Ghost Node 1  │◄────►│   Ghost Node 2  │◄────►│   Ghost Node N  │
-       │  (Pool + Core)  │      │  (Pool + Core)  │      │  (Pool + Core)  │
-       └────────┬────────┘      └────────┬────────┘      └────────┬────────┘
-                │                        │                        │
-                │ P2P Consensus (ZMQ Mesh)                        │
-                └────────────────────────┴────────────────────────┘
-                │                        │                        │
-       ┌────────▼────────┐      ┌────────▼────────┐      ┌────────▼────────┐
-       │    Miners       │      │    Miners       │      │    Miners       │
-       │  (SV1/SV2)      │      │  (SV1/SV2)      │      │  (SV1/SV2)      │
-       └─────────────────┘      └─────────────────┘      └─────────────────┘
+       ┌────────────────┐      ┌────────────────┐      ┌────────────────┐
+       │  Ghost Node 1  │◄────►│  Ghost Node 2  │◄────►│  Ghost Node N  │
+       │ (Pool + Core)  │      │ (Pool + Core)  │      │ (Pool + Core)  │
+       └───────┬────────┘      └───────┬────────┘      └───────┬────────┘
+               │                       │                       │
+               │     P2P Consensus (ZMQ Mesh)                  │
+               └───────────────────────┴───────────────────────┘
+               │                       │                       │
+       ┌───────▼───────┐      ┌───────▼───────┐      ┌───────▼───────┐
+       │    Miners     │      │    Miners     │      │    Miners     │
+       │   (SV1/SV2)   │      │   (SV1/SV2)   │      │   (SV1/SV2)   │
+       └───────────────┘      └───────────────┘      └───────────────┘
+
+Miners use Node Finder (web tool) to discover nodes and test latency.
 ```
 
 ## Binary Components
 
 | Binary | Description | Required |
 |--------|-------------|----------|
-| `ghost-pool` | Mining pool with Stratum, consensus, accounting, verification | Yes |
+| `ghost-pool` | Mining pool with Stratum/TDP, consensus, accounting, verification | Yes |
 | `ghost-core` | Bitcoin Core v30.1 fork with Ghost Pay L1 integration | Yes |
-| `translator` | SV1→SV2 proxy for protocol translation | Optional |
-| `ghost-coordinator` | Stateless miner routing service | One per network |
+| `pool-sv2` | SRI Pool - SV2 protocol distribution (TDP mode) | For SV2 |
+| `translator-sv1` | SRI Translator - SV1↔SV2 conversion (TDP mode) | For SV1 miners |
 | `ghost-pay` | L2 payment network node | Optional |
 | `ghost-cli` | Administration CLI for pool management | Yes |
 
@@ -87,7 +81,6 @@ bitcoin-ghost/
 │   └── ghost-reconciliation/# L1 settlement
 ├── bins/
 │   ├── ghost-pool/          # Main pool node
-│   ├── ghost-coordinator/   # Load balancer
 │   ├── ghost-pay/           # L2 payment node
 │   ├── ghost-cli/           # Admin CLI
 │   └── translator/          # SV1↔SV2 bridge
@@ -121,16 +114,58 @@ bitcoin-ghost/
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### TDP Mode (SRI Integration)
+
+For Stratum V2 support, ghost-pool can run in TDP mode, serving block templates to SRI:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                  Ghost Node (TDP Mode)                           │
+├─────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐                               │
+│  │ Ghost Pool  │  │ Ghost Core  │                               │
+│  │   (TDP)     │◄─┤  (Bitcoin)  │                               │
+│  │ Port 8442   │  └─────────────┘                               │
+│  └──────┬──────┘       │ RPC                                    │
+│         │              ▼                                        │
+│         │    ┌─────────────────┐                                │
+│         └───►│ Template Filter │  ◄── BUDS/Policy applied       │
+│              │ (Block Builder) │                                │
+│              └────────┬────────┘                                │
+│                       │ Noise encrypted                         │
+│                       ▼                                         │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │                  SRI Components                             │ │
+│  │  ┌───────────┐           ┌─────────────┐                   │ │
+│  │  │ SRI Pool  │──────────►│ Translator  │                   │ │
+│  │  │ Port 34256│   SV2     │  Port 3333  │                   │ │
+│  │  └───────────┘           └──────┬──────┘                   │ │
+│  │                                  │ SV1                      │ │
+│  └────────────────────────────────────────────────────────────┘ │
+│                                     │                           │
+│  ┌─────────────┐  ┌─────────────┐   ▼                          │
+│  │  Consensus  │  │ HTTP API    │ Miners                       │
+│  │  (ZMQ Mesh) │  │ (Verify)    │ (BitAxe, etc.)               │
+│  └─────────────┘  └─────────────┘                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**TDP Mode CLI Flags:**
+- `--tdp-enabled` - Enable TDP server
+- `--tdp-port 8442` - TDP port (Noise encrypted)
+- `--no-stratum` - Disable native stratum (use SRI instead)
+
 ## Network Ports
 
 ### External Ports (Firewall Open)
 
 | Port | Protocol | Component | Purpose |
 |------|----------|-----------|---------|
-| 3333 | TCP/JSON | ghost-pool | SV1 Stratum (miners) |
-| 34255 | TCP/Noise | (reserved) | SV2 Stratum (future) |
+| 34255 | TCP/JSON | ghost-pool | Native Stratum (SV1 miners) |
+| 8442 | TCP/Noise | ghost-pool | TDP server (SRI integration) |
+| 34256 | TCP/Noise | SRI Pool | SV2 connections (TDP mode) |
+| 3333 | TCP/JSON | SRI Translator | SV1 miners (TDP mode) |
 | 8080 | HTTP | ghost-pool | Verification API |
-| 8333 | TCP | ghost-coordinator | Initial miner connection |
 | 8333 | TCP | ghost-core | Bitcoin P2P (mainnet) |
 
 ### Internal Ports (localhost)
@@ -156,15 +191,29 @@ bitcoin-ghost/
 
 ## Data Flow
 
-### Block Template Flow
+### Block Template Flow (Native Stratum)
 
 ```
-1. Bitcoin Core → getblocktemplate RPC
+1. ghost-core → getblocktemplate RPC
 2. Ghost Pool receives template
 3. BUDS Policy Filter applied
 4. Merkle tree rebuilt
 5. Coinbase constructed (pre-consensus payouts)
-6. Template distributed to miners via Stratum
+6. Template distributed to miners via Stratum (port 34255)
+```
+
+### Block Template Flow (TDP Mode)
+
+```
+1. ghost-core → getblocktemplate RPC
+2. Ghost Pool receives template
+3. BUDS Policy Filter applied
+4. Merkle tree rebuilt
+5. Coinbase constructed (pre-consensus payouts)
+6. Template sent via TDP (Noise encrypted, port 8442)
+   → SRI Pool receives template
+   → SRI Pool distributes to SV2 miners (port 34256)
+   → SRI Translator converts for SV1 miners (port 3333)
 ```
 
 ### Share Flow
@@ -251,17 +300,6 @@ Additional requirements:
 - More storage for L2 state
 - Additional ports for L2 protocols
 
-### Coordinator
-
-```
-ghost-coordinator (standalone)
-```
-
-Requirements:
-- Minimal resources
-- Public IP
-- Low latency to pool nodes
-
 ## Security Model
 
 ### Trust Assumptions
@@ -271,7 +309,6 @@ Requirements:
 | Ghost Core | Trusted (local process) |
 | Pool Nodes | Untrusted (Byzantine fault tolerant) |
 | Miners | Untrusted (verify all shares) |
-| Coordinator | Untrusted (only routes, no funds) |
 
 ### Key Security Properties
 
@@ -285,7 +322,7 @@ Requirements:
 ### Horizontal Scaling
 
 - Add more pool nodes (P2P mesh scales)
-- Coordinator load balances across nodes
+- Node Finder helps miners discover optimal nodes
 - Each node handles ~10,000 miners
 
 ### Vertical Scaling

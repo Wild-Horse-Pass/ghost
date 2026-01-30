@@ -338,13 +338,11 @@
             </div>
             
             <div class="wizard-field">
-              <label>Region</label>
+              <label>Region (<a href="node-finder.html" style="color: var(--orange); font-size: 12px;">find best node</a>)</label>
               <select id="region-select">
-                <option value="auto">Auto-select (lowest latency)</option>
-                <option value="us-west">US West (Los Angeles)</option>
-                <option value="us-east">US East (New York)</option>
-                <option value="eu">Europe (Frankfurt)</option>
-                <option value="asia">Asia (Singapore)</option>
+                <option value="eu">Europe (eu.pool.bitcoinghost.org)</option>
+                <option value="us">North America (us.pool.bitcoinghost.org)</option>
+                <option value="asia">Asia-Pacific (asia.pool.bitcoinghost.org)</option>
               </select>
             </div>
           </div>
@@ -356,7 +354,7 @@
               
               <div style="margin-bottom: 20px;">
                 <div style="font-size: 11px; color: var(--gray-500); margin-bottom: 6px;">URL</div>
-                <div style="font-family: var(--font-mono); font-size: 14px; color: var(--cyan); word-break: break-all; background: var(--gray-900); padding: 12px; border-radius: 8px;">stratum+tcp://pool.bitcoinghost.org:3333</div>
+                <div id="stratum-url" style="font-family: var(--font-mono); font-size: 14px; color: var(--cyan); word-break: break-all; background: var(--gray-900); padding: 12px; border-radius: 8px;">stratum+tcp://eu.pool.bitcoinghost.org:3333</div>
               </div>
               
               <div style="margin-bottom: 20px;">
@@ -399,38 +397,58 @@
     </div>
   </section>
 
-  <!-- Stratum Endpoints -->
+  <!-- Regional Endpoints -->
   <section>
     <div class="container">
-      <h2 class="section-title">Stratum Endpoints</h2>
-      <p class="section-subtitle">Fire Ping load balancing automatically routes you to the lowest-latency node.</p>
+      <h2 class="section-title">Regional Pool Endpoints</h2>
+      <p class="section-subtitle">Connect to the nearest region for lowest latency. <a href="node-finder.html" style="color: var(--orange);">Use Node Finder</a> to discover the best endpoint.</p>
 
-      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; margin-top: 40px;">
-        <div style="background: linear-gradient(135deg, rgba(247, 147, 26, 0.1) 0%, var(--gray-900) 100%); border: 1px solid var(--orange); border-radius: 16px; padding: 28px;">
-          <div style="display: inline-block; padding: 4px 10px; background: var(--orange); border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--black); margin-bottom: 12px; text-transform: uppercase;">Recommended</div>
-          <h3 style="font-size: 20px; font-weight: 600; color: var(--white); margin-bottom: 8px;">Stratum V1 (SV1)</h3>
-          <div style="font-family: var(--font-mono); font-size: 14px; color: var(--cyan); background: var(--black); padding: 14px 18px; border-radius: 8px; margin: 16px 0; word-break: break-all;">stratum+tcp://pool.bitcoinghost.org:3333</div>
-          <p style="font-size: 14px; color: var(--gray-400); line-height: 1.6;">Most compatible. Works with all ASIC miners (Antminer, Whatsminer, Avalon) and software miners (CGMiner, BFGMiner).</p>
-          <div style="display: flex; gap: 16px; margin-top: 16px; font-size: 12px; color: var(--gray-500);">
-            <span style="display: flex; align-items: center; gap: 6px;"><span style="width: 8px; height: 8px; background: var(--green); border-radius: 50%;"></span> Fire Ping Enabled</span>
-            <span>Port 3333</span>
-          </div>
+      <!-- Regional endpoints grid -->
+      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 40px;">
+        <div style="background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 24px; text-align: center;">
+          <div style="font-size: 32px; margin-bottom: 12px;">🇪🇺</div>
+          <h3 style="font-size: 18px; font-weight: 600; color: var(--white); margin-bottom: 8px;">Europe</h3>
+          <div style="font-family: var(--font-mono); font-size: 12px; color: var(--cyan); background: var(--black); padding: 12px; border-radius: 8px; margin: 12px 0; word-break: break-all;">eu.pool.bitcoinghost.org:3333</div>
+          <p style="font-size: 13px; color: var(--gray-400);">Frankfurt, Germany</p>
         </div>
 
-        <div style="background: linear-gradient(135deg, rgba(0, 212, 255, 0.1) 0%, var(--gray-900) 100%); border: 1px solid var(--cyan); border-radius: 16px; padding: 28px;">
-          <div style="display: inline-block; padding: 4px 10px; background: var(--cyan); border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--black); margin-bottom: 12px; text-transform: uppercase;">High Performance</div>
-          <h3 style="font-size: 20px; font-weight: 600; color: var(--white); margin-bottom: 8px;">Stratum V2 (SV2)</h3>
-          <div style="font-family: var(--font-mono); font-size: 14px; color: var(--cyan); background: var(--black); padding: 14px 18px; border-radius: 8px; margin: 16px 0; word-break: break-all;">stratum+tcp://pool.bitcoinghost.org:34255</div>
-          <p style="font-size: 14px; color: var(--gray-400); line-height: 1.6;">Next-gen protocol with encrypted connections, reduced bandwidth, and job negotiation. Requires SV2-compatible firmware.</p>
-          <div style="display: flex; gap: 16px; margin-top: 16px; font-size: 12px; color: var(--gray-500);">
-            <span style="display: flex; align-items: center; gap: 6px;"><span style="width: 8px; height: 8px; background: var(--green); border-radius: 50%;"></span> Fire Ping Enabled</span>
-            <span>Port 34255</span>
-          </div>
+        <div style="background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 24px; text-align: center;">
+          <div style="font-size: 32px; margin-bottom: 12px;">🇺🇸</div>
+          <h3 style="font-size: 18px; font-weight: 600; color: var(--white); margin-bottom: 8px;">North America</h3>
+          <div style="font-family: var(--font-mono); font-size: 12px; color: var(--cyan); background: var(--black); padding: 12px; border-radius: 8px; margin: 12px 0; word-break: break-all;">us.pool.bitcoinghost.org:3333</div>
+          <p style="font-size: 13px; color: var(--gray-400);">Multiple US locations</p>
+        </div>
+
+        <div style="background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 24px; text-align: center;">
+          <div style="font-size: 32px; margin-bottom: 12px;">🌏</div>
+          <h3 style="font-size: 18px; font-weight: 600; color: var(--white); margin-bottom: 8px;">Asia-Pacific</h3>
+          <div style="font-family: var(--font-mono); font-size: 12px; color: var(--cyan); background: var(--black); padding: 12px; border-radius: 8px; margin: 12px 0; word-break: break-all;">asia.pool.bitcoinghost.org:3333</div>
+          <p style="font-size: 13px; color: var(--gray-400);">Singapore / Sydney</p>
         </div>
       </div>
 
-      <div style="margin-top: 32px; text-align: center;">
-        <a href="fire-ping.html" style="color: var(--orange); font-size: 14px; text-decoration: none;">Learn more about Fire Ping load balancing →</a>
+      <!-- Find best endpoint CTA -->
+      <div style="margin-top: 32px; padding: 24px; background: rgba(247, 147, 26, 0.1); border: 1px solid rgba(247, 147, 26, 0.3); border-radius: 12px; text-align: center;">
+        <div style="font-weight: 600; color: var(--orange); margin-bottom: 8px;">Not sure which node to use?</div>
+        <p style="font-size: 14px; color: var(--gray-300); margin-bottom: 16px;">Use Node Finder to discover all available pool nodes and test latency from your location.</p>
+        <a href="node-finder.html" class="btn btn-primary">Open Node Finder</a>
+      </div>
+
+      <!-- Protocol info -->
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; margin-top: 40px;">
+        <div style="background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 28px;">
+          <div style="display: inline-block; padding: 4px 10px; background: var(--orange); border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--black); margin-bottom: 12px; text-transform: uppercase;">Most Compatible</div>
+          <h3 style="font-size: 20px; font-weight: 600; color: var(--white); margin-bottom: 8px;">Stratum V1 (SV1)</h3>
+          <p style="font-size: 14px; color: var(--gray-400); line-height: 1.6; margin-bottom: 12px;">Works with all ASIC miners (Antminer, Whatsminer, Avalon, BitAxe) and software miners (CGMiner, BFGMiner).</p>
+          <div style="font-size: 12px; color: var(--gray-500);">Port: <span style="color: var(--cyan);">3333</span></div>
+        </div>
+
+        <div style="background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 28px;">
+          <div style="display: inline-block; padding: 4px 10px; background: var(--cyan); border-radius: 4px; font-size: 11px; font-weight: 600; color: var(--black); margin-bottom: 12px; text-transform: uppercase;">High Performance</div>
+          <h3 style="font-size: 20px; font-weight: 600; color: var(--white); margin-bottom: 8px;">Stratum V2 (SV2)</h3>
+          <p style="font-size: 14px; color: var(--gray-400); line-height: 1.6; margin-bottom: 12px;">Next-gen protocol with encryption and reduced bandwidth. Requires SV2-compatible firmware or translator.</p>
+          <div style="font-size: 12px; color: var(--gray-500);">Port: <span style="color: var(--cyan);">34255</span> (via SRI translator)</div>
+        </div>
       </div>
     </div>
   </section>
@@ -499,5 +517,44 @@
       </div>
     </div>
   </footer>
+
+  <script>
+    // Regional endpoints
+    const REGIONS = {
+      'eu': { subdomain: 'eu.pool.bitcoinghost.org', name: 'Europe' },
+      'us': { subdomain: 'us.pool.bitcoinghost.org', name: 'North America' },
+      'asia': { subdomain: 'asia.pool.bitcoinghost.org', name: 'Asia-Pacific' }
+    };
+
+    // Update stratum URL when region changes
+    function updateStratumUrl() {
+      const region = document.getElementById('region-select').value;
+      const protocol = document.getElementById('protocol-select').value;
+      const port = protocol === 'sv2' ? 34255 : 3333;
+      const subdomain = REGIONS[region]?.subdomain || 'eu.pool.bitcoinghost.org';
+
+      document.getElementById('stratum-url').textContent = `stratum+tcp://${subdomain}:${port}`;
+    }
+
+    // Update username display when inputs change
+    function updateUsername() {
+      const address = document.getElementById('payout-address').value || 'YOUR_BTC_ADDRESS';
+      const worker = document.getElementById('worker-name').value || 'worker1';
+      // Find the username display element and update it
+      const usernameEl = document.querySelector('[style*="color: var(--green)"]');
+      if (usernameEl) {
+        usernameEl.textContent = `${address}.${worker}`;
+      }
+    }
+
+    // Event listeners
+    document.getElementById('region-select').addEventListener('change', updateStratumUrl);
+    document.getElementById('protocol-select').addEventListener('change', updateStratumUrl);
+    document.getElementById('payout-address').addEventListener('input', updateUsername);
+    document.getElementById('worker-name').addEventListener('input', updateUsername);
+
+    // Initialize
+    updateStratumUrl();
+  </script>
 </body>
 </html>

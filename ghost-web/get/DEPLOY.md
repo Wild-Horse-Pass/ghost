@@ -106,7 +106,7 @@ gpg --verify install.sh.sig install.sh
 
 The stats page at `https://bitcoinghost.org/stats.html` fetches data from
 `https://pool.bitcoinghost.org/api/v1/stats`. You need to configure nginx
-on the Pool VM to proxy these requests to the ghost-coordinator.
+on the Pool VM to proxy these requests to ghost-pool.
 
 Add this to your Pool VM nginx configuration:
 
@@ -114,7 +114,7 @@ Add this to your Pool VM nginx configuration:
 # Add this location block to your pool.bitcoinghost.org server block
 
 location /api/v1/ {
-    proxy_pass http://127.0.0.1:8334/api/v1/;
+    proxy_pass http://127.0.0.1:8080/api/v1/;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -146,20 +146,20 @@ sudo nginx -t && sudo systemctl reload nginx
 
 ```bash
 # Direct test (from Pool VM)
-curl http://localhost:8334/api/v1/stats
+curl http://localhost:8080/api/v1/stats
 
 # Via nginx proxy
 curl https://pool.bitcoinghost.org/api/v1/stats
 
 # Test nodes endpoint
-curl https://pool.bitcoinghost.org/api/v1/nodes
+curl https://pool.bitcoinghost.org/api/v1/network/public-nodes
 ```
 
 ## Troubleshooting
 
 ### Stats page shows placeholders
-- Check if ghost-coordinator is running: `systemctl status ghost-coordinator`
-- Check coordinator logs: `journalctl -u ghost-coordinator -f`
+- Check if ghost-pool is running: `systemctl status ghost-pool`
+- Check pool logs: `journalctl -u ghost-pool -f`
 - Verify nginx proxy: `curl -v https://pool.bitcoinghost.org/api/v1/stats`
 
 ### CORS errors in browser console

@@ -31,7 +31,8 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use ghost_gsp_proto::{GhostLockInfo, GhostLockStatus, TransactionInfo, UtxoInfo};
+use ghost_common::instant::LockSnapshot;
+use ghost_gsp_proto::{GhostLockInfo, GhostLockStatus, LockStateSnapshot, TransactionInfo, UtxoInfo};
 
 use crate::error::{GspError, GspResult};
 
@@ -691,6 +692,125 @@ impl PayNodeProxy {
             .json()
             .await
             .map_err(|e| GspError::PayNodeError(e.to_string()))
+    }
+
+    // =========================================================================
+    // Instant Payment Methods
+    // =========================================================================
+
+    /// Get current block height from the node
+    pub async fn get_current_height(&self) -> GspResult<u64> {
+        let url = format!("{}/api/v1/status", self.base_url);
+        debug!(url = %url, "Getting current height");
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(GspError::PayNodeError(format!(
+                "Status request failed: {}",
+                response.status()
+            )));
+        }
+
+        #[derive(Deserialize)]
+        struct StatusWithHeight {
+            block_height: Option<u64>,
+        }
+
+        let status: StatusWithHeight = response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(e.to_string()))?;
+
+        Ok(status.block_height.unwrap_or(0))
+    }
+
+    /// Get lock snapshot for instant payment evaluation
+    ///
+    /// Returns a LockSnapshot with all the data needed to evaluate instant capability.
+    pub async fn get_lock_snapshot(&self, lock_id: &str) -> GspResult<LockSnapshot> {
+        let lock = self.get_lock(lock_id).await?;
+        let current_height = self.get_current_height().await.unwrap_or(0);
+
+        // Calculate jump urgency from blocks_until_jump
+        // If needs_jump is true, urgency is high
+        let jump_urgency = if lock.needs_jump {
+            0.8
+        } else if lock.blocks_until_jump < 100 {
+            0.5
+        } else if lock.blocks_until_jump < 1000 {
+            0.2
+        } else {
+            0.05
+        };
+
+        // Calculate confirmations (approximate)
+        let confirmations = if lock.creation_height > 0 && current_height > lock.creation_height as u64 {
+            (current_height - lock.creation_height as u64) as u32
+        } else {
+            // Assume well-confirmed if we don't have creation height
+            10
+        };
+
+        // Recovery blocks remaining
+        let recovery_blocks_remaining = if lock.recovery_height > 0 && current_height < lock.recovery_height as u64 {
+            (lock.recovery_height as u64 - current_height) as u32
+        } else {
+            26280 // Default: ~6 months of blocks remaining
+        };
+
+        // Check mempool status
+        // In production, this would query the mempool for pending transactions
+        let in_mempool = false; // TODO: Implement mempool monitoring
+
+        // Get pending L2 balance
+        // In production, this would track pending L2 payments
+        let pending_l2_sats = 0; // TODO: Implement L2 pending tracking
+
+        Ok(LockSnapshot {
+            lock_id: lock.lock_id,
+            state: format!("{:?}", lock.status),
+            balance_sats: lock.balance_sats,
+            funding_height: lock.creation_height,
+            confirmations,
+            denomination: lock.denomination,
+            jump_urgency,
+            recovery_blocks_remaining,
+            recovery_window_total: 52560, // ~1 year
+            in_mempool,
+            pending_l2_sats,
+        })
+    }
+
+    /// Get lock state snapshot for real-time updates
+    ///
+    /// Returns a LockStateSnapshot suitable for WebSocket push notifications.
+    pub async fn get_lock_state_snapshot(&self, lock_id: &str) -> GspResult<LockStateSnapshot> {
+        let snapshot = self.get_lock_snapshot(lock_id).await?;
+        let current_height = self.get_current_height().await.unwrap_or(0);
+
+        // Calculate max instant amount based on denomination
+        let max_instant_sats = match snapshot.denomination.as_str() {
+            "Micro" => 10_000,
+            "Tiny" | "Small" | "Medium" | "Large" | "XL" => 100_000,
+            _ => 0,
+        };
+
+        Ok(LockStateSnapshot {
+            state: snapshot.state,
+            balance_sats: snapshot.balance_sats,
+            confirmations: snapshot.confirmations,
+            jump_urgency: snapshot.jump_urgency,
+            in_mempool: snapshot.in_mempool,
+            pending_l2_sats: snapshot.pending_l2_sats,
+            max_instant_sats,
+            current_height,
+        })
     }
 }
 

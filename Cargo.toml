@@ -37,6 +37,8 @@ members = [
     "crates/ghost-locks",
     "crates/wraith-protocol",
     "crates/ghost-reconciliation",
+    # ZK-BFT Infrastructure
+    "crates/ghost-zkp",
     # GSP & Light Wallet
     "crates/ghost-gsp-proto",
     "crates/ghost-gsp",
@@ -47,7 +49,6 @@ members = [
     # Node Binaries
     "bins/ghost-pool",
     "bins/translator",
-    "bins/ghost-coordinator",
     "bins/ghost-pay",
     "bins/ghost-cli",
     "bins/ghost-gsp",
@@ -79,6 +80,8 @@ ghost-keys = { path = "crates/ghost-keys" }
 ghost-locks = { path = "crates/ghost-locks" }
 wraith-protocol = { path = "crates/wraith-protocol" }
 ghost-reconciliation = { path = "crates/ghost-reconciliation" }
+# ZK-BFT Infrastructure
+ghost-zkp = { path = "crates/ghost-zkp" }
 # GSP & Light Wallet crates
 ghost-gsp-proto = { path = "crates/ghost-gsp-proto" }
 ghost-gsp = { path = "crates/ghost-gsp" }

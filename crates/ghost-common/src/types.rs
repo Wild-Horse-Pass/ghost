@@ -100,6 +100,7 @@ impl NodeCapabilities {
 
 /// Capacity state for load balancing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CapacityState {
     /// Below 50% capacity
     Healthy,

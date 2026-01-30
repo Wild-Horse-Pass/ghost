@@ -1,0 +1,535 @@
+<!--
+|======================================================================================================================|
+|                                                                                                                      |
+|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+|       ░              ░                                                                                               |
+|----------------------------------------------------------------------------------------------------------------------|
+|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+|----------------------------------------------------------------------------------------------------------------------|
+| PROJECT: Bitcoin Ghost                                                                                               |
+| REPO: https://github.com/bitcoin-ghost                                                                               |
+| WEB: https://bitcoinghost.org/                                                                                       |
+| LICENSE: MIT                                                                                                         |
+| FILE: node-finder.html                                                                                               |
+|======================================================================================================================|
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Node Finder | Bitcoin Ghost</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --black: #050505; --darker: #0a0a0a; --dark: #0f0f0f;
+      --gray-900: #141414; --gray-800: #1a1a1a; --gray-700: #242424;
+      --gray-600: #333333; --gray-500: #4a4a4a; --gray-400: #666666;
+      --gray-300: #888888; --gray-200: #aaaaaa; --gray-100: #cccccc;
+      --white: #f0f0f0;
+      --orange: #f7931a; --orange-light: #ffb347;
+      --cyan: #00d4ff; --green: #00ff88; --red: #ff4444; --yellow: #ffcc00;
+      --font-display: 'Outfit', system-ui, sans-serif;
+      --font-mono: 'Geist Mono', monospace;
+    }
+    html { scroll-behavior: smooth; }
+    body { font-family: var(--font-display); background: var(--black); color: var(--gray-100); line-height: 1.6; }
+    ::selection { background: var(--orange); color: var(--black); }
+    .container { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
+
+    nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; padding: 16px 0; background: rgba(5, 5, 5, 0.9); backdrop-filter: blur(20px); border-bottom: 1px solid var(--gray-800); }
+    .nav-inner { display: flex; align-items: center; justify-content: space-between; max-width: 1400px; margin: 0 auto; padding: 0 24px; }
+    .logo { display: flex; align-items: center; gap: 12px; text-decoration: none; color: var(--white); }
+    .logo-icon { width: 40px; height: 40px; border-radius: 10px; overflow: hidden; }
+    .logo-icon img { width: 100%; height: 100%; object-fit: contain; }
+    .logo-text { font-weight: 700; font-size: 20px; }
+    .logo-text span { color: var(--orange); }
+    .nav-links { display: flex; gap: 8px; }
+    .nav-links a { color: var(--gray-300); text-decoration: none; padding: 8px 16px; font-size: 14px; font-weight: 500; border-radius: 8px; transition: all 0.2s; }
+    .nav-links a:hover { color: var(--white); background: var(--gray-800); }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; font-family: var(--font-display); font-size: 14px; font-weight: 600; border-radius: 8px; text-decoration: none; transition: all 0.2s; border: none; cursor: pointer; }
+    .btn-primary { background: var(--orange); color: var(--black); }
+    .btn-primary:hover { background: var(--orange-light); }
+    .btn-secondary { background: transparent; color: var(--gray-200); border: 1px solid var(--gray-700); }
+    .btn-secondary:hover { border-color: var(--gray-500); color: var(--white); }
+
+    .page-header { padding: 140px 0 48px; text-align: center; }
+    .page-title { font-size: clamp(36px, 5vw, 52px); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 16px; }
+    .page-title span { background: linear-gradient(135deg, var(--orange), var(--orange-light)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .page-subtitle { font-size: 18px; color: var(--gray-400); max-width: 600px; margin: 0 auto; }
+
+    .finder-section { padding: 40px 0 80px; }
+
+    .finder-card { background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 20px; padding: 32px; margin-bottom: 24px; }
+    .finder-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; flex-wrap: wrap; gap: 16px; }
+    .finder-title { font-size: 20px; font-weight: 600; color: var(--white); }
+    .finder-status { font-size: 14px; color: var(--gray-400); }
+
+    #find-nodes { font-size: 16px; padding: 12px 24px; }
+    #find-nodes:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .results-table { width: 100%; border-collapse: collapse; }
+    .results-table th { text-align: left; padding: 12px 16px; font-size: 12px; font-weight: 600; color: var(--gray-400); text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid var(--gray-700); }
+    .results-table td { padding: 16px; border-bottom: 1px solid var(--gray-800); vertical-align: middle; }
+    .results-table tr:last-child td { border-bottom: none; }
+    .results-table tr.best { background: rgba(247, 147, 26, 0.1); }
+    .results-table tr.best td:first-child { position: relative; }
+    .results-table tr.best td:first-child::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--orange); }
+
+    .node-cell { display: flex; flex-direction: column; gap: 4px; }
+    .node-name { font-weight: 600; color: var(--white); }
+    .node-host { font-family: var(--font-mono); font-size: 12px; color: var(--gray-400); }
+
+    .latency-cell { font-family: var(--font-mono); font-size: 16px; }
+    .latency-cell.good { color: var(--green); }
+    .latency-cell.medium { color: var(--yellow); }
+    .latency-cell.poor { color: var(--orange); }
+    .latency-cell.bad { color: var(--red); }
+    .latency-cell.testing { color: var(--gray-400); }
+    .latency-cell.error { color: var(--red); }
+
+    .status-badge { display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+    .status-badge.available { background: rgba(0, 255, 136, 0.2); color: var(--green); }
+    .status-badge.busy { background: rgba(255, 204, 0, 0.2); color: var(--yellow); }
+    .status-badge.full { background: rgba(255, 68, 68, 0.2); color: var(--red); }
+    .status-badge.unknown { background: var(--gray-700); color: var(--gray-400); }
+    .status-badge.offline { background: rgba(255, 68, 68, 0.2); color: var(--red); }
+
+    .connect-btn { padding: 6px 12px; font-size: 12px; }
+
+    .recommendation { margin-top: 32px; padding: 24px; background: rgba(247, 147, 26, 0.1); border: 1px solid rgba(247, 147, 26, 0.3); border-radius: 12px; display: none; }
+    .recommendation.show { display: block; }
+    .recommendation-title { font-size: 18px; font-weight: 600; color: var(--orange); margin-bottom: 12px; }
+    .recommendation-endpoint { font-family: var(--font-mono); font-size: 14px; background: var(--black); padding: 16px; border-radius: 8px; margin: 16px 0; color: var(--cyan); word-break: break-all; }
+    .recommendation p { font-size: 14px; color: var(--gray-300); }
+
+    .copy-btn { background: var(--gray-700); color: var(--white); border: none; padding: 8px 16px; border-radius: 6px; font-size: 12px; cursor: pointer; margin-top: 12px; }
+    .copy-btn:hover { background: var(--gray-600); }
+    .copy-btn.copied { background: var(--green); color: var(--black); }
+
+    .info-box { background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 12px; padding: 20px; margin-top: 24px; }
+    .info-box h3 { font-size: 14px; font-weight: 600; color: var(--white); margin-bottom: 8px; }
+    .info-box p { font-size: 13px; color: var(--gray-400); line-height: 1.6; }
+
+    .empty-state { text-align: center; padding: 48px; color: var(--gray-400); }
+    .empty-state p { margin-bottom: 16px; }
+
+    footer { padding: 48px 0 32px; background: var(--darker); border-top: 1px solid var(--gray-800); }
+    .footer-inner { max-width: 1200px; margin: 0 auto; padding: 0 24px; display: flex; justify-content: space-between; align-items: center; }
+    .footer-left { display: flex; align-items: center; gap: 32px; }
+    .footer-links { display: flex; gap: 24px; }
+    .footer-links a { color: var(--gray-400); text-decoration: none; font-size: 14px; }
+    .footer-links a:hover { color: var(--white); }
+    .footer-right { font-size: 13px; color: var(--gray-500); }
+
+    @media (max-width: 768px) {
+      .nav-links { display: none; }
+      .finder-header { flex-direction: column; align-items: stretch; }
+      .results-table th:nth-child(3), .results-table td:nth-child(3) { display: none; }
+      .footer-inner { flex-direction: column; gap: 24px; text-align: center; }
+      .footer-left { flex-direction: column; gap: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="nav-inner">
+      <a href="index.html" class="logo">
+        <div class="logo-icon"><img src="logo.png" alt="Bitcoin Ghost"></div>
+        <div class="logo-text">Bitcoin<span>Ghost</span></div>
+      </a>
+      <div class="nav-links">
+        <a href="index.html">Home</a>
+        <a href="network.html">Network</a>
+        <a href="stats.html">Pool</a>
+        <a href="how-it-works.html">How It Works</a>
+        <a href="docs/index.html">Docs</a>
+      </div>
+      <a href="miners.html" class="btn btn-primary">Connect Miner</a>
+    </div>
+  </nav>
+
+  <header class="page-header">
+    <div class="container">
+      <h1 class="page-title">Find Your <span>Best Node</span></h1>
+      <p class="page-subtitle">Discover and test all available Ghost Pool nodes to find the fastest connection for your miners.</p>
+    </div>
+  </header>
+
+  <section class="finder-section">
+    <div class="container">
+      <div class="finder-card">
+        <div class="finder-header">
+          <div>
+            <h2 class="finder-title">Available Pool Nodes</h2>
+            <p class="finder-status" id="status-text">Click "Find Nodes" to discover available pool nodes</p>
+          </div>
+          <button id="find-nodes" class="btn btn-primary">Find Nodes</button>
+        </div>
+
+        <div id="results-container">
+          <div class="empty-state">
+            <p>No nodes discovered yet.</p>
+            <p style="font-size: 12px;">Click "Find Nodes" to scan the network for available mining pool nodes.</p>
+          </div>
+        </div>
+
+        <div id="recommendation" class="recommendation">
+          <div class="recommendation-title">Recommended Node</div>
+          <p>Based on latency and availability, we recommend:</p>
+          <div class="recommendation-endpoint" id="recommended-endpoint">stratum+tcp://node.example.com:3333</div>
+          <button class="copy-btn" onclick="copyEndpoint()">Copy to Clipboard</button>
+          <p style="margin-top: 16px;">
+            <strong>Miner Config:</strong><br>
+            URL: <span id="rec-url" style="color: var(--cyan);"></span><br>
+            Username: YOUR_BTC_ADDRESS.worker1<br>
+            Password: x
+          </p>
+        </div>
+      </div>
+
+      <div class="info-box">
+        <h3>How It Works</h3>
+        <p>The node finder queries regional seed nodes and discovers all public mining pool nodes on the network.
+        It then tests latency from your browser to each node and shows availability status.
+        Nodes with lower latency will result in fewer stale shares and better mining efficiency.</p>
+      </div>
+
+      <div class="info-box" style="margin-top: 16px;">
+        <h3>Quick Regional Endpoints</h3>
+        <p>If the finder doesn't work, use these regional endpoints based on your location:</p>
+        <ul style="margin-top: 12px; margin-left: 20px; color: var(--gray-300); font-size: 13px;">
+          <li><strong>Europe:</strong> stratum+tcp://eu.pool.bitcoinghost.org:3333</li>
+          <li><strong>North America:</strong> stratum+tcp://us.pool.bitcoinghost.org:3333</li>
+          <li><strong>Asia-Pacific:</strong> stratum+tcp://asia.pool.bitcoinghost.org:3333</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-left">
+        <a href="index.html" class="logo">
+          <div class="logo-icon"><img src="logo.png" alt="Bitcoin Ghost"></div>
+          <div class="logo-text">Bitcoin<span>Ghost</span></div>
+        </a>
+        <div class="footer-links">
+          <a href="https://github.com/bitcoin-ghost" target="_blank">GitHub</a>
+          <a href="docs/index.html">Docs</a>
+          <a href="miners.html">Miners</a>
+        </div>
+      </div>
+      <div class="footer-right">
+        Open source under MIT License.
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Seed nodes to start discovery (regional endpoints)
+    const SEED_NODES = [
+      { host: 'eu.pool.bitcoinghost.org', httpPort: 8080 },
+      { host: 'us.pool.bitcoinghost.org', httpPort: 8080 },
+      { host: 'asia.pool.bitcoinghost.org', httpPort: 8080 },
+    ];
+
+    const PING_TIMEOUT = 5000;
+    const PING_SAMPLES = 3;
+
+    let discoveredNodes = new Map();
+
+    async function fetchWithTimeout(url, timeout) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      try {
+        const response = await fetch(url, {
+          method: 'GET',
+          mode: 'cors',
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        return response;
+      } catch (e) {
+        clearTimeout(timeoutId);
+        throw e;
+      }
+    }
+
+    async function pingNode(host, httpPort) {
+      const latencies = [];
+      const url = `https://${host}:${httpPort}/health`;
+
+      for (let i = 0; i < PING_SAMPLES; i++) {
+        try {
+          const start = performance.now();
+          await fetchWithTimeout(url, PING_TIMEOUT);
+          latencies.push(Math.round(performance.now() - start));
+        } catch (e) {
+          // Try HTTP if HTTPS fails
+          if (i === 0) {
+            try {
+              const start = performance.now();
+              await fetchWithTimeout(`http://${host}:${httpPort}/health`, PING_TIMEOUT);
+              latencies.push(Math.round(performance.now() - start));
+            } catch (e2) {
+              // Skip this sample
+            }
+          }
+        }
+        await new Promise(r => setTimeout(r, 50));
+      }
+
+      if (latencies.length === 0) return null;
+      latencies.sort((a, b) => a - b);
+      return latencies[Math.floor(latencies.length / 2)];
+    }
+
+    async function getNodeInfo(host, httpPort) {
+      try {
+        const response = await fetchWithTimeout(
+          `https://${host}:${httpPort}/api/v1/node/public-info`,
+          PING_TIMEOUT
+        );
+        if (response.ok) {
+          return await response.json();
+        }
+      } catch (e) {
+        // Try HTTP
+        try {
+          const response = await fetchWithTimeout(
+            `http://${host}:${httpPort}/api/v1/node/public-info`,
+            PING_TIMEOUT
+          );
+          if (response.ok) {
+            return await response.json();
+          }
+        } catch (e2) {}
+      }
+      return null;
+    }
+
+    async function discoverFromNode(host, httpPort) {
+      try {
+        const response = await fetchWithTimeout(
+          `https://${host}:${httpPort}/api/v1/network/public-nodes`,
+          PING_TIMEOUT
+        );
+        if (response.ok) {
+          const data = await response.json();
+          return data.nodes || [];
+        }
+      } catch (e) {
+        try {
+          const response = await fetchWithTimeout(
+            `http://${host}:${httpPort}/api/v1/network/public-nodes`,
+            PING_TIMEOUT
+          );
+          if (response.ok) {
+            const data = await response.json();
+            return data.nodes || [];
+          }
+        } catch (e2) {}
+      }
+      return [];
+    }
+
+    function updateStatus(text) {
+      document.getElementById('status-text').textContent = text;
+    }
+
+    function renderResults() {
+      const container = document.getElementById('results-container');
+      const nodes = Array.from(discoveredNodes.values())
+        .filter(n => n.tested)
+        .sort((a, b) => {
+          // Sort by: available first, then by latency
+          if (a.online !== b.online) return b.online - a.online;
+          if (a.status === 'available' && b.status !== 'available') return -1;
+          if (b.status === 'available' && a.status !== 'available') return 1;
+          if (a.latency === null) return 1;
+          if (b.latency === null) return -1;
+          return a.latency - b.latency;
+        });
+
+      if (nodes.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <p>No nodes found.</p>
+            <p style="font-size: 12px;">Try using the regional endpoints listed below.</p>
+          </div>
+        `;
+        return;
+      }
+
+      const bestNode = nodes.find(n => n.online && n.status === 'available');
+
+      container.innerHTML = `
+        <table class="results-table">
+          <thead>
+            <tr>
+              <th>Node</th>
+              <th>Latency</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${nodes.map((node, i) => {
+              const isBest = bestNode && node.key === bestNode.key;
+              const latencyClass = !node.online ? 'error' :
+                node.latency < 100 ? 'good' :
+                node.latency < 200 ? 'medium' :
+                node.latency < 400 ? 'poor' : 'bad';
+              const statusClass = !node.online ? 'offline' : (node.status || 'unknown');
+
+              return `
+                <tr class="${isBest ? 'best' : ''}">
+                  <td>
+                    <div class="node-cell">
+                      <span class="node-name">${node.name || node.host}</span>
+                      <span class="node-host">${node.host}:${node.stratumPort || 3333}</span>
+                    </div>
+                  </td>
+                  <td class="latency-cell ${latencyClass}">
+                    ${node.online ? (node.latency + 'ms') : 'Offline'}
+                  </td>
+                  <td>
+                    <span class="status-badge ${statusClass}">${statusClass}</span>
+                  </td>
+                  <td>
+                    <button class="btn btn-secondary connect-btn"
+                            onclick="selectNode('${node.host}', ${node.stratumPort || 3333})"
+                            ${!node.online || node.status === 'full' ? 'disabled' : ''}>
+                      Select
+                    </button>
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      `;
+
+      // Show recommendation
+      if (bestNode) {
+        const endpoint = `stratum+tcp://${bestNode.host}:${bestNode.stratumPort || 3333}`;
+        document.getElementById('recommended-endpoint').textContent = endpoint;
+        document.getElementById('rec-url').textContent = endpoint;
+        document.getElementById('recommendation').classList.add('show');
+      }
+    }
+
+    function selectNode(host, port) {
+      const endpoint = `stratum+tcp://${host}:${port}`;
+      document.getElementById('recommended-endpoint').textContent = endpoint;
+      document.getElementById('rec-url').textContent = endpoint;
+      document.getElementById('recommendation').classList.add('show');
+      document.getElementById('recommendation').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function copyEndpoint() {
+      const endpoint = document.getElementById('recommended-endpoint').textContent;
+      navigator.clipboard.writeText(endpoint).then(() => {
+        const btn = document.querySelector('.copy-btn');
+        btn.textContent = 'Copied!';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = 'Copy to Clipboard';
+          btn.classList.remove('copied');
+        }, 2000);
+      });
+    }
+
+    async function findNodes() {
+      const btn = document.getElementById('find-nodes');
+      btn.disabled = true;
+      btn.textContent = 'Scanning...';
+      discoveredNodes.clear();
+      document.getElementById('recommendation').classList.remove('show');
+
+      // Phase 1: Add seed nodes
+      updateStatus('Contacting seed nodes...');
+      for (const seed of SEED_NODES) {
+        const key = `${seed.host}:${seed.httpPort}`;
+        discoveredNodes.set(key, {
+          key,
+          host: seed.host,
+          httpPort: seed.httpPort,
+          tested: false,
+          online: false
+        });
+      }
+
+      // Phase 2: Discover more nodes from seeds
+      updateStatus('Discovering nodes...');
+      for (const seed of SEED_NODES) {
+        const peers = await discoverFromNode(seed.host, seed.httpPort);
+        for (const peer of peers) {
+          const key = `${peer.host}:${peer.http_port || 8080}`;
+          if (!discoveredNodes.has(key)) {
+            discoveredNodes.set(key, {
+              key,
+              host: peer.host,
+              httpPort: peer.http_port || 8080,
+              tested: false,
+              online: false
+            });
+          }
+        }
+      }
+
+      // Phase 3: Test each node
+      const total = discoveredNodes.size;
+      let tested = 0;
+
+      updateStatus(`Testing ${total} nodes...`);
+
+      const testPromises = Array.from(discoveredNodes.values()).map(async (node) => {
+        // Get node info
+        const info = await getNodeInfo(node.host, node.httpPort);
+        if (info && info.public_mining) {
+          node.name = info.name;
+          node.region = info.region;
+          node.stratumPort = info.stratum_port || 3333;
+          node.status = info.status;
+          node.online = true;
+        }
+
+        // Ping for latency
+        const latency = await pingNode(node.host, node.httpPort);
+        if (latency !== null) {
+          node.latency = latency;
+          node.online = true;
+        }
+
+        node.tested = true;
+        tested++;
+        updateStatus(`Testing nodes... ${tested}/${total}`);
+        renderResults();
+      });
+
+      await Promise.all(testPromises);
+
+      updateStatus(`Found ${Array.from(discoveredNodes.values()).filter(n => n.online).length} online nodes`);
+      btn.disabled = false;
+      btn.textContent = 'Find Nodes';
+    }
+
+    // Initialize
+    document.getElementById('find-nodes').addEventListener('click', findNodes);
+  </script>
+</body>
+</html>

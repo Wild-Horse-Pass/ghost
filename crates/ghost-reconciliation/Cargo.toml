@@ -30,8 +30,10 @@ description = "L1 settlement and reconciliation for Ghost Pay"
 
 [dependencies]
 ghost-common = { workspace = true }
+ghost-consensus = { workspace = true }
 ghost-keys = { workspace = true }
 ghost-locks = { workspace = true }
+ghost-storage = { workspace = true }
 
 # Async
 tokio = { workspace = true }

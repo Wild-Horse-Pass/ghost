@@ -46,6 +46,14 @@ pub const MAX_HEALTH_PING_SIZE: usize = 2_000;
 pub const MAX_DISCOVERY_SIZE: usize = 50_000;
 pub const MAX_PAYOUT_PROPOSAL_SIZE: usize = 500_000;
 pub const MAX_ELDER_UPDATE_SIZE: usize = 10_000;
+/// ZK block proposal can include transactions + proof (up to 2MB)
+pub const MAX_ZK_PROPOSAL_SIZE: usize = 2_000_000;
+/// ZK vote is small (just signature + metadata)
+pub const MAX_ZK_VOTE_SIZE: usize = 1_000;
+/// ZK payout proposal includes proof + merkle root (up to 1MB)
+pub const MAX_ZK_PAYOUT_PROPOSAL_SIZE: usize = 1_000_000;
+/// ZK payout vote is small (signature + approval + optional rejection reason)
+pub const MAX_ZK_PAYOUT_VOTE_SIZE: usize = 1_000;
 
 /// Message validation errors
 #[derive(Debug, Clone, Error)]
@@ -100,8 +108,8 @@ pub fn validate_envelope_header(data: &[u8]) -> Result<(), MessageValidationErro
 
     // Message type check (second byte)
     let msg_type_byte = data[1];
-    if msg_type_byte > 7 {
-        // We have 8 message types (0-7)
+    if msg_type_byte > 11 {
+        // We have 12 message types (0-11) including ZK payout types
         return Err(MessageValidationError::InvalidType(msg_type_byte));
     }
 
@@ -119,6 +127,10 @@ pub fn max_payload_size(msg_type: MessageType) -> usize {
         MessageType::Discovery => MAX_DISCOVERY_SIZE,
         MessageType::PayoutProposal => MAX_PAYOUT_PROPOSAL_SIZE,
         MessageType::ElderUpdate => MAX_ELDER_UPDATE_SIZE,
+        MessageType::ZkBlockProposal => MAX_ZK_PROPOSAL_SIZE,
+        MessageType::ZkVote => MAX_ZK_VOTE_SIZE,
+        MessageType::ZkPayoutProposal => MAX_ZK_PAYOUT_PROPOSAL_SIZE,
+        MessageType::ZkPayoutVote => MAX_ZK_PAYOUT_VOTE_SIZE,
     }
 }
 

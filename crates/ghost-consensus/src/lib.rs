@@ -36,28 +36,36 @@
 
 pub mod discovery_handler;
 pub mod encrypted_proposal;
+pub mod epoch;
 pub mod health_handler;
 pub mod mesh;
 pub mod message;
 pub mod message_validator;
 pub mod noise;
 pub mod peer;
+pub mod reorg;
 pub mod reputation;
 pub mod transport;
 pub mod vote_handler;
 pub mod voter_eligibility;
 pub mod voting;
+pub mod zk_payout_handler;
+pub mod zk_vote_handler;
 
 pub use discovery_handler::*;
 pub use encrypted_proposal::*;
+pub use epoch::*;
 pub use health_handler::*;
 pub use mesh::*;
 pub use message::*;
 pub use message_validator::*;
 pub use noise::*;
 pub use peer::*;
+pub use reorg::*;
 pub use reputation::*;
 pub use transport::*;
 pub use vote_handler::*;
 pub use voter_eligibility::*;
 pub use voting::*;
+pub use zk_payout_handler::*;
+pub use zk_vote_handler::*;

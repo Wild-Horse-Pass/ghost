@@ -55,6 +55,9 @@ impl SubscriptionType {
 pub struct SubscriptionManager {
     /// wallet_id -> set of subscription types
     subscriptions: RwLock<HashMap<String, HashSet<SubscriptionType>>>,
+
+    /// lock_id -> set of wallet_ids subscribed to that lock's state updates
+    lock_state_subscriptions: RwLock<HashMap<String, HashSet<String>>>,
 }
 
 impl SubscriptionManager {
@@ -62,6 +65,7 @@ impl SubscriptionManager {
     pub fn new() -> Self {
         Self {
             subscriptions: RwLock::new(HashMap::new()),
+            lock_state_subscriptions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -120,6 +124,80 @@ impl SubscriptionManager {
     /// Get unique wallet count with subscriptions
     pub fn wallet_count(&self) -> usize {
         self.subscriptions.read().len()
+    }
+
+    // =========================================================================
+    // Lock State Subscriptions (for instant payments)
+    // =========================================================================
+
+    /// Subscribe a wallet to lock state updates for a specific lock
+    pub fn subscribe_lock_state(&self, wallet_id: &WalletId, lock_id: &str) {
+        let mut subs = self.lock_state_subscriptions.write();
+        subs.entry(lock_id.to_string())
+            .or_insert_with(HashSet::new)
+            .insert(wallet_id.to_string());
+    }
+
+    /// Unsubscribe a wallet from lock state updates for a specific lock
+    pub fn unsubscribe_lock_state(&self, wallet_id: &WalletId, lock_id: &str) {
+        let mut subs = self.lock_state_subscriptions.write();
+        if let Some(lock_subs) = subs.get_mut(lock_id) {
+            lock_subs.remove(&wallet_id.to_string());
+            if lock_subs.is_empty() {
+                subs.remove(lock_id);
+            }
+        }
+    }
+
+    /// Unsubscribe a wallet from all lock state subscriptions
+    pub fn unsubscribe_all_lock_states(&self, wallet_id: &WalletId) {
+        let wallet_str = wallet_id.to_string();
+        let mut subs = self.lock_state_subscriptions.write();
+
+        // Remove wallet from all lock subscriptions
+        let empty_locks: Vec<String> = subs
+            .iter_mut()
+            .filter_map(|(lock_id, wallets)| {
+                wallets.remove(&wallet_str);
+                if wallets.is_empty() {
+                    Some(lock_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Clean up empty lock entries
+        for lock_id in empty_locks {
+            subs.remove(&lock_id);
+        }
+    }
+
+    /// Get all wallet IDs subscribed to a specific lock's state updates
+    pub fn get_lock_state_subscribers(&self, lock_id: &str) -> Vec<WalletId> {
+        let subs = self.lock_state_subscriptions.read();
+        subs.get(lock_id)
+            .map(|wallets| {
+                wallets
+                    .iter()
+                    .map(|id| WalletId::from(id.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Check if a wallet is subscribed to a lock's state updates
+    pub fn is_subscribed_lock_state(&self, wallet_id: &WalletId, lock_id: &str) -> bool {
+        let subs = self.lock_state_subscriptions.read();
+        subs.get(lock_id)
+            .map(|wallets| wallets.contains(&wallet_id.to_string()))
+            .unwrap_or(false)
+    }
+
+    /// Get count of lock state subscriptions
+    pub fn lock_state_subscription_count(&self) -> usize {
+        let subs = self.lock_state_subscriptions.read();
+        subs.values().map(|s| s.len()).sum()
     }
 }
 

@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 5;
+const SCHEMA_VERSION: u32 = 6;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -64,6 +64,10 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
 
     if current_version < 5 {
         migrate_v5(conn)?;
+    }
+
+    if current_version < 6 {
+        migrate_v6(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -546,6 +550,56 @@ fn migrate_v5(conn: &Connection) -> GhostResult<()> {
 
         -- Create index for efficient payout lookups
         CREATE INDEX IF NOT EXISTS idx_nodes_payout ON nodes(payout_address) WHERE payout_address IS NOT NULL;
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Migration to v6: ZK-BFT state management tables
+fn migrate_v6(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v6: Adding ZK-BFT state management tables");
+
+    conn.execute_batch(
+        r#"
+        -- State snapshots for L2 rollback capability
+        -- Snapshots are taken at intervals (every N blocks) and pruned to keep last M
+        CREATE TABLE IF NOT EXISTS state_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            height INTEGER NOT NULL UNIQUE,
+            state_root TEXT NOT NULL,
+            balances_json TEXT NOT NULL,
+            nonces_json TEXT,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_snapshots_height ON state_snapshots(height);
+
+        -- Block proposers for epoch settler selection
+        -- The proposer of the last block in an epoch becomes the settler
+        CREATE TABLE IF NOT EXISTS block_proposers (
+            height INTEGER PRIMARY KEY,
+            proposer_id TEXT NOT NULL,
+            state_root TEXT NOT NULL,
+            timestamp INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_proposers_epoch ON block_proposers((height / 2160));
+
+        -- Epoch settlement tracking
+        -- Tracks which node is responsible for settling each epoch
+        CREATE TABLE IF NOT EXISTS epoch_settlements (
+            epoch_id INTEGER PRIMARY KEY,
+            settler_id TEXT NOT NULL,
+            fallback_settler_id TEXT,
+            batch_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            settlement_deadline INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            failure_reason TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_epoch_status ON epoch_settlements(status);
+        CREATE INDEX IF NOT EXISTS idx_epoch_deadline ON epoch_settlements(settlement_deadline);
         "#,
     )
     .map_err(|e| GhostError::Migration(e.to_string()))?;

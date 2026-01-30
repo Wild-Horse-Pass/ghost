@@ -46,6 +46,7 @@
 pub mod batch;
 pub mod broadcaster;
 pub mod commitment;
+pub mod coordinator;
 pub mod error;
 pub mod executor;
 pub mod proof;
@@ -57,6 +58,7 @@ pub mod transaction;
 pub use batch::*;
 pub use broadcaster::*;
 pub use commitment::*;
+pub use coordinator::*;
 pub use error::*;
 pub use executor::*;
 pub use proof::*;

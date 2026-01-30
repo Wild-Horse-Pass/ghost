@@ -298,9 +298,65 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
         }
 
         ClientMessage::Unsubscribe { subscription } => {
-            let valid_subscriptions = ["balance", "payments", "locks"];
+            let valid_subscriptions = ["balance", "payments", "locks", "lock_state"];
             if !valid_subscriptions.contains(&subscription.to_lowercase().as_str()) {
                 result.add_error("Invalid subscription type");
+            }
+        }
+
+        // =========================================================================
+        // Instant Payment Messages
+        // =========================================================================
+        ClientMessage::CheckInstantCapability {
+            lock_id,
+            amount_sats,
+        } => {
+            if lock_id.is_empty() {
+                result.add_error("Lock ID cannot be empty");
+            }
+            if *amount_sats == 0 {
+                result.add_error("Amount must be greater than 0");
+            }
+            // Cap at instant limit (100k sats)
+            if *amount_sats > 100_000 {
+                result.add_warning("Amount exceeds instant payment limit (100,000 sats)");
+            }
+        }
+
+        ClientMessage::SubscribeLockState { lock_id } => {
+            if lock_id.is_empty() {
+                result.add_error("Lock ID cannot be empty");
+            }
+        }
+
+        ClientMessage::UnsubscribeLockState { lock_id } => {
+            if lock_id.is_empty() {
+                result.add_error("Lock ID cannot be empty");
+            }
+        }
+
+        ClientMessage::AcceptInstantPayment {
+            sender_lock_id,
+            amount_sats,
+            proof,
+        } => {
+            if sender_lock_id.is_empty() {
+                result.add_error("Sender lock ID cannot be empty");
+            }
+            if *amount_sats == 0 {
+                result.add_error("Amount must be greater than 0");
+            }
+            // Instant payments capped at 100k sats
+            if *amount_sats > 100_000 {
+                result.add_error("Amount exceeds instant payment limit (100,000 sats)");
+            }
+
+            if let Err(e) = proof.validate_structure() {
+                result.add_error(format!("Invalid proof: {}", e));
+            }
+
+            if !proof.is_timestamp_valid() {
+                result.add_error("Proof timestamp out of range");
             }
         }
     }

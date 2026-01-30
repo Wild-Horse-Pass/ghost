@@ -158,9 +158,6 @@ pub const SV1_STRATUM_PORT: u16 = 3333;
 /// HTTP API port
 pub const HTTP_API_PORT: u16 = 8080;
 
-/// Coordinator port
-pub const COORDINATOR_PORT: u16 = 8333;
-
 // P2P Consensus ports
 /// Share propagation port
 pub const SHARE_PROPAGATION_PORT: u16 = 8555;
@@ -226,25 +223,6 @@ pub const MAX_TX_OUTPUTS_BITCOIN_PURE: usize = 50;
 
 /// Maximum transaction size for bitcoin_pure (bytes)
 pub const MAX_TX_SIZE_BITCOIN_PURE: usize = 100_000;
-
-// =============================================================================
-// COORDINATOR
-// =============================================================================
-
-/// Coordinator heartbeat interval in seconds
-pub const COORDINATOR_HEARTBEAT_SECS: u64 = 30;
-
-/// Fire Ping timeout in milliseconds
-pub const FIRE_PING_TIMEOUT_MS: u64 = 5000;
-
-/// Gradient descent test interval in seconds
-pub const CONVERGENCE_TEST_INTERVAL_SECS: u64 = 300;
-
-/// Gradient descent migration threshold (20% improvement required)
-pub const CONVERGENCE_MIGRATION_THRESHOLD: f64 = 0.20;
-
-/// Maximum gradient descent iterations
-pub const CONVERGENCE_MAX_ITERATIONS: usize = 10;
 
 // =============================================================================
 // GHOST PAY L2

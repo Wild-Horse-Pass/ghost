@@ -23,7 +23,7 @@
 //! Verification server
 
 use axum::extract::DefaultBodyLimit;
-use axum::http::{HeaderValue, Method};
+use axum::http::Method;
 use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::identity::NodeIdentity;
 use ghost_common::rpc::BitcoinRpc;
@@ -59,6 +59,18 @@ pub struct DashboardConfig {
     pub mempool_profile: String,
     pub template_profile: String,
     pub prune_profile: String,
+    /// Maximum miners this node will accept
+    pub max_miners: u32,
+    /// Node display name for node finder
+    pub node_name: Option<String>,
+    /// Geographic region (eu, us, asia)
+    pub region: Option<String>,
+    /// Public stratum hostname
+    pub stratum_host: Option<String>,
+    /// Public stratum port
+    pub stratum_port: Option<u16>,
+    /// Public HTTP API port
+    pub http_port: Option<u16>,
 }
 
 impl Default for DashboardConfig {
@@ -74,6 +86,12 @@ impl Default for DashboardConfig {
             mempool_profile: "permissive".to_string(),
             template_profile: "default".to_string(),
             prune_profile: "none".to_string(),
+            max_miners: 1000,
+            node_name: None,
+            region: None,
+            stratum_host: None,
+            stratum_port: None,
+            http_port: None,
         }
     }
 }
@@ -562,19 +580,12 @@ impl VerificationState {
 
 /// Start verification server
 pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResult<()> {
-    // CORS configuration - allow specific origins for production
-    // Also allows localhost for development/testing
-    let allowed_origins = [
-        "https://bitcoinghost.org",
-        "https://www.bitcoinghost.org",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8080",
-        "http://127.0.0.1:8080",
-    ];
-
+    // CORS configuration - permissive for node dashboard access
+    // The dashboard runs on port 3000 on the same machine and needs to access the API on 8080.
+    // Since nodes may have various IP addresses, we allow any origin for API access.
+    // The API itself is protected by rate limiting and authentication where needed.
     let cors = CorsLayer::new()
-        .allow_origin(allowed_origins.map(|s| s.parse::<HeaderValue>().unwrap()))
+        .allow_origin(tower_http::cors::Any)
         .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,

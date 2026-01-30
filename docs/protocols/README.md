@@ -40,6 +40,7 @@ Comprehensive documentation for the Bitcoin Ghost decentralized mining pool and 
 | Document | Description |
 |----------|-------------|
 | [Ghost Pay](GHOST_PAY.md) | L2 payment network overview |
+| [L2 Comparison](L2_COMPARISON.md) | Ghost Pay vs Lightning, Citrea, Liquid, Ark, etc. |
 | [Ghost Keys](GHOST_KEYS.md) | Silent Payment-style addresses |
 | [Ghost Locks](GHOST_LOCKS.md) | P2TR UTXOs with timelocked recovery |
 | [Jump Locks](JUMP_LOCKS.md) | Automatic key rotation |

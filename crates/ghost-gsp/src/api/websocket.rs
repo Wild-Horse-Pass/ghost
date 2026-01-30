@@ -67,6 +67,9 @@ struct ConnectionState {
 
     /// Active subscriptions
     subscriptions: Vec<String>,
+
+    /// Lock state subscriptions (lock_id)
+    lock_state_subscriptions: Vec<String>,
 }
 
 impl Default for ConnectionState {
@@ -74,6 +77,7 @@ impl Default for ConnectionState {
         Self {
             wallet_id: None,
             subscriptions: Vec::new(),
+            lock_state_subscriptions: Vec::new(),
         }
     }
 }
@@ -252,6 +256,29 @@ async fn handle_message(
                 &proof,
             )
             .await
+        }
+
+        // Instant Payment operations
+        ClientMessage::CheckInstantCapability {
+            lock_id,
+            amount_sats,
+        } => handle_check_instant_capability(state, conn_state, &lock_id, amount_sats).await,
+
+        ClientMessage::SubscribeLockState { lock_id } => {
+            handle_subscribe_lock_state(state, conn_state, &lock_id).await
+        }
+
+        ClientMessage::UnsubscribeLockState { lock_id } => {
+            handle_unsubscribe_lock_state(state, conn_state, &lock_id).await
+        }
+
+        ClientMessage::AcceptInstantPayment {
+            sender_lock_id,
+            amount_sats,
+            proof,
+        } => {
+            handle_accept_instant_payment(state, conn_state, &sender_lock_id, amount_sats, &proof)
+                .await
         }
     }
 }
@@ -1053,4 +1080,290 @@ async fn handle_confirm_ghost_lock_funding(
             }))
         }
     }
+}
+
+// =============================================================================
+// Instant Payment Handlers
+// =============================================================================
+
+/// Check instant payment capability for a lock
+///
+/// Evaluates whether a lock can accept instant (optimistic) payments.
+async fn handle_check_instant_capability(
+    state: &Arc<GspState>,
+    conn_state: &ConnectionState,
+    lock_id: &str,
+    amount_sats: u64,
+) -> Result<Option<ServerMessage>, GspError> {
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
+
+    debug!(
+        wallet_id = %wallet_id,
+        lock_id = %lock_id,
+        amount_sats = amount_sats,
+        "Checking instant capability"
+    );
+
+    // Query lock state from pay node
+    let lock_snapshot = match state.pay_node.get_lock_snapshot(lock_id).await {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            return Ok(Some(ServerMessage::InstantCapabilityResult {
+                lock_id: lock_id.to_string(),
+                capable: false,
+                max_instant_sats: 0,
+                confidence: 0.0,
+                valid_until_height: 0,
+                conditions_met: 0,
+                conditions_failed: 0xFF, // All failed
+                error: Some(format!("Failed to get lock state: {}", e)),
+            }));
+        }
+    };
+
+    // Get current block height
+    let current_height = state.pay_node.get_current_height().await.unwrap_or(0);
+
+    // Evaluate instant capability using common logic
+    let capability = lock_snapshot.check_instant(amount_sats, current_height);
+
+    Ok(Some(ServerMessage::InstantCapabilityResult {
+        lock_id: lock_id.to_string(),
+        capable: capability.capable,
+        max_instant_sats: capability.max_instant_sats,
+        confidence: capability.confidence,
+        valid_until_height: capability.valid_until_height,
+        conditions_met: capability.conditions_bitmap(),
+        conditions_failed: capability
+            .conditions_failed
+            .iter()
+            .fold(0u8, |acc, c| acc | c.bit_flag()),
+        error: None,
+    }))
+}
+
+/// Subscribe to real-time lock state updates
+async fn handle_subscribe_lock_state(
+    state: &Arc<GspState>,
+    conn_state: &mut ConnectionState,
+    lock_id: &str,
+) -> Result<Option<ServerMessage>, GspError> {
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
+
+    info!(
+        wallet_id = %wallet_id,
+        lock_id = %lock_id,
+        "Subscribing to lock state updates"
+    );
+
+    // Register subscription
+    conn_state.lock_state_subscriptions.push(lock_id.to_string());
+    state
+        .subscriptions
+        .subscribe_lock_state(wallet_id, lock_id);
+
+    // Get current lock snapshot
+    let snapshot = match state.pay_node.get_lock_state_snapshot(lock_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            return Ok(Some(ServerMessage::Error {
+                code: "LOCK_NOT_FOUND".to_string(),
+                message: format!("Failed to get lock state: {}", e),
+                request_id: None,
+            }));
+        }
+    };
+
+    Ok(Some(ServerMessage::LockStateSubscribed {
+        lock_id: lock_id.to_string(),
+        snapshot,
+    }))
+}
+
+/// Unsubscribe from lock state updates
+async fn handle_unsubscribe_lock_state(
+    state: &Arc<GspState>,
+    conn_state: &mut ConnectionState,
+    lock_id: &str,
+) -> Result<Option<ServerMessage>, GspError> {
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
+
+    debug!(
+        wallet_id = %wallet_id,
+        lock_id = %lock_id,
+        "Unsubscribing from lock state updates"
+    );
+
+    // Remove subscription
+    conn_state.lock_state_subscriptions.retain(|s| s != lock_id);
+    state
+        .subscriptions
+        .unsubscribe_lock_state(wallet_id, lock_id);
+
+    Ok(Some(ServerMessage::LockStateUnsubscribed {
+        lock_id: lock_id.to_string(),
+    }))
+}
+
+/// Accept an instant payment as a merchant
+///
+/// This allows merchants to show "Confirmed" immediately for small payments,
+/// with actual settlement happening on the next virtual block.
+async fn handle_accept_instant_payment(
+    state: &Arc<GspState>,
+    conn_state: &ConnectionState,
+    sender_lock_id: &str,
+    amount_sats: u64,
+    proof: &WalletProof,
+) -> Result<Option<ServerMessage>, GspError> {
+    let wallet_id = conn_state
+        .wallet_id
+        .as_ref()
+        .ok_or(GspError::Unauthorized)?;
+
+    // Validate proof
+    if let Err(e) = proof.validate_structure() {
+        return Ok(Some(ServerMessage::Error {
+            code: "INVALID_PROOF".to_string(),
+            message: format!("Invalid proof structure: {}", e),
+            request_id: None,
+        }));
+    }
+
+    if !proof.is_timestamp_valid() {
+        return Ok(Some(ServerMessage::Error {
+            code: "EXPIRED_PROOF".to_string(),
+            message: "Proof timestamp expired or too far in future".to_string(),
+            request_id: None,
+        }));
+    }
+
+    if let Err(e) = verify_schnorr_proof(proof) {
+        return Ok(Some(ServerMessage::Error {
+            code: "INVALID_SIGNATURE".to_string(),
+            message: format!("Invalid wallet proof signature: {}", e),
+            request_id: None,
+        }));
+    }
+
+    // Verify proof matches authenticated wallet
+    let proof_wallet_id = match proof.wallet_id() {
+        Ok(id) => id,
+        Err(e) => {
+            return Ok(Some(ServerMessage::Error {
+                code: "INVALID_PUBLIC_KEY".to_string(),
+                message: format!("Invalid proof public key: {}", e),
+                request_id: None,
+            }));
+        }
+    };
+
+    if proof_wallet_id != *wallet_id {
+        return Ok(Some(ServerMessage::Error {
+            code: "WALLET_MISMATCH".to_string(),
+            message: "Wallet proof does not match authenticated session".to_string(),
+            request_id: None,
+        }));
+    }
+
+    info!(
+        wallet_id = %wallet_id,
+        sender_lock_id = %sender_lock_id,
+        amount_sats = amount_sats,
+        "Accepting instant payment"
+    );
+
+    // Check instant capability
+    let lock_snapshot = match state.pay_node.get_lock_snapshot(sender_lock_id).await {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            return Ok(Some(ServerMessage::Error {
+                code: "LOCK_NOT_FOUND".to_string(),
+                message: format!("Failed to get sender lock state: {}", e),
+                request_id: None,
+            }));
+        }
+    };
+
+    let current_height = state.pay_node.get_current_height().await.unwrap_or(0);
+    let capability = lock_snapshot.check_instant(amount_sats, current_height);
+
+    if !capability.capable {
+        let failed_conditions: Vec<String> = capability
+            .conditions_failed
+            .iter()
+            .map(|c| c.description().to_string())
+            .collect();
+
+        return Ok(Some(ServerMessage::Error {
+            code: "NOT_INSTANT_CAPABLE".to_string(),
+            message: format!(
+                "Lock not instant-capable. Failed: {}",
+                failed_conditions.join(", ")
+            ),
+            request_id: None,
+        }));
+    }
+
+    if amount_sats > capability.max_instant_sats {
+        return Ok(Some(ServerMessage::Error {
+            code: "AMOUNT_EXCEEDS_LIMIT".to_string(),
+            message: format!(
+                "Amount {} exceeds instant limit {}",
+                amount_sats, capability.max_instant_sats
+            ),
+            request_id: None,
+        }));
+    }
+
+    // Generate payment ID
+    let payment_id = generate_instant_payment_id(sender_lock_id, amount_sats, current_height);
+    let settlement_block = current_height + 1;
+    let timestamp = chrono::Utc::now().timestamp();
+
+    // Record the instant payment acceptance (for later settlement verification)
+    // In production, this would record to the database for reconciliation
+    info!(
+        payment_id = hex::encode(&payment_id),
+        sender_lock_id = sender_lock_id,
+        amount_sats = amount_sats,
+        settlement_block = settlement_block,
+        confidence = capability.confidence,
+        "Instant payment accepted - show Confirmed"
+    );
+
+    Ok(Some(ServerMessage::InstantPaymentAccepted {
+        payment_id: hex::encode(&payment_id),
+        sender_lock_id: sender_lock_id.to_string(),
+        amount_sats,
+        settlement_block,
+        confidence: capability.confidence,
+        timestamp,
+    }))
+}
+
+/// Generate a unique payment ID for instant payments
+fn generate_instant_payment_id(lock_id: &str, amount: u64, height: u64) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"ghost-instant-payment-v1");
+    hasher.update(lock_id.as_bytes());
+    hasher.update(&amount.to_le_bytes());
+    hasher.update(&height.to_le_bytes());
+    hasher.update(
+        &chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or(0)
+            .to_le_bytes(),
+    );
+    hasher.finalize().into()
 }

@@ -5,7 +5,6 @@ This document describes all HTTP API endpoints available in Bitcoin Ghost servic
 ## Table of Contents
 
 - [Ghost Pool (Verification Node)](#ghost-pool-verification-node)
-- [Ghost Coordinator](#ghost-coordinator)
 - [Ghost Pay (L2 Payments)](#ghost-pay-l2-payments)
 - [Ghost GSP (Silent Payment Server)](#ghost-gsp-silent-payment-server)
 
@@ -160,78 +159,6 @@ The main pool node API for mining operations, status monitoring, and dashboard i
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | POST | `/admin/test-consensus` | Test consensus (admin only) |
-
----
-
-## Ghost Coordinator
-
-Load balancer and miner assignment service.
-
-**Default Port:** `8333`
-
-### Health & Status
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check (status, service, version) |
-
-### Node Management
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/nodes` | List all registered nodes |
-| GET | `/register` | Register or update a node |
-
-**Register Parameters:**
-- `node_id` - Unique node identifier
-- `address` - Node address (host:port)
-- `max_miners` - Maximum concurrent miners
-
-### Miner Assignment
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/assign` | Find best node for miner |
-
-**Assign Parameters:**
-- `miner_ip` - Miner's IP address for latency optimization
-
-**Response:**
-```json
-{
-  "node_id": "node1",
-  "address": "192.168.1.100:3333",
-  "load": 0.45
-}
-```
-
-### Latency Measurement
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/fire-ping` | Measure latency to node |
-
-**Fire Ping Parameters:**
-- `address` - Target node address
-- `detailed` - Return detailed stats (default: false)
-
-### Public API (`/api/v1/*`)
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/stats` | Aggregated pool statistics |
-| GET | `/api/v1/nodes` | Node list for website display |
-
-**Stats Response:**
-```json
-{
-  "total_hashrate": 1250000000000,
-  "active_miners": 342,
-  "online_nodes": 4,
-  "blocks_found_24h": 2,
-  "current_difficulty": 52328312332
-}
-```
 
 ---
 
@@ -529,7 +456,6 @@ ws.onmessage = (event) => {
 | Service | Limit |
 |---------|-------|
 | Ghost Pool | 100 requests/minute |
-| Ghost Coordinator | 60 requests/minute |
 | Ghost Pay | 30 requests/minute |
 | Ghost GSP | 100 requests/minute |
 
@@ -556,7 +482,7 @@ All services enable CORS with:
 ### Get Pool Stats
 
 ```bash
-curl http://localhost:8333/api/v1/stats
+curl http://localhost:8080/api/v1/stats
 ```
 
 ### Get Node Status

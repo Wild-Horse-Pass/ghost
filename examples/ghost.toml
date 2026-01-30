@@ -156,14 +156,3 @@ wraith_enabled = true
 
 # Wraith mixing fee percentage
 wraith_fee_percent = 0.5
-
-# =============================================================================
-# Coordinator (Optional)
-# =============================================================================
-# Uncomment to run as a miner coordinator/load balancer
-
-# [coordinator]
-# port = 8333
-# heartbeat_secs = 30
-# fire_ping_timeout_ms = 5000
-# convergence_threshold = 0.67

@@ -30,7 +30,7 @@ bitcoin-ghost-v1.4/
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     Rust Applications                        │
-│  (ghost-pool, ghost-pay, ghost-coordinator, translator)     │
+│        (ghost-pool, ghost-pay, translator)                   │
 └─────────────────────────┬───────────────────────────────────┘
                           │ JSON-RPC
                           ▼

@@ -31,7 +31,10 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, info, warn};
 
-use ghost_gsp_proto::{ClientMessage, ServerMessage, SessionToken, WalletId};
+use ghost_gsp_proto::{
+    ClientMessage, InstantCapability, LockStateSnapshot, ServerMessage, SessionToken, WalletId,
+};
+use ghost_common::instant::LockSnapshot;
 
 /// Balance information from GSP
 #[derive(Debug, Clone, Default)]
@@ -45,6 +48,9 @@ pub struct GspBalance {
 }
 
 use crate::error::{LightWalletError, WalletResult};
+
+/// Callback for lock state updates
+pub type LockStateCallback = Arc<dyn Fn(String, LockStateSnapshot) + Send + Sync>;
 
 /// GSP client for WebSocket communication
 pub struct GspClient {
@@ -62,6 +68,15 @@ pub struct GspClient {
 
     /// Connection state
     connected: Arc<RwLock<bool>>,
+
+    /// Pending instant capability requests (lock_id -> response channel)
+    pending_instant_checks: Arc<RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>>>,
+
+    /// Lock state subscriptions (lock_id -> callback)
+    lock_state_callbacks: Arc<RwLock<std::collections::HashMap<String, LockStateCallback>>>,
+
+    /// Last known lock state snapshots (for caching)
+    lock_snapshots: Arc<RwLock<std::collections::HashMap<String, LockStateSnapshot>>>,
 }
 
 impl GspClient {
@@ -81,6 +96,9 @@ impl GspClient {
 
         let connected = Arc::new(RwLock::new(true));
         let session_token = Arc::new(RwLock::new(None));
+        let pending_instant_checks = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let lock_state_callbacks = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let lock_snapshots = Arc::new(RwLock::new(std::collections::HashMap::new()));
 
         // Spawn write task
         let connected_clone = connected.clone();
@@ -89,7 +107,17 @@ impl GspClient {
         // Spawn read task
         let connected_clone = connected.clone();
         let session_clone = session_token.clone();
-        tokio::spawn(Self::read_task(read, connected_clone, session_clone));
+        let pending_checks_clone = pending_instant_checks.clone();
+        let callbacks_clone = lock_state_callbacks.clone();
+        let snapshots_clone = lock_snapshots.clone();
+        tokio::spawn(Self::read_task(
+            read,
+            connected_clone,
+            session_clone,
+            pending_checks_clone,
+            callbacks_clone,
+            snapshots_clone,
+        ));
 
         info!(url = url, "Connected to GSP");
 
@@ -99,6 +127,9 @@ impl GspClient {
             session_token,
             tx,
             connected,
+            pending_instant_checks,
+            lock_state_callbacks,
+            lock_snapshots,
         })
     }
 
@@ -133,12 +164,21 @@ impl GspClient {
         mut read: futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         connected: Arc<RwLock<bool>>,
         _session_token: Arc<RwLock<Option<SessionToken>>>,
+        pending_instant_checks: Arc<RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>>>,
+        lock_state_callbacks: Arc<RwLock<std::collections::HashMap<String, LockStateCallback>>>,
+        lock_snapshots: Arc<RwLock<std::collections::HashMap<String, LockStateSnapshot>>>,
     ) {
         while let Some(result) = read.next().await {
             match result {
                 Ok(Message::Text(text)) => match serde_json::from_str::<ServerMessage>(&text) {
                     Ok(msg) => {
-                        Self::handle_server_message(msg).await;
+                        Self::handle_server_message_with_callbacks(
+                            msg,
+                            &pending_instant_checks,
+                            &lock_state_callbacks,
+                            &lock_snapshots,
+                        )
+                        .await;
                     }
                     Err(e) => {
                         warn!("Failed to parse server message: {}", e);
@@ -162,7 +202,7 @@ impl GspClient {
         }
     }
 
-    /// Handle incoming server message
+    /// Handle incoming server message (legacy - for simple cases)
     async fn handle_server_message(msg: ServerMessage) {
         match msg {
             ServerMessage::BalanceUpdate {
@@ -200,6 +240,118 @@ impl GspClient {
             _ => {
                 debug!("Received server message: {:?}", msg);
             }
+        }
+    }
+
+    /// Handle incoming server message with callbacks for instant payments
+    async fn handle_server_message_with_callbacks(
+        msg: ServerMessage,
+        pending_instant_checks: &Arc<RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>>>,
+        lock_state_callbacks: &Arc<RwLock<std::collections::HashMap<String, LockStateCallback>>>,
+        lock_snapshots: &Arc<RwLock<std::collections::HashMap<String, LockStateSnapshot>>>,
+    ) {
+        match msg {
+            // Handle instant capability result
+            ServerMessage::InstantCapabilityResult {
+                lock_id,
+                capable,
+                max_instant_sats,
+                confidence,
+                valid_until_height,
+                conditions_met,
+                conditions_failed,
+                error,
+            } => {
+                if let Some(err) = error {
+                    warn!(lock_id = lock_id, error = err, "Instant capability check failed");
+                }
+
+                // Build capability response
+                let capability = InstantCapability {
+                    capable,
+                    max_instant_sats,
+                    confidence,
+                    valid_until_height,
+                    conditions_met: InstantCapability::from_bitmap(conditions_met),
+                    conditions_failed: InstantCapability::from_bitmap(conditions_failed),
+                };
+
+                // Send to waiting request
+                if let Some(tx) = pending_instant_checks.write().remove(&lock_id) {
+                    let _ = tx.send(capability);
+                }
+            }
+
+            // Handle lock state subscription confirmed
+            ServerMessage::LockStateSubscribed { lock_id, snapshot } => {
+                info!(lock_id = lock_id, "Lock state subscription confirmed");
+                lock_snapshots.write().insert(lock_id, snapshot);
+            }
+
+            // Handle real-time lock state update
+            ServerMessage::LockStateUpdate {
+                lock_id,
+                snapshot,
+                change_type,
+                timestamp: _,
+            } => {
+                debug!(
+                    lock_id = lock_id,
+                    change_type = ?change_type,
+                    "Lock state update received"
+                );
+
+                // Update cached snapshot
+                lock_snapshots.write().insert(lock_id.clone(), snapshot.clone());
+
+                // Notify callback if registered
+                if let Some(callback) = lock_state_callbacks.read().get(&lock_id) {
+                    callback(lock_id, snapshot);
+                }
+            }
+
+            // Handle instant payment accepted
+            ServerMessage::InstantPaymentAccepted {
+                payment_id,
+                sender_lock_id,
+                amount_sats,
+                settlement_block,
+                confidence,
+                ..
+            } => {
+                info!(
+                    payment_id = payment_id,
+                    sender = sender_lock_id,
+                    amount = amount_sats,
+                    settlement_block = settlement_block,
+                    confidence = confidence,
+                    "Instant payment accepted"
+                );
+            }
+
+            // Handle instant payment settled
+            ServerMessage::InstantPaymentSettled {
+                payment_id,
+                settled_at_height,
+                success,
+            } => {
+                if success {
+                    info!(
+                        payment_id = payment_id,
+                        height = settled_at_height,
+                        "Instant payment settled"
+                    );
+                } else {
+                    warn!(
+                        payment_id = payment_id,
+                        height = settled_at_height,
+                        "Instant payment settlement failed"
+                    );
+                }
+            }
+
+            // Delegate other messages to standard handler
+            _ => Self::handle_server_message(msg).await,
         }
     }
 
@@ -265,6 +417,145 @@ impl GspClient {
     /// Get Ghost Locks
     pub async fn get_ghost_locks(&self) -> WalletResult<()> {
         self.send_message(ClientMessage::GetGhostLocks).await
+    }
+
+    // =========================================================================
+    // Instant Payment Methods
+    // =========================================================================
+
+    /// Check instant payment capability for a lock
+    ///
+    /// Returns the instant capability status including max amount and confidence.
+    pub async fn check_instant_capability(
+        &self,
+        lock_id: &str,
+        amount_sats: u64,
+    ) -> WalletResult<InstantCapability> {
+        // Create oneshot channel for response
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        // Register pending request
+        self.pending_instant_checks
+            .write()
+            .insert(lock_id.to_string(), tx);
+
+        // Send request
+        self.send_message(ClientMessage::CheckInstantCapability {
+            lock_id: lock_id.to_string(),
+            amount_sats,
+        })
+        .await?;
+
+        // Wait for response with timeout
+        match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
+            Ok(Ok(capability)) => Ok(capability),
+            Ok(Err(_)) => Err(LightWalletError::GspError(
+                "Response channel closed".to_string(),
+            )),
+            Err(_) => {
+                // Remove pending request on timeout
+                self.pending_instant_checks.write().remove(lock_id);
+                Err(LightWalletError::GspError(
+                    "Instant capability check timed out".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Query lock state for instant payment evaluation
+    ///
+    /// Returns a LockSnapshot that can be used to evaluate instant capability locally.
+    pub async fn query_lock_state(&self, lock_id: &str) -> WalletResult<LockSnapshot> {
+        // First, check if we have a cached snapshot
+        if let Some(snapshot) = self.lock_snapshots.read().get(lock_id) {
+            return Ok(self.convert_snapshot(lock_id, snapshot));
+        }
+
+        // Subscribe to get initial snapshot
+        self.send_message(ClientMessage::SubscribeLockState {
+            lock_id: lock_id.to_string(),
+        })
+        .await?;
+
+        // Wait for subscription confirmation with snapshot
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        // Check cache again
+        if let Some(snapshot) = self.lock_snapshots.read().get(lock_id) {
+            Ok(self.convert_snapshot(lock_id, snapshot))
+        } else {
+            Err(LightWalletError::LockNotFound(lock_id.to_string()))
+        }
+    }
+
+    /// Convert GSP snapshot to common LockSnapshot
+    fn convert_snapshot(&self, lock_id: &str, snapshot: &LockStateSnapshot) -> LockSnapshot {
+        // Determine denomination from balance
+        let denomination = Self::denomination_from_balance(snapshot.balance_sats);
+
+        LockSnapshot {
+            lock_id: lock_id.to_string(),
+            state: snapshot.state.clone(),
+            balance_sats: snapshot.balance_sats,
+            funding_height: 0, // Not provided in real-time snapshot
+            confirmations: snapshot.confirmations,
+            denomination,
+            jump_urgency: snapshot.jump_urgency,
+            recovery_blocks_remaining: 26280, // Default - would come from full lock info
+            recovery_window_total: 52560,
+            in_mempool: snapshot.in_mempool,
+            pending_l2_sats: snapshot.pending_l2_sats,
+        }
+    }
+
+    /// Determine denomination tier from balance
+    fn denomination_from_balance(balance_sats: u64) -> String {
+        match balance_sats {
+            0..=10_000 => "Micro",
+            10_001..=100_000 => "Tiny",
+            100_001..=1_000_000 => "Small",
+            1_000_001..=10_000_000 => "Medium",
+            10_000_001..=100_000_000 => "Large",
+            _ => "XL",
+        }
+        .to_string()
+    }
+
+    /// Subscribe to real-time lock state updates
+    ///
+    /// The callback will be invoked whenever the lock state changes.
+    pub async fn subscribe_lock_state(
+        &self,
+        lock_id: &str,
+        callback: LockStateCallback,
+    ) -> WalletResult<()> {
+        // Register callback
+        self.lock_state_callbacks
+            .write()
+            .insert(lock_id.to_string(), callback);
+
+        // Send subscription request
+        self.send_message(ClientMessage::SubscribeLockState {
+            lock_id: lock_id.to_string(),
+        })
+        .await
+    }
+
+    /// Unsubscribe from lock state updates
+    pub async fn unsubscribe_lock_state(&self, lock_id: &str) -> WalletResult<()> {
+        // Remove callback
+        self.lock_state_callbacks.write().remove(lock_id);
+
+        // Send unsubscribe request
+        self.send_message(ClientMessage::UnsubscribeLockState {
+            lock_id: lock_id.to_string(),
+        })
+        .await
+    }
+
+    /// Get cached lock snapshot (if available)
+    pub fn get_cached_lock_state(&self, lock_id: &str) -> Option<LockStateSnapshot> {
+        self.lock_snapshots.read().get(lock_id).cloned()
     }
 
     /// Check if connected

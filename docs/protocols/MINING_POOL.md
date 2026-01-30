@@ -84,9 +84,11 @@ Each Ghost Node runs:
 
 ## Stratum Protocol
 
-### SV1 (Current)
+Ghost Pool supports two mining protocol modes:
 
-Miners connect using Stratum V1 (JSON-RPC over TCP):
+### Native Stratum (SV1)
+
+Direct miner connections using Stratum V1 (JSON-RPC over TCP):
 
 ```json
 // Subscribe
@@ -102,13 +104,61 @@ Miners connect using Stratum V1 (JSON-RPC over TCP):
 {"id": 3, "method": "mining.submit", "params": ["worker", "job_id", "extranonce2", "ntime", "nonce"]}
 ```
 
-### Connection Settings
-
 | Setting | Value |
 |---------|-------|
-| Default Port | 3333 |
+| Port | 34255 |
 | Protocol | TCP/JSON-RPC |
 | Encryption | Optional TLS |
+
+### TDP Mode with SRI (SV2)
+
+For Stratum V2 support, ghost-pool integrates with SRI (Stratum Reference Implementation) using the Template Distribution Protocol (TDP). This architecture allows ghost-pool to control block template building while SRI handles the SV2 mining protocol.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     TDP Mode Architecture                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ghost-core (RPC)                                               │
+│       │                                                         │
+│       ▼                                                         │
+│  ghost-pool (TDP Server)  ◄── BUDS/policy/custom block building │
+│  --tdp-enabled --no-stratum                                     │
+│       │ Noise encrypted (port 8442)                             │
+│       ▼                                                         │
+│  SRI Pool (pool-sv2)  ◄── SV2 protocol distribution             │
+│       │ SV2 (port 34256)                                        │
+│       ▼                                                         │
+│  SRI Translator (translator-sv1)  ◄── SV1 ↔ SV2 conversion      │
+│       │ SV1 (port 3333)                                         │
+│       ▼                                                         │
+│  Legacy Miners (BitAxe, ASICs)                                  │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**TDP Mode Benefits:**
+- Ghost-pool retains full control over block template construction
+- BUDS policy and mempool filtering applied before template distribution
+- Noise protocol encryption for secure template transport
+- Full Stratum V2 protocol support via SRI
+- Backward compatible with SV1 miners through SRI translator
+
+**CLI Flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--tdp-enabled` | false | Enable TDP server |
+| `--tdp-port` | 8442 | TDP server port |
+| `--no-stratum` | false | Disable native stratum |
+
+**TDP Port Configuration:**
+
+| Port | Component | Purpose |
+|------|-----------|---------|
+| 8442 | ghost-pool | TDP server (Noise encrypted) |
+| 34256 | SRI Pool | SV2 miner/translator connections |
+| 3333 | SRI Translator | SV1 miner connections |
 
 ### Username Format
 
@@ -282,25 +332,22 @@ Round 12345:
 └── ...
 ```
 
-## Coordinator (Optional)
+## Node Discovery
 
-The coordinator routes miners to optimal nodes:
+Miners can find optimal pool nodes through:
 
-```
-1. Miner connects to coordinator (port 8333)
-2. Coordinator probes latency to all pool nodes
-3. Selects best node based on:
-   ├── Latency (Fire Ping)
-   ├── Current capacity
-   └── Geographic proximity
-4. Sends client.reconnect with target node
-5. Miner connects directly to pool node
-```
+1. **Node Finder Tool** - Web-based tool at `https://bitcoinghost.org/node-finder.html`
+   - Discovers nodes from seed nodes and P2P network
+   - Tests latency from user's browser
+   - Shows node availability (available/busy/full)
+   - Recommends best node based on latency and availability
 
-The coordinator does NOT:
-- Handle shares or payouts
-- Participate in consensus
-- Store any miner state
+2. **Regional Subdomains** - Pre-configured regional endpoints
+   - `eu.pool.bitcoinghost.org:3333` - Europe
+   - `us.pool.bitcoinghost.org:3333` - North America
+   - `asia.pool.bitcoinghost.org:3333` - Asia-Pacific
+
+3. **Direct Connection** - Connect to any known pool node
 
 ## Miner Setup
 

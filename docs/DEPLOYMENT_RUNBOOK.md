@@ -50,10 +50,12 @@ source $HOME/.cargo/env
 
 ## Architecture Overview
 
+### Standard Mode (Native Stratum)
+
 ```
                                     ┌─────────────────┐
-                                    │  Bitcoin Core   │
-                                    │  (ghost-core)   │
+                                    │   ghost-core    │
+                                    │   (Bitcoin)     │
                                     └────────┬────────┘
                                              │ RPC + ZMQ
                               ┌──────────────┴──────────────┐
@@ -62,14 +64,55 @@ source $HOME/.cargo/env
                     │    ghost-pool     │         │  ghost-pay (L2) │
                     │  (Mining Pool)    │◄────────┤  (Optional)     │
                     └─────────┬─────────┘         └─────────────────┘
-                              │
-            ┌─────────────────┼─────────────────┐
-            │                 │                 │
-   ┌────────▼────────┐ ┌──────▼──────┐ ┌───────▼───────┐
-   │   translator    │ │  Stratum V2 │ │  P2P Mesh     │
-   │   (SV1↔SV2)    │ │   Miners    │ │  (Consensus)  │
-   └─────────────────┘ └─────────────┘ └───────────────┘
+                              │ Stratum V1
+                              │ (port 34255)
+                              ▼
+                    ┌─────────────────┐
+                    │    SV1 Miners   │
+                    └─────────────────┘
 ```
+
+### TDP Mode (SRI Integration for Stratum V2)
+
+For Stratum V2 support with full BUDS/policy control, use TDP mode with SRI:
+
+```
+                                    ┌─────────────────┐
+                                    │   ghost-core    │
+                                    │   (Bitcoin)     │
+                                    └────────┬────────┘
+                                             │ RPC + ZMQ
+                                             ▼
+                    ┌─────────────────────────────────────┐
+                    │           ghost-pool                 │
+                    │  (TDP Server - Noise encrypted)     │
+                    │  --tdp-enabled --no-stratum         │
+                    └─────────────────┬───────────────────┘
+                                      │ TDP (port 8442)
+                                      │ Block templates
+                                      ▼
+                    ┌─────────────────────────────────────┐
+                    │        SRI Pool (pool-sv2)          │
+                    │  (SV2 protocol distribution)        │
+                    └─────────────────┬───────────────────┘
+                                      │ SV2 (port 34256)
+                                      ▼
+                    ┌─────────────────────────────────────┐
+                    │    SRI Translator (translator-sv1)  │
+                    │         (SV1 ↔ SV2 proxy)           │
+                    └─────────────────┬───────────────────┘
+                                      │ SV1 (port 3333)
+                                      ▼
+                    ┌─────────────────────────────────────┐
+                    │     Legacy Miners (BitAxe, etc.)    │
+                    └─────────────────────────────────────┘
+```
+
+**TDP Mode Benefits:**
+- Ghost-pool controls block template building (BUDS, mempool policy, custom block building)
+- Full Stratum V2 protocol support via SRI
+- Noise protocol encryption for template distribution
+- Compatible with legacy SV1 miners through SRI translator
 
 ### Components
 
@@ -78,7 +121,6 @@ source $HOME/.cargo/env
 | `ghost-pool` | Main mining pool node | Yes |
 | `translator` | SV1 to SV2 protocol translator | If SV1 miners |
 | `ghost-pay` | L2 instant payments | Optional |
-| `ghost-coordinator` | Wraith Protocol coordinator | Optional |
 
 ---
 
@@ -98,7 +140,6 @@ cargo build --release
 ls -la target/release/ghost-pool
 ls -la target/release/translator
 ls -la target/release/ghost-pay
-ls -la target/release/ghost-coordinator
 ```
 
 ### Option 2: Pre-built Binaries
@@ -209,15 +250,64 @@ transfer_fee_bps = 10
 wraith_enabled = true
 wraith_fee_percent = 0.5
 
-# Optional: Wraith Coordinator
-[coordinator]
-port = 8333
-heartbeat_secs = 30
-fire_ping_timeout_ms = 5000
-convergence_threshold = 0.67
 ```
 
-### Bitcoin Core Configuration (`bitcoin.conf`)
+### TDP Mode Configuration (SRI Integration)
+
+For Stratum V2 support via SRI, use TDP mode. This allows ghost-pool to control block template building (BUDS, mempool policy) while SRI handles the SV2 protocol.
+
+**ghost-pool CLI flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--tdp-enabled` | false | Enable Template Distribution Protocol server |
+| `--tdp-port` | 8442 | TDP server port (Noise encrypted) |
+| `--no-stratum` | false | Disable native stratum server |
+
+**Example TDP mode startup:**
+
+```bash
+ghost-pool --config /etc/ghost/config.toml \
+           --tdp-enabled \
+           --tdp-port 8442 \
+           --no-stratum
+```
+
+**SRI Pool Configuration (`/etc/ghost/sri/pool-config.toml`):**
+
+```toml
+# Pool identity (Ed25519)
+authority_public_key = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+authority_secret_key = "mkDLTBBRxdBv998612qipDYoTK3YUrqLe8uWw7gu3iXbSrn2n"
+
+# Listen for SV2 connections (port 34256 to avoid conflict with ghost-pool's 34255)
+listen_address = "0.0.0.0:34256"
+
+# Coinbase reward destination
+coinbase_reward_script = "addr(tb1qa0sm0hxzj0x25rh8gw5xlzwlsfvvyz8u96w3p8)"
+
+# Template Provider - connects to ghost-pool TDP server
+[template_provider_type.Sv2Tp]
+address = "127.0.0.1:8442"
+# ghost-pool's TDP authority public key (from --tdp-enabled startup logs)
+public_key = "9bRi8WdawJSqbhc4CjK9UDTCudaBxkNx1a6qaJ4yx5qjnrQgQDF"
+```
+
+**SRI Translator Configuration (`/etc/ghost/sri/translator-config.toml`):**
+
+```toml
+# Listen for SV1 miners (standard stratum port)
+downstream_address = "0.0.0.0"
+downstream_port = 3333
+
+# Upstream SRI Pool connection
+[[upstreams]]
+address = "127.0.0.1"
+port = 34256
+authority_pubkey = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"
+```
+
+### ghost-core Configuration (`bitcoin.conf`)
 
 ```ini
 # Bitcoin Ghost compatible configuration
@@ -349,9 +439,11 @@ curl http://localhost:8080/api/v1/miners
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
-| 34255 | TCP | Stratum V2 miners |
-| 3333 | TCP | Stratum V1 miners (translator) |
+| 34255 | TCP | Native Stratum (ghost-pool) |
+| 34256 | TCP | SV2 miners/translators (SRI pool, TDP mode) |
+| 3333 | TCP | SV1 miners (SRI translator, TDP mode) |
 | 8080 | TCP | HTTP API |
+| 8442 | TCP | TDP server (Noise encrypted, TDP mode) |
 | 8555-8562 | TCP | P2P consensus mesh |
 
 ### Internal Only (Localhost)
@@ -362,6 +454,54 @@ curl http://localhost:8080/api/v1/miners
 | 38332 | Bitcoin RPC (signet) |
 | 28332 | ZMQ hashblock |
 | 28333 | ZMQ hashtx |
+
+---
+
+## DNS Configuration for Regional Endpoints
+
+Ghost Pool uses regional subdomains for miner routing. Miners connect to the nearest region for lowest latency.
+
+### Required DNS Records
+
+Create A records for each regional subdomain pointing to your pool nodes:
+
+```dns
+# Regional stratum endpoints
+eu.pool.bitcoinghost.org      A    <EU_NODE_IP>
+us.pool.bitcoinghost.org      A    <US_NODE_IP>
+asia.pool.bitcoinghost.org    A    <ASIA_NODE_IP>
+
+# For multiple nodes per region (DNS round-robin)
+eu.pool.bitcoinghost.org      A    <EU_NODE_1_IP>
+eu.pool.bitcoinghost.org      A    <EU_NODE_2_IP>
+```
+
+### Regional Endpoint Reference
+
+| Region | Subdomain | SV1 Port | SV2 Port |
+|--------|-----------|----------|----------|
+| Europe | `eu.pool.bitcoinghost.org` | 3333 | 34255 |
+| North America | `us.pool.bitcoinghost.org` | 3333 | 34255 |
+| Asia-Pacific | `asia.pool.bitcoinghost.org` | 3333 | 34255 |
+
+### Miner Configuration Example
+
+```
+URL:      stratum+tcp://eu.pool.bitcoinghost.org:3333
+Username: bc1qYourAddress.worker1
+Password: x
+```
+
+### HTTPS for Node Finder
+
+The website includes a Node Finder tool (`/node-finder.html`) that discovers pool nodes and tests latency.
+For this to work:
+
+1. Enable CORS on the HTTP API (already enabled by default)
+2. Configure HTTPS with valid SSL certificates
+3. Ensure port 8080 is accessible from the internet
+
+The Node Finder uses `https://<node>/health` and `/api/v1/node/public-info` endpoints.
 
 ### Firewall Configuration (UFW)
 

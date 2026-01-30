@@ -29,6 +29,9 @@ license.workspace = true
 description = "Shared protocol types for Ghost Service Provider (GSP) and Light Wallet communication"
 
 [dependencies]
+# Internal crates
+ghost-common = { workspace = true }
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }

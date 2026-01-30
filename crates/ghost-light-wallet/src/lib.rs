@@ -86,6 +86,7 @@
 
 mod error;
 pub mod gsp;
+pub mod instant;
 pub mod keys;
 pub mod locks;
 pub mod payments;
@@ -94,6 +95,7 @@ pub mod state;
 mod wallet;
 
 pub use error::LightWalletError;
+pub use instant::{InstantPaymentChecker, InstantStatus};
 pub use wallet::{LightWallet, WalletConfig, WalletStatus};
 
 /// Light wallet version

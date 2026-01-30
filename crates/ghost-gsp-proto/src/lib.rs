@@ -70,7 +70,10 @@ pub use lock::{
     GhostLockInfo, GhostLockStatus, JumpPriority, JumpRequest, JumpResponse,
     LockFundingConfirmation, LockRequest, LockResponse, LockStateTransition,
 };
-pub use messages::{ClientMessage, ServerMessage, TransactionInfo, UtxoInfo};
+pub use messages::{
+    ClientMessage, InstantCapability, InstantCondition, LockSnapshot, LockStateChangeType,
+    LockStateSnapshot, ServerMessage, TransactionInfo, UtxoInfo,
+};
 pub use payment::{
     PaymentMode, PaymentReceipt, PaymentStatus, PreparePaymentRequest, PreparePaymentResponse,
     PreparedPayment, SubmitPaymentRequest, SubmitPaymentResponse,

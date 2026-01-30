@@ -39,6 +39,78 @@ use crate::challenge::*;
 use crate::server::VerificationState;
 use crate::websocket::ws_handler;
 
+/// Get system resource usage (CPU %, Memory %, Disk %)
+fn get_system_resources() -> (f64, f64, f64) {
+    // Read memory info from /proc/meminfo
+    let memory_percent = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|content| {
+            let mut total: u64 = 0;
+            let mut available: u64 = 0;
+            for line in content.lines() {
+                if line.starts_with("MemTotal:") {
+                    total = line.split_whitespace().nth(1)?.parse().ok()?;
+                } else if line.starts_with("MemAvailable:") {
+                    available = line.split_whitespace().nth(1)?.parse().ok()?;
+                }
+            }
+            if total > 0 {
+                Some(((total - available) as f64 / total as f64) * 100.0)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0.0);
+
+    // Read disk usage using statvfs on root partition
+    let disk_percent = {
+        #[cfg(unix)]
+        {
+            use std::ffi::CString;
+            use std::mem::MaybeUninit;
+
+            let path = CString::new("/").unwrap();
+            let mut stat: MaybeUninit<libc::statvfs> = MaybeUninit::uninit();
+
+            let result = unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) };
+
+            if result == 0 {
+                let stat = unsafe { stat.assume_init() };
+                let total = stat.f_blocks as f64 * stat.f_frsize as f64;
+                let free = stat.f_bfree as f64 * stat.f_frsize as f64;
+                if total > 0.0 {
+                    ((total - free) / total) * 100.0
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            0.0
+        }
+    };
+
+    // CPU usage requires sampling over time, return a simple load average estimate
+    let cpu_percent = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|content| {
+            let load_1min: f64 = content.split_whitespace().next()?.parse().ok()?;
+            // Get number of CPUs
+            let num_cpus = std::fs::read_to_string("/proc/cpuinfo")
+                .ok()
+                .map(|c| c.matches("processor").count())
+                .unwrap_or(1) as f64;
+            // Convert load average to percentage (capped at 100%)
+            Some((load_1min / num_cpus * 100.0).min(100.0))
+        })
+        .unwrap_or(0.0);
+
+    (cpu_percent, memory_percent, disk_percent)
+}
+
 /// Create verification router
 pub fn create_router(state: Arc<VerificationState>) -> Router {
     // Clone ws_state for the WebSocket handler
@@ -106,6 +178,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/backup/history", get(api_backup_history_handler))
         .route("/api/v1/wraith/sessions", get(api_wraith_sessions_handler))
         .route("/api/v1/network/elder", get(api_network_elder_handler))
+        .route("/api/v1/network/public-nodes", get(api_public_nodes_handler))
+        .route("/api/v1/node/public-info", get(api_node_public_info_handler))
         .route("/api/v1/buds/mempool", get(api_buds_mempool_handler))
         .route(
             "/api/v1/mining/best-hash",
@@ -1110,13 +1184,23 @@ async fn api_config_handler(State(state): State<Arc<VerificationState>>) -> impl
 /// API v1 resources handler
 async fn api_resources_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
+
+    // Get actual system resource usage
+    let (cpu_percent, memory_percent, disk_percent) = get_system_resources();
+
     Json(serde_json::json!({
-        "cpu_percent": 0.0,
+        "cpu_percent": cpu_percent,
+        "memory_percent": memory_percent,
         "memory_mb": 0,
-        "disk_usage_percent": 0.0,
+        "disk_percent": disk_percent,
+        "disk_usage_percent": disk_percent,
         "uptime_seconds": health.uptime_secs,
         "uptime_secs": health.uptime_secs,
-        "status": "healthy"
+        "status": "healthy",
+        "warning_threshold_cpu": 70.0,
+        "critical_threshold_cpu": 90.0,
+        "warning_threshold_memory": 70.0,
+        "critical_threshold_memory": 90.0
     }))
 }
 
@@ -1631,6 +1715,79 @@ async fn api_swarm_nodes_handler(State(state): State<Arc<VerificationState>>) ->
     Json(serde_json::json!({
         "nodes": nodes,
         "total": total
+    }))
+}
+
+/// API v1 Public nodes handler - returns list of peer addresses for node finder to query
+async fn api_public_nodes_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
+    let _health = state.get_health().await; // Reserved for future health-based filtering
+    let config = state.dashboard_config.read();
+
+    let mut nodes = Vec::new();
+
+    // Add self if public mining is enabled
+    if config.public_mining {
+        let host = config.stratum_host.clone().unwrap_or_else(|| "localhost".to_string());
+        let http_port = config.http_port.unwrap_or(8080);
+        nodes.push(serde_json::json!({
+            "host": host,
+            "http_port": http_port,
+            "is_self": true
+        }));
+    }
+
+    // Add known peers - the node finder will query each one for /api/v1/node/public-info
+    if let Some(ref db) = state.database {
+        if let Ok(peers) = db.get_active_peers(100) {
+            for peer in peers {
+                // Add peer address for the finder to query
+                nodes.push(serde_json::json!({
+                    "host": peer.address,
+                    "http_port": peer.port,
+                    "is_self": false
+                }));
+            }
+        }
+    }
+
+    Json(serde_json::json!({
+        "nodes": nodes,
+        "total": nodes.len(),
+        "note": "Query each node's /api/v1/node/public-info for details"
+    }))
+}
+
+/// API v1 Node public info handler - returns this node's public mining info
+async fn api_node_public_info_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
+    let health = state.get_health().await;
+    let config = state.dashboard_config.read();
+
+    if !config.public_mining {
+        return Json(serde_json::json!({
+            "public_mining": false,
+            "message": "This node does not accept public miners"
+        }));
+    }
+
+    // Determine status based on miner count vs capacity
+    let status = if health.miner_count >= config.max_miners as u32 {
+        "full"
+    } else if health.miner_count as f64 >= config.max_miners as f64 * 0.8 {
+        "busy"
+    } else {
+        "available"
+    };
+
+    Json(serde_json::json!({
+        "public_mining": true,
+        "node_id": health.node_id,
+        "name": config.node_name.clone().unwrap_or_else(|| health.node_id[..8].to_string()),
+        "region": config.region.clone().unwrap_or_else(|| "unknown".to_string()),
+        "stratum_host": config.stratum_host.clone().unwrap_or_else(|| "localhost".to_string()),
+        "stratum_port": config.stratum_port.unwrap_or(3333),
+        "status": status,
+        "accepting_miners": status != "full",
+        "version": health.version
     }))
 }
 

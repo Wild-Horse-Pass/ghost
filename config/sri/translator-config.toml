@@ -1,0 +1,57 @@
+# Ghost Network - SRI Translator Configuration
+#
+# Translates Stratum V1 (JSON-RPC) from legacy miners to Stratum V2 for the pool.
+#
+# Architecture:
+#   BitAxe (SV1) -> Translator (:3333) -> SRI Pool (:34255) -> ghost-pool (TDP)
+
+# Listen for SV1 miners (standard stratum port)
+downstream_address = "0.0.0.0"
+downstream_port = 3333
+
+# Protocol version
+max_supported_version = 2
+min_supported_version = 2
+
+# Extranonce size for downstream miners
+# Max value for CGminer: 8, Min value: 2
+downstream_extranonce2_size = 4
+
+# User identity prefix (miner usernames will be username.miner1, username.miner2, etc.)
+user_identity = "ghost_miner"
+
+# Channel aggregation
+# true = all miners share one upstream channel (recommended for many small miners)
+# false = each miner gets its own channel
+aggregate_channels = true
+
+# Protocol extensions
+supported_extensions = []
+required_extensions = []
+
+# Monitoring endpoint
+monitoring_address = "0.0.0.0:9092"
+
+# Log file (optional)
+# log_file = "/var/log/ghost/sri-translator.log"
+
+# Difficulty configuration for SV1 miners
+[downstream_difficulty_config]
+# Minimum hashrate of connected miners (10 TH/s default)
+min_individual_miner_hashrate = 10_000_000_000_000.0
+# Target shares per minute
+shares_per_minute = 6.0
+# Enable variable difficulty adjustment
+enable_vardiff = true
+# Idle miner timeout (seconds) - disconnect miners with no shares
+idle_timeout_secs = 600
+
+# Keepalive interval for downstream miners (seconds)
+job_keepalive_interval_secs = 60
+
+# Upstream SRI Pool connection
+[[upstreams]]
+address = "127.0.0.1"
+port = 34256
+# Must match the pool's authority_public_key
+authority_pubkey = "9auqWEzQDVyd2oe1JVGFLMLHZtCo2FFqZwtKA5gd9xbuEu7PH72"

@@ -96,6 +96,9 @@ pub enum LightWalletError {
     #[error("Payment not found: {0}")]
     PaymentNotFound(String),
 
+    #[error("Invalid payment: {0}")]
+    InvalidPayment(String),
+
     // =========================================================================
     // Lock Errors
     // =========================================================================

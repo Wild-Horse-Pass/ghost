@@ -292,6 +292,67 @@ curl http://localhost:8080/health
    - Elders must maintain >90% challenge pass rate
    - Check logs for failed verifications
 
+### 8. TDP Mode / SRI Integration Issues
+
+**Symptoms:**
+- SRI Pool not receiving templates
+- "Waiting for initial template" in SRI logs
+- Noise handshake failures
+
+**Causes & Solutions:**
+
+1. **TDP server not started**
+   ```bash
+   # Verify TDP is enabled
+   ghost-pool --help | grep tdp
+
+   # Start with TDP enabled
+   ghost-pool --tdp-enabled --tdp-port 8442 --no-stratum
+   ```
+
+2. **Public key mismatch**
+   ```bash
+   # Check ghost-pool's TDP authority public key in startup logs
+   journalctl -u ghost-pool | grep "TDP authority public key"
+
+   # Ensure SRI pool config has matching key
+   grep public_key /etc/ghost/sri/pool-config.toml
+   ```
+
+3. **Port conflicts**
+   ```bash
+   # Check ports are available
+   ss -tlnp | grep -E '8442|34255|34256|3333'
+
+   # TDP mode should use:
+   # - 8442: ghost-pool TDP server
+   # - 34256: SRI pool (not 34255 - avoid conflict)
+   # - 3333: SRI translator for SV1 miners
+   ```
+
+4. **SRI Pool stuck on "Waiting for initial template"**
+   - Templates must be sent with `future_template: true` for initial registration
+   - Check ghost-pool logs for template generation
+   - Verify ghost-core RPC connection is working
+
+5. **Noise handshake timeout**
+   ```bash
+   # Verify SRI can reach TDP port
+   nc -zv localhost 8442
+
+   # Check firewall
+   sudo ufw status | grep 8442
+   ```
+
+6. **SV1 miners not connecting through translator**
+   ```bash
+   # Check translator is running and listening
+   ss -tlnp | grep 3333
+
+   # Verify translator upstream config points to SRI pool
+   grep -A5 upstreams /etc/ghost/sri/translator-config.toml
+   ```
+
 ## Log Analysis
 
 ### Key Log Patterns
@@ -316,6 +377,9 @@ journalctl -u ghost-pool -f | grep -E 'share|submit'
 | "Invalid share difficulty" | Miner misconfigured | Check miner stratum settings |
 | "Consensus timeout" | Network partition | Check peer connectivity |
 | "Template generation failed" | RPC issue | Check Bitcoin Core |
+| "Noise handshake failed" | TDP key mismatch | Check public_key in SRI config |
+| "Waiting for initial template" | SRI not receiving templates | Verify TDP port and key match |
+| "Address already in use" | Port conflict | Use --tdp-port or adjust SRI ports |
 
 ## Monitoring Integration
 

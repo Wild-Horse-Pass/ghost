@@ -46,8 +46,8 @@ pub struct NodeConfig {
     pub pool: PoolConfig,
     /// Ghost Pay L2 configuration (optional)
     pub ghost_pay: Option<GhostPayConfig>,
-    /// Coordinator configuration (optional, for coordinator nodes)
-    pub coordinator: Option<CoordinatorConfig>,
+    /// Registry configuration (optional, for load balancer registration)
+    pub registry: Option<RegistryConfig>,
 }
 
 impl Default for NodeConfig {
@@ -60,7 +60,7 @@ impl Default for NodeConfig {
             storage: StorageConfig::default(),
             pool: PoolConfig::default(),
             ghost_pay: None,
-            coordinator: None,
+            registry: None,
         }
     }
 }
@@ -144,10 +144,6 @@ impl NodeConfig {
             self.validate_ghost_pay(gp, &mut result);
         }
 
-        // Validate coordinator configuration (if present)
-        if let Some(ref coord) = self.coordinator {
-            self.validate_coordinator(coord, &mut result);
-        }
 
         result
     }
@@ -409,44 +405,6 @@ impl NodeConfig {
         }
     }
 
-    fn validate_coordinator(&self, coord: &CoordinatorConfig, result: &mut ConfigValidationResult) {
-        // Port validation
-        if coord.port == 0 {
-            result.add_error("coordinator.port", "Invalid port 0");
-        }
-
-        // Check for conflict with network ports
-        if coord.port == self.network.sv2_port
-            || coord.port == self.network.sv1_port
-            || coord.port == self.network.http_port
-        {
-            result.add_error(
-                "coordinator.port",
-                &format!("Port {} conflicts with network ports", coord.port),
-            );
-        }
-
-        // Heartbeat interval
-        if coord.heartbeat_secs == 0 {
-            result.add_error("coordinator.heartbeat_secs", "Cannot be 0");
-        }
-
-        // Fire ping timeout
-        if coord.fire_ping_timeout_ms < 100 {
-            result.add_warning(
-                "coordinator.fire_ping_timeout_ms",
-                "Very short timeout may cause false timeouts",
-            );
-        }
-
-        // Convergence threshold
-        if coord.convergence_threshold <= 0.0 || coord.convergence_threshold >= 1.0 {
-            result.add_error(
-                "coordinator.convergence_threshold",
-                "Must be between 0 and 1 (exclusive)",
-            );
-        }
-    }
 }
 
 /// Identity configuration
@@ -745,35 +703,64 @@ impl Default for GhostPayConfig {
     }
 }
 
-/// Coordinator configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CoordinatorConfig {
-    /// Coordinator port
-    pub port: u16,
-    /// Heartbeat interval (seconds)
-    pub heartbeat_secs: u64,
-    /// Fire Ping timeout (milliseconds)
-    pub fire_ping_timeout_ms: u64,
-    /// Enable gradient descent convergence fallback
-    pub convergence_enabled: bool,
-    /// Convergence test interval (seconds)
-    pub convergence_interval_secs: u64,
-    /// Convergence migration threshold (improvement required)
-    pub convergence_threshold: f64,
-    /// Maximum convergence iterations
-    pub convergence_max_iterations: usize,
+
+/// Geographic region for miner routing
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Region {
+    UsEast,
+    UsWest,
+    EuWest,
+    EuCentral,
+    AsiaSoutheast,
+    AsiaNortheast,
+    Oceania,
+    SouthAmerica,
+    Africa,
+    Unknown,
 }
 
-impl Default for CoordinatorConfig {
+impl Default for Region {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+impl std::fmt::Display for Region {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::UsEast => "us-east",
+            Self::UsWest => "us-west",
+            Self::EuWest => "eu-west",
+            Self::EuCentral => "eu-central",
+            Self::AsiaSoutheast => "asia-southeast",
+            Self::AsiaNortheast => "asia-northeast",
+            Self::Oceania => "oceania",
+            Self::SouthAmerica => "south-america",
+            Self::Africa => "africa",
+            Self::Unknown => "unknown",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// Registry configuration for load balancer registration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryConfig {
+    /// URL of the registry/load balancer (e.g., "http://83.136.255.218:8333")
+    pub url: String,
+    /// Heartbeat interval in seconds
+    pub heartbeat_interval_secs: u64,
+    /// Geographic region of this node
+    pub region: Region,
+}
+
+impl Default for RegistryConfig {
     fn default() -> Self {
         Self {
-            port: COORDINATOR_PORT,
-            heartbeat_secs: COORDINATOR_HEARTBEAT_SECS,
-            fire_ping_timeout_ms: FIRE_PING_TIMEOUT_MS,
-            convergence_enabled: true,
-            convergence_interval_secs: CONVERGENCE_TEST_INTERVAL_SECS,
-            convergence_threshold: CONVERGENCE_MIGRATION_THRESHOLD,
-            convergence_max_iterations: CONVERGENCE_MAX_ITERATIONS,
+            url: String::new(),
+            heartbeat_interval_secs: 30,
+            region: Region::Unknown,
         }
     }
 }
