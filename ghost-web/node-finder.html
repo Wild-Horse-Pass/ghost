@@ -59,6 +59,15 @@
     .nav-links { display: flex; gap: 8px; }
     .nav-links a { color: var(--gray-300); text-decoration: none; padding: 8px 16px; font-size: 14px; font-weight: 500; border-radius: 8px; transition: all 0.2s; }
     .nav-links a:hover { color: var(--white); background: var(--gray-800); }
+    .nav-links a.active { color: var(--orange); }
+    .nav-dropdown { position: relative; }
+    .nav-dropdown-menu { position: absolute; top: 100%; left: 0; background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 8px; padding: 8px; min-width: 160px; opacity: 0; visibility: hidden; transform: translateY(-8px); transition: all 0.2s; }
+    .nav-dropdown:hover .nav-dropdown-menu { opacity: 1; visibility: visible; transform: translateY(0); }
+    .nav-dropdown-menu a { display: block; padding: 10px 16px; color: var(--gray-300); text-decoration: none; font-size: 14px; border-radius: 6px; }
+    .nav-dropdown-menu a:hover { background: var(--gray-800); color: var(--white); }
+    .nav-right { display: flex; align-items: center; gap: 12px; }
+    .btn-ghost { background: transparent; color: var(--gray-300); padding: 8px 12px; }
+    .btn-ghost:hover { color: var(--white); }
     .btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 20px; font-family: var(--font-display); font-size: 14px; font-weight: 600; border-radius: 8px; text-decoration: none; transition: all 0.2s; border: none; cursor: pointer; }
     .btn-primary { background: var(--orange); color: var(--black); }
     .btn-primary:hover { background: var(--orange-light); }
@@ -153,11 +162,24 @@
       <div class="nav-links">
         <a href="index.html">Home</a>
         <a href="network.html">Network</a>
-        <a href="stats.html">Pool</a>
+        <div class="nav-dropdown">
+          <a href="pool.html" class="active">Pool</a>
+          <div class="nav-dropdown-menu">
+            <a href="pool.html">Connect</a>
+            <a href="pool-stats.html">Statistics</a>
+            <a href="node-finder.html">Node Finder</a>
+          </div>
+        </div>
         <a href="how-it-works.html">How It Works</a>
+        <a href="economics.html">Economics</a>
         <a href="docs/index.html">Docs</a>
       </div>
-      <a href="miners.html" class="btn btn-primary">Connect Miner</a>
+      <div class="nav-right">
+        <a href="https://github.com/bitcoin-ghost" class="btn btn-ghost" target="_blank">
+          <svg style="width:20px;height:20px;" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+        <a href="get-started.html" class="btn btn-primary">Get Started</a>
+      </div>
     </div>
   </nav>
 
@@ -209,11 +231,12 @@
 
       <div class="info-box" style="margin-top: 16px;">
         <h3>Quick Regional Endpoints</h3>
-        <p>If the finder doesn't work, use these regional endpoints based on your location:</p>
+        <p>Use these regional endpoints based on your location:</p>
         <ul style="margin-top: 12px; margin-left: 20px; color: var(--gray-300); font-size: 13px;">
-          <li><strong>Europe:</strong> stratum+tcp://eu.pool.bitcoinghost.org:3333</li>
-          <li><strong>North America:</strong> stratum+tcp://us.pool.bitcoinghost.org:3333</li>
-          <li><strong>Asia-Pacific:</strong> stratum+tcp://asia.pool.bitcoinghost.org:3333</li>
+          <li><strong>Europe (London):</strong> stratum+tcp://eu.pool.bitcoinghost.org:3333 or stratum+tcp://83.136.251.162:3333</li>
+          <li><strong>North America (New York):</strong> stratum+tcp://us.pool.bitcoinghost.org:3333 or stratum+tcp://85.9.198.212:3333</li>
+          <li><strong>Asia (Singapore):</strong> stratum+tcp://asia.pool.bitcoinghost.org:3333 or stratum+tcp://213.163.207.46:3333</li>
+          <li><strong>Australia (Sydney):</strong> stratum+tcp://au.pool.bitcoinghost.org:3333 or stratum+tcp://95.111.221.169:3333</li>
         </ul>
       </div>
     </div>
@@ -240,10 +263,20 @@
 
   <script>
     // Seed nodes to start discovery (regional endpoints)
+    // Uses DNS names when available, falls back to direct IPs
     const SEED_NODES = [
-      { host: 'eu.pool.bitcoinghost.org', httpPort: 8080 },
-      { host: 'us.pool.bitcoinghost.org', httpPort: 8080 },
-      { host: 'asia.pool.bitcoinghost.org', httpPort: 8080 },
+      { host: 'eu.pool.bitcoinghost.org', httpPort: 8080, name: 'Europe (London)', fallbackIp: '83.136.251.162' },
+      { host: 'us.pool.bitcoinghost.org', httpPort: 8080, name: 'North America (New York)', fallbackIp: '85.9.198.212' },
+      { host: 'asia.pool.bitcoinghost.org', httpPort: 8080, name: 'Asia (Singapore)', fallbackIp: '213.163.207.46' },
+      { host: 'au.pool.bitcoinghost.org', httpPort: 8080, name: 'Australia (Sydney)', fallbackIp: '95.111.221.169' },
+    ];
+
+    // Direct IP nodes (always available, used as fallback)
+    const DIRECT_NODES = [
+      { host: '83.136.251.162', httpPort: 8080, name: 'EU Node (London)', stratumPort: 3333 },
+      { host: '85.9.198.212', httpPort: 8080, name: 'US Node (New York)', stratumPort: 3333 },
+      { host: '213.163.207.46', httpPort: 8080, name: 'Asia Node (Singapore)', stratumPort: 3333 },
+      { host: '95.111.221.169', httpPort: 8080, name: 'AU Node (Sydney)', stratumPort: 3333 },
     ];
 
     const PING_TIMEOUT = 5000;
@@ -460,7 +493,7 @@
       discoveredNodes.clear();
       document.getElementById('recommendation').classList.remove('show');
 
-      // Phase 1: Add seed nodes
+      // Phase 1: Add seed nodes (DNS names)
       updateStatus('Contacting seed nodes...');
       for (const seed of SEED_NODES) {
         const key = `${seed.host}:${seed.httpPort}`;
@@ -468,9 +501,26 @@
           key,
           host: seed.host,
           httpPort: seed.httpPort,
+          name: seed.name,
           tested: false,
           online: false
         });
+      }
+
+      // Phase 1b: Add direct IP nodes as fallback
+      for (const node of DIRECT_NODES) {
+        const key = `${node.host}:${node.httpPort}`;
+        if (!discoveredNodes.has(key)) {
+          discoveredNodes.set(key, {
+            key,
+            host: node.host,
+            httpPort: node.httpPort,
+            name: node.name,
+            stratumPort: node.stratumPort,
+            tested: false,
+            online: false
+          });
+        }
       }
 
       // Phase 2: Discover more nodes from seeds

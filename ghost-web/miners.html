@@ -340,9 +340,10 @@
             <div class="wizard-field">
               <label>Region (<a href="node-finder.html" style="color: var(--orange); font-size: 12px;">find best node</a>)</label>
               <select id="region-select">
-                <option value="eu">Europe (eu.pool.bitcoinghost.org)</option>
-                <option value="us">North America (us.pool.bitcoinghost.org)</option>
-                <option value="asia">Asia-Pacific (asia.pool.bitcoinghost.org)</option>
+                <option value="eu">Europe - London (eu.pool.bitcoinghost.org)</option>
+                <option value="us">North America - New York (us.pool.bitcoinghost.org)</option>
+                <option value="asia">Asia - Singapore (asia.pool.bitcoinghost.org)</option>
+                <option value="au">Australia - Sydney (au.pool.bitcoinghost.org)</option>
               </select>
             </div>
           </div>
@@ -404,26 +405,33 @@
       <p class="section-subtitle">Connect to the nearest region for lowest latency. <a href="node-finder.html" style="color: var(--orange);">Use Node Finder</a> to discover the best endpoint.</p>
 
       <!-- Regional endpoints grid -->
-      <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-top: 40px;">
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-top: 40px;">
         <div style="background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 24px; text-align: center;">
-          <div style="font-size: 32px; margin-bottom: 12px;">🇪🇺</div>
+          <div style="font-size: 32px; margin-bottom: 12px;">🇬🇧</div>
           <h3 style="font-size: 18px; font-weight: 600; color: var(--white); margin-bottom: 8px;">Europe</h3>
           <div style="font-family: var(--font-mono); font-size: 12px; color: var(--cyan); background: var(--black); padding: 12px; border-radius: 8px; margin: 12px 0; word-break: break-all;">eu.pool.bitcoinghost.org:3333</div>
-          <p style="font-size: 13px; color: var(--gray-400);">Frankfurt, Germany</p>
+          <p style="font-size: 13px; color: var(--gray-400);">London, UK</p>
         </div>
 
         <div style="background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 24px; text-align: center;">
           <div style="font-size: 32px; margin-bottom: 12px;">🇺🇸</div>
           <h3 style="font-size: 18px; font-weight: 600; color: var(--white); margin-bottom: 8px;">North America</h3>
           <div style="font-family: var(--font-mono); font-size: 12px; color: var(--cyan); background: var(--black); padding: 12px; border-radius: 8px; margin: 12px 0; word-break: break-all;">us.pool.bitcoinghost.org:3333</div>
-          <p style="font-size: 13px; color: var(--gray-400);">Multiple US locations</p>
+          <p style="font-size: 13px; color: var(--gray-400);">New York, USA</p>
         </div>
 
         <div style="background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 24px; text-align: center;">
-          <div style="font-size: 32px; margin-bottom: 12px;">🌏</div>
-          <h3 style="font-size: 18px; font-weight: 600; color: var(--white); margin-bottom: 8px;">Asia-Pacific</h3>
+          <div style="font-size: 32px; margin-bottom: 12px;">🇸🇬</div>
+          <h3 style="font-size: 18px; font-weight: 600; color: var(--white); margin-bottom: 8px;">Asia</h3>
           <div style="font-family: var(--font-mono); font-size: 12px; color: var(--cyan); background: var(--black); padding: 12px; border-radius: 8px; margin: 12px 0; word-break: break-all;">asia.pool.bitcoinghost.org:3333</div>
-          <p style="font-size: 13px; color: var(--gray-400);">Singapore / Sydney</p>
+          <p style="font-size: 13px; color: var(--gray-400);">Singapore</p>
+        </div>
+
+        <div style="background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 16px; padding: 24px; text-align: center;">
+          <div style="font-size: 32px; margin-bottom: 12px;">🇦🇺</div>
+          <h3 style="font-size: 18px; font-weight: 600; color: var(--white); margin-bottom: 8px;">Australia</h3>
+          <div style="font-family: var(--font-mono); font-size: 12px; color: var(--cyan); background: var(--black); padding: 12px; border-radius: 8px; margin: 12px 0; word-break: break-all;">au.pool.bitcoinghost.org:3333</div>
+          <p style="font-size: 13px; color: var(--gray-400);">Sydney</p>
         </div>
       </div>
 
@@ -521,9 +529,10 @@
   <script>
     // Regional endpoints
     const REGIONS = {
-      'eu': { subdomain: 'eu.pool.bitcoinghost.org', name: 'Europe' },
-      'us': { subdomain: 'us.pool.bitcoinghost.org', name: 'North America' },
-      'asia': { subdomain: 'asia.pool.bitcoinghost.org', name: 'Asia-Pacific' }
+      'eu': { subdomain: 'eu.pool.bitcoinghost.org', name: 'Europe (London)' },
+      'us': { subdomain: 'us.pool.bitcoinghost.org', name: 'North America (New York)' },
+      'asia': { subdomain: 'asia.pool.bitcoinghost.org', name: 'Asia (Singapore)' },
+      'au': { subdomain: 'au.pool.bitcoinghost.org', name: 'Australia (Sydney)' }
     };
 
     // Update stratum URL when region changes
