@@ -56,10 +56,10 @@
     .logo-icon img { width: 100%; height: 100%; object-fit: contain; }
     .logo-text { font-weight: 700; font-size: 20px; }
     .logo-text span { color: var(--orange); }
-    .nav-links { display: flex; gap: 8px; }
-    .nav-links a { color: var(--gray-300); text-decoration: none; padding: 8px 16px; font-size: 14px; font-weight: 500; border-radius: 8px; transition: all 0.2s; }
-    .nav-links a:hover { color: var(--white); background: var(--gray-800); }
-    .nav-links a.active { color: var(--orange); }
+    .nav-links { display: flex; align-items: center; gap: 8px; }
+    .nav-links > a, .nav-dropdown > a { color: var(--gray-300); text-decoration: none; padding: 8px 16px; font-size: 14px; font-weight: 500; border-radius: 8px; transition: all 0.2s; }
+    .nav-links > a:hover, .nav-dropdown > a:hover { color: var(--white); background: var(--gray-800); }
+    .nav-links > a.active, .nav-dropdown > a.active { color: var(--orange); }
     .nav-dropdown { position: relative; }
     .nav-dropdown-menu { position: absolute; top: 100%; left: 0; background: var(--gray-900); border: 1px solid var(--gray-800); border-radius: 8px; padding: 8px; min-width: 160px; opacity: 0; visibility: hidden; transform: translateY(-8px); transition: all 0.2s; }
     .nav-dropdown:hover .nav-dropdown-menu { opacity: 1; visibility: visible; transform: translateY(0); }
@@ -224,9 +224,9 @@
 
       <div class="info-box">
         <h3>How It Works</h3>
-        <p>The node finder queries regional seed nodes and discovers all public mining pool nodes on the network.
-        It then tests latency from your browser to each node and shows availability status.
-        Nodes with lower latency will result in fewer stale shares and better mining efficiency.</p>
+        <p>The node finder measures actual latency from your browser to each Ghost Pool node.
+        Select the node with the lowest latency for the best mining experience.
+        Lower latency means faster share submission and reduced stale shares.</p>
       </div>
 
       <div class="info-box" style="margin-top: 16px;">
@@ -262,21 +262,12 @@
   </footer>
 
   <script>
-    // Seed nodes to start discovery (regional endpoints)
-    // Uses DNS names when available, falls back to direct IPs
-    const SEED_NODES = [
-      { host: 'eu.pool.bitcoinghost.org', httpPort: 8080, name: 'Europe (London)', fallbackIp: '83.136.251.162' },
-      { host: 'us.pool.bitcoinghost.org', httpPort: 8080, name: 'North America (New York)', fallbackIp: '85.9.198.212' },
-      { host: 'asia.pool.bitcoinghost.org', httpPort: 8080, name: 'Asia (Singapore)', fallbackIp: '213.163.207.46' },
-      { host: 'au.pool.bitcoinghost.org', httpPort: 8080, name: 'Australia (Sydney)', fallbackIp: '95.111.221.169' },
-    ];
-
-    // Direct IP nodes (always available, used as fallback)
-    const DIRECT_NODES = [
-      { host: '83.136.251.162', httpPort: 8080, name: 'EU Node (London)', stratumPort: 3333 },
-      { host: '85.9.198.212', httpPort: 8080, name: 'US Node (New York)', stratumPort: 3333 },
-      { host: '213.163.207.46', httpPort: 8080, name: 'Asia Node (Singapore)', stratumPort: 3333 },
-      { host: '95.111.221.169', httpPort: 8080, name: 'AU Node (Sydney)', stratumPort: 3333 },
+    // Pool nodes with HTTPS endpoints (SSL enabled)
+    const POOL_NODES = [
+      { dns: 'eu.pool.bitcoinghost.org', ip: '83.136.251.162', name: 'Europe (London)', stratumPort: 3333 },
+      { dns: 'us.pool.bitcoinghost.org', ip: '85.9.198.212', name: 'North America (New York)', stratumPort: 3333 },
+      { dns: 'asia.pool.bitcoinghost.org', ip: '213.163.207.46', name: 'Asia (Singapore)', stratumPort: 3333 },
+      { dns: 'au.pool.bitcoinghost.org', ip: '95.111.221.169', name: 'Australia (Sydney)', stratumPort: 3333 },
     ];
 
     const PING_TIMEOUT = 5000;
@@ -301,81 +292,67 @@
       }
     }
 
-    async function pingNode(host, httpPort) {
-      const latencies = [];
-      const url = `https://${host}:${httpPort}/health`;
-
+    // Real latency measurement using HTTPS health endpoint
+    async function pingNode(dns) {
+      const samples = [];
       for (let i = 0; i < PING_SAMPLES; i++) {
+        const start = performance.now();
         try {
-          const start = performance.now();
-          await fetchWithTimeout(url, PING_TIMEOUT);
-          latencies.push(Math.round(performance.now() - start));
-        } catch (e) {
-          // Try HTTP if HTTPS fails
-          if (i === 0) {
-            try {
-              const start = performance.now();
-              await fetchWithTimeout(`http://${host}:${httpPort}/health`, PING_TIMEOUT);
-              latencies.push(Math.round(performance.now() - start));
-            } catch (e2) {
-              // Skip this sample
-            }
+          // Use health endpoint with cache-busting query param
+          const response = await fetchWithTimeout(`https://${dns}/health?t=${Date.now()}`, PING_TIMEOUT);
+          if (response.ok) {
+            const latency = Math.round(performance.now() - start);
+            samples.push(latency);
+            console.log(`[${dns}] ping sample ${i+1}: ${latency}ms`);
           }
+        } catch (e) {
+          console.log(`[${dns}] ping failed:`, e.message);
         }
-        await new Promise(r => setTimeout(r, 50));
+        // Small delay between samples
+        if (i < PING_SAMPLES - 1) {
+          await new Promise(r => setTimeout(r, 100));
+        }
       }
 
-      if (latencies.length === 0) return null;
-      latencies.sort((a, b) => a - b);
-      return latencies[Math.floor(latencies.length / 2)];
+      if (samples.length === 0) {
+        console.log(`[${dns}] all ping samples failed`);
+        return null;
+      }
+
+      // Return median latency for stability
+      samples.sort((a, b) => a - b);
+      const median = samples[Math.floor(samples.length / 2)];
+      console.log(`[${dns}] median latency: ${median}ms`);
+      return median;
     }
 
-    async function getNodeInfo(host, httpPort) {
+    async function getNodeInfo(dns) {
       try {
-        const response = await fetchWithTimeout(
-          `https://${host}:${httpPort}/api/v1/node/public-info`,
-          PING_TIMEOUT
-        );
+        console.log(`[${dns}] fetching node info...`);
+        const response = await fetchWithTimeout(`https://${dns}/health`, PING_TIMEOUT);
         if (response.ok) {
-          return await response.json();
+          const data = await response.json();
+          console.log(`[${dns}] got response:`, data);
+          const info = data.response || data;
+          return {
+            name: info.name,
+            stratum_port: info.stratum_port || 3333,
+            status: info.capabilities?.public_mining ? 'available' : 'busy',
+            public_mining: info.capabilities?.public_mining || false,
+            block_height: info.block_height,
+            total_shares: info.capabilities?.total_shares || 0
+          };
+        } else {
+          console.log(`[${dns}] response not ok:`, response.status);
         }
       } catch (e) {
-        // Try HTTP
-        try {
-          const response = await fetchWithTimeout(
-            `http://${host}:${httpPort}/api/v1/node/public-info`,
-            PING_TIMEOUT
-          );
-          if (response.ok) {
-            return await response.json();
-          }
-        } catch (e2) {}
+        console.log(`[${dns}] fetch error:`, e.message);
       }
       return null;
     }
 
-    async function discoverFromNode(host, httpPort) {
-      try {
-        const response = await fetchWithTimeout(
-          `https://${host}:${httpPort}/api/v1/network/public-nodes`,
-          PING_TIMEOUT
-        );
-        if (response.ok) {
-          const data = await response.json();
-          return data.nodes || [];
-        }
-      } catch (e) {
-        try {
-          const response = await fetchWithTimeout(
-            `http://${host}:${httpPort}/api/v1/network/public-nodes`,
-            PING_TIMEOUT
-          );
-          if (response.ok) {
-            const data = await response.json();
-            return data.nodes || [];
-          }
-        } catch (e2) {}
-      }
+    async function discoverFromNode(dns) {
+      // Skip discovery - use known nodes only
       return [];
     }
 
@@ -432,19 +409,19 @@
                 <tr class="${isBest ? 'best' : ''}">
                   <td>
                     <div class="node-cell">
-                      <span class="node-name">${node.name || node.host}</span>
-                      <span class="node-host">${node.host}:${node.stratumPort || 3333}</span>
+                      <span class="node-name">${node.name || node.dns}</span>
+                      <span class="node-host">${node.dns}:${node.stratumPort || 3333}</span>
                     </div>
                   </td>
                   <td class="latency-cell ${latencyClass}">
-                    ${node.online ? (node.latency + 'ms') : 'Offline'}
+                    ${node.online ? node.latency + 'ms' : 'Offline'}
                   </td>
                   <td>
                     <span class="status-badge ${statusClass}">${statusClass}</span>
                   </td>
                   <td>
                     <button class="btn btn-secondary connect-btn"
-                            onclick="selectNode('${node.host}', ${node.stratumPort || 3333})"
+                            onclick="selectNode('${node.dns}', ${node.stratumPort || 3333})"
                             ${!node.online || node.status === 'full' ? 'disabled' : ''}>
                       Select
                     </button>
@@ -458,7 +435,7 @@
 
       // Show recommendation
       if (bestNode) {
-        const endpoint = `stratum+tcp://${bestNode.host}:${bestNode.stratumPort || 3333}`;
+        const endpoint = `stratum+tcp://${bestNode.dns}:${bestNode.stratumPort || 3333}`;
         document.getElementById('recommended-endpoint').textContent = endpoint;
         document.getElementById('rec-url').textContent = endpoint;
         document.getElementById('recommendation').classList.add('show');
@@ -493,76 +470,45 @@
       discoveredNodes.clear();
       document.getElementById('recommendation').classList.remove('show');
 
-      // Phase 1: Add seed nodes (DNS names)
-      updateStatus('Contacting seed nodes...');
-      for (const seed of SEED_NODES) {
-        const key = `${seed.host}:${seed.httpPort}`;
+      // Phase 1: Add pool nodes
+      updateStatus('Contacting pool nodes...');
+      for (const node of POOL_NODES) {
+        const key = node.dns;
         discoveredNodes.set(key, {
           key,
-          host: seed.host,
-          httpPort: seed.httpPort,
-          name: seed.name,
+          dns: node.dns,
+          ip: node.ip,
+          name: node.name,
+          stratumPort: node.stratumPort,
           tested: false,
           online: false
         });
       }
 
-      // Phase 1b: Add direct IP nodes as fallback
-      for (const node of DIRECT_NODES) {
-        const key = `${node.host}:${node.httpPort}`;
-        if (!discoveredNodes.has(key)) {
-          discoveredNodes.set(key, {
-            key,
-            host: node.host,
-            httpPort: node.httpPort,
-            name: node.name,
-            stratumPort: node.stratumPort,
-            tested: false,
-            online: false
-          });
-        }
-      }
-
-      // Phase 2: Discover more nodes from seeds
-      updateStatus('Discovering nodes...');
-      for (const seed of SEED_NODES) {
-        const peers = await discoverFromNode(seed.host, seed.httpPort);
-        for (const peer of peers) {
-          const key = `${peer.host}:${peer.http_port || 8080}`;
-          if (!discoveredNodes.has(key)) {
-            discoveredNodes.set(key, {
-              key,
-              host: peer.host,
-              httpPort: peer.http_port || 8080,
-              tested: false,
-              online: false
-            });
-          }
-        }
-      }
-
-      // Phase 3: Test each node
+      // Phase 2: Test each node
       const total = discoveredNodes.size;
       let tested = 0;
 
       updateStatus(`Testing ${total} nodes...`);
 
       const testPromises = Array.from(discoveredNodes.values()).map(async (node) => {
-        // Get node info
-        const info = await getNodeInfo(node.host, node.httpPort);
-        if (info && info.public_mining) {
-          node.name = info.name;
-          node.region = info.region;
-          node.stratumPort = info.stratum_port || 3333;
-          node.status = info.status;
+        // Get node info from HTTPS endpoint
+        const info = await getNodeInfo(node.dns);
+        if (info) {
+          node.stratumPort = info.stratum_port || node.stratumPort || 3333;
+          node.status = info.status || 'available';
+          node.blockHeight = info.block_height;
+          node.totalShares = info.total_shares;
           node.online = true;
         }
 
-        // Ping for latency
-        const latency = await pingNode(node.host, node.httpPort);
+        // Measure real latency from browser to node
+        const latency = await pingNode(node.dns);
         if (latency !== null) {
           node.latency = latency;
           node.online = true;
+        } else if (!info) {
+          node.online = false;
         }
 
         node.tested = true;

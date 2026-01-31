@@ -107,9 +107,11 @@
     }
     .nav-links {
       display: flex;
+      align-items: center;
       gap: 8px;
     }
-    .nav-links a {
+    .nav-links > a,
+    .nav-dropdown > a {
       color: var(--gray-300);
       text-decoration: none;
       padding: 8px 16px;
@@ -118,11 +120,13 @@
       border-radius: 8px;
       transition: all 0.2s;
     }
-    .nav-links a:hover {
+    .nav-links > a:hover,
+    .nav-dropdown > a:hover {
       color: var(--white);
       background: var(--gray-800);
     }
-    .nav-links a.active {
+    .nav-links > a.active,
+    .nav-dropdown > a.active {
       color: var(--orange);
     }
     .nav-dropdown {
@@ -802,47 +806,63 @@
     document.getElementById('payout-address').addEventListener('input', updateConfig);
     document.getElementById('worker-name').addEventListener('input', updateConfig);
 
-    // Fetch live stats from nodes
-    async function fetchStats() {
+    // Fetch real node status from HTTPS endpoints
+    async function fetchNodeStatus() {
+      let onlineCount = 0;
       let totalMiners = 0;
-      let onlineNodes = 0;
 
       for (const [region, info] of Object.entries(REGIONS)) {
+        const statusEl = document.getElementById(`${region}-status`);
         try {
-          const response = await fetch(`http://${info.ip}:8080/health`, {
+          console.log(`[${region}] checking ${info.host}...`);
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+          const response = await fetch(`https://${info.host}/health`, {
             method: 'GET',
             mode: 'cors',
-            signal: AbortSignal.timeout(5000)
+            signal: controller.signal
           });
+          clearTimeout(timeoutId);
+
           if (response.ok) {
             const data = await response.json();
-            if (data.response) {
-              totalMiners += data.response.miner_count || 0;
-              onlineNodes++;
-              const statusEl = document.getElementById(`${region}-status`);
-              if (statusEl) {
-                statusEl.textContent = 'Online';
-                statusEl.style.color = 'var(--green)';
-              }
+            console.log(`[${region}] response:`, data);
+            const nodeInfo = data.response || data;
+
+            statusEl.textContent = 'Online';
+            statusEl.style.color = 'var(--green)';
+            onlineCount++;
+
+            // Accumulate connected miners
+            if (nodeInfo.miner_count !== undefined) {
+              totalMiners += nodeInfo.miner_count;
             }
+          } else {
+            console.log(`[${region}] not ok:`, response.status);
+            statusEl.textContent = 'Offline';
+            statusEl.style.color = 'var(--red)';
           }
         } catch (e) {
-          const statusEl = document.getElementById(`${region}-status`);
-          if (statusEl) {
-            statusEl.textContent = 'Checking...';
-            statusEl.style.color = 'var(--gray-400)';
-          }
+          console.log(`[${region}] error:`, e.message);
+          statusEl.textContent = 'Offline';
+          statusEl.style.color = 'var(--red)';
         }
       }
 
-      document.getElementById('miner-count').textContent = totalMiners;
-      document.getElementById('node-count').textContent = onlineNodes;
+      // Update aggregate stats
+      document.getElementById('node-count').textContent = onlineCount.toString();
+      if (totalMiners > 0) {
+        document.getElementById('miner-count').textContent = totalMiners.toString();
+      }
     }
 
-    // Initialize
+    // Initialize config and fetch status
     updateConfig();
-    fetchStats();
-    setInterval(fetchStats, 30000);
+    fetchNodeStatus();
+
+    // Refresh status every 30 seconds
+    setInterval(fetchNodeStatus, 30000);
   </script>
 </body>
 </html>
