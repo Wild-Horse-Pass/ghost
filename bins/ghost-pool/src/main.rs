@@ -775,6 +775,7 @@ async fn main() -> Result<()> {
     let rpc_for_verification = Arc::clone(&rpc);
     let rm_for_height = Arc::clone(&round_manager);
     let rm_for_round = Arc::clone(&round_manager);
+    let rm_for_miners = Arc::clone(&round_manager);
     let mesh_for_verification = Arc::clone(&mesh);
 
     let mut verification_state = VerificationState::new(
@@ -785,11 +786,16 @@ async fn main() -> Result<()> {
     );
 
     // Configure callbacks for health/status endpoints
-    // Note: miner_count returns 0 - SRI handles miner connections now
+    // Miner count now comes from share notifications via SRI forwarder
     verification_state = verification_state.with_callbacks(
         move || rm_for_height.current_height(),
         move || rm_for_round.current_round_id() as u64,
-        move || 0_u32, // Miner count from SRI (not tracked here)
+        move || {
+            rm_for_miners
+                .round_stats(rm_for_miners.current_round_id())
+                .map(|s| s.miner_count as u32)
+                .unwrap_or(0)
+        },
         move || mesh_for_verification.peers().peer_count() as u32,
     );
 
@@ -840,6 +846,22 @@ async fn main() -> Result<()> {
     });
     verification_state = verification_state.with_test_proposal_fn(test_proposal_fn);
 
+    // Configure share recorder callback for SRI Pool share notifications
+    let rm_for_shares = Arc::clone(&round_manager);
+    let identity_for_shares = Arc::clone(&identity);
+    verification_state = verification_state.with_share_recorder(move |share| {
+        // Record the share in the current round
+        rm_for_shares
+            .record_share(&share.miner_id, share.work, identity_for_shares.node_id())
+            .map_err(|e| ghost_common::GhostError::Internal(e.to_string()))?;
+        tracing::debug!(
+            miner_id = %share.miner_id,
+            work = share.work,
+            "Share recorded from SRI notification"
+        );
+        Ok(())
+    });
+
     let verification_state = Arc::new(verification_state);
 
     // Start WebSocket health broadcast task
@@ -853,10 +875,14 @@ async fn main() -> Result<()> {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
+                    let miner_count = rm_for_ws
+                        .round_stats(rm_for_ws.current_round_id())
+                        .map(|s| s.miner_count as u32)
+                        .unwrap_or(0);
                     let event = ghost_verification::WsEvent::HealthUpdate {
                         block_height: rm_for_ws.current_height(),
                         round_id: rm_for_ws.current_round_id() as u64,
-                        miner_count: 0, // Miner count from SRI (not tracked here)
+                        miner_count,
                         peer_count: mesh_for_ws.peers().peer_count() as u32,
                         uptime_secs: start_time.elapsed().as_secs(),
                     };

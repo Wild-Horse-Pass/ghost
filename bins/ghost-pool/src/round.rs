@@ -407,6 +407,51 @@ impl RoundManager {
         info!(difficulty = share_difficulty, "Updated share difficulty");
     }
 
+    /// Record a share forwarded from SRI (already validated by SRI)
+    /// Used when ghost-pool runs in TDP-only mode without direct stratum access
+    pub fn record_share(
+        &self,
+        miner_id: &str,
+        work: f64,
+        receiving_node: NodeId,
+    ) -> Result<(), ShareError> {
+        let round_id = *self.current_round.read();
+        if round_id == 0 {
+            return Err(ShareError::NoActiveRound);
+        }
+
+        let mut rounds = self.rounds.write();
+        let round = rounds
+            .get_mut(&round_id)
+            .ok_or(ShareError::RoundNotFound(round_id))?;
+
+        if round.miner_shares.len() >= self.config.max_shares_per_round {
+            return Err(ShareError::RoundFull);
+        }
+
+        // Add miner work
+        round.add_miner_work(miner_id, work);
+
+        // Credit the node that received the share
+        round.increment_node_shares(&receiving_node);
+
+        debug!(
+            round_id = round_id,
+            miner = %miner_id,
+            work = work,
+            from_node = ?hex::encode(&receiving_node[..4]),
+            "Recorded share from SRI"
+        );
+
+        let _ = self.event_tx.send(RoundEvent::ShareSubmitted {
+            round_id,
+            miner_id: miner_id.to_string(),
+            work,
+        });
+
+        Ok(())
+    }
+
     /// Get a miner's share percentage in current round
     pub fn miner_share_percent(&self, miner_id: &str) -> f64 {
         let round_id = *self.current_round.read();

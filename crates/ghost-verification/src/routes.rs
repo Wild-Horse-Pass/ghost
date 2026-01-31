@@ -36,7 +36,7 @@ use tracing::{debug, error, warn};
 use ghost_buds::{BudsClassifier, BudsTier};
 
 use crate::challenge::*;
-use crate::server::VerificationState;
+use crate::server::{ShareNotification, VerificationState};
 use crate::websocket::ws_handler;
 
 /// Get system resource usage (CPU %, Memory %, Disk %)
@@ -298,6 +298,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/auth/token", get(api_auth_token_handler))
         // Admin endpoints for testing
         .route("/admin/test-consensus", post(admin_test_consensus_handler))
+        // Internal API for SRI Pool share notifications
+        .route("/api/internal/share", post(share_notification_handler))
         .with_state(state)
 }
 
@@ -3092,6 +3094,35 @@ async fn admin_test_consensus_handler(
                 "error": format!("Failed to trigger test proposal: {}", e)
             })),
         ),
+    }
+}
+
+/// Share notification handler - receives share data from SRI Pool
+///
+/// POST /api/internal/share
+///
+/// This endpoint is called by SRI Pool when it receives a valid share from a miner.
+/// ghost-pool uses this to track miner work for payout calculations.
+async fn share_notification_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(share): Json<ShareNotification>,
+) -> impl IntoResponse {
+    debug!(
+        miner_id = %share.miner_id,
+        work = share.work,
+        job_id = share.job_id,
+        "Received share notification from SRI"
+    );
+
+    match state.record_share(share) {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))),
+        Err(e) => {
+            warn!(error = %e, "Failed to record share");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"status": "error", "message": e.to_string()})),
+            )
+        }
     }
 }
 

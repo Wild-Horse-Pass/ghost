@@ -49,6 +49,19 @@ use crate::websocket::WsState;
 /// Callback for triggering test consensus proposal
 pub type TestProposalFn = Arc<dyn Fn() -> GhostResult<[u8; 32]> + Send + Sync>;
 
+/// Share notification data from SRI Pool
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ShareNotification {
+    pub miner_id: String,
+    pub work: f64,
+    pub share_hash: String,
+    pub job_id: u32,
+    pub timestamp: u64,
+}
+
+/// Callback for recording shares (from SRI Pool notifications)
+pub type RecordShareFn = Arc<dyn Fn(ShareNotification) -> GhostResult<()> + Send + Sync>;
+
 /// Dashboard configuration state (mutable settings)
 #[derive(Debug, Clone)]
 pub struct DashboardConfig {
@@ -145,6 +158,8 @@ pub struct VerificationState {
     pub ws_state: Arc<WsState>,
     /// Test proposal callback (for admin testing)
     test_proposal_fn: Option<TestProposalFn>,
+    /// Share recording callback (from SRI Pool notifications)
+    record_share_fn: Option<RecordShareFn>,
 }
 
 /// Archive handler trait
@@ -224,6 +239,25 @@ impl VerificationState {
             node_config_path: None,
             ws_state: Arc::new(WsState::new()),
             test_proposal_fn: None,
+            record_share_fn: None,
+        }
+    }
+
+    /// Set share recording callback (for SRI Pool share notifications)
+    pub fn with_share_recorder<F>(mut self, recorder: F) -> Self
+    where
+        F: Fn(ShareNotification) -> GhostResult<()> + Send + Sync + 'static,
+    {
+        self.record_share_fn = Some(Arc::new(recorder));
+        self
+    }
+
+    /// Record a share (called from HTTP endpoint)
+    pub fn record_share(&self, share: ShareNotification) -> GhostResult<()> {
+        if let Some(ref recorder) = self.record_share_fn {
+            recorder(share)
+        } else {
+            Err(GhostError::Internal("Share recorder not configured".to_string()))
         }
     }
 
