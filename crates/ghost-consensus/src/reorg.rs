@@ -15,8 +15,13 @@
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use tokio::sync::broadcast;
+use tracing::{debug, warn};
 
 use ghost_common::types::NodeId;
+
+/// Channel capacity for reorg event broadcasts
+const REORG_EVENT_CHANNEL_CAPACITY: usize = 64;
 
 // =============================================================================
 // L2 (Ghost Pay) Reorg Handling
@@ -101,22 +106,33 @@ pub struct L2ForkDetector {
     proposer_blocks: RwLock<HashMap<(u64, NodeId), [u8; 32]>>,
     /// Maximum history to keep
     max_history: u64,
+    /// Broadcast sender for L2 events
+    event_sender: broadcast::Sender<L2Event>,
 }
 
 impl L2ForkDetector {
     /// Create a new fork detector
     pub fn new(max_history: u64) -> Self {
+        let (event_sender, _) = broadcast::channel(REORG_EVENT_CHANNEL_CAPACITY);
         Self {
             our_chain: RwLock::new(HashMap::new()),
             peer_blocks: RwLock::new(HashMap::new()),
             proposer_blocks: RwLock::new(HashMap::new()),
             max_history,
+            event_sender,
         }
+    }
+
+    /// Subscribe to L2 chain events
+    pub fn subscribe(&self) -> broadcast::Receiver<L2Event> {
+        self.event_sender.subscribe()
     }
 
     /// Record a block we've accepted to our chain
     pub fn record_our_block(&self, block: L2BlockRef) {
         let height = block.height;
+        let state_root = block.state_root;
+        let block_hash = block.block_hash;
 
         // Record in our chain
         self.our_chain.write().insert(height, block.clone());
@@ -128,6 +144,14 @@ impl L2ForkDetector {
 
         // Cleanup old history
         self.cleanup_old_blocks(height);
+
+        // Emit new block event
+        let _ = self.event_sender.send(L2Event::NewBlock {
+            height,
+            state_root,
+            block_hash,
+        });
+        debug!(height, "L2 block recorded");
     }
 
     /// Record a block seen from a peer (may conflict with ours)
@@ -141,6 +165,20 @@ impl L2ForkDetector {
         if let Some(&existing_hash) = proposer_blocks.get(&(height, proposer)) {
             if existing_hash != block_hash {
                 // Equivocation detected!
+                warn!(
+                    height,
+                    proposer = hex::encode(&proposer[..8]),
+                    "EQUIVOCATION DETECTED: Proposer signed two different blocks"
+                );
+
+                // Emit equivocation event
+                let _ = self.event_sender.send(L2Event::EquivocationDetected {
+                    proposer,
+                    height,
+                    block_hash_a: existing_hash,
+                    block_hash_b: block_hash,
+                });
+
                 return Some(EquivocationProof {
                     proposer,
                     height,
@@ -175,6 +213,20 @@ impl L2ForkDetector {
             if our_block.state_root != their_state_root {
                 // Fork detected - find common ancestor
                 let common_ancestor = self.find_common_ancestor(&our_chain, their_height);
+
+                warn!(
+                    fork_height = their_height,
+                    common_ancestor = ?common_ancestor,
+                    "L2 FORK DETECTED: Chains diverged"
+                );
+
+                // Emit fork detection event
+                let _ = self.event_sender.send(L2Event::ForkDetected {
+                    fork_height: their_height,
+                    our_state_root: our_block.state_root,
+                    their_state_root,
+                    common_ancestor,
+                });
 
                 return ForkDetectionResult::ForkDetected {
                     fork_height: their_height,
@@ -263,6 +315,37 @@ pub enum L2ReorgAction {
     SlashProposer { proof: EquivocationProof },
     /// No action needed
     None,
+}
+
+/// L2 chain events emitted by the fork detector
+#[derive(Debug, Clone)]
+pub enum L2Event {
+    /// New L2 block accepted to our chain
+    NewBlock {
+        height: u64,
+        state_root: [u8; 32],
+        block_hash: [u8; 32],
+    },
+    /// Fork detected between our chain and a peer
+    ForkDetected {
+        fork_height: u64,
+        our_state_root: [u8; 32],
+        their_state_root: [u8; 32],
+        common_ancestor: Option<u64>,
+    },
+    /// Equivocation detected (proposer double-signed)
+    EquivocationDetected {
+        proposer: NodeId,
+        height: u64,
+        block_hash_a: [u8; 32],
+        block_hash_b: [u8; 32],
+    },
+    /// Chain stabilized after a fork resolution
+    ChainStabilized {
+        height: u64,
+        state_root: [u8; 32],
+        blocks_since_fork: u32,
+    },
 }
 
 // =============================================================================
@@ -365,18 +448,27 @@ pub struct L1ChainMonitor {
     config: L1ConfirmationConfig,
     /// Maximum block history to keep
     max_history: u64,
+    /// Broadcast sender for L1 events
+    event_sender: broadcast::Sender<L1Event>,
 }
 
 impl L1ChainMonitor {
     /// Create a new L1 chain monitor
     pub fn new(config: L1ConfirmationConfig) -> Self {
+        let (event_sender, _) = broadcast::channel(REORG_EVENT_CHANNEL_CAPACITY);
         Self {
             blocks: RwLock::new(HashMap::new()),
             tip_height: RwLock::new(0),
             pending_txs: RwLock::new(HashMap::new()),
             config,
             max_history: 144, // ~24 hours of Bitcoin blocks
+            event_sender,
         }
+    }
+
+    /// Subscribe to L1 chain events
+    pub fn subscribe(&self) -> broadcast::Receiver<L1Event> {
+        self.event_sender.subscribe()
     }
 
     /// Process a new L1 block
@@ -391,6 +483,15 @@ impl L1ChainMonitor {
                 if existing_hash != hash {
                     // Reorg detected!
                     let depth = (current_tip - height + 1) as u32;
+
+                    warn!(
+                        from_height = height,
+                        depth,
+                        old_tip = hex::encode(&existing_hash[..8]),
+                        new_tip = hex::encode(&hash[..8]),
+                        "L1 REORG DETECTED: Bitcoin chain reorganized"
+                    );
+
                     events.push(L1Event::Reorg {
                         from_height: height,
                         old_tip: existing_hash,
@@ -425,6 +526,12 @@ impl L1ChainMonitor {
         self.update_confirmations(height, &mut events);
 
         events.push(L1Event::NewBlock { height, hash });
+
+        // Broadcast all events to subscribers
+        for event in &events {
+            let _ = self.event_sender.send(event.clone());
+        }
+
         events
     }
 
