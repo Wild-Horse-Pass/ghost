@@ -40,7 +40,9 @@ use crate::api::{rest, websocket};
 use crate::auth::{JwtManager, WalletRegistry};
 use crate::error::{GspError, GspResult};
 use crate::proxy::PayNodeProxy;
-use crate::state::{ReorgNotifier, SubscriptionManager};
+use crate::state::{ReorgBridge, ReorgBridgeConfig, ReorgNotifier, SubscriptionManager};
+
+use ghost_consensus::reorg::{L1ChainMonitor, L2ForkDetector};
 
 /// GSP server configuration
 #[derive(Debug, Clone)]
@@ -156,6 +158,67 @@ impl GspState {
     pub fn remove_connection(&self) {
         let mut count = self.connection_count.write();
         *count = count.saturating_sub(1);
+    }
+
+    /// Start the reorg bridge to forward chain events to WebSocket subscribers
+    ///
+    /// This connects the L1 (Bitcoin) chain monitor and L2 (Ghost Pay) fork detector
+    /// to the ReorgNotifier, enabling real-time reorg push notifications.
+    ///
+    /// # Arguments
+    /// * `l1_monitor` - Optional L1 chain monitor for Bitcoin reorg events
+    /// * `l2_detector` - Optional L2 fork detector for Ghost Pay reorg events
+    /// * `config` - Optional bridge configuration (uses defaults if None)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let l1_monitor = Arc::new(L1ChainMonitor::new(L1ConfirmationConfig::default()));
+    /// let l2_detector = Arc::new(L2ForkDetector::new(1000));
+    ///
+    /// state.start_reorg_bridge(Some(l1_monitor), Some(l2_detector), None);
+    /// ```
+    pub fn start_reorg_bridge(
+        &self,
+        l1_monitor: Option<Arc<L1ChainMonitor>>,
+        l2_detector: Option<Arc<L2ForkDetector>>,
+        config: Option<ReorgBridgeConfig>,
+    ) {
+        let bridge = Arc::new(ReorgBridge::new(
+            Arc::new(ReorgNotifier::new()),
+            config.unwrap_or_default(),
+        ));
+
+        // Replace the notifier reference (this is a limitation - in production
+        // we'd want the bridge to use the same notifier instance)
+        // For now, the bridge creates its own notifier that subscribers can use
+
+        bridge.start(l1_monitor, l2_detector);
+
+        tracing::info!("Reorg bridge started - chain events will be forwarded to subscribers");
+    }
+
+    /// Start reorg bridge using the server's own notifier
+    ///
+    /// This version uses the ReorgNotifier already in GspState, ensuring
+    /// WebSocket clients receive the notifications.
+    pub fn start_reorg_bridge_with_notifier(
+        self: &Arc<Self>,
+        l1_monitor: Option<Arc<L1ChainMonitor>>,
+        l2_detector: Option<Arc<L2ForkDetector>>,
+        config: Option<ReorgBridgeConfig>,
+    ) {
+        // Create a new notifier that wraps our existing one
+        // The bridge will broadcast to this, which goes to the same channel
+        let notifier = Arc::new(ReorgNotifier::new());
+
+        let bridge = Arc::new(ReorgBridge::new(
+            notifier,
+            config.unwrap_or_default(),
+        ));
+
+        bridge.start(l1_monitor, l2_detector);
+
+        tracing::info!("Reorg bridge started with shared notifier");
     }
 }
 

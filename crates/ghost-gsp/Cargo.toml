@@ -32,6 +32,7 @@ description = "Ghost Service Provider (GSP) server library for light wallet supp
 # Internal crates
 ghost-gsp-proto = { path = "../ghost-gsp-proto" }
 ghost-common = { workspace = true }
+ghost-consensus = { workspace = true }
 ghost-keys = { workspace = true }
 ghost-locks = { workspace = true }
 

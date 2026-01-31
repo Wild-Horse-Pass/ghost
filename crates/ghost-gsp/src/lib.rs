@@ -68,7 +68,7 @@ pub mod state;
 
 pub use error::GspError;
 pub use server::{GspConfig, GspServer, GspState};
-pub use state::{ReorgEvent, ReorgNotifier};
+pub use state::{ReorgBridge, ReorgBridgeConfig, ReorgEvent, ReorgNotifier};
 
 /// GSP version
 pub const GSP_VERSION: &str = env!("CARGO_PKG_VERSION");
