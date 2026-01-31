@@ -104,6 +104,11 @@ pub struct WorkState {
     pub total_weight: u64,
     /// Original template (for block submission)
     pub template: BlockTemplate,
+    /// Serialized coinbase outputs (Bitcoin consensus format for TDP)
+    /// This is the raw TxOut data that SRI Pool should use
+    pub coinbase_outputs_serialized: Vec<u8>,
+    /// Number of coinbase outputs
+    pub coinbase_outputs_count: u32,
 }
 
 /// Witness data for SegWit coinbase transaction
@@ -286,12 +291,14 @@ impl TemplateProcessor {
     ///
     /// When there's an approved payout, this includes all payout outputs.
     /// Otherwise falls back to placeholder single output.
+    ///
+    /// Returns: (coinbase1, coinbase2, witness_data, outputs_serialized, outputs_count)
     fn build_coinbase_parts_with_payout(
         &self,
         height: u64,
         total_value: u64,
         witness_commitment: &Option<String>,
-    ) -> (Vec<u8>, Vec<u8>, WitnessData) {
+    ) -> (Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32) {
         // Check for approved payout
         let payout_hash = *self.approved_payout.read();
         let proposal = payout_hash.and_then(|h| self.get_proposal(&h));
@@ -332,6 +339,11 @@ impl TemplateProcessor {
         // Track witness commitment for WitnessData
         let mut witness_data = WitnessData::default();
 
+        // Track serialized outputs for TDP (Bitcoin consensus format: Vec<TxOut>)
+        // This is sent to SRI Pool so it uses Ghost's coinbase outputs
+        let mut outputs_serialized = Vec::new();
+        let mut outputs_count: u32 = 0;
+
         // Build outputs based on whether we have an approved payout
         // Note: witness commitment output is NOT included in txid outputs
         // It goes in the witness serialization only
@@ -344,6 +356,7 @@ impl TemplateProcessor {
 
             // Add 1 for witness commitment if present (it IS part of outputs, just 0-value)
             let output_count = base_output_count + if witness_commitment.is_some() { 1 } else { 0 };
+            outputs_count = output_count as u32;
 
             self.encode_varint(&mut coinbase2, output_count);
 
@@ -351,12 +364,18 @@ impl TemplateProcessor {
             for entry in &prop.miner_payouts {
                 coinbase2.extend_from_slice(&entry.amount.to_le_bytes());
                 self.encode_script(&mut coinbase2, &entry.address);
+                // Also add to outputs_serialized for TDP
+                outputs_serialized.extend_from_slice(&entry.amount.to_le_bytes());
+                self.encode_script(&mut outputs_serialized, &entry.address);
             }
 
             // Node payouts
             for entry in &prop.node_payouts {
                 coinbase2.extend_from_slice(&entry.amount.to_le_bytes());
                 self.encode_script(&mut coinbase2, &entry.address);
+                // Also add to outputs_serialized for TDP
+                outputs_serialized.extend_from_slice(&entry.amount.to_le_bytes());
+                self.encode_script(&mut outputs_serialized, &entry.address);
             }
 
             // Treasury
@@ -366,6 +385,13 @@ impl TemplateProcessor {
                     &mut coinbase2,
                     &self.config.treasury_address,
                     "treasury",
+                );
+                // Also add to outputs_serialized for TDP
+                outputs_serialized.extend_from_slice(&prop.treasury_amount.to_le_bytes());
+                self.encode_address_script(
+                    &mut outputs_serialized,
+                    &self.config.treasury_address,
+                    "treasury_tdp",
                 );
             }
 
@@ -378,6 +404,7 @@ impl TemplateProcessor {
         } else {
             // Fallback: single output with total value (plus witness commitment if present)
             let output_count = if witness_commitment.is_some() { 2 } else { 1 };
+            outputs_count = output_count as u32;
             coinbase2.push(output_count as u8);
 
             // Single pool reward output
@@ -386,6 +413,13 @@ impl TemplateProcessor {
                 &mut coinbase2,
                 &self.config.pool_payout_address,
                 "pool_payout",
+            );
+            // Also add to outputs_serialized for TDP
+            outputs_serialized.extend_from_slice(&total_value.to_le_bytes());
+            self.encode_address_script(
+                &mut outputs_serialized,
+                &self.config.pool_payout_address,
+                "pool_payout_tdp",
             );
         }
 
@@ -396,7 +430,11 @@ impl TemplateProcessor {
             if let Ok(commitment_bytes) = hex::decode(commitment) {
                 coinbase2.push(commitment_bytes.len() as u8);
                 coinbase2.extend_from_slice(&commitment_bytes);
-                witness_data.commitment_script = Some(commitment_bytes);
+                witness_data.commitment_script = Some(commitment_bytes.clone());
+                // Also add to outputs_serialized for TDP
+                outputs_serialized.extend_from_slice(&0u64.to_le_bytes());
+                outputs_serialized.push(commitment_bytes.len() as u8);
+                outputs_serialized.extend_from_slice(&commitment_bytes);
             }
         }
 
@@ -408,7 +446,7 @@ impl TemplateProcessor {
         // The witness nonce is all zeros per BIP141 default
         witness_data.nonce = [0u8; 32];
 
-        (coinbase1, coinbase2, witness_data)
+        (coinbase1, coinbase2, witness_data, outputs_serialized, outputs_count)
     }
 
     /// Encode a varint
@@ -533,12 +571,18 @@ impl TemplateProcessor {
             .await
             .map_err(|e| anyhow::anyhow!("RPC error: {}", e))?;
 
-        // Check if template changed
+        // Check if template changed (height or significant curtime drift)
         let should_update = {
             let current = self.current_work.read();
             current
                 .as_ref()
-                .map(|w| w.height != template.height)
+                .map(|w| {
+                    // Update if height changed (new block)
+                    let height_changed = w.height != template.height;
+                    // Update if curtime drifted more than 60 seconds (keeps ntime fresh for miners)
+                    let curtime_drift = (template.curtime as u32).saturating_sub(w.ntime) > 60;
+                    height_changed || curtime_drift
+                })
                 .unwrap_or(true)
         };
 
@@ -581,11 +625,13 @@ impl TemplateProcessor {
 
         // Build coinbase transaction parts (uses approved payout if available)
         // Returns NON-WITNESS serialization for TXID computation + separate witness data
-        let (coinbase1, coinbase2, witness_data) = self.build_coinbase_parts_with_payout(
-            template.height,
-            template.coinbasevalue + total_fees,
-            &template.default_witness_commitment,
-        );
+        // Also returns serialized outputs for TDP to send to SRI Pool
+        let (coinbase1, coinbase2, witness_data, coinbase_outputs_serialized, coinbase_outputs_count) =
+            self.build_coinbase_parts_with_payout(
+                template.height,
+                template.coinbasevalue + total_fees,
+                &template.default_witness_commitment,
+            );
 
         // Create work state
         let work = WorkState {
@@ -603,6 +649,8 @@ impl TemplateProcessor {
             tx_count: filtered_txs.len() + 1, // +1 for coinbase
             total_weight,
             template: template.clone(),
+            coinbase_outputs_serialized,
+            coinbase_outputs_count,
         };
 
         *self.current_work.write() = Some(work);

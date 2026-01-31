@@ -1764,6 +1764,7 @@ dependencies = [
  "chrono",
  "futures",
  "ghost-common",
+ "ghost-consensus",
  "ghost-gsp-proto",
  "ghost-keys",
  "ghost-locks",

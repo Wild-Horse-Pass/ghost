@@ -695,14 +695,6 @@ fn create_new_template(
         .try_into()
         .map_err(|_| anyhow::anyhow!("Coinbase1 too long"))?;
 
-    // coinbase2 (suffix) is not directly used in NewTemplate
-    // The pool adds its own outputs based on CoinbaseOutputConstraints
-    let _coinbase_suffix: B064K<'static> = work_state
-        .coinbase2
-        .clone()
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Coinbase2 too long"))?;
-
     // Convert merkle branches to Seq0255<U256>
     let merkle_path: Vec<U256<'static>> = work_state
         .merkle_branches
@@ -717,6 +709,20 @@ fn create_new_template(
         .try_into()
         .map_err(|_| anyhow::anyhow!("Too many merkle branches"))?;
 
+    // Use Ghost's pre-built coinbase outputs instead of letting SRI Pool add its own
+    // This gives Ghost full control over payouts (BFT consensus, treasury, etc.)
+    let coinbase_outputs: B064K<'static> = work_state
+        .coinbase_outputs_serialized
+        .clone()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Coinbase outputs too long"))?;
+
+    debug!(
+        "TDP NewTemplate: outputs_count={}, outputs_len={}",
+        work_state.coinbase_outputs_count,
+        work_state.coinbase_outputs_serialized.len()
+    );
+
     Ok(NewTemplate {
         template_id,
         future_template: true, // Must be true for SRI pool to register initial template
@@ -724,9 +730,10 @@ fn create_new_template(
         coinbase_tx_version: 2, // Standard coinbase version
         coinbase_prefix,
         coinbase_tx_input_sequence: 0xffffffff,
-        coinbase_tx_value_remaining: work_state.total_fees + get_block_subsidy(work_state.height),
-        coinbase_tx_outputs_count: 1,                    // Pool output
-        coinbase_tx_outputs: vec![].try_into().unwrap(), // Empty, pool adds its own
+        // Set to 0 since Ghost provides all outputs - nothing remaining for pool
+        coinbase_tx_value_remaining: 0,
+        coinbase_tx_outputs_count: work_state.coinbase_outputs_count,
+        coinbase_tx_outputs: coinbase_outputs, // Ghost's outputs (BFT payouts, treasury)
         coinbase_tx_locktime: 0,
         merkle_path: merkle_path_seq,
     })
