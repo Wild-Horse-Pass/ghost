@@ -318,6 +318,45 @@ cargo build --release -p ghost-registry
 
 ## Monitoring
 
+### Node Status CLI
+
+Node operators can check their pool's position in the load balancer:
+
+```bash
+# One-time status check
+ghost-pool --config /etc/ghost/pool.toml --status
+
+# Continuous monitoring (refresh every 5 seconds)
+ghost-pool --config /etc/ghost/pool.toml --watch 5
+```
+
+**Example output:**
+```
+╔══════════════════════════════════════════════════════════════╗
+║                    Ghost Pool Status                          ║
+╚══════════════════════════════════════════════════════════════╝
+
+Registry:    http://registry.bitcoinghost.org:8335
+Node ID:     02a716..d0af5 (02a716669bb7f7eeae36002bcd3a7a648fbd2bf3980d80b155fcc22670369d0af5)
+
+Status:      ● IN DNS (receiving miners)
+
+┌─ Load Balancer Status ─────────────────────────────────────┐
+│ Registered:        Yes                                     │
+│ In DNS:            Yes                                     │
+│ Healthy:           Yes                                     │
+│ Accepting Miners:  Yes                                     │
+└─────────────────────────────────────────────────────────────┘
+
+┌─ Load & Ranking ────────────────────────────────────────────┐
+│ Current Load:      45%                                      │
+│ Region:            EuWest                                   │
+│ Rank in Region:    2 of 4 (by load)                         │
+│ Total in Region:   4 nodes (4 healthy)                      │
+│ Last Heartbeat:    12s ago                                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ### Check Registered Nodes
 
 ```bash
