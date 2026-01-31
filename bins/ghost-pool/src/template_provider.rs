@@ -233,6 +233,10 @@ impl TemplateDistributionServer {
                                 let template_id = template_id_for_broadcast
                                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
+                                // Store work state for later SubmitSolution lookup
+                                template_processor_for_broadcast
+                                    .store_work_state(template_id, work_state.clone());
+
                                 if let Err(e) = broadcast_template(
                                     &clients_for_broadcast,
                                     &work_state,
@@ -425,6 +429,9 @@ async fn handle_tdp_client(
     if let Some(work_state) = template_processor.current_work() {
         let template_id = template_id_counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
+        // Store work state for later SubmitSolution lookup
+        template_processor.store_work_state(template_id, work_state.clone());
+
         send_new_template(&frame_tx, &work_state, template_id).await?;
         send_set_new_prev_hash(&frame_tx, &work_state, template_id).await?;
 
@@ -556,10 +563,17 @@ async fn handle_submit_solution(
         solution.template_id, solution.version, solution.header_timestamp, solution.header_nonce
     );
 
-    // Get the work state for this template
+    // Get the work state for this specific template_id
+    // This is critical - we must use the work state that was active when the miner
+    // received the template, NOT the current work state which may have changed
     let work_state = template_processor
-        .current_work()
-        .ok_or_else(|| anyhow::anyhow!("No active work state for block submission"))?;
+        .get_work_state(solution.template_id)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "No work state found for template_id={} (template may have expired)",
+                solution.template_id
+            )
+        })?;
 
     // Get the coinbase transaction from the solution
     let coinbase_tx: &[u8] = solution.coinbase_tx.inner_as_ref();

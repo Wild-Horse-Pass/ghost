@@ -148,6 +148,8 @@ pub struct TemplateProcessor {
     classifier: BudsClassifier,
     /// Current work state
     current_work: RwLock<Option<WorkState>>,
+    /// Work states by template_id (for SubmitSolution lookup)
+    work_states: RwLock<HashMap<u64, WorkState>>,
     /// Job counter
     job_counter: RwLock<u64>,
     /// Event sender
@@ -171,6 +173,7 @@ impl TemplateProcessor {
             policy,
             classifier: BudsClassifier::new(),
             current_work: RwLock::new(None),
+            work_states: RwLock::new(HashMap::new()),
             job_counter: RwLock::new(0),
             event_tx,
             running: RwLock::new(false),
@@ -964,6 +967,23 @@ impl TemplateProcessor {
     /// Get current work state
     pub fn current_work(&self) -> Option<WorkState> {
         self.current_work.read().clone()
+    }
+
+    /// Store work state by template_id (for SubmitSolution lookup)
+    pub fn store_work_state(&self, template_id: u64, work_state: WorkState) {
+        let mut states = self.work_states.write();
+        states.insert(template_id, work_state);
+        // Keep only the last 10 work states to prevent memory growth
+        if states.len() > 10 {
+            if let Some(&oldest_id) = states.keys().min() {
+                states.remove(&oldest_id);
+            }
+        }
+    }
+
+    /// Get work state by template_id
+    pub fn get_work_state(&self, template_id: u64) -> Option<WorkState> {
+        self.work_states.read().get(&template_id).cloned()
     }
 
     /// Get current block height
