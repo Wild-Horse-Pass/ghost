@@ -636,10 +636,7 @@ async fn handle_submit_solution(
     )?;
 
     // Log full header for debugging
-    info!(
-        "Block header (80 bytes): {}",
-        hex::encode(&header)
-    );
+    info!("Block header (80 bytes): {}", hex::encode(&header));
     // Compute block hash for verification
     let block_hash = double_sha256(&header);
     info!(
@@ -648,8 +645,10 @@ async fn handle_submit_solution(
     );
 
     // Submit the block to Bitcoin Core
+    // Pass the ORIGINAL witness coinbase from SRI for block data,
+    // and the non-witness version for weight calculation
     template_processor
-        .submit_block(&coinbase_non_witness, &header)
+        .submit_block_with_coinbase(coinbase_tx, &coinbase_non_witness, &header)
         .await?;
 
     info!(
@@ -722,11 +721,18 @@ fn strip_witness_if_present(coinbase: &[u8]) -> anyhow::Result<Vec<u8>> {
             pos += script_len as usize; // scriptPubKey
         }
 
-        // pos now points to locktime (4 bytes)
-        let locktime_end = pos + 4;
+        // pos now points to WITNESS data (not locktime!)
+        // In BIP141 format: version | marker | flag | inputs | outputs | WITNESS | locktime
+        // We need to:
+        // 1. Copy from input_count through end of outputs (bytes 6..pos)
+        // 2. Skip witness data
+        // 3. Copy locktime (last 4 bytes of the transaction)
 
-        // Copy from input_count through locktime (skipping witness)
-        non_witness.extend_from_slice(&coinbase[6..locktime_end]);
+        // Copy inputs and outputs (skipping marker/flag at bytes 4-5)
+        non_witness.extend_from_slice(&coinbase[6..pos]);
+
+        // Copy locktime (always the last 4 bytes)
+        non_witness.extend_from_slice(&coinbase[coinbase.len() - 4..]);
 
         Ok(non_witness)
     } else {
@@ -815,8 +821,8 @@ fn build_block_header(
 
     // Previous block hash (32 bytes)
     // Note: work_state.prev_hash is already in little-endian (internal) byte order
-    let prev_hash_bytes = hex::decode(prev_hash_hex)
-        .map_err(|e| anyhow::anyhow!("Invalid prev_hash hex: {}", e))?;
+    let prev_hash_bytes =
+        hex::decode(prev_hash_hex).map_err(|e| anyhow::anyhow!("Invalid prev_hash hex: {}", e))?;
     if prev_hash_bytes.len() != 32 {
         return Err(anyhow::anyhow!(
             "Invalid prev_hash length: {}",
@@ -954,12 +960,36 @@ fn create_new_template(
 ) -> anyhow::Result<NewTemplate<'static>> {
     use stratum_apps::stratum_core::binary_sv2::{B0255, B064K, U256};
 
-    // Convert coinbase parts to the correct types
-    let coinbase_prefix: B0255<'static> = work_state
-        .coinbase1
-        .clone()
+    // Extract just the scriptSig prefix from coinbase1
+    // coinbase1 format: version(4) + input_count(1) + prev_txhash(32) + prev_outindex(4) + scriptsig_len(1) + scriptsig_data
+    // SV2 protocol expects coinbase_prefix to be ONLY the scriptsig_data (height + pool tag)
+    // NOT the full coinbase1!
+    //
+    // SRI will construct the full coinbase by:
+    // - Adding its own version, marker/flag, input structure
+    // - Using our coinbase_prefix as the scriptSig content
+    // - Adding extranonce
+    // - Using our coinbase_tx_outputs
+    const SCRIPTSIG_START: usize = 4 + 1 + 32 + 4 + 1; // 42 bytes before scriptSig data
+
+    if work_state.coinbase1.len() < SCRIPTSIG_START {
+        return Err(anyhow::anyhow!("Coinbase1 too short"));
+    }
+
+    // Extract scriptSig prefix (height bytes + pool tag) - everything after the length byte
+    let scriptsig_prefix = &work_state.coinbase1[SCRIPTSIG_START..];
+
+    debug!(
+        "TDP coinbase_prefix: {} bytes (from coinbase1 {} bytes), hex: {}",
+        scriptsig_prefix.len(),
+        work_state.coinbase1.len(),
+        hex::encode(scriptsig_prefix)
+    );
+
+    let coinbase_prefix: B0255<'static> = scriptsig_prefix
+        .to_vec()
         .try_into()
-        .map_err(|_| anyhow::anyhow!("Coinbase1 too long"))?;
+        .map_err(|_| anyhow::anyhow!("ScriptSig prefix too long"))?;
 
     // Convert merkle branches to Seq0255<U256>
     let merkle_path: Vec<U256<'static>> = work_state

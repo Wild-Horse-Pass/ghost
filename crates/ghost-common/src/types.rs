@@ -381,7 +381,10 @@ impl TreasuryAddress {
     ) -> Result<Self, TreasuryAddressError> {
         // Validate M-of-N parameters
         if required == 0 || total == 0 || required > total || total > 15 {
-            return Err(TreasuryAddressError::InvalidMofN { m: required, n: total });
+            return Err(TreasuryAddressError::InvalidMofN {
+                m: required,
+                n: total,
+            });
         }
 
         Ok(Self::MultiSig {
@@ -403,7 +406,10 @@ impl TreasuryAddress {
     ) -> Result<Self, TreasuryAddressError> {
         // Validate M-of-N parameters
         if required == 0 || total == 0 || required > total || total > 15 {
-            return Err(TreasuryAddressError::InvalidMofN { m: required, n: total });
+            return Err(TreasuryAddressError::InvalidMofN {
+                m: required,
+                n: total,
+            });
         }
 
         // Validate pubkey count if provided
@@ -440,7 +446,9 @@ impl TreasuryAddress {
     pub fn multisig_params(&self) -> Option<(u8, u8)> {
         match self {
             Self::Single(_) => None,
-            Self::MultiSig { required, total, .. } => Some((*required, *total)),
+            Self::MultiSig {
+                required, total, ..
+            } => Some((*required, *total)),
         }
     }
 
@@ -587,17 +595,17 @@ mod tests {
     fn test_treasury_address_single_empty() {
         let addr = TreasuryAddress::single("");
         assert!(addr.is_empty());
-        assert!(matches!(addr.validate(), Err(TreasuryAddressError::EmptyAddress)));
+        assert!(matches!(
+            addr.validate(),
+            Err(TreasuryAddressError::EmptyAddress)
+        ));
     }
 
     #[test]
     fn test_treasury_address_multisig() {
-        let addr = TreasuryAddress::multisig(
-            "bc1qmultisigaddress...",
-            "522102abc...02def...52ae",
-            2,
-            3,
-        ).unwrap();
+        let addr =
+            TreasuryAddress::multisig("bc1qmultisigaddress...", "522102abc...02def...52ae", 2, 3)
+                .unwrap();
 
         assert!(addr.is_multisig());
         assert_eq!(addr.multisig_params(), Some((2, 3)));
@@ -633,17 +641,15 @@ mod tests {
             2,
             3,
             pubkeys,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(addr.is_multisig());
     }
 
     #[test]
     fn test_treasury_address_multisig_pubkey_mismatch() {
-        let pubkeys = vec![
-            "02abc...".to_string(),
-            "02def...".to_string(),
-        ];
+        let pubkeys = vec!["02abc...".to_string(), "02def...".to_string()];
 
         // 2 pubkeys but total is 3
         let result = TreasuryAddress::multisig_with_pubkeys(
@@ -654,7 +660,10 @@ mod tests {
             pubkeys,
         );
 
-        assert!(matches!(result, Err(TreasuryAddressError::PubkeyCountMismatch { .. })));
+        assert!(matches!(
+            result,
+            Err(TreasuryAddressError::PubkeyCountMismatch { .. })
+        ));
     }
 
     #[test]
@@ -676,12 +685,7 @@ mod tests {
 
     #[test]
     fn test_treasury_address_serde_multisig() {
-        let addr = TreasuryAddress::multisig(
-            "bc1qmultisig",
-            "abcd1234",
-            2,
-            3,
-        ).unwrap();
+        let addr = TreasuryAddress::multisig("bc1qmultisig", "abcd1234", 2, 3).unwrap();
 
         let json = serde_json::to_string(&addr).unwrap();
         let parsed: TreasuryAddress = serde_json::from_str(&json).unwrap();

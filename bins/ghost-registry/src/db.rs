@@ -522,7 +522,16 @@ impl RegistryDb {
             )
             .optional()?;
 
-        let Some((region_str, load_percent, healthy, accepting_miners, excluded_for_load, registered_at, last_heartbeat)) = node else {
+        let Some((
+            region_str,
+            load_percent,
+            healthy,
+            accepting_miners,
+            excluded_for_load,
+            registered_at,
+            last_heartbeat,
+        )) = node
+        else {
             return Ok(None);
         };
 

@@ -182,7 +182,11 @@ impl SignerConfig {
     }
 
     /// Create a KMS signer config
-    pub fn kms(key_id: impl Into<String>, region: impl Into<String>, provider: KmsProvider) -> Self {
+    pub fn kms(
+        key_id: impl Into<String>,
+        region: impl Into<String>,
+        provider: KmsProvider,
+    ) -> Self {
         Self::Kms {
             key_id: key_id.into(),
             region: region.into(),

@@ -474,7 +474,11 @@ struct NodeSummary {
 }
 
 /// Verify secp256k1 signature
-fn verify_signature(public_key_hex: &str, message: &str, signature_hex: &str) -> Result<(), String> {
+fn verify_signature(
+    public_key_hex: &str,
+    message: &str,
+    signature_hex: &str,
+) -> Result<(), String> {
     let secp = Secp256k1::verification_only();
 
     // Parse public key
@@ -507,8 +511,8 @@ fn verify_signature(public_key_hex: &str, message: &str, signature_hex: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secp256k1::{Secp256k1, SecretKey};
     use rand::rngs::OsRng;
+    use secp256k1::{Secp256k1, SecretKey};
 
     #[test]
     fn test_signature_verification() {

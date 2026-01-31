@@ -65,9 +65,9 @@ impl Default for TemplateConfig {
             refresh_interval_ms: 500,
             min_fee_rate: 1.0,
             target_weight: 3_992_000, // ~99% of 4MW limit
-            coinbase_extra: "/Ghost/".to_string(),
+            coinbase_extra: "GHOST".to_string(),
             treasury_address: TreasuryAddress::default(), // Must be configured
-            pool_payout_address: String::new(),            // Must be configured
+            pool_payout_address: String::new(),           // Must be configured
             network: BitcoinNetwork::Mainnet,
         }
     }
@@ -387,18 +387,10 @@ impl TemplateProcessor {
             if prop.treasury_amount > 0 {
                 let treasury_addr = self.config.treasury_address.address();
                 coinbase2.extend_from_slice(&prop.treasury_amount.to_le_bytes());
-                self.encode_address_script(
-                    &mut coinbase2,
-                    treasury_addr,
-                    "treasury",
-                );
+                self.encode_address_script(&mut coinbase2, treasury_addr, "treasury");
                 // Also add to outputs_serialized for TDP
                 outputs_serialized.extend_from_slice(&prop.treasury_amount.to_le_bytes());
-                self.encode_address_script(
-                    &mut outputs_serialized,
-                    treasury_addr,
-                    "treasury_tdp",
-                );
+                self.encode_address_script(&mut outputs_serialized, treasury_addr, "treasury_tdp");
             }
 
             debug!(
@@ -1155,6 +1147,148 @@ impl TemplateProcessor {
             block_weight = total_weight,
             prev_hash = %prev_hash_from_header,
             "Block validated, submitting to Bitcoin Core"
+        );
+
+        match self.rpc.submit_block(&block_hex).await {
+            Ok(None) => {
+                info!(height = work.height, "Block accepted!");
+                Ok(())
+            }
+            Ok(Some(rejection)) => {
+                warn!(height = work.height, reason = %rejection, "Block rejected");
+                Err(anyhow::anyhow!("Block rejected: {}", rejection))
+            }
+            Err(e) => {
+                error!(height = work.height, error = %e, "Block submission failed");
+                Err(anyhow::anyhow!("Submission failed: {}", e))
+            }
+        }
+    }
+
+    /// Submit a block using the original witness coinbase from SRI
+    ///
+    /// This method is used when receiving a SubmitSolution from SRI Pool.
+    /// SRI sends us the complete witness coinbase it constructed, so we use
+    /// it directly instead of reconstructing the witness data.
+    ///
+    /// Arguments:
+    /// - coinbase_witness: The original witness coinbase from SRI (for block data)
+    /// - coinbase_non_witness: The stripped non-witness coinbase (for weight calculation)
+    /// - header: The 80-byte block header
+    pub async fn submit_block_with_coinbase(
+        &self,
+        coinbase_witness: &[u8],
+        coinbase_non_witness: &[u8],
+        header: &[u8],
+    ) -> anyhow::Result<()> {
+        // Get current work state for transaction data
+        let work = self
+            .current_work
+            .read()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No active work state"))?;
+
+        // === BLOCK VALIDATION BEFORE SUBMISSION ===
+
+        // 1. Validate header length
+        if header.len() != 80 {
+            return Err(anyhow::anyhow!(
+                "Invalid header length: {} (expected 80)",
+                header.len()
+            ));
+        }
+
+        // 2. Validate previous block hash matches template
+        let prev_hash_from_header: String = header[4..36]
+            .iter()
+            .rev()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+
+        if prev_hash_from_header != work.template.previousblockhash {
+            error!(
+                expected = %work.template.previousblockhash,
+                found = %prev_hash_from_header,
+                "Block previousblockhash mismatch - possible stale work"
+            );
+            return Err(anyhow::anyhow!(
+                "Block previousblockhash mismatch: expected {}, got {}",
+                work.template.previousblockhash,
+                prev_hash_from_header
+            ));
+        }
+
+        // 3. Validate block version
+        let version = u32::from_le_bytes(header[0..4].try_into().unwrap());
+        if version == 0 || version > 0x3FFFFFFF {
+            error!(version = version, "Invalid block version");
+            return Err(anyhow::anyhow!("Invalid block version: {}", version));
+        }
+
+        // Assemble the full block using the ORIGINAL witness coinbase from SRI
+        let mut block_data = Vec::new();
+
+        // 1. Block header (80 bytes)
+        block_data.extend_from_slice(header);
+
+        // 2. Transaction count (varint)
+        let tx_count = work.tx_count;
+        if tx_count < 0xfd {
+            block_data.push(tx_count as u8);
+        } else if tx_count <= 0xffff {
+            block_data.push(0xfd);
+            block_data.extend_from_slice(&(tx_count as u16).to_le_bytes());
+        } else {
+            block_data.push(0xfe);
+            block_data.extend_from_slice(&(tx_count as u32).to_le_bytes());
+        }
+
+        // 3. Coinbase transaction - use the ORIGINAL witness coinbase from SRI
+        block_data.extend_from_slice(coinbase_witness);
+
+        // 4. Other transactions from template
+        for tx in &work.template.transactions {
+            if let Ok(tx_bytes) = hex::decode(&tx.data) {
+                block_data.extend_from_slice(&tx_bytes);
+            }
+        }
+
+        // 5. Validate block weight
+        let coinbase_non_witness_len = coinbase_non_witness.len();
+        let coinbase_witness_extra = coinbase_witness.len() - coinbase_non_witness_len;
+        let coinbase_weight = (coinbase_non_witness_len * 4 + coinbase_witness_extra) as u64;
+        let total_weight = coinbase_weight + work.total_weight;
+
+        const MAX_BLOCK_WEIGHT: u64 = 4_000_000;
+        const MIN_BLOCK_SIZE: usize = 81;
+
+        if block_data.len() < MIN_BLOCK_SIZE {
+            error!(size = block_data.len(), "Block too small");
+            return Err(anyhow::anyhow!(
+                "Block too small: {} bytes (minimum {})",
+                block_data.len(),
+                MIN_BLOCK_SIZE
+            ));
+        }
+
+        if total_weight > MAX_BLOCK_WEIGHT {
+            error!(weight = total_weight, "Block weight exceeds limit");
+            return Err(anyhow::anyhow!(
+                "Block weight {} exceeds maximum {}",
+                total_weight,
+                MAX_BLOCK_WEIGHT
+            ));
+        }
+
+        let block_hex = hex::encode(&block_data);
+        info!(
+            height = work.height,
+            tx_count = tx_count,
+            block_size = block_data.len(),
+            block_weight = total_weight,
+            coinbase_witness_len = coinbase_witness.len(),
+            prev_hash = %prev_hash_from_header,
+            "Block validated, submitting to Bitcoin Core (using SRI coinbase)"
         );
 
         match self.rpc.submit_block(&block_hex).await {

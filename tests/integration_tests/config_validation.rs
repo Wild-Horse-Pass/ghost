@@ -358,7 +358,8 @@ fn test_113_empty_treasury_address_warning() {
 fn test_114_invalid_treasury_address_prefix_rejected() {
     let mut config = NodeConfig::default();
     config.bitcoin.network = BitcoinNetwork::Mainnet;
-    config.pool.treasury_address = TreasuryAddress::single("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"); // testnet address
+    config.pool.treasury_address =
+        TreasuryAddress::single("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"); // testnet address
 
     let result = config.validate();
     assert!(!result.is_valid());
@@ -372,7 +373,8 @@ fn test_114_invalid_treasury_address_prefix_rejected() {
 fn test_115_treasury_address_matches_mainnet() {
     let mut config = NodeConfig::default();
     config.bitcoin.network = BitcoinNetwork::Mainnet;
-    config.pool.treasury_address = TreasuryAddress::single("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+    config.pool.treasury_address =
+        TreasuryAddress::single("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
 
     let result = config.validate();
     assert!(!result
@@ -385,7 +387,8 @@ fn test_115_treasury_address_matches_mainnet() {
 fn test_116_treasury_address_matches_testnet() {
     let mut config = NodeConfig::default();
     config.bitcoin.network = BitcoinNetwork::Testnet;
-    config.pool.treasury_address = TreasuryAddress::single("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx");
+    config.pool.treasury_address =
+        TreasuryAddress::single("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx");
 
     let result = config.validate();
     assert!(!result

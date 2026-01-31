@@ -177,18 +177,16 @@ impl HealthChecker {
         let (added, removed) = self.cloudflare.sync_all_regions(&region_ips).await?;
 
         if added > 0 || removed > 0 {
-            info!(
-                added = added,
-                removed = removed,
-                "DNS records updated"
-            );
+            info!(added = added, removed = removed, "DNS records updated");
         }
 
         Ok(())
     }
 
     /// Get current health summary
-    pub fn get_health_summary(&self) -> Result<HealthSummary, Box<dyn std::error::Error + Send + Sync>> {
+    pub fn get_health_summary(
+        &self,
+    ) -> Result<HealthSummary, Box<dyn std::error::Error + Send + Sync>> {
         let total_nodes = self.db.get_node_count()?;
         let healthy_nodes = self.db.get_healthy_node_count()?;
         let region_stats = self.db.get_region_stats()?;

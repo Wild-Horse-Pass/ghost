@@ -2323,7 +2323,12 @@ impl Database {
     }
 
     /// Check if a rotation proof has been used (prevent replay)
-    fn is_rotation_proof_used(&self, conn: &Connection, old_node_id: &str, new_node_id: &str) -> GhostResult<bool> {
+    fn is_rotation_proof_used(
+        &self,
+        conn: &Connection,
+        old_node_id: &str,
+        new_node_id: &str,
+    ) -> GhostResult<bool> {
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM rotation_history
@@ -2516,13 +2521,17 @@ impl Database {
                     "SELECT old_node_id, new_node_id, finalized_timestamp
                      FROM rotation_history
                      WHERE old_node_id = ?1 AND status = 'completed'
-                     ORDER BY finalized_timestamp DESC"
+                     ORDER BY finalized_timestamp DESC",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let rotations = stmt
                 .query_map([node_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
@@ -2536,13 +2545,17 @@ impl Database {
                     "SELECT old_node_id, new_node_id, finalized_timestamp
                      FROM rotation_history
                      WHERE new_node_id = ?1 AND status = 'completed'
-                     ORDER BY finalized_timestamp DESC"
+                     ORDER BY finalized_timestamp DESC",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let rotations = stmt
                 .query_map([node_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
@@ -2605,7 +2618,7 @@ impl Database {
 
             if rows_affected == 0 {
                 return Err(GhostError::Database(
-                    "Rotation not found or already finalized".to_string()
+                    "Rotation not found or already finalized".to_string(),
                 ));
             }
 

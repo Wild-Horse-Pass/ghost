@@ -104,7 +104,12 @@ impl KeyRotationProof {
 
         // Find a nonce that satisfies PoW (if required)
         let nonce = if ROTATION_POW_DIFFICULTY > 0 {
-            Self::mine_nonce(&old_node_id, &new_node_id, timestamp, ROTATION_POW_DIFFICULTY)?
+            Self::mine_nonce(
+                &old_node_id,
+                &new_node_id,
+                timestamp,
+                ROTATION_POW_DIFFICULTY,
+            )?
         } else {
             0
         };
@@ -248,13 +253,18 @@ impl KeyRotationProof {
 
         let sig = Signature::from_bytes(signature);
 
-        verifying_key
-            .verify(message, &sig)
-            .map_err(|e| GhostError::SignatureVerification(format!("Signature verification failed: {}", e)))
+        verifying_key.verify(message, &sig).map_err(|e| {
+            GhostError::SignatureVerification(format!("Signature verification failed: {}", e))
+        })
     }
 
     /// Compute PoW hash for mining
-    fn compute_pow_hash(old_node_id: &NodeId, new_node_id: &NodeId, timestamp: u64, nonce: u64) -> [u8; 32] {
+    fn compute_pow_hash(
+        old_node_id: &NodeId,
+        new_node_id: &NodeId,
+        timestamp: u64,
+        nonce: u64,
+    ) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(old_node_id);
         hasher.update(new_node_id);
@@ -521,8 +531,11 @@ mod tests {
         let mut proof = KeyRotationProof::create(&old_identity, &new_identity).unwrap();
 
         // Replace old_key_signature with signature from wrong identity
-        let message =
-            KeyRotationProof::create_old_key_message(&new_identity.node_id(), proof.timestamp, proof.nonce);
+        let message = KeyRotationProof::create_old_key_message(
+            &new_identity.node_id(),
+            proof.timestamp,
+            proof.nonce,
+        );
         proof.old_key_signature = wrong_identity.sign(&message);
 
         assert!(proof.verify().is_err());
@@ -537,8 +550,11 @@ mod tests {
         let mut proof = KeyRotationProof::create(&old_identity, &new_identity).unwrap();
 
         // Replace new_key_signature with signature from wrong identity
-        let message =
-            KeyRotationProof::create_new_key_message(&old_identity.node_id(), proof.timestamp, proof.nonce);
+        let message = KeyRotationProof::create_new_key_message(
+            &old_identity.node_id(),
+            proof.timestamp,
+            proof.nonce,
+        );
         proof.new_key_signature = wrong_identity.sign(&message);
 
         assert!(proof.verify().is_err());

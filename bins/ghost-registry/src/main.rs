@@ -177,7 +177,14 @@ async fn main() -> Result<()> {
     info!("Ghost Registry is ready!");
     info!("  HTTP API:     {}", addr);
     info!("  Health check: {}/health", addr);
-    info!("  Cloudflare:   {}", if config.cloudflare.enabled { "enabled" } else { "disabled" });
+    info!(
+        "  Cloudflare:   {}",
+        if config.cloudflare.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
     info!("════════════════════════════════════════════════════════════════");
 
     // Start server
@@ -205,10 +212,7 @@ fn load_config(path: &PathBuf) -> Result<RegistryServiceConfig> {
         info!("Configuration loaded from: {}", path.display());
         Ok(config)
     } else {
-        info!(
-            "No config file found at {}, using defaults",
-            path.display()
-        );
+        info!("No config file found at {}, using defaults", path.display());
         Ok(RegistryServiceConfig::default())
     }
 }

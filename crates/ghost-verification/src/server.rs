@@ -328,7 +328,10 @@ impl VerificationState {
                     // Local persisted config wins - sync ghost-core to match
                     match rpc.set_ghost_mode(local_ghost_mode).await {
                         Ok(_) => {
-                            info!("Successfully synced ghost-core to ghost_mode={}", local_ghost_mode);
+                            info!(
+                                "Successfully synced ghost-core to ghost_mode={}",
+                                local_ghost_mode
+                            );
                         }
                         Err(e) => {
                             warn!("Failed to sync ghost mode to ghost-core: {}", e);

@@ -98,9 +98,7 @@ impl CloudflareClient {
             ));
         }
 
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()?;
+        let client = Client::builder().timeout(Duration::from_secs(30)).build()?;
 
         Ok(Self {
             client,
@@ -130,7 +128,10 @@ impl CloudflareClient {
     }
 
     /// List all A records for a region
-    pub async fn list_region_records(&self, region: Region) -> Result<Vec<DnsRecord>, CloudflareError> {
+    pub async fn list_region_records(
+        &self,
+        region: Region,
+    ) -> Result<Vec<DnsRecord>, CloudflareError> {
         if !self.config.enabled {
             return Ok(Vec::new());
         }
@@ -170,7 +171,9 @@ impl CloudflareClient {
         ip: &str,
     ) -> Result<DnsRecord, CloudflareError> {
         if !self.config.enabled {
-            return Err(CloudflareError::Config("Cloudflare not enabled".to_string()));
+            return Err(CloudflareError::Config(
+                "Cloudflare not enabled".to_string(),
+            ));
         }
 
         let name = self.region_subdomain(region);
@@ -215,7 +218,9 @@ impl CloudflareClient {
     /// Delete an A record by ID
     pub async fn delete_record(&self, record_id: &str) -> Result<(), CloudflareError> {
         if !self.config.enabled {
-            return Err(CloudflareError::Config("Cloudflare not enabled".to_string()));
+            return Err(CloudflareError::Config(
+                "Cloudflare not enabled".to_string(),
+            ));
         }
 
         let url = format!(
@@ -264,7 +269,8 @@ impl CloudflareClient {
 
         // Get current records
         let current_records = self.list_region_records(region).await?;
-        let current_ips: HashSet<&str> = current_records.iter().map(|r| r.content.as_str()).collect();
+        let current_ips: HashSet<&str> =
+            current_records.iter().map(|r| r.content.as_str()).collect();
         let desired_set: HashSet<&str> = desired_ips.iter().map(|s| s.as_str()).collect();
 
         let mut added = 0;
@@ -440,9 +446,6 @@ mod tests {
 
         let client = CloudflareClient::new(config, dns_config).unwrap();
 
-        assert_eq!(
-            client.region_fqdn(Region::EuWest),
-            "eu.pool.example.com"
-        );
+        assert_eq!(client.region_fqdn(Region::EuWest), "eu.pool.example.com");
     }
 }

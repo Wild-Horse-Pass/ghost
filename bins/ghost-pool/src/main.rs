@@ -240,25 +240,49 @@ fn print_status(status: &ghost_pool::registry::NodeStatusResponse) {
 
     // Details
     println!("┌─ Load Balancer Status ─────────────────────────────────────┐");
-    println!("│ Registered:        {:<39} │", if status.registered { "Yes" } else { "No" });
-    println!("│ In DNS:            {:<39} │", if status.in_dns { "Yes" } else { "No" });
-    println!("│ Healthy:           {:<39} │", if status.healthy { "Yes" } else { "No" });
-    println!("│ Accepting Miners:  {:<39} │", if status.accepting_miners { "Yes" } else { "No" });
+    println!(
+        "│ Registered:        {:<39} │",
+        if status.registered { "Yes" } else { "No" }
+    );
+    println!(
+        "│ In DNS:            {:<39} │",
+        if status.in_dns { "Yes" } else { "No" }
+    );
+    println!(
+        "│ Healthy:           {:<39} │",
+        if status.healthy { "Yes" } else { "No" }
+    );
+    println!(
+        "│ Accepting Miners:  {:<39} │",
+        if status.accepting_miners { "Yes" } else { "No" }
+    );
     println!("└─────────────────────────────────────────────────────────────┘");
     println!();
 
     println!("┌─ Load & Ranking ────────────────────────────────────────────┐");
-    println!("│ Current Load:      {:<39} │", format!("{}%", status.load_percent));
+    println!(
+        "│ Current Load:      {:<39} │",
+        format!("{}%", status.load_percent)
+    );
     println!("│ Region:            {:<39} │", status.region);
     println!(
         "│ Rank in Region:    {:<39} │",
-        format!("{} of {} (by load)", status.rank_in_region, status.healthy_in_region)
+        format!(
+            "{} of {} (by load)",
+            status.rank_in_region, status.healthy_in_region
+        )
     );
     println!(
         "│ Total in Region:   {:<39} │",
-        format!("{} nodes ({} healthy)", status.total_in_region, status.healthy_in_region)
+        format!(
+            "{} nodes ({} healthy)",
+            status.total_in_region, status.healthy_in_region
+        )
     );
-    println!("│ Last Heartbeat:    {:<39} │", format!("{}s ago", status.last_heartbeat_ago_secs));
+    println!(
+        "│ Last Heartbeat:    {:<39} │",
+        format!("{}s ago", status.last_heartbeat_ago_secs)
+    );
     println!("└─────────────────────────────────────────────────────────────┘");
 
     // Exclusion reason if any
@@ -338,12 +362,18 @@ async fn main() -> Result<()> {
             // Use config key_path if it exists, otherwise fall back to data_dir
             let cfg_key_path = expand_path(&config.identity.key_path)?;
             if cfg_key_path.exists() {
-                SignerConfig::Local { key_path: cfg_key_path }
+                SignerConfig::Local {
+                    key_path: cfg_key_path,
+                }
             } else if default_key_path.exists() {
-                SignerConfig::Local { key_path: default_key_path.clone() }
+                SignerConfig::Local {
+                    key_path: default_key_path.clone(),
+                }
             } else {
                 // No key file exists, we'll generate one below
-                SignerConfig::Local { key_path: default_key_path.clone() }
+                SignerConfig::Local {
+                    key_path: default_key_path.clone(),
+                }
             }
         }
     };
@@ -354,7 +384,10 @@ async fn main() -> Result<()> {
             if key_path.exists() {
                 NodeIdentity::load(key_path)?
             } else {
-                info!("No identity found at {}, generating new one...", key_path.display());
+                info!(
+                    "No identity found at {}, generating new one...",
+                    key_path.display()
+                );
                 let identity = NodeIdentity::generate();
                 identity.save(key_path)?;
                 info!("Generated new identity, saved to: {}", key_path.display());
@@ -364,13 +397,15 @@ async fn main() -> Result<()> {
         SignerConfig::Hsm { .. } | SignerConfig::Kms { .. } => {
             // HSM/KMS signers require the key to already exist
             NodeIdentity::from_config(&signer_config).map_err(|e| {
-                anyhow::anyhow!("Failed to initialize {} signer: {}",
+                anyhow::anyhow!(
+                    "Failed to initialize {} signer: {}",
                     match &signer_config {
                         SignerConfig::Hsm { .. } => "HSM",
                         SignerConfig::Kms { .. } => "KMS",
                         _ => "unknown",
                     },
-                    e)
+                    e
+                )
             })?
         }
     };
@@ -400,7 +435,11 @@ async fn main() -> Result<()> {
     );
     info!("║          Decentralized Bitcoin Mining Pool                   ║");
     info!("╚══════════════════════════════════════════════════════════════╝");
-    info!("Node ID: {} ({})", identity.node_id_short(), identity.signer_type());
+    info!(
+        "Node ID: {} ({})",
+        identity.node_id_short(),
+        identity.signer_type()
+    );
 
     // Validate configuration
     let validation = config.validate();
@@ -1171,7 +1210,10 @@ async fn main() -> Result<()> {
 
     // Start registry client for load balancer registration (if configured)
     // Store registry client for deregistration on shutdown
-    let registry_client_for_shutdown: Option<Arc<RegistryClient>> = if let Some(ref registry_config) = config.registry {
+    let registry_client_for_shutdown: Option<Arc<RegistryClient>> = if let Some(
+        ref registry_config,
+    ) = config.registry
+    {
         if !registry_config.url.is_empty() {
             let host = config
                 .network

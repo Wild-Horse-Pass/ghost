@@ -716,7 +716,7 @@ mod tests {
         }
 
         script.push(0x53); // OP_3
-        // Missing OP_CHECKMULTISIG
+                           // Missing OP_CHECKMULTISIG
 
         let result = validate_multisig_witness_script(&script, 2, 3);
         assert!(result.is_err());

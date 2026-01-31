@@ -39,9 +39,7 @@ pub struct NodeConfig {
 
 impl Default for NodeConfig {
     fn default() -> Self {
-        Self {
-            ghost_mode: false,
-        }
+        Self { ghost_mode: false }
     }
 }
 
@@ -82,9 +80,8 @@ impl NodeConfig {
             }
         }
 
-        let contents = serde_json::to_string_pretty(self).map_err(|e| {
-            GhostError::Config(format!("Failed to serialize config: {}", e))
-        })?;
+        let contents = serde_json::to_string_pretty(self)
+            .map_err(|e| GhostError::Config(format!("Failed to serialize config: {}", e)))?;
 
         std::fs::write(path, contents).map_err(|e| {
             GhostError::Config(format!("Failed to write config file {:?}: {}", path, e))
@@ -99,7 +96,10 @@ impl NodeConfig {
         match Self::load(path) {
             Ok(config) => config,
             Err(e) => {
-                warn!("Failed to load config from {:?}: {}. Using defaults.", path, e);
+                warn!(
+                    "Failed to load config from {:?}: {}. Using defaults.",
+                    path, e
+                );
                 Self::default()
             }
         }

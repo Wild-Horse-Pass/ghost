@@ -435,7 +435,10 @@ impl RegistryClient {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("Status query failed with status {}: {}", status, body));
+            return Err(format!(
+                "Status query failed with status {}: {}",
+                status, body
+            ));
         }
 
         let api_response: ApiResponse<NodeStatusResponse> = response

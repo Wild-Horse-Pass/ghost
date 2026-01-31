@@ -2472,7 +2472,10 @@ async fn api_config_ghost_mode_handler(
                 {
                     let mut config = state.dashboard_config.write();
                     if config.ghost_mode != response.ghost_mode {
-                        debug!("Syncing ghost mode from RPC: {} -> {}", config.ghost_mode, response.ghost_mode);
+                        debug!(
+                            "Syncing ghost mode from RPC: {} -> {}",
+                            config.ghost_mode, response.ghost_mode
+                        );
                         config.ghost_mode = response.ghost_mode;
                     }
                 }

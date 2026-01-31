@@ -220,9 +220,8 @@ impl NodeIdentity {
     ///
     /// This is the recommended way to create an identity from configuration.
     pub fn from_config(config: &SignerConfig) -> GhostResult<Self> {
-        let signer = crate::signer::create_signer(config).map_err(|e| {
-            GhostError::InvalidKey(format!("Failed to create signer: {}", e))
-        })?;
+        let signer = crate::signer::create_signer(config)
+            .map_err(|e| GhostError::InvalidKey(format!("Failed to create signer: {}", e)))?;
 
         let public_key = signer.public_key();
         let pow_proof = NodeIdProof::mine(&public_key, NODE_ID_POW_DIFFICULTY);
@@ -306,8 +305,7 @@ impl NodeIdentity {
     /// Load identity from hex-encoded string (private key only, will mine PoW)
     pub fn from_hex(hex_str: &str) -> GhostResult<Self> {
         let signer = Arc::new(
-            LocalSigner::from_hex(hex_str)
-                .map_err(|e| GhostError::InvalidKey(e.to_string()))?,
+            LocalSigner::from_hex(hex_str).map_err(|e| GhostError::InvalidKey(e.to_string()))?,
         );
         let public_key = signer.public_key();
 
@@ -325,8 +323,7 @@ impl NodeIdentity {
     /// Load identity with existing PoW proof (for database restoration)
     pub fn from_hex_with_proof(hex_str: &str, proof_hex: &str) -> GhostResult<Self> {
         let signer = Arc::new(
-            LocalSigner::from_hex(hex_str)
-                .map_err(|e| GhostError::InvalidKey(e.to_string()))?,
+            LocalSigner::from_hex(hex_str).map_err(|e| GhostError::InvalidKey(e.to_string()))?,
         );
         let public_key = signer.public_key();
 
@@ -373,11 +370,7 @@ impl NodeIdentity {
         // For LocalSigner, we need to get the signing key bytes
         // We do this by downcasting, but fall back to just saving public key if that fails
         // In practice, LocalSigner always supports this
-        let local_signer = self
-            .signer
-            .as_ref()
-            .as_any()
-            .downcast_ref::<LocalSigner>();
+        let local_signer = self.signer.as_ref().as_any().downcast_ref::<LocalSigner>();
 
         if let Some(local) = local_signer {
             // Build 44-byte output: private key + PoW proof

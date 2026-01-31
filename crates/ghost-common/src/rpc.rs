@@ -628,8 +628,67 @@ impl BitcoinRpc {
     }
 
     /// Submit a block
+    ///
+    /// Returns:
+    /// - Ok(None) if block was accepted
+    /// - Ok(Some(reason)) if block was rejected with a specific reason
+    /// - Err if RPC call failed
     pub async fn submit_block(&self, block_hex: &str) -> GhostResult<Option<String>> {
-        self.call("submitblock", vec![json!(block_hex)]).await
+        // Bitcoin Core returns null on success, so we need special handling
+        // for this method (null is not an error, it means accepted)
+        self.call_nullable("submitblock", vec![json!(block_hex)])
+            .await
+    }
+
+    /// Make an RPC call that can return null as a valid success response
+    async fn call_nullable<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: Vec<Value>,
+    ) -> GhostResult<Option<T>> {
+        // Check circuit breaker first
+        if !self.circuit_breaker.is_allowed() {
+            return Err(GhostError::Rpc(
+                "Circuit breaker open - Bitcoin Core RPC unavailable".to_string(),
+            ));
+        }
+
+        let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
+        let request = json!({
+            "jsonrpc": "1.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+
+        let response = self
+            .client
+            .post(&self.url)
+            .header("Authorization", format!("Basic {}", self.auth))
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| {
+                self.circuit_breaker.record_failure();
+                GhostError::Rpc(format!("Request failed: {}", e))
+            })?;
+
+        let rpc_response: RpcResponse<T> = response.json().await.map_err(|e| {
+            self.circuit_breaker.record_failure();
+            GhostError::Rpc(format!("Failed to parse response: {}", e))
+        })?;
+
+        if let Some(error) = rpc_response.error {
+            self.circuit_breaker.record_failure();
+            return Err(GhostError::Rpc(format!(
+                "RPC error {}: {}",
+                error.code, error.message
+            )));
+        }
+
+        // For nullable methods, None is a valid success response
+        self.circuit_breaker.record_success();
+        Ok(rpc_response.result)
     }
 
     /// Get raw mempool
