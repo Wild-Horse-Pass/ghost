@@ -132,6 +132,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/nodes/register", post(handle_register))
         .route("/api/v1/nodes/heartbeat", post(handle_heartbeat))
         .route("/api/v1/nodes/:node_id", delete(handle_deregister))
+        .route("/api/v1/nodes/:node_id/status", get(handle_node_status))
         .route("/api/v1/nodes", get(handle_list_nodes))
         .route("/api/v1/regions", get(handle_list_regions))
         .route("/api/v1/health", get(handle_health))
@@ -339,6 +340,71 @@ async fn handle_deregister(
             Json(ApiResponse::error(format!("Database error: {}", e))),
         ),
     }
+}
+
+/// Handle node status query
+async fn handle_node_status(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+) -> impl IntoResponse {
+    match state.db.get_node_status(&node_id) {
+        Ok(Some(status)) => {
+            let last_hb_ago = chrono::Utc::now()
+                .signed_duration_since(status.last_heartbeat)
+                .num_seconds();
+
+            let response = NodeStatusResponse {
+                registered: status.registered,
+                in_dns: status.in_dns,
+                healthy: status.healthy,
+                accepting_miners: status.accepting_miners,
+                excluded_for_load: status.excluded_for_load,
+                load_percent: status.load_percent,
+                rank_in_region: status.rank_in_region,
+                total_in_region: status.total_in_region,
+                healthy_in_region: status.healthy_in_region,
+                region: format!("{:?}", status.region),
+                last_heartbeat_ago_secs: last_hb_ago as u64,
+                exclusion_reason: if !status.healthy {
+                    Some("Node marked unhealthy (missed heartbeats)".to_string())
+                } else if !status.accepting_miners {
+                    Some("Node not accepting miners".to_string())
+                } else if status.excluded_for_load {
+                    Some("Load too high (>= 80%), will resume at < 70%".to_string())
+                } else {
+                    None
+                },
+            };
+
+            (StatusCode::OK, Json(ApiResponse::ok_with_data(response)))
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::error("Node not found")),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Database error: {}", e))),
+        ),
+    }
+}
+
+/// Node status response
+#[derive(Debug, Serialize, Deserialize)]
+struct NodeStatusResponse {
+    registered: bool,
+    in_dns: bool,
+    healthy: bool,
+    accepting_miners: bool,
+    excluded_for_load: bool,
+    load_percent: u8,
+    rank_in_region: u32,
+    total_in_region: u32,
+    healthy_in_region: u32,
+    region: String,
+    last_heartbeat_ago_secs: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exclusion_reason: Option<String>,
 }
 
 /// Handle list nodes (admin endpoint)

@@ -96,3 +96,11 @@ stratum-apps = { path = "../../sv2-apps/stratum-apps", features = ["network", "c
 bs58 = { version = "0.4.0", features = ["check"] }
 secp256k1 = { version = "0.28.2", features = ["rand"] }
 rand = "0.8"
+
+# TUI dashboard (optional)
+ratatui = { workspace = true, optional = true }
+crossterm = { version = "0.27", optional = true }
+
+[features]
+default = []
+tui = ["ratatui", "crossterm"]

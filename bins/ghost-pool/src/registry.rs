@@ -111,6 +111,46 @@ impl RegistrationResponse {
     }
 }
 
+/// Generic API response wrapper
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiResponse<T> {
+    pub status: String,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub data: Option<T>,
+}
+
+/// Node status response from registry
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NodeStatusResponse {
+    /// Whether node is registered
+    pub registered: bool,
+    /// Whether node is currently in DNS rotation
+    pub in_dns: bool,
+    /// Whether node is healthy
+    pub healthy: bool,
+    /// Whether accepting new miners
+    pub accepting_miners: bool,
+    /// Whether excluded due to high load
+    pub excluded_for_load: bool,
+    /// Current load percentage
+    pub load_percent: u8,
+    /// Rank in region (1 = lowest load)
+    pub rank_in_region: u32,
+    /// Total nodes in region
+    pub total_in_region: u32,
+    /// Healthy nodes in region
+    pub healthy_in_region: u32,
+    /// Region name
+    pub region: String,
+    /// Seconds since last heartbeat
+    pub last_heartbeat_ago_secs: u64,
+    /// Reason for exclusion if not in DNS
+    #[serde(default)]
+    pub exclusion_reason: Option<String>,
+}
+
 /// Registry client for load balancer communication
 pub struct RegistryClient {
     /// HTTP client
@@ -376,6 +416,46 @@ impl RegistryClient {
         }
 
         Ok(())
+    }
+
+    /// Query node status from the registry
+    pub async fn get_status(&self) -> Result<NodeStatusResponse, String> {
+        let url = format!(
+            "{}/api/v1/nodes/{}/status",
+            self.registry_url, self.public_key_hex
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("Status query failed with status {}: {}", status, body));
+        }
+
+        let api_response: ApiResponse<NodeStatusResponse> = response
+            .json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+        api_response
+            .data
+            .ok_or_else(|| "No data in response".to_string())
+    }
+
+    /// Get the node ID (public key hex)
+    pub fn node_id(&self) -> &str {
+        &self.public_key_hex
+    }
+
+    /// Get the registry URL
+    pub fn registry_url(&self) -> &str {
+        &self.registry_url
     }
 
     /// Start the registry client (register and heartbeat loop)

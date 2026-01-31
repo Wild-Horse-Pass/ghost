@@ -494,6 +494,99 @@ impl RegistryDb {
             })?;
         Ok(count as usize)
     }
+
+    /// Get node status with rank information
+    pub fn get_node_status(&self, node_id: &str) -> Result<Option<NodeStatus>, DbError> {
+        let conn = self.conn.lock();
+
+        // Get the node first
+        let node: Option<(String, u8, bool, bool, bool, String, String)> = conn
+            .query_row(
+                r#"
+                SELECT region, load_percent, healthy, accepting_miners, excluded_for_load,
+                       registered_at, last_heartbeat
+                FROM nodes WHERE node_id = ?1
+                "#,
+                params![node_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .optional()?;
+
+        let Some((region_str, load_percent, healthy, accepting_miners, excluded_for_load, registered_at, last_heartbeat)) = node else {
+            return Ok(None);
+        };
+
+        let region = string_to_region(&region_str);
+
+        // Get rank in region (by load, lower is better)
+        let rank: i64 = conn.query_row(
+            r#"
+            SELECT COUNT(*) + 1 FROM nodes
+            WHERE region = ?1 AND load_percent < ?2 AND healthy = 1
+            "#,
+            params![region_str, load_percent],
+            |row| row.get(0),
+        )?;
+
+        // Get total nodes in region
+        let total_in_region: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE region = ?1",
+            params![region_str],
+            |row| row.get(0),
+        )?;
+
+        // Get healthy nodes in region
+        let healthy_in_region: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE region = ?1 AND healthy = 1",
+            params![region_str],
+            |row| row.get(0),
+        )?;
+
+        // Node is in DNS if healthy, accepting miners, and not excluded for load
+        let in_dns = healthy && accepting_miners && !excluded_for_load;
+
+        Ok(Some(NodeStatus {
+            registered: true,
+            in_dns,
+            healthy,
+            accepting_miners,
+            excluded_for_load,
+            load_percent,
+            rank_in_region: rank as u32,
+            total_in_region: total_in_region as u32,
+            healthy_in_region: healthy_in_region as u32,
+            region,
+            registered_at: parse_datetime(&registered_at),
+            last_heartbeat: parse_datetime(&last_heartbeat),
+        }))
+    }
+}
+
+/// Node status with rank information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeStatus {
+    pub registered: bool,
+    pub in_dns: bool,
+    pub healthy: bool,
+    pub accepting_miners: bool,
+    pub excluded_for_load: bool,
+    pub load_percent: u8,
+    pub rank_in_region: u32,
+    pub total_in_region: u32,
+    pub healthy_in_region: u32,
+    pub region: Region,
+    pub registered_at: DateTime<Utc>,
+    pub last_heartbeat: DateTime<Utc>,
 }
 
 /// Region statistics

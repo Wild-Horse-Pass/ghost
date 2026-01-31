@@ -88,6 +88,14 @@ struct Args {
     #[arg(long)]
     show_identity: bool,
 
+    /// Show node status in load balancer and exit
+    #[arg(long)]
+    status: bool,
+
+    /// Watch node status continuously (refresh every N seconds)
+    #[arg(long, value_name = "SECS")]
+    watch: Option<u64>,
+
     /// Bitcoin RPC host override
     #[arg(long)]
     rpc_host: Option<String>,
@@ -135,6 +143,144 @@ pub struct PoolState {
     pub vote_handler: Arc<VoteHandler>,
     /// Shutdown signal
     pub shutdown_tx: broadcast::Sender<()>,
+}
+
+/// Handle --status command: query and display node status from registry
+async fn handle_status_command(
+    config: &NodeConfig,
+    identity: &NodeIdentity,
+    watch_interval: Option<u64>,
+) -> Result<()> {
+    use ghost_pool::registry::NodeStatusResponse;
+
+    let Some(ref registry_config) = config.registry else {
+        println!("Registry not configured in config file.");
+        println!("Add [registry] section with url and region to enable load balancing.");
+        return Ok(());
+    };
+
+    // Create a simple HTTP client to query status
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+
+    let node_id = identity.node_id_hex();
+    let url = format!("{}/api/v1/nodes/{}/status", registry_config.url, node_id);
+
+    loop {
+        // Clear screen in watch mode
+        if watch_interval.is_some() {
+            print!("\x1B[2J\x1B[1;1H");
+        }
+
+        println!("╔══════════════════════════════════════════════════════════════╗");
+        println!("║                    Ghost Pool Status                          ║");
+        println!("╚══════════════════════════════════════════════════════════════╝");
+        println!();
+
+        println!("Registry:    {}", registry_config.url);
+        println!("Node ID:     {} ({})", identity.node_id_short(), node_id);
+        println!();
+
+        match client.get(&url).send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    let api_resp: serde_json::Value = response.json().await?;
+
+                    if let Some(data) = api_resp.get("data") {
+                        let status: NodeStatusResponse = serde_json::from_value(data.clone())?;
+                        print_status(&status);
+                    } else if let Some(error) = api_resp.get("error") {
+                        println!("Error: {}", error);
+                    }
+                } else if response.status().as_u16() == 404 {
+                    println!("Status:      NOT REGISTERED");
+                    println!();
+                    println!("This node is not registered with the registry.");
+                    println!("Start the pool service to register automatically.");
+                } else {
+                    println!("Error: Registry returned status {}", response.status());
+                }
+            }
+            Err(e) => {
+                println!("Error:       Could not connect to registry");
+                println!("             {}", e);
+                println!();
+                println!("Check that the registry is running and accessible.");
+            }
+        }
+
+        // Exit if not in watch mode
+        let Some(interval) = watch_interval else {
+            break;
+        };
+
+        println!();
+        println!("─────────────────────────────────────────────────────────────────");
+        println!("Refreshing every {}s. Press Ctrl+C to exit.", interval);
+
+        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+    }
+
+    Ok(())
+}
+
+/// Print formatted status output
+fn print_status(status: &ghost_pool::registry::NodeStatusResponse) {
+    // Status indicator
+    let status_icon = if status.in_dns { "●" } else { "○" };
+    let status_text = if status.in_dns {
+        "IN DNS (receiving miners)"
+    } else {
+        "NOT IN DNS"
+    };
+
+    println!("Status:      {} {}", status_icon, status_text);
+    println!();
+
+    // Details
+    println!("┌─ Load Balancer Status ─────────────────────────────────────┐");
+    println!("│ Registered:        {:<39} │", if status.registered { "Yes" } else { "No" });
+    println!("│ In DNS:            {:<39} │", if status.in_dns { "Yes" } else { "No" });
+    println!("│ Healthy:           {:<39} │", if status.healthy { "Yes" } else { "No" });
+    println!("│ Accepting Miners:  {:<39} │", if status.accepting_miners { "Yes" } else { "No" });
+    println!("└─────────────────────────────────────────────────────────────┘");
+    println!();
+
+    println!("┌─ Load & Ranking ────────────────────────────────────────────┐");
+    println!("│ Current Load:      {:<39} │", format!("{}%", status.load_percent));
+    println!("│ Region:            {:<39} │", status.region);
+    println!(
+        "│ Rank in Region:    {:<39} │",
+        format!("{} of {} (by load)", status.rank_in_region, status.healthy_in_region)
+    );
+    println!(
+        "│ Total in Region:   {:<39} │",
+        format!("{} nodes ({} healthy)", status.total_in_region, status.healthy_in_region)
+    );
+    println!("│ Last Heartbeat:    {:<39} │", format!("{}s ago", status.last_heartbeat_ago_secs));
+    println!("└─────────────────────────────────────────────────────────────┘");
+
+    // Exclusion reason if any
+    if let Some(ref reason) = status.exclusion_reason {
+        println!();
+        println!("┌─ Exclusion Reason ─────────────────────────────────────────┐");
+        println!("│ {:<59} │", reason);
+        println!("└─────────────────────────────────────────────────────────────┘");
+    }
+
+    // Tips
+    if !status.in_dns {
+        println!();
+        println!("Tip: Node is not receiving miners because it's excluded from DNS.");
+        if status.excluded_for_load {
+            println!("     Load is ≥80%. Will resume when load drops below 70%.");
+        } else if !status.healthy {
+            println!("     Node marked unhealthy. Check heartbeat connectivity.");
+        } else if !status.accepting_miners {
+            println!("     Node is not accepting miners. Check configuration.");
+        }
+    }
 }
 
 #[tokio::main]
@@ -235,6 +381,16 @@ async fn main() -> Result<()> {
         println!("Short ID: {}", identity.node_id_short());
         println!("Signer: {}", identity.signer_type());
         return Ok(());
+    }
+
+    // Handle --status command
+    if args.status {
+        return handle_status_command(&config, &identity, None).await;
+    }
+
+    // Handle --watch command
+    if let Some(interval) = args.watch {
+        return handle_status_command(&config, &identity, Some(interval.max(1))).await;
     }
 
     info!("╔══════════════════════════════════════════════════════════════╗");
