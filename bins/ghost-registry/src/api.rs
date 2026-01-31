@@ -416,6 +416,7 @@ async fn handle_list_nodes(State(state): State<Arc<AppState>>) -> impl IntoRespo
                 .map(|n| NodeSummary {
                     node_id: n.node_id,
                     host: n.host,
+                    sv1_port: n.sv1_port,
                     sv2_port: n.sv2_port,
                     region: format!("{:?}", n.region),
                     miner_count: n.miner_count,
@@ -462,6 +463,7 @@ async fn handle_health(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 struct NodeSummary {
     node_id: String,
     host: String,
+    sv1_port: u16,
     sv2_port: u16,
     region: String,
     miner_count: u32,
