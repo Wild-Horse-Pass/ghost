@@ -58,7 +58,7 @@ bool WalletRegistry::Initialize()
     }
 
     m_impl->db_path = m_data_dir / "wallets.db";
-    int rc = sqlite3_open(m_impl->db_path.string().c_str(), &m_impl->db);
+    int rc = sqlite3_open(fs::PathToString(m_impl->db_path).c_str(), &m_impl->db);
     if (rc != SQLITE_OK) {
         LogPrintf("GSP: Failed to open wallet database: %s\n",
                   sqlite3_errmsg(m_impl->db));
@@ -83,7 +83,7 @@ bool WalletRegistry::Initialize()
         return false;
     }
 
-    LogPrintf("GSP: Wallet registry initialized at %s\n", m_impl->db_path.string());
+    LogPrintf("GSP: Wallet registry initialized at %s\n", fs::PathToString(m_impl->db_path));
     return true;
 }
 

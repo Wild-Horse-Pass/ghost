@@ -175,6 +175,17 @@ public:
                                const std::string& lock_id,
                                const std::string& state);
 
+    // Message handlers (public for dispatch function access)
+    std::string HandleAuthenticate(WsConnection& conn, const std::string& payload);
+    std::string HandleGetBalance(WsConnection& conn, const std::string& payload);
+    std::string HandleGetUtxos(WsConnection& conn, const std::string& payload);
+    std::string HandleGetGhostLocks(WsConnection& conn, const std::string& payload);
+    std::string HandleGetTransactions(WsConnection& conn, const std::string& payload);
+    std::string HandleGetBlockFilter(WsConnection& conn, const std::string& payload);
+    std::string HandleGetBlock(WsConnection& conn, const std::string& payload);
+    std::string HandleSubscribe(WsConnection& conn, WsMessageType sub_type);
+    std::string HandleUnsubscribe(WsConnection& conn, WsMessageType sub_type);
+
 private:
     node::NodeContext& m_node;
     JwtManager& m_jwt;
@@ -186,22 +197,32 @@ private:
     class Impl;
     std::unique_ptr<Impl> m_impl;
 
-    // Message handlers
-    std::string HandleAuthenticate(WsConnection& conn, const std::string& payload);
-    std::string HandleGetBalance(WsConnection& conn, const std::string& payload);
-    std::string HandleGetUtxos(WsConnection& conn, const std::string& payload);
-    std::string HandleGetGhostLocks(WsConnection& conn, const std::string& payload);
-    std::string HandleGetTransactions(WsConnection& conn, const std::string& payload);
-    std::string HandleGetBlockFilter(WsConnection& conn, const std::string& payload);
-    std::string HandleGetBlock(WsConnection& conn, const std::string& payload);
-    std::string HandleSubscribe(WsConnection& conn, WsMessageType sub_type);
-    std::string HandleUnsubscribe(WsConnection& conn, WsMessageType sub_type);
+    friend std::string DispatchMessage(WsServer& server, WsConnection& conn, const std::string& message);
+    friend uint64_t CreateConnection(WsServer::Impl& impl, const std::string& remote_addr);
+    friend void RemoveConnection(WsServer::Impl& impl, uint64_t conn_id);
+    friend WsConnection* GetConnection(WsServer::Impl& impl, uint64_t conn_id);
 };
 
 /**
  * Convert WebSocket message type to string (for logging).
  */
 std::string WsMessageTypeToString(WsMessageType type);
+
+/**
+ * Dispatch an incoming WebSocket message to the appropriate handler.
+ * @param server The WebSocket server instance
+ * @param conn The connection that sent the message
+ * @param message The raw JSON message string
+ * @return JSON response string
+ */
+std::string DispatchMessage(WsServer& server, WsConnection& conn, const std::string& message);
+
+/**
+ * Connection management helpers.
+ */
+uint64_t CreateConnection(WsServer::Impl& impl, const std::string& remote_addr);
+void RemoveConnection(WsServer::Impl& impl, uint64_t conn_id);
+WsConnection* GetConnection(WsServer::Impl& impl, uint64_t conn_id);
 
 } // namespace gsp
 

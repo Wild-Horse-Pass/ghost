@@ -12,9 +12,12 @@
 #include <filesystem>
 #include <util/fs.h>
 
+// Forward declarations
 namespace node {
 struct NodeContext;
 } // namespace node
+
+class HTTPRequest;  // Global HTTPRequest from httpserver.h
 
 namespace gsp {
 
@@ -121,24 +124,15 @@ private:
     class Impl;
     std::unique_ptr<Impl> m_impl;
 
-    // HTTP handlers using HTTPRequest wrapper
-    bool HandleHealthHTTP(class HTTPRequest* req);
-    bool HandleInfoHTTP(class HTTPRequest* req);
-    bool HandleRegisterHTTP(class HTTPRequest* req);
-    bool HandleSessionHTTP(class HTTPRequest* req);
-    bool HandleFilterHTTP(class HTTPRequest* req, int height);
-    bool HandleFilterBatchHTTP(class HTTPRequest* req);
-    bool HandleFilterHeadersHTTP(class HTTPRequest* req);
-    bool HandleBlockHTTP(class HTTPRequest* req, const std::string& hash);
-
-    // Legacy evhttp handlers (deprecated)
-    bool HandleHealth(struct evhttp_request* req);
-    bool HandleInfo(struct evhttp_request* req);
-    bool HandleRegister(struct evhttp_request* req);
-    bool HandleSession(struct evhttp_request* req);
-    bool HandleFilter(struct evhttp_request* req, int height);
-    bool HandleFilterHeaders(struct evhttp_request* req);
-    bool HandleBlock(struct evhttp_request* req, const std::string& hash);
+    // HTTP handlers using HTTPRequest wrapper (global ::HTTPRequest from httpserver.h)
+    bool HandleHealthHTTP(::HTTPRequest* req);
+    bool HandleInfoHTTP(::HTTPRequest* req);
+    bool HandleRegisterHTTP(::HTTPRequest* req);
+    bool HandleSessionHTTP(::HTTPRequest* req);
+    bool HandleFilterHTTP(::HTTPRequest* req, int height);
+    bool HandleFilterBatchHTTP(::HTTPRequest* req);
+    bool HandleFilterHeadersHTTP(::HTTPRequest* req);
+    bool HandleBlockHTTP(::HTTPRequest* req, const std::string& hash);
 };
 
 /**

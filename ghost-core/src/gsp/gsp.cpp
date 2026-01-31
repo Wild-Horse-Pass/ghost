@@ -13,48 +13,65 @@
 #include <httpserver.h>
 #include <index/blockfilterindex.h>
 #include <logging.h>
+#include <netaddress.h>
 #include <node/blockstorage.h>
 #include <node/context.h>
 #include <primitives/block.h>
+#include <random.h>
+#include <rpc/protocol.h>
 #include <serialize.h>
 #include <streams.h>
 #include <univalue.h>
 #include <util/time.h>
 #include <util/strencodings.h>
 #include <validation.h>
-
-#include <event2/http.h>
-#include <event2/buffer.h>
-#include <event2/keyvalq_struct.h>
+#include <validationinterface.h>
 
 namespace gsp {
 
-// HTTP helper functions
-static void SendJsonResponse(evhttp_request* req, int code, const UniValue& json)
-{
-    struct evbuffer* buf = evbuffer_new();
-    if (!buf) return;
+/**
+ * GSP Notification Handler - Receives validation events and pushes to WebSocket clients.
+ * Implements CValidationInterface to get notified of new blocks, transactions, etc.
+ */
+class GspNotificationHandler : public CValidationInterface {
+public:
+    explicit GspNotificationHandler(WsServer* ws_server) : m_ws_server(ws_server) {}
 
-    std::string body = json.write();
-    evbuffer_add(buf, body.data(), body.size());
+protected:
+    void UpdatedBlockTip(const CBlockIndex* pindexNew, const CBlockIndex* pindexFork, bool fInitialDownload) override
+    {
+        // Don't send notifications during initial sync
+        if (fInitialDownload || !m_ws_server) return;
 
-    evhttp_add_header(evhttp_request_get_output_headers(req), "Content-Type", "application/json");
-    evhttp_send_reply(req, code, nullptr, buf);
-    evbuffer_free(buf);
-}
+        if (pindexNew) {
+            LogPrintf("GSP: New block tip at height %d, notifying WebSocket clients\n", pindexNew->nHeight);
+            m_ws_server->NotifyNewBlock(pindexNew->GetBlockHash().GetHex(), pindexNew->nHeight);
+        }
+    }
 
-static std::string GetRequestBody(evhttp_request* req)
-{
-    struct evbuffer* buf = evhttp_request_get_input_buffer(req);
-    if (!buf) return "";
+    void BlockConnected(ChainstateRole role, const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex) override
+    {
+        // Only notify for the active chainstate
+        if (role != ChainstateRole::NORMAL || !m_ws_server) return;
 
-    size_t len = evbuffer_get_length(buf);
-    if (len == 0) return "";
+        // In a full implementation, scan the block for transactions relevant to
+        // subscribed wallets and send balance/payment notifications
+        LogPrintf("GSP: Block %s connected at height %d\n",
+                  pindex->GetBlockHash().GetHex().substr(0, 16), pindex->nHeight);
+    }
 
-    std::vector<char> data(len);
-    evbuffer_copyout(buf, data.data(), len);
-    return std::string(data.begin(), data.end());
-}
+    void TransactionAddedToMempool(const NewMempoolTransactionInfo& tx, uint64_t mempool_sequence) override
+    {
+        // In a full implementation, check if this transaction is relevant to
+        // any subscribed wallets and send payment notifications
+        if (!m_ws_server) return;
+
+        // Note: We don't log every mempool tx as it would be too noisy
+    }
+
+private:
+    WsServer* m_ws_server;
+};
 
 // Implementation class
 class GspServer::Impl {
@@ -63,6 +80,7 @@ public:
     std::unique_ptr<WalletRegistry> registry;
     std::unique_ptr<WsServer> ws_server;
     std::unique_ptr<AuthRateLimiter> rate_limiter;
+    std::unique_ptr<GspNotificationHandler> notification_handler;
 };
 
 GspServer::GspServer(node::NodeContext& node, const GspConfig& config)
@@ -186,6 +204,13 @@ bool GspServer::Start()
         return false;
     }
 
+    // Register for validation events (new blocks, transactions)
+    if (m_node.validation_signals) {
+        m_impl->notification_handler = std::make_unique<GspNotificationHandler>(m_impl->ws_server.get());
+        m_node.validation_signals->RegisterValidationInterface(m_impl->notification_handler.get());
+        LogPrintf("GSP: Registered validation interface for push notifications\n");
+    }
+
     m_start_time = GetTime();
     m_running.store(true);
     LogPrintf("GSP: Server started successfully\n");
@@ -199,6 +224,13 @@ void GspServer::Stop()
     }
 
     LogPrintf("GSP: Stopping server...\n");
+
+    // Unregister validation interface first
+    if (m_impl->notification_handler && m_node.validation_signals) {
+        m_node.validation_signals->UnregisterValidationInterface(m_impl->notification_handler.get());
+        m_impl->notification_handler.reset();
+        LogPrintf("GSP: Unregistered validation interface\n");
+    }
 
     // Stop WebSocket server
     if (m_impl->ws_server) {
@@ -309,7 +341,7 @@ bool GspServer::HandleRegisterHTTP(HTTPRequest* req)
             error.pushKV("error", "rate_limit_exceeded");
             error.pushKV("message", "Too many registration attempts");
             req->WriteHeader("Content-Type", "application/json");
-            req->WriteReply(HTTP_TOO_MANY_REQUESTS, error.write());
+            req->WriteReply(429, error.write());
             return true;
         }
     }
@@ -339,7 +371,8 @@ bool GspServer::HandleRegisterHTTP(HTTPRequest* req)
     WalletProof proof;
     // Parse pubkey
     std::vector<unsigned char> pubkey_bytes = ParseHex(params["pubkey"].get_str());
-    if (!proof.pubkey.Set(pubkey_bytes.begin(), pubkey_bytes.end())) {
+    proof.pubkey.Set(pubkey_bytes.begin(), pubkey_bytes.end());
+    if (!proof.pubkey.IsValid()) {
         UniValue error(UniValue::VOBJ);
         error.pushKV("error", "invalid_pubkey");
         req->WriteHeader("Content-Type", "application/json");
@@ -349,7 +382,7 @@ bool GspServer::HandleRegisterHTTP(HTTPRequest* req)
 
     proof.challenge = params["challenge"].get_str();
     proof.signature = ParseHex(params["signature"].get_str());
-    proof.timestamp = params["timestamp"].get_int64();
+    proof.timestamp = params["timestamp"].getInt<int64_t>();
 
     // Verify timestamp
     if (!proof.IsTimestampValid()) {
@@ -409,7 +442,7 @@ bool GspServer::HandleSessionHTTP(HTTPRequest* req)
             UniValue error(UniValue::VOBJ);
             error.pushKV("error", "rate_limit_exceeded");
             req->WriteHeader("Content-Type", "application/json");
-            req->WriteReply(HTTP_TOO_MANY_REQUESTS, error.write());
+            req->WriteReply(429, error.write());
             return true;
         }
     }
@@ -451,7 +484,7 @@ bool GspServer::HandleSessionHTTP(HTTPRequest* req)
     proof.pubkey = wallet->pubkey;
     proof.challenge = params["challenge"].get_str();
     proof.signature = ParseHex(params["signature"].get_str());
-    proof.timestamp = params["timestamp"].get_int64();
+    proof.timestamp = params["timestamp"].getInt<int64_t>();
 
     if (!proof.IsTimestampValid() || !proof.Verify()) {
         UniValue error(UniValue::VOBJ);
@@ -753,7 +786,7 @@ bool GspServer::HandleBlockHTTP(HTTPRequest* req, const std::string& hash_str)
     CBlock block;
     {
         LOCK(cs_main);
-        if (!m_node.chainman->m_blockman.ReadBlockFromDisk(block, *block_index)) {
+        if (!m_node.chainman->m_blockman.ReadBlock(block, *block_index)) {
             UniValue error(UniValue::VOBJ);
             error.pushKV("error", "block_read_failed");
             error.pushKV("message", "Failed to read block from disk");
@@ -775,232 +808,6 @@ bool GspServer::HandleBlockHTTP(HTTPRequest* req, const std::string& hash_str)
 
     req->WriteHeader("Content-Type", "application/json");
     req->WriteReply(HTTP_OK, result.write());
-    return true;
-}
-
-// Deprecated evhttp_request handlers (kept for reference)
-bool GspServer::HandleHealth(evhttp_request* req)
-{
-    UniValue result(UniValue::VOBJ);
-    result.pushKV("status", "ok");
-    result.pushKV("version", GSP_VERSION);
-    SendJsonResponse(req, HTTP_OK, result);
-    return true;
-}
-
-bool GspServer::HandleInfo(evhttp_request* req)
-{
-    ServerInfo info = GetServerInfo();
-
-    UniValue result(UniValue::VOBJ);
-    result.pushKV("protocol_version", info.protocol_version);
-    result.pushKV("network", info.network);
-    result.pushKV("connections", (int)info.connections);
-    result.pushKV("registered_wallets", (int)info.registered_wallets);
-    result.pushKV("sync_status", info.sync_status);
-    result.pushKV("uptime_secs", (int64_t)info.uptime_secs);
-
-    SendJsonResponse(req, HTTP_OK, result);
-    return true;
-}
-
-bool GspServer::HandleRegister(evhttp_request* req)
-{
-    // Implementation delegated to HandleRegisterHTTP
-    return false;
-}
-
-bool GspServer::HandleSession(evhttp_request* req)
-{
-    // Implementation delegated to HandleSessionHTTP
-    return false;
-}
-
-bool GspServer::HandleFilter(evhttp_request* req, int height)
-{
-    // BIP-157 compact block filter retrieval
-    // This is the privacy-preserving way for light wallets to find their transactions
-
-    if (!m_node.chainman) {
-        UniValue error(UniValue::VOBJ);
-        error.pushKV("error", "node_not_ready");
-        error.pushKV("message", "Chain manager not initialized");
-        SendJsonResponse(req, HTTP_SERVICE_UNAVAILABLE, error);
-        return true;
-    }
-
-    // Get the basic filter index
-    BlockFilterIndex* filter_index = GetBlockFilterIndex(BlockFilterType::BASIC);
-    if (!filter_index) {
-        UniValue error(UniValue::VOBJ);
-        error.pushKV("error", "filter_index_not_enabled");
-        error.pushKV("message", "Block filter index not enabled. Start node with -blockfilterindex=basic");
-        SendJsonResponse(req, HTTP_SERVICE_UNAVAILABLE, error);
-        return true;
-    }
-
-    // Get block at height
-    const CBlockIndex* block_index;
-    {
-        LOCK(cs_main);
-        block_index = m_node.chainman->ActiveChain()[height];
-        if (!block_index) {
-            UniValue error(UniValue::VOBJ);
-            error.pushKV("error", "block_not_found");
-            error.pushKV("message", "Block not found at height " + std::to_string(height));
-            SendJsonResponse(req, HTTP_NOT_FOUND, error);
-            return true;
-        }
-    }
-
-    // Look up the filter
-    BlockFilter filter;
-    if (!filter_index->LookupFilter(block_index, filter)) {
-        UniValue error(UniValue::VOBJ);
-        error.pushKV("error", "filter_not_found");
-        if (!filter_index->BlockUntilSyncedToCurrentChain()) {
-            error.pushKV("message", "Block filters still being indexed");
-        } else {
-            error.pushKV("message", "Filter not found (index may be corrupted)");
-        }
-        SendJsonResponse(req, HTTP_NOT_FOUND, error);
-        return true;
-    }
-
-    // Look up the filter header
-    uint256 filter_header;
-    if (!filter_index->LookupFilterHeader(block_index, filter_header)) {
-        filter_header.SetNull();
-    }
-
-    // Return the filter data
-    UniValue result(UniValue::VOBJ);
-    result.pushKV("height", height);
-    result.pushKV("block_hash", block_index->GetBlockHash().GetHex());
-    result.pushKV("filter", HexStr(filter.GetEncodedFilter()));
-    result.pushKV("filter_header", filter_header.GetHex());
-    result.pushKV("filter_type", "basic");
-
-    SendJsonResponse(req, HTTP_OK, result);
-    return true;
-}
-
-bool GspServer::HandleFilterHeaders(evhttp_request* req)
-{
-    // BIP-157 filter header chain retrieval
-    // Light wallets use this to efficiently sync filter headers
-
-    if (!m_node.chainman) {
-        UniValue error(UniValue::VOBJ);
-        error.pushKV("error", "node_not_ready");
-        SendJsonResponse(req, HTTP_SERVICE_UNAVAILABLE, error);
-        return true;
-    }
-
-    BlockFilterIndex* filter_index = GetBlockFilterIndex(BlockFilterType::BASIC);
-    if (!filter_index) {
-        UniValue error(UniValue::VOBJ);
-        error.pushKV("error", "filter_index_not_enabled");
-        error.pushKV("message", "Block filter index not enabled");
-        SendJsonResponse(req, HTTP_SERVICE_UNAVAILABLE, error);
-        return true;
-    }
-
-    // Get current chain tip height
-    int tip_height;
-    {
-        LOCK(cs_main);
-        tip_height = m_node.chainman->ActiveChain().Height();
-    }
-
-    // Return checkpoint headers (every 1000 blocks per BIP-157)
-    UniValue headers(UniValue::VARR);
-    {
-        LOCK(cs_main);
-        for (int h = 0; h <= tip_height; h += CFCHECKPT_INTERVAL) {
-            const CBlockIndex* block_index = m_node.chainman->ActiveChain()[h];
-            if (!block_index) continue;
-
-            uint256 filter_header;
-            if (filter_index->LookupFilterHeader(block_index, filter_header)) {
-                UniValue header_obj(UniValue::VOBJ);
-                header_obj.pushKV("height", h);
-                header_obj.pushKV("block_hash", block_index->GetBlockHash().GetHex());
-                header_obj.pushKV("filter_header", filter_header.GetHex());
-                headers.push_back(header_obj);
-            }
-        }
-    }
-
-    UniValue result(UniValue::VOBJ);
-    result.pushKV("filter_type", "basic");
-    result.pushKV("tip_height", tip_height);
-    result.pushKV("checkpoint_interval", CFCHECKPT_INTERVAL);
-    result.pushKV("headers", headers);
-
-    SendJsonResponse(req, HTTP_OK, result);
-    return true;
-}
-
-bool GspServer::HandleBlock(evhttp_request* req, const std::string& hash_str)
-{
-    // Block retrieval for light wallets to extract their transactions
-    // After a filter match, the wallet requests the full block to scan locally
-
-    if (!m_node.chainman) {
-        UniValue error(UniValue::VOBJ);
-        error.pushKV("error", "node_not_ready");
-        SendJsonResponse(req, HTTP_SERVICE_UNAVAILABLE, error);
-        return true;
-    }
-
-    // Parse block hash
-    auto block_hash = uint256::FromHex(hash_str);
-    if (!block_hash) {
-        UniValue error(UniValue::VOBJ);
-        error.pushKV("error", "invalid_hash");
-        error.pushKV("message", "Invalid block hash format");
-        SendJsonResponse(req, HTTP_BAD_REQUEST, error);
-        return true;
-    }
-
-    // Find block index
-    const CBlockIndex* block_index;
-    {
-        LOCK(cs_main);
-        block_index = m_node.chainman->m_blockman.LookupBlockIndex(*block_hash);
-        if (!block_index) {
-            UniValue error(UniValue::VOBJ);
-            error.pushKV("error", "block_not_found");
-            SendJsonResponse(req, HTTP_NOT_FOUND, error);
-            return true;
-        }
-    }
-
-    // Read block from disk
-    CBlock block;
-    {
-        LOCK(cs_main);
-        if (!m_node.chainman->m_blockman.ReadBlockFromDisk(block, *block_index)) {
-            UniValue error(UniValue::VOBJ);
-            error.pushKV("error", "block_read_failed");
-            error.pushKV("message", "Failed to read block from disk");
-            SendJsonResponse(req, HTTP_INTERNAL_SERVER_ERROR, error);
-            return true;
-        }
-    }
-
-    // Serialize block to hex
-    DataStream ss;
-    ss << TX_WITH_WITNESS(block);
-
-    UniValue result(UniValue::VOBJ);
-    result.pushKV("hash", block_hash->GetHex());
-    result.pushKV("height", block_index->nHeight);
-    result.pushKV("block", HexStr(ss));
-    result.pushKV("size", (int)ss.size());
-
-    SendJsonResponse(req, HTTP_OK, result);
     return true;
 }
 
