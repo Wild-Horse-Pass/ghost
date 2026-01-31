@@ -1,0 +1,25 @@
+[Unit]
+Description=Ghost Registry - Pool Node Registry & DNS Load Balancer
+Documentation=https://github.com/bitcoin-ghost
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ghost
+Group=ghost
+Environment="CLOUDFLARE_API_TOKEN=your_cloudflare_api_token_here"
+ExecStart=/usr/local/bin/ghost-registry --config /etc/ghost/registry.toml
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ghost-registry
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

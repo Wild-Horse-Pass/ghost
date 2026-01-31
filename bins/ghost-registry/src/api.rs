@@ -1,0 +1,502 @@
+//|======================================================================================================================|
+//|                                                                                                                      |
+//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+//|       ░              ░                                                                                               |
+//|----------------------------------------------------------------------------------------------------------------------|
+//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|----------------------------------------------------------------------------------------------------------------------|
+//| PROJECT: Bitcoin Ghost                                                                                               |
+//| REPO: https://github.com/bitcoin-ghost                                                                               |
+//| WEB: https://bitcoinghost.org/                                                                                       |
+//| LICENSE: MIT                                                                                                         |
+//| FILE: api.rs                                                                                                         |
+//|======================================================================================================================|
+
+//! HTTP API endpoints for node registration and management
+
+use crate::config::HealthConfig;
+use crate::db::{PoolNode, RegistryDb};
+use crate::health_checker::HealthChecker;
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{delete, get, post},
+    Json, Router,
+};
+use bitcoin::secp256k1::{Message, PublicKey, Secp256k1};
+use chrono::Utc;
+use ghost_common::config::Region;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{debug, info, warn};
+
+/// Shared application state
+pub struct AppState {
+    pub db: Arc<RegistryDb>,
+    pub health_checker: Arc<HealthChecker>,
+    pub health_config: HealthConfig,
+}
+
+/// Node registration request (matches ghost-pool registry.rs)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeRegistration {
+    pub node_id: String,
+    pub host: String,
+    pub sv1_port: u16,
+    pub sv2_port: u16,
+    pub region: Region,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
+    pub max_miners: u32,
+    pub signature: String,
+    pub timestamp: u64,
+}
+
+/// Node heartbeat request (matches ghost-pool registry.rs)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeHeartbeat {
+    pub node_id: String,
+    pub miner_count: u32,
+    pub max_miners: u32,
+    pub load_percent: u8,
+    pub cpu_percent: u8,
+    pub memory_percent: u8,
+    pub share_latency_ms: u16,
+    pub bandwidth_percent: u8,
+    pub capacity_state: String,
+    pub accepting_miners: bool,
+    pub signature: String,
+    pub timestamp: u64,
+}
+
+/// Node deregistration request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeDeregistration {
+    pub node_id: String,
+    pub signature: String,
+    pub timestamp: u64,
+}
+
+/// API response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiResponse {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+impl ApiResponse {
+    pub fn ok() -> Self {
+        Self {
+            status: "ok".to_string(),
+            error: None,
+            data: None,
+        }
+    }
+
+    pub fn ok_with_data(data: impl Serialize) -> Self {
+        Self {
+            status: "ok".to_string(),
+            error: None,
+            data: Some(serde_json::to_value(data).unwrap_or(serde_json::Value::Null)),
+        }
+    }
+
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            status: "error".to_string(),
+            error: Some(message.into()),
+            data: None,
+        }
+    }
+}
+
+/// Build the API router
+pub fn build_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/api/v1/nodes/register", post(handle_register))
+        .route("/api/v1/nodes/heartbeat", post(handle_heartbeat))
+        .route("/api/v1/nodes/:node_id", delete(handle_deregister))
+        .route("/api/v1/nodes", get(handle_list_nodes))
+        .route("/api/v1/regions", get(handle_list_regions))
+        .route("/api/v1/health", get(handle_health))
+        .route("/health", get(handle_health))
+        .with_state(state)
+}
+
+/// Handle node registration
+async fn handle_register(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<NodeRegistration>,
+) -> impl IntoResponse {
+    // Validate timestamp (prevent replay attacks)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let drift = if now > req.timestamp {
+        now - req.timestamp
+    } else {
+        req.timestamp - now
+    };
+
+    if drift > state.health_config.max_timestamp_drift_secs {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::error("Timestamp too far from server time")),
+        );
+    }
+
+    // Verify signature
+    let message = format!(
+        "ghost:register:{}:{}:{}:{}:{}",
+        req.node_id, req.host, req.sv1_port, req.sv2_port, req.timestamp
+    );
+
+    if let Err(e) = verify_signature(&req.node_id, &message, &req.signature) {
+        warn!(
+            node_id = %req.node_id,
+            error = %e,
+            "Invalid registration signature"
+        );
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiResponse::error(format!("Invalid signature: {}", e))),
+        );
+    }
+
+    // Check rate limiting (if node already exists)
+    if let Ok(Some(existing)) = state.db.get_node(&req.node_id) {
+        let since_registered = (Utc::now() - existing.registered_at).num_seconds();
+        if since_registered < state.health_config.registration_rate_limit_secs as i64 {
+            debug!(
+                node_id = %req.node_id,
+                seconds_remaining = state.health_config.registration_rate_limit_secs as i64 - since_registered,
+                "Rate limited registration"
+            );
+            // Allow re-registration but don't update registered_at
+        }
+    }
+
+    // Create node record
+    let node = PoolNode {
+        node_id: req.node_id.clone(),
+        host: req.host,
+        sv1_port: req.sv1_port,
+        sv2_port: req.sv2_port,
+        region: req.region,
+        latitude: req.latitude,
+        longitude: req.longitude,
+        max_miners: req.max_miners,
+        miner_count: 0,
+        load_percent: 0,
+        cpu_percent: 0,
+        memory_percent: 0,
+        healthy: true,
+        accepting_miners: true,
+        excluded_for_load: false,
+        registered_at: Utc::now(),
+        last_heartbeat: Utc::now(),
+    };
+
+    // Store in database
+    if let Err(e) = state.db.upsert_node(&node) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Database error: {}", e))),
+        );
+    }
+
+    info!(
+        node_id = %req.node_id,
+        host = %node.host,
+        region = %format!("{:?}", node.region),
+        "Node registered"
+    );
+
+    (StatusCode::OK, Json(ApiResponse::ok()))
+}
+
+/// Handle node heartbeat
+async fn handle_heartbeat(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<NodeHeartbeat>,
+) -> impl IntoResponse {
+    // Validate timestamp
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    let drift = if now > req.timestamp {
+        now - req.timestamp
+    } else {
+        req.timestamp - now
+    };
+
+    if drift > state.health_config.max_timestamp_drift_secs {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse::error("Timestamp too far from server time")),
+        );
+    }
+
+    // Verify signature
+    let message = format!(
+        "ghost:heartbeat:{}:{}:{}:{}",
+        req.node_id, req.miner_count, req.load_percent, req.timestamp
+    );
+
+    if let Err(e) = verify_signature(&req.node_id, &message, &req.signature) {
+        warn!(
+            node_id = %req.node_id,
+            error = %e,
+            "Invalid heartbeat signature"
+        );
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiResponse::error(format!("Invalid signature: {}", e))),
+        );
+    }
+
+    // Check if node exists
+    match state.db.get_node(&req.node_id) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiResponse::error("Node not registered")),
+            );
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error(format!("Database error: {}", e))),
+            );
+        }
+    }
+
+    // Update heartbeat
+    if let Err(e) = state.db.update_heartbeat(
+        &req.node_id,
+        req.miner_count,
+        req.load_percent,
+        req.cpu_percent,
+        req.memory_percent,
+        req.accepting_miners,
+    ) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Database error: {}", e))),
+        );
+    }
+
+    debug!(
+        node_id = %req.node_id,
+        miners = req.miner_count,
+        load = req.load_percent,
+        "Heartbeat received"
+    );
+
+    (StatusCode::OK, Json(ApiResponse::ok()))
+}
+
+/// Handle node deregistration
+async fn handle_deregister(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+) -> impl IntoResponse {
+    // Note: In production, you'd want to verify a signature here too
+    // For now we allow deletion by node_id
+
+    match state.db.delete_node(&node_id) {
+        Ok(true) => {
+            info!(node_id = %node_id, "Node deregistered");
+            (StatusCode::OK, Json(ApiResponse::ok()))
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::error("Node not found")),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Database error: {}", e))),
+        ),
+    }
+}
+
+/// Handle list nodes (admin endpoint)
+async fn handle_list_nodes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.db.get_all_nodes() {
+        Ok(nodes) => {
+            let response = nodes
+                .into_iter()
+                .map(|n| NodeSummary {
+                    node_id: n.node_id,
+                    host: n.host,
+                    sv2_port: n.sv2_port,
+                    region: format!("{:?}", n.region),
+                    miner_count: n.miner_count,
+                    max_miners: n.max_miners,
+                    load_percent: n.load_percent,
+                    healthy: n.healthy,
+                    last_heartbeat: n.last_heartbeat.to_rfc3339(),
+                })
+                .collect::<Vec<_>>();
+
+            (StatusCode::OK, Json(ApiResponse::ok_with_data(response)))
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Database error: {}", e))),
+        ),
+    }
+}
+
+/// Handle list regions
+async fn handle_list_regions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.db.get_region_stats() {
+        Ok(stats) => (StatusCode::OK, Json(ApiResponse::ok_with_data(stats))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Database error: {}", e))),
+        ),
+    }
+}
+
+/// Handle health check
+async fn handle_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.health_checker.get_health_summary() {
+        Ok(summary) => (StatusCode::OK, Json(ApiResponse::ok_with_data(summary))),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiResponse::error(format!("Health check failed: {}", e))),
+        ),
+    }
+}
+
+/// Node summary for list endpoint
+#[derive(Debug, Serialize, Deserialize)]
+struct NodeSummary {
+    node_id: String,
+    host: String,
+    sv2_port: u16,
+    region: String,
+    miner_count: u32,
+    max_miners: u32,
+    load_percent: u8,
+    healthy: bool,
+    last_heartbeat: String,
+}
+
+/// Verify secp256k1 signature
+fn verify_signature(public_key_hex: &str, message: &str, signature_hex: &str) -> Result<(), String> {
+    let secp = Secp256k1::verification_only();
+
+    // Parse public key
+    let pubkey_bytes =
+        hex::decode(public_key_hex).map_err(|e| format!("Invalid public key hex: {}", e))?;
+
+    let pubkey =
+        PublicKey::from_slice(&pubkey_bytes).map_err(|e| format!("Invalid public key: {}", e))?;
+
+    // Hash the message
+    let mut hasher = Sha256::new();
+    hasher.update(message.as_bytes());
+    let hash: [u8; 32] = hasher.finalize().into();
+
+    // Parse signature
+    let sig_bytes =
+        hex::decode(signature_hex).map_err(|e| format!("Invalid signature hex: {}", e))?;
+
+    let signature = bitcoin::secp256k1::ecdsa::Signature::from_compact(&sig_bytes)
+        .map_err(|e| format!("Invalid signature: {}", e))?;
+
+    // Verify
+    let msg = Message::from_digest(hash);
+    secp.verify_ecdsa(&msg, &signature, &pubkey)
+        .map_err(|e| format!("Signature verification failed: {}", e))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use secp256k1::{Secp256k1, SecretKey};
+    use rand::rngs::OsRng;
+
+    #[test]
+    fn test_signature_verification() {
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::new(&mut OsRng);
+        let public_key = secp256k1::PublicKey::from_secret_key(&secp, &secret_key);
+
+        let message = "ghost:register:test:1.2.3.4:3333:34255:1234567890";
+
+        // Hash and sign
+        let mut hasher = Sha256::new();
+        hasher.update(message.as_bytes());
+        let hash: [u8; 32] = hasher.finalize().into();
+        let msg = secp256k1::Message::from_digest(hash);
+        let sig = secp.sign_ecdsa(&msg, &secret_key);
+
+        let pubkey_hex = hex::encode(public_key.serialize());
+        let sig_hex = hex::encode(sig.serialize_compact());
+
+        // Verify
+        let result = verify_signature(&pubkey_hex, message, &sig_hex);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_invalid_signature() {
+        let secp = Secp256k1::new();
+        let secret_key1 = SecretKey::new(&mut OsRng);
+        let secret_key2 = SecretKey::new(&mut OsRng);
+        let public_key1 = secp256k1::PublicKey::from_secret_key(&secp, &secret_key1);
+
+        let message = "ghost:register:test:1.2.3.4:3333:34255:1234567890";
+
+        // Sign with wrong key (secret_key2)
+        let mut hasher = Sha256::new();
+        hasher.update(message.as_bytes());
+        let hash: [u8; 32] = hasher.finalize().into();
+        let msg = secp256k1::Message::from_digest(hash);
+        let sig = secp.sign_ecdsa(&msg, &secret_key2);
+
+        // Verify with public_key1 should fail
+        let pubkey_hex = hex::encode(public_key1.serialize());
+        let sig_hex = hex::encode(sig.serialize_compact());
+
+        let result = verify_signature(&pubkey_hex, message, &sig_hex);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_api_response() {
+        let resp = ApiResponse::ok();
+        assert_eq!(resp.status, "ok");
+        assert!(resp.error.is_none());
+
+        let resp = ApiResponse::error("test error");
+        assert_eq!(resp.status, "error");
+        assert_eq!(resp.error, Some("test error".to_string()));
+    }
+}
