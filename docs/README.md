@@ -39,6 +39,7 @@ Complete documentation for the Bitcoin Ghost network - a privacy-focused Bitcoin
 |----------|-------------|
 | [Specification](./SPECIFICATION.md) | Complete technical specification |
 | [Ghost Core Integration](./GHOST_CORE_INTEGRATION.md) | Bitcoin Core modifications |
+| [Mining Load Balancing](./MINING_LOAD_BALANCING.md) | DNS-based miner routing and load distribution |
 | [Security Audit](./SECURITY_AUDIT.md) | Security review and recommendations |
 | [Testing Plan](./TESTING_PLAN.md) | Test strategy and coverage |
 | [Troubleshooting](./TROUBLESHOOTING.md) | Common issues and solutions |
@@ -172,7 +173,8 @@ bitcoin-ghost/
 ├── bins/                   # Rust binaries
 │   ├── ghost-light-wallet-cli/
 │   ├── ghost-light-wallet-tui/
-│   ├── ghost-pool/
+│   ├── ghost-pool/        # Mining pool node
+│   ├── ghost-registry/    # Pool load balancer registry
 │   └── ...
 ├── ghost-core/            # Modified Bitcoin Core
 └── docs/                  # Documentation
