@@ -54,6 +54,8 @@ members = [
     "bins/ghost-gsp",
     # Node Dashboard TUI
     "bins/ghost-node-tui",
+    # Registry service for load balancing
+    "bins/ghost-registry",
 ]
 # NOTE: Full Node Wallets (ghost-wallet-cli, ghost-wallet-tui) are built from
 # the bitcoin-ghost repository since they require ghostd and ghost-crypto.

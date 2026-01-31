@@ -1014,9 +1014,8 @@ async fn main() -> Result<()> {
     // WebSocket broadcast for miner events would need SRI integration
 
     // Start registry client for load balancer registration (if configured)
-    info!("Checking registry config: {:?}", config.registry.is_some());
-    if let Some(ref registry_config) = config.registry {
-        info!("Registry URL: {}", registry_config.url);
+    // Store registry client for deregistration on shutdown
+    let registry_client_for_shutdown: Option<Arc<RegistryClient>> = if let Some(ref registry_config) = config.registry {
         if !registry_config.url.is_empty() {
             let host = config
                 .network
@@ -1026,6 +1025,7 @@ async fn main() -> Result<()> {
 
             if host.is_empty() {
                 warn!("Registry configured but network.public_address is not set - skipping registration");
+                None
             } else if let Some(ref signing_key) = config.network.signing_key {
                 match RegistryClient::new(
                     signing_key,
@@ -1036,9 +1036,11 @@ async fn main() -> Result<()> {
                     config.network.max_miners,
                 ) {
                     Ok(registry_client) => {
+                        let registry_client = Arc::new(registry_client);
+                        let registry_for_task = Arc::clone(&registry_client);
                         let registry_shutdown = shutdown_tx.subscribe();
                         tokio::spawn(async move {
-                            registry_client
+                            registry_for_task
                                 .start(
                                     move || 0_u32, // Miner count from SRI (not tracked here)
                                     registry_shutdown,
@@ -1050,16 +1052,23 @@ async fn main() -> Result<()> {
                             "Registry client started (heartbeat every {}s)",
                             registry_config.heartbeat_interval_secs
                         );
+                        Some(registry_client)
                     }
                     Err(e) => {
                         error!("Failed to create registry client: {}", e);
+                        None
                     }
                 }
             } else {
                 warn!("Registry configured but network.signing_key is not set - skipping registration");
+                None
             }
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
 
     // Print startup summary
     info!("════════════════════════════════════════════════════════════════");
@@ -1098,6 +1107,14 @@ async fn main() -> Result<()> {
 
     info!("Shutting down Ghost Pool...");
     let _ = shutdown_tx.send(());
+
+    // Deregister from load balancer (if registered)
+    if let Some(registry_client) = registry_client_for_shutdown {
+        info!("Deregistering from load balancer...");
+        if let Err(e) = registry_client.deregister().await {
+            warn!("Failed to deregister from load balancer: {}", e);
+        }
+    }
 
     // Cleanup
     template_processor.stop();

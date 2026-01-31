@@ -557,23 +557,275 @@ async fn handle_submit_solution(
     );
 
     // Get the work state for this template
-    if let Some(work_state) = template_processor.current_work() {
-        // Reconstruct and submit block
-        // In a full implementation:
-        // 1. Reconstruct the full block from template + solution
-        // 2. Submit via Bitcoin Core RPC (submitblock)
-        // 3. Update RoundManager for payout tracking
+    let work_state = template_processor
+        .current_work()
+        .ok_or_else(|| anyhow::anyhow!("No active work state for block submission"))?;
 
-        info!(
-            "Would submit block at height {} to Bitcoin Core",
-            work_state.height
-        );
-
-        // TODO: Implement actual block submission
-        // template_processor.submit_block(solution).await?;
+    // Get the coinbase transaction from the solution
+    let coinbase_tx: &[u8] = solution.coinbase_tx.inner_as_ref();
+    if coinbase_tx.len() < 60 {
+        return Err(anyhow::anyhow!(
+            "Coinbase transaction too short: {} bytes",
+            coinbase_tx.len()
+        ));
     }
 
+    // Check if coinbase is witness or non-witness format
+    let is_witness = coinbase_tx.len() > 5 && coinbase_tx[4] == 0x00 && coinbase_tx[5] == 0x01;
+    info!(
+        "Submitting block at height {} with {} byte coinbase (witness={})",
+        work_state.height,
+        coinbase_tx.len(),
+        is_witness
+    );
+
+    // Log first bytes of coinbase for debugging
+    info!(
+        "Coinbase first 20 bytes: {}",
+        hex::encode(&coinbase_tx[..std::cmp::min(20, coinbase_tx.len())])
+    );
+
+    // Convert coinbase to non-witness format if needed (for TXID computation)
+    let coinbase_non_witness = strip_witness_if_present(coinbase_tx)?;
+
+    info!(
+        "Non-witness coinbase: {} bytes, first 20: {}",
+        coinbase_non_witness.len(),
+        hex::encode(&coinbase_non_witness[..std::cmp::min(20, coinbase_non_witness.len())])
+    );
+
+    // Compute coinbase TXID using bitcoin crate (same as SRI does)
+    // This ensures identical TXID computation
+    let coinbase_tx_parsed: bitcoin::Transaction =
+        bitcoin::consensus::deserialize(&coinbase_non_witness)
+            .map_err(|e| anyhow::anyhow!("Failed to parse coinbase: {}", e))?;
+    let txid = coinbase_tx_parsed.compute_txid();
+    let coinbase_txid: [u8; 32] = *txid.as_ref();
+    info!("Coinbase TXID (bitcoin crate): {}", txid);
+
+    // Compute merkle root from coinbase TXID and merkle branches
+    info!(
+        "Merkle branches count: {}",
+        work_state.merkle_branches.len()
+    );
+    let merkle_root = compute_merkle_root(&coinbase_txid, &work_state.merkle_branches);
+    info!("Computed merkle root: {}", hex::encode(&merkle_root));
+
+    // Build the 80-byte block header
+    let header = build_block_header(
+        solution.version,
+        &work_state.prev_hash,
+        &merkle_root,
+        solution.header_timestamp,
+        &work_state.nbits,
+        solution.header_nonce,
+    )?;
+
+    // Log full header for debugging
+    info!(
+        "Block header (80 bytes): {}",
+        hex::encode(&header)
+    );
+    // Compute block hash for verification
+    let block_hash = double_sha256(&header);
+    info!(
+        "Block hash (should match SRI): {}",
+        hex::encode(block_hash.iter().rev().copied().collect::<Vec<_>>())
+    );
+
+    // Submit the block to Bitcoin Core
+    template_processor
+        .submit_block(&coinbase_non_witness, &header)
+        .await?;
+
+    info!(
+        "Block at height {} submitted successfully!",
+        work_state.height
+    );
+
     Ok(())
+}
+
+/// Strip witness data from a coinbase transaction if present
+///
+/// Witness format: version(4) | marker(0x00) | flag(0x01) | inputs | outputs | locktime | witness
+/// Non-witness:    version(4) | inputs | outputs | locktime
+fn strip_witness_if_present(coinbase: &[u8]) -> anyhow::Result<Vec<u8>> {
+    if coinbase.len() < 10 {
+        return Err(anyhow::anyhow!("Coinbase too short"));
+    }
+
+    // Check for witness marker/flag at bytes 4-5
+    // Witness: marker=0x00, flag=0x01
+    // Non-witness: input_count (0x01 for coinbase with 1 input)
+    if coinbase[4] == 0x00 && coinbase[5] == 0x01 {
+        // This is witness format - need to strip marker/flag and witness data
+        debug!("Stripping witness data from coinbase");
+
+        let mut non_witness = Vec::with_capacity(coinbase.len());
+
+        // Copy version (bytes 0-3)
+        non_witness.extend_from_slice(&coinbase[0..4]);
+
+        // Skip marker/flag (bytes 4-5), copy the rest of the transaction
+        // We need to find where the witness data starts (after locktime)
+        // Parse the transaction to find the boundary
+
+        // Input count starts at byte 6 (after marker/flag)
+        let mut pos = 6;
+
+        // Read input count (varint) - just parse, don't copy yet
+        let (input_count, varint_len) = read_varint(&coinbase[pos..])?;
+        pos += varint_len;
+
+        // Skip inputs
+        for _ in 0..input_count {
+            // prev_txid (32) + prev_vout (4) = 36 bytes
+            pos += 36;
+
+            // scriptSig length (varint)
+            let (script_len, varint_len) = read_varint(&coinbase[pos..])?;
+            pos += varint_len;
+            pos += script_len as usize; // scriptSig
+
+            // sequence (4 bytes)
+            pos += 4;
+        }
+
+        // Read output count (varint)
+        let (output_count, varint_len) = read_varint(&coinbase[pos..])?;
+        let _outputs_start = pos;
+        pos += varint_len;
+
+        // Skip outputs
+        for _ in 0..output_count {
+            // value (8 bytes)
+            pos += 8;
+
+            // scriptPubKey length (varint)
+            let (script_len, varint_len) = read_varint(&coinbase[pos..])?;
+            pos += varint_len;
+            pos += script_len as usize; // scriptPubKey
+        }
+
+        // pos now points to locktime (4 bytes)
+        let locktime_end = pos + 4;
+
+        // Copy from input_count through locktime (skipping witness)
+        non_witness.extend_from_slice(&coinbase[6..locktime_end]);
+
+        Ok(non_witness)
+    } else {
+        // Already non-witness format
+        debug!("Coinbase already in non-witness format");
+        Ok(coinbase.to_vec())
+    }
+}
+
+/// Read a Bitcoin varint from a byte slice
+/// Returns (value, bytes_consumed)
+fn read_varint(data: &[u8]) -> anyhow::Result<(u64, usize)> {
+    if data.is_empty() {
+        return Err(anyhow::anyhow!("Empty data for varint"));
+    }
+
+    let first = data[0];
+    match first {
+        0..=0xfc => Ok((first as u64, 1)),
+        0xfd => {
+            if data.len() < 3 {
+                return Err(anyhow::anyhow!("Truncated varint (fd)"));
+            }
+            let val = u16::from_le_bytes([data[1], data[2]]);
+            Ok((val as u64, 3))
+        }
+        0xfe => {
+            if data.len() < 5 {
+                return Err(anyhow::anyhow!("Truncated varint (fe)"));
+            }
+            let val = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
+            Ok((val as u64, 5))
+        }
+        0xff => {
+            if data.len() < 9 {
+                return Err(anyhow::anyhow!("Truncated varint (ff)"));
+            }
+            let val = u64::from_le_bytes([
+                data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
+            ]);
+            Ok((val, 9))
+        }
+    }
+}
+
+/// Compute double SHA256 hash
+fn double_sha256(data: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+
+    let first = Sha256::digest(data);
+    let second = Sha256::digest(&first);
+
+    let mut result = [0u8; 32];
+    result.copy_from_slice(&second);
+    result
+}
+
+/// Compute merkle root from coinbase TXID and merkle branches
+fn compute_merkle_root(coinbase_txid: &[u8; 32], branches: &[[u8; 32]]) -> [u8; 32] {
+    let mut current = *coinbase_txid;
+
+    for branch in branches {
+        // Concatenate current hash with branch hash and double SHA256
+        let mut combined = [0u8; 64];
+        combined[..32].copy_from_slice(&current);
+        combined[32..].copy_from_slice(branch);
+        current = double_sha256(&combined);
+    }
+
+    current
+}
+
+/// Build an 80-byte block header
+fn build_block_header(
+    version: u32,
+    prev_hash_hex: &str,
+    merkle_root: &[u8; 32],
+    timestamp: u32,
+    nbits_hex: &str,
+    nonce: u32,
+) -> anyhow::Result<[u8; 80]> {
+    let mut header = [0u8; 80];
+
+    // Version (4 bytes, little-endian)
+    header[0..4].copy_from_slice(&version.to_le_bytes());
+
+    // Previous block hash (32 bytes)
+    // Note: work_state.prev_hash is already in little-endian (internal) byte order
+    let prev_hash_bytes = hex::decode(prev_hash_hex)
+        .map_err(|e| anyhow::anyhow!("Invalid prev_hash hex: {}", e))?;
+    if prev_hash_bytes.len() != 32 {
+        return Err(anyhow::anyhow!(
+            "Invalid prev_hash length: {}",
+            prev_hash_bytes.len()
+        ));
+    }
+    header[4..36].copy_from_slice(&prev_hash_bytes);
+
+    // Merkle root (32 bytes, already in internal byte order)
+    header[36..68].copy_from_slice(merkle_root);
+
+    // Timestamp (4 bytes, little-endian)
+    header[68..72].copy_from_slice(&timestamp.to_le_bytes());
+
+    // nBits (4 bytes, little-endian)
+    let nbits = u32::from_str_radix(nbits_hex, 16)
+        .map_err(|e| anyhow::anyhow!("Invalid nbits hex: {}", e))?;
+    header[72..76].copy_from_slice(&nbits.to_le_bytes());
+
+    // Nonce (4 bytes, little-endian)
+    header[76..80].copy_from_slice(&nonce.to_le_bytes());
+
+    Ok(header)
 }
 
 // ============================================================================

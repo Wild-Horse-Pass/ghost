@@ -33,6 +33,7 @@ use ghost_common::types::CapacityState;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
@@ -281,6 +282,48 @@ impl RegistryClient {
             .map_err(|e| format!("Failed to parse response: {}", e))
     }
 
+    /// Create signable message for deregistration
+    fn deregistration_message(node_id: &str, timestamp: u64) -> String {
+        format!("ghost:deregister:{}:{}", node_id, timestamp)
+    }
+
+    /// Deregister from the load balancer
+    pub async fn deregister(&self) -> Result<(), String> {
+        let timestamp = Self::now_timestamp();
+        let node_id = &self.public_key_hex;
+
+        // Create message to sign
+        let msg = Self::deregistration_message(node_id, timestamp);
+
+        // Sign the message
+        let signature_hex = self.sign(&msg);
+
+        let url = format!("{}/api/v1/nodes/{}", self.registry_url, node_id);
+
+        debug!(url = %url, "Sending deregistration to load balancer");
+
+        let response = self
+            .client
+            .delete(&url)
+            .header("X-Signature", signature_hex)
+            .header("X-Timestamp", timestamp.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!(
+                "Deregistration failed with status {}: {}",
+                status, body
+            ));
+        }
+
+        info!("Deregistered from load balancer");
+        Ok(())
+    }
+
     /// Send heartbeat to the load balancer
     pub async fn heartbeat(
         &self,
@@ -337,7 +380,7 @@ impl RegistryClient {
 
     /// Start the registry client (register and heartbeat loop)
     pub async fn start(
-        self,
+        self: Arc<Self>,
         miner_count_fn: impl Fn() -> u32 + Send + Sync + 'static,
         mut shutdown_rx: broadcast::Receiver<()>,
     ) {
@@ -468,6 +511,12 @@ mod tests {
     fn test_heartbeat_message() {
         let msg = RegistryClient::heartbeat_message("abc123", 500, 50, 1234567890);
         assert_eq!(msg, "ghost:heartbeat:abc123:500:50:1234567890");
+    }
+
+    #[test]
+    fn test_deregistration_message() {
+        let msg = RegistryClient::deregistration_message("abc123", 1234567890);
+        assert_eq!(msg, "ghost:deregister:abc123:1234567890");
     }
 
     #[test]
