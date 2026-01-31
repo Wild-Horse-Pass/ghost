@@ -34,7 +34,6 @@ pub mod registry;
 pub mod reorg;
 pub mod round;
 pub mod rpc;
-pub mod stratum;
 pub mod template;
 pub mod template_provider;
 pub mod validation;

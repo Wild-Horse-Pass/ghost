@@ -59,9 +59,6 @@ use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler};
 use ghost_pool::registry::RegistryClient;
 use ghost_pool::reorg::{ReorgConfig, ReorgHandler};
 use ghost_pool::round::{RoundConfig, RoundEvent, RoundManager};
-use ghost_pool::stratum::{
-    JobNotification, StratumConfig, StratumEvent, StratumServer, VardiffController,
-};
 use ghost_pool::template::{TemplateConfig, TemplateEvent, TemplateProcessor};
 use ghost_pool::template_provider::{TdpConfig, TemplateDistributionServer};
 
@@ -131,8 +128,6 @@ pub struct PoolState {
     pub round_manager: Arc<RoundManager>,
     /// Template processor
     pub template_processor: Arc<TemplateProcessor>,
-    /// Stratum server
-    pub stratum_server: Arc<StratumServer>,
     /// P2P mesh network
     pub mesh: Arc<MeshNetwork>,
     /// Vote handler for consensus
@@ -355,17 +350,9 @@ async fn main() -> Result<()> {
         policy.clone(),
     ));
 
-    // Initialize Stratum server
-    let stratum_port = args.stratum_port.unwrap_or(config.network.sv2_port);
-    let stratum_config = StratumConfig {
-        listen_addr: format!("0.0.0.0:{}", stratum_port).parse()?,
-        ..Default::default()
-    };
-    let vardiff_target_secs = stratum_config.vardiff_target_secs; // Save before move
-    let stratum_server = Arc::new(StratumServer::new(
-        stratum_config,
-        Arc::clone(&round_manager),
-    ));
+    // Note: Native stratum server removed - using SRI (Stratum Reference Implementation) via TDP
+    // SRI pool connects to ghost-pool's TDP server for templates
+    // SRI translator handles SV1 miners on port 3333
 
     // Initialize P2P mesh
     let mesh_config = MeshConfig {
@@ -542,7 +529,6 @@ async fn main() -> Result<()> {
         db: Arc::clone(&db),
         round_manager: Arc::clone(&round_manager),
         template_processor: Arc::clone(&template_processor),
-        stratum_server: Arc::clone(&stratum_server),
         mesh: Arc::clone(&mesh),
         vote_handler: Arc::clone(&vote_handler),
         shutdown_tx: shutdown_tx.clone(),
@@ -552,7 +538,6 @@ async fn main() -> Result<()> {
     let rpc_for_verification = Arc::clone(&rpc);
     let rm_for_height = Arc::clone(&round_manager);
     let rm_for_round = Arc::clone(&round_manager);
-    let ss_for_verification = Arc::clone(&stratum_server);
     let mesh_for_verification = Arc::clone(&mesh);
 
     let mut verification_state = VerificationState::new(
@@ -563,10 +548,11 @@ async fn main() -> Result<()> {
     );
 
     // Configure callbacks for health/status endpoints
+    // Note: miner_count returns 0 - SRI handles miner connections now
     verification_state = verification_state.with_callbacks(
         move || rm_for_height.current_height(),
         move || rm_for_round.current_round_id() as u64,
-        move || ss_for_verification.miner_count() as u32,
+        move || 0_u32, // Miner count from SRI (not tracked here)
         move || mesh_for_verification.peers().peer_count() as u32,
     );
 
@@ -622,7 +608,6 @@ async fn main() -> Result<()> {
     // Start WebSocket health broadcast task
     let ws_state = Arc::clone(&verification_state.ws_state);
     let rm_for_ws = Arc::clone(&round_manager);
-    let ss_for_ws = Arc::clone(&stratum_server);
     let mesh_for_ws = Arc::clone(&mesh);
     let start_time = std::time::Instant::now();
     let mut ws_shutdown = shutdown_tx.subscribe();
@@ -634,7 +619,7 @@ async fn main() -> Result<()> {
                     let event = ghost_verification::WsEvent::HealthUpdate {
                         block_height: rm_for_ws.current_height(),
                         round_id: rm_for_ws.current_round_id() as u64,
-                        miner_count: ss_for_ws.miner_count() as u32,
+                        miner_count: 0, // Miner count from SRI (not tracked here)
                         peer_count: mesh_for_ws.peers().peer_count() as u32,
                         uptime_secs: start_time.elapsed().as_secs(),
                     };
@@ -647,7 +632,6 @@ async fn main() -> Result<()> {
 
     // Clone ws_state for event handlers before moving verification_state
     let _verification_state_for_ws = Arc::clone(&verification_state);
-    let ws_for_stratum = Arc::clone(&verification_state.ws_state);
 
     let http_port = config.network.http_port;
     tokio::spawn(async move {
@@ -656,6 +640,10 @@ async fn main() -> Result<()> {
         }
     });
     info!("HTTP API listening on port {}", http_port);
+
+    // Subscribe to template events BEFORE starting the processor to avoid race condition
+    // (the processor fires NewWork immediately on first refresh)
+    let mut template_events_early = template_processor.subscribe();
 
     // Start template processor
     let tp = Arc::clone(&template_processor);
@@ -672,46 +660,7 @@ async fn main() -> Result<()> {
     });
     info!("Template processor started");
 
-    // Start Stratum server (unless disabled for TDP-only mode)
-    if !args.no_stratum {
-        let ss = Arc::clone(&stratum_server);
-        let mut stratum_shutdown = shutdown_tx.subscribe();
-        tokio::spawn(async move {
-            tokio::select! {
-                result = ss.start() => {
-                    if let Err(e) = result {
-                        error!(error = %e, "Stratum server error");
-                    }
-                }
-                _ = stratum_shutdown.recv() => {}
-            }
-        });
-        info!("Stratum server listening on port {}", stratum_port);
-
-        // Start vardiff controller
-        let vardiff_config = StratumConfig {
-            listen_addr: format!("0.0.0.0:{}", stratum_port)
-                .parse()
-                .expect("valid socket address from configured port"),
-            ..Default::default()
-        };
-        let vardiff_controller = Arc::new(VardiffController::new(vardiff_config));
-
-        // Link vardiff controller to stratum server for share tracking
-        stratum_server.set_vardiff_controller(Arc::clone(&vardiff_controller));
-
-        let ss_vardiff = Arc::clone(&stratum_server);
-        let vc = Arc::clone(&vardiff_controller);
-        tokio::spawn(async move {
-            ss_vardiff.run_vardiff_loop(vc).await;
-        });
-        info!(
-            "Vardiff controller started (target {}s between shares)",
-            vardiff_target_secs
-        );
-    } else {
-        info!("Native stratum server disabled (using TDP for SRI pool integration)");
-    }
+    // Note: Native stratum server removed - SRI handles all miner connections via TDP
 
     // Start Template Distribution Protocol server (for SRI pool integration)
     if args.tdp_enabled {
@@ -878,33 +827,17 @@ async fn main() -> Result<()> {
         std::mem::forget(zmq_subscriber);
     }
 
-    // Subscribe to template events for job notifications
-    let ss_notify = Arc::clone(&stratum_server);
-    let tp_notify = Arc::clone(&template_processor);
+    // Handle template events for round management
+    // (subscription was created earlier before template processor started)
+    // Note: Job notifications to miners now handled by SRI via TDP
     let rm_notify = Arc::clone(&round_manager);
-    let mut template_events = template_processor.subscribe();
+
     tokio::spawn(async move {
-        while let Ok(event) = template_events.recv().await {
+        while let Ok(event) = template_events_early.recv().await {
             match event {
                 TemplateEvent::NewWork { job_id: _, height } => {
-                    // Start new round
+                    // Start new round (SRI gets jobs via TDP automatically)
                     rm_notify.start_round(height);
-
-                    // Get work state and notify miners
-                    if let Some(work) = tp_notify.current_work() {
-                        let job = JobNotification {
-                            job_id: work.job_id,
-                            prev_hash: work.prev_hash,
-                            coinbase1: hex::encode(&work.coinbase1),
-                            coinbase2: hex::encode(&work.coinbase2),
-                            merkle_branches: work.merkle_branches.iter().map(hex::encode).collect(),
-                            version: format!("{:08x}", work.version),
-                            nbits: work.nbits,
-                            ntime: format!("{:08x}", work.ntime),
-                            clean_jobs: true,
-                        };
-                        ss_notify.notify_new_job(job).await;
-                    }
                 }
                 TemplateEvent::TransactionsFiltered {
                     original_count,
@@ -1034,50 +967,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Subscribe to stratum events for logging and WebSocket broadcast
-    let mut stratum_events = stratum_server.subscribe_events();
-    tokio::spawn(async move {
-        while let Ok(event) = stratum_events.recv().await {
-            match event {
-                StratumEvent::MinerConnected { miner_id, addr } => {
-                    info!(miner = %miner_id, addr = %addr, "Miner connected");
-                    ws_for_stratum.broadcast(ghost_verification::WsEvent::MinerConnected {
-                        miner_id: miner_id.clone(),
-                        address: addr.to_string(),
-                    });
-                }
-                StratumEvent::MinerDisconnected { miner_id } => {
-                    info!(miner = %miner_id, "Miner disconnected");
-                    ws_for_stratum.broadcast(ghost_verification::WsEvent::MinerDisconnected {
-                        miner_id: miner_id.clone(),
-                    });
-                }
-                StratumEvent::BlockFound {
-                    miner_id,
-                    block_hash,
-                } => {
-                    info!(miner = %miner_id, hash = %block_hash, "Block found by miner!");
-                    ws_for_stratum.broadcast(ghost_verification::WsEvent::BlockFound {
-                        height: 0, // Would need to get from round manager
-                        hash: block_hash.clone(),
-                        miner_id: miner_id.clone(),
-                    });
-                }
-                StratumEvent::ShareSubmitted {
-                    miner_id,
-                    difficulty,
-                    accepted,
-                    ..
-                } => {
-                    ws_for_stratum.broadcast(ghost_verification::WsEvent::ShareSubmitted {
-                        miner_id: miner_id.clone(),
-                        difficulty,
-                        valid: accepted,
-                    });
-                }
-            }
-        }
-    });
+    // Note: Stratum events now come from SRI, not ghost-pool
+    // WebSocket broadcast for miner events would need SRI integration
 
     // Start registry client for load balancer registration (if configured)
     info!("Checking registry config: {:?}", config.registry.is_some());
@@ -1098,16 +989,15 @@ async fn main() -> Result<()> {
                     registry_config.clone(),
                     host,
                     config.network.sv1_port,
-                    stratum_port, // sv2_port
+                    config.network.sv2_port,
                     config.network.max_miners,
                 ) {
                     Ok(registry_client) => {
-                        let ss_for_registry = Arc::clone(&stratum_server);
                         let registry_shutdown = shutdown_tx.subscribe();
                         tokio::spawn(async move {
                             registry_client
                                 .start(
-                                    move || ss_for_registry.miner_count() as u32,
+                                    move || 0_u32, // Miner count from SRI (not tracked here)
                                     registry_shutdown,
                                 )
                                 .await;
@@ -1131,11 +1021,7 @@ async fn main() -> Result<()> {
     // Print startup summary
     info!("════════════════════════════════════════════════════════════════");
     info!("Ghost Pool is ready!");
-    if args.no_stratum {
-        info!("  Stratum:    disabled (TDP mode)");
-    } else {
-        info!("  Stratum:    0.0.0.0:{}", stratum_port);
-    }
+    info!("  Stratum:    via SRI (connect to TDP)");
     if args.tdp_enabled {
         info!("  TDP:        0.0.0.0:{}", args.tdp_port);
     }
@@ -1143,6 +1029,26 @@ async fn main() -> Result<()> {
     info!("  Policy:     {}", policy.name);
     info!("  Shares:     {}/15", capabilities.total_shares());
     info!("════════════════════════════════════════════════════════════════");
+
+    // Verify template processor has work (for TDP job delivery)
+    {
+        let tp_check = Arc::clone(&template_processor);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            match tp_check.current_work() {
+                Some(work) => {
+                    info!(
+                        height = work.height,
+                        job_id = %work.job_id,
+                        "STARTUP CHECK: Template processor has work available"
+                    );
+                }
+                None => {
+                    error!("STARTUP CHECK: Template processor has NO work - SRI won't receive templates!");
+                }
+            }
+        });
+    }
 
     // Wait for shutdown signal
     tokio::signal::ctrl_c().await?;
@@ -1152,7 +1058,6 @@ async fn main() -> Result<()> {
 
     // Cleanup
     template_processor.stop();
-    stratum_server.stop();
     mesh.stop().await?;
 
     info!("Ghost Pool shutdown complete");
