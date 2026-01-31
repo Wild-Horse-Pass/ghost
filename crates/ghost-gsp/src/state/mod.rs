@@ -22,6 +22,8 @@
 
 //! State management for GSP server
 
+mod reorg_notifier;
 mod subscriptions;
 
+pub use reorg_notifier::{ReorgEvent, ReorgNotifier};
 pub use subscriptions::SubscriptionManager;

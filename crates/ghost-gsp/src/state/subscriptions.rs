@@ -37,6 +37,8 @@ pub enum SubscriptionType {
     Payments,
     /// Lock state changes
     Locks,
+    /// Chain reorganization notifications (L1 and L2)
+    Reorgs,
 }
 
 impl SubscriptionType {
@@ -46,7 +48,18 @@ impl SubscriptionType {
             "balance" => Some(SubscriptionType::Balance),
             "payments" => Some(SubscriptionType::Payments),
             "locks" => Some(SubscriptionType::Locks),
+            "reorgs" => Some(SubscriptionType::Reorgs),
             _ => None,
+        }
+    }
+
+    /// Get string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SubscriptionType::Balance => "balance",
+            SubscriptionType::Payments => "payments",
+            SubscriptionType::Locks => "locks",
+            SubscriptionType::Reorgs => "reorgs",
         }
     }
 }
@@ -198,6 +211,39 @@ impl SubscriptionManager {
     pub fn lock_state_subscription_count(&self) -> usize {
         let subs = self.lock_state_subscriptions.read();
         subs.values().map(|s| s.len()).sum()
+    }
+
+    // =========================================================================
+    // Reorg Subscriptions
+    // =========================================================================
+
+    /// Subscribe a wallet to chain reorganization notifications
+    pub fn subscribe_reorgs(&self, wallet_id: &WalletId) {
+        let mut subs = self.subscriptions.write();
+        subs.entry(wallet_id.to_string())
+            .or_insert_with(HashSet::new)
+            .insert(SubscriptionType::Reorgs);
+    }
+
+    /// Unsubscribe a wallet from chain reorganization notifications
+    pub fn unsubscribe_reorgs(&self, wallet_id: &WalletId) {
+        let mut subs = self.subscriptions.write();
+        if let Some(wallet_subs) = subs.get_mut(&wallet_id.to_string()) {
+            wallet_subs.remove(&SubscriptionType::Reorgs);
+            if wallet_subs.is_empty() {
+                subs.remove(&wallet_id.to_string());
+            }
+        }
+    }
+
+    /// Get all wallet IDs subscribed to reorg notifications
+    pub fn get_reorg_subscribers(&self) -> Vec<WalletId> {
+        self.get_subscribers(SubscriptionType::Reorgs)
+    }
+
+    /// Check if a wallet is subscribed to reorg notifications
+    pub fn is_subscribed_reorgs(&self, wallet_id: &WalletId) -> bool {
+        self.is_subscribed(wallet_id, SubscriptionType::Reorgs)
     }
 }
 

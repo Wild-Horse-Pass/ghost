@@ -165,6 +165,12 @@ pub enum ClientMessage {
         subscription: String,
     },
 
+    /// Subscribe to chain reorganization notifications
+    SubscribeReorgs,
+
+    /// Unsubscribe from chain reorganization notifications
+    UnsubscribeReorgs,
+
     // =========================================================================
     // Instant Payments
     // =========================================================================
@@ -464,6 +470,99 @@ pub enum ServerMessage {
         /// Final status (confirmed/failed)
         success: bool,
     },
+
+    // =========================================================================
+    // Chain Reorganization Notifications
+    // =========================================================================
+    /// Reorg subscription confirmed
+    ReorgsSubscribed,
+
+    /// Reorg subscription cancelled
+    ReorgsUnsubscribed,
+
+    /// L1 (Bitcoin) chain reorganization detected (push notification)
+    L1ReorgDetected {
+        /// Block height where reorg started
+        reorg_height: u64,
+        /// Number of blocks reorganized
+        depth: u32,
+        /// Previous chain tip hash
+        old_tip: String,
+        /// New chain tip hash
+        new_tip: String,
+        /// Payments affected by this reorg (payment IDs that lost confirmations)
+        affected_payments: Vec<String>,
+        /// Locks affected by this reorg (lock IDs that lost confirmations)
+        affected_locks: Vec<String>,
+        /// Timestamp when reorg was detected
+        detected_at: i64,
+    },
+
+    /// L2 (Ghost Pay) chain reorganization detected (push notification)
+    L2ReorgDetected {
+        /// Virtual block height where reorg started
+        reorg_height: u64,
+        /// Number of virtual blocks reorganized
+        depth: u32,
+        /// Previous state root
+        old_state_root: String,
+        /// New state root
+        new_state_root: String,
+        /// Reason for reorg (fork_resolution, equivocation, network_partition)
+        reason: L2ReorgReason,
+        /// Payments affected (payment IDs with changed status)
+        affected_payments: Vec<String>,
+        /// Whether any pending L2 transfers were rolled back
+        transfers_rolled_back: u32,
+        /// Timestamp when reorg was detected
+        detected_at: i64,
+    },
+
+    /// A specific payment was affected by a chain reorg
+    PaymentReorged {
+        /// Payment ID
+        payment_id: String,
+        /// Layer where reorg occurred (l1 or l2)
+        layer: ReorgLayer,
+        /// Previous confirmation count
+        old_confirmations: u32,
+        /// New confirmation count (may be 0 if unconfirmed)
+        new_confirmations: u32,
+        /// New payment status
+        new_status: PaymentStatus,
+        /// Human-readable explanation
+        reason: String,
+    },
+
+    /// A specific lock was affected by a chain reorg
+    LockReorged {
+        /// Lock ID
+        lock_id: String,
+        /// Layer where reorg occurred (l1 or l2)
+        layer: ReorgLayer,
+        /// Previous state
+        old_state: String,
+        /// New state after reorg
+        new_state: String,
+        /// Previous confirmation count
+        old_confirmations: u32,
+        /// New confirmation count
+        new_confirmations: u32,
+        /// Human-readable explanation
+        reason: String,
+    },
+
+    /// Chain reorganization resolved (chain stabilized)
+    ReorgResolved {
+        /// Layer that stabilized
+        layer: ReorgLayer,
+        /// Current chain height
+        height: u64,
+        /// Current tip hash (L1) or state root (L2)
+        tip: String,
+        /// Number of confirmations since reorg
+        confirmations_since_reorg: u32,
+    },
 }
 
 /// UTXO information
@@ -543,6 +642,32 @@ pub enum LockStateChangeType {
     PendingL2Change,
 }
 
+/// Layer where a chain reorganization occurred
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReorgLayer {
+    /// Bitcoin L1 chain reorg
+    L1,
+    /// Ghost Pay L2 virtual chain reorg
+    L2,
+}
+
+/// Reason for L2 chain reorganization
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum L2ReorgReason {
+    /// Normal fork resolution (competing blocks at same height)
+    ForkResolution,
+    /// Proposer equivocation detected (same proposer, two different blocks)
+    Equivocation,
+    /// Network partition recovery (nodes rejoining after split)
+    NetworkPartition,
+    /// State snapshot restoration
+    SnapshotRestore,
+    /// Manual intervention required
+    ManualRollback,
+}
+
 impl ClientMessage {
     /// Check if this message requires authentication
     pub fn requires_auth(&self) -> bool {
@@ -562,6 +687,8 @@ impl ClientMessage {
                 | ClientMessage::SubscribeBalance
                 | ClientMessage::SubscribePayments
                 | ClientMessage::SubscribeLocks
+                | ClientMessage::SubscribeReorgs
+                | ClientMessage::UnsubscribeReorgs
                 | ClientMessage::CheckInstantCapability { .. }
                 | ClientMessage::SubscribeLockState { .. }
                 | ClientMessage::UnsubscribeLockState { .. }

@@ -71,8 +71,8 @@ pub use lock::{
     LockFundingConfirmation, LockRequest, LockResponse, LockStateTransition,
 };
 pub use messages::{
-    ClientMessage, InstantCapability, InstantCondition, LockSnapshot, LockStateChangeType,
-    LockStateSnapshot, ServerMessage, TransactionInfo, UtxoInfo,
+    ClientMessage, InstantCapability, InstantCondition, L2ReorgReason, LockSnapshot,
+    LockStateChangeType, LockStateSnapshot, ReorgLayer, ServerMessage, TransactionInfo, UtxoInfo,
 };
 pub use payment::{
     PaymentMode, PaymentReceipt, PaymentStatus, PreparePaymentRequest, PreparePaymentResponse,

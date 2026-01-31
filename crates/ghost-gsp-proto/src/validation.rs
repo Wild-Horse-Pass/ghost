@@ -293,12 +293,14 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
 
         ClientMessage::SubscribeBalance
         | ClientMessage::SubscribePayments
-        | ClientMessage::SubscribeLocks => {
+        | ClientMessage::SubscribeLocks
+        | ClientMessage::SubscribeReorgs
+        | ClientMessage::UnsubscribeReorgs => {
             // No parameters to validate
         }
 
         ClientMessage::Unsubscribe { subscription } => {
-            let valid_subscriptions = ["balance", "payments", "locks", "lock_state"];
+            let valid_subscriptions = ["balance", "payments", "locks", "lock_state", "reorgs"];
             if !valid_subscriptions.contains(&subscription.to_lowercase().as_str()) {
                 result.add_error("Invalid subscription type");
             }

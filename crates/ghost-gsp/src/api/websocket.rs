@@ -195,6 +195,10 @@ async fn handle_message(
 
         ClientMessage::SubscribeLocks => handle_subscribe(state, conn_state, "locks").await,
 
+        ClientMessage::SubscribeReorgs => handle_subscribe(state, conn_state, "reorgs").await,
+
+        ClientMessage::UnsubscribeReorgs => handle_unsubscribe(state, conn_state, "reorgs").await,
+
         ClientMessage::Unsubscribe { subscription } => {
             handle_unsubscribe(state, conn_state, &subscription).await
         }

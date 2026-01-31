@@ -40,7 +40,7 @@ use crate::api::{rest, websocket};
 use crate::auth::{JwtManager, WalletRegistry};
 use crate::error::{GspError, GspResult};
 use crate::proxy::PayNodeProxy;
-use crate::state::SubscriptionManager;
+use crate::state::{ReorgNotifier, SubscriptionManager};
 
 /// GSP server configuration
 #[derive(Debug, Clone)]
@@ -102,6 +102,9 @@ pub struct GspState {
     /// Subscription manager for WebSocket push notifications
     pub subscriptions: SubscriptionManager,
 
+    /// Reorg notification broadcaster
+    pub reorg_notifier: ReorgNotifier,
+
     /// Current connection count
     pub connection_count: RwLock<usize>,
 }
@@ -125,12 +128,16 @@ impl GspState {
         // Initialize subscription manager
         let subscriptions = SubscriptionManager::new();
 
+        // Initialize reorg notifier
+        let reorg_notifier = ReorgNotifier::new();
+
         Ok(Self {
             config,
             jwt,
             registry,
             pay_node,
             subscriptions,
+            reorg_notifier,
             connection_count: RwLock::new(0),
         })
     }
