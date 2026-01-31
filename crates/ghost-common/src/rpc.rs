@@ -761,6 +761,22 @@ impl BitcoinRpc {
     }
 
     // ============================================================
+    // Ghost Mode RPC Methods
+    // ============================================================
+
+    /// Set ghost mode on the node
+    ///
+    /// When enabled, the node will not request, relay, or announce unconfirmed transactions.
+    pub async fn set_ghost_mode(&self, enable: bool) -> GhostResult<GhostModeResponse> {
+        self.call("setghostmode", vec![json!(enable)]).await
+    }
+
+    /// Get current ghost mode state
+    pub async fn get_ghost_mode(&self) -> GhostResult<GhostModeResponse> {
+        self.call("getghostmode", vec![]).await
+    }
+
+    // ============================================================
     // Ghost-Core Specific RPC Methods
     // ============================================================
 
@@ -1247,6 +1263,16 @@ pub struct MempoolInfo {
     pub incrementalrelayfee: f64,
     pub unbroadcastcount: u64,
     pub fullrbf: bool,
+}
+
+// ============================================================
+// Ghost Mode Types
+// ============================================================
+
+/// Response from setghostmode/getghostmode RPC
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhostModeResponse {
+    pub ghost_mode: bool,
 }
 
 // ============================================================

@@ -2458,12 +2458,39 @@ async fn api_config_archive_mode_handler(
 }
 
 /// API v1 Config ghost mode handler
+///
+/// Returns ghost mode status. If RPC is available, queries ghost-core for the
+/// authoritative state and syncs the local config.
 async fn api_config_ghost_mode_handler(
     State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
+    // Try to get ghost mode from ghost-core RPC
+    let rpc_state = if let Some(ref rpc) = state.rpc {
+        match rpc.get_ghost_mode().await {
+            Ok(response) => {
+                // Sync local state with RPC response
+                {
+                    let mut config = state.dashboard_config.write();
+                    if config.ghost_mode != response.ghost_mode {
+                        debug!("Syncing ghost mode from RPC: {} -> {}", config.ghost_mode, response.ghost_mode);
+                        config.ghost_mode = response.ghost_mode;
+                    }
+                }
+                Some(response.ghost_mode)
+            }
+            Err(e) => {
+                warn!("Failed to get ghost mode from RPC: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let config = state.dashboard_config.read();
     Json(serde_json::json!({
         "enabled": config.ghost_mode,
+        "rpc_synced": rpc_state.is_some(),
         "message": "Ghost mode configuration"
     }))
 }
@@ -2571,16 +2598,64 @@ async fn api_config_archive_mode_post_handler(
 }
 
 /// API v1 Config ghost_mode POST handler
+///
+/// Toggles ghost mode on the node:
+/// 1. Calls ghost-core RPC to set the mode (if RPC client available)
+/// 2. Updates the in-memory dashboard config
+/// 3. Persists the setting to disk (if config path available)
 async fn api_config_ghost_mode_post_handler(
     State(state): State<Arc<VerificationState>>,
     Json(payload): Json<ToggleRequest>,
 ) -> impl IntoResponse {
-    let mut config = state.dashboard_config.write();
-    config.ghost_mode = payload.enabled;
+    let enabled = payload.enabled;
+
+    // Try to call ghost-core RPC to set ghost mode
+    let rpc_result = if let Some(ref rpc) = state.rpc {
+        match rpc.set_ghost_mode(enabled).await {
+            Ok(response) => {
+                debug!("Ghost mode RPC call successful: {:?}", response);
+                Some(response.ghost_mode)
+            }
+            Err(e) => {
+                warn!("Failed to set ghost mode via RPC: {}", e);
+                None
+            }
+        }
+    } else {
+        debug!("No RPC client available, updating local state only");
+        None
+    };
+
+    // Use RPC response if available, otherwise use requested value
+    let actual_enabled = rpc_result.unwrap_or(enabled);
+
+    // Update dashboard config
+    {
+        let mut config = state.dashboard_config.write();
+        config.ghost_mode = actual_enabled;
+    }
+
+    // Update and persist node config
+    {
+        let mut node_config = state.node_config.write();
+        node_config.ghost_mode = actual_enabled;
+
+        if let Some(ref path) = state.node_config_path {
+            if let Err(e) = node_config.save(path) {
+                error!("Failed to persist node config: {}", e);
+            }
+        }
+    }
+
     Json(serde_json::json!({
         "success": true,
-        "enabled": payload.enabled,
-        "message": "Ghost mode updated"
+        "enabled": actual_enabled,
+        "rpc_synced": rpc_result.is_some(),
+        "message": if rpc_result.is_some() {
+            "Ghost mode updated and synced with ghost-core"
+        } else {
+            "Ghost mode updated (RPC sync unavailable)"
+        }
     }))
 }
 

@@ -1138,6 +1138,10 @@ public:
     bool GetNetworkActive() const { return fNetworkActive; };
     bool GetUseAddrmanOutgoing() const { return m_use_addrman_outgoing; };
     void SetNetworkActive(bool active);
+
+    /** Ghost mode: suppress transaction relay/announcement */
+    bool GetGhostMode() const { return m_ghost_mode.load(std::memory_order_relaxed); }
+    void SetGhostMode(bool enable) { m_ghost_mode.store(enable, std::memory_order_relaxed); }
     void OpenNetworkConnection(const CAddress& addrConnect, bool fCountFailure, CountingSemaphoreGrant<>&& grant_outbound, const char* strDest, ConnectionType conn_type, bool use_v2transport) EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
     bool CheckIncomingNonce(uint64_t nonce);
     void ASMapHealthCheck();
@@ -1445,6 +1449,8 @@ private:
 
     std::vector<ListenSocket> vhListenSocket;
     std::atomic<bool> fNetworkActive{true};
+    /** Ghost mode: do not request, relay, or announce unconfirmed transactions */
+    std::atomic<bool> m_ghost_mode{false};
     bool fAddressesInitialized{false};
     AddrMan& addrman;
     const NetGroupManager& m_netgroupman;

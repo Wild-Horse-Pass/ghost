@@ -39,6 +39,7 @@
 
 pub mod challenge;
 pub mod client;
+pub mod config;
 pub mod handlers;
 pub mod routes;
 pub mod server;
@@ -46,6 +47,7 @@ pub mod websocket;
 
 pub use challenge::*;
 pub use client::*;
+pub use config::*;
 pub use handlers::*;
 pub use routes::*;
 pub use server::*;

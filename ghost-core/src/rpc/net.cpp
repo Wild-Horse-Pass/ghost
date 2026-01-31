@@ -910,6 +910,63 @@ static RPCHelpMan setnetworkactive()
     };
 }
 
+static RPCHelpMan setghostmode()
+{
+    return RPCHelpMan{
+        "setghostmode",
+        "Enable or disable ghost mode.\n"
+        "When enabled, the node will not request, relay, or announce unconfirmed transactions.\n"
+        "Transactions will only be processed when they appear in blocks.\n",
+                {
+                    {"enable", RPCArg::Type::BOOL, RPCArg::Optional::NO, "true to enable ghost mode, false to disable"},
+                },
+                RPCResult{RPCResult::Type::OBJ, "", "", {
+                    {RPCResult::Type::BOOL, "ghost_mode", "Current ghost mode state"},
+                }},
+                RPCExamples{
+                    HelpExampleCli("setghostmode", "true")
+                    + HelpExampleRpc("setghostmode", "true")
+                },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    NodeContext& node = EnsureAnyNodeContext(request.context);
+    CConnman& connman = EnsureConnman(node);
+
+    connman.SetGhostMode(request.params[0].get_bool());
+
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("ghost_mode", connman.GetGhostMode());
+    return result;
+},
+    };
+}
+
+static RPCHelpMan getghostmode()
+{
+    return RPCHelpMan{
+        "getghostmode",
+        "Returns the current ghost mode state.\n"
+        "When ghost mode is enabled, the node does not request, relay, or announce unconfirmed transactions.\n",
+                {},
+                RPCResult{RPCResult::Type::OBJ, "", "", {
+                    {RPCResult::Type::BOOL, "ghost_mode", "Current ghost mode state"},
+                }},
+                RPCExamples{
+                    HelpExampleCli("getghostmode", "")
+                    + HelpExampleRpc("getghostmode", "")
+                },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    NodeContext& node = EnsureAnyNodeContext(request.context);
+    CConnman& connman = EnsureConnman(node);
+
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("ghost_mode", connman.GetGhostMode());
+    return result;
+},
+    };
+}
+
 static RPCHelpMan getnodeaddresses()
 {
     return RPCHelpMan{"getnodeaddresses",
@@ -1270,7 +1327,7 @@ static RPCHelpMan getgspnodes()
             // Add known addresses from addrman with GSP capability
             if ((int)result.size() < max_count) {
                 // Get addresses that have GSP service flag
-                std::vector<CAddress> vAddr = connman.GetAddresses(max_count * 2, max_count * 2, std::nullopt, false);
+                std::vector<CAddress> vAddr = connman.GetAddressesUnsafe(max_count * 2, max_count * 2, std::nullopt, false);
                 for (const CAddress& addr : vAddr) {
                     if ((int)result.size() >= max_count) break;
                     if (addr.nServices & NODE_GSP) {
@@ -1311,6 +1368,8 @@ void RegisterNetRPCCommands(CRPCTable& t)
         {"network", &listbanned},
         {"network", &clearbanned},
         {"network", &setnetworkactive},
+        {"network", &setghostmode},
+        {"network", &getghostmode},
         {"network", &getnodeaddresses},
         {"network", &getaddrmaninfo},
         {"network", &getgspnodes},

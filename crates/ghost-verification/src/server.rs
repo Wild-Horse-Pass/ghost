@@ -30,8 +30,11 @@ use ghost_common::rpc::BitcoinRpc;
 use ghost_common::types::NodeCapabilities;
 use ghost_policy::{PolicyEngine, PolicyProfile};
 use ghost_storage::Database;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use crate::config::NodeConfig;
 use tokio::net::TcpListener;
 use tower_governor::{
     governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
@@ -134,6 +137,10 @@ pub struct VerificationState {
     pub rpc: Option<Arc<BitcoinRpc>>,
     /// Dashboard config (mutable settings)
     pub dashboard_config: parking_lot::RwLock<DashboardConfig>,
+    /// Node config with disk persistence (ghost_mode, etc.)
+    pub node_config: parking_lot::RwLock<NodeConfig>,
+    /// Path to node config file
+    pub node_config_path: Option<PathBuf>,
     /// WebSocket state for real-time updates
     pub ws_state: Arc<WsState>,
     /// Test proposal callback (for admin testing)
@@ -213,9 +220,24 @@ impl VerificationState {
             database: None,
             rpc: None,
             dashboard_config: parking_lot::RwLock::new(dashboard_config),
+            node_config: parking_lot::RwLock::new(NodeConfig::default()),
+            node_config_path: None,
             ws_state: Arc::new(WsState::new()),
             test_proposal_fn: None,
         }
+    }
+
+    /// Set the node config path and load config from disk
+    pub fn with_node_config_path(mut self, path: PathBuf) -> Self {
+        let config = NodeConfig::load_or_default(&path);
+        // Sync dashboard_config ghost_mode with loaded node_config
+        {
+            let mut dashboard = self.dashboard_config.write();
+            dashboard.ghost_mode = config.ghost_mode;
+        }
+        self.node_config = parking_lot::RwLock::new(config);
+        self.node_config_path = Some(path);
+        self
     }
 
     /// Set node identity for signing responses
@@ -274,6 +296,60 @@ impl VerificationState {
     pub fn with_rpc(mut self, rpc: Arc<BitcoinRpc>) -> Self {
         self.rpc = Some(rpc);
         self
+    }
+
+    /// Sync ghost mode with ghost-core on startup
+    ///
+    /// If RPC is available, queries ghost-core for the current ghost mode
+    /// and syncs the local config. If the local config differs, updates
+    /// ghost-core to match the persisted config (local wins on startup).
+    pub async fn sync_ghost_mode_with_core(&self) -> GhostResult<()> {
+        use tracing::{debug, info, warn};
+
+        let rpc = match &self.rpc {
+            Some(rpc) => rpc,
+            None => {
+                debug!("No RPC client available, skipping ghost mode sync");
+                return Ok(());
+            }
+        };
+
+        // Get local config state
+        let local_ghost_mode = self.node_config.read().ghost_mode;
+
+        // Query ghost-core for current state
+        match rpc.get_ghost_mode().await {
+            Ok(response) => {
+                if response.ghost_mode != local_ghost_mode {
+                    info!(
+                        "Ghost mode mismatch: local={}, core={}. Syncing core to local.",
+                        local_ghost_mode, response.ghost_mode
+                    );
+                    // Local persisted config wins - sync ghost-core to match
+                    match rpc.set_ghost_mode(local_ghost_mode).await {
+                        Ok(_) => {
+                            info!("Successfully synced ghost-core to ghost_mode={}", local_ghost_mode);
+                        }
+                        Err(e) => {
+                            warn!("Failed to sync ghost mode to ghost-core: {}", e);
+                        }
+                    }
+                } else {
+                    debug!("Ghost mode already in sync: {}", local_ghost_mode);
+                }
+
+                // Sync dashboard config
+                {
+                    let mut dashboard = self.dashboard_config.write();
+                    dashboard.ghost_mode = local_ghost_mode;
+                }
+            }
+            Err(e) => {
+                warn!("Failed to query ghost mode from ghost-core: {}", e);
+            }
+        }
+
+        Ok(())
     }
 
     /// Set callbacks

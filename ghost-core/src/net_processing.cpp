@@ -2120,6 +2120,9 @@ void PeerManagerImpl::SendPings()
 
 void PeerManagerImpl::RelayTransaction(const Txid& txid, const Wtxid& wtxid)
 {
+    // Ghost mode: do not relay transactions to peers
+    if (m_connman.GetGhostMode()) return;
+
     LOCK(m_peer_mutex);
     for(auto& it : m_peer_map) {
         Peer& peer = *it.second;
@@ -2405,6 +2408,12 @@ void PeerManagerImpl::ProcessGetData(CNode& pfrom, Peer& peer, const std::atomic
         if (tx_relay == nullptr) {
             // Ignore GETDATA requests for transactions from block-relay-only
             // peers and peers that asked us not to announce transactions.
+            continue;
+        }
+
+        // Ghost mode: do not respond to transaction GETDATA requests
+        if (m_connman.GetGhostMode()) {
+            vNotFound.push_back(inv);
             continue;
         }
 
@@ -5427,6 +5436,8 @@ public:
 
 bool PeerManagerImpl::RejectIncomingTxs(const CNode& peer) const
 {
+    // Ghost mode: reject all transaction relay (similar to blocksonly but runtime-togglable)
+    if (m_connman.GetGhostMode()) return true;
     // block-relay-only peers may never send txs to us
     if (peer.IsBlockOnlyConn()) return true;
     if (peer.IsFeelerConn()) return true;
@@ -5704,7 +5715,8 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
             peer->m_blocks_for_inv_relay.clear();
         }
 
-        if (auto tx_relay = peer->GetTxRelay(); tx_relay != nullptr) {
+        // Ghost mode: skip transaction inventory broadcast entirely
+        if (auto tx_relay = peer->GetTxRelay(); tx_relay != nullptr && !m_connman.GetGhostMode()) {
                 LOCK(tx_relay->m_tx_inventory_mutex);
                 // Check whether periodic sends should happen
                 bool fSendTrickle = pto->HasPermission(NetPermissionFlags::NoBan);
@@ -5929,7 +5941,8 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
         //
         // Message: getdata (transactions)
         //
-        {
+        // Ghost mode: do not request transactions from peers
+        if (!m_connman.GetGhostMode()) {
             LOCK(m_tx_download_mutex);
             for (const GenTxid& gtxid : m_txdownloadman.GetRequestsToSend(pto->GetId(), current_time)) {
                 vGetData.emplace_back(gtxid.IsWtxid() ? MSG_WTX : (MSG_TX | GetFetchFlags(*peer)), gtxid.ToUint256());
