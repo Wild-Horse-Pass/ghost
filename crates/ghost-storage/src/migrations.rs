@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -68,6 +68,10 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
 
     if current_version < 6 {
         migrate_v6(conn)?;
+    }
+
+    if current_version < 7 {
+        migrate_v7(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -600,6 +604,62 @@ fn migrate_v6(conn: &Connection) -> GhostResult<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_epoch_status ON epoch_settlements(status);
         CREATE INDEX IF NOT EXISTS idx_epoch_deadline ON epoch_settlements(settlement_deadline);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Migration to v7: Key rotation with elder status transfer
+///
+/// Adds tables to securely track node identity rotations, preventing:
+/// - Reuse of retired node_ids
+/// - Unauthorized elder status claims
+/// - Replay of old rotation proofs
+fn migrate_v7(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v7: Adding key rotation tables");
+
+    conn.execute_batch(
+        r#"
+        -- Retired node_ids table
+        -- Once a node_id is retired (rotated away from), it can never be reused.
+        -- This prevents replay attacks and identity resurrection.
+        CREATE TABLE IF NOT EXISTS retired_nodes (
+            old_node_id TEXT PRIMARY KEY,
+            new_node_id TEXT NOT NULL,
+            rotation_timestamp INTEGER NOT NULL,
+            rotation_proof BLOB NOT NULL,
+            FOREIGN KEY (new_node_id) REFERENCES nodes(node_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_retired_new ON retired_nodes(new_node_id);
+
+        -- Rotation history for audit trail
+        -- Tracks all rotations including revoked ones for forensic analysis.
+        CREATE TABLE IF NOT EXISTS rotation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            old_node_id TEXT NOT NULL,
+            new_node_id TEXT NOT NULL,
+            rotation_timestamp INTEGER NOT NULL,
+            finalized_timestamp INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            rotation_proof BLOB NOT NULL,
+            revocation_proof BLOB,
+            elder_transferred INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_rotation_old ON rotation_history(old_node_id);
+        CREATE INDEX IF NOT EXISTS idx_rotation_new ON rotation_history(new_node_id);
+        CREATE INDEX IF NOT EXISTS idx_rotation_status ON rotation_history(status);
+
+        -- Add rotation tracking column to nodes
+        -- Points to the new node_id if this identity was rotated
+        -- NULL means active identity, non-NULL means retired
+        ALTER TABLE nodes ADD COLUMN rotated_to TEXT;
+
+        -- Add rotation source column to nodes
+        -- Points to the old node_id if this identity was rotated from another
+        -- Allows tracing the full identity chain
+        ALTER TABLE nodes ADD COLUMN rotated_from TEXT;
         "#,
     )
     .map_err(|e| GhostError::Migration(e.to_string()))?;

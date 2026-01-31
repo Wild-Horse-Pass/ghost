@@ -44,6 +44,7 @@ use tracing_subscriber::FmtSubscriber;
 use ghost_common::config::NodeConfig;
 use ghost_common::identity::NodeIdentity;
 use ghost_common::rpc::BitcoinRpc;
+use ghost_common::signer::SignerConfig;
 use ghost_common::types::{ConsensusResult, NodeCapabilities};
 use ghost_common::zmq::{ZmqConfig, ZmqSubscriber};
 use ghost_consensus::health_handler::HealthPingHandler;
@@ -164,31 +165,75 @@ async fn main() -> Result<()> {
     let data_dir = expand_path(&args.data_dir)?;
     std::fs::create_dir_all(&data_dir)?;
 
-    // Handle identity commands
-    let key_path = data_dir.join("node.key");
+    // Default key path in data directory (used for --generate-identity and fallback)
+    let default_key_path = data_dir.join("node.key");
 
+    // Handle --generate-identity command (doesn't need config)
     if args.generate_identity {
         info!("Generating new node identity...");
         let identity = NodeIdentity::generate();
-        identity.save(&key_path)?;
+        identity.save(&default_key_path)?;
         info!("Node ID: {}", identity.node_id_hex());
-        info!("Key saved to: {}", key_path.display());
+        info!("Key saved to: {}", default_key_path.display());
         return Ok(());
     }
 
-    // Load or create identity
-    let identity = if key_path.exists() {
-        NodeIdentity::load(&key_path)?
-    } else {
-        info!("No identity found, generating new one...");
-        let identity = NodeIdentity::generate();
-        identity.save(&key_path)?;
-        identity
+    // Load configuration first (needed for signer config)
+    let config = load_config(&args.config)?;
+
+    // Determine the effective signer configuration
+    // Priority: config.identity.signer > config.identity.key_path > data_dir/node.key
+    let signer_config = match &config.identity.signer {
+        Some(cfg) => {
+            // Explicit signer configuration in config file
+            cfg.clone()
+        }
+        None => {
+            // Use config key_path if it exists, otherwise fall back to data_dir
+            let cfg_key_path = expand_path(&config.identity.key_path)?;
+            if cfg_key_path.exists() {
+                SignerConfig::Local { key_path: cfg_key_path }
+            } else if default_key_path.exists() {
+                SignerConfig::Local { key_path: default_key_path.clone() }
+            } else {
+                // No key file exists, we'll generate one below
+                SignerConfig::Local { key_path: default_key_path.clone() }
+            }
+        }
     };
 
+    // Load or create identity using signer config
+    let identity = match &signer_config {
+        SignerConfig::Local { key_path } => {
+            if key_path.exists() {
+                NodeIdentity::load(key_path)?
+            } else {
+                info!("No identity found at {}, generating new one...", key_path.display());
+                let identity = NodeIdentity::generate();
+                identity.save(key_path)?;
+                info!("Generated new identity, saved to: {}", key_path.display());
+                identity
+            }
+        }
+        SignerConfig::Hsm { .. } | SignerConfig::Kms { .. } => {
+            // HSM/KMS signers require the key to already exist
+            NodeIdentity::from_config(&signer_config).map_err(|e| {
+                anyhow::anyhow!("Failed to initialize {} signer: {}",
+                    match &signer_config {
+                        SignerConfig::Hsm { .. } => "HSM",
+                        SignerConfig::Kms { .. } => "KMS",
+                        _ => "unknown",
+                    },
+                    e)
+            })?
+        }
+    };
+
+    // Handle --show-identity command
     if args.show_identity {
         println!("Node ID: {}", identity.node_id_hex());
         println!("Short ID: {}", identity.node_id_short());
+        println!("Signer: {}", identity.signer_type());
         return Ok(());
     }
 
@@ -199,10 +244,7 @@ async fn main() -> Result<()> {
     );
     info!("║          Decentralized Bitcoin Mining Pool                   ║");
     info!("╚══════════════════════════════════════════════════════════════╝");
-    info!("Node ID: {}", identity.node_id_short());
-
-    // Load configuration
-    let config = load_config(&args.config)?;
+    info!("Node ID: {} ({})", identity.node_id_short(), identity.signer_type());
 
     // Validate configuration
     let validation = config.validate();
@@ -340,7 +382,7 @@ async fn main() -> Result<()> {
     // Pool payout address defaults to treasury address if not explicitly configured separately
     let template_config = TemplateConfig {
         treasury_address: config.pool.treasury_address.clone(),
-        pool_payout_address: config.pool.treasury_address.clone(), // Use same as treasury for now
+        pool_payout_address: config.pool.treasury_address.address().to_string(), // Use same as treasury for now
         network: config.bitcoin.network.clone(),
         ..Default::default()
     };
@@ -867,11 +909,12 @@ async fn main() -> Result<()> {
         use bitcoin::Address;
         use std::str::FromStr;
 
-        match Address::<NetworkUnchecked>::from_str(&config.pool.treasury_address) {
+        let addr_str = config.pool.treasury_address.address();
+        match Address::<NetworkUnchecked>::from_str(addr_str) {
             Ok(addr) => addr.assume_checked().script_pubkey().into_bytes(),
             Err(e) => {
                 warn!(
-                    address = %config.pool.treasury_address,
+                    address = %addr_str,
                     error = %e,
                     "Invalid treasury address, using empty (payouts will fail)"
                 );

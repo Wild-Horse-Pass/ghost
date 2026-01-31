@@ -23,6 +23,7 @@
 //! Common types used across Bitcoin Ghost
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// 32-byte Node ID (Ed25519 public key)
 pub type NodeId = [u8; 32];
@@ -302,6 +303,235 @@ pub struct HealthPing {
     pub timestamp: u64,
 }
 
+/// Errors for treasury address validation
+#[derive(Debug, Error)]
+pub enum TreasuryAddressError {
+    /// Invalid M-of-N parameters
+    #[error("Invalid M-of-N: M={m} must be <= N={n} and both must be between 1 and 15")]
+    InvalidMofN { m: u8, n: u8 },
+
+    /// Empty address
+    #[error("Treasury address cannot be empty")]
+    EmptyAddress,
+
+    /// Invalid witness script
+    #[error("Invalid witness script: {0}")]
+    InvalidWitnessScript(String),
+
+    /// Public key count mismatch
+    #[error("Expected {expected} public keys, got {actual}")]
+    PubkeyCountMismatch { expected: u8, actual: usize },
+}
+
+/// Treasury address configuration
+///
+/// Supports both single-sig and multi-sig (P2WSH) addresses for treasury payouts.
+/// Multi-sig provides enhanced security for mainnet deployments.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum TreasuryAddress {
+    /// Single-sig address (bech32 format)
+    ///
+    /// Example: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+    Single(String),
+
+    /// Multi-sig P2WSH address
+    ///
+    /// Requires M-of-N signatures to spend.
+    MultiSig {
+        /// P2WSH bech32 address
+        address: String,
+
+        /// Witness script (redeem script) in hex
+        ///
+        /// This is the actual multi-sig script that gets hashed to create
+        /// the P2WSH address. Required for spending.
+        witness_script: String,
+
+        /// Required signatures (M in M-of-N)
+        required: u8,
+
+        /// Total signers (N in M-of-N)
+        total: u8,
+
+        /// Public keys of all signers (optional, for verification)
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pubkeys: Vec<String>,
+    },
+}
+
+impl TreasuryAddress {
+    /// Create a single-sig treasury address
+    pub fn single(address: impl Into<String>) -> Self {
+        Self::Single(address.into())
+    }
+
+    /// Create a multi-sig treasury address
+    ///
+    /// # Arguments
+    /// * `address` - P2WSH bech32 address
+    /// * `witness_script` - Witness script (redeem script) in hex
+    /// * `required` - Required signatures (M)
+    /// * `total` - Total signers (N)
+    pub fn multisig(
+        address: impl Into<String>,
+        witness_script: impl Into<String>,
+        required: u8,
+        total: u8,
+    ) -> Result<Self, TreasuryAddressError> {
+        // Validate M-of-N parameters
+        if required == 0 || total == 0 || required > total || total > 15 {
+            return Err(TreasuryAddressError::InvalidMofN { m: required, n: total });
+        }
+
+        Ok(Self::MultiSig {
+            address: address.into(),
+            witness_script: witness_script.into(),
+            required,
+            total,
+            pubkeys: Vec::new(),
+        })
+    }
+
+    /// Create a multi-sig treasury address with public keys
+    pub fn multisig_with_pubkeys(
+        address: impl Into<String>,
+        witness_script: impl Into<String>,
+        required: u8,
+        total: u8,
+        pubkeys: Vec<String>,
+    ) -> Result<Self, TreasuryAddressError> {
+        // Validate M-of-N parameters
+        if required == 0 || total == 0 || required > total || total > 15 {
+            return Err(TreasuryAddressError::InvalidMofN { m: required, n: total });
+        }
+
+        // Validate pubkey count if provided
+        if !pubkeys.is_empty() && pubkeys.len() != total as usize {
+            return Err(TreasuryAddressError::PubkeyCountMismatch {
+                expected: total,
+                actual: pubkeys.len(),
+            });
+        }
+
+        Ok(Self::MultiSig {
+            address: address.into(),
+            witness_script: witness_script.into(),
+            required,
+            total,
+            pubkeys,
+        })
+    }
+
+    /// Get the address string (works for both single and multi-sig)
+    pub fn address(&self) -> &str {
+        match self {
+            Self::Single(addr) => addr,
+            Self::MultiSig { address, .. } => address,
+        }
+    }
+
+    /// Check if this is a multi-sig address
+    pub fn is_multisig(&self) -> bool {
+        matches!(self, Self::MultiSig { .. })
+    }
+
+    /// Get M-of-N parameters for multi-sig
+    pub fn multisig_params(&self) -> Option<(u8, u8)> {
+        match self {
+            Self::Single(_) => None,
+            Self::MultiSig { required, total, .. } => Some((*required, *total)),
+        }
+    }
+
+    /// Get the witness script for multi-sig
+    pub fn witness_script(&self) -> Option<&str> {
+        match self {
+            Self::Single(_) => None,
+            Self::MultiSig { witness_script, .. } => Some(witness_script),
+        }
+    }
+
+    /// Validate the treasury address configuration
+    pub fn validate(&self) -> Result<(), TreasuryAddressError> {
+        match self {
+            Self::Single(addr) => {
+                if addr.is_empty() {
+                    return Err(TreasuryAddressError::EmptyAddress);
+                }
+                Ok(())
+            }
+            Self::MultiSig {
+                address,
+                witness_script,
+                required,
+                total,
+                pubkeys,
+            } => {
+                if address.is_empty() {
+                    return Err(TreasuryAddressError::EmptyAddress);
+                }
+
+                if *required == 0 || *total == 0 || *required > *total || *total > 15 {
+                    return Err(TreasuryAddressError::InvalidMofN {
+                        m: *required,
+                        n: *total,
+                    });
+                }
+
+                if witness_script.is_empty() {
+                    return Err(TreasuryAddressError::InvalidWitnessScript(
+                        "witness script cannot be empty".into(),
+                    ));
+                }
+
+                // Validate hex encoding
+                if hex::decode(witness_script).is_err() {
+                    return Err(TreasuryAddressError::InvalidWitnessScript(
+                        "witness script must be valid hex".into(),
+                    ));
+                }
+
+                // Validate pubkey count if provided
+                if !pubkeys.is_empty() && pubkeys.len() != *total as usize {
+                    return Err(TreasuryAddressError::PubkeyCountMismatch {
+                        expected: *total,
+                        actual: pubkeys.len(),
+                    });
+                }
+
+                Ok(())
+            }
+        }
+    }
+
+    /// Check if the address is empty
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Single(addr) => addr.is_empty(),
+            Self::MultiSig { address, .. } => address.is_empty(),
+        }
+    }
+}
+
+impl Default for TreasuryAddress {
+    fn default() -> Self {
+        Self::Single(String::new())
+    }
+}
+
+impl From<String> for TreasuryAddress {
+    fn from(address: String) -> Self {
+        Self::Single(address)
+    }
+}
+
+impl From<&str> for TreasuryAddress {
+    fn from(address: &str) -> Self {
+        Self::Single(address.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +573,118 @@ mod tests {
         assert_eq!(CapacityState::from_load(60, 100), CapacityState::Normal);
         assert_eq!(CapacityState::from_load(80, 100), CapacityState::SoftLimit);
         assert_eq!(CapacityState::from_load(95, 100), CapacityState::HardLimit);
+    }
+
+    #[test]
+    fn test_treasury_address_single() {
+        let addr = TreasuryAddress::single("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+        assert!(!addr.is_multisig());
+        assert_eq!(addr.address(), "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+        assert!(addr.validate().is_ok());
+    }
+
+    #[test]
+    fn test_treasury_address_single_empty() {
+        let addr = TreasuryAddress::single("");
+        assert!(addr.is_empty());
+        assert!(matches!(addr.validate(), Err(TreasuryAddressError::EmptyAddress)));
+    }
+
+    #[test]
+    fn test_treasury_address_multisig() {
+        let addr = TreasuryAddress::multisig(
+            "bc1qmultisigaddress...",
+            "522102abc...02def...52ae",
+            2,
+            3,
+        ).unwrap();
+
+        assert!(addr.is_multisig());
+        assert_eq!(addr.multisig_params(), Some((2, 3)));
+        assert_eq!(addr.witness_script(), Some("522102abc...02def...52ae"));
+    }
+
+    #[test]
+    fn test_treasury_address_multisig_invalid_m_of_n() {
+        // M > N
+        assert!(TreasuryAddress::multisig("addr", "script", 3, 2).is_err());
+
+        // M = 0
+        assert!(TreasuryAddress::multisig("addr", "script", 0, 2).is_err());
+
+        // N = 0
+        assert!(TreasuryAddress::multisig("addr", "script", 1, 0).is_err());
+
+        // N > 15
+        assert!(TreasuryAddress::multisig("addr", "script", 1, 16).is_err());
+    }
+
+    #[test]
+    fn test_treasury_address_multisig_with_pubkeys() {
+        let pubkeys = vec![
+            "02abc...".to_string(),
+            "02def...".to_string(),
+            "02ghi...".to_string(),
+        ];
+
+        let addr = TreasuryAddress::multisig_with_pubkeys(
+            "bc1qmultisigaddress...",
+            "522102abc...52ae",
+            2,
+            3,
+            pubkeys,
+        ).unwrap();
+
+        assert!(addr.is_multisig());
+    }
+
+    #[test]
+    fn test_treasury_address_multisig_pubkey_mismatch() {
+        let pubkeys = vec![
+            "02abc...".to_string(),
+            "02def...".to_string(),
+        ];
+
+        // 2 pubkeys but total is 3
+        let result = TreasuryAddress::multisig_with_pubkeys(
+            "bc1qmultisigaddress...",
+            "522102abc...52ae",
+            2,
+            3,
+            pubkeys,
+        );
+
+        assert!(matches!(result, Err(TreasuryAddressError::PubkeyCountMismatch { .. })));
+    }
+
+    #[test]
+    fn test_treasury_address_from_string() {
+        let addr: TreasuryAddress = "bc1qtest...".into();
+        assert!(!addr.is_multisig());
+        assert_eq!(addr.address(), "bc1qtest...");
+    }
+
+    #[test]
+    fn test_treasury_address_serde_single() {
+        let addr = TreasuryAddress::single("bc1qtest...");
+        let json = serde_json::to_string(&addr).unwrap();
+        assert_eq!(json, "\"bc1qtest...\"");
+
+        let parsed: TreasuryAddress = serde_json::from_str(&json).unwrap();
+        assert_eq!(addr, parsed);
+    }
+
+    #[test]
+    fn test_treasury_address_serde_multisig() {
+        let addr = TreasuryAddress::multisig(
+            "bc1qmultisig",
+            "abcd1234",
+            2,
+            3,
+        ).unwrap();
+
+        let json = serde_json::to_string(&addr).unwrap();
+        let parsed: TreasuryAddress = serde_json::from_str(&json).unwrap();
+        assert_eq!(addr, parsed);
     }
 }

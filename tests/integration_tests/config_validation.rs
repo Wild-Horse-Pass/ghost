@@ -11,6 +11,7 @@
 //! - Coordinator configuration
 
 use ghost_common::config::*;
+use ghost_common::types::TreasuryAddress;
 
 // =============================================================================
 // CONFIG LOADING TESTS (Tests 86-90)
@@ -344,7 +345,7 @@ fn test_109_zmq_endpoints_valid() {
 #[test]
 fn test_113_empty_treasury_address_warning() {
     let mut config = NodeConfig::default();
-    config.pool.treasury_address = String::new();
+    config.pool.treasury_address = TreasuryAddress::Single(String::new());
 
     let result = config.validate();
     assert!(result
@@ -357,7 +358,7 @@ fn test_113_empty_treasury_address_warning() {
 fn test_114_invalid_treasury_address_prefix_rejected() {
     let mut config = NodeConfig::default();
     config.bitcoin.network = BitcoinNetwork::Mainnet;
-    config.pool.treasury_address = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string(); // testnet address
+    config.pool.treasury_address = TreasuryAddress::single("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"); // testnet address
 
     let result = config.validate();
     assert!(!result.is_valid());
@@ -371,7 +372,7 @@ fn test_114_invalid_treasury_address_prefix_rejected() {
 fn test_115_treasury_address_matches_mainnet() {
     let mut config = NodeConfig::default();
     config.bitcoin.network = BitcoinNetwork::Mainnet;
-    config.pool.treasury_address = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string();
+    config.pool.treasury_address = TreasuryAddress::single("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
 
     let result = config.validate();
     assert!(!result
@@ -384,7 +385,7 @@ fn test_115_treasury_address_matches_mainnet() {
 fn test_116_treasury_address_matches_testnet() {
     let mut config = NodeConfig::default();
     config.bitcoin.network = BitcoinNetwork::Testnet;
-    config.pool.treasury_address = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string();
+    config.pool.treasury_address = TreasuryAddress::single("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx");
 
     let result = config.validate();
     assert!(!result
@@ -556,7 +557,7 @@ fn test_135_wraith_fee_out_of_range_rejected() {
 #[test]
 fn test_pool_config_validate_empty_treasury() {
     let config = PoolConfig {
-        treasury_address: String::new(),
+        treasury_address: TreasuryAddress::Single(String::new()),
         ..PoolConfig::default()
     };
 
@@ -567,7 +568,7 @@ fn test_pool_config_validate_empty_treasury() {
 #[test]
 fn test_pool_config_validate_invalid_fee() {
     let config = PoolConfig {
-        treasury_address: "bc1qtest".to_string(),
+        treasury_address: TreasuryAddress::single("bc1qtest"),
         treasury_fee_percent: 150.0,
         ..PoolConfig::default()
     };
@@ -579,7 +580,7 @@ fn test_pool_config_validate_invalid_fee() {
 #[test]
 fn test_pool_config_validate_zero_min_payout() {
     let config = PoolConfig {
-        treasury_address: "bc1qtest".to_string(),
+        treasury_address: TreasuryAddress::single("bc1qtest"),
         min_payout_sats: 0,
         ..PoolConfig::default()
     };
@@ -591,7 +592,7 @@ fn test_pool_config_validate_zero_min_payout() {
 #[test]
 fn test_pool_config_validate_success() {
     let config = PoolConfig {
-        treasury_address: "bc1qtest".to_string(),
+        treasury_address: TreasuryAddress::single("bc1qtest"),
         treasury_fee_percent: 2.0,
         min_payout_sats: 10000,
         payout_interval_blocks: 100,

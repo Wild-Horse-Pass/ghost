@@ -2300,6 +2300,318 @@ impl Database {
             Ok(count as u64)
         })
     }
+
+    // =========================================================================
+    // KEY ROTATION WITH ELDER STATUS TRANSFER
+    // =========================================================================
+
+    /// Check if a node_id has been retired (rotated away from)
+    ///
+    /// Returns the new node_id if the node was rotated, None if still active.
+    pub fn is_node_retired(&self, node_id: &str) -> GhostResult<Option<String>> {
+        self.with_connection(|conn| {
+            let result: Option<String> = conn
+                .query_row(
+                    "SELECT new_node_id FROM retired_nodes WHERE old_node_id = ?1",
+                    [node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(result)
+        })
+    }
+
+    /// Check if a rotation proof has been used (prevent replay)
+    fn is_rotation_proof_used(&self, conn: &Connection, old_node_id: &str, new_node_id: &str) -> GhostResult<bool> {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM rotation_history
+                 WHERE old_node_id = ?1 AND new_node_id = ?2 AND status = 'completed'",
+                params![old_node_id, new_node_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    /// Transfer elder status from old node_id to new node_id using a rotation proof
+    ///
+    /// This is the ONLY way to preserve elder status during key rotation.
+    ///
+    /// Security checks performed:
+    /// 1. Rotation proof is cryptographically valid (both signatures)
+    /// 2. Old node_id is not already retired
+    /// 3. New node_id is not already in use as someone else's identity
+    /// 4. The rotation proof hasn't been used before (prevent replay)
+    /// 5. The rotation proof is recent (not expired)
+    ///
+    /// Returns (success, elder_transferred)
+    pub fn transfer_elder_with_rotation(
+        &self,
+        rotation_proof: &ghost_common::key_rotation::KeyRotationProof,
+    ) -> GhostResult<(bool, bool)> {
+        // Step 1: Verify the rotation proof cryptographically (includes expiration check)
+        rotation_proof.verify().map_err(|e| {
+            GhostError::SignatureVerification(format!("Invalid rotation proof: {}", e))
+        })?;
+
+        let old_node_id = hex::encode(rotation_proof.old_node_id);
+        let new_node_id = hex::encode(rotation_proof.new_node_id);
+        let now = chrono::Utc::now().timestamp();
+        let proof_bytes = rotation_proof.to_bytes();
+
+        self.with_connection(|conn| {
+            // Step 2: Check if old node is already retired
+            let already_retired: Option<String> = conn
+                .query_row(
+                    "SELECT new_node_id FROM retired_nodes WHERE old_node_id = ?1",
+                    [&old_node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if already_retired.is_some() {
+                return Err(GhostError::SignatureVerification(format!(
+                    "Node {} is already retired",
+                    &old_node_id[..16]
+                )));
+            }
+
+            // Step 3: Check if this rotation proof was already used
+            if self.is_rotation_proof_used(conn, &old_node_id, &new_node_id)? {
+                return Err(GhostError::SignatureVerification(
+                    "Rotation proof has already been used".to_string()
+                ));
+            }
+
+            // Step 4: Check if new_node_id is already in use by someone else
+            let existing_new: Option<String> = conn
+                .query_row(
+                    "SELECT node_id FROM nodes WHERE node_id = ?1 AND rotated_from IS NULL",
+                    [&new_node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if let Some(_) = existing_new {
+                // New node_id exists and wasn't from a rotation - could be hijack attempt
+                return Err(GhostError::SignatureVerification(format!(
+                    "New node_id {} is already registered by another identity",
+                    &new_node_id[..16]
+                )));
+            }
+
+            // Step 5: Start transaction for atomic elder transfer
+            conn.execute("BEGIN IMMEDIATE", [])
+                .map_err(|e| GhostError::Database(format!("Failed to start transaction: {}", e)))?;
+
+            let result: GhostResult<(bool, bool)> = (|| {
+                // Get old node's elder status and other transferable attributes
+                let old_node: Option<(bool, Option<u32>, Option<String>, Option<String>, Option<i64>)> = conn
+                    .query_row(
+                        "SELECT is_elder, elder_order, pow_proof, capabilities, first_seen
+                         FROM nodes WHERE node_id = ?1",
+                        [&old_node_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                    )
+                    .optional()
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                let (is_elder, elder_order, pow_proof, capabilities, first_seen) = match old_node {
+                    Some(data) => data,
+                    None => {
+                        return Err(GhostError::SignatureVerification(format!(
+                            "Old node {} not found in database",
+                            &old_node_id[..16]
+                        )));
+                    }
+                };
+
+                // Insert new node (or update if it exists from a previous incomplete rotation)
+                conn.execute(
+                    "INSERT INTO nodes (node_id, first_seen, last_seen, is_elder, elder_order,
+                                       pow_proof, capabilities, rotated_from)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                     ON CONFLICT(node_id) DO UPDATE SET
+                         is_elder = excluded.is_elder,
+                         elder_order = excluded.elder_order,
+                         pow_proof = COALESCE(excluded.pow_proof, pow_proof),
+                         capabilities = COALESCE(excluded.capabilities, capabilities),
+                         rotated_from = excluded.rotated_from,
+                         last_seen = excluded.last_seen",
+                    params![
+                        &new_node_id,
+                        first_seen.unwrap_or(now),  // Preserve original first_seen
+                        now,
+                        is_elder,
+                        elder_order,
+                        pow_proof,
+                        capabilities,
+                        &old_node_id,
+                    ],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                // Mark old node as retired (remove elder status)
+                conn.execute(
+                    "UPDATE nodes SET is_elder = 0, elder_order = NULL, rotated_to = ?1
+                     WHERE node_id = ?2",
+                    params![&new_node_id, &old_node_id],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                // Add to retired_nodes table (permanent record)
+                conn.execute(
+                    "INSERT INTO retired_nodes (old_node_id, new_node_id, rotation_timestamp, rotation_proof)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![&old_node_id, &new_node_id, now, &proof_bytes],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                // Add to rotation history
+                conn.execute(
+                    "INSERT INTO rotation_history (old_node_id, new_node_id, rotation_timestamp,
+                                                   finalized_timestamp, status, rotation_proof, elder_transferred)
+                     VALUES (?1, ?2, ?3, ?4, 'completed', ?5, ?6)",
+                    params![
+                        &old_node_id,
+                        &new_node_id,
+                        rotation_proof.timestamp as i64,
+                        now,
+                        &proof_bytes,
+                        if is_elder { 1 } else { 0 },
+                    ],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                Ok((true, is_elder))
+            })();
+
+            // Commit or rollback
+            match &result {
+                Ok(_) => {
+                    conn.execute("COMMIT", [])
+                        .map_err(|e| GhostError::Database(format!("Failed to commit: {}", e)))?;
+                }
+                Err(_) => {
+                    let _ = conn.execute("ROLLBACK", []);
+                }
+            }
+
+            result
+        })
+    }
+
+    /// Get the rotation history for a node (follows the chain of rotations)
+    pub fn get_rotation_chain(&self, node_id: &str) -> GhostResult<Vec<(String, String, i64)>> {
+        self.with_connection(|conn| {
+            let mut chain = Vec::new();
+
+            // First, find all rotations FROM this node
+            let mut stmt = conn
+                .prepare(
+                    "SELECT old_node_id, new_node_id, finalized_timestamp
+                     FROM rotation_history
+                     WHERE old_node_id = ?1 AND status = 'completed'
+                     ORDER BY finalized_timestamp DESC"
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rotations = stmt
+                .query_map([node_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            chain.extend(rotations);
+
+            // Also find rotations TO this node (to build full chain)
+            let mut stmt = conn
+                .prepare(
+                    "SELECT old_node_id, new_node_id, finalized_timestamp
+                     FROM rotation_history
+                     WHERE new_node_id = ?1 AND status = 'completed'
+                     ORDER BY finalized_timestamp DESC"
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rotations = stmt
+                .query_map([node_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            chain.extend(rotations);
+
+            Ok(chain)
+        })
+    }
+
+    /// Store a pending rotation (before finalization)
+    /// This allows for grace period revocation
+    pub fn store_pending_rotation(
+        &self,
+        rotation_proof: &ghost_common::key_rotation::KeyRotationProof,
+    ) -> GhostResult<i64> {
+        let old_node_id = hex::encode(rotation_proof.old_node_id);
+        let new_node_id = hex::encode(rotation_proof.new_node_id);
+        let proof_bytes = rotation_proof.to_bytes();
+
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO rotation_history (old_node_id, new_node_id, rotation_timestamp,
+                                               status, rotation_proof, elder_transferred)
+                 VALUES (?1, ?2, ?3, 'pending', ?4, 0)",
+                params![
+                    &old_node_id,
+                    &new_node_id,
+                    rotation_proof.timestamp as i64,
+                    &proof_bytes,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    /// Revoke a pending rotation (during grace period)
+    pub fn revoke_pending_rotation(
+        &self,
+        rotation_id: i64,
+        revocation_proof: &ghost_common::key_rotation::RotationRevocation,
+    ) -> GhostResult<()> {
+        // Serialize revocation proof to JSON
+        let revocation_bytes = serde_json::to_vec(revocation_proof)
+            .map_err(|e| GhostError::Database(format!("Failed to serialize revocation: {}", e)))?;
+        let now = chrono::Utc::now().timestamp();
+
+        self.with_connection(|conn| {
+            let rows_affected = conn
+                .execute(
+                    "UPDATE rotation_history
+                     SET status = 'revoked', finalized_timestamp = ?1, revocation_proof = ?2
+                     WHERE id = ?3 AND status = 'pending'",
+                    params![now, &revocation_bytes, rotation_id],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if rows_affected == 0 {
+                return Err(GhostError::Database(
+                    "Rotation not found or already finalized".to_string()
+                ));
+            }
+
+            Ok(())
+        })
+    }
 }
 
 fn withdrawal_from_row(row: &rusqlite::Row) -> rusqlite::Result<WithdrawalRequest> {

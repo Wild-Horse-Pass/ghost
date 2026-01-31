@@ -28,6 +28,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::constants::*;
+use crate::signer::SignerConfig;
+use crate::types::TreasuryAddress;
 
 /// Main node configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,8 +157,13 @@ impl NodeConfig {
                 "Treasury address not configured - pool fee collection disabled",
             );
         } else {
-            // Basic bech32 validation
-            let addr = &self.pool.treasury_address;
+            // Validate the TreasuryAddress configuration
+            if let Err(e) = self.pool.treasury_address.validate() {
+                result.add_error("pool.treasury_address", &e.to_string());
+            }
+
+            // Basic bech32 prefix validation
+            let addr = self.pool.treasury_address.address();
             let valid_prefix = match self.bitcoin.network {
                 BitcoinNetwork::Mainnet => addr.starts_with("bc1"),
                 BitcoinNetwork::Signet | BitcoinNetwork::Testnet => addr.starts_with("tb1"),
@@ -170,6 +177,21 @@ impl NodeConfig {
                         format!("{:?}", self.bitcoin.network).to_lowercase()
                     ),
                 );
+            }
+
+            // Additional validation for multi-sig
+            if self.pool.treasury_address.is_multisig() {
+                if let Some((m, n)) = self.pool.treasury_address.multisig_params() {
+                    if m > n || n > 15 || m == 0 {
+                        result.add_error(
+                            "pool.treasury_address",
+                            &format!(
+                                "Invalid M-of-N multi-sig: {}-of-{} (M must be 1-N, N must be 1-15)",
+                                m, n
+                            ),
+                        );
+                    }
+                }
             }
         }
 
@@ -408,17 +430,41 @@ impl NodeConfig {
 /// Identity configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdentityConfig {
-    /// Path to Ed25519 private key file
+    /// Path to Ed25519 private key file (legacy, use signer.key_path instead)
+    #[serde(default = "default_key_path")]
     pub key_path: PathBuf,
     /// Node display name (optional)
     pub display_name: Option<String>,
+    /// Signer configuration (optional, defaults to local with key_path)
+    ///
+    /// When not specified, uses SignerConfig::Local with key_path.
+    /// When specified, key_path is ignored in favor of signer configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer: Option<SignerConfig>,
+}
+
+fn default_key_path() -> PathBuf {
+    PathBuf::from("~/.ghost/node.key")
+}
+
+impl IdentityConfig {
+    /// Get the effective signer configuration
+    ///
+    /// If `signer` is specified, returns it directly.
+    /// Otherwise, returns a Local signer using `key_path`.
+    pub fn signer_config(&self) -> SignerConfig {
+        self.signer.clone().unwrap_or_else(|| SignerConfig::Local {
+            key_path: self.key_path.clone(),
+        })
+    }
 }
 
 impl Default for IdentityConfig {
     fn default() -> Self {
         Self {
-            key_path: PathBuf::from("~/.ghost/node.key"),
+            key_path: default_key_path(),
             display_name: None,
+            signer: None,
         }
     }
 }
@@ -765,8 +811,26 @@ impl Default for RegistryConfig {
 /// Pool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolConfig {
-    /// Treasury address for pool fees (bech32 format)
-    pub treasury_address: String,
+    /// Treasury address for pool fees
+    ///
+    /// Can be either:
+    /// - Simple string (single-sig bech32 address)
+    /// - Multi-sig configuration with witness script
+    ///
+    /// # Example (TOML)
+    /// ```toml
+    /// # Single-sig (simple)
+    /// treasury_address = "bc1q..."
+    ///
+    /// # Multi-sig (object)
+    /// [pool.treasury_address]
+    /// address = "bc1q..."
+    /// witness_script = "522102..."
+    /// required = 2
+    /// total = 3
+    /// ```
+    #[serde(default)]
+    pub treasury_address: TreasuryAddress,
     /// Treasury fee percentage (0-100)
     pub treasury_fee_percent: f64,
     /// Minimum payout threshold (satoshis)
@@ -783,6 +847,12 @@ impl PoolConfig {
         if self.treasury_address.is_empty() {
             return Err("treasury_address must be configured".to_string());
         }
+
+        // Validate treasury address
+        if let Err(e) = self.treasury_address.validate() {
+            return Err(format!("treasury_address: {}", e));
+        }
+
         if self.treasury_fee_percent < 0.0 || self.treasury_fee_percent > 100.0 {
             return Err(format!(
                 "treasury_fee_percent must be between 0 and 100, got {}",
@@ -794,13 +864,23 @@ impl PoolConfig {
         }
         Ok(())
     }
+
+    /// Get the treasury address string (for backward compatibility)
+    pub fn treasury_address_str(&self) -> &str {
+        self.treasury_address.address()
+    }
+
+    /// Check if treasury is multi-sig
+    pub fn is_multisig_treasury(&self) -> bool {
+        self.treasury_address.is_multisig()
+    }
 }
 
 impl Default for PoolConfig {
     fn default() -> Self {
         Self {
             // Default placeholder - MUST be configured in production
-            treasury_address: String::new(),
+            treasury_address: TreasuryAddress::default(),
             treasury_fee_percent: 2.0, // 2% pool fee
             min_payout_sats: 100_000,  // 0.001 BTC minimum
             payout_interval_blocks: 100,

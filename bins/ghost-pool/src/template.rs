@@ -36,7 +36,7 @@ use ghost_accounting::CoinbaseBuilder;
 use ghost_buds::BudsClassifier;
 use ghost_common::config::BitcoinNetwork;
 use ghost_common::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
-use ghost_common::types::PayoutProposal;
+use ghost_common::types::{PayoutProposal, TreasuryAddress};
 use ghost_policy::PolicyProfile;
 
 /// Template processor configuration
@@ -50,8 +50,8 @@ pub struct TemplateConfig {
     pub target_weight: u64,
     /// Coinbase extra data (pool signature)
     pub coinbase_extra: String,
-    /// Treasury address for pool fees (bech32)
-    pub treasury_address: String,
+    /// Treasury address for pool fees (supports multi-sig)
+    pub treasury_address: TreasuryAddress,
     /// Pool payout address for fallback coinbase (bech32)
     /// Used when no approved payout proposal exists
     pub pool_payout_address: String,
@@ -66,8 +66,8 @@ impl Default for TemplateConfig {
             min_fee_rate: 1.0,
             target_weight: 3_992_000, // ~99% of 4MW limit
             coinbase_extra: "/Ghost/".to_string(),
-            treasury_address: String::new(),    // Must be configured
-            pool_payout_address: String::new(), // Must be configured
+            treasury_address: TreasuryAddress::default(), // Must be configured
+            pool_payout_address: String::new(),            // Must be configured
             network: BitcoinNetwork::Mainnet,
         }
     }
@@ -244,8 +244,10 @@ impl TemplateProcessor {
 
         // Add treasury output if non-zero and treasury address is configured
         if proposal.treasury_amount > 0 && !self.config.treasury_address.is_empty() {
+            // Use the address string for treasury (multi-sig uses same P2WSH address)
+            let treasury_addr = self.config.treasury_address.address();
             entries.push(ghost_common::types::PayoutEntry {
-                address: self.config.treasury_address.as_bytes().to_vec(),
+                address: treasury_addr.as_bytes().to_vec(),
                 amount: proposal.treasury_amount,
                 recipient_id: [0u8; 32],
                 payout_type: ghost_common::types::PayoutType::Treasury,
@@ -380,17 +382,18 @@ impl TemplateProcessor {
 
             // Treasury
             if prop.treasury_amount > 0 {
+                let treasury_addr = self.config.treasury_address.address();
                 coinbase2.extend_from_slice(&prop.treasury_amount.to_le_bytes());
                 self.encode_address_script(
                     &mut coinbase2,
-                    &self.config.treasury_address,
+                    treasury_addr,
                     "treasury",
                 );
                 // Also add to outputs_serialized for TDP
                 outputs_serialized.extend_from_slice(&prop.treasury_amount.to_le_bytes());
                 self.encode_address_script(
                     &mut outputs_serialized,
-                    &self.config.treasury_address,
+                    treasury_addr,
                     "treasury_tdp",
                 );
             }

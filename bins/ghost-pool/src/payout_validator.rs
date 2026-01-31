@@ -302,6 +302,7 @@ fn validate_output_script(script: &[u8]) -> Result<(), PayoutValidationError> {
         22 if script[0] == 0x00 && script[1] == 0x14 => Ok(()),
 
         // P2WSH: OP_0 <32 bytes>
+        // This covers both standard P2WSH and multi-sig P2WSH
         34 if script[0] == 0x00 && script[1] == 0x20 => Ok(()),
 
         // P2TR: OP_1 <32 bytes>
@@ -318,6 +319,121 @@ fn validate_output_script(script: &[u8]) -> Result<(), PayoutValidationError> {
             Err(PayoutValidationError::InvalidScript(preview))
         }
     }
+}
+
+/// Validate a multi-sig witness script (redeem script)
+///
+/// Multi-sig scripts have the format:
+/// OP_M <pubkey1> <pubkey2> ... <pubkeyN> OP_N OP_CHECKMULTISIG
+///
+/// Where:
+/// - OP_M (0x51-0x60) represents M (1-16)
+/// - Each pubkey is 33 bytes (compressed) or 65 bytes (uncompressed)
+/// - OP_N (0x51-0x60) represents N (1-16)
+/// - OP_CHECKMULTISIG (0xae)
+pub fn validate_multisig_witness_script(
+    script: &[u8],
+    expected_m: u8,
+    expected_n: u8,
+) -> Result<(), PayoutValidationError> {
+    // Minimum length: OP_M + N pubkeys + OP_N + OP_CHECKMULTISIG
+    // For compressed pubkeys: 1 + (33+1)*N + 1 + 1 = 3 + 34*N
+    if script.len() < 3 + (34 * expected_n as usize) {
+        return Err(PayoutValidationError::InvalidScript(
+            "multi-sig script too short".into(),
+        ));
+    }
+
+    // Check OP_M (0x51 = OP_1, 0x52 = OP_2, etc.)
+    let m_opcode = script[0];
+    if m_opcode < 0x51 || m_opcode > 0x60 {
+        return Err(PayoutValidationError::InvalidScript(
+            "invalid OP_M in multi-sig script".into(),
+        ));
+    }
+    let actual_m = m_opcode - 0x50;
+
+    if actual_m != expected_m {
+        return Err(PayoutValidationError::InvalidScript(format!(
+            "M mismatch: script has {}, expected {}",
+            actual_m, expected_m
+        )));
+    }
+
+    // Count pubkeys and find OP_N
+    let mut pos = 1;
+    let mut pubkey_count = 0;
+
+    while pos < script.len() - 2 {
+        let len = script[pos] as usize;
+        if len == 33 || len == 65 {
+            // Valid pubkey length (compressed or uncompressed)
+            pos += 1 + len;
+            pubkey_count += 1;
+        } else if len >= 0x51 && len <= 0x60 {
+            // This is OP_N
+            break;
+        } else {
+            return Err(PayoutValidationError::InvalidScript(format!(
+                "unexpected opcode 0x{:02x} at position {}",
+                len, pos
+            )));
+        }
+    }
+
+    if pubkey_count != expected_n {
+        return Err(PayoutValidationError::InvalidScript(format!(
+            "N mismatch: script has {} pubkeys, expected {}",
+            pubkey_count, expected_n
+        )));
+    }
+
+    // Check OP_N
+    if pos >= script.len() - 1 {
+        return Err(PayoutValidationError::InvalidScript(
+            "multi-sig script truncated before OP_N".into(),
+        ));
+    }
+
+    let n_opcode = script[pos];
+    if n_opcode < 0x51 || n_opcode > 0x60 {
+        return Err(PayoutValidationError::InvalidScript(
+            "invalid OP_N in multi-sig script".into(),
+        ));
+    }
+    let actual_n = n_opcode - 0x50;
+
+    if actual_n != expected_n {
+        return Err(PayoutValidationError::InvalidScript(format!(
+            "N opcode mismatch: script has {}, expected {}",
+            actual_n, expected_n
+        )));
+    }
+
+    // Check OP_CHECKMULTISIG
+    pos += 1;
+    if pos >= script.len() {
+        return Err(PayoutValidationError::InvalidScript(
+            "multi-sig script truncated before OP_CHECKMULTISIG".into(),
+        ));
+    }
+
+    if script[pos] != 0xae {
+        return Err(PayoutValidationError::InvalidScript(format!(
+            "expected OP_CHECKMULTISIG (0xae), got 0x{:02x}",
+            script[pos]
+        )));
+    }
+
+    // Verify M <= N
+    if expected_m > expected_n || expected_m == 0 || expected_n > 15 {
+        return Err(PayoutValidationError::InvalidScript(format!(
+            "invalid M-of-N: {}-of-{} (M must be 1-N, N must be 1-15)",
+            expected_m, expected_n
+        )));
+    }
+
+    Ok(())
 }
 
 /// Check for duplicate recipients
@@ -531,5 +647,78 @@ mod tests {
         let mut p2tr = vec![0x51, 0x20];
         p2tr.extend_from_slice(&[0u8; 32]);
         assert!(validate_output_script(&p2tr).is_ok());
+
+        // P2WSH (multi-sig compatible)
+        let mut p2wsh = vec![0x00, 0x20];
+        p2wsh.extend_from_slice(&[0u8; 32]);
+        assert!(validate_output_script(&p2wsh).is_ok());
+    }
+
+    #[test]
+    fn test_multisig_witness_script_2of3() {
+        // Build a 2-of-3 multi-sig witness script
+        // OP_2 <pubkey1> <pubkey2> <pubkey3> OP_3 OP_CHECKMULTISIG
+        let mut script = vec![0x52]; // OP_2
+
+        // Add 3 compressed pubkeys (33 bytes each)
+        for _ in 0..3 {
+            script.push(33); // push 33 bytes
+            script.extend_from_slice(&[0x02; 33]); // fake compressed pubkey
+        }
+
+        script.push(0x53); // OP_3
+        script.push(0xae); // OP_CHECKMULTISIG
+
+        assert!(validate_multisig_witness_script(&script, 2, 3).is_ok());
+    }
+
+    #[test]
+    fn test_multisig_witness_script_invalid_m() {
+        // Build script with wrong M
+        let mut script = vec![0x53]; // OP_3 (but we expect 2)
+
+        for _ in 0..3 {
+            script.push(33);
+            script.extend_from_slice(&[0x02; 33]);
+        }
+
+        script.push(0x53); // OP_3
+        script.push(0xae); // OP_CHECKMULTISIG
+
+        let result = validate_multisig_witness_script(&script, 2, 3);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_multisig_witness_script_wrong_pubkey_count() {
+        // Build 2-of-3 script but only include 2 pubkeys
+        let mut script = vec![0x52]; // OP_2
+
+        for _ in 0..2 {
+            script.push(33);
+            script.extend_from_slice(&[0x02; 33]);
+        }
+
+        script.push(0x53); // OP_3
+        script.push(0xae); // OP_CHECKMULTISIG
+
+        let result = validate_multisig_witness_script(&script, 2, 3);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_multisig_witness_script_missing_checkmultisig() {
+        let mut script = vec![0x52]; // OP_2
+
+        for _ in 0..3 {
+            script.push(33);
+            script.extend_from_slice(&[0x02; 33]);
+        }
+
+        script.push(0x53); // OP_3
+        // Missing OP_CHECKMULTISIG
+
+        let result = validate_multisig_witness_script(&script, 2, 3);
+        assert!(result.is_err());
     }
 }

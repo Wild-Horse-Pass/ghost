@@ -58,6 +58,7 @@
 use tracing::{debug, info, warn};
 
 use ghost_common::constants::{TREASURY_DECAY_YEARS, TREASURY_THRESHOLD_SATS};
+use ghost_common::types::TreasuryAddress;
 
 /// A block height that has been verified to come from a trusted source
 ///
@@ -118,8 +119,10 @@ pub const FINAL_TREASURY_PERCENT: f64 = 0.0;
 pub struct Treasury {
     /// Current balance (satoshis)
     pub balance_sats: u64,
-    /// Treasury address (script pubkey)
-    pub address: Vec<u8>,
+    /// Treasury address configuration (supports multi-sig)
+    pub address: TreasuryAddress,
+    /// Raw script pubkey bytes (cached for efficiency)
+    address_script: Vec<u8>,
     /// Threshold for starting decay (21 BTC)
     pub threshold_sats: u64,
     /// Decay period in years
@@ -133,11 +136,12 @@ pub struct Treasury {
 }
 
 impl Treasury {
-    /// Create a new treasury
-    pub fn new(address: Vec<u8>) -> Self {
+    /// Create a new treasury from script pubkey bytes (legacy)
+    pub fn new(address_script: Vec<u8>) -> Self {
         Self {
             balance_sats: 0,
-            address,
+            address: TreasuryAddress::default(),
+            address_script,
             threshold_sats: TREASURY_THRESHOLD_SATS,
             decay_years: TREASURY_DECAY_YEARS,
             threshold_reached_height: None,
@@ -146,11 +150,44 @@ impl Treasury {
         }
     }
 
-    /// Create with custom threshold
-    pub fn with_threshold(address: Vec<u8>, threshold_sats: u64) -> Self {
+    /// Create a new treasury from TreasuryAddress
+    pub fn from_address(address: TreasuryAddress, address_script: Vec<u8>) -> Self {
         Self {
             balance_sats: 0,
             address,
+            address_script,
+            threshold_sats: TREASURY_THRESHOLD_SATS,
+            decay_years: TREASURY_DECAY_YEARS,
+            threshold_reached_height: None,
+            total_collected_sats: 0,
+            total_payouts_sats: 0,
+        }
+    }
+
+    /// Create with custom threshold (legacy)
+    pub fn with_threshold(address_script: Vec<u8>, threshold_sats: u64) -> Self {
+        Self {
+            balance_sats: 0,
+            address: TreasuryAddress::default(),
+            address_script,
+            threshold_sats,
+            decay_years: TREASURY_DECAY_YEARS,
+            threshold_reached_height: None,
+            total_collected_sats: 0,
+            total_payouts_sats: 0,
+        }
+    }
+
+    /// Create with TreasuryAddress and custom threshold
+    pub fn from_address_with_threshold(
+        address: TreasuryAddress,
+        address_script: Vec<u8>,
+        threshold_sats: u64,
+    ) -> Self {
+        Self {
+            balance_sats: 0,
+            address,
+            address_script,
             threshold_sats,
             decay_years: TREASURY_DECAY_YEARS,
             threshold_reached_height: None,
@@ -161,7 +198,28 @@ impl Treasury {
 
     /// Restore treasury state (e.g., from database)
     pub fn restore(
-        address: Vec<u8>,
+        address_script: Vec<u8>,
+        balance_sats: u64,
+        threshold_reached_height: Option<u64>,
+        total_collected_sats: u64,
+        total_payouts_sats: u64,
+    ) -> Self {
+        Self {
+            balance_sats,
+            address: TreasuryAddress::default(),
+            address_script,
+            threshold_sats: TREASURY_THRESHOLD_SATS,
+            decay_years: TREASURY_DECAY_YEARS,
+            threshold_reached_height,
+            total_collected_sats,
+            total_payouts_sats,
+        }
+    }
+
+    /// Restore treasury state with TreasuryAddress
+    pub fn restore_with_address(
+        address: TreasuryAddress,
+        address_script: Vec<u8>,
         balance_sats: u64,
         threshold_reached_height: Option<u64>,
         total_collected_sats: u64,
@@ -170,6 +228,7 @@ impl Treasury {
         Self {
             balance_sats,
             address,
+            address_script,
             threshold_sats: TREASURY_THRESHOLD_SATS,
             decay_years: TREASURY_DECAY_YEARS,
             threshold_reached_height,
@@ -180,7 +239,7 @@ impl Treasury {
 
     /// Restore treasury state with custom threshold (for testing)
     pub fn restore_with_threshold(
-        address: Vec<u8>,
+        address_script: Vec<u8>,
         balance_sats: u64,
         threshold_sats: u64,
         threshold_reached_height: Option<u64>,
@@ -189,13 +248,29 @@ impl Treasury {
     ) -> Self {
         Self {
             balance_sats,
-            address,
+            address: TreasuryAddress::default(),
+            address_script,
             threshold_sats,
             decay_years: TREASURY_DECAY_YEARS,
             threshold_reached_height,
             total_collected_sats,
             total_payouts_sats,
         }
+    }
+
+    /// Get the treasury address configuration
+    pub fn treasury_address(&self) -> &TreasuryAddress {
+        &self.address
+    }
+
+    /// Get the raw script pubkey bytes
+    pub fn script_pubkey(&self) -> &[u8] {
+        &self.address_script
+    }
+
+    /// Check if this is a multi-sig treasury
+    pub fn is_multisig(&self) -> bool {
+        self.address.is_multisig()
     }
 
     /// Add funds to treasury

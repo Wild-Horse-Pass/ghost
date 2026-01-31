@@ -33,12 +33,14 @@
 //!
 //! This makes generating "favorable" node_ids computationally expensive.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::error::{GhostError, GhostResult};
+use crate::signer::{LocalSigner, Signer, SignerConfig};
 use crate::types::NodeId;
 
 /// Required leading zero bits for node_id proof-of-work.
@@ -136,12 +138,20 @@ impl NodeIdProof {
 }
 
 /// Node identity with Ed25519 keypair and proof-of-work
+///
+/// NodeIdentity wraps a [`Signer`] implementation to abstract the signing backend.
+/// This enables future HSM/KMS integration without changing calling code.
+///
+/// # Signer Abstraction
+///
+/// By default, NodeIdentity uses [`LocalSigner`] which stores keys in a local file.
+/// Future implementations will support HSM and KMS backends through the same interface.
 #[derive(Debug)]
 pub struct NodeIdentity {
-    /// Ed25519 signing key (private)
-    signing_key: SigningKey,
-    /// Ed25519 verifying key (public)
-    verifying_key: VerifyingKey,
+    /// Signer implementation (LocalSigner, HSM, or KMS)
+    signer: Arc<dyn Signer>,
+    /// Cached public key (for efficiency)
+    public_key: [u8; 32],
     /// Proof-of-work for Sybil resistance
     pow_proof: Option<NodeIdProof>,
     /// Display name (optional)
@@ -152,10 +162,8 @@ impl NodeIdentity {
     /// Create a new random identity with proof-of-work
     /// This will mine a nonce that satisfies the PoW difficulty requirement
     pub fn generate() -> Self {
-        let mut rng = rand::thread_rng();
-        let signing_key = SigningKey::generate(&mut rng);
-        let verifying_key = signing_key.verifying_key();
-        let public_key = verifying_key.to_bytes();
+        let signer = Arc::new(LocalSigner::generate());
+        let public_key = signer.public_key();
 
         // Mine proof-of-work
         let pow_proof = NodeIdProof::mine(&public_key, NODE_ID_POW_DIFFICULTY);
@@ -171,26 +179,84 @@ impl NodeIdentity {
         }
 
         Self {
-            signing_key,
-            verifying_key,
+            signer,
+            public_key,
             pow_proof,
             display_name: None,
         }
     }
 
+    /// Create a NodeIdentity from a Signer implementation
+    ///
+    /// This allows using custom signer backends (HSM, KMS) with NodeIdentity.
+    /// Proof-of-work will be mined automatically.
+    pub fn from_signer(signer: Arc<dyn Signer>) -> Self {
+        let public_key = signer.public_key();
+        let pow_proof = NodeIdProof::mine(&public_key, NODE_ID_POW_DIFFICULTY);
+
+        Self {
+            signer,
+            public_key,
+            pow_proof,
+            display_name: None,
+        }
+    }
+
+    /// Create a NodeIdentity from a Signer with existing PoW proof
+    ///
+    /// Use this when restoring from database or file to avoid re-mining.
+    pub fn from_signer_with_proof(signer: Arc<dyn Signer>, pow_proof: Option<NodeIdProof>) -> Self {
+        let public_key = signer.public_key();
+
+        Self {
+            signer,
+            public_key,
+            pow_proof,
+            display_name: None,
+        }
+    }
+
+    /// Create a NodeIdentity from a SignerConfig
+    ///
+    /// This is the recommended way to create an identity from configuration.
+    pub fn from_config(config: &SignerConfig) -> GhostResult<Self> {
+        let signer = crate::signer::create_signer(config).map_err(|e| {
+            GhostError::InvalidKey(format!("Failed to create signer: {}", e))
+        })?;
+
+        let public_key = signer.public_key();
+        let pow_proof = NodeIdProof::mine(&public_key, NODE_ID_POW_DIFFICULTY);
+
+        Ok(Self {
+            signer,
+            public_key,
+            pow_proof,
+            display_name: None,
+        })
+    }
+
     /// Create identity without proof-of-work (for testing only)
     #[cfg(test)]
     pub fn generate_without_pow() -> Self {
-        let mut rng = rand::thread_rng();
-        let signing_key = SigningKey::generate(&mut rng);
-        let verifying_key = signing_key.verifying_key();
+        let signer = Arc::new(LocalSigner::generate());
+        let public_key = signer.public_key();
 
         Self {
-            signing_key,
-            verifying_key,
+            signer,
+            public_key,
             pow_proof: None,
             display_name: None,
         }
+    }
+
+    /// Get the underlying signer
+    pub fn signer(&self) -> &Arc<dyn Signer> {
+        &self.signer
+    }
+
+    /// Get the signer type (local, hsm, kms)
+    pub fn signer_type(&self) -> &'static str {
+        self.signer.signer_type()
     }
 
     /// Load identity from a key file (44 bytes: 32 key + 12 PoW proof)
@@ -218,21 +284,20 @@ impl NodeIdentity {
         let mut key_array = [0u8; 32];
         key_array.copy_from_slice(&key_bytes[..32]);
 
-        let signing_key = SigningKey::from_bytes(&key_array);
-        let verifying_key = signing_key.verifying_key();
+        let signer = Arc::new(LocalSigner::from_bytes(&key_array));
+        let public_key = signer.public_key();
 
         // Extract PoW proof if present
         let pow_proof = if key_bytes.len() == 44 {
             NodeIdProof::from_bytes(&key_bytes[32..])
         } else {
             // Legacy key without PoW - mine one now
-            let public_key = verifying_key.to_bytes();
             NodeIdProof::mine(&public_key, NODE_ID_POW_DIFFICULTY)
         };
 
         Ok(Self {
-            signing_key,
-            verifying_key,
+            signer,
+            public_key,
             pow_proof,
             display_name: None,
         })
@@ -240,29 +305,18 @@ impl NodeIdentity {
 
     /// Load identity from hex-encoded string (private key only, will mine PoW)
     pub fn from_hex(hex_str: &str) -> GhostResult<Self> {
-        let key_bytes = hex::decode(hex_str)
-            .map_err(|e| GhostError::InvalidKey(format!("Invalid hex: {}", e)))?;
-
-        if key_bytes.len() != 32 {
-            return Err(GhostError::InvalidKey(format!(
-                "Invalid key length: expected 32, got {}",
-                key_bytes.len()
-            )));
-        }
-
-        let mut key_array = [0u8; 32];
-        key_array.copy_from_slice(&key_bytes);
-
-        let signing_key = SigningKey::from_bytes(&key_array);
-        let verifying_key = signing_key.verifying_key();
-        let public_key = verifying_key.to_bytes();
+        let signer = Arc::new(
+            LocalSigner::from_hex(hex_str)
+                .map_err(|e| GhostError::InvalidKey(e.to_string()))?,
+        );
+        let public_key = signer.public_key();
 
         // Mine proof-of-work
         let pow_proof = NodeIdProof::mine(&public_key, NODE_ID_POW_DIFFICULTY);
 
         Ok(Self {
-            signing_key,
-            verifying_key,
+            signer,
+            public_key,
             pow_proof,
             display_name: None,
         })
@@ -270,27 +324,16 @@ impl NodeIdentity {
 
     /// Load identity with existing PoW proof (for database restoration)
     pub fn from_hex_with_proof(hex_str: &str, proof_hex: &str) -> GhostResult<Self> {
-        let key_bytes = hex::decode(hex_str)
-            .map_err(|e| GhostError::InvalidKey(format!("Invalid hex: {}", e)))?;
-
-        if key_bytes.len() != 32 {
-            return Err(GhostError::InvalidKey(format!(
-                "Invalid key length: expected 32, got {}",
-                key_bytes.len()
-            )));
-        }
-
-        let mut key_array = [0u8; 32];
-        key_array.copy_from_slice(&key_bytes);
-
-        let signing_key = SigningKey::from_bytes(&key_array);
-        let verifying_key = signing_key.verifying_key();
+        let signer = Arc::new(
+            LocalSigner::from_hex(hex_str)
+                .map_err(|e| GhostError::InvalidKey(e.to_string()))?,
+        );
+        let public_key = signer.public_key();
 
         let pow_proof = NodeIdProof::from_hex(proof_hex);
 
         // Verify the proof is valid for this key
         if let Some(ref proof) = pow_proof {
-            let public_key = verifying_key.to_bytes();
             if !proof.verify(&public_key, NODE_ID_POW_DIFFICULTY) {
                 return Err(GhostError::InvalidKey(
                     "PoW proof does not match public key".into(),
@@ -299,34 +342,61 @@ impl NodeIdentity {
         }
 
         Ok(Self {
-            signing_key,
-            verifying_key,
+            signer,
+            public_key,
             pow_proof,
             display_name: None,
         })
     }
 
     /// Save identity to a key file (44 bytes: 32 key + 12 PoW proof)
+    ///
+    /// Note: This only works for LocalSigner. HSM/KMS signers don't support
+    /// exporting private keys.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> GhostResult<()> {
         let path = path.as_ref();
+
+        // For non-local signers, we can only save the PoW proof and public key reference
+        // The actual key is managed by the HSM/KMS
+        if self.signer.signer_type() != "local" {
+            return Err(GhostError::InvalidKey(format!(
+                "Cannot save {} signer to file - key is managed by external backend",
+                self.signer.signer_type()
+            )));
+        }
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        // Build 44-byte output: private key + PoW proof
-        let mut output = Vec::with_capacity(44);
-        output.extend_from_slice(&self.signing_key.to_bytes());
+        // For LocalSigner, we need to get the signing key bytes
+        // We do this by downcasting, but fall back to just saving public key if that fails
+        // In practice, LocalSigner always supports this
+        let local_signer = self
+            .signer
+            .as_ref()
+            .as_any()
+            .downcast_ref::<LocalSigner>();
 
-        if let Some(ref proof) = self.pow_proof {
-            output.extend_from_slice(&proof.to_bytes());
+        if let Some(local) = local_signer {
+            // Build 44-byte output: private key + PoW proof
+            let mut output = Vec::with_capacity(44);
+            output.extend_from_slice(&local.signing_key_bytes());
+
+            if let Some(ref proof) = self.pow_proof {
+                output.extend_from_slice(&proof.to_bytes());
+            } else {
+                // No proof - write zeros (legacy compatibility)
+                output.extend_from_slice(&[0u8; 12]);
+            }
+
+            fs::write(path, &output)?;
         } else {
-            // No proof - write zeros (legacy compatibility)
-            output.extend_from_slice(&[0u8; 12]);
+            return Err(GhostError::InvalidKey(
+                "Cannot extract private key from signer".into(),
+            ));
         }
-
-        fs::write(path, &output)?;
 
         // Set restrictive permissions on Unix
         #[cfg(unix)]
@@ -341,7 +411,7 @@ impl NodeIdentity {
 
     /// Get the node ID (public key bytes)
     pub fn node_id(&self) -> NodeId {
-        self.verifying_key.to_bytes()
+        self.public_key
     }
 
     /// Get the node ID as hex string
@@ -355,8 +425,11 @@ impl NodeIdentity {
     }
 
     /// Get the verifying key for signature verification
-    pub fn verifying_key(&self) -> &VerifyingKey {
-        &self.verifying_key
+    ///
+    /// Note: This creates a new VerifyingKey from the public key.
+    /// For LocalSigner, this matches the internal key.
+    pub fn verifying_key(&self) -> VerifyingKey {
+        VerifyingKey::from_bytes(&self.public_key).expect("public key is always valid")
     }
 
     /// Get the proof-of-work proof
@@ -372,8 +445,7 @@ impl NodeIdentity {
     /// Check if this identity has a valid proof-of-work
     pub fn has_valid_pow(&self) -> bool {
         if let Some(ref proof) = self.pow_proof {
-            let public_key = self.verifying_key.to_bytes();
-            proof.verify(&public_key, NODE_ID_POW_DIFFICULTY)
+            proof.verify(&self.public_key, NODE_ID_POW_DIFFICULTY)
         } else {
             false
         }
@@ -396,8 +468,7 @@ impl NodeIdentity {
 
     /// Sign a message
     pub fn sign(&self, message: &[u8]) -> [u8; 64] {
-        let signature: Signature = self.signing_key.sign(message);
-        signature.to_bytes()
+        self.signer.sign(message)
     }
 
     /// Sign a hash (for consensus messages)
@@ -407,8 +478,7 @@ impl NodeIdentity {
 
     /// Verify a signature
     pub fn verify(&self, message: &[u8], signature: &[u8; 64]) -> bool {
-        let sig = Signature::from_bytes(signature);
-        self.verifying_key.verify(message, &sig).is_ok()
+        self.signer.verify(message, signature)
     }
 }
 
@@ -598,7 +668,13 @@ mod tests {
     #[test]
     fn test_from_hex() {
         let identity = NodeIdentity::generate_without_pow();
-        let hex = hex::encode(identity.signing_key.to_bytes());
+        // Get the signing key bytes from the LocalSigner
+        let local_signer = identity
+            .signer()
+            .as_any()
+            .downcast_ref::<LocalSigner>()
+            .unwrap();
+        let hex = hex::encode(local_signer.signing_key_bytes());
 
         let loaded = NodeIdentity::from_hex(&hex).unwrap();
         assert_eq!(loaded.node_id(), identity.node_id());
