@@ -81,7 +81,25 @@ Pool nodes automatically register with the registry on startup and send heartbea
 The system uses Cloudflare for DNS management:
 - **Load Balancer** with geo-steering routes `pool.bitcoinghost.org` to regional pools
 - **DNS A records** for regional subdomains (`eu.pool`, `us.pool`, etc.)
+- **TCP health monitors** on Stratum ports (3333 for V1, 34255 for V2)
 - **60-second TTL** enables fast failover
+
+## Mining Ports
+
+| Protocol | Port | Description |
+|----------|------|-------------|
+| Stratum V1 | 3333 | Legacy protocol, SV1→SV2 translator |
+| Stratum V2 | 34255 | Native SV2 (recommended) |
+| Stratum V2 (alt) | 4444 | Alternative SV2 port |
+
+Miners can connect via:
+```bash
+# Stratum V1 (legacy miners)
+stratum+tcp://pool.bitcoinghost.org:3333
+
+# Stratum V2 (modern miners)
+stratum+tcp://pool.bitcoinghost.org:34255
+```
 
 ## DNS Structure
 
@@ -269,13 +287,48 @@ public_address = "83.136.251.162"  # Node's public IP
 
 ## Cloudflare Setup
 
-### 1. Create Load Balancer
+### 1. Create Origin Pools
 
-1. Go to Traffic > Load Balancing
-2. Create a new Load Balancer for `pool.bitcoinghost.org`
-3. Add origin pools for each region pointing to regional subdomains
+1. Go to Traffic > Load Balancing > Pools
+2. Create a pool for each region (e.g., `eu-pool`, `us-pool`, `asia-pool`, `au-pool`)
+3. Add origin servers (pool node IPs) to each pool
 
-### 2. Configure Geo Steering
+### 2. Create TCP Health Monitors
+
+**Important:** Stratum uses raw TCP, not HTTP. You must use TCP monitors.
+
+1. Go to Traffic > Load Balancing > Monitors
+2. Create a TCP monitor for each port you want to health check:
+
+**Stratum V1 Monitor:**
+```
+Type: TCP
+Port: 3333
+Interval: 60 seconds
+Timeout: 5 seconds
+Retries: 2
+```
+
+**Stratum V2 Monitor:**
+```
+Type: TCP
+Port: 34255
+Interval: 60 seconds
+Timeout: 5 seconds
+Retries: 2
+```
+
+3. Attach monitors to your origin pools
+
+### 3. Create Load Balancer
+
+1. Go to Traffic > Load Balancing > Load Balancers
+2. Create a new Load Balancer:
+   - Hostname: `pool.bitcoinghost.org`
+   - Add all regional pools as origins
+3. **IMPORTANT:** Enable the Load Balancer toggle on the right side (it's disabled by default!)
+
+### 4. Configure Geo Steering
 
 1. Select "Geo Steering" as the steering policy
 2. Map regions to origin pools:
@@ -283,12 +336,27 @@ public_address = "83.136.251.162"  # Node's public IP
    - Eastern North America → US pool
    - Southeast Asia → Asia pool
    - Oceania → AU pool
+3. Set a fallback pool for regions without a specific mapping
 
-### 3. Configure ECS (EDNS Client Subnet)
+### 5. Configure Session Affinity (Optional)
+
+For consistent miner connections:
+- Enable "Session Affinity" with IP-based stickiness
+- This keeps miners on the same node during a session
+
+### 6. Configure ECS (EDNS Client Subnet)
 
 For accurate geo-location:
 - Set Location Strategy to "Resolver GeoIP"
 - Enable ECS preference as "Geo"
+
+### Common Setup Issues
+
+| Issue | Solution |
+|-------|----------|
+| Pools showing "0 of N healthy" | Ensure Load Balancer toggle is enabled |
+| Health checks failing | Use TCP monitors (not HTTP) for Stratum ports |
+| Miners not geo-routed | Verify geo-steering is configured, check fallback pool |
 
 ## Deployment
 
@@ -418,14 +486,34 @@ max_timestamp_drift_secs = 60        # Reject stale messages
 3. Check load is below threshold: `load_percent < 80`
 4. Check Cloudflare API logs on registry
 
+### Cloudflare Load Balancer Not Working
+
+1. **Check the Enable toggle** - Load Balancers are disabled by default. Look for the toggle on the right side of the Load Balancer dashboard.
+2. **Verify pools show healthy origins** - Should show "N of N healthy", not "0 of N"
+3. **Check health monitors are TCP** - Stratum doesn't speak HTTP; use TCP monitors on port 3333 or 34255
+4. **Wait for health checks** - Initial health checks take 60-90 seconds
+
+### Miners Going to Fallback Pool
+
+1. Check if primary pool nodes are marked healthy in Cloudflare
+2. Verify TCP health monitors can reach the Stratum port (firewall open?)
+3. Check geo-steering configuration maps the miner's region to a pool
+
 ### Miners Not Routing to Nearest Node
 
 1. Verify Cloudflare Load Balancer geo-steering is enabled
 2. Check ECS is configured correctly
 3. Test from different locations using VPN
+4. Verify fallback pool isn't overriding geo-steering
 
 ### High Latency
 
 1. Verify miners are connecting to regional pool (check IP)
 2. Check DNS TTL is 60 seconds
 3. Verify no proxy/VPN between miner and pool
+
+### Health Checks Failing
+
+1. Ensure firewall allows inbound TCP on ports 3333/34255 from Cloudflare IPs
+2. Verify the Stratum service is actually running
+3. Test locally: `nc -zv <node-ip> 3333`
