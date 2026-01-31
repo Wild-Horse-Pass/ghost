@@ -28,7 +28,7 @@ mod config;
 mod pages;
 mod widgets;
 
-use app::{App, Tab, InputMode};
+use app::{App, InputMode, Tab};
 use config::SwarmConfig;
 
 #[derive(Parser, Debug)]
@@ -172,9 +172,9 @@ async fn run_app(
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(3),  // Header
-                    Constraint::Min(10),    // Content
-                    Constraint::Length(3),  // Footer
+                    Constraint::Length(3), // Header
+                    Constraint::Min(10),   // Content
+                    Constraint::Length(3), // Footer
                 ])
                 .split(f.size());
 
@@ -316,15 +316,13 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
                 _ => return false,
             }
         }
-        InputMode::Filter => {
-            match code {
-                KeyCode::Esc | KeyCode::Enter => {
-                    app.input_mode = InputMode::Normal;
-                    return false;
-                }
-                _ => return false,
+        InputMode::Filter => match code {
+            KeyCode::Esc | KeyCode::Enter => {
+                app.input_mode = InputMode::Normal;
+                return false;
             }
-        }
+            _ => return false,
+        },
         InputMode::ConfirmDelete => {
             match code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -333,7 +331,9 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
                         let removed_name = app.swarm.nodes[app.selected_row].name.clone();
                         app.swarm.nodes.remove(app.selected_row);
                         // Adjust active_node_idx if needed
-                        if app.active_node_idx >= app.swarm.nodes.len() && !app.swarm.nodes.is_empty() {
+                        if app.active_node_idx >= app.swarm.nodes.len()
+                            && !app.swarm.nodes.is_empty()
+                        {
                             app.active_node_idx = app.swarm.nodes.len() - 1;
                         }
                         if app.selected_row > 0 {
@@ -463,7 +463,9 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
                 // Switch to selected node
                 if app.selected_row < app.swarm.nodes.len() {
                     app.active_node_idx = app.selected_row;
-                    let node_info = app.active_node().map(|n| (n.url.clone(), n.auth_token.clone(), n.name.clone()));
+                    let node_info = app
+                        .active_node()
+                        .map(|n| (n.url.clone(), n.auth_token.clone(), n.name.clone()));
                     if let Some((url, auth_token, name)) = node_info {
                         app.api_client = Some(create_client(&url, auth_token.as_deref()));
                         app.status_message = format!("Switched to {}", name);
@@ -532,16 +534,20 @@ async fn refresh_data(app: &mut App) {
         }
         Tab::Swarm => {
             // Refresh status for all nodes
-            let nodes: Vec<_> = app.swarm.nodes.iter().map(|n| (n.url.clone(), n.auth_token.clone())).collect();
+            let nodes: Vec<_> = app
+                .swarm
+                .nodes
+                .iter()
+                .map(|n| (n.url.clone(), n.auth_token.clone()))
+                .collect();
             for (url, auth_token) in nodes {
                 let node_client = create_client(&url, auth_token.as_deref());
                 match node_client.get_node_status().await {
                     Ok(status) => {
                         app.swarm.node_statuses.insert(url.clone(), status);
-                        app.swarm.connection_status.insert(
-                            url,
-                            app::ConnectionStatus::Connected,
-                        );
+                        app.swarm
+                            .connection_status
+                            .insert(url, app::ConnectionStatus::Connected);
                     }
                     Err(_) => {
                         app.swarm.connection_status.insert(

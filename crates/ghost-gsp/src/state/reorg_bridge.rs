@@ -51,10 +51,10 @@ pub struct ReorgBridgeConfig {
 impl Default for ReorgBridgeConfig {
     fn default() -> Self {
         Self {
-            min_l1_reorg_depth: 1,       // Notify on any reorg
+            min_l1_reorg_depth: 1, // Notify on any reorg
             notify_l2_forks: true,
             notify_equivocations: true,
-            stability_confirmations: 6,  // 6 blocks for stability
+            stability_confirmations: 6, // 6 blocks for stability
         }
     }
 }
@@ -171,18 +171,19 @@ impl ReorgBridge {
             } => {
                 // Filter by minimum depth
                 if depth < self.config.min_l1_reorg_depth {
-                    debug!(depth, min = self.config.min_l1_reorg_depth, "L1 reorg below threshold");
+                    debug!(
+                        depth,
+                        min = self.config.min_l1_reorg_depth,
+                        "L1 reorg below threshold"
+                    );
                     return;
                 }
 
-                warn!(
-                    from_height,
-                    depth,
-                    "L1 REORG: Notifying subscribers"
-                );
+                warn!(from_height, depth, "L1 REORG: Notifying subscribers");
 
                 // Track reorg state
-                self.last_l1_reorg_height.store(from_height, Ordering::SeqCst);
+                self.last_l1_reorg_height
+                    .store(from_height, Ordering::SeqCst);
                 self.l1_blocks_since_reorg.store(0, Ordering::SeqCst);
 
                 // Send notification
@@ -276,7 +277,8 @@ impl ReorgBridge {
                 );
 
                 // Track fork state
-                self.last_l2_reorg_height.store(fork_height, Ordering::SeqCst);
+                self.last_l2_reorg_height
+                    .store(fork_height, Ordering::SeqCst);
                 self.l2_blocks_since_reorg.store(0, Ordering::SeqCst);
 
                 self.notifier.notify_l2_reorg(
@@ -328,11 +330,7 @@ impl ReorgBridge {
                 state_root,
                 blocks_since_fork,
             } => {
-                info!(
-                    height,
-                    blocks_since_fork,
-                    "L2 chain stabilized"
-                );
+                info!(height, blocks_since_fork, "L2 chain stabilized");
 
                 self.notifier.notify_reorg_resolved(
                     ReorgLayer::L2,
@@ -368,7 +366,9 @@ mod tests {
         let bridge = ReorgBridge::new(notifier, ReorgBridgeConfig::default());
 
         assert_eq!(
-            bridge.l1_blocks_since_reorg.load(std::sync::atomic::Ordering::SeqCst),
+            bridge
+                .l1_blocks_since_reorg
+                .load(std::sync::atomic::Ordering::SeqCst),
             0
         );
     }

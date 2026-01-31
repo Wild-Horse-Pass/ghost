@@ -1,11 +1,11 @@
 //! Bitcoin L1 page - chain status, peers, mempool
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, Table, Cell},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    Frame,
 };
 
 use crate::app::App;
@@ -14,18 +14,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),   // Chain info
-            Constraint::Min(10),     // Peers table
+            Constraint::Length(8), // Chain info
+            Constraint::Min(10),   // Peers table
         ])
         .split(area);
 
     // Row 1: Chain info cards
     let info_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[0]);
 
     render_chain_info(f, info_chunks[0], app);
@@ -39,7 +36,9 @@ fn render_chain_info(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Chain ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -58,14 +57,19 @@ fn render_chain_info(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::Gray)),
-            Span::styled(sync_text, Style::default().fg(sync_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                sync_text,
+                Style::default().fg(sync_color).add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         lines.push(Line::from(vec![
             Span::styled("Block Height: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 format_number(status.block_height),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]));
 
@@ -99,7 +103,9 @@ fn render_mempool_info(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Mempool ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -139,17 +145,35 @@ fn render_peers_table(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Connected Peers ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
     if let Some(peers) = &app.node_data.peers {
         let header = Row::new(vec![
-            Cell::from("Address").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Node ID").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Latency").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Last Seen").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Cell::from("Address").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Node ID").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Latency").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Last Seen").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]);
 
         let rows: Vec<Row> = peers

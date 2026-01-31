@@ -1,11 +1,11 @@
 //! Overview page - all services at a glance
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Gauge},
+    widgets::{Block, Borders, Gauge, Paragraph},
+    Frame,
 };
 
 use crate::app::{App, ConnectionStatus};
@@ -14,9 +14,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(9),   // Status cards row
-            Constraint::Length(9),   // Mining + L2 row
-            Constraint::Min(5),      // Rewards + Activity
+            Constraint::Length(9), // Status cards row
+            Constraint::Length(9), // Mining + L2 row
+            Constraint::Min(5),    // Rewards + Activity
         ])
         .split(area);
 
@@ -63,7 +63,9 @@ fn render_node_status_card(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Node Status ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -76,11 +78,21 @@ fn render_node_status_card(f: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Node: ", Style::default().fg(Color::Gray)),
-            Span::styled(node_name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                node_name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::Gray)),
-            Span::styled(status_text, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                status_text,
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
     ];
 
@@ -91,7 +103,10 @@ fn render_node_status_card(f: &mut Frame, area: Rect, app: &App) {
         ]));
         lines.push(Line::from(vec![
             Span::styled("Uptime: ", Style::default().fg(Color::Gray)),
-            Span::styled(format_uptime(s.uptime_seconds), Style::default().fg(Color::White)),
+            Span::styled(
+                format_uptime(s.uptime_seconds),
+                Style::default().fg(Color::White),
+            ),
         ]));
         lines.push(Line::from(vec![
             Span::styled("Peers: ", Style::default().fg(Color::Gray)),
@@ -107,7 +122,9 @@ fn render_sync_status_card(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Bitcoin Core ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -128,13 +145,18 @@ fn render_sync_status_card(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("Sync: ", Style::default().fg(Color::Gray)),
-            Span::styled(sync_text, Style::default().fg(sync_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                sync_text,
+                Style::default().fg(sync_color).add_modifier(Modifier::BOLD),
+            ),
         ]));
         lines.push(Line::from(vec![
             Span::styled("Block: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 format_number(s.block_height),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]));
         lines.push(Line::from(vec![
@@ -160,7 +182,9 @@ fn render_resources_card(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Resources ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -185,10 +209,7 @@ fn render_resources_card(f: &mut Frame, area: Rect, app: &App) {
         // Disk gauge
         render_resource_gauge(f, inner_chunks[2], "DISK", res.disk_percent);
     } else {
-        let paragraph = Paragraph::new(Span::styled(
-            "No data",
-            Style::default().fg(Color::Gray),
-        ));
+        let paragraph = Paragraph::new(Span::styled("No data", Style::default().fg(Color::Gray)));
         f.render_widget(paragraph, inner);
     }
 }
@@ -215,7 +236,9 @@ fn render_mining_card(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Mining Pool ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -234,7 +257,10 @@ fn render_mining_card(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("Mode: ", Style::default().fg(Color::Gray)),
-            Span::styled(mode, Style::default().fg(mode_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                mode,
+                Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+            ),
         ]));
         lines.push(Line::from(vec![
             Span::styled("Workers: ", Style::default().fg(Color::Gray)),
@@ -256,7 +282,9 @@ fn render_mining_card(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled("Hashrate: ", Style::default().fg(Color::Gray)),
                 Span::styled(
                     format_hashrate(hashrate),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]));
         }
@@ -275,7 +303,9 @@ fn render_l2_card(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Ghost Pay (L2) ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -294,7 +324,10 @@ fn render_l2_card(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::Gray)),
-            Span::styled(status, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                status,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         if let Some(epoch) = gp.epoch {
@@ -333,7 +366,9 @@ fn render_rewards_card(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Node Rewards ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -348,7 +383,9 @@ fn render_rewards_card(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("Shares: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 format!("{}/15", rewards.node_shares),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(" (network: {})", rewards.total_network_shares),
@@ -408,10 +445,7 @@ fn capability_span(name: &str, enabled: bool, shares: i32) -> Span<'static> {
             Style::default().fg(Color::Green),
         )
     } else {
-        Span::styled(
-            name.to_string(),
-            Style::default().fg(Color::Gray),
-        )
+        Span::styled(name.to_string(), Style::default().fg(Color::Gray))
     }
 }
 

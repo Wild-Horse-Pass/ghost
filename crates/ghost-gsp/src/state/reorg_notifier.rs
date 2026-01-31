@@ -470,13 +470,6 @@ mod tests {
     fn test_no_subscribers_ok() {
         let notifier = ReorgNotifier::new();
         // Should not panic even with no subscribers
-        notifier.notify_l1_reorg(
-            100,
-            1,
-            "old".to_string(),
-            "new".to_string(),
-            vec![],
-            vec![],
-        );
+        notifier.notify_l1_reorg(100, 1, "old".to_string(), "new".to_string(), vec![], vec![]);
     }
 }

@@ -1,11 +1,11 @@
 //! Swarm page - multi-node management
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    Frame,
 };
 
 use crate::app::{App, ConnectionStatus, InputMode};
@@ -14,9 +14,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),   // Instructions
-            Constraint::Min(10),     // Node list
-            Constraint::Length(5),   // Selected node details
+            Constraint::Length(3), // Instructions
+            Constraint::Min(10),   // Node list
+            Constraint::Length(5), // Selected node details
         ])
         .split(area);
 
@@ -29,7 +29,9 @@ fn render_instructions(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Swarm Management ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -38,40 +40,36 @@ fn render_instructions(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(block, area);
 
     let text = match app.input_mode {
-        InputMode::Normal => {
-            Line::from(Span::styled(
-                "[a] Add node  [e] Edit  [d] Delete  [Enter] Connect  [j/k] Navigate",
+        InputMode::Normal => Line::from(Span::styled(
+            "[a] Add node  [e] Edit  [d] Delete  [Enter] Connect  [j/k] Navigate",
+            Style::default().fg(Color::Gray),
+        )),
+        InputMode::NodeUrl => Line::from(vec![
+            Span::styled("URL: ", Style::default().fg(Color::Yellow)),
+            Span::styled(&app.input_buffer, Style::default().fg(Color::White)),
+            Span::styled("_", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                "  [Enter] Confirm  [Esc] Cancel",
                 Style::default().fg(Color::Gray),
-            ))
-        }
-        InputMode::NodeUrl => {
-            Line::from(vec![
-                Span::styled("URL: ", Style::default().fg(Color::Yellow)),
-                Span::styled(&app.input_buffer, Style::default().fg(Color::White)),
-                Span::styled("_", Style::default().fg(Color::Cyan)),
-                Span::styled("  [Enter] Confirm  [Esc] Cancel", Style::default().fg(Color::Gray)),
-            ])
-        }
-        InputMode::NodeName => {
-            Line::from(vec![
-                Span::styled("Name: ", Style::default().fg(Color::Yellow)),
-                Span::styled(&app.input_buffer, Style::default().fg(Color::White)),
-                Span::styled("_", Style::default().fg(Color::Cyan)),
-                Span::styled("  [Enter] Confirm  [Esc] Cancel", Style::default().fg(Color::Gray)),
-            ])
-        }
-        InputMode::ConfirmDelete => {
-            Line::from(Span::styled(
-                &app.status_message,
-                Style::default().fg(Color::Red),
-            ))
-        }
-        _ => {
-            Line::from(Span::styled(
-                "[Esc] Back to normal mode",
+            ),
+        ]),
+        InputMode::NodeName => Line::from(vec![
+            Span::styled("Name: ", Style::default().fg(Color::Yellow)),
+            Span::styled(&app.input_buffer, Style::default().fg(Color::White)),
+            Span::styled("_", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                "  [Enter] Confirm  [Esc] Cancel",
                 Style::default().fg(Color::Gray),
-            ))
-        }
+            ),
+        ]),
+        InputMode::ConfirmDelete => Line::from(Span::styled(
+            &app.status_message,
+            Style::default().fg(Color::Red),
+        )),
+        _ => Line::from(Span::styled(
+            "[Esc] Back to normal mode",
+            Style::default().fg(Color::Gray),
+        )),
     };
 
     let paragraph = Paragraph::new(text);
@@ -82,18 +80,40 @@ fn render_node_list(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Configured Nodes ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
     let header = Row::new(vec![
         Cell::from("").style(Style::default().fg(Color::Cyan)),
-        Cell::from("Name").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Cell::from("URL").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Cell::from("Status").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Cell::from("Block").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Cell::from("Peers").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Cell::from("Name").style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("URL").style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("Status").style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("Block").style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("Peers").style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]);
 
     let rows: Vec<Row> = app
@@ -186,7 +206,9 @@ fn render_node_details(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Node Details ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -199,7 +221,12 @@ fn render_node_details(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("Name: ", Style::default().fg(Color::Gray)),
-            Span::styled(&node.name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &node.name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         lines.push(Line::from(vec![

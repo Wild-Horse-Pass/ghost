@@ -1,11 +1,11 @@
 //! Backup page - backup history and management
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, Table, Cell},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    Frame,
 };
 
 use crate::app::App;
@@ -14,8 +14,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),   // Backup status
-            Constraint::Min(10),     // Backup history
+            Constraint::Length(8), // Backup status
+            Constraint::Min(10),   // Backup history
         ])
         .split(area);
 
@@ -27,7 +27,9 @@ fn render_backup_status(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Backup Status ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -48,7 +50,12 @@ fn render_backup_status(f: &mut Frame, area: Rect, app: &App) {
 
             lines.push(Line::from(vec![
                 Span::styled("Last backup: ", Style::default().fg(Color::Gray)),
-                Span::styled(status_text, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    status_text,
+                    Style::default()
+                        .fg(status_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]));
 
             lines.push(Line::from(vec![
@@ -67,10 +74,7 @@ fn render_backup_status(f: &mut Frame, area: Rect, app: &App) {
             if let Some(size) = latest.size_bytes {
                 lines.push(Line::from(vec![
                     Span::styled("Size: ", Style::default().fg(Color::Gray)),
-                    Span::styled(
-                        format_bytes(size),
-                        Style::default().fg(Color::White),
-                    ),
+                    Span::styled(format_bytes(size), Style::default().fg(Color::White)),
                 ]));
             }
         } else {
@@ -100,7 +104,9 @@ fn render_backup_history(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Backup History ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -119,11 +125,31 @@ fn render_backup_history(f: &mut Frame, area: Rect, app: &App) {
         }
 
         let header = Row::new(vec![
-            Cell::from("ID").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Type").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Time").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Size").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Status").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Cell::from("ID").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Type").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Time").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Size").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Status").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]);
 
         let rows: Vec<Row> = backups

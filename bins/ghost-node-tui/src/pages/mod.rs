@@ -1,17 +1,17 @@
 //! Page rendering module for Ghost Node TUI
 
-pub mod overview;
+pub mod backup;
 pub mod bitcoin;
 pub mod l2_service;
-pub mod mining;
-pub mod swarm;
 pub mod logs;
-pub mod watchdog;
-pub mod backup;
+pub mod mining;
+pub mod overview;
 pub mod settings;
+pub mod swarm;
+pub mod watchdog;
 
-use ratatui::Frame;
 use ratatui::layout::Rect;
+use ratatui::Frame;
 
 use crate::app::{App, Tab};
 

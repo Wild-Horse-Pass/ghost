@@ -1,11 +1,11 @@
 //! Logs page - live log viewer with filtering
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, List, ListItem},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
+    Frame,
 };
 
 use crate::api::types::LogLevel;
@@ -15,8 +15,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),   // Filter bar
-            Constraint::Min(10),     // Log entries
+            Constraint::Length(3), // Filter bar
+            Constraint::Min(10),   // Log entries
         ])
         .split(area);
 
@@ -30,7 +30,9 @@ fn render_filter_bar(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             format!(" Log Filter: {} ", current_level.as_str().to_uppercase()),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -49,13 +51,16 @@ fn render_filter_bar(f: &mut Frame, area: Rect, app: &App) {
         ("5", "All", LogLevel::Trace),
     ];
 
-    let mut spans = vec![
-        Span::styled("[/] Search  ", Style::default().fg(Color::Gray)),
-    ];
+    let mut spans = vec![Span::styled(
+        "[/] Search  ",
+        Style::default().fg(Color::Gray),
+    )];
 
     for (key, name, level) in levels {
         let style = if level == current_level {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -71,7 +76,9 @@ fn render_log_entries(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Log Entries ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -94,13 +101,12 @@ fn render_log_entries(f: &mut Frame, area: Rect, app: &App) {
                 let timestamp = format_timestamp(&entry.timestamp);
 
                 let line = Line::from(vec![
-                    Span::styled(
-                        format!("{} ", timestamp),
-                        Style::default().fg(Color::Gray),
-                    ),
+                    Span::styled(format!("{} ", timestamp), Style::default().fg(Color::Gray)),
                     Span::styled(
                         format!("{:5} ", entry.level.to_uppercase()),
-                        Style::default().fg(level_color).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(level_color)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         format!("[{}] ", entry.component),

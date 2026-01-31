@@ -1,11 +1,11 @@
 //! L2 Service page - Ghost Pay service status (not wallet)
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, Table, Cell},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    Frame,
 };
 
 use crate::app::App;
@@ -14,8 +14,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(10),  // Status cards
-            Constraint::Min(8),      // Wraith sessions
+            Constraint::Length(10), // Status cards
+            Constraint::Min(8),     // Wraith sessions
         ])
         .split(area);
 
@@ -41,7 +41,9 @@ fn render_service_status(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Ghost Pay Service ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -60,7 +62,10 @@ fn render_service_status(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::Gray)),
-            Span::styled(status, Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                status,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         lines.push(Line::from(vec![
@@ -73,10 +78,7 @@ fn render_service_status(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("Peers: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                gp.peer_count.to_string(),
-                Style::default().fg(Color::Cyan),
-            ),
+            Span::styled(gp.peer_count.to_string(), Style::default().fg(Color::Cyan)),
         ]));
 
         let wraith_status = gp.wraith_enabled.unwrap_or(false);
@@ -101,7 +103,9 @@ fn render_service_status(f: &mut Frame, area: Rect, app: &App) {
     lines.push(Line::from(Span::raw("")));
     lines.push(Line::from(Span::styled(
         "Service view only",
-        Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC),
+        Style::default()
+            .fg(Color::Gray)
+            .add_modifier(Modifier::ITALIC),
     )));
 
     let paragraph = Paragraph::new(lines);
@@ -112,7 +116,9 @@ fn render_epoch_progress(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Epoch Progress ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -128,7 +134,9 @@ fn render_epoch_progress(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled("Epoch: ", Style::default().fg(Color::Gray)),
                 Span::styled(
                     epoch.to_string(),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]));
         }
@@ -174,7 +182,9 @@ fn render_locks_summary(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Locks Managed ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -189,7 +199,9 @@ fn render_locks_summary(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("Active Locks: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 locks.active_locks.to_string(),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]));
 
@@ -205,11 +217,15 @@ fn render_locks_summary(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(Span::raw("")));
         lines.push(Line::from(Span::styled(
             "Aggregate count only",
-            Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC),
         )));
         lines.push(Line::from(Span::styled(
             "(no individual balances)",
-            Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::ITALIC),
         )));
     } else {
         lines.push(Line::from(Span::styled(
@@ -226,7 +242,9 @@ fn render_wraith_sessions(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Wraith Mixing Sessions (Coordinator View) ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -245,10 +263,26 @@ fn render_wraith_sessions(f: &mut Frame, area: Rect, app: &App) {
         }
 
         let header = Row::new(vec![
-            Cell::from("Session").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Denomination").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Phase").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Participants").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Cell::from("Session").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Denomination").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Phase").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Participants").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]);
 
         let rows: Vec<Row> = sessions

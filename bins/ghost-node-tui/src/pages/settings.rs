@@ -1,11 +1,11 @@
 //! Settings page - node configuration
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
+    Frame,
 };
 
 use crate::app::App;
@@ -14,9 +14,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(12),  // Node config
-            Constraint::Length(10),  // Display settings
-            Constraint::Min(5),      // Help
+            Constraint::Length(12), // Node config
+            Constraint::Length(10), // Display settings
+            Constraint::Min(5),     // Help
         ])
         .split(area);
 
@@ -29,7 +29,9 @@ fn render_node_config(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Node Configuration ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -42,7 +44,12 @@ fn render_node_config(f: &mut Frame, area: Rect, app: &App) {
     if let Some(node) = app.active_node() {
         lines.push(Line::from(vec![
             Span::styled("Name: ", Style::default().fg(Color::Gray)),
-            Span::styled(&node.name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                &node.name,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         lines.push(Line::from(vec![
@@ -89,7 +96,9 @@ fn render_display_settings(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Display Settings ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -144,7 +153,9 @@ fn render_help(f: &mut Frame, area: Rect) {
     let block = Block::default()
         .title(Span::styled(
             " Keyboard Shortcuts ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));

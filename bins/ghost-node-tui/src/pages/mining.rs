@@ -1,11 +1,11 @@
 //! Mining page - pool status, workers, blocks
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, Table, Cell},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    Frame,
 };
 
 use crate::app::App;
@@ -14,18 +14,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),   // Mining status
-            Constraint::Min(10),     // Workers table
+            Constraint::Length(8), // Mining status
+            Constraint::Min(10),   // Workers table
         ])
         .split(area);
 
     // Row 1: Mining status cards
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[0]);
 
     render_pool_status(f, status_chunks[0], app);
@@ -39,7 +36,9 @@ fn render_pool_status(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Your Pool ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -58,7 +57,10 @@ fn render_pool_status(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("Mode: ", Style::default().fg(Color::Gray)),
-            Span::styled(mode, Style::default().fg(mode_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                mode,
+                Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+            ),
         ]));
 
         if let Some(hashrate) = mining.total_hashrate {
@@ -66,7 +68,9 @@ fn render_pool_status(f: &mut Frame, area: Rect, app: &App) {
                 Span::styled("Hashrate: ", Style::default().fg(Color::Gray)),
                 Span::styled(
                     format_hashrate(hashrate),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]));
         }
@@ -109,7 +113,9 @@ fn render_network_status(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Network ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -124,7 +130,9 @@ fn render_network_status(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("Block: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 format_number(mining.block_height),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]));
 
@@ -150,10 +158,7 @@ fn render_network_status(f: &mut Frame, area: Rect, app: &App) {
         if let Some(best_hash) = &mining.best_hash {
             lines.push(Line::from(vec![
                 Span::styled("Best: ", Style::default().fg(Color::Gray)),
-                Span::styled(
-                    truncate_hash(best_hash),
-                    Style::default().fg(Color::White),
-                ),
+                Span::styled(truncate_hash(best_hash), Style::default().fg(Color::White)),
             ]));
         }
     } else {
@@ -171,18 +176,40 @@ fn render_workers_table(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Workers ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
     if let Some(miners) = &app.node_data.miners {
         let header = Row::new(vec![
-            Cell::from("Miner ID").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Hashrate").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Shares").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Work").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Status").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Cell::from("Miner ID").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Hashrate").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Shares").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Work").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Status").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]);
 
         let rows: Vec<Row> = miners

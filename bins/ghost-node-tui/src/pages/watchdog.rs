@@ -1,11 +1,11 @@
 //! Watchdog page - service health and capabilities
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Row, Table, Cell},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    Frame,
 };
 
 use crate::app::App;
@@ -14,18 +14,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(10),  // Service health
-            Constraint::Min(8),      // Capabilities & events
+            Constraint::Length(10), // Service health
+            Constraint::Min(8),     // Capabilities & events
         ])
         .split(area);
 
     // Row 1: Service health cards
     let health_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[0]);
 
     render_service_health(f, health_chunks[0], app);
@@ -39,7 +36,9 @@ fn render_service_health(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Service Health ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -66,14 +65,8 @@ fn render_service_health(f: &mut Frame, area: Rect, app: &App) {
             };
 
             lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} ", status_text),
-                    Style::default().fg(color),
-                ),
-                Span::styled(
-                    format!("{:<15}", name),
-                    Style::default().fg(Color::White),
-                ),
+                Span::styled(format!("{} ", status_text), Style::default().fg(color)),
+                Span::styled(format!("{:<15}", name), Style::default().fg(Color::White)),
                 Span::styled(status, Style::default().fg(color)),
             ]));
         }
@@ -101,7 +94,9 @@ fn render_capabilities(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Node Capabilities ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -129,10 +124,7 @@ fn render_capabilities(f: &mut Frame, area: Rect, app: &App) {
                 };
 
                 lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("{} ", indicator),
-                        Style::default().fg(color),
-                    ),
+                    Span::styled(format!("{} ", indicator), Style::default().fg(color)),
                     Span::styled(
                         format!("{:<15}", name),
                         Style::default().fg(if enabled { Color::White } else { Color::Gray }),
@@ -164,7 +156,9 @@ fn render_events(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(Span::styled(
             " Recent Events ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -183,9 +177,21 @@ fn render_events(f: &mut Frame, area: Rect, app: &App) {
         }
 
         let header = Row::new(vec![
-            Cell::from("Time").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Service").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Cell::from("Event").style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Cell::from("Time").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Service").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Cell::from("Event").style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]);
 
         let rows: Vec<Row> = watchdog

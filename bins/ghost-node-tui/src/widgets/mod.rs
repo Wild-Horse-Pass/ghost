@@ -1,11 +1,11 @@
 //! Common widgets for Ghost Node TUI
 
 use ratatui::{
-    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Tabs},
+    Frame,
 };
 
 use crate::app::{App, ConnectionStatus, InputMode};
@@ -55,18 +55,16 @@ pub fn render_header(f: &mut Frame, area: Rect, app: &App) {
         .map(|n| n.name.as_str())
         .unwrap_or("No Node");
 
-    let title = format!(
-        " Ghost Node TUI {} {} ",
-        status_text,
-        node_name
-    );
+    let title = format!(" Ghost Node TUI {} {} ", status_text, node_name);
 
     let tabs = Tabs::new(titles)
         .block(
             Block::default()
                 .title(Span::styled(
                     title,
-                    Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(status_color)
+                        .add_modifier(Modifier::BOLD),
                 ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan)),
@@ -100,10 +98,7 @@ pub fn render_footer(f: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let paragraph = Paragraph::new(Span::styled(
-        display_text,
-        Style::default().fg(Color::Gray),
-    ));
+    let paragraph = Paragraph::new(Span::styled(display_text, Style::default().fg(Color::Gray)));
     f.render_widget(paragraph, inner);
 }
 
@@ -118,7 +113,9 @@ pub fn render_help_overlay(f: &mut Frame, area: Rect) {
     let block = Block::default()
         .title(Span::styled(
             " Help - Press any key to close ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
@@ -130,7 +127,9 @@ pub fn render_help_overlay(f: &mut Frame, area: Rect) {
         )),
         Line::from(Span::styled(
             "                    NAVIGATION",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
@@ -160,7 +159,9 @@ pub fn render_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "                    GENERAL",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
@@ -178,7 +179,9 @@ pub fn render_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "                 SWARM PAGE (5)",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![
@@ -200,7 +203,9 @@ pub fn render_help_overlay(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "                  LOGS PAGE (6)",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![

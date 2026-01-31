@@ -211,10 +211,7 @@ impl GspState {
         // The bridge will broadcast to this, which goes to the same channel
         let notifier = Arc::new(ReorgNotifier::new());
 
-        let bridge = Arc::new(ReorgBridge::new(
-            notifier,
-            config.unwrap_or_default(),
-        ));
+        let bridge = Arc::new(ReorgBridge::new(notifier, config.unwrap_or_default()));
 
         bridge.start(l1_monitor, l2_detector);
 

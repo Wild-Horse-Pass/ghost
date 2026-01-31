@@ -446,7 +446,13 @@ impl TemplateProcessor {
         // The witness nonce is all zeros per BIP141 default
         witness_data.nonce = [0u8; 32];
 
-        (coinbase1, coinbase2, witness_data, outputs_serialized, outputs_count)
+        (
+            coinbase1,
+            coinbase2,
+            witness_data,
+            outputs_serialized,
+            outputs_count,
+        )
     }
 
     /// Encode a varint
@@ -626,12 +632,17 @@ impl TemplateProcessor {
         // Build coinbase transaction parts (uses approved payout if available)
         // Returns NON-WITNESS serialization for TXID computation + separate witness data
         // Also returns serialized outputs for TDP to send to SRI Pool
-        let (coinbase1, coinbase2, witness_data, coinbase_outputs_serialized, coinbase_outputs_count) =
-            self.build_coinbase_parts_with_payout(
-                template.height,
-                template.coinbasevalue + total_fees,
-                &template.default_witness_commitment,
-            );
+        let (
+            coinbase1,
+            coinbase2,
+            witness_data,
+            coinbase_outputs_serialized,
+            coinbase_outputs_count,
+        ) = self.build_coinbase_parts_with_payout(
+            template.height,
+            template.coinbasevalue + total_fees,
+            &template.default_witness_commitment,
+        );
 
         // Create work state
         let work = WorkState {

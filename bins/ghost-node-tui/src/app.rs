@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::api::types::*;
 use crate::api::client::NodeApiClient;
+use crate::api::types::*;
 use crate::config::{NodeEntry, SwarmConfig, TuiSettings};
 
 /// Main application state
@@ -244,11 +244,7 @@ pub enum DataType {
 
 impl App {
     pub fn new(config: SwarmConfig) -> Self {
-        let active_idx = config
-            .nodes
-            .iter()
-            .position(|n| n.default)
-            .unwrap_or(0);
+        let active_idx = config.nodes.iter().position(|n| n.default).unwrap_or(0);
 
         let swarm = SwarmState {
             nodes: config.nodes,
