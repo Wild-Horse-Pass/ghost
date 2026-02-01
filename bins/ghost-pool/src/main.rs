@@ -889,11 +889,34 @@ async fn main() -> Result<()> {
     // Configure share recorder callback for SRI Pool share notifications
     let rm_for_shares = Arc::clone(&round_manager);
     let identity_for_shares = Arc::clone(&identity);
+    let db_for_shares = Arc::clone(&db);
     verification_state = verification_state.with_share_recorder(move |share| {
         // Record the share in the current round
         rm_for_shares
             .record_share(&share.miner_id, share.work, identity_for_shares.node_id())
             .map_err(|e| ghost_common::GhostError::Internal(e.to_string()))?;
+
+        // Update miner's payout address in database if provided
+        // The payout_address is extracted from user_identity (format: <address>.<worker>)
+        if let Some(ref payout_address) = share.payout_address {
+            if !payout_address.is_empty() {
+                if let Err(e) = db_for_shares.update_miner_address(&share.miner_id, payout_address) {
+                    tracing::warn!(
+                        miner_id = %share.miner_id,
+                        payout_address = %payout_address,
+                        error = %e,
+                        "Failed to update miner payout address"
+                    );
+                } else {
+                    tracing::trace!(
+                        miner_id = %share.miner_id,
+                        payout_address = %payout_address,
+                        "Updated miner payout address"
+                    );
+                }
+            }
+        }
+
         tracing::debug!(
             miner_id = %share.miner_id,
             work = share.work,
@@ -950,6 +973,7 @@ async fn main() -> Result<()> {
             block_hash: notification.block_hash,
             block_height: height,
             winning_miner_id: notification.miner_id.clone(),
+            winning_miner_payout_address: notification.payout_address.clone(),
             winning_node_id,
             subsidy_sats: subsidy,
             tx_fees_sats: fees,
@@ -1295,6 +1319,7 @@ async fn main() -> Result<()> {
                         block_hash,
                         block_height: height,
                         winning_miner_id: miner_id.clone(),
+                        winning_miner_payout_address: None, // Address looked up from DB
                         winning_node_id,
                         subsidy_sats: subsidy,
                         tx_fees_sats: fees,

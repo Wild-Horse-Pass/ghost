@@ -1038,12 +1038,12 @@ impl Database {
         })
     }
 
-    /// Get miner's payout address by ID
+    /// Get miner's payout address by ID (from stratum_miners table)
     pub fn get_miner_payout_address(&self, miner_id: &str) -> GhostResult<Option<String>> {
         self.with_connection(|conn| {
             let address: Option<String> = conn
                 .query_row(
-                    "SELECT payout_address FROM miners WHERE miner_id = ?1",
+                    "SELECT payout_address FROM stratum_miners WHERE miner_id = ?1",
                     [miner_id],
                     |row| row.get(0),
                 )
@@ -1089,7 +1089,7 @@ impl Database {
         })
     }
 
-    /// Update miner's payout address
+    /// Update miner's payout address (in stratum_miners table)
     pub fn update_miner_address(&self, miner_id: &str, payout_address: &str) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
 
@@ -1097,7 +1097,7 @@ impl Database {
             // Try update first
             let updated = conn
                 .execute(
-                    "UPDATE miners SET payout_address = ?1, last_seen = ?2 WHERE miner_id = ?3",
+                    "UPDATE stratum_miners SET payout_address = ?1, last_seen = ?2 WHERE miner_id = ?3",
                     params![payout_address, now, miner_id],
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -1105,7 +1105,7 @@ impl Database {
             // If no row updated, insert new miner
             if updated == 0 {
                 conn.execute(
-                    "INSERT INTO miners (miner_id, payout_address, first_seen, last_seen)
+                    "INSERT INTO stratum_miners (miner_id, payout_address, first_seen, last_seen)
                      VALUES (?1, ?2, ?3, ?3)",
                     params![miner_id, payout_address, now],
                 )

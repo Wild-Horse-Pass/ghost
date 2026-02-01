@@ -80,6 +80,8 @@ pub struct BlockFoundData {
     pub block_height: u64,
     /// Miner ID that found the block
     pub winning_miner_id: String,
+    /// Payout address of the winning miner (extracted from user_identity)
+    pub winning_miner_payout_address: Option<String>,
     /// Node ID that found the block (gets TX fees)
     pub winning_node_id: NodeId,
     /// Block subsidy (satoshis)
@@ -449,6 +451,7 @@ mod tests {
             block_hash: [0u8; 32],
             block_height: 800_000,
             winning_miner_id: "miner1".to_string(),
+            winning_miner_payout_address: None,
             winning_node_id: [1u8; 32],
             subsidy_sats: 625_000_000, // 6.25 BTC
             tx_fees_sats: 10_000_000,  // 0.1 BTC
@@ -476,6 +479,7 @@ mod tests {
             block_hash: [0u8; 32],
             block_height: 800_000,
             winning_miner_id: "miner1".to_string(),
+            winning_miner_payout_address: None,
             winning_node_id: [1u8; 32],
             subsidy_sats: 312_500_000, // 3.125 BTC
             tx_fees_sats: 10_000_000,  // 0.1 BTC

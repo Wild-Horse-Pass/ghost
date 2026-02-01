@@ -36,7 +36,7 @@ use tracing::{debug, error, warn};
 use ghost_buds::{BudsClassifier, BudsTier};
 
 use crate::challenge::*;
-use crate::server::{ShareNotification, VerificationState};
+use crate::server::{ShareBatch, ShareNotification, VerificationState};
 use crate::websocket::ws_handler;
 
 /// Get system resource usage (CPU %, Memory %, Disk %)
@@ -300,6 +300,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/admin/test-consensus", post(admin_test_consensus_handler))
         // Internal API for SRI Pool share notifications
         .route("/api/internal/share", post(share_notification_handler))
+        // Internal API for SRI Pool batch share notifications (native webhook)
+        .route("/api/internal/shares", post(share_batch_handler))
         .with_state(state)
 }
 
@@ -3118,6 +3120,50 @@ async fn share_notification_handler(
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))),
         Err(e) => {
             warn!(error = %e, "Failed to record share");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"status": "error", "message": e.to_string()})),
+            )
+        }
+    }
+}
+
+/// Share batch handler - receives batched share data from SRI Pool native webhook
+///
+/// POST /api/internal/shares
+///
+/// This endpoint is called by SRI Pool's native webhook integration when it has
+/// accumulated a batch of valid shares. This is more efficient than individual
+/// share notifications for high-volume mining.
+async fn share_batch_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(batch): Json<ShareBatch>,
+) -> impl IntoResponse {
+    let share_count = batch.shares.len();
+    let batch_seq = batch.batch_seq;
+    let pool_id = batch.pool_id;
+
+    debug!(
+        pool_id,
+        batch_seq,
+        share_count,
+        "Received share batch from SRI Pool"
+    );
+
+    match state.record_share_batch(batch) {
+        Ok(recorded) => {
+            debug!(recorded, share_count, "Share batch processed");
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "status": "ok",
+                    "recorded": recorded,
+                    "total": share_count
+                })),
+            )
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to record share batch");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"status": "error", "message": e.to_string()})),

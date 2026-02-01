@@ -70,6 +70,8 @@ pub struct ShareNotification {
     pub timestamp: u64,
     /// Whether this share found a block (triggers payout proposal)
     pub is_block: bool,
+    /// Payout address extracted from user_identity (format: <address>.<worker>)
+    pub payout_address: Option<String>,
 }
 
 /// Data for a single share in a batch (from SRI Pool native webhook)
@@ -91,6 +93,10 @@ pub struct ShareData {
     pub downstream_id: usize,
     /// Whether this share found a block
     pub is_block: bool,
+    /// User identity string (format: <payout_address>.<worker_name>)
+    /// Used to identify the miner's payout address
+    #[serde(default)]
+    pub user_identity: String,
 }
 
 /// Batch of shares from SRI Pool native webhook
@@ -118,6 +124,22 @@ pub struct BlockFoundNotification {
     pub share_work: f64,
     /// Timestamp (seconds since epoch)
     pub timestamp: u64,
+    /// Payout address extracted from user_identity (format: <address>.<worker>)
+    pub payout_address: Option<String>,
+}
+
+/// Parse user_identity string to extract payout address and worker name.
+/// Format: <payout_address>.<worker_name>
+/// Returns (payout_address, worker_name) or (user_identity, "default") if no dot found.
+fn parse_user_identity(user_identity: &str) -> (String, String) {
+    if let Some(last_dot) = user_identity.rfind('.') {
+        let address = &user_identity[..last_dot];
+        let worker = &user_identity[last_dot + 1..];
+        (address.to_string(), worker.to_string())
+    } else {
+        // No dot found - treat entire string as address with default worker
+        (user_identity.to_string(), "default".to_string())
+    }
 }
 
 /// Callback for block found events (triggers payout proposal creation)
@@ -337,7 +359,7 @@ impl VerificationState {
     /// Record a batch of shares (called from HTTP endpoint for native SRI webhook)
     ///
     /// Converts ShareData to ShareNotification format and records each share.
-    /// Uses downstream_id as miner_id for now (proper miner identification TBD).
+    /// Extracts payout address from user_identity (format: <address>.<worker>).
     /// When is_block == true, triggers block found callback for payout proposal.
     pub fn record_share_batch(&self, batch: ShareBatch) -> GhostResult<usize> {
         if self.record_share_fn.is_none() {
@@ -348,15 +370,35 @@ impl VerificationState {
         let mut blocks_found = 0;
 
         for share in batch.shares {
+            // Parse user_identity to extract payout address and worker name
+            // Format: <payout_address>.<worker_name>
+            let (payout_address, worker_name) = if !share.user_identity.is_empty() {
+                parse_user_identity(&share.user_identity)
+            } else {
+                // Fallback to downstream_id if no user_identity
+                (share.downstream_id.to_string(), "default".to_string())
+            };
+
+            // Use user_identity as miner_id if available, otherwise downstream_id
+            let miner_id = if !share.user_identity.is_empty() {
+                share.user_identity.clone()
+            } else {
+                share.downstream_id.to_string()
+            };
+
             // Convert ShareData to ShareNotification
-            // Use downstream_id as miner_id for now
             let notification = ShareNotification {
-                miner_id: share.downstream_id.to_string(),
+                miner_id: miner_id.clone(),
                 work: share.share_work,
                 share_hash: share.share_hash.clone(),
                 job_id: share.job_id,
                 timestamp: share.timestamp_ms / 1000, // Convert ms to seconds
                 is_block: share.is_block,
+                payout_address: if !payout_address.is_empty() {
+                    Some(payout_address.clone())
+                } else {
+                    None
+                },
             };
 
             if let Err(e) = self.record_share(notification) {
@@ -370,7 +412,9 @@ impl VerificationState {
                 blocks_found += 1;
                 tracing::info!(
                     share_hash = %share.share_hash,
-                    miner_id = share.downstream_id,
+                    miner_id = %miner_id,
+                    payout_address = %payout_address,
+                    worker_name = %worker_name,
                     work = share.share_work,
                     "Block found via SRI webhook - triggering payout proposal"
                 );
@@ -381,9 +425,14 @@ impl VerificationState {
 
                     let block_notification = BlockFoundNotification {
                         block_hash,
-                        miner_id: share.downstream_id.to_string(),
+                        miner_id,
                         share_work: share.share_work,
                         timestamp: share.timestamp_ms / 1000,
+                        payout_address: if !payout_address.is_empty() {
+                            Some(payout_address)
+                        } else {
+                            None
+                        },
                     };
 
                     if let Err(e) = block_found_fn(block_notification) {

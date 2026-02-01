@@ -57,6 +57,10 @@ members = [
     # Registry service for load balancing
     "bins/ghost-registry",
 ]
+exclude = [
+    # sv2-apps has its own workspace structure
+    "sv2-apps",
+]
 # NOTE: Full Node Wallets (ghost-wallet-cli, ghost-wallet-tui) are built from
 # the bitcoin-ghost repository since they require ghostd and ghost-crypto.
 # Use scripts/build-all-wallets.sh to build all wallet types.
