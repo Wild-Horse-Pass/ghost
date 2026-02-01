@@ -40,6 +40,9 @@ use crate::peer::PeerManager;
 /// Callback for registering discovered elders
 pub type ElderCallback = Arc<dyn Fn(NodeId) + Send + Sync>;
 
+/// Callback for registering node capabilities (for payout calculation)
+pub type NodeCapabilitiesCallback = Arc<dyn Fn(NodeId, ghost_common::types::NodeCapabilities) + Send + Sync>;
+
 /// Handler for health ping messages
 pub struct HealthPingHandler {
     /// Peer manager for updating peer state
@@ -48,6 +51,8 @@ pub struct HealthPingHandler {
     db: Option<Arc<Database>>,
     /// Callback to register discovered elders
     elder_callback: Option<ElderCallback>,
+    /// Callback to register node capabilities for payout calculations
+    node_capabilities_callback: Option<NodeCapabilitiesCallback>,
 }
 
 impl HealthPingHandler {
@@ -57,6 +62,7 @@ impl HealthPingHandler {
             peers,
             db,
             elder_callback: None,
+            node_capabilities_callback: None,
         }
     }
 
@@ -72,6 +78,15 @@ impl HealthPingHandler {
     /// this callback will be invoked to register the elder.
     pub fn with_elder_callback(mut self, callback: ElderCallback) -> Self {
         self.elder_callback = Some(callback);
+        self
+    }
+
+    /// Set callback for node capabilities registration
+    ///
+    /// When a HealthPing is received, this callback will be invoked to
+    /// register the node's capabilities for payout calculations.
+    pub fn with_node_capabilities_callback(mut self, callback: NodeCapabilitiesCallback) -> Self {
+        self.node_capabilities_callback = Some(callback);
         self
     }
 
@@ -99,6 +114,12 @@ impl HealthPingHandler {
         if let Some(ref callback) = self.elder_callback {
             callback(envelope.sender);
             debug!(node_id = %short_id, "Registered node as BFT voter from health ping");
+        }
+
+        // Register node capabilities for payout calculations
+        if let Some(ref callback) = self.node_capabilities_callback {
+            callback(envelope.sender, ping.capabilities.clone());
+            debug!(node_id = %short_id, "Registered node capabilities for payout");
         }
 
         // Update peer's last seen time in memory

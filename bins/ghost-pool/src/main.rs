@@ -632,8 +632,19 @@ async fn main() -> Result<()> {
                     "Payout consensus approved - executing"
                 );
                 // Store approved payout for coinbase construction
-                // The template processor will use this when building the next block
                 tp_for_execute.set_approved_payout(proposal_hash);
+
+                // Refresh template to include approved payout in coinbase
+                // This is the "1 block behind" fix: when consensus approves the payout
+                // from round N, refresh templates so block N+1 has correct outputs
+                let tp = Arc::clone(&tp_for_execute);
+                tokio::spawn(async move {
+                    if let Err(e) = tp.refresh_template().await {
+                        tracing::error!(error = %e, "Failed to refresh template after payout approval");
+                    } else {
+                        tracing::info!("Template refreshed with approved payout outputs");
+                    }
+                });
             }
             ConsensusResult::Rejected {
                 proposal_hash,
@@ -718,9 +729,18 @@ async fn main() -> Result<()> {
     let voter_callback: ghost_consensus::health_handler::ElderCallback = Arc::new(move |node_id| {
         vh_for_callback.add_elder(node_id);
     });
+
+    // Callback to register node capabilities for payout calculations
+    let rm_for_callback = Arc::clone(&round_manager);
+    let node_caps_callback: ghost_consensus::health_handler::NodeCapabilitiesCallback =
+        Arc::new(move |node_id, capabilities| {
+            rm_for_callback.register_node(node_id, capabilities);
+        });
+
     let health_handler = Arc::new(
         HealthPingHandler::new(Arc::clone(mesh.peers()), Some(Arc::clone(&db)))
-            .with_elder_callback(voter_callback),
+            .with_elder_callback(voter_callback)
+            .with_node_capabilities_callback(node_caps_callback),
     );
     mesh.register_handler(
         Arc::clone(&health_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>
@@ -809,6 +829,7 @@ async fn main() -> Result<()> {
         payout_config,
         Arc::clone(&db),
         Arc::clone(&vote_handler),
+        Arc::clone(&template_processor),
     ));
 
     // Start verification HTTP server

@@ -557,8 +557,9 @@ impl VoteHandler {
         }
 
         // 8. Validate block height is reasonable (sanity check)
-        // Block height should be above genesis and not impossibly high
-        if proposal.block_height < 100_000 || proposal.block_height > 10_000_000 {
+        // Block height should not be impossibly high
+        // Note: No lower bound - allows signet/testnet networks with fewer blocks
+        if proposal.block_height > 10_000_000 {
             return Err("invalid block height");
         }
 
@@ -818,7 +819,7 @@ pub struct VotingStatus {
 }
 
 /// Compute hash of a payout proposal
-fn compute_proposal_hash(proposal: &PayoutProposal) -> [u8; 32] {
+pub fn compute_proposal_hash(proposal: &PayoutProposal) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"PayoutProposal/v1");
     hasher.update(&proposal.round_id.to_le_bytes());

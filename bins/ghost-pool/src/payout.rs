@@ -40,9 +40,10 @@ use tracing::{debug, info, warn};
 use ghost_common::error::GhostResult;
 use ghost_common::identity::NodeIdentity;
 use ghost_common::types::{NodeId, PayoutEntry, PayoutProposal, PayoutType, RoundId};
-use ghost_consensus::vote_handler::VoteHandler;
+use ghost_consensus::vote_handler::{compute_proposal_hash, VoteHandler};
 use ghost_storage::Database;
 
+use crate::template::TemplateProcessor;
 use crate::treasury::{FeeDistribution, TreasuryState};
 
 /// Configuration for payout proposal creation
@@ -161,6 +162,17 @@ impl PayoutProposalCreator {
         // (original pool + miner dust, not including TX fees)
         let mut node_payouts = self.calculate_node_payouts(&data.node_shares, augmented_node_pool)?;
 
+        // FALLBACK: If no nodes qualify for payouts, add the node pool to treasury
+        // This ensures no satoshis are lost when there are no eligible nodes
+        let mut final_treasury = fee_dist.treasury_amount;
+        if node_payouts.is_empty() && augmented_node_pool > 0 {
+            info!(
+                node_pool = augmented_node_pool,
+                "No eligible nodes - redirecting node reward pool to treasury"
+            );
+            final_treasury = final_treasury.saturating_add(augmented_node_pool);
+        }
+
         // TX fees go 100% to the node that found the block
         if fee_dist.tx_fees_to_block_finder >= self.config.dust_threshold_sats {
             let block_finder_address = self.get_node_address(&data.winning_node_id)?;
@@ -206,7 +218,7 @@ impl PayoutProposalCreator {
             proposer: self.identity.node_id(),
             miner_payouts,
             node_payouts,
-            treasury_amount: fee_dist.treasury_amount,
+            treasury_amount: final_treasury,
             tx_fees: data.tx_fees_sats,
             subsidy: data.subsidy_sats,
             timestamp: now,
@@ -226,7 +238,7 @@ impl PayoutProposalCreator {
             height = data.block_height,
             miner_count = proposal.miner_payouts.len(),
             node_count = proposal.node_payouts.len(),
-            treasury = fee_dist.treasury_amount,
+            treasury = final_treasury,
             decay_year = data.treasury_state.decay_year(),
             "Created payout proposal"
         );
@@ -399,11 +411,10 @@ impl PayoutProposalCreator {
     /// which is stored in the miners table via update_miner_address().
     fn get_miner_address(&self, miner_id: &str) -> GhostResult<Vec<u8>> {
         // Look up miner's payout address from the miners table
-        if let Some(address_hex) = self.db.get_miner_payout_address(miner_id)? {
-            if !address_hex.is_empty() {
-                if let Ok(bytes) = hex::decode(&address_hex) {
-                    return Ok(bytes);
-                }
+        if let Some(address_str) = self.db.get_miner_payout_address(miner_id)? {
+            if !address_str.is_empty() {
+                // Address is stored as bech32 string, return as bytes
+                return Ok(address_str.into_bytes());
             }
         }
 
@@ -422,11 +433,10 @@ impl PayoutProposalCreator {
         let node_id_hex = hex::encode(node_id);
 
         // Look up node's payout address from the nodes table
-        if let Some(address_hex) = self.db.get_node_payout_address(&node_id_hex)? {
-            if !address_hex.is_empty() {
-                if let Ok(bytes) = hex::decode(&address_hex) {
-                    return Ok(bytes);
-                }
+        if let Some(address_str) = self.db.get_node_payout_address(&node_id_hex)? {
+            if !address_str.is_empty() {
+                // Address is stored as bech32 string, return as bytes
+                return Ok(address_str.into_bytes());
             }
         }
 
@@ -439,6 +449,7 @@ impl PayoutProposalCreator {
 pub struct PayoutHandler {
     creator: PayoutProposalCreator,
     vote_handler: Arc<VoteHandler>,
+    template_processor: Arc<TemplateProcessor>,
 }
 
 impl PayoutHandler {
@@ -447,24 +458,37 @@ impl PayoutHandler {
         config: PayoutConfig,
         db: Arc<Database>,
         vote_handler: Arc<VoteHandler>,
+        template_processor: Arc<TemplateProcessor>,
     ) -> Self {
         let creator = PayoutProposalCreator::new(identity, config, db);
         Self {
             creator,
             vote_handler,
+            template_processor,
         }
     }
 
     /// Handle a block found event by creating and submitting a payout proposal
     pub fn handle_block_found(&self, data: BlockFoundData) -> GhostResult<[u8; 32]> {
         // Create the proposal
-        let proposal = self.creator.create_proposal(data)?;
+        let mut proposal = self.creator.create_proposal(data)?;
 
         // Validate proposal has meaningful content
         if proposal.miner_payouts.is_empty() {
             warn!("Payout proposal has no miner payouts - skipping submission");
             return Ok([0u8; 32]);
         }
+
+        // Compute proposal hash before storing
+        // This ensures the template processor can find the proposal when
+        // consensus approves with this hash
+        let proposal_hash = compute_proposal_hash(&proposal);
+        proposal.proposal_hash = proposal_hash;
+
+        // Store proposal in template processor BEFORE submitting to consensus
+        // This ensures the proposal data is available when consensus approves
+        // and we need to build coinbase outputs
+        self.template_processor.store_proposal(proposal.clone());
 
         // Submit to vote handler for BFT consensus
         info!(
@@ -474,7 +498,10 @@ impl PayoutHandler {
             "Submitting payout proposal to consensus"
         );
 
-        let proposal_hash = self.vote_handler.handle_proposal(proposal)?;
+        let returned_hash = self.vote_handler.handle_proposal(proposal)?;
+
+        // Verify hash matches (sanity check)
+        debug_assert_eq!(proposal_hash, returned_hash, "Proposal hash mismatch");
 
         info!(
             hash = %hex::encode(&proposal_hash[..8]),

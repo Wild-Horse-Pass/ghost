@@ -185,10 +185,14 @@ impl TemplateProcessor {
     /// Store a payout proposal (called when proposal is received)
     pub fn store_proposal(&self, proposal: PayoutProposal) {
         let hash = proposal.proposal_hash;
+        let miners = proposal.miner_payouts.len();
+        let nodes = proposal.node_payouts.len();
         self.payout_proposals.write().insert(hash, proposal);
-        debug!(
+        info!(
             hash = %hex::encode(&hash[..8]),
-            "Stored payout proposal"
+            miners = miners,
+            nodes = nodes,
+            "Stored payout proposal in template processor"
         );
     }
 
@@ -354,10 +358,11 @@ impl TemplateProcessor {
         // It goes in the witness serialization only
         if let Some(ref prop) = proposal {
             // Build outputs from approved payout
-            // Witness commitment is a separate output that goes at the end
-            let base_output_count = prop.miner_payouts.len()
-                + prop.node_payouts.len()
-                + if prop.treasury_amount > 0 { 1 } else { 0 };
+            // Count only non-zero value entries
+            let miner_output_count = prop.miner_payouts.iter().filter(|e| e.amount > 0).count();
+            let node_output_count = prop.node_payouts.iter().filter(|e| e.amount > 0).count();
+            let treasury_output_count = if prop.treasury_amount > 0 { 1 } else { 0 };
+            let base_output_count = miner_output_count + node_output_count + treasury_output_count;
 
             // Add 1 for witness commitment if present (it IS part of outputs, just 0-value)
             let output_count = base_output_count + if witness_commitment.is_some() { 1 } else { 0 };
@@ -365,8 +370,11 @@ impl TemplateProcessor {
 
             self.encode_varint(&mut coinbase2, output_count);
 
-            // Miner payouts
+            // Miner payouts (skip 0-value entries)
             for entry in &prop.miner_payouts {
+                if entry.amount == 0 {
+                    continue;
+                }
                 coinbase2.extend_from_slice(&entry.amount.to_le_bytes());
                 self.encode_script(&mut coinbase2, &entry.address);
                 // Also add to outputs_serialized for TDP
@@ -374,8 +382,11 @@ impl TemplateProcessor {
                 self.encode_script(&mut outputs_serialized, &entry.address);
             }
 
-            // Node payouts
+            // Node payouts (skip 0-value entries)
             for entry in &prop.node_payouts {
+                if entry.amount == 0 {
+                    continue; // Skip 0-value outputs
+                }
                 coinbase2.extend_from_slice(&entry.amount.to_le_bytes());
                 self.encode_script(&mut coinbase2, &entry.address);
                 // Also add to outputs_serialized for TDP
@@ -393,11 +404,12 @@ impl TemplateProcessor {
                 self.encode_address_script(&mut outputs_serialized, treasury_addr, "treasury_tdp");
             }
 
-            debug!(
+            info!(
                 height = height,
                 miners = prop.miner_payouts.len(),
                 nodes = prop.node_payouts.len(),
-                "Built coinbase with approved payout"
+                treasury = prop.treasury_amount,
+                "Built coinbase with approved payout outputs"
             );
         } else {
             // Fallback: single output with total value (plus witness commitment if present)
