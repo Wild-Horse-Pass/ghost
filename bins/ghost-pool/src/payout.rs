@@ -27,6 +27,12 @@
 //! 2. PayoutProposal is created from round data + template info
 //! 3. Proposal is submitted to VoteHandler for BFT consensus
 //! 4. Once approved, coinbase is constructed with the payout outputs
+//!
+//! Fee Distribution (per ECONOMICS.md):
+//! - TX fees (100%) → Node who found the block
+//! - Pool fee (1% of subsidy) → Split between Treasury and Node Reward Pool
+//! - Miner Pool (99% of subsidy) → Top 200 miners by work
+//! - Node Pool → Top 100 nodes by 5-4-3-2-1 capability shares
 
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -37,25 +43,24 @@ use ghost_common::types::{NodeId, PayoutEntry, PayoutProposal, PayoutType, Round
 use ghost_consensus::vote_handler::VoteHandler;
 use ghost_storage::Database;
 
+use crate::treasury::{FeeDistribution, TreasuryState};
+
 /// Configuration for payout proposal creation
 #[derive(Debug, Clone)]
 pub struct PayoutConfig {
-    /// Pool fee percentage (e.g., 0.01 = 1%)
-    pub pool_fee_percent: f64,
     /// Minimum payout amount (dust threshold)
     pub dust_threshold_sats: u64,
     /// Maximum miner outputs per block
     pub max_miner_outputs: usize,
     /// Maximum node outputs per block
     pub max_node_outputs: usize,
-    /// Treasury address (script pubkey hex)
+    /// Treasury address (script pubkey bytes)
     pub treasury_address: Vec<u8>,
 }
 
 impl Default for PayoutConfig {
     fn default() -> Self {
         Self {
-            pool_fee_percent: 0.01, // 1%
             dust_threshold_sats: 546,
             max_miner_outputs: 200,
             max_node_outputs: 100,
@@ -75,14 +80,19 @@ pub struct BlockFoundData {
     pub block_height: u64,
     /// Miner ID that found the block
     pub winning_miner_id: String,
+    /// Node ID that found the block (gets TX fees)
+    pub winning_node_id: NodeId,
     /// Block subsidy (satoshis)
     pub subsidy_sats: u64,
     /// Transaction fees (satoshis)
     pub tx_fees_sats: u64,
     /// Miner work distribution: (miner_id, work_fraction)
     pub miner_work: Vec<(String, f64)>,
-    /// Node share distribution: (node_id, shares)
+    /// Node share distribution: (node_id, capability_shares)
+    /// Capability shares follow the 5-4-3-2-1 scheme per ECONOMICS.md
     pub node_shares: Vec<(NodeId, i32)>,
+    /// Current treasury state (for decay calculation)
+    pub treasury_state: TreasuryState,
 }
 
 /// Creates payout proposals from block found events
@@ -102,28 +112,76 @@ impl PayoutProposalCreator {
     }
 
     /// Create a payout proposal from block found data
+    ///
+    /// Fee distribution per ECONOMICS.md:
+    /// - TX fees (100%) → Node who found the block
+    /// - Pool fee (1% of subsidy) → Split between Treasury and Node Reward Pool
+    /// - Miner Pool (99% of subsidy) → Top 200 miners by work
+    /// - Node Pool → Top 100 nodes by 5-4-3-2-1 capability shares
     pub fn create_proposal(&self, data: BlockFoundData) -> GhostResult<PayoutProposal> {
         let now = chrono::Utc::now().timestamp() as u64;
 
-        // Calculate total available for distribution (after pool fee)
-        // Use saturating_add to prevent overflow (though unlikely with Bitcoin amounts)
-        let total_available = data.subsidy_sats.saturating_add(data.tx_fees_sats);
-        let pool_fee = (total_available as f64 * self.config.pool_fee_percent) as u64;
-        // Use saturating_sub to prevent underflow if pool_fee rounds up
-        let distributable = total_available.saturating_sub(pool_fee);
+        // Calculate fee distribution using treasury decay schedule
+        let fee_dist = FeeDistribution::calculate(
+            data.subsidy_sats,
+            data.tx_fees_sats,
+            &data.treasury_state,
+        );
 
-        // Split distributable 50/50 between miners and nodes
-        let miner_pool = distributable / 2;
-        let node_pool = distributable - miner_pool;
+        info!(
+            subsidy = data.subsidy_sats,
+            tx_fees = data.tx_fees_sats,
+            pool_fee = fee_dist.pool_fee,
+            treasury_rate = fee_dist.treasury_rate,
+            node_rate = fee_dist.node_rate,
+            miner_pool = fee_dist.miner_pool,
+            node_pool = fee_dist.node_reward_pool,
+            decay_year = data.treasury_state.decay_year(),
+            "Calculating fee distribution"
+        );
 
-        // Calculate miner payouts (proportional to work)
-        let miner_payouts = self.calculate_miner_payouts(&data.miner_work, miner_pool)?;
+        // Calculate miner payouts (99% of subsidy, proportional to work)
+        let miner_payouts = self.calculate_miner_payouts(&data.miner_work, fee_dist.miner_pool)?;
 
-        // Calculate node payouts (proportional to shares)
-        let node_payouts = self.calculate_node_payouts(&data.node_shares, node_pool)?;
+        // Calculate node payouts from the node reward pool (not including TX fees)
+        let mut node_payouts = self.calculate_node_payouts(&data.node_shares, fee_dist.node_reward_pool)?;
 
-        // Treasury gets the pool fee
-        let treasury_amount = pool_fee;
+        // TX fees go 100% to the node that found the block
+        if fee_dist.tx_fees_to_block_finder >= self.config.dust_threshold_sats {
+            let block_finder_address = self.get_node_address(&data.winning_node_id)?;
+            if !block_finder_address.is_empty() {
+                // Check if this node is already in node_payouts - if so, add to their amount
+                let mut found = false;
+                for payout in &mut node_payouts {
+                    if payout.recipient_id == data.winning_node_id {
+                        payout.amount = payout.amount.saturating_add(fee_dist.tx_fees_to_block_finder);
+                        found = true;
+                        break;
+                    }
+                }
+
+                // If not already in the list, add a new entry
+                if !found {
+                    node_payouts.push(PayoutEntry {
+                        address: block_finder_address,
+                        amount: fee_dist.tx_fees_to_block_finder,
+                        recipient_id: data.winning_node_id,
+                        payout_type: PayoutType::TxFees,
+                    });
+                }
+
+                info!(
+                    node_id = %hex::encode(&data.winning_node_id[..8]),
+                    tx_fees = fee_dist.tx_fees_to_block_finder,
+                    "TX fees allocated to block finder"
+                );
+            } else {
+                warn!(
+                    node_id = %hex::encode(&data.winning_node_id[..8]),
+                    "Block finder node has no payout address - TX fees will not be paid"
+                );
+            }
+        }
 
         let proposal = PayoutProposal {
             proposal_hash: [0u8; 32], // Will be computed by vote handler
@@ -133,18 +191,28 @@ impl PayoutProposalCreator {
             proposer: self.identity.node_id(),
             miner_payouts,
             node_payouts,
-            treasury_amount,
+            treasury_amount: fee_dist.treasury_amount,
             tx_fees: data.tx_fees_sats,
             subsidy: data.subsidy_sats,
             timestamp: now,
         };
+
+        // Verify the distribution adds up
+        if !fee_dist.verify(data.subsidy_sats, data.tx_fees_sats) {
+            warn!(
+                expected = data.subsidy_sats + data.tx_fees_sats,
+                actual = fee_dist.total(),
+                "Fee distribution verification failed - small rounding difference"
+            );
+        }
 
         info!(
             round_id = data.round_id,
             height = data.block_height,
             miner_count = proposal.miner_payouts.len(),
             node_count = proposal.node_payouts.len(),
-            treasury = treasury_amount,
+            treasury = fee_dist.treasury_amount,
+            decay_year = data.treasury_state.decay_year(),
             "Created payout proposal"
         );
 
@@ -369,9 +437,9 @@ mod tests {
     #[test]
     fn test_payout_config_default() {
         let config = PayoutConfig::default();
-        assert_eq!(config.pool_fee_percent, 0.01);
         assert_eq!(config.dust_threshold_sats, 546);
         assert_eq!(config.max_miner_outputs, 200);
+        assert_eq!(config.max_node_outputs, 100);
     }
 
     #[test]
@@ -381,15 +449,43 @@ mod tests {
             block_hash: [0u8; 32],
             block_height: 800_000,
             winning_miner_id: "miner1".to_string(),
+            winning_node_id: [1u8; 32],
             subsidy_sats: 625_000_000, // 6.25 BTC
             tx_fees_sats: 10_000_000,  // 0.1 BTC
             miner_work: vec![("miner1".to_string(), 100.0), ("miner2".to_string(), 50.0)],
             node_shares: vec![([1u8; 32], 10), ([2u8; 32], 5)],
+            treasury_state: TreasuryState::new(),
         };
 
         assert_eq!(data.round_id, 1);
         assert_eq!(data.miner_work.len(), 2);
         assert_eq!(data.node_shares.len(), 2);
+        assert_eq!(data.winning_node_id, [1u8; 32]);
+    }
+
+    #[test]
+    fn test_block_found_data_with_treasury_decay() {
+        let threshold_time = chrono::Utc::now() - chrono::Duration::days(365 * 3);
+        let treasury_state = TreasuryState::from_stored(
+            crate::treasury::TREASURY_THRESHOLD_SATS,
+            Some(threshold_time),
+        );
+
+        let data = BlockFoundData {
+            round_id: 1,
+            block_hash: [0u8; 32],
+            block_height: 800_000,
+            winning_miner_id: "miner1".to_string(),
+            winning_node_id: [1u8; 32],
+            subsidy_sats: 312_500_000, // 3.125 BTC
+            tx_fees_sats: 10_000_000,  // 0.1 BTC
+            miner_work: vec![("miner1".to_string(), 100.0)],
+            node_shares: vec![([1u8; 32], 5)],
+            treasury_state,
+        };
+
+        // After 3 years, should be in year 4 of decay (0.1 treasury, 0.9 nodes)
+        assert!(data.treasury_state.decay_year() >= 3);
     }
 
     #[test]

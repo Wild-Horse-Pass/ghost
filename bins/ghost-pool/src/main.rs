@@ -54,10 +54,11 @@ use ghost_consensus::vote_handler::{BroadcastFn, ExecuteFn, VoteHandler};
 use ghost_consensus::voting::VotingManager;
 use ghost_policy::PolicyProfile;
 use ghost_storage::Database;
-use ghost_verification::{start_server, RpcArchiveHandler, VerificationState};
+use ghost_verification::{start_server, BlockFoundNotification, RpcArchiveHandler, VerificationState};
 
 use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler};
 use ghost_pool::registry::RegistryClient;
+use ghost_pool::treasury::TreasuryState;
 use ghost_pool::reorg::{ReorgConfig, ReorgHandler};
 use ghost_pool::round::{RoundConfig, RoundEvent, RoundManager};
 use ghost_pool::template::{TemplateConfig, TemplateEvent, TemplateProcessor};
@@ -771,6 +772,45 @@ async fn main() -> Result<()> {
         shutdown_tx: shutdown_tx.clone(),
     });
 
+    // Create payout handler for block found events
+    // This wires BlockFound -> PayoutProposal -> VoteHandler (BFT consensus)
+    //
+    // Convert treasury address from bech32 string to script pubkey bytes
+    let treasury_script = if !config.pool.treasury_address.is_empty() {
+        use bitcoin::address::NetworkUnchecked;
+        use bitcoin::Address;
+        use std::str::FromStr;
+
+        let addr_str = config.pool.treasury_address.address();
+        match Address::<NetworkUnchecked>::from_str(addr_str) {
+            Ok(addr) => addr.assume_checked().script_pubkey().into_bytes(),
+            Err(e) => {
+                warn!(
+                    address = %addr_str,
+                    error = %e,
+                    "Invalid treasury address, using empty (payouts will fail)"
+                );
+                Vec::new()
+            }
+        }
+    } else {
+        warn!("No treasury address configured, pool fee payouts will fail");
+        Vec::new()
+    };
+
+    let payout_config = PayoutConfig {
+        dust_threshold_sats: config.pool.min_payout_sats.max(546),
+        max_miner_outputs: 200,
+        max_node_outputs: 100,
+        treasury_address: treasury_script,
+    };
+    let payout_handler = Arc::new(PayoutHandler::new(
+        Arc::clone(&identity),
+        payout_config,
+        Arc::clone(&db),
+        Arc::clone(&vote_handler),
+    ));
+
     // Start verification HTTP server
     let rpc_for_verification = Arc::clone(&rpc);
     let rm_for_height = Arc::clone(&round_manager);
@@ -859,6 +899,81 @@ async fn main() -> Result<()> {
             work = share.work,
             "Share recorded from SRI notification"
         );
+        Ok(())
+    });
+
+    // Configure block found handler for payout proposal creation from SRI webhook
+    let rm_for_block = Arc::clone(&round_manager);
+    let tp_for_block = Arc::clone(&template_processor);
+    let payout_for_block = Arc::clone(&payout_handler);
+    let identity_for_block = Arc::clone(&identity);
+    let db_for_block = Arc::clone(&db);
+    verification_state = verification_state.with_block_found_handler(move |notification: BlockFoundNotification| {
+        let round_id = rm_for_block.current_round_id();
+
+        info!(
+            round = round_id,
+            hash = %hex::encode(&notification.block_hash[..8]),
+            miner = %notification.miner_id,
+            "🎉 BLOCK FOUND via webhook! Creating payout proposal..."
+        );
+
+        // Gather data for payout proposal
+        let miner_work = rm_for_block.get_miner_work(round_id);
+        let node_shares = rm_for_block.get_node_shares(round_id);
+        let (subsidy, fees, height) = tp_for_block.get_current_block_info();
+
+        // Load treasury state from database
+        let treasury_state = match db_for_block.get_treasury_balance() {
+            Ok(balance) => {
+                let threshold_ts = db_for_block
+                    .get_treasury_threshold_reached()
+                    .ok()
+                    .flatten()
+                    .map(|ts| chrono::DateTime::from_timestamp(ts, 0))
+                    .flatten()
+                    .map(|dt| dt.with_timezone(&chrono::Utc));
+                TreasuryState::from_stored(balance, threshold_ts)
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to load treasury state, using default");
+                TreasuryState::new()
+            }
+        };
+
+        // This node found the block
+        let winning_node_id = identity_for_block.node_id();
+
+        // Create block found data for payout handler
+        let block_data = BlockFoundData {
+            round_id,
+            block_hash: notification.block_hash,
+            block_height: height,
+            winning_miner_id: notification.miner_id.clone(),
+            winning_node_id,
+            subsidy_sats: subsidy,
+            tx_fees_sats: fees,
+            miner_work,
+            node_shares,
+            treasury_state,
+        };
+
+        // Submit payout proposal for BFT consensus
+        match payout_for_block.handle_block_found(block_data) {
+            Ok(proposal_hash) => {
+                if proposal_hash != [0u8; 32] {
+                    info!(
+                        round = round_id,
+                        hash = %hex::encode(&proposal_hash[..8]),
+                        "Payout proposal submitted for consensus"
+                    );
+                }
+            }
+            Err(e) => {
+                error!(error = %e, round = round_id, "Failed to create payout proposal");
+            }
+        }
+
         Ok(())
     });
 
@@ -1121,50 +1236,12 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Create payout handler for block found events
-    // This wires BlockFound -> PayoutProposal -> VoteHandler (BFT consensus)
-    //
-    // Convert treasury address from bech32 string to script pubkey bytes
-    let treasury_script = if !config.pool.treasury_address.is_empty() {
-        use bitcoin::address::NetworkUnchecked;
-        use bitcoin::Address;
-        use std::str::FromStr;
-
-        let addr_str = config.pool.treasury_address.address();
-        match Address::<NetworkUnchecked>::from_str(addr_str) {
-            Ok(addr) => addr.assume_checked().script_pubkey().into_bytes(),
-            Err(e) => {
-                warn!(
-                    address = %addr_str,
-                    error = %e,
-                    "Invalid treasury address, using empty (payouts will fail)"
-                );
-                Vec::new()
-            }
-        }
-    } else {
-        warn!("No treasury address configured, pool fee payouts will fail");
-        Vec::new()
-    };
-
-    let payout_config = PayoutConfig {
-        pool_fee_percent: config.pool.treasury_fee_percent / 100.0, // Config is 0-100, convert to 0-1
-        dust_threshold_sats: config.pool.min_payout_sats.max(546), // Use config value but ensure at least dust limit
-        max_miner_outputs: 200,
-        max_node_outputs: 100,
-        treasury_address: treasury_script,
-    };
-    let payout_handler = Arc::new(PayoutHandler::new(
-        Arc::clone(&identity),
-        payout_config,
-        Arc::clone(&db),
-        Arc::clone(&vote_handler),
-    ));
-
     // Clone refs for the async round event handler
     let rm_for_events = Arc::clone(&round_manager);
     let tp_for_events = Arc::clone(&template_processor);
     let payout_for_events = Arc::clone(&payout_handler);
+    let identity_for_events = Arc::clone(&identity);
+    let db_for_events = Arc::clone(&db);
 
     // Subscribe to round events and handle block found
     let mut round_events = round_manager.subscribe();
@@ -1191,16 +1268,39 @@ async fn main() -> Result<()> {
                     // Get block subsidy and fees from template processor
                     let (subsidy, fees, height) = tp_for_events.get_current_block_info();
 
+                    // Load treasury state from database for decay calculation
+                    let treasury_state = match db_for_events.get_treasury_balance() {
+                        Ok(balance) => {
+                            let threshold_ts = db_for_events
+                                .get_treasury_threshold_reached()
+                                .ok()
+                                .flatten()
+                                .map(|ts| chrono::DateTime::from_timestamp(ts, 0))
+                                .flatten()
+                                .map(|dt| dt.with_timezone(&chrono::Utc));
+                            TreasuryState::from_stored(balance, threshold_ts)
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to load treasury state, using default");
+                            TreasuryState::new()
+                        }
+                    };
+
+                    // This node found the block (received the winning share)
+                    let winning_node_id = identity_for_events.node_id();
+
                     // Create block found data for payout handler
                     let block_data = BlockFoundData {
                         round_id,
                         block_hash,
                         block_height: height,
                         winning_miner_id: miner_id.clone(),
+                        winning_node_id,
                         subsidy_sats: subsidy,
                         tx_fees_sats: fees,
                         miner_work,
                         node_shares,
+                        treasury_state,
                     };
 
                     // Submit payout proposal for BFT consensus

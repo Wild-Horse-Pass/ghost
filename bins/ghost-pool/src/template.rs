@@ -630,6 +630,12 @@ impl TemplateProcessor {
         // Build coinbase transaction parts (uses approved payout if available)
         // Returns NON-WITNESS serialization for TXID computation + separate witness data
         // Also returns serialized outputs for TDP to send to SRI Pool
+        //
+        // Note: template.coinbasevalue from Bitcoin Core includes subsidy + ALL original tx fees
+        // but we may have filtered some transactions, so we calculate the correct value:
+        // subsidy (from halving schedule) + filtered tx fees
+        let subsidy = Self::calculate_subsidy(template.height);
+        let coinbase_value = subsidy + total_fees;
         let (
             coinbase1,
             coinbase2,
@@ -638,11 +644,13 @@ impl TemplateProcessor {
             coinbase_outputs_count,
         ) = self.build_coinbase_parts_with_payout(
             template.height,
-            template.coinbasevalue + total_fees,
+            coinbase_value,
             &template.default_witness_commitment,
         );
 
         // Create work state
+        // Note: template.coinbasevalue from Bitcoin Core = subsidy + all tx fees
+        // We store just the tx fees separately for payout calculations
         let work = WorkState {
             job_id: job_id.clone(),
             prev_hash: self.reverse_hex(&template.previousblockhash),
@@ -654,7 +662,7 @@ impl TemplateProcessor {
             nbits: template.bits.clone(),
             ntime: template.curtime as u32,
             height: template.height,
-            total_fees: template.coinbasevalue + total_fees,
+            total_fees, // Just the TX fees, NOT coinbasevalue (which includes subsidy)
             tx_count: filtered_txs.len() + 1, // +1 for coinbase
             total_weight,
             template: template.clone(),

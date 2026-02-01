@@ -36,4 +36,5 @@ pub mod round;
 pub mod rpc;
 pub mod template;
 pub mod template_provider;
+pub mod treasury;
 pub mod validation;

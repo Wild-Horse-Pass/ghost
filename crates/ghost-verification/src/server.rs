@@ -46,6 +46,17 @@ use crate::challenge::*;
 use crate::routes::create_router;
 use crate::websocket::WsState;
 
+/// Parse a share hash hex string to [u8; 32]
+/// Returns zeros if the string is invalid or too short
+fn parse_share_hash(hash_str: &str) -> [u8; 32] {
+    let mut result = [0u8; 32];
+    if let Ok(bytes) = hex::decode(hash_str) {
+        let len = bytes.len().min(32);
+        result[..len].copy_from_slice(&bytes[..len]);
+    }
+    result
+}
+
 /// Callback for triggering test consensus proposal
 pub type TestProposalFn = Arc<dyn Fn() -> GhostResult<[u8; 32]> + Send + Sync>;
 
@@ -57,10 +68,60 @@ pub struct ShareNotification {
     pub share_hash: String,
     pub job_id: u32,
     pub timestamp: u64,
+    /// Whether this share found a block (triggers payout proposal)
+    pub is_block: bool,
+}
+
+/// Data for a single share in a batch (from SRI Pool native webhook)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ShareData {
+    /// Timestamp in milliseconds since epoch
+    pub timestamp_ms: u64,
+    /// Share hash as hex string
+    pub share_hash: String,
+    /// Share work/difficulty value
+    pub share_work: f64,
+    /// Channel ID the share was submitted on
+    pub channel_id: u32,
+    /// Sequence number from the share submission
+    pub sequence_number: u32,
+    /// Job ID the share was submitted for
+    pub job_id: u32,
+    /// Downstream client ID
+    pub downstream_id: usize,
+    /// Whether this share found a block
+    pub is_block: bool,
+}
+
+/// Batch of shares from SRI Pool native webhook
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ShareBatch {
+    /// Pool/server ID
+    pub pool_id: u16,
+    /// Sequence number for this batch
+    pub batch_seq: u64,
+    /// Array of shares in this batch
+    pub shares: Vec<ShareData>,
 }
 
 /// Callback for recording shares (from SRI Pool notifications)
 pub type RecordShareFn = Arc<dyn Fn(ShareNotification) -> GhostResult<()> + Send + Sync>;
+
+/// Block found notification from SRI Pool (when is_block == true)
+#[derive(Debug, Clone)]
+pub struct BlockFoundNotification {
+    /// Block hash (parsed from share_hash)
+    pub block_hash: [u8; 32],
+    /// Miner ID that found the block
+    pub miner_id: String,
+    /// Share work value
+    pub share_work: f64,
+    /// Timestamp (seconds since epoch)
+    pub timestamp: u64,
+}
+
+/// Callback for block found events (triggers payout proposal creation)
+pub type BlockFoundFn = Arc<dyn Fn(BlockFoundNotification) -> GhostResult<()> + Send + Sync>;
 
 /// Dashboard configuration state (mutable settings)
 #[derive(Debug, Clone)]
@@ -160,6 +221,8 @@ pub struct VerificationState {
     test_proposal_fn: Option<TestProposalFn>,
     /// Share recording callback (from SRI Pool notifications)
     record_share_fn: Option<RecordShareFn>,
+    /// Block found callback (triggers payout proposal when is_block == true)
+    block_found_fn: Option<BlockFoundFn>,
 }
 
 /// Archive handler trait
@@ -240,6 +303,7 @@ impl VerificationState {
             ws_state: Arc::new(WsState::new()),
             test_proposal_fn: None,
             record_share_fn: None,
+            block_found_fn: None,
         }
     }
 
@@ -252,6 +316,15 @@ impl VerificationState {
         self
     }
 
+    /// Set block found callback (triggers payout proposal when is_block == true)
+    pub fn with_block_found_handler<F>(mut self, handler: F) -> Self
+    where
+        F: Fn(BlockFoundNotification) -> GhostResult<()> + Send + Sync + 'static,
+    {
+        self.block_found_fn = Some(Arc::new(handler));
+        self
+    }
+
     /// Record a share (called from HTTP endpoint)
     pub fn record_share(&self, share: ShareNotification) -> GhostResult<()> {
         if let Some(ref recorder) = self.record_share_fn {
@@ -259,6 +332,83 @@ impl VerificationState {
         } else {
             Err(GhostError::Internal("Share recorder not configured".to_string()))
         }
+    }
+
+    /// Record a batch of shares (called from HTTP endpoint for native SRI webhook)
+    ///
+    /// Converts ShareData to ShareNotification format and records each share.
+    /// Uses downstream_id as miner_id for now (proper miner identification TBD).
+    /// When is_block == true, triggers block found callback for payout proposal.
+    pub fn record_share_batch(&self, batch: ShareBatch) -> GhostResult<usize> {
+        if self.record_share_fn.is_none() {
+            return Err(GhostError::Internal("Share recorder not configured".to_string()));
+        }
+
+        let mut recorded = 0;
+        let mut blocks_found = 0;
+
+        for share in batch.shares {
+            // Convert ShareData to ShareNotification
+            // Use downstream_id as miner_id for now
+            let notification = ShareNotification {
+                miner_id: share.downstream_id.to_string(),
+                work: share.share_work,
+                share_hash: share.share_hash.clone(),
+                job_id: share.job_id,
+                timestamp: share.timestamp_ms / 1000, // Convert ms to seconds
+                is_block: share.is_block,
+            };
+
+            if let Err(e) = self.record_share(notification) {
+                tracing::warn!(error = %e, "Failed to record share from batch");
+            } else {
+                recorded += 1;
+            }
+
+            // Handle block found event (triggers payout proposal creation)
+            if share.is_block {
+                blocks_found += 1;
+                tracing::info!(
+                    share_hash = %share.share_hash,
+                    miner_id = share.downstream_id,
+                    work = share.share_work,
+                    "Block found via SRI webhook - triggering payout proposal"
+                );
+
+                if let Some(ref block_found_fn) = self.block_found_fn {
+                    // Parse share hash from hex string to bytes
+                    let block_hash = parse_share_hash(&share.share_hash);
+
+                    let block_notification = BlockFoundNotification {
+                        block_hash,
+                        miner_id: share.downstream_id.to_string(),
+                        share_work: share.share_work,
+                        timestamp: share.timestamp_ms / 1000,
+                    };
+
+                    if let Err(e) = block_found_fn(block_notification) {
+                        tracing::error!(error = %e, "Failed to handle block found event");
+                    }
+                } else {
+                    tracing::warn!("Block found but no block_found_handler configured");
+                }
+            }
+        }
+
+        if blocks_found > 0 {
+            tracing::info!(
+                recorded,
+                blocks_found,
+                "Share batch processed with block(s) found"
+            );
+        }
+
+        Ok(recorded)
+    }
+
+    /// Parse a share hash hex string to [u8; 32]
+    fn parse_share_hash_internal(hash_str: &str) -> [u8; 32] {
+        parse_share_hash(hash_str)
     }
 
     /// Set the node config path and load config from disk

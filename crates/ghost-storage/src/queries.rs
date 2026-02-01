@@ -2663,6 +2663,74 @@ fn payout_from_row(row: &rusqlite::Row) -> rusqlite::Result<PayoutRecord> {
     })
 }
 
+// =============================================================================
+// TREASURY STATE QUERIES
+// =============================================================================
+
+/// Treasury state storage keys
+const TREASURY_BALANCE_KEY: &str = "treasury_balance_sats";
+const TREASURY_THRESHOLD_REACHED_KEY: &str = "treasury_threshold_reached_at";
+
+impl Database {
+    /// Get the current treasury balance in satoshis
+    pub fn get_treasury_balance(&self) -> GhostResult<u64> {
+        match self.kv_get(TREASURY_BALANCE_KEY)? {
+            Some(s) => s.parse().map_err(|e| {
+                GhostError::Database(format!("Failed to parse treasury balance: {}", e))
+            }),
+            None => Ok(0),
+        }
+    }
+
+    /// Set the current treasury balance in satoshis
+    pub fn set_treasury_balance(&self, balance: u64) -> GhostResult<()> {
+        self.kv_set(TREASURY_BALANCE_KEY, &balance.to_string())
+    }
+
+    /// Get the timestamp when treasury threshold was reached (if ever)
+    pub fn get_treasury_threshold_reached(&self) -> GhostResult<Option<i64>> {
+        match self.kv_get(TREASURY_THRESHOLD_REACHED_KEY)? {
+            Some(s) => {
+                let ts: i64 = s.parse().map_err(|e| {
+                    GhostError::Database(format!(
+                        "Failed to parse treasury threshold timestamp: {}",
+                        e
+                    ))
+                })?;
+                Ok(Some(ts))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Set the timestamp when treasury threshold was reached
+    pub fn set_treasury_threshold_reached(&self, timestamp: i64) -> GhostResult<()> {
+        self.kv_set(TREASURY_THRESHOLD_REACHED_KEY, &timestamp.to_string())
+    }
+
+    /// Add funds to treasury and check if threshold was crossed
+    /// Returns true if threshold was just crossed
+    pub fn add_treasury_funds(&self, amount: u64, threshold: u64) -> GhostResult<bool> {
+        let current = self.get_treasury_balance()?;
+        let new_balance = current.saturating_add(amount);
+        self.set_treasury_balance(new_balance)?;
+
+        // Check if we just crossed threshold
+        if current < threshold && new_balance >= threshold {
+            let now = chrono::Utc::now().timestamp();
+            self.set_treasury_threshold_reached(now)?;
+            tracing::info!(
+                balance = new_balance,
+                threshold,
+                "Treasury threshold reached - decay begins"
+            );
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
