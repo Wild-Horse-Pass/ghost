@@ -112,12 +112,27 @@ impl PayoutCalculator {
         let node_pool = remaining_subsidy - miner_pool;
 
         // 5. Calculate miner payouts (top 200)
-        result.miner_payouts = self.calculate_miner_payouts(shares, miner_pool, miner_addresses);
+        // Dust from miners below threshold is returned for redistribution to node pool
+        let (miner_payouts, miner_dust) =
+            self.calculate_miner_payouts(shares, miner_pool, miner_addresses);
+        result.miner_payouts = miner_payouts;
 
-        // 6. Calculate node payouts (top 100)
-        result.node_payouts = self.calculate_node_payouts(shares, node_pool, node_addresses);
+        // 6. Add miner dust to node pool - no satoshis are lost!
+        let augmented_node_pool = node_pool.saturating_add(miner_dust);
+        if miner_dust > 0 {
+            info!(
+                miner_dust,
+                original_node_pool = node_pool,
+                augmented_node_pool,
+                "Miner dust added to node reward pool"
+            );
+        }
 
-        // 7. Add treasury payout entry
+        // 7. Calculate node payouts (top 100) from augmented pool
+        result.node_payouts =
+            self.calculate_node_payouts(shares, augmented_node_pool, node_addresses);
+
+        // 8. Add treasury payout entry
         if result.treasury_amount >= self.dust_threshold {
             result.treasury_entry = Some(PayoutEntry {
                 address: treasury_address,
@@ -127,7 +142,7 @@ impl PayoutCalculator {
             });
         }
 
-        // 8. Add TX fee payout entry
+        // 9. Add TX fee payout entry
         // SECURITY: TX fees MUST go somewhere - if builder address not found,
         // add to treasury rather than silently losing them
         if let Some(builder) = result.tx_fee_recipient {
@@ -140,13 +155,25 @@ impl PayoutCalculator {
                         payout_type: PayoutType::TxFees,
                     });
                 } else if tx_fees_sats > 0 {
-                    // Dust TX fees: add to treasury
-                    warn!(
-                        tx_fees = tx_fees_sats,
-                        threshold = self.dust_threshold,
-                        "TX fees below dust threshold, adding to treasury"
-                    );
-                    result.treasury_amount += tx_fees_sats;
+                    // Dust TX fees: add to node reward pool (top node gets the dust)
+                    // This ensures no satoshis are lost and benefits node operators
+                    if !result.node_payouts.is_empty() {
+                        result.node_payouts[0].amount += tx_fees_sats;
+                        info!(
+                            tx_fees = tx_fees_sats,
+                            threshold = self.dust_threshold,
+                            top_node = hex::encode(&result.node_payouts[0].recipient_id[..8]),
+                            "TX fee dust redistributed to top node"
+                        );
+                    } else {
+                        // Fallback: no nodes to pay, add to treasury
+                        warn!(
+                            tx_fees = tx_fees_sats,
+                            threshold = self.dust_threshold,
+                            "TX fees below dust threshold, no nodes available - adding to treasury"
+                        );
+                        result.treasury_amount += tx_fees_sats;
+                    }
                 }
             } else {
                 // CRITICAL: Block builder address not found - this should not happen
@@ -173,13 +200,15 @@ impl PayoutCalculator {
     }
 
     /// Calculate miner payouts proportional to work
+    /// Returns (payouts, dust_amount) where dust is redirected to node reward pool
     fn calculate_miner_payouts(
         &self,
         shares: &RoundShares,
         pool_amount: u64,
         miner_addresses: &[(String, Vec<u8>)],
-    ) -> Vec<PayoutEntry> {
+    ) -> (Vec<PayoutEntry>, u64) {
         let mut payouts = Vec::new();
+        let mut dust_total: u64 = 0;
 
         // Get top miners
         let top_miners = shares.top_miners(self.max_miner_outputs);
@@ -189,6 +218,14 @@ impl PayoutCalculator {
             let amount = (pool_amount as f64 * share_percent) as u64;
 
             if amount < self.dust_threshold {
+                // Track dust for redistribution to node reward pool
+                dust_total = dust_total.saturating_add(amount);
+                debug!(
+                    miner_id,
+                    amount,
+                    threshold = self.dust_threshold,
+                    "Miner payout below dust threshold - redirecting to node reward pool"
+                );
                 continue;
             }
 
@@ -209,10 +246,18 @@ impl PayoutCalculator {
             }
         }
 
-        payouts
+        if dust_total > 0 {
+            info!(
+                dust_total,
+                "Miner dust collected for node reward pool"
+            );
+        }
+
+        (payouts, dust_total)
     }
 
     /// Calculate node payouts based on capability shares
+    /// Dust from nodes below threshold is redistributed to the top node
     fn calculate_node_payouts(
         &self,
         shares: &RoundShares,
@@ -220,6 +265,7 @@ impl PayoutCalculator {
         node_addresses: &[([u8; 32], Vec<u8>)],
     ) -> Vec<PayoutEntry> {
         let mut payouts = Vec::new();
+        let mut dust_total: u64 = 0;
 
         // Get top 100 nodes
         let top_nodes = shares.top_100_nodes();
@@ -232,6 +278,14 @@ impl PayoutCalculator {
             let amount = (pool_amount as f64 * share_percent) as u64;
 
             if amount < self.dust_threshold {
+                // Track dust for redistribution to top node
+                dust_total = dust_total.saturating_add(amount);
+                debug!(
+                    node_id = hex::encode(&node_info.node_id[..8]),
+                    amount,
+                    threshold = self.dust_threshold,
+                    "Node payout below dust threshold - will add to top node"
+                );
                 continue;
             }
 
@@ -247,6 +301,21 @@ impl PayoutCalculator {
                     payout_type: PayoutType::NodeReward,
                 });
             }
+        }
+
+        // Add dust to the top node's payout (first in list = highest capability shares)
+        if dust_total > 0 && !payouts.is_empty() {
+            payouts[0].amount = payouts[0].amount.saturating_add(dust_total);
+            info!(
+                dust_total,
+                top_node = hex::encode(&payouts[0].recipient_id[..8]),
+                "Node dust redistributed to top node"
+            );
+        } else if dust_total > 0 {
+            warn!(
+                dust_total,
+                "Node dust lost - no eligible nodes to receive it"
+            );
         }
 
         payouts

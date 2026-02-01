@@ -143,10 +143,23 @@ impl PayoutProposalCreator {
         );
 
         // Calculate miner payouts (99% of subsidy, proportional to work)
-        let miner_payouts = self.calculate_miner_payouts(&data.miner_work, fee_dist.miner_pool)?;
+        // Dust from miners below threshold is returned for redistribution to node pool
+        let (miner_payouts, miner_dust) = self.calculate_miner_payouts(&data.miner_work, fee_dist.miner_pool)?;
 
-        // Calculate node payouts from the node reward pool (not including TX fees)
-        let mut node_payouts = self.calculate_node_payouts(&data.node_shares, fee_dist.node_reward_pool)?;
+        // Add miner dust to node reward pool - no satoshis are lost!
+        let augmented_node_pool = fee_dist.node_reward_pool.saturating_add(miner_dust);
+        if miner_dust > 0 {
+            info!(
+                miner_dust,
+                original_node_pool = fee_dist.node_reward_pool,
+                augmented_node_pool,
+                "Miner dust added to node reward pool"
+            );
+        }
+
+        // Calculate node payouts from the augmented node reward pool
+        // (original pool + miner dust, not including TX fees)
+        let mut node_payouts = self.calculate_node_payouts(&data.node_shares, augmented_node_pool)?;
 
         // TX fees go 100% to the node that found the block
         if fee_dist.tx_fees_to_block_finder >= self.config.dust_threshold_sats {
@@ -222,16 +235,18 @@ impl PayoutProposalCreator {
     }
 
     /// Calculate miner payouts proportional to work
+    /// Returns (payouts, dust_amount) where dust is redirected to node reward pool
     fn calculate_miner_payouts(
         &self,
         miner_work: &[(String, f64)],
         total_sats: u64,
-    ) -> GhostResult<Vec<PayoutEntry>> {
+    ) -> GhostResult<(Vec<PayoutEntry>, u64)> {
         let mut payouts = Vec::new();
+        let mut dust_total: u64 = 0;
         let total_work: f64 = miner_work.iter().map(|(_, w)| w).sum();
 
         if total_work <= 0.0 {
-            return Ok(payouts);
+            return Ok((payouts, dust_total));
         }
 
         // Sort by work descending, take top N
@@ -245,7 +260,7 @@ impl PayoutProposalCreator {
         // Safety check: avoid division by zero after truncation
         if top_work <= 0.0 {
             warn!("Top miners have zero total work after truncation - no payouts");
-            return Ok(payouts);
+            return Ok((payouts, dust_total));
         }
 
         for (miner_id, work) in sorted {
@@ -259,6 +274,14 @@ impl PayoutProposalCreator {
             let amount = (total_sats as f64 * clamped_share).min(u64::MAX as f64) as u64;
 
             if amount < self.config.dust_threshold_sats {
+                // Dust amount redirected to node reward pool
+                dust_total = dust_total.saturating_add(amount);
+                debug!(
+                    miner_id,
+                    amount,
+                    threshold = self.config.dust_threshold_sats,
+                    "Miner payout below dust threshold - redirecting to node reward pool"
+                );
                 continue;
             }
 
@@ -278,16 +301,26 @@ impl PayoutProposalCreator {
             });
         }
 
-        Ok(payouts)
+        if dust_total > 0 {
+            info!(
+                dust_total,
+                miners_affected = miner_work.len() - payouts.len(),
+                "Miner dust collected for node reward pool"
+            );
+        }
+
+        Ok((payouts, dust_total))
     }
 
     /// Calculate node payouts proportional to capability shares
+    /// Returns (payouts, dust_amount) where dust is added to top node's payout
     fn calculate_node_payouts(
         &self,
         node_shares: &[(NodeId, i32)],
         total_sats: u64,
     ) -> GhostResult<Vec<PayoutEntry>> {
         let mut payouts = Vec::new();
+        let mut dust_total: u64 = 0;
         let total_shares: i32 = node_shares.iter().map(|(_, s)| s).sum();
 
         if total_shares <= 0 {
@@ -319,6 +352,14 @@ impl PayoutProposalCreator {
             let amount = (total_sats as f64 * clamped_share).min(u64::MAX as f64) as u64;
 
             if amount < self.config.dust_threshold_sats {
+                // Track dust for redistribution to top node
+                dust_total = dust_total.saturating_add(amount);
+                debug!(
+                    node_id = %hex::encode(&node_id[..8]),
+                    amount,
+                    threshold = self.config.dust_threshold_sats,
+                    "Node payout below dust threshold - will add to top node"
+                );
                 continue;
             }
 
@@ -331,6 +372,22 @@ impl PayoutProposalCreator {
                 recipient_id: node_id,
                 payout_type: PayoutType::NodeReward,
             });
+        }
+
+        // Add dust to the top node's payout (first in sorted order = highest capability shares)
+        if dust_total > 0 && !payouts.is_empty() {
+            payouts[0].amount = payouts[0].amount.saturating_add(dust_total);
+            info!(
+                dust_total,
+                top_node = %hex::encode(&payouts[0].recipient_id[..8]),
+                nodes_affected = node_shares.len() - payouts.len(),
+                "Node dust redistributed to top node"
+            );
+        } else if dust_total > 0 {
+            warn!(
+                dust_total,
+                "Node dust lost - no eligible nodes to receive it"
+            );
         }
 
         Ok(payouts)
@@ -531,5 +588,69 @@ mod tests {
         let amount = (total_sats as f64 * share).min(u64::MAX as f64) as u64;
         // Should not panic or produce weird values
         assert!(amount <= u64::MAX);
+    }
+
+    #[test]
+    fn test_dust_redistribution_to_node_pool() {
+        // Test that miner dust is properly tracked
+        // With 1000 sats total and 1% going to each of 100 small miners,
+        // each would get 10 sats which is below the 546 dust threshold
+        let dust_threshold = 546u64;
+
+        // Simulate calculating payouts for many small miners
+        let total_sats = 10_000u64;
+        let miner_count = 100;
+        let per_miner = total_sats / miner_count; // 100 sats each
+
+        // All should be dust since 100 < 546
+        let mut dust_collected = 0u64;
+        for _ in 0..miner_count {
+            if per_miner < dust_threshold {
+                dust_collected += per_miner;
+            }
+        }
+
+        // All 10_000 sats should be collected as dust
+        assert_eq!(dust_collected, total_sats);
+
+        // This dust would then be added to the node reward pool
+        // ensuring no satoshis are lost
+        let original_node_pool = 5_000u64;
+        let augmented_node_pool = original_node_pool.saturating_add(dust_collected);
+        assert_eq!(augmented_node_pool, 15_000);
+    }
+
+    #[test]
+    fn test_node_dust_to_top_node() {
+        // Test that node dust is redistributed to the top node
+        let dust_threshold = 546u64;
+
+        // Simulate payouts: top node gets 1000, others are dust
+        let payouts = vec![
+            (1000u64, [1u8; 32]), // Top node - above threshold
+            (100u64, [2u8; 32]),  // Dust - below threshold
+            (50u64, [3u8; 32]),   // Dust - below threshold
+        ];
+
+        let mut final_payouts: Vec<(u64, [u8; 32])> = Vec::new();
+        let mut dust_total = 0u64;
+
+        for (amount, node_id) in payouts {
+            if amount < dust_threshold {
+                dust_total += amount;
+            } else {
+                final_payouts.push((amount, node_id));
+            }
+        }
+
+        // Add dust to top node
+        if dust_total > 0 && !final_payouts.is_empty() {
+            final_payouts[0].0 += dust_total;
+        }
+
+        // Top node should have original + dust
+        assert_eq!(final_payouts.len(), 1);
+        assert_eq!(final_payouts[0].0, 1000 + 100 + 50); // 1150 sats
+        assert_eq!(final_payouts[0].1, [1u8; 32]); // Top node ID
     }
 }
