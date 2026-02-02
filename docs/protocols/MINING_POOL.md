@@ -82,6 +82,63 @@ Each Ghost Node runs:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## Mining Modes
+
+Ghost Pool supports three operational modes configured via `mining_mode` in pool.toml:
+
+### Public Pool (Default)
+
+```toml
+[network]
+mining_mode = "public_pool"
+public_mining = true
+signing_key = "your_64_hex_char_key"
+```
+
+- **DNS Registration**: Yes (discoverable via pool.bitcoinghost.org)
+- **Authentication**: None required
+- **Rewards**: 99% subsidy split proportionally among all miners
+- **TX Fees**: Go to block-finding node
+- **Pool Fee**: 1% (treasury + node rewards per decay schedule)
+
+### Private Pool
+
+```toml
+[network]
+mining_mode = "private_pool"
+private_mining_password = "your_secure_password"
+```
+
+- **DNS Registration**: No (not publicly discoverable)
+- **Authentication**: Password required (via stratum authorize)
+- **Rewards**: Same as Public Pool
+- **Use Case**: Private mining operations, testing
+
+### Private Solo
+
+```toml
+[network]
+mining_mode = "private_solo"
+private_mining_password = "your_secure_password"
+solo_payout_address = "tb1q..."  # Your payout address
+```
+
+- **DNS Registration**: No
+- **Authentication**: Password required
+- **Rewards**: 99% subsidy + ALL TX fees to `solo_payout_address`
+- **Pool Fee**: 1% still applies (treasury + node rewards)
+- **Use Case**: Solo mining operations where operator receives all rewards
+
+### Reward Distribution by Mode
+
+| Mode | Miner Reward | TX Fees | Pool Fee (1%) | DNS |
+|------|--------------|---------|---------------|-----|
+| Public Pool | 99% proportional | Block-finding node | Treasury + Nodes | Yes |
+| Private Pool | 99% proportional | Block-finding node | Treasury + Nodes | No |
+| Private Solo | 99% + ALL fees | Solo address | Treasury + Nodes | No |
+
+---
+
 ## Stratum Protocol
 
 Ghost Pool supports two mining protocol modes:
