@@ -42,6 +42,7 @@ use ghost_common::identity::NodeIdentity;
 use ghost_common::types::{NodeId, PayoutEntry, PayoutProposal, PayoutType, RoundId};
 use ghost_consensus::vote_handler::{compute_proposal_hash, VoteHandler};
 use ghost_storage::Database;
+use ghost_verification::QualifiedCapabilityProvider;
 
 use crate::template::TemplateProcessor;
 use crate::treasury::{FeeDistribution, TreasuryState};
@@ -93,6 +94,33 @@ pub struct BlockFoundData {
     pub miner_work: Vec<(String, f64)>,
     /// Node share distribution: (node_id, capability_shares)
     /// Capability shares follow the 5-4-3-2-1 scheme per ECONOMICS.md
+    pub node_shares: Vec<(NodeId, i32)>,
+    /// Current treasury state (for decay calculation)
+    pub treasury_state: TreasuryState,
+}
+
+/// Data for solo mining mode block found event
+///
+/// In solo mode:
+/// - 99% of subsidy + ALL TX fees → solo_payout_address
+/// - 1% pool fee split between treasury and node pool per decay schedule
+/// - Hosting node participates in node reward pool
+#[derive(Debug, Clone)]
+pub struct SoloBlockFoundData {
+    /// Round ID
+    pub round_id: RoundId,
+    /// Block hash (from the found share)
+    pub block_hash: [u8; 32],
+    /// Block height
+    pub block_height: u64,
+    /// Solo payout address (configured in pool settings)
+    pub solo_payout_address: String,
+    /// Block subsidy (satoshis)
+    pub subsidy_sats: u64,
+    /// Transaction fees (satoshis) - ALL go to solo miner
+    pub tx_fees_sats: u64,
+    /// Node share distribution: (node_id, capability_shares)
+    /// Hosting node is included in this list
     pub node_shares: Vec<(NodeId, i32)>,
     /// Current treasury state (for decay calculation)
     pub treasury_state: TreasuryState,
@@ -246,6 +274,95 @@ impl PayoutProposalCreator {
         Ok(proposal)
     }
 
+    /// Create a solo mode payout proposal
+    ///
+    /// Solo mode distribution:
+    /// - Solo miner: 99% of subsidy + ALL TX fees → solo_payout_address
+    /// - 1% pool fee → split between treasury and node pool per decay schedule
+    /// - Hosting node is included in node reward pool calculation
+    pub fn create_solo_proposal(&self, data: SoloBlockFoundData) -> GhostResult<PayoutProposal> {
+        let now = chrono::Utc::now().timestamp() as u64;
+
+        // Calculate fee distribution using treasury decay schedule
+        // Note: In solo mode, TX fees are NOT included in pool fee calculation
+        // TX fees go 100% to solo miner, pool fee is only from subsidy
+        let fee_dist = FeeDistribution::calculate(
+            data.subsidy_sats,
+            0, // TX fees not subject to pool fee in solo mode
+            &data.treasury_state,
+        );
+
+        // Solo miner gets 99% of subsidy + ALL tx fees
+        let solo_miner_amount = fee_dist.miner_pool.saturating_add(data.tx_fees_sats);
+
+        info!(
+            subsidy = data.subsidy_sats,
+            tx_fees = data.tx_fees_sats,
+            solo_miner = solo_miner_amount,
+            pool_fee = fee_dist.pool_fee,
+            treasury = fee_dist.treasury_amount,
+            node_pool = fee_dist.node_reward_pool,
+            decay_year = data.treasury_state.decay_year(),
+            "Calculating solo mode fee distribution"
+        );
+
+        // Create miner payout entry (single entry for solo operator)
+        let mut miner_payouts = Vec::new();
+        if solo_miner_amount >= 546 {
+            // Dust threshold
+            let mut recipient_id = [0u8; 32];
+            let hash = ghost_common::identity::hash_message(data.solo_payout_address.as_bytes());
+            recipient_id.copy_from_slice(&hash);
+
+            miner_payouts.push(PayoutEntry {
+                address: data.solo_payout_address.into_bytes(),
+                amount: solo_miner_amount,
+                recipient_id,
+                payout_type: PayoutType::Mining,
+            });
+        }
+
+        // Calculate node payouts from the 1% pool fee's node reward portion
+        // In solo mode, the hosting node should be included in node_shares
+        let node_payouts = self.calculate_node_payouts(&data.node_shares, fee_dist.node_reward_pool)?;
+
+        // If no nodes qualify for payouts, add node pool to treasury
+        let mut final_treasury = fee_dist.treasury_amount;
+        if node_payouts.is_empty() && fee_dist.node_reward_pool > 0 {
+            info!(
+                node_pool = fee_dist.node_reward_pool,
+                "Solo mode: no eligible nodes - redirecting node reward pool to treasury"
+            );
+            final_treasury = final_treasury.saturating_add(fee_dist.node_reward_pool);
+        }
+
+        let proposal = PayoutProposal {
+            proposal_hash: [0u8; 32], // Will be computed by vote handler
+            round_id: data.round_id,
+            block_hash: data.block_hash,
+            block_height: data.block_height,
+            proposer: self.identity.node_id(),
+            miner_payouts,
+            node_payouts,
+            treasury_amount: final_treasury,
+            tx_fees: data.tx_fees_sats,
+            subsidy: data.subsidy_sats,
+            timestamp: now,
+        };
+
+        info!(
+            round_id = data.round_id,
+            height = data.block_height,
+            solo_miner = solo_miner_amount,
+            node_count = proposal.node_payouts.len(),
+            treasury = final_treasury,
+            decay_year = data.treasury_state.decay_year(),
+            "Created solo mode payout proposal"
+        );
+
+        Ok(proposal)
+    }
+
     /// Calculate miner payouts proportional to work
     /// Returns (payouts, dust_amount) where dust is redirected to node reward pool
     fn calculate_miner_payouts(
@@ -378,6 +495,18 @@ impl PayoutProposalCreator {
             // Get node's payout address from database
             let address = self.get_node_address(&node_id)?;
 
+            // Skip nodes without a configured payout address - their share becomes dust
+            // which will be redistributed to the top node or go to treasury
+            if address.is_empty() {
+                dust_total = dust_total.saturating_add(amount);
+                debug!(
+                    node_id = %hex::encode(&node_id[..8]),
+                    amount,
+                    "Node has no payout address - adding to dust pool"
+                );
+                continue;
+            }
+
             payouts.push(PayoutEntry {
                 address,
                 amount,
@@ -386,8 +515,26 @@ impl PayoutProposalCreator {
             });
         }
 
+        // Merge payouts going to the same address (e.g., multiple nodes using treasury)
+        let mut merged_payouts: Vec<PayoutEntry> = Vec::new();
+        for payout in payouts {
+            if let Some(existing) = merged_payouts.iter_mut().find(|p| p.address == payout.address) {
+                existing.amount = existing.amount.saturating_add(payout.amount);
+                debug!(
+                    address = %String::from_utf8_lossy(&payout.address[..20.min(payout.address.len())]),
+                    merged_amount = payout.amount,
+                    "Merged duplicate node payout address"
+                );
+            } else {
+                merged_payouts.push(payout);
+            }
+        }
+        let payouts = merged_payouts;
+
         // Add dust to the top node's payout (first in sorted order = highest capability shares)
         if dust_total > 0 && !payouts.is_empty() {
+            // payouts is now immutable, need to make it mutable again
+            let mut payouts = payouts;
             payouts[0].amount = payouts[0].amount.saturating_add(dust_total);
             info!(
                 dust_total,
@@ -395,6 +542,7 @@ impl PayoutProposalCreator {
                 nodes_affected = node_shares.len() - payouts.len(),
                 "Node dust redistributed to top node"
             );
+            return Ok(payouts);
         } else if dust_total > 0 {
             warn!(
                 dust_total,
@@ -440,7 +588,8 @@ impl PayoutProposalCreator {
             }
         }
 
-        debug!(node_id = %&node_id_hex[..8], "Node payout address not found - will be filtered from proposal");
+        // Return empty - caller will handle this by treating as dust
+        // which gets redistributed to top node or treasury
         Ok(Vec::new())
     }
 }
@@ -450,6 +599,8 @@ pub struct PayoutHandler {
     creator: PayoutProposalCreator,
     vote_handler: Arc<VoteHandler>,
     template_processor: Arc<TemplateProcessor>,
+    /// Qualification provider for calculating VERIFIED capabilities
+    qualification_provider: Option<Arc<QualifiedCapabilityProvider>>,
 }
 
 impl PayoutHandler {
@@ -465,11 +616,40 @@ impl PayoutHandler {
             creator,
             vote_handler,
             template_processor,
+            qualification_provider: None,
         }
     }
 
+    /// Add a qualified capability provider for using VERIFIED capabilities
+    pub fn with_qualification_provider(mut self, provider: Arc<QualifiedCapabilityProvider>) -> Self {
+        self.qualification_provider = Some(provider);
+        self
+    }
+
     /// Handle a block found event by creating and submitting a payout proposal
-    pub fn handle_block_found(&self, data: BlockFoundData) -> GhostResult<[u8; 32]> {
+    pub fn handle_block_found(&self, mut data: BlockFoundData) -> GhostResult<[u8; 32]> {
+        // If we have a qualification provider, get ALL qualified nodes from database
+        // This ensures all verified nodes get payouts, not just ones that received shares directly
+        if let Some(ref provider) = self.qualification_provider {
+            // Get all nodes with verified capabilities from the database
+            let qualified_shares = provider.get_all_qualified_nodes();
+
+            let claimed_count = data.node_shares.len();
+            let verified_count = qualified_shares.len();
+            let total_claimed_shares: i32 = data.node_shares.iter().map(|(_, s)| s).sum();
+            let total_verified_shares: i32 = qualified_shares.iter().map(|(_, s)| s).sum();
+
+            info!(
+                claimed_nodes = claimed_count,
+                verified_nodes = verified_count,
+                claimed_shares = total_claimed_shares,
+                verified_shares = total_verified_shares,
+                "Recalculated node shares using VERIFIED capabilities"
+            );
+
+            data.node_shares = qualified_shares;
+        }
+
         // Create the proposal
         let mut proposal = self.creator.create_proposal(data)?;
 
@@ -506,6 +686,48 @@ impl PayoutHandler {
         info!(
             hash = %hex::encode(&proposal_hash[..8]),
             "Payout proposal submitted for voting"
+        );
+
+        Ok(proposal_hash)
+    }
+
+    /// Handle a block found event in solo mining mode
+    ///
+    /// In solo mode, all rewards go to the configured solo_payout_address:
+    /// - 99% of subsidy + ALL TX fees → solo_payout_address
+    /// - 1% pool fee → treasury + node pool per decay schedule
+    pub fn handle_solo_block_found(&self, data: SoloBlockFoundData) -> GhostResult<[u8; 32]> {
+        // Create the solo proposal
+        let mut proposal = self.creator.create_solo_proposal(data)?;
+
+        // Validate proposal has meaningful content
+        if proposal.miner_payouts.is_empty() {
+            warn!("Solo payout proposal has no miner payout - skipping submission");
+            return Ok([0u8; 32]);
+        }
+
+        // Compute proposal hash before storing
+        let proposal_hash = compute_proposal_hash(&proposal);
+        proposal.proposal_hash = proposal_hash;
+
+        // Store proposal in template processor BEFORE submitting to consensus
+        self.template_processor.store_proposal(proposal.clone());
+
+        // Submit to vote handler for BFT consensus
+        info!(
+            round_id = proposal.round_id,
+            solo_payout = proposal.miner_payouts[0].amount,
+            nodes = proposal.node_payouts.len(),
+            "Submitting solo mode payout proposal to consensus"
+        );
+
+        let returned_hash = self.vote_handler.handle_proposal(proposal)?;
+
+        debug_assert_eq!(proposal_hash, returned_hash, "Proposal hash mismatch");
+
+        info!(
+            hash = %hex::encode(&proposal_hash[..8]),
+            "Solo mode payout proposal submitted for voting"
         );
 
         Ok(proposal_hash)

@@ -370,6 +370,106 @@ impl NodeConfig {
                 );
             }
         }
+
+        // Validate mining mode configuration
+        self.validate_mining_mode(result);
+    }
+
+    fn validate_mining_mode(&self, result: &mut ConfigValidationResult) {
+        match self.network.mining_mode {
+            MiningMode::PublicPool => {
+                // PublicPool requires signing_key for DNS registration
+                // (already validated above in public_mining check)
+                // Sync public_mining with mining_mode for backward compatibility
+                if !self.network.public_mining {
+                    result.add_warning(
+                        "network.mining_mode",
+                        "mining_mode is PublicPool but public_mining is false. \
+                         Consider setting public_mining = true for consistency.",
+                    );
+                }
+            }
+            MiningMode::PrivatePool => {
+                // PrivatePool requires private_mining_password
+                match &self.network.private_mining_password {
+                    None => {
+                        result.add_error(
+                            "network.private_mining_password",
+                            "private_mining_password is REQUIRED when mining_mode = private_pool",
+                        );
+                    }
+                    Some(password) => {
+                        if password.len() < 8 {
+                            result.add_warning(
+                                "network.private_mining_password",
+                                &format!(
+                                    "Password is only {} characters. Minimum 8 recommended for security.",
+                                    password.len()
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+            MiningMode::PrivateSolo => {
+                // PrivateSolo requires both password and solo_payout_address
+                match &self.network.private_mining_password {
+                    None => {
+                        result.add_error(
+                            "network.private_mining_password",
+                            "private_mining_password is REQUIRED when mining_mode = private_solo",
+                        );
+                    }
+                    Some(password) => {
+                        if password.len() < 8 {
+                            result.add_warning(
+                                "network.private_mining_password",
+                                &format!(
+                                    "Password is only {} characters. Minimum 8 recommended for security.",
+                                    password.len()
+                                ),
+                            );
+                        }
+                    }
+                }
+
+                // solo_payout_address is required
+                match &self.network.solo_payout_address {
+                    None => {
+                        result.add_error(
+                            "network.solo_payout_address",
+                            "solo_payout_address is REQUIRED when mining_mode = private_solo",
+                        );
+                    }
+                    Some(addr) => {
+                        if addr.is_empty() {
+                            result.add_error(
+                                "network.solo_payout_address",
+                                "solo_payout_address cannot be empty",
+                            );
+                        } else {
+                            // Validate bech32 prefix matches network
+                            let valid_prefix = match self.bitcoin.network {
+                                BitcoinNetwork::Mainnet => addr.starts_with("bc1"),
+                                BitcoinNetwork::Signet | BitcoinNetwork::Testnet => {
+                                    addr.starts_with("tb1")
+                                }
+                                BitcoinNetwork::Regtest => addr.starts_with("bcrt1"),
+                            };
+                            if !valid_prefix {
+                                result.add_error(
+                                    "network.solo_payout_address",
+                                    &format!(
+                                        "Invalid address prefix for {} network",
+                                        format!("{:?}", self.bitcoin.network).to_lowercase()
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn validate_storage(&self, result: &mut ConfigValidationResult) {
@@ -515,6 +615,29 @@ pub enum BitcoinNetwork {
     Regtest,
 }
 
+/// Mining mode configuration
+///
+/// Determines how the pool operates and who can mine.
+///
+/// # TOML Example
+/// ```toml
+/// [network]
+/// mining_mode = "private_solo"
+/// private_mining_password = "mysecretpassword"
+/// solo_payout_address = "tb1q..."
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MiningMode {
+    /// DNS registered, anyone can mine, pool-aggregated rewards
+    #[default]
+    PublicPool,
+    /// Password required, pool-aggregated rewards, not in DNS
+    PrivatePool,
+    /// Password required, 99% + fees to operator's address, not in DNS
+    PrivateSolo,
+}
+
 impl BitcoinNetwork {
     pub fn default_rpc_port(&self) -> u16 {
         match self {
@@ -553,11 +676,27 @@ pub struct NetworkConfig {
     /// Maximum connected miners
     pub max_miners: u32,
     /// Enable public mining (accept external miners)
+    /// DEPRECATED: Use mining_mode instead. This is kept for backward compatibility.
     pub public_mining: bool,
-    /// Signing key for message authentication (REQUIRED for public_mining)
+    /// Signing key for message authentication (REQUIRED for public_mining/PublicPool)
     /// Must be 64 hex characters (32 bytes). Generate with: ghostd --generate-signing-key
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_key: Option<String>,
+    /// Mining mode: public_pool, private_pool, or private_solo
+    ///
+    /// - PublicPool: DNS registered, anyone can mine, pool-aggregated rewards
+    /// - PrivatePool: Password required, pool-aggregated rewards, not in DNS
+    /// - PrivateSolo: Password required, 99% + fees to operator's address
+    #[serde(default)]
+    pub mining_mode: MiningMode,
+    /// Password required for private mining modes (PrivatePool, PrivateSolo)
+    /// Minimum 8 characters recommended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_mining_password: Option<String>,
+    /// Payout address for PrivateSolo mode (required when mining_mode = private_solo)
+    /// Must be a valid bech32 address for the configured network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solo_payout_address: Option<String>,
 }
 
 impl Default for NetworkConfig {
@@ -572,6 +711,9 @@ impl Default for NetworkConfig {
             max_miners: 1000,
             public_mining: false,
             signing_key: None,
+            mining_mode: MiningMode::default(),
+            private_mining_password: None,
+            solo_payout_address: None,
         }
     }
 }
@@ -987,5 +1129,120 @@ mod tests {
             .errors
             .iter()
             .any(|e| e.field == "network.signing_key"));
+    }
+
+    #[test]
+    fn test_mining_mode_public_pool() {
+        let mut config = NodeConfig::default();
+        config.network.mining_mode = MiningMode::PublicPool;
+        config.network.public_mining = true;
+        config.network.signing_key =
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
+
+        let result = config.validate();
+        // Should not have mining_mode errors
+        assert!(!result
+            .errors
+            .iter()
+            .any(|e| e.field.contains("mining_mode")));
+    }
+
+    #[test]
+    fn test_mining_mode_private_pool_requires_password() {
+        let mut config = NodeConfig::default();
+        config.network.mining_mode = MiningMode::PrivatePool;
+        config.network.private_mining_password = None;
+
+        let result = config.validate();
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.private_mining_password"));
+    }
+
+    #[test]
+    fn test_mining_mode_private_pool_with_password() {
+        let mut config = NodeConfig::default();
+        config.network.mining_mode = MiningMode::PrivatePool;
+        config.network.private_mining_password = Some("mysecretpassword".to_string());
+
+        let result = config.validate();
+        // Should not have password error
+        assert!(!result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.private_mining_password"));
+    }
+
+    #[test]
+    fn test_mining_mode_private_pool_short_password_warning() {
+        let mut config = NodeConfig::default();
+        config.network.mining_mode = MiningMode::PrivatePool;
+        config.network.private_mining_password = Some("short".to_string()); // 5 chars
+
+        let result = config.validate();
+        // Should have password warning (not error)
+        assert!(result
+            .warnings
+            .iter()
+            .any(|e| e.field == "network.private_mining_password"
+                && e.message.contains("Minimum 8")));
+    }
+
+    #[test]
+    fn test_mining_mode_private_solo_requires_password_and_address() {
+        let mut config = NodeConfig::default();
+        config.network.mining_mode = MiningMode::PrivateSolo;
+        config.network.private_mining_password = None;
+        config.network.solo_payout_address = None;
+
+        let result = config.validate();
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.private_mining_password"));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.solo_payout_address"));
+    }
+
+    #[test]
+    fn test_mining_mode_private_solo_valid() {
+        let mut config = NodeConfig::default();
+        config.bitcoin.network = BitcoinNetwork::Signet;
+        config.network.mining_mode = MiningMode::PrivateSolo;
+        config.network.private_mining_password = Some("mysecretpassword".to_string());
+        config.network.solo_payout_address =
+            Some("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string());
+
+        let result = config.validate();
+        // Should not have mining mode related errors
+        assert!(!result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.private_mining_password"));
+        assert!(!result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.solo_payout_address"));
+    }
+
+    #[test]
+    fn test_mining_mode_private_solo_wrong_network_address() {
+        let mut config = NodeConfig::default();
+        config.bitcoin.network = BitcoinNetwork::Mainnet;
+        config.network.mining_mode = MiningMode::PrivateSolo;
+        config.network.private_mining_password = Some("mysecretpassword".to_string());
+        // Using signet address on mainnet
+        config.network.solo_payout_address =
+            Some("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string());
+
+        let result = config.validate();
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.solo_payout_address"
+                && e.message.contains("Invalid address prefix")));
     }
 }

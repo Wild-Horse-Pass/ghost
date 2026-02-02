@@ -30,6 +30,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info};
 
 use ghost_accounting::shares::{DifficultyCalculator, RoundShares};
+use ghost_common::config::MiningMode;
 use ghost_common::types::{NodeCapabilities, NodeId, RoundId, ShareProof};
 
 /// Round manager configuration
@@ -43,6 +44,8 @@ pub struct RoundConfig {
     pub max_shares_per_round: usize,
     /// Round history to keep
     pub rounds_to_keep: usize,
+    /// Mining mode (affects payout flow)
+    pub mining_mode: MiningMode,
 }
 
 impl Default for RoundConfig {
@@ -52,6 +55,7 @@ impl Default for RoundConfig {
             network_difficulty: 1_000_000.0,
             max_shares_per_round: 1_000_000,
             rounds_to_keep: 10,
+            mining_mode: MiningMode::PublicPool,
         }
     }
 }
@@ -490,16 +494,28 @@ impl RoundManager {
     /// Get node share distribution for a round
     /// Returns Vec<(node_id, shares)>
     pub fn get_node_shares(&self, round_id: RoundId) -> Vec<(NodeId, i32)> {
-        let rounds = self.rounds.read();
-        rounds
-            .get(&round_id)
-            .map(|r| {
-                r.top_100_nodes()
-                    .into_iter()
-                    .map(|n| (n.node_id, n.shares))
-                    .collect()
-            })
-            .unwrap_or_default()
+        let mut rounds = self.rounds.write();
+        if let Some(round) = rounds.get_mut(&round_id) {
+            // Ensure top 100 is calculated before returning
+            round.calculate_top_100_nodes();
+            round
+                .top_100_nodes()
+                .into_iter()
+                .map(|n| (n.node_id, n.shares))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Get the configured mining mode
+    pub fn mining_mode(&self) -> MiningMode {
+        self.config.mining_mode
+    }
+
+    /// Check if we're in solo mining mode
+    pub fn is_solo_mode(&self) -> bool {
+        matches!(self.config.mining_mode, MiningMode::PrivateSolo)
     }
 }
 

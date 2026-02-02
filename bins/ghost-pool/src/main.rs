@@ -41,7 +41,7 @@ use tokio::sync::broadcast;
 use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use ghost_common::config::NodeConfig;
+use ghost_common::config::{MiningMode, NodeConfig};
 use ghost_common::identity::NodeIdentity;
 use ghost_common::rpc::BitcoinRpc;
 use ghost_common::signer::SignerConfig;
@@ -50,19 +50,74 @@ use ghost_common::zmq::{ZmqConfig, ZmqSubscriber};
 use ghost_consensus::health_handler::HealthPingHandler;
 use ghost_consensus::mesh::{MeshConfig, MeshNetwork};
 use ghost_consensus::message::MessageType;
+use ghost_consensus::verification_handler::VerificationResultHandler;
 use ghost_consensus::vote_handler::{BroadcastFn, ExecuteFn, VoteHandler};
 use ghost_consensus::voting::VotingManager;
 use ghost_policy::PolicyProfile;
 use ghost_storage::Database;
-use ghost_verification::{start_server, BlockFoundNotification, RpcArchiveHandler, VerificationState};
+use ghost_verification::{
+    start_server, BlockFoundNotification, GhostPayL2Handler, QualifiedCapabilityProvider,
+    RpcArchiveHandler, VerificationState, VerificationTask, VerifiablePeer, PeerProvider,
+};
 
-use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler};
+use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler, SoloBlockFoundData};
 use ghost_pool::registry::RegistryClient;
 use ghost_pool::treasury::TreasuryState;
 use ghost_pool::reorg::{ReorgConfig, ReorgHandler};
 use ghost_pool::round::{RoundConfig, RoundEvent, RoundManager};
 use ghost_pool::template::{TemplateConfig, TemplateEvent, TemplateProcessor};
 use ghost_pool::template_provider::{TdpConfig, TemplateDistributionServer};
+
+/// Adapter to provide peers for verification from PeerManager
+struct PeerProviderAdapter {
+    peers: Arc<ghost_consensus::peer::PeerManager>,
+    http_port: u16,
+}
+
+impl PeerProviderAdapter {
+    fn new(peers: Arc<ghost_consensus::peer::PeerManager>, http_port: u16) -> Self {
+        Self { peers, http_port }
+    }
+}
+
+impl PeerProvider for PeerProviderAdapter {
+    fn get_random_peers(
+        &self,
+        exclude: &ghost_common::types::NodeId,
+        count: usize,
+    ) -> Vec<VerifiablePeer> {
+        use rand::seq::SliceRandom;
+
+        // Get connected peers (seen in last 60 seconds)
+        let connected = self.peers.get_connected_peers(60);
+
+        // Filter out the excluded node (ourselves) and peers without valid addresses
+        let mut candidates: Vec<_> = connected
+            .into_iter()
+            .filter(|p| &p.node_id != exclude && !p.public_address.is_empty())
+            .map(|p| {
+                // Derive HTTP address from public_address + http_port
+                // public_address is typically just an IP or host
+                let host = if p.public_address.contains(':') {
+                    // Has port, extract just the host
+                    p.public_address.split(':').next().unwrap_or(&p.public_address)
+                } else {
+                    &p.public_address
+                };
+                VerifiablePeer {
+                    node_id: p.node_id,
+                    http_address: format!("{}:{}", host, self.http_port),
+                }
+            })
+            .collect();
+
+        // Shuffle and take up to count
+        let mut rng = rand::thread_rng();
+        candidates.shuffle(&mut rng);
+        candidates.truncate(count);
+        candidates
+    }
+}
 
 /// Ghost Pool - Decentralized Bitcoin Mining Pool
 #[derive(Parser, Debug)]
@@ -514,12 +569,22 @@ async fn main() -> Result<()> {
         policy.highest_allowed_tier().map(|t| t as u8).unwrap_or(0)
     );
 
+    // Determine effective public_mining from mining_mode
+    // PublicPool = public mining enabled, other modes = private
+    let mining_mode = config.network.mining_mode;
+    let is_public_mining = matches!(mining_mode, MiningMode::PublicPool);
+
+    info!(
+        "Mining mode: {:?} (public_mining={})",
+        mining_mode, is_public_mining
+    );
+
     // Setup capabilities - initially with elder_status = false
     // We'll update after registering with the database
     let mut capabilities = NodeCapabilities {
         archive_mode: config.storage.archive_mode,
         ghost_pay: config.ghost_pay.is_some(),
-        public_mining: config.network.public_mining,
+        public_mining: is_public_mining, // Derived from mining_mode
         bitcoin_pure: matches!(
             config.policy.profile,
             ghost_common::config::PolicyProfile::BitcoinPure
@@ -570,9 +635,16 @@ async fn main() -> Result<()> {
     // Create identity Arc
     let identity = Arc::new(identity);
 
-    // Initialize round manager
-    let round_config = RoundConfig::default();
+    // Initialize round manager with mining mode
+    let round_config = RoundConfig {
+        mining_mode,
+        ..Default::default()
+    };
     let round_manager = Arc::new(RoundManager::new(identity.node_id(), round_config));
+
+    // Register our own node's capabilities so we're included in node reward calculations
+    // This is critical - without this, our shares won't be counted for node rewards
+    round_manager.register_node(identity.node_id(), capabilities);
 
     // Initialize template processor with treasury and pool payout addresses from config
     // Pool payout address defaults to treasury address if not explicitly configured separately
@@ -580,6 +652,8 @@ async fn main() -> Result<()> {
         treasury_address: config.pool.treasury_address.clone(),
         pool_payout_address: config.pool.treasury_address.address().to_string(), // Use same as treasury for now
         network: config.bitcoin.network.clone(),
+        mining_mode,
+        solo_payout_address: config.network.solo_payout_address.clone(),
         ..Default::default()
     };
     let template_processor = Arc::new(TemplateProcessor::new(
@@ -592,7 +666,7 @@ async fn main() -> Result<()> {
     // SRI pool connects to ghost-pool's TDP server for templates
     // SRI translator handles SV1 miners on port 3333
 
-    // Initialize P2P mesh
+    // Initialize P2P mesh with actual node capabilities for health pings
     let mesh_config = MeshConfig {
         public_address: config
             .network
@@ -600,6 +674,7 @@ async fn main() -> Result<()> {
             .clone()
             .unwrap_or_else(|| "127.0.0.1".to_string()),
         ports: config.network.p2p.clone(),
+        capabilities: capabilities.clone(),
         ..Default::default()
     };
     let mesh = Arc::new(MeshNetwork::new(Arc::clone(&identity), mesh_config));
@@ -746,6 +821,12 @@ async fn main() -> Result<()> {
         Arc::clone(&health_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>
     );
 
+    // Create and register verification result handler for P2P verification results
+    let verification_result_handler = Arc::new(VerificationResultHandler::new(Arc::clone(&db)));
+    mesh.register_handler(
+        Arc::clone(&verification_result_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>
+    );
+
     // Create and register discovery handler for peer gossip
     // This enables nodes to discover peers beyond just seed nodes
     let public_address = config
@@ -824,13 +905,20 @@ async fn main() -> Result<()> {
         max_node_outputs: 100,
         treasury_address: treasury_script,
     };
-    let payout_handler = Arc::new(PayoutHandler::new(
-        Arc::clone(&identity),
-        payout_config,
-        Arc::clone(&db),
-        Arc::clone(&vote_handler),
-        Arc::clone(&template_processor),
-    ));
+
+    // Create qualified capability provider for using VERIFIED capabilities
+    let qualification_provider = Arc::new(QualifiedCapabilityProvider::new(Arc::clone(&db)));
+
+    let payout_handler = Arc::new(
+        PayoutHandler::new(
+            Arc::clone(&identity),
+            payout_config,
+            Arc::clone(&db),
+            Arc::clone(&vote_handler),
+            Arc::clone(&template_processor),
+        )
+        .with_qualification_provider(Arc::clone(&qualification_provider)),
+    );
 
     // Start verification HTTP server
     let rpc_for_verification = Arc::clone(&rpc);
@@ -857,13 +945,46 @@ async fn main() -> Result<()> {
                 .map(|s| s.miner_count as u32)
                 .unwrap_or(0)
         },
-        move || mesh_for_verification.peers().peer_count() as u32,
+        move || mesh_for_verification.peers().unique_peer_count() as u32,
     );
 
     // Configure archive handler if archive mode enabled
     if capabilities.archive_mode {
         let archive_handler = RpcArchiveHandler::new(Arc::clone(&rpc_for_verification));
         verification_state = verification_state.with_archive_handler(archive_handler);
+    }
+
+    // Configure GhostPay handler if ghost_pay enabled
+    if let Some(ref gp_config) = config.ghost_pay {
+        if gp_config.enabled {
+            // Calculate virtual blocks from time since startup
+            let startup_time = std::time::Instant::now();
+            let virtual_block_secs = gp_config.virtual_block_secs;
+            let epoch_blocks = gp_config.epoch_blocks;
+            let wraith_enabled = gp_config.wraith_enabled;
+
+            let ghostpay_handler = GhostPayL2Handler::new(
+                true, // enabled
+                move || {
+                    // Virtual block = elapsed seconds / virtual_block_secs
+                    startup_time.elapsed().as_secs() / virtual_block_secs.max(1)
+                },
+                move || {
+                    // Epoch = virtual_block / epoch_blocks
+                    let virtual_block = startup_time.elapsed().as_secs() / virtual_block_secs.max(1);
+                    virtual_block / epoch_blocks.max(1)
+                },
+                |_address| {
+                    // No real L2 balances tracked - return 0
+                    // In a full implementation, this would query the L2 state
+                    Ok(0u64)
+                },
+                wraith_enabled,
+            );
+            verification_state = verification_state.with_ghostpay_handler(ghostpay_handler);
+            info!("GhostPay handler configured (virtual_block_secs={}, epoch_blocks={})",
+                  virtual_block_secs, epoch_blocks);
+        }
     }
 
     // Pass database and RPC to verification state for API endpoints
@@ -912,10 +1033,36 @@ async fn main() -> Result<()> {
     let identity_for_shares = Arc::clone(&identity);
     let db_for_shares = Arc::clone(&db);
     verification_state = verification_state.with_share_recorder(move |share| {
-        // Record the share in the current round
+        // Get current round ID for database record
+        let round_id = rm_for_shares.current_round_id();
+
+        // Record the share in the current round (in-memory tracking)
         rm_for_shares
             .record_share(&share.miner_id, share.work, identity_for_shares.node_id())
             .map_err(|e| ghost_common::GhostError::Internal(e.to_string()))?;
+
+        // Persist share to database for historical tracking and auditing
+        let share_record = ghost_storage::models::ShareRecord {
+            id: None,
+            round_id,
+            miner_id: share.miner_id.clone(),
+            difficulty: share.work, // SRI reports work as difficulty-adjusted value
+            work: share.work,
+            share_hash: share.share_hash.clone(),
+            timestamp: share.timestamp as i64,
+            received_by: hex::encode(&identity_for_shares.node_id()[..8]),
+            valid: true, // Already validated by SRI Pool
+        };
+
+        if let Err(e) = db_for_shares.insert_share(&share_record) {
+            // Log but don't fail - in-memory tracking is primary, DB is for auditing
+            tracing::warn!(
+                miner_id = %share.miner_id,
+                share_hash = %share.share_hash,
+                error = %e,
+                "Failed to persist share to database"
+            );
+        }
 
         // Update miner's payout address in database if provided
         // The payout_address is extracted from user_identity (format: <address>.<worker>)
@@ -941,6 +1088,7 @@ async fn main() -> Result<()> {
         tracing::debug!(
             miner_id = %share.miner_id,
             work = share.work,
+            round_id = round_id,
             "Share recorded from SRI notification"
         );
         Ok(())
@@ -952,18 +1100,20 @@ async fn main() -> Result<()> {
     let payout_for_block = Arc::clone(&payout_handler);
     let identity_for_block = Arc::clone(&identity);
     let db_for_block = Arc::clone(&db);
+    let solo_payout_address_for_block = config.network.solo_payout_address.clone();
     verification_state = verification_state.with_block_found_handler(move |notification: BlockFoundNotification| {
         let round_id = rm_for_block.current_round_id();
+        let is_solo_mode = rm_for_block.is_solo_mode();
 
         info!(
             round = round_id,
             hash = %hex::encode(&notification.block_hash[..8]),
             miner = %notification.miner_id,
+            solo_mode = is_solo_mode,
             "🎉 BLOCK FOUND via webhook! Creating payout proposal..."
         );
 
         // Gather data for payout proposal
-        let miner_work = rm_for_block.get_miner_work(round_id);
         let node_shares = rm_for_block.get_node_shares(round_id);
         let (subsidy, fees, height) = tp_for_block.get_current_block_info();
 
@@ -988,34 +1138,75 @@ async fn main() -> Result<()> {
         // This node found the block
         let winning_node_id = identity_for_block.node_id();
 
-        // Create block found data for payout handler
-        let block_data = BlockFoundData {
-            round_id,
-            block_hash: notification.block_hash,
-            block_height: height,
-            winning_miner_id: notification.miner_id.clone(),
-            winning_miner_payout_address: notification.payout_address.clone(),
-            winning_node_id,
-            subsidy_sats: subsidy,
-            tx_fees_sats: fees,
-            miner_work,
-            node_shares,
-            treasury_state,
-        };
+        // Dispatch to appropriate payout handler based on mining mode
+        if is_solo_mode {
+            // Solo mode: 99% subsidy + ALL TX fees to solo_payout_address
+            let solo_address = match &solo_payout_address_for_block {
+                Some(addr) if !addr.is_empty() => addr.clone(),
+                _ => {
+                    error!("Solo mode block found but solo_payout_address not configured!");
+                    return Err(ghost_common::GhostError::Config(
+                        "solo_payout_address required for solo mode".to_string(),
+                    ));
+                }
+            };
 
-        // Submit payout proposal for BFT consensus
-        match payout_for_block.handle_block_found(block_data) {
-            Ok(proposal_hash) => {
-                if proposal_hash != [0u8; 32] {
-                    info!(
-                        round = round_id,
-                        hash = %hex::encode(&proposal_hash[..8]),
-                        "Payout proposal submitted for consensus"
-                    );
+            let solo_data = SoloBlockFoundData {
+                round_id,
+                block_hash: notification.block_hash,
+                block_height: height,
+                solo_payout_address: solo_address,
+                subsidy_sats: subsidy,
+                tx_fees_sats: fees,
+                node_shares,
+                treasury_state,
+            };
+
+            match payout_for_block.handle_solo_block_found(solo_data) {
+                Ok(proposal_hash) => {
+                    if proposal_hash != [0u8; 32] {
+                        info!(
+                            round = round_id,
+                            hash = %hex::encode(&proposal_hash[..8]),
+                            "Solo mode payout proposal submitted for consensus"
+                        );
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, round = round_id, "Failed to create solo mode payout proposal");
                 }
             }
-            Err(e) => {
-                error!(error = %e, round = round_id, "Failed to create payout proposal");
+        } else {
+            // Pool mode: proportional distribution to all miners
+            let miner_work = rm_for_block.get_miner_work(round_id);
+
+            let block_data = BlockFoundData {
+                round_id,
+                block_hash: notification.block_hash,
+                block_height: height,
+                winning_miner_id: notification.miner_id.clone(),
+                winning_miner_payout_address: notification.payout_address.clone(),
+                winning_node_id,
+                subsidy_sats: subsidy,
+                tx_fees_sats: fees,
+                miner_work,
+                node_shares,
+                treasury_state,
+            };
+
+            match payout_for_block.handle_block_found(block_data) {
+                Ok(proposal_hash) => {
+                    if proposal_hash != [0u8; 32] {
+                        info!(
+                            round = round_id,
+                            hash = %hex::encode(&proposal_hash[..8]),
+                            "Payout proposal submitted for consensus"
+                        );
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, round = round_id, "Failed to create payout proposal");
+                }
             }
         }
 
@@ -1043,7 +1234,7 @@ async fn main() -> Result<()> {
                         block_height: rm_for_ws.current_height(),
                         round_id: rm_for_ws.current_round_id() as u64,
                         miner_count,
-                        peer_count: mesh_for_ws.peers().peer_count() as u32,
+                        peer_count: mesh_for_ws.peers().unique_peer_count() as u32,
                         uptime_secs: start_time.elapsed().as_secs(),
                     };
                     ws_state.broadcast(event);
@@ -1052,6 +1243,58 @@ async fn main() -> Result<()> {
             }
         }
     });
+
+    // Start self-uptime recording task
+    // Records our own uptime so we can be qualified for payouts
+    // This is necessary because verification results are stored by OTHER nodes about us,
+    // but we need our own uptime record for the gatekeeper calculation (95% over 7 days).
+    // Without self-recording, this node would have no uptime data ABOUT itself.
+    let db_for_uptime = Arc::clone(&db);
+    let node_id_for_uptime = identity.node_id_hex();
+    let mut uptime_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+        let mut sample_count: u64 = 0;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let now = chrono::Utc::now().timestamp();
+                    match db_for_uptime.record_uptime_sample(&node_id_for_uptime, now, true) {
+                        Ok(_) => {
+                            sample_count += 1;
+                            // Log every 360 samples (~1 hour) to confirm it's working
+                            if sample_count % 360 == 0 {
+                                tracing::debug!(
+                                    samples = sample_count,
+                                    node_id = %&node_id_for_uptime[..8],
+                                    "Self-uptime recording checkpoint"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                node_id = %&node_id_for_uptime[..8],
+                                "Failed to record self-uptime sample"
+                            );
+                        }
+                    }
+                }
+                _ = uptime_shutdown.recv() => {
+                    tracing::info!(
+                        total_samples = sample_count,
+                        "Self-uptime recording task shutting down"
+                    );
+                    break;
+                }
+            }
+        }
+    });
+    info!(
+        node_id = %&node_id_hex[..8],
+        interval_secs = 10,
+        "Self-uptime recording task started"
+    );
 
     // Clone ws_state for event handlers before moving verification_state
     let _verification_state_for_ws = Arc::clone(&verification_state);
@@ -1189,6 +1432,111 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start periodic verification task (verifies peer capabilities every 5 minutes)
+    // This implements the spec: nodes verify each other, results stored in DB for payout calculation
+    let peer_provider = Arc::new(PeerProviderAdapter::new(
+        Arc::clone(mesh.peers()),
+        config.network.http_port,
+    ));
+
+    // Create broadcast channel for verification results
+    let (verification_tx, mut verification_rx) = ghost_verification::task::verification_broadcast_channel(100);
+
+    let verification_task = VerificationTask::new(
+        Arc::clone(&db),
+        identity.node_id(),
+        peer_provider as Arc<dyn PeerProvider>,
+    )
+    .with_rpc(Arc::clone(&rpc))
+    .with_broadcast(verification_tx);
+
+    tokio::spawn(async move {
+        // Wait for mesh to establish connections before starting verification
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        verification_task.run().await;
+    });
+    info!("Verification task started (5 minute interval)");
+
+    // Start verification result broadcaster (sends results to other nodes via P2P)
+    let mesh_for_verification = Arc::clone(&mesh);
+    let identity_for_verification = Arc::clone(&identity);
+    tokio::spawn(async move {
+        use ghost_consensus::message::{CapabilityType, MessageType, VerificationResultMessage};
+
+        while let Some(broadcast) = verification_rx.recv().await {
+            let target_short = hex::encode(&broadcast.target_node_id[..4]);
+            let challenger_short = hex::encode(&broadcast.challenger_id[..4]);
+
+            info!(
+                target = %target_short,
+                challenger = %challenger_short,
+                capability = %broadcast.capability,
+                passed = broadcast.passed,
+                "DIAG: Broadcasting verification result to P2P mesh"
+            );
+
+            // Convert the capability to the message enum
+            let capability = match broadcast.capability.as_str() {
+                "archive" => CapabilityType::Archive,
+                "policy" => CapabilityType::Policy,
+                "stratum" => CapabilityType::Stratum,
+                "ghostpay" => CapabilityType::GhostPay,
+                other => {
+                    warn!(capability = %other, "Unknown capability type, skipping broadcast");
+                    continue;
+                }
+            };
+
+            // Sign the verification result
+            let mut signing_data = Vec::new();
+            signing_data.extend_from_slice(&broadcast.target_node_id);
+            signing_data.extend_from_slice(broadcast.capability.as_bytes());
+            signing_data.push(if broadcast.passed { 1 } else { 0 });
+            signing_data.extend_from_slice(&broadcast.timestamp.to_le_bytes());
+            let signature = identity_for_verification.sign(&signing_data);
+
+            let msg = VerificationResultMessage {
+                target_node_id: broadcast.target_node_id,
+                challenger_id: broadcast.challenger_id,
+                capability,
+                passed: broadcast.passed,
+                timestamp: broadcast.timestamp,
+                challenge_data: broadcast.challenge_data,
+                response_data: broadcast.response_data,
+                signature,
+            };
+
+            // Get peer count before broadcast for logging
+            let peer_count = mesh_for_verification.peers().peer_count();
+            let connected_count = mesh_for_verification.peers().connected_count();
+
+            match mesh_for_verification.broadcast_message(MessageType::VerificationResult, &msg).await {
+                Ok(sent) => {
+                    info!(
+                        target = %target_short,
+                        capability = %broadcast.capability,
+                        passed = broadcast.passed,
+                        sent_to = sent,
+                        total_peers = peer_count,
+                        connected_peers = connected_count,
+                        "DIAG: Verification result broadcast complete"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        target = %target_short,
+                        capability = %broadcast.capability,
+                        peer_count = peer_count,
+                        connected_count = connected_count,
+                        "DIAG: Failed to broadcast verification result"
+                    );
+                }
+            }
+        }
+    });
+    info!("Verification result broadcaster started");
+
     // Start ZMQ block watcher with reorg detection (if configured)
     if let Some(ref zmq_endpoint) = config.bitcoin.zmq_hashblock {
         let rm = Arc::clone(&round_manager);
@@ -1287,6 +1635,7 @@ async fn main() -> Result<()> {
     let payout_for_events = Arc::clone(&payout_handler);
     let identity_for_events = Arc::clone(&identity);
     let db_for_events = Arc::clone(&db);
+    let solo_payout_address_for_events = config.network.solo_payout_address.clone();
 
     // Subscribe to round events and handle block found
     let mut round_events = round_manager.subscribe();
@@ -1298,16 +1647,16 @@ async fn main() -> Result<()> {
                     block_hash,
                     miner_id,
                 } => {
+                    let is_solo_mode = rm_for_events.is_solo_mode();
                     info!(
                         round = round_id,
                         hash = %hex::encode(&block_hash[..8]),
                         miner = %miner_id,
+                        solo_mode = is_solo_mode,
                         "🎉 BLOCK FOUND! Creating payout proposal..."
                     );
 
                     // Gather data for payout proposal
-                    // Get miner work distribution from round manager
-                    let miner_work = rm_for_events.get_miner_work(round_id);
                     let node_shares = rm_for_events.get_node_shares(round_id);
 
                     // Get block subsidy and fees from template processor
@@ -1331,37 +1680,74 @@ async fn main() -> Result<()> {
                         }
                     };
 
-                    // This node found the block (received the winning share)
-                    let winning_node_id = identity_for_events.node_id();
+                    // Dispatch based on mining mode
+                    if is_solo_mode {
+                        // Solo mode: 99% subsidy + ALL TX fees to solo_payout_address
+                        let solo_address = match &solo_payout_address_for_events {
+                            Some(addr) if !addr.is_empty() => addr.clone(),
+                            _ => {
+                                error!("Solo mode block found but solo_payout_address not configured!");
+                                continue;
+                            }
+                        };
 
-                    // Create block found data for payout handler
-                    let block_data = BlockFoundData {
-                        round_id,
-                        block_hash,
-                        block_height: height,
-                        winning_miner_id: miner_id.clone(),
-                        winning_miner_payout_address: None, // Address looked up from DB
-                        winning_node_id,
-                        subsidy_sats: subsidy,
-                        tx_fees_sats: fees,
-                        miner_work,
-                        node_shares,
-                        treasury_state,
-                    };
+                        let solo_data = SoloBlockFoundData {
+                            round_id,
+                            block_hash,
+                            block_height: height,
+                            solo_payout_address: solo_address,
+                            subsidy_sats: subsidy,
+                            tx_fees_sats: fees,
+                            node_shares,
+                            treasury_state,
+                        };
 
-                    // Submit payout proposal for BFT consensus
-                    match payout_for_events.handle_block_found(block_data) {
-                        Ok(proposal_hash) => {
-                            if proposal_hash != [0u8; 32] {
-                                info!(
-                                    round = round_id,
-                                    hash = %hex::encode(&proposal_hash[..8]),
-                                    "Payout proposal submitted for consensus"
-                                );
+                        match payout_for_events.handle_solo_block_found(solo_data) {
+                            Ok(proposal_hash) => {
+                                if proposal_hash != [0u8; 32] {
+                                    info!(
+                                        round = round_id,
+                                        hash = %hex::encode(&proposal_hash[..8]),
+                                        "Solo mode payout proposal submitted for consensus"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, round = round_id, "Failed to create solo mode payout proposal");
                             }
                         }
-                        Err(e) => {
-                            error!(error = %e, round = round_id, "Failed to create payout proposal");
+                    } else {
+                        // Pool mode: proportional distribution to all miners
+                        let miner_work = rm_for_events.get_miner_work(round_id);
+                        let winning_node_id = identity_for_events.node_id();
+
+                        let block_data = BlockFoundData {
+                            round_id,
+                            block_hash,
+                            block_height: height,
+                            winning_miner_id: miner_id.clone(),
+                            winning_miner_payout_address: None, // Address looked up from DB
+                            winning_node_id,
+                            subsidy_sats: subsidy,
+                            tx_fees_sats: fees,
+                            miner_work,
+                            node_shares,
+                            treasury_state,
+                        };
+
+                        match payout_for_events.handle_block_found(block_data) {
+                            Ok(proposal_hash) => {
+                                if proposal_hash != [0u8; 32] {
+                                    info!(
+                                        round = round_id,
+                                        hash = %hex::encode(&proposal_hash[..8]),
+                                        "Payout proposal submitted for consensus"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                error!(error = %e, round = round_id, "Failed to create payout proposal");
+                            }
                         }
                     }
                 }
@@ -1380,12 +1766,19 @@ async fn main() -> Result<()> {
     // Note: Stratum events now come from SRI, not ghost-pool
     // WebSocket broadcast for miner events would need SRI integration
 
-    // Start registry client for load balancer registration (if configured)
+    // Start registry client for load balancer registration (only for PublicPool mode)
+    // Private modes (PrivatePool, PrivateSolo) skip DNS registration
     // Store registry client for deregistration on shutdown
-    let registry_client_for_shutdown: Option<Arc<RegistryClient>> = if let Some(
-        ref registry_config,
-    ) = config.registry
-    {
+    let registry_client_for_shutdown: Option<Arc<RegistryClient>> = if !matches!(
+        mining_mode,
+        MiningMode::PublicPool
+    ) {
+        info!(
+            "Mining mode {:?}: skipping DNS registration (private mode)",
+            mining_mode
+        );
+        None
+    } else if let Some(ref registry_config) = config.registry {
         if !registry_config.url.is_empty() {
             let host = config
                 .network

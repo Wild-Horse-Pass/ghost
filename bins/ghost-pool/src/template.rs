@@ -34,7 +34,7 @@ use tracing::{debug, error, info, warn};
 use bitcoin::consensus::deserialize;
 use ghost_accounting::CoinbaseBuilder;
 use ghost_buds::BudsClassifier;
-use ghost_common::config::BitcoinNetwork;
+use ghost_common::config::{BitcoinNetwork, MiningMode};
 use ghost_common::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
 use ghost_common::types::{PayoutProposal, TreasuryAddress};
 use ghost_policy::PolicyProfile;
@@ -57,6 +57,11 @@ pub struct TemplateConfig {
     pub pool_payout_address: String,
     /// Bitcoin network (mainnet, signet, testnet, regtest)
     pub network: BitcoinNetwork,
+    /// Mining mode (PublicPool, PrivatePool, PrivateSolo)
+    pub mining_mode: MiningMode,
+    /// Solo payout address (required for PrivateSolo mode)
+    /// All rewards (99% subsidy + 100% tx fees) go to this address
+    pub solo_payout_address: Option<String>,
 }
 
 impl Default for TemplateConfig {
@@ -69,6 +74,8 @@ impl Default for TemplateConfig {
             treasury_address: TreasuryAddress::default(), // Must be configured
             pool_payout_address: String::new(),           // Must be configured
             network: BitcoinNetwork::Mainnet,
+            mining_mode: MiningMode::PublicPool,
+            solo_payout_address: None,
         }
     }
 }
@@ -463,6 +470,153 @@ impl TemplateProcessor {
             outputs_serialized,
             outputs_count,
         )
+    }
+
+    /// Build coinbase for solo mining mode
+    ///
+    /// Solo mode reward structure:
+    /// - Output 0: 99% subsidy + ALL TX fees → solo_payout_address
+    /// - Output 1: Treasury portion of 1% pool fee → treasury_address
+    /// - Output 2: Node pool portion of 1% pool fee → treasury_address (node pool)
+    /// - Output 3: Witness commitment (if SegWit)
+    ///
+    /// The 1% pool fee is split between treasury and node pool per decay schedule.
+    /// The hosting node participates in the node reward pool calculation.
+    ///
+    /// Returns: (coinbase1, coinbase2, witness_data, outputs_serialized, outputs_count)
+    pub fn build_coinbase_solo_mode(
+        &self,
+        height: u64,
+        subsidy: u64,
+        tx_fees: u64,
+        treasury_amount: u64,
+        node_pool_amount: u64,
+        witness_commitment: &Option<String>,
+    ) -> Option<(Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32)> {
+        // Solo mode requires solo_payout_address to be configured
+        let solo_address = self.config.solo_payout_address.as_ref()?;
+        if solo_address.is_empty() {
+            warn!("Solo mode requires solo_payout_address to be configured");
+            return None;
+        }
+
+        // Calculate solo miner's share: 99% of subsidy + ALL tx fees
+        // The 1% pool fee (treasury_amount + node_pool_amount) comes from the caller
+        let miner_pool = subsidy.saturating_sub(treasury_amount).saturating_sub(node_pool_amount);
+        let solo_miner_amount = miner_pool.saturating_add(tx_fees);
+
+        info!(
+            height = height,
+            subsidy = subsidy,
+            tx_fees = tx_fees,
+            solo_miner_amount = solo_miner_amount,
+            treasury = treasury_amount,
+            node_pool = node_pool_amount,
+            "Building solo mode coinbase"
+        );
+
+        // Build coinbase1 - NON-WITNESS format
+        let mut coinbase1 = Vec::new();
+
+        // Version (4 bytes, little-endian)
+        coinbase1.extend_from_slice(&2u32.to_le_bytes()); // Version 2 for BIP68
+
+        // Input count
+        coinbase1.push(0x01);
+
+        // Previous tx hash (all zeros for coinbase)
+        coinbase1.extend_from_slice(&[0u8; 32]);
+
+        // Previous output index (0xffffffff for coinbase)
+        coinbase1.extend_from_slice(&0xffffffffu32.to_le_bytes());
+
+        // Script sig (height in BIP34 format + extra data)
+        let height_bytes = self.encode_height(height);
+        let extra = self.config.coinbase_extra.as_bytes();
+        let script_len = height_bytes.len() + extra.len() + 8; // +8 for extranonce space
+
+        coinbase1.push(script_len as u8);
+        coinbase1.extend_from_slice(&height_bytes);
+        coinbase1.extend_from_slice(extra);
+
+        // Coinbase2: extranonce end + sequence + outputs + locktime
+        let mut coinbase2 = Vec::new();
+
+        // Sequence
+        coinbase2.extend_from_slice(&0xffffffffu32.to_le_bytes());
+
+        // Track witness commitment for WitnessData
+        let mut witness_data = WitnessData::default();
+
+        // Track serialized outputs for TDP
+        let mut outputs_serialized = Vec::new();
+
+        // Count outputs: solo miner + treasury (if > 0) + node pool (if > 0) + witness commitment
+        let mut output_count = 1; // solo miner always present
+        if treasury_amount > 0 {
+            output_count += 1;
+        }
+        if node_pool_amount > 0 {
+            output_count += 1;
+        }
+        if witness_commitment.is_some() {
+            output_count += 1;
+        }
+
+        self.encode_varint(&mut coinbase2, output_count);
+
+        // Output 0: Solo miner (99% subsidy + ALL tx fees)
+        coinbase2.extend_from_slice(&solo_miner_amount.to_le_bytes());
+        self.encode_address_script(&mut coinbase2, solo_address, "solo_miner");
+        outputs_serialized.extend_from_slice(&solo_miner_amount.to_le_bytes());
+        self.encode_address_script(&mut outputs_serialized, solo_address, "solo_miner_tdp");
+
+        // Output 1: Treasury (portion of 1% pool fee per decay schedule)
+        if treasury_amount > 0 {
+            let treasury_addr = self.config.treasury_address.address();
+            coinbase2.extend_from_slice(&treasury_amount.to_le_bytes());
+            self.encode_address_script(&mut coinbase2, treasury_addr, "treasury");
+            outputs_serialized.extend_from_slice(&treasury_amount.to_le_bytes());
+            self.encode_address_script(&mut outputs_serialized, treasury_addr, "treasury_tdp");
+        }
+
+        // Output 2: Node pool (portion of 1% pool fee per decay schedule)
+        // In solo mode, this typically goes to the hosting node (operator)
+        // For simplicity, we use treasury address as the destination (can be separate)
+        if node_pool_amount > 0 {
+            let treasury_addr = self.config.treasury_address.address();
+            coinbase2.extend_from_slice(&node_pool_amount.to_le_bytes());
+            self.encode_address_script(&mut coinbase2, treasury_addr, "node_pool");
+            outputs_serialized.extend_from_slice(&node_pool_amount.to_le_bytes());
+            self.encode_address_script(&mut outputs_serialized, treasury_addr, "node_pool_tdp");
+        }
+
+        // Output 3: Witness commitment (0-value OP_RETURN)
+        if let Some(commitment) = witness_commitment {
+            coinbase2.extend_from_slice(&0u64.to_le_bytes()); // 0 value
+            if let Ok(commitment_bytes) = hex::decode(commitment) {
+                coinbase2.push(commitment_bytes.len() as u8);
+                coinbase2.extend_from_slice(&commitment_bytes);
+                witness_data.commitment_script = Some(commitment_bytes.clone());
+                outputs_serialized.extend_from_slice(&0u64.to_le_bytes());
+                outputs_serialized.push(commitment_bytes.len() as u8);
+                outputs_serialized.extend_from_slice(&commitment_bytes);
+            }
+        }
+
+        // Locktime
+        coinbase2.extend_from_slice(&0u32.to_le_bytes());
+
+        // Witness nonce
+        witness_data.nonce = [0u8; 32];
+
+        Some((
+            coinbase1,
+            coinbase2,
+            witness_data,
+            outputs_serialized,
+            output_count as u32,
+        ))
     }
 
     /// Encode a varint

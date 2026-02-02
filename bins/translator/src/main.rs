@@ -56,6 +56,30 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
+/// Mining mode for authorization
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MiningMode {
+    /// DNS registered, anyone can mine, pool-aggregated rewards
+    #[default]
+    PublicPool,
+    /// Password required, pool-aggregated rewards, not in DNS
+    PrivatePool,
+    /// Password required, 99% + fees to operator's address, not in DNS
+    PrivateSolo,
+}
+
+impl std::str::FromStr for MiningMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "public_pool" | "publicpool" | "public" => Ok(MiningMode::PublicPool),
+            "private_pool" | "privatepool" => Ok(MiningMode::PrivatePool),
+            "private_solo" | "privatesolo" | "solo" => Ok(MiningMode::PrivateSolo),
+            _ => Err(format!("Unknown mining mode: {}. Use: public_pool, private_pool, or private_solo", s)),
+        }
+    }
+}
+
 /// SV1→SV2 Stratum Protocol Translator
 #[derive(Parser, Debug)]
 #[command(name = "translator")]
@@ -76,6 +100,14 @@ struct Args {
     /// Maximum concurrent connections
     #[arg(long, default_value = "1000")]
     max_connections: usize,
+
+    /// Mining mode (public_pool, private_pool, private_solo)
+    #[arg(long, default_value = "public_pool")]
+    mining_mode: MiningMode,
+
+    /// Password for private mining modes (required for private_pool and private_solo)
+    #[arg(long)]
+    mining_password: Option<String>,
 }
 
 #[tokio::main]
@@ -107,11 +139,63 @@ async fn main() -> Result<()> {
     let sv1_addr: SocketAddr = args.sv1_listen.parse()?;
     let sv2_addr: SocketAddr = args.sv2_upstream.parse()?;
 
+    // Validate mining mode configuration
+    if args.mining_mode != MiningMode::PublicPool && args.mining_password.is_none() {
+        error!(
+            "Mining mode {:?} requires --mining-password to be set",
+            args.mining_mode
+        );
+        return Err(anyhow::anyhow!(
+            "Mining mode {:?} requires --mining-password",
+            args.mining_mode
+        ));
+    }
+
+    info!("Mining mode: {:?}", args.mining_mode);
+    if args.mining_mode != MiningMode::PublicPool {
+        info!("Password authentication enabled for private mode");
+    }
+
     // Start translator
-    let translator = Translator::new(sv1_addr, sv2_addr, args.max_connections);
+    let translator = Translator::new(
+        sv1_addr,
+        sv2_addr,
+        args.max_connections,
+        args.mining_mode,
+        args.mining_password,
+    );
     translator.run().await?;
 
     Ok(())
+}
+
+/// Mining mode and password configuration for authorization
+#[derive(Debug, Clone)]
+struct AuthConfig {
+    mining_mode: MiningMode,
+    password: Option<String>,
+}
+
+impl AuthConfig {
+    fn new(mining_mode: MiningMode, password: Option<String>) -> Self {
+        Self {
+            mining_mode,
+            password,
+        }
+    }
+
+    /// Check if password authentication is required
+    fn requires_password(&self) -> bool {
+        self.mining_mode != MiningMode::PublicPool
+    }
+
+    /// Validate the provided password
+    fn validate_password(&self, provided: &str) -> bool {
+        match &self.password {
+            Some(expected) => provided == expected,
+            None => !self.requires_password(), // OK if no password required
+        }
+    }
 }
 
 /// Stratum protocol translator
@@ -119,14 +203,22 @@ struct Translator {
     sv1_listen: SocketAddr,
     sv2_upstream: SocketAddr,
     max_connections: usize,
+    auth_config: Arc<AuthConfig>,
 }
 
 impl Translator {
-    fn new(sv1_listen: SocketAddr, sv2_upstream: SocketAddr, max_connections: usize) -> Self {
+    fn new(
+        sv1_listen: SocketAddr,
+        sv2_upstream: SocketAddr,
+        max_connections: usize,
+        mining_mode: MiningMode,
+        mining_password: Option<String>,
+    ) -> Self {
         Self {
             sv1_listen,
             sv2_upstream,
             max_connections,
+            auth_config: Arc::new(AuthConfig::new(mining_mode, mining_password)),
         }
     }
 
@@ -151,8 +243,9 @@ impl Translator {
             );
 
             let sv2_upstream = self.sv2_upstream;
+            let auth_config = Arc::clone(&self.auth_config);
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, sv2_upstream).await {
+                if let Err(e) = handle_connection(stream, sv2_upstream, auth_config).await {
                     tracing::error!("Connection error: {}", e);
                 }
             });
@@ -163,6 +256,7 @@ impl Translator {
 async fn handle_connection(
     sv1_stream: tokio::net::TcpStream,
     sv2_upstream: SocketAddr,
+    auth_config: Arc<AuthConfig>,
 ) -> Result<()> {
     let peer_addr = sv1_stream.peer_addr()?;
     info!(peer = %peer_addr, "Handling SV1 connection");
@@ -222,6 +316,7 @@ async fn handle_connection(
     let state_clone = Arc::clone(&state);
     let sv1_to_sv2_tx_clone = sv1_to_sv2_tx.clone();
     let sv2_to_sv1_tx_clone = sv2_to_sv1_tx.clone();
+    let auth_config_clone = Arc::clone(&auth_config);
     let sv1_read_task = tokio::spawn(async move {
         let mut lines = sv1_reader.lines();
 
@@ -235,6 +330,7 @@ async fn handle_connection(
                         &state_clone,
                         &sv1_to_sv2_tx_clone,
                         &sv2_to_sv1_tx_clone,
+                        &auth_config_clone,
                     )
                     .await
                     {
@@ -347,6 +443,7 @@ async fn handle_sv1_request(
     state: &Arc<RwLock<ConnectionState>>,
     sv2_tx: &mpsc::Sender<Vec<u8>>,
     sv1_tx: &mpsc::Sender<String>,
+    auth_config: &Arc<AuthConfig>,
 ) -> Result<()> {
     match request.method.as_str() {
         "mining.subscribe" => {
@@ -383,12 +480,48 @@ async fn handle_sv1_request(
 
         "mining.authorize" => {
             // Parse worker name and password
+            // SV1 authorize: params = [username, password]
             let worker = request
                 .params
                 .first()
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
+
+            let provided_password = request
+                .params
+                .get(1)
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            // Validate password for private mining modes
+            if auth_config.requires_password() {
+                if !auth_config.validate_password(provided_password) {
+                    warn!(
+                        worker = %worker,
+                        mode = ?auth_config.mining_mode,
+                        "Mining authorization FAILED: invalid password"
+                    );
+
+                    // Send error response
+                    let response = sv1::Response::error(
+                        request.id,
+                        -1,
+                        "Authorization failed: invalid password".to_string(),
+                    );
+                    let json = serde_json::to_string(&response)?;
+                    sv1_tx.send(json).await?;
+
+                    // Don't proceed - connection will be dropped
+                    return Ok(());
+                }
+
+                info!(
+                    worker = %worker,
+                    mode = ?auth_config.mining_mode,
+                    "Mining authorization successful (private mode)"
+                );
+            }
 
             {
                 let mut state_guard = state.write();
