@@ -1,0 +1,15 @@
+[Unit]
+Description=SRI Pool (SV2) - Ghost Network
+After=network.target ghost-pool.service
+Wants=ghost-pool.service
+
+[Service]
+Type=simple
+User=ghost
+Group=ghost
+ExecStart=/opt/ghost/bin/pool_sv2 --config /etc/ghost/pool-config.toml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+[Unit]
+Description=SRI Translator (SV1 to SV2) - Ghost Network
+After=network.target sri-pool.service
+Wants=sri-pool.service
+
+[Service]
+Type=simple
+User=ghost
+Group=ghost
+ExecStart=/opt/ghost/bin/translator_sv2 --config /etc/ghost/translator-config.toml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
