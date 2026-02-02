@@ -29,9 +29,9 @@
 //! 4. Storing results in the local database
 //! 5. Broadcasting results via P2P
 
+use rand::Rng;
 use std::sync::Arc;
 use std::time::Duration;
-use rand::Rng;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -55,9 +55,7 @@ pub struct VerificationTaskConfig {
 impl Default for VerificationTaskConfig {
     fn default() -> Self {
         use ghost_common::constants::{
-            VERIFICATION_INTERVAL_SECS,
-            NODES_TO_VERIFY_PER_ROUND,
-            VERIFICATION_TIMEOUT_SECS,
+            NODES_TO_VERIFY_PER_ROUND, VERIFICATION_INTERVAL_SECS, VERIFICATION_TIMEOUT_SECS,
         };
         Self {
             interval: Duration::from_secs(VERIFICATION_INTERVAL_SECS),
@@ -112,7 +110,9 @@ pub type VerificationBroadcastSender = mpsc::Sender<VerificationBroadcast>;
 pub type VerificationBroadcastReceiver = mpsc::Receiver<VerificationBroadcast>;
 
 /// Create a broadcast channel for verification results
-pub fn verification_broadcast_channel(buffer: usize) -> (VerificationBroadcastSender, VerificationBroadcastReceiver) {
+pub fn verification_broadcast_channel(
+    buffer: usize,
+) -> (VerificationBroadcastSender, VerificationBroadcastReceiver) {
     mpsc::channel(buffer)
 }
 
@@ -121,11 +121,11 @@ pub fn verification_broadcast_channel(buffer: usize) -> (VerificationBroadcastSe
 fn build_test_transaction() -> String {
     use bitcoin::consensus::encode::serialize_hex;
     use bitcoin::hashes::{sha256d, Hash};
-    use bitcoin::script::Builder;
-    use bitcoin::transaction::{Transaction, Version};
     use bitcoin::locktime::absolute::LockTime;
-    use bitcoin::{Amount, OutPoint, Sequence, TxIn, TxOut, Txid, Witness};
+    use bitcoin::script::Builder;
     use bitcoin::script::ScriptBuf;
+    use bitcoin::transaction::{Transaction, Version};
+    use bitcoin::{Amount, OutPoint, Sequence, TxIn, TxOut, Txid, Witness};
 
     // Create a non-null txid (hash of some bytes)
     let txid = Txid::from_raw_hash(sha256d::Hash::hash(&[1u8; 32]));
@@ -244,20 +244,16 @@ impl VerificationTask {
     /// Perform a single verification cycle
     pub async fn verify_cycle(&self) {
         // Get random peers to verify
-        let peers = self.peer_provider.get_random_peers(
-            &self.our_node_id,
-            self.config.peers_per_cycle,
-        );
+        let peers = self
+            .peer_provider
+            .get_random_peers(&self.our_node_id, self.config.peers_per_cycle);
 
         if peers.is_empty() {
             debug!("No peers to verify");
             return;
         }
 
-        info!(
-            peer_count = peers.len(),
-            "Starting verification cycle"
-        );
+        info!(peer_count = peers.len(), "Starting verification cycle");
 
         // Verify each peer
         for peer in peers {
@@ -287,19 +283,23 @@ impl VerificationTask {
 
         // Verify each claimed capability
         if capabilities.archive_mode {
-            self.verify_archive(&peer, &peer_id_hex, &our_id_hex, timestamp).await;
+            self.verify_archive(&peer, &peer_id_hex, &our_id_hex, timestamp)
+                .await;
         }
 
         if capabilities.bitcoin_pure {
-            self.verify_policy(&peer, &peer_id_hex, &our_id_hex, timestamp).await;
+            self.verify_policy(&peer, &peer_id_hex, &our_id_hex, timestamp)
+                .await;
         }
 
         if capabilities.public_mining {
-            self.verify_stratum(&peer, &peer_id_hex, &our_id_hex, timestamp).await;
+            self.verify_stratum(&peer, &peer_id_hex, &our_id_hex, timestamp)
+                .await;
         }
 
         if capabilities.ghost_pay {
-            self.verify_ghostpay(&peer, &peer_id_hex, &our_id_hex, timestamp).await;
+            self.verify_ghostpay(&peer, &peer_id_hex, &our_id_hex, timestamp)
+                .await;
         }
     }
 
@@ -327,18 +327,25 @@ impl VerificationTask {
         let challenge_data = serde_json::json!({
             "block_hash": block_hash,
             "block_height": block_height,
-        }).to_string();
+        })
+        .to_string();
 
-        let result = self.client.verify_archive(&peer.http_address, Some(&block_hash), None).await;
+        let result = self
+            .client
+            .verify_archive(&peer.http_address, Some(&block_hash), None)
+            .await;
 
         let (passed, response_data) = match result {
             Ok(resp) => (
                 resp.success,
-                Some(serde_json::json!({
-                    "success": resp.success,
-                    "hash": resp.block_data.as_ref().map(|b| &b.hash),
-                    "height": resp.block_data.as_ref().map(|b| b.height),
-                }).to_string()),
+                Some(
+                    serde_json::json!({
+                        "success": resp.success,
+                        "hash": resp.block_data.as_ref().map(|b| &b.hash),
+                        "height": resp.block_data.as_ref().map(|b| b.height),
+                    })
+                    .to_string(),
+                ),
             ),
             Err(e) => {
                 debug!(error = %e, "Archive verification failed");
@@ -371,7 +378,8 @@ impl VerificationTask {
             challenge_data,
             response_data,
             timestamp,
-        ).await;
+        )
+        .await;
     }
 
     /// Get a random block hash from the blockchain for archive verification
@@ -420,9 +428,13 @@ impl VerificationTask {
         let challenge_data = serde_json::json!({
             "tx_type": "T0",
             "expected_tier": "T0",
-        }).to_string();
+        })
+        .to_string();
 
-        let result = self.client.verify_policy(&peer.http_address, &test_tx_hex).await;
+        let result = self
+            .client
+            .verify_policy(&peer.http_address, &test_tx_hex)
+            .await;
 
         let (passed, tier, response_data) = match result {
             Ok(resp) => {
@@ -430,7 +442,8 @@ impl VerificationTask {
                 // 1. Response parsed successfully (success=true)
                 // 2. Classification exists and is T0 or T1 (valid for simple tx)
                 let tier = resp.classification.as_ref().map(|c| c.tier.clone());
-                let tier_ok = tier.as_ref()
+                let tier_ok = tier
+                    .as_ref()
                     .map(|t| t == "T0" || t == "T1")
                     .unwrap_or(false);
                 let passed = resp.success && tier_ok;
@@ -438,12 +451,15 @@ impl VerificationTask {
                 (
                     passed,
                     tier,
-                    Some(serde_json::json!({
-                        "success": resp.success,
-                        "tier": resp.classification.as_ref().map(|c| &c.tier),
-                        "profile": resp.profile,
-                        "accepted": resp.accepted,
-                    }).to_string()),
+                    Some(
+                        serde_json::json!({
+                            "success": resp.success,
+                            "tier": resp.classification.as_ref().map(|c| &c.tier),
+                            "profile": resp.profile,
+                            "accepted": resp.accepted,
+                        })
+                        .to_string(),
+                    ),
                 )
             }
             Err(e) => {
@@ -486,7 +502,8 @@ impl VerificationTask {
             challenge_data,
             response_data,
             timestamp,
-        ).await;
+        )
+        .await;
     }
 
     /// Verify stratum capability
@@ -501,9 +518,13 @@ impl VerificationTask {
 
         let challenge_data = serde_json::json!({
             "protocol": "sv2",
-        }).to_string();
+        })
+        .to_string();
 
-        let result = self.client.verify_stratum(&peer.http_address, StratumProtocol::Sv2).await;
+        let result = self
+            .client
+            .verify_stratum(&peer.http_address, StratumProtocol::Sv2)
+            .await;
 
         let short_id = &peer_id_hex[..8];
         let (passed, connected, latency_ms, response_data) = match result {
@@ -511,11 +532,14 @@ impl VerificationTask {
                 resp.success && resp.connected,
                 resp.connected,
                 resp.latency_ms,
-                Some(serde_json::json!({
-                    "success": resp.success,
-                    "connected": resp.connected,
-                    "latency_ms": resp.latency_ms,
-                }).to_string()),
+                Some(
+                    serde_json::json!({
+                        "success": resp.success,
+                        "connected": resp.connected,
+                        "latency_ms": resp.latency_ms,
+                    })
+                    .to_string(),
+                ),
             ),
             Err(e) => {
                 warn!(peer = %short_id, error = %e, "Stratum verification failed");
@@ -542,7 +566,8 @@ impl VerificationTask {
             challenge_data,
             response_data,
             timestamp,
-        ).await;
+        )
+        .await;
     }
 
     /// Verify ghostpay capability
@@ -555,7 +580,8 @@ impl VerificationTask {
     ) {
         let challenge_data = serde_json::json!({
             "endpoint": "ghostpay",
-        }).to_string();
+        })
+        .to_string();
 
         let short_id = &peer_id_hex[..8];
         let result = self.client.verify_ghostpay(&peer.http_address, None).await;
@@ -564,12 +590,15 @@ impl VerificationTask {
             Ok(resp) => (
                 resp.success && resp.l2_enabled,
                 resp.l2_enabled,
-                Some(serde_json::json!({
-                    "success": resp.success,
-                    "valid": resp.l2_enabled,
-                    "virtual_block": resp.virtual_block,
-                    "epoch": resp.epoch,
-                }).to_string()),
+                Some(
+                    serde_json::json!({
+                        "success": resp.success,
+                        "valid": resp.l2_enabled,
+                        "virtual_block": resp.virtual_block,
+                        "epoch": resp.epoch,
+                    })
+                    .to_string(),
+                ),
             ),
             Err(e) => {
                 warn!(peer = %short_id, error = %e, "GhostPay verification failed");
@@ -598,7 +627,8 @@ impl VerificationTask {
             challenge_data,
             response_data,
             timestamp,
-        ).await;
+        )
+        .await;
     }
 
     /// Broadcast a verification result via P2P

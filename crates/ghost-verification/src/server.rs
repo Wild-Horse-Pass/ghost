@@ -353,7 +353,9 @@ impl VerificationState {
         if let Some(ref recorder) = self.record_share_fn {
             recorder(share)
         } else {
-            Err(GhostError::Internal("Share recorder not configured".to_string()))
+            Err(GhostError::Internal(
+                "Share recorder not configured".to_string(),
+            ))
         }
     }
 
@@ -364,7 +366,9 @@ impl VerificationState {
     /// When is_block == true, triggers block found callback for payout proposal.
     pub fn record_share_batch(&self, batch: ShareBatch) -> GhostResult<usize> {
         if self.record_share_fn.is_none() {
-            return Err(GhostError::Internal("Share recorder not configured".to_string()));
+            return Err(GhostError::Internal(
+                "Share recorder not configured".to_string(),
+            ));
         }
 
         let mut recorded = 0;

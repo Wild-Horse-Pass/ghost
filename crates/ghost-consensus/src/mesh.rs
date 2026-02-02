@@ -30,15 +30,15 @@
 //! - ROUTER/DEALER for request-response patterns
 
 use async_trait::async_trait;
+use futures::{SinkExt, StreamExt};
+use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use tmq::{publish, subscribe, Context, Multipart};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
-use futures::{SinkExt, StreamExt};
-use once_cell::sync::Lazy;
-use tmq::{publish, subscribe, Context, Multipart};
 
 /// Shared ZMQ context for all sockets (libzmq handles threading internally)
 static ZMQ_CONTEXT: Lazy<Context> = Lazy::new(Context::new);
@@ -515,10 +515,7 @@ impl MeshNetwork {
                 self.config.ports.share_propagation
             ))
             .map_err(|e| {
-                GhostError::P2PMessage(format!(
-                    "Failed to bind share_propagation: {}",
-                    e
-                ))
+                GhostError::P2PMessage(format!("Failed to bind share_propagation: {}", e))
             })?;
 
         // Bind additional ports using the underlying zmq socket
@@ -534,9 +531,10 @@ impl MeshNetwork {
 
         for (port, name) in additional_ports {
             let endpoint = format!("tcp://0.0.0.0:{}", port);
-            pub_socket.get_socket().bind(&endpoint).map_err(|e| {
-                GhostError::P2PMessage(format!("Failed to bind {}: {}", name, e))
-            })?;
+            pub_socket
+                .get_socket()
+                .bind(&endpoint)
+                .map_err(|e| GhostError::P2PMessage(format!("Failed to bind {}: {}", name, e)))?;
         }
 
         info!(
@@ -606,11 +604,11 @@ impl MeshNetwork {
 
         // bind() returns SubscribeWithoutTopic, then subscribe() returns Subscribe (which implements Stream)
         let mut sub_socket = subscribe(&*ZMQ_CONTEXT)
-            .set_reconnect_ivl(100)      // Initial reconnect interval: 100ms
+            .set_reconnect_ivl(100) // Initial reconnect interval: 100ms
             .set_reconnect_ivl_max(5000) // Max reconnect interval: 5 seconds
             .bind(&dummy_endpoint)
             .map_err(|e| GhostError::P2PMessage(format!("Failed to create SUB socket: {}", e)))?
-            .subscribe(b"")  // Subscribe to all topics (empty filter) - this returns Subscribe
+            .subscribe(b"") // Subscribe to all topics (empty filter) - this returns Subscribe
             .map_err(|e| GhostError::P2PMessage(format!("Failed to subscribe: {}", e)))?;
 
         info!("DIAG: SUB socket created with reconnection support (ivl=100ms, max=5000ms)");
@@ -706,7 +704,10 @@ impl MeshNetwork {
             {
                 Ok(Some(Ok(msg))) => {
                     // ZMQ message with topic prefix - tmq returns Multipart
-                    let raw_data: Vec<u8> = msg.into_iter().flat_map(|frame: tmq::Message| frame.to_vec()).collect();
+                    let raw_data: Vec<u8> = msg
+                        .into_iter()
+                        .flat_map(|frame: tmq::Message| frame.to_vec())
+                        .collect();
 
                     if raw_data.is_empty() {
                         debug!("Received empty ZMQ message");

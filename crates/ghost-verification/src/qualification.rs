@@ -51,10 +51,8 @@ pub struct QualificationConfig {
 impl Default for QualificationConfig {
     fn default() -> Self {
         use ghost_common::constants::{
-            MIN_CHALLENGES_FOR_QUALIFICATION,
-            ARCHIVE_PASS_RATE,
+            ARCHIVE_PASS_RATE, MIN_CHALLENGES_FOR_QUALIFICATION, UPTIME_GATEKEEPER_THRESHOLD,
             UPTIME_WINDOW_DAYS,
-            UPTIME_GATEKEEPER_THRESHOLD,
         };
         Self {
             min_challenges: MIN_CHALLENGES_FOR_QUALIFICATION as u32,
@@ -146,10 +144,22 @@ impl QualifiedCapabilityProvider {
         let since = self.lookback_timestamp();
 
         // Log challenge stats for debugging (before gatekeeper check)
-        let archive_stats = self.db.get_archive_pass_rate(&node_id_hex, since).unwrap_or((0, 0));
-        let policy_stats = self.db.get_policy_pass_rate(&node_id_hex, since).unwrap_or((0, 0));
-        let stratum_stats = self.db.get_stratum_pass_rate(&node_id_hex, since).unwrap_or((0, 0));
-        let ghostpay_stats = self.db.get_ghostpay_pass_rate(&node_id_hex, since).unwrap_or((0, 0));
+        let archive_stats = self
+            .db
+            .get_archive_pass_rate(&node_id_hex, since)
+            .unwrap_or((0, 0));
+        let policy_stats = self
+            .db
+            .get_policy_pass_rate(&node_id_hex, since)
+            .unwrap_or((0, 0));
+        let stratum_stats = self
+            .db
+            .get_stratum_pass_rate(&node_id_hex, since)
+            .unwrap_or((0, 0));
+        let ghostpay_stats = self
+            .db
+            .get_ghostpay_pass_rate(&node_id_hex, since)
+            .unwrap_or((0, 0));
 
         info!(
             node = %&node_id_hex[..8],
@@ -212,12 +222,14 @@ impl QualifiedCapabilityProvider {
         }
 
         // Get qualified capabilities from database
-        self.db.get_qualified_capabilities(
-            node_id_hex,
-            since,
-            self.config.min_challenges,
-            self.config.min_pass_rate,
-        ).unwrap_or_default()
+        self.db
+            .get_qualified_capabilities(
+                node_id_hex,
+                since,
+                self.config.min_challenges,
+                self.config.min_pass_rate,
+            )
+            .unwrap_or_default()
     }
 
     /// Get all nodes with qualified (verified) capabilities
@@ -261,12 +273,15 @@ impl QualifiedCapabilityProvider {
             }
 
             // Get qualified capabilities
-            let caps = self.db.get_qualified_capabilities(
-                node_id_hex,
-                since,
-                self.config.min_challenges,
-                self.config.min_pass_rate,
-            ).unwrap_or_default();
+            let caps = self
+                .db
+                .get_qualified_capabilities(
+                    node_id_hex,
+                    since,
+                    self.config.min_challenges,
+                    self.config.min_pass_rate,
+                )
+                .unwrap_or_default();
 
             let shares = caps.total_shares();
             if shares > 0 {
@@ -304,13 +319,28 @@ impl QualifiedCapabilityProvider {
         let node_id_hex = hex::encode(node_id);
         let since = self.lookback_timestamp();
 
-        let uptime = self.db.get_uptime_percent(&node_id_hex, since).unwrap_or(0.0);
+        let uptime = self
+            .db
+            .get_uptime_percent(&node_id_hex, since)
+            .unwrap_or(0.0);
         let passes_uptime = uptime >= self.config.min_uptime;
 
-        let archive = self.db.get_archive_pass_rate(&node_id_hex, since).unwrap_or((0, 0));
-        let policy = self.db.get_policy_pass_rate(&node_id_hex, since).unwrap_or((0, 0));
-        let stratum = self.db.get_stratum_pass_rate(&node_id_hex, since).unwrap_or((0, 0));
-        let ghostpay = self.db.get_ghostpay_pass_rate(&node_id_hex, since).unwrap_or((0, 0));
+        let archive = self
+            .db
+            .get_archive_pass_rate(&node_id_hex, since)
+            .unwrap_or((0, 0));
+        let policy = self
+            .db
+            .get_policy_pass_rate(&node_id_hex, since)
+            .unwrap_or((0, 0));
+        let stratum = self
+            .db
+            .get_stratum_pass_rate(&node_id_hex, since)
+            .unwrap_or((0, 0));
+        let ghostpay = self
+            .db
+            .get_ghostpay_pass_rate(&node_id_hex, since)
+            .unwrap_or((0, 0));
 
         QualificationStats {
             node_id: node_id_hex,
@@ -325,12 +355,14 @@ impl QualifiedCapabilityProvider {
             ghostpay_challenges: ghostpay.1,
             ghostpay_passed: ghostpay.0,
             qualified_capabilities: if passes_uptime {
-                self.db.get_qualified_capabilities(
-                    &hex::encode(node_id),
-                    since,
-                    self.config.min_challenges,
-                    self.config.min_pass_rate,
-                ).unwrap_or_default()
+                self.db
+                    .get_qualified_capabilities(
+                        &hex::encode(node_id),
+                        since,
+                        self.config.min_challenges,
+                        self.config.min_pass_rate,
+                    )
+                    .unwrap_or_default()
             } else {
                 NodeCapabilities::default()
             },
@@ -370,19 +402,35 @@ pub struct QualificationStats {
 impl QualificationStats {
     /// Get pass rate for a capability (0.0 if no challenges)
     pub fn archive_pass_rate(&self) -> f64 {
-        if self.archive_challenges == 0 { 0.0 } else { self.archive_passed as f64 / self.archive_challenges as f64 }
+        if self.archive_challenges == 0 {
+            0.0
+        } else {
+            self.archive_passed as f64 / self.archive_challenges as f64
+        }
     }
 
     pub fn policy_pass_rate(&self) -> f64 {
-        if self.policy_challenges == 0 { 0.0 } else { self.policy_passed as f64 / self.policy_challenges as f64 }
+        if self.policy_challenges == 0 {
+            0.0
+        } else {
+            self.policy_passed as f64 / self.policy_challenges as f64
+        }
     }
 
     pub fn stratum_pass_rate(&self) -> f64 {
-        if self.stratum_challenges == 0 { 0.0 } else { self.stratum_passed as f64 / self.stratum_challenges as f64 }
+        if self.stratum_challenges == 0 {
+            0.0
+        } else {
+            self.stratum_passed as f64 / self.stratum_challenges as f64
+        }
     }
 
     pub fn ghostpay_pass_rate(&self) -> f64 {
-        if self.ghostpay_challenges == 0 { 0.0 } else { self.ghostpay_passed as f64 / self.ghostpay_challenges as f64 }
+        if self.ghostpay_challenges == 0 {
+            0.0
+        } else {
+            self.ghostpay_passed as f64 / self.ghostpay_challenges as f64
+        }
     }
 }
 
@@ -393,7 +441,10 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = QualificationConfig::default();
-        assert_eq!(config.min_challenges, ghost_common::constants::MIN_CHALLENGES_FOR_QUALIFICATION as u32);
+        assert_eq!(
+            config.min_challenges,
+            ghost_common::constants::MIN_CHALLENGES_FOR_QUALIFICATION as u32
+        );
         assert!((config.min_pass_rate - 0.95).abs() < 0.001);
         assert_eq!(config.lookback_days, 7);
         assert!((config.min_uptime - 0.95).abs() < 0.001);

@@ -3145,9 +3145,7 @@ async fn share_batch_handler(
 
     debug!(
         pool_id,
-        batch_seq,
-        share_count,
-        "Received share batch from SRI Pool"
+        batch_seq, share_count, "Received share batch from SRI Pool"
     );
 
     match state.record_share_batch(batch) {

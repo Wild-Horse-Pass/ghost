@@ -1182,11 +1182,9 @@ mod tests {
 
         let result = config.validate();
         // Should have password warning (not error)
-        assert!(result
-            .warnings
-            .iter()
-            .any(|e| e.field == "network.private_mining_password"
-                && e.message.contains("Minimum 8")));
+        assert!(result.warnings.iter().any(
+            |e| e.field == "network.private_mining_password" && e.message.contains("Minimum 8")
+        ));
     }
 
     #[test]

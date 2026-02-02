@@ -2984,7 +2984,12 @@ impl Database {
     }
 
     /// Record an uptime sample for a node
-    pub fn record_uptime_sample(&self, node_id: &str, sample_time: i64, was_online: bool) -> GhostResult<()> {
+    pub fn record_uptime_sample(
+        &self,
+        node_id: &str,
+        sample_time: i64,
+        was_online: bool,
+    ) -> GhostResult<()> {
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO uptime_samples (node_id, sample_time, was_online)

@@ -163,7 +163,10 @@ impl FeeDistribution {
 
     /// Total amount distributed (should equal subsidy + tx_fees)
     pub fn total(&self) -> u64 {
-        self.tx_fees_to_block_finder + self.treasury_amount + self.node_reward_pool + self.miner_pool
+        self.tx_fees_to_block_finder
+            + self.treasury_amount
+            + self.node_reward_pool
+            + self.miner_pool
     }
 
     /// Verify distribution adds up correctly

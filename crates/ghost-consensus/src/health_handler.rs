@@ -41,7 +41,8 @@ use crate::peer::PeerManager;
 pub type ElderCallback = Arc<dyn Fn(NodeId) + Send + Sync>;
 
 /// Callback for registering node capabilities (for payout calculation)
-pub type NodeCapabilitiesCallback = Arc<dyn Fn(NodeId, ghost_common::types::NodeCapabilities) + Send + Sync>;
+pub type NodeCapabilitiesCallback =
+    Arc<dyn Fn(NodeId, ghost_common::types::NodeCapabilities) + Send + Sync>;
 
 /// Handler for health ping messages
 pub struct HealthPingHandler {
@@ -152,7 +153,7 @@ impl HealthPingHandler {
             let peer = PeerRecord {
                 peer_id: node_id_hex.clone(),
                 address: ping.public_address.clone(),
-                port: 8555,             // Default port
+                port: 8555, // Default port
                 node_id: Some(node_id_hex.clone()),
                 first_seen: now,
                 last_seen: now,

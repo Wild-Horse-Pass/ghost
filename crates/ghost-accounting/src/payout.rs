@@ -247,10 +247,7 @@ impl PayoutCalculator {
         }
 
         if dust_total > 0 {
-            info!(
-                dust_total,
-                "Miner dust collected for node reward pool"
-            );
+            info!(dust_total, "Miner dust collected for node reward pool");
         }
 
         (payouts, dust_total)

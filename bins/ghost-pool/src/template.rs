@@ -502,7 +502,9 @@ impl TemplateProcessor {
 
         // Calculate solo miner's share: 99% of subsidy + ALL tx fees
         // The 1% pool fee (treasury_amount + node_pool_amount) comes from the caller
-        let miner_pool = subsidy.saturating_sub(treasury_amount).saturating_sub(node_pool_amount);
+        let miner_pool = subsidy
+            .saturating_sub(treasury_amount)
+            .saturating_sub(node_pool_amount);
         let solo_miner_amount = miner_pool.saturating_add(tx_fees);
 
         info!(

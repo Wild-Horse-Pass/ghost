@@ -153,11 +153,8 @@ impl PayoutProposalCreator {
         let now = chrono::Utc::now().timestamp() as u64;
 
         // Calculate fee distribution using treasury decay schedule
-        let fee_dist = FeeDistribution::calculate(
-            data.subsidy_sats,
-            data.tx_fees_sats,
-            &data.treasury_state,
-        );
+        let fee_dist =
+            FeeDistribution::calculate(data.subsidy_sats, data.tx_fees_sats, &data.treasury_state);
 
         info!(
             subsidy = data.subsidy_sats,
@@ -173,7 +170,8 @@ impl PayoutProposalCreator {
 
         // Calculate miner payouts (99% of subsidy, proportional to work)
         // Dust from miners below threshold is returned for redistribution to node pool
-        let (miner_payouts, miner_dust) = self.calculate_miner_payouts(&data.miner_work, fee_dist.miner_pool)?;
+        let (miner_payouts, miner_dust) =
+            self.calculate_miner_payouts(&data.miner_work, fee_dist.miner_pool)?;
 
         // Add miner dust to node reward pool - no satoshis are lost!
         let augmented_node_pool = fee_dist.node_reward_pool.saturating_add(miner_dust);
@@ -188,7 +186,8 @@ impl PayoutProposalCreator {
 
         // Calculate node payouts from the augmented node reward pool
         // (original pool + miner dust, not including TX fees)
-        let mut node_payouts = self.calculate_node_payouts(&data.node_shares, augmented_node_pool)?;
+        let mut node_payouts =
+            self.calculate_node_payouts(&data.node_shares, augmented_node_pool)?;
 
         // FALLBACK: If no nodes qualify for payouts, add the node pool to treasury
         // This ensures no satoshis are lost when there are no eligible nodes
@@ -209,7 +208,9 @@ impl PayoutProposalCreator {
                 let mut found = false;
                 for payout in &mut node_payouts {
                     if payout.recipient_id == data.winning_node_id {
-                        payout.amount = payout.amount.saturating_add(fee_dist.tx_fees_to_block_finder);
+                        payout.amount = payout
+                            .amount
+                            .saturating_add(fee_dist.tx_fees_to_block_finder);
                         found = true;
                         break;
                     }
@@ -324,7 +325,8 @@ impl PayoutProposalCreator {
 
         // Calculate node payouts from the 1% pool fee's node reward portion
         // In solo mode, the hosting node should be included in node_shares
-        let node_payouts = self.calculate_node_payouts(&data.node_shares, fee_dist.node_reward_pool)?;
+        let node_payouts =
+            self.calculate_node_payouts(&data.node_shares, fee_dist.node_reward_pool)?;
 
         // If no nodes qualify for payouts, add node pool to treasury
         let mut final_treasury = fee_dist.treasury_amount;
@@ -518,7 +520,10 @@ impl PayoutProposalCreator {
         // Merge payouts going to the same address (e.g., multiple nodes using treasury)
         let mut merged_payouts: Vec<PayoutEntry> = Vec::new();
         for payout in payouts {
-            if let Some(existing) = merged_payouts.iter_mut().find(|p| p.address == payout.address) {
+            if let Some(existing) = merged_payouts
+                .iter_mut()
+                .find(|p| p.address == payout.address)
+            {
                 existing.amount = existing.amount.saturating_add(payout.amount);
                 debug!(
                     address = %String::from_utf8_lossy(&payout.address[..20.min(payout.address.len())]),
@@ -621,7 +626,10 @@ impl PayoutHandler {
     }
 
     /// Add a qualified capability provider for using VERIFIED capabilities
-    pub fn with_qualification_provider(mut self, provider: Arc<QualifiedCapabilityProvider>) -> Self {
+    pub fn with_qualification_provider(
+        mut self,
+        provider: Arc<QualifiedCapabilityProvider>,
+    ) -> Self {
         self.qualification_provider = Some(provider);
         self
     }

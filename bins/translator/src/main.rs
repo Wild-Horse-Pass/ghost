@@ -75,7 +75,10 @@ impl std::str::FromStr for MiningMode {
             "public_pool" | "publicpool" | "public" => Ok(MiningMode::PublicPool),
             "private_pool" | "privatepool" => Ok(MiningMode::PrivatePool),
             "private_solo" | "privatesolo" | "solo" => Ok(MiningMode::PrivateSolo),
-            _ => Err(format!("Unknown mining mode: {}. Use: public_pool, private_pool, or private_solo", s)),
+            _ => Err(format!(
+                "Unknown mining mode: {}. Use: public_pool, private_pool, or private_solo",
+                s
+            )),
         }
     }
 }
@@ -488,11 +491,7 @@ async fn handle_sv1_request(
                 .unwrap_or("unknown")
                 .to_string();
 
-            let provided_password = request
-                .params
-                .get(1)
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let provided_password = request.params.get(1).and_then(|v| v.as_str()).unwrap_or("");
 
             // Validate password for private mining modes
             if auth_config.requires_password() {

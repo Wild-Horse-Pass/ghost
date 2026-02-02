@@ -59,8 +59,8 @@ impl VerificationResultHandler {
         );
 
         // Deserialize the verification result message
-        let msg: VerificationResultMessage = serde_json::from_slice(&envelope.payload)
-            .map_err(|e| {
+        let msg: VerificationResultMessage =
+            serde_json::from_slice(&envelope.payload).map_err(|e| {
                 warn!(error = %e, "Failed to deserialize verification result message");
                 ghost_common::error::GhostError::P2PMessage(e.to_string())
             })?;
@@ -90,8 +90,8 @@ impl VerificationResultHandler {
 
         // Verify the challenger's signature on the result
         let signing_data = msg.signing_data();
-        let sig_valid = verify_signature(&msg.challenger_id, &signing_data, &msg.signature)
-            .unwrap_or(false);
+        let sig_valid =
+            verify_signature(&msg.challenger_id, &signing_data, &msg.signature).unwrap_or(false);
         if !sig_valid {
             warn!(
                 challenger = %short_challenger,
@@ -112,7 +112,11 @@ impl VerificationResultHandler {
 
                 let expected_hash = serde_json::from_str::<serde_json::Value>(&msg.challenge_data)
                     .ok()
-                    .and_then(|v| v.get("expected_hash").and_then(|h| h.as_str()).map(String::from))
+                    .and_then(|v| {
+                        v.get("expected_hash")
+                            .and_then(|h| h.as_str())
+                            .map(String::from)
+                    })
                     .unwrap_or_default();
 
                 let response_hash = msg.response_data.as_ref().and_then(|rd| {
@@ -162,12 +166,16 @@ impl VerificationResultHandler {
                 }
             }
             CapabilityType::Stratum => {
-                let connected = msg.response_data.as_ref().map(|rd| {
-                    serde_json::from_str::<serde_json::Value>(rd)
-                        .ok()
-                        .and_then(|v| v.get("connected").and_then(|c| c.as_bool()))
-                        .unwrap_or(false)
-                }).unwrap_or(false);
+                let connected = msg
+                    .response_data
+                    .as_ref()
+                    .map(|rd| {
+                        serde_json::from_str::<serde_json::Value>(rd)
+                            .ok()
+                            .and_then(|v| v.get("connected").and_then(|c| c.as_bool()))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
 
                 let latency_ms = msg.response_data.as_ref().and_then(|rd| {
                     serde_json::from_str::<serde_json::Value>(rd)
@@ -192,12 +200,16 @@ impl VerificationResultHandler {
                     .and_then(|v| v.get("endpoint").and_then(|e| e.as_str()).map(String::from))
                     .unwrap_or_else(|| "ghostpay".to_string());
 
-                let response_valid = msg.response_data.as_ref().map(|rd| {
-                    serde_json::from_str::<serde_json::Value>(rd)
-                        .ok()
-                        .and_then(|v| v.get("valid").and_then(|c| c.as_bool()))
-                        .unwrap_or(false)
-                }).unwrap_or(false);
+                let response_valid = msg
+                    .response_data
+                    .as_ref()
+                    .map(|rd| {
+                        serde_json::from_str::<serde_json::Value>(rd)
+                            .ok()
+                            .and_then(|v| v.get("valid").and_then(|c| c.as_bool()))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
 
                 if let Err(e) = self.db.insert_ghostpay_challenge(
                     &target_hex,

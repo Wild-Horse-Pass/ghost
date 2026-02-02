@@ -128,7 +128,12 @@ impl PeerManager {
         let unique_hosts: std::collections::HashSet<&str> = peers
             .values()
             .filter(|p| !p.public_address.is_empty())
-            .map(|p| p.public_address.split(':').next().unwrap_or(&p.public_address))
+            .map(|p| {
+                p.public_address
+                    .split(':')
+                    .next()
+                    .unwrap_or(&p.public_address)
+            })
             .collect();
         unique_hosts.len()
     }

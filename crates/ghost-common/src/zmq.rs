@@ -292,14 +292,17 @@ impl ZmqSubscriber {
         // Create ZMQ socket with tmq
         // Order: context -> options -> connect -> subscribe (returns Subscribe which implements Stream)
         let mut socket = match subscribe(&*ZMQ_CONTEXT)
-            .set_reconnect_ivl(100)      // Initial reconnect interval: 100ms
+            .set_reconnect_ivl(100) // Initial reconnect interval: 100ms
             .set_reconnect_ivl_max(5000) // Max reconnect interval: 5 seconds
             .connect(endpoint)
             .and_then(|s| s.subscribe(topic.as_bytes()))
         {
             Ok(s) => s,
             Err(e) => {
-                error!("Failed to create subscriber for {} on {}: {}", topic, endpoint, e);
+                error!(
+                    "Failed to create subscriber for {} on {}: {}",
+                    topic, endpoint, e
+                );
                 return;
             }
         };
@@ -367,12 +370,17 @@ impl ZmqSubscriber {
         {
             Ok(s) => s,
             Err(e) => {
-                error!("Failed to create sequence subscriber on {}: {}", endpoint, e);
+                error!(
+                    "Failed to create sequence subscriber on {}: {}",
+                    endpoint, e
+                );
                 return;
             }
         };
 
-        info!("ZMQ sequence subscriber connected for reorg detection (libzmq handles reconnection)");
+        info!(
+            "ZMQ sequence subscriber connected for reorg detection (libzmq handles reconnection)"
+        );
 
         loop {
             tokio::select! {

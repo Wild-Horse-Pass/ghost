@@ -90,9 +90,9 @@ impl VerificationClient {
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
 
         // Extract the inner response object
-        let inner = wrapper
-            .get("response")
-            .ok_or_else(|| GhostError::InvalidVerificationResponse("Missing 'response' field".to_string()))?;
+        let inner = wrapper.get("response").ok_or_else(|| {
+            GhostError::InvalidVerificationResponse("Missing 'response' field".to_string())
+        })?;
 
         let health: HealthResponse = serde_json::from_value(inner.clone())
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
@@ -134,9 +134,9 @@ impl VerificationClient {
             .await
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
 
-        let inner = wrapper
-            .get("response")
-            .ok_or_else(|| GhostError::InvalidVerificationResponse("Missing 'response' field".to_string()))?;
+        let inner = wrapper.get("response").ok_or_else(|| {
+            GhostError::InvalidVerificationResponse("Missing 'response' field".to_string())
+        })?;
 
         let result: ArchiveResponse = serde_json::from_value(inner.clone())
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
@@ -172,9 +172,9 @@ impl VerificationClient {
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
 
         // Extract the inner response object
-        let inner = wrapper
-            .get("response")
-            .ok_or_else(|| GhostError::InvalidVerificationResponse("Missing 'response' field".to_string()))?;
+        let inner = wrapper.get("response").ok_or_else(|| {
+            GhostError::InvalidVerificationResponse("Missing 'response' field".to_string())
+        })?;
 
         let result: PolicyResponse = serde_json::from_value(inner.clone())
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
@@ -213,9 +213,9 @@ impl VerificationClient {
             .await
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
 
-        let inner = wrapper
-            .get("response")
-            .ok_or_else(|| GhostError::InvalidVerificationResponse("Missing 'response' field".to_string()))?;
+        let inner = wrapper.get("response").ok_or_else(|| {
+            GhostError::InvalidVerificationResponse("Missing 'response' field".to_string())
+        })?;
 
         let result: StratumResponse = serde_json::from_value(inner.clone())
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
@@ -250,9 +250,9 @@ impl VerificationClient {
             .await
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
 
-        let inner = wrapper
-            .get("response")
-            .ok_or_else(|| GhostError::InvalidVerificationResponse("Missing 'response' field".to_string()))?;
+        let inner = wrapper.get("response").ok_or_else(|| {
+            GhostError::InvalidVerificationResponse("Missing 'response' field".to_string())
+        })?;
 
         let result: GhostPayResponse = serde_json::from_value(inner.clone())
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;

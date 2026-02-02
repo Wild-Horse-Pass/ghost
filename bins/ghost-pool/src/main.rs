@@ -56,17 +56,18 @@ use ghost_consensus::voting::VotingManager;
 use ghost_policy::PolicyProfile;
 use ghost_storage::Database;
 use ghost_verification::{
-    start_server, BlockFoundNotification, GhostPayL2Handler, QualifiedCapabilityProvider,
-    RpcArchiveHandler, VerificationState, VerificationTask, VerifiablePeer, PeerProvider,
+    start_server, BlockFoundNotification, GhostPayL2Handler, PeerProvider,
+    QualifiedCapabilityProvider, RpcArchiveHandler, VerifiablePeer, VerificationState,
+    VerificationTask,
 };
 
 use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler, SoloBlockFoundData};
 use ghost_pool::registry::RegistryClient;
-use ghost_pool::treasury::TreasuryState;
 use ghost_pool::reorg::{ReorgConfig, ReorgHandler};
 use ghost_pool::round::{RoundConfig, RoundEvent, RoundManager};
 use ghost_pool::template::{TemplateConfig, TemplateEvent, TemplateProcessor};
 use ghost_pool::template_provider::{TdpConfig, TemplateDistributionServer};
+use ghost_pool::treasury::TreasuryState;
 
 /// Adapter to provide peers for verification from PeerManager
 struct PeerProviderAdapter {
@@ -100,7 +101,10 @@ impl PeerProvider for PeerProviderAdapter {
                 // public_address is typically just an IP or host
                 let host = if p.public_address.contains(':') {
                     // Has port, extract just the host
-                    p.public_address.split(':').next().unwrap_or(&p.public_address)
+                    p.public_address
+                        .split(':')
+                        .next()
+                        .unwrap_or(&p.public_address)
                 } else {
                     &p.public_address
                 };
@@ -823,9 +827,8 @@ async fn main() -> Result<()> {
 
     // Create and register verification result handler for P2P verification results
     let verification_result_handler = Arc::new(VerificationResultHandler::new(Arc::clone(&db)));
-    mesh.register_handler(
-        Arc::clone(&verification_result_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>
-    );
+    mesh.register_handler(Arc::clone(&verification_result_handler)
+        as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
 
     // Create and register discovery handler for peer gossip
     // This enables nodes to discover peers beyond just seed nodes
@@ -971,7 +974,8 @@ async fn main() -> Result<()> {
                 },
                 move || {
                     // Epoch = virtual_block / epoch_blocks
-                    let virtual_block = startup_time.elapsed().as_secs() / virtual_block_secs.max(1);
+                    let virtual_block =
+                        startup_time.elapsed().as_secs() / virtual_block_secs.max(1);
                     virtual_block / epoch_blocks.max(1)
                 },
                 |_address| {
@@ -982,8 +986,10 @@ async fn main() -> Result<()> {
                 wraith_enabled,
             );
             verification_state = verification_state.with_ghostpay_handler(ghostpay_handler);
-            info!("GhostPay handler configured (virtual_block_secs={}, epoch_blocks={})",
-                  virtual_block_secs, epoch_blocks);
+            info!(
+                "GhostPay handler configured (virtual_block_secs={}, epoch_blocks={})",
+                virtual_block_secs, epoch_blocks
+            );
         }
     }
 
@@ -1068,7 +1074,8 @@ async fn main() -> Result<()> {
         // The payout_address is extracted from user_identity (format: <address>.<worker>)
         if let Some(ref payout_address) = share.payout_address {
             if !payout_address.is_empty() {
-                if let Err(e) = db_for_shares.update_miner_address(&share.miner_id, payout_address) {
+                if let Err(e) = db_for_shares.update_miner_address(&share.miner_id, payout_address)
+                {
                     tracing::warn!(
                         miner_id = %share.miner_id,
                         payout_address = %payout_address,
@@ -1440,7 +1447,8 @@ async fn main() -> Result<()> {
     ));
 
     // Create broadcast channel for verification results
-    let (verification_tx, mut verification_rx) = ghost_verification::task::verification_broadcast_channel(100);
+    let (verification_tx, mut verification_rx) =
+        ghost_verification::task::verification_broadcast_channel(100);
 
     let verification_task = VerificationTask::new(
         Arc::clone(&db),
@@ -1510,7 +1518,10 @@ async fn main() -> Result<()> {
             let peer_count = mesh_for_verification.peers().peer_count();
             let connected_count = mesh_for_verification.peers().connected_count();
 
-            match mesh_for_verification.broadcast_message(MessageType::VerificationResult, &msg).await {
+            match mesh_for_verification
+                .broadcast_message(MessageType::VerificationResult, &msg)
+                .await
+            {
                 Ok(sent) => {
                     info!(
                         target = %target_short,
@@ -1686,7 +1697,9 @@ async fn main() -> Result<()> {
                         let solo_address = match &solo_payout_address_for_events {
                             Some(addr) if !addr.is_empty() => addr.clone(),
                             _ => {
-                                error!("Solo mode block found but solo_payout_address not configured!");
+                                error!(
+                                    "Solo mode block found but solo_payout_address not configured!"
+                                );
                                 continue;
                             }
                         };
