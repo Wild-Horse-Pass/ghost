@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "bitcoin-ghost-tests"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "bitcoin",
  "ghost-buds",
@@ -1592,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-accounting"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "bitcoin",
  "ghost-common",
@@ -1606,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-buds"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "bitcoin",
  "ghost-common",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-cli"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-common"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "base64 0.22.1",
  "bitcoin",
@@ -1663,7 +1663,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-consensus"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -1689,7 +1689,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-gsp"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1744,7 +1744,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-gsp-proto"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "bitcoin",
  "chrono",
@@ -1760,7 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-keys"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "bech32",
  "bitcoin",
@@ -1775,7 +1775,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-light-wallet"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1852,7 +1852,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-locks"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "bitcoin",
  "hex",
@@ -1864,7 +1864,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-node-tui"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1885,7 +1885,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-pay"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-policy"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "bitcoin",
  "ghost-buds",
@@ -1926,7 +1926,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-pool"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "async-channel 2.5.0",
@@ -1972,7 +1972,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-reconciliation"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -1994,7 +1994,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-registry"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -2023,7 +2023,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-storage"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "chrono",
  "ghost-common",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-template"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "bitcoin",
  "ghost-buds",
@@ -2055,7 +2055,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-verification"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "axum",
  "bitcoin",
@@ -4826,7 +4826,7 @@ dependencies = [
 
 [[package]]
 name = "translator"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5483,7 +5483,7 @@ checksum = "d7249219f66ced02969388cf2bb044a09756a083d0fab1e566056b04d9fbcaa5"
 
 [[package]]
 name = "wraith-protocol"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "bitcoin",
  "getrandom 0.2.17",
