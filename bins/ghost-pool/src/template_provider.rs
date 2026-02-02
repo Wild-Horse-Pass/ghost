@@ -1026,8 +1026,8 @@ fn create_new_template(
         coinbase_tx_version: 2, // Standard coinbase version
         coinbase_prefix,
         coinbase_tx_input_sequence: 0xffffffff,
-        // Set to 0 since Ghost provides all outputs - nothing remaining for pool
-        coinbase_tx_value_remaining: 0,
+        // Total coinbase value (subsidy + fees) - SRI Pool validates outputs sum matches this
+        coinbase_tx_value_remaining: get_block_subsidy(work_state.height) + work_state.total_fees,
         coinbase_tx_outputs_count: work_state.coinbase_outputs_count,
         coinbase_tx_outputs: coinbase_outputs, // Ghost's outputs (BFT payouts, treasury)
         coinbase_tx_locktime: 0,

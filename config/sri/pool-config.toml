@@ -40,9 +40,17 @@ monitoring_address = "127.0.0.1:9090"
 # Log file (optional)
 # log_file = "/var/log/ghost/sri-pool.log"
 
+# Share Webhook Configuration
+# Native integration with ghost-pool for share accounting
+[share_webhook]
+url = "http://127.0.0.1:8080/api/internal/shares"
+batch_size = 50
+batch_timeout_ms = 2000
+max_retries = 3
+
 # Template Provider Configuration
 # Connects to ghost-pool's TDP server
 [template_provider_type.Sv2Tp]
 address = "127.0.0.1:8442"
 # ghost-pool's TDP authority public key (from --tdp-enabled startup logs)
-public_key = "9bRi8WdawJSqbhc4CjK9UDTCudaBxkNx1a6qaJ4yx5qjnrQgQDF"
+public_key = "9bWFgYocHgkMPKEu1y87CxuAa145YSFVkafJrf8L6hhRKrhLGTz"

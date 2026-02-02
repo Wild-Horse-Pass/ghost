@@ -49,3 +49,6 @@ wallet-data/
 
 # Zone.Identifier files (Windows)
 *:Zone.Identifier
+
+# Local dev notes
+CLAUDE.md

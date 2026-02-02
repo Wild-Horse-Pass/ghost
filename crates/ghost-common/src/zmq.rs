@@ -33,9 +33,14 @@
 //! Never expose ZMQ ports to the network. If remote block notifications are needed,
 //! use an authenticated transport layer (SSH tunnel, VPN, etc.).
 
+use futures::StreamExt;
+use once_cell::sync::Lazy;
+use tmq::{subscribe, Context};
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
-use zeromq::{Socket, SocketRecv};
+
+/// Shared ZMQ context for all sockets
+static ZMQ_CONTEXT: Lazy<Context> = Lazy::new(Context::new);
 
 /// ZMQ notification types
 #[derive(Debug, Clone)]
@@ -269,6 +274,8 @@ impl ZmqSubscriber {
     }
 
     /// Run a ZMQ subscriber loop
+    ///
+    /// Uses tmq with libzmq's built-in reconnection support.
     async fn run_subscriber<F>(
         endpoint: &str,
         topic: &str,
@@ -282,23 +289,23 @@ impl ZmqSubscriber {
             endpoint, topic
         );
 
-        // Create ZMQ socket
-        let mut socket = zeromq::SubSocket::new();
-
-        // Subscribe to topic
-        if let Err(e) = socket.subscribe(topic).await {
-            error!("Failed to subscribe to {}: {}", topic, e);
-            return;
-        }
-
-        // Connect to endpoint
-        if let Err(e) = socket.connect(endpoint).await {
-            error!("Failed to connect to {}: {}", endpoint, e);
-            return;
-        }
+        // Create ZMQ socket with tmq
+        // Order: context -> options -> connect -> subscribe (returns Subscribe which implements Stream)
+        let mut socket = match subscribe(&*ZMQ_CONTEXT)
+            .set_reconnect_ivl(100)      // Initial reconnect interval: 100ms
+            .set_reconnect_ivl_max(5000) // Max reconnect interval: 5 seconds
+            .connect(endpoint)
+            .and_then(|s| s.subscribe(topic.as_bytes()))
+        {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to create subscriber for {} on {}: {}", topic, endpoint, e);
+                return;
+            }
+        };
 
         info!(
-            "ZMQ subscriber connected to {} for topic {}",
+            "ZMQ subscriber connected to {} for topic {} (libzmq handles reconnection)",
             endpoint, topic
         );
 
@@ -309,18 +316,23 @@ impl ZmqSubscriber {
                     info!("ZMQ subscriber shutting down");
                     break;
                 }
-                result = socket.recv() => {
+                result = socket.next() => {
                     match result {
-                        Ok(msg) => {
+                        Some(Ok(msg)) => {
                             // ZMQ message format: [topic, body, sequence]
-                            let frames: Vec<_> = msg.into_vec();
+                            // tmq returns Multipart - collect frames as Vec<Message>
+                            let frames: Vec<tmq::Message> = msg.into_iter().collect();
                             if frames.len() >= 2 {
                                 let data = &frames[1];
                                 handler(data.as_ref());
                             }
                         }
-                        Err(e) => {
+                        Some(Err(e)) => {
                             warn!("ZMQ receive error: {}", e);
+                        }
+                        None => {
+                            warn!("ZMQ socket stream ended unexpectedly");
+                            break;
                         }
                     }
                 }
@@ -334,6 +346,8 @@ impl ZmqSubscriber {
     /// - hash: 32 bytes (block hash, little-endian)
     /// - label: 1 byte ('C' for connect, 'D' for disconnect, 'R' for remove from mempool, etc.)
     /// - sequence: 8 bytes (uint64 mempool sequence number)
+    ///
+    /// Uses tmq with libzmq's built-in reconnection support.
     async fn run_sequence_subscriber(
         endpoint: &str,
         block_event_tx: broadcast::Sender<BlockEvent>,
@@ -344,20 +358,21 @@ impl ZmqSubscriber {
             endpoint
         );
 
-        let mut socket = zeromq::SubSocket::new();
+        // Create socket with tmq - connect then subscribe (returns Subscribe which implements Stream)
+        let mut socket = match subscribe(&*ZMQ_CONTEXT)
+            .set_reconnect_ivl(100)
+            .set_reconnect_ivl_max(5000)
+            .connect(endpoint)
+            .and_then(|s| s.subscribe(b"sequence"))
+        {
+            Ok(s) => s,
+            Err(e) => {
+                error!("Failed to create sequence subscriber on {}: {}", endpoint, e);
+                return;
+            }
+        };
 
-        // Subscribe to sequence topic
-        if let Err(e) = socket.subscribe("sequence").await {
-            error!("Failed to subscribe to sequence: {}", e);
-            return;
-        }
-
-        if let Err(e) = socket.connect(endpoint).await {
-            error!("Failed to connect to sequence endpoint {}: {}", endpoint, e);
-            return;
-        }
-
-        info!("ZMQ sequence subscriber connected for reorg detection");
+        info!("ZMQ sequence subscriber connected for reorg detection (libzmq handles reconnection)");
 
         loop {
             tokio::select! {
@@ -365,10 +380,11 @@ impl ZmqSubscriber {
                     info!("ZMQ sequence subscriber shutting down");
                     break;
                 }
-                result = socket.recv() => {
+                result = socket.next() => {
                     match result {
-                        Ok(msg) => {
-                            let frames: Vec<_> = msg.into_vec();
+                        Some(Ok(msg)) => {
+                            // tmq returns Multipart - collect frames as Vec<Message>
+                            let frames: Vec<tmq::Message> = msg.into_iter().collect();
                             // Format: [topic, hash (32), label (1), sequence (8)]
                             if frames.len() >= 3 {
                                 let hash_bytes = &frames[1];
@@ -402,8 +418,12 @@ impl ZmqSubscriber {
                                 }
                             }
                         }
-                        Err(e) => {
+                        Some(Err(e)) => {
                             warn!("ZMQ sequence receive error: {}", e);
+                        }
+                        None => {
+                            warn!("ZMQ sequence socket stream ended unexpectedly");
+                            break;
                         }
                     }
                 }

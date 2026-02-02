@@ -40,10 +40,13 @@ chrono = { workspace = true }
 tracing = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
-zeromq = { workspace = true }
+tmq = { workspace = true }
 tokio = { workspace = true }
 base64 = { workspace = true }
 parking_lot = { workspace = true }
+once_cell = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

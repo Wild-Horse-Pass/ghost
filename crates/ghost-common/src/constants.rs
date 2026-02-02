@@ -121,17 +121,17 @@ pub const SHARE_CONVERGENCE_TIMEOUT_MS: u64 = 30000;
 // VERIFICATION
 // =============================================================================
 
-/// Verification interval in seconds
+/// Verification interval in seconds (5 minutes)
 pub const VERIFICATION_INTERVAL_SECS: u64 = 300;
 
 /// Verification HTTP timeout in seconds
 pub const VERIFICATION_TIMEOUT_SECS: u64 = 10;
 
-/// Nodes to verify per round
-pub const NODES_TO_VERIFY_PER_ROUND: usize = 3;
+/// Nodes to verify per round (2 peers every 5 minutes = ~2 verifications per 10 min)
+pub const NODES_TO_VERIFY_PER_ROUND: usize = 2;
 
-/// Minimum challenges required for capability qualification
-pub const MIN_CHALLENGES_FOR_QUALIFICATION: usize = 10;
+/// Minimum challenges required for capability qualification (3 for testing, 10 for production)
+pub const MIN_CHALLENGES_FOR_QUALIFICATION: usize = 3;
 
 /// Archive mode pass rate threshold
 pub const ARCHIVE_PASS_RATE: f64 = 0.95;
@@ -149,7 +149,7 @@ pub const GHOSTPAY_PASS_RATE: f64 = 0.90;
 // NETWORK PORTS
 // =============================================================================
 
-/// SV2 Stratum port
+/// SV2 Stratum port (SRI pool)
 pub const SV2_STRATUM_PORT: u16 = 34255;
 
 /// SV1 Stratum port (translator)

@@ -115,7 +115,7 @@ hex = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
 
 # Networking
-zeromq = "0.4"
+tmq = "0.5"
 axum = { version = "0.7", features = ["ws"] }
 reqwest = { version = "0.12", features = ["json"] }
 tower = { version = "0.4", features = ["limit", "timeout"] }
@@ -132,6 +132,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 
 # Utilities
+bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.7", features = ["v4"] }
 parking_lot = "0.12"
