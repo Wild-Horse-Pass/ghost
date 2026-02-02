@@ -52,3 +52,10 @@ wallet-data/
 
 # Local dev notes
 CLAUDE.md
+
+# Local data
+data/
+tasks/
+.claude/
+PAYOUT_FIX_PLAN.md
+TODO_VERIFY_NODE_PAYOUTS.md
