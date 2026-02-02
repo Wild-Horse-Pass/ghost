@@ -123,13 +123,23 @@ impl HealthPingHandler {
         }
 
         // Update peer's last seen time in memory
-        // If the peer doesn't exist (was registered with temp node_id), add it with real node_id
-        if self.peers.get_peer(&envelope.sender).is_none() {
-            // Create peer with real node_id and real public address from the ping
+        // If the peer doesn't exist or has empty address, update with real info from ping
+        let existing_peer = self.peers.get_peer(&envelope.sender);
+        let needs_update = existing_peer
+            .as_ref()
+            .map(|p| p.public_address.is_empty())
+            .unwrap_or(true);
+
+        if needs_update && !ping.public_address.is_empty() {
+            // Create/update peer with real node_id and real public address from the ping
             let mut peer = crate::peer::Peer::new(envelope.sender, ping.public_address.clone());
             peer.state = crate::peer::PeerState::Connected;
+            // Preserve first_seen if peer existed
+            if let Some(ref existing) = existing_peer {
+                peer.first_seen = existing.first_seen;
+            }
             self.peers.upsert_peer(peer);
-            debug!(node_id = %short_id, address = %ping.public_address, "Added new peer from health ping");
+            debug!(node_id = %short_id, address = %ping.public_address, "Updated peer address from health ping");
         }
         self.peers.update_last_seen(&envelope.sender);
 
@@ -141,9 +151,9 @@ impl HealthPingHandler {
             // Create peer record for database
             let peer = PeerRecord {
                 peer_id: node_id_hex.clone(),
-                address: String::new(), // Will be updated when we know the address
+                address: ping.public_address.clone(),
                 port: 8555,             // Default port
-                node_id: Some(node_id_hex),
+                node_id: Some(node_id_hex.clone()),
                 first_seen: now,
                 last_seen: now,
                 last_success: Some(now),
@@ -158,6 +168,11 @@ impl HealthPingHandler {
 
             if let Err(e) = db.upsert_peer(&peer) {
                 warn!(error = %e, peer_id = %short_id, "Failed to persist peer info");
+            }
+
+            // Record uptime sample - node is online since we received their health ping
+            if let Err(e) = db.record_uptime_sample(&node_id_hex, now, true) {
+                warn!(error = %e, peer_id = %short_id, "Failed to record uptime sample");
             }
         }
 

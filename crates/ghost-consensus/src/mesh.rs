@@ -36,7 +36,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
-use zeromq::{PubSocket, Socket, SocketRecv, SocketSend, SubSocket, ZmqMessage};
+use futures::{SinkExt, StreamExt};
+use once_cell::sync::Lazy;
+use tmq::{publish, subscribe, Context, Multipart};
+
+/// Shared ZMQ context for all sockets (libzmq handles threading internally)
+static ZMQ_CONTEXT: Lazy<Context> = Lazy::new(Context::new);
 
 use ghost_common::config::P2PPortConfig;
 use ghost_common::error::{GhostError, GhostResult};
@@ -62,6 +67,8 @@ pub struct MeshConfig {
     pub health_ping_interval_secs: u64,
     /// Maximum seen messages to track (prevents memory exhaustion)
     pub max_seen_messages: usize,
+    /// Node capabilities to advertise in health pings
+    pub capabilities: ghost_common::types::NodeCapabilities,
 }
 
 impl Default for MeshConfig {
@@ -73,6 +80,7 @@ impl Default for MeshConfig {
             dedup_window_secs: 60,
             health_ping_interval_secs: 10,
             max_seen_messages: 100_000, // Cap at 100k messages (~3.2MB with 32-byte IDs)
+            capabilities: ghost_common::types::NodeCapabilities::default(),
         }
     }
 }
@@ -88,10 +96,10 @@ pub trait MessageHandler: Send + Sync {
 /// Note: Currently unused - sockets managed through channels. Reserved for direct ZMQ integration.
 #[allow(dead_code)]
 pub struct MeshSockets {
-    /// Publisher socket for broadcasting
-    pub_socket: Option<PubSocket>,
+    /// Publisher socket for broadcasting (tmq::publish::Publish)
+    pub_socket: Option<tmq::publish::Publish>,
     /// Subscriber sockets for receiving (keyed by peer address)
-    sub_sockets: HashMap<String, SubSocket>,
+    sub_sockets: HashMap<String, tmq::subscribe::Subscribe>,
 }
 
 #[allow(dead_code)]
@@ -254,8 +262,10 @@ impl MeshNetwork {
 
         let sequence = self.next_sequence();
 
-        // Sign the payload
-        let signature = self.identity.sign(&payload_bytes);
+        // Sign the payload + sequence (verifier expects both)
+        let mut signed_data = payload_bytes.clone();
+        signed_data.extend_from_slice(&sequence.to_le_bytes());
+        let signature = self.identity.sign(&signed_data);
 
         Ok(MessageEnvelope::new(
             msg_type,
@@ -361,6 +371,8 @@ impl MeshNetwork {
             | MessageType::ZkVote
             | MessageType::ZkPayoutProposal
             | MessageType::ZkPayoutVote => self.config.ports.consensus_voting,
+            // Verification results use health monitoring port
+            MessageType::VerificationResult => self.config.ports.health_monitoring,
         };
         format!("tcp://{}:{}", host_only, base_port)
     }
@@ -375,14 +387,12 @@ impl MeshNetwork {
                 let mut stats = self.validation_stats.write();
                 stats.record(&Err(e.clone()));
 
-                // Only warn for signature failures (potential attacks)
-                // Other failures are just noise from malformed data
-                if matches!(
-                    e,
-                    crate::message_validator::MessageValidationError::InvalidSignature(_)
-                ) {
-                    warn!(error = %e, "Message rejected due to invalid signature");
-                }
+                // Log ALL validation failures for diagnostics
+                info!(
+                    error = %e,
+                    data_len = data.len(),
+                    "DIAG: Message validation failed"
+                );
                 return Err(GhostError::P2PMessage(e.to_string()));
             }
         };
@@ -391,6 +401,16 @@ impl MeshNetwork {
         {
             let mut stats = self.validation_stats.write();
             stats.record(&Ok(envelope.clone()));
+        }
+
+        // Log verification messages for P2P debugging
+        if matches!(envelope.msg_type, MessageType::VerificationResult) {
+            let sender_hex = hex::encode(&envelope.sender);
+            info!(
+                sender = %&sender_hex[..8],
+                msg_type = ?envelope.msg_type,
+                "DIAG: Message validated successfully"
+            );
         }
 
         // Check for duplicate
@@ -486,50 +506,43 @@ impl MeshNetwork {
 
     /// Run the publisher (sends outbound messages)
     async fn run_publisher(&self) -> GhostResult<()> {
-        // Create PUB socket
-        let mut pub_socket = PubSocket::new();
+        use tmq::AsZmqSocket;
 
-        // Bind to all interfaces (0.0.0.0), not the public address
-        // (public_address is for telling peers how to reach us, not for binding)
-        let bind_address = "0.0.0.0";
-        let endpoints = [
-            format!(
-                "tcp://{}:{}",
-                bind_address, self.config.ports.share_propagation
-            ),
-            format!(
-                "tcp://{}:{}",
-                bind_address, self.config.ports.block_announcement
-            ),
-            format!(
-                "tcp://{}:{}",
-                bind_address, self.config.ports.consensus_voting
-            ),
-            format!(
-                "tcp://{}:{}",
-                bind_address, self.config.ports.health_monitoring
-            ),
-            format!("tcp://{}:{}", bind_address, self.config.ports.discovery),
-            format!(
-                "tcp://{}:{}",
-                bind_address, self.config.ports.elder_management
-            ),
-            format!(
-                "tcp://{}:{}",
-                bind_address, self.config.ports.payout_proposal
-            ),
-            format!(
-                "tcp://{}:{}",
-                bind_address, self.config.ports.payout_transaction
-            ),
+        // Create PUB socket using tmq with shared context - bind first port
+        let mut pub_socket = publish(&*ZMQ_CONTEXT)
+            .bind(&format!(
+                "tcp://0.0.0.0:{}",
+                self.config.ports.share_propagation
+            ))
+            .map_err(|e| {
+                GhostError::P2PMessage(format!(
+                    "Failed to bind share_propagation: {}",
+                    e
+                ))
+            })?;
+
+        // Bind additional ports using the underlying zmq socket
+        let additional_ports = [
+            (self.config.ports.block_announcement, "block_announcement"),
+            (self.config.ports.consensus_voting, "consensus_voting"),
+            (self.config.ports.health_monitoring, "health_monitoring"),
+            (self.config.ports.discovery, "discovery"),
+            (self.config.ports.elder_management, "elder_management"),
+            (self.config.ports.payout_proposal, "payout_proposal"),
+            (self.config.ports.payout_transaction, "payout_transaction"),
         ];
 
-        for endpoint in &endpoints {
-            pub_socket.bind(endpoint).await.map_err(|e| {
-                GhostError::P2PMessage(format!("Failed to bind {}: {}", endpoint, e))
+        for (port, name) in additional_ports {
+            let endpoint = format!("tcp://0.0.0.0:{}", port);
+            pub_socket.get_socket().bind(&endpoint).map_err(|e| {
+                GhostError::P2PMessage(format!("Failed to bind {}: {}", name, e))
             })?;
-            info!(endpoint = %endpoint, "Bound PUB socket");
         }
+
+        info!(
+            ports = ?self.config.ports,
+            "Bound PUB socket to all ports"
+        );
 
         // Take the receiver from the RwLock
         let mut outbound_rx = self
@@ -544,10 +557,28 @@ impl MeshNetwork {
                 .await
             {
                 Ok(Some((_endpoint, data))) => {
-                    // Create ZMQ message with topic prefix
-                    let zmq_msg: ZmqMessage = data.into();
-                    if let Err(e) = pub_socket.send(zmq_msg).await {
-                        warn!(error = %e, "Failed to send message");
+                    // Extract topic from the serialized envelope
+                    let (topic, msg_type_str) = match MessageEnvelope::deserialize(&data) {
+                        Ok(env) => {
+                            let topic = env.topic().to_vec();
+                            let msg_type = format!("{:?}", env.msg_type);
+                            (topic, msg_type)
+                        }
+                        Err(_) => {
+                            // Fallback to generic topic if deserialization fails
+                            warn!("Failed to deserialize envelope for topic extraction");
+                            (b"msg".to_vec(), "Unknown".to_string())
+                        }
+                    };
+
+                    // Send as single-frame ZMQ message with topic prefix for filtering
+                    // Format: [topic + payload] in a single frame
+                    let mut prefixed_data = topic.clone();
+                    prefixed_data.extend_from_slice(&data);
+                    let msg = Multipart::from(vec![prefixed_data]);
+
+                    if let Err(e) = pub_socket.send(msg).await {
+                        warn!(error = %e, msg_type = %msg_type_str, "Failed to send ZMQ message");
                     }
                 }
                 Ok(None) => break,  // Channel closed
@@ -560,36 +591,60 @@ impl MeshNetwork {
     }
 
     /// Run subscriber (receives messages from peers)
+    ///
+    /// Uses tmq with libzmq's built-in reconnection support via ZMQ_RECONNECT_IVL
+    /// and ZMQ_RECONNECT_IVL_MAX socket options. No manual watchdog needed.
     async fn run_subscriber(&self) -> GhostResult<()> {
-        let mut sub_socket = SubSocket::new();
+        use tmq::AsZmqSocket;
 
-        // Subscribe to all topics
-        sub_socket
-            .subscribe("")
-            .await
+        info!("Starting mesh subscriber task");
+
+        // Create SUB socket with tmq - we need to bind/connect to at least one endpoint
+        // to create the socket, then we can add more endpoints dynamically.
+        // We'll use a dummy inproc endpoint that we create just to bootstrap the socket.
+        let dummy_endpoint = format!("inproc://mesh-sub-bootstrap-{}", std::process::id());
+
+        // bind() returns SubscribeWithoutTopic, then subscribe() returns Subscribe (which implements Stream)
+        let mut sub_socket = subscribe(&*ZMQ_CONTEXT)
+            .set_reconnect_ivl(100)      // Initial reconnect interval: 100ms
+            .set_reconnect_ivl_max(5000) // Max reconnect interval: 5 seconds
+            .bind(&dummy_endpoint)
+            .map_err(|e| GhostError::P2PMessage(format!("Failed to create SUB socket: {}", e)))?
+            .subscribe(b"")  // Subscribe to all topics (empty filter) - this returns Subscribe
             .map_err(|e| GhostError::P2PMessage(format!("Failed to subscribe: {}", e)))?;
+
+        info!("DIAG: SUB socket created with reconnection support (ivl=100ms, max=5000ms)");
 
         // Track which peers we've attempted to connect to
         let mut connected_addresses: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
+        // Track message receive stats for debugging
+        let mut last_stats_log = std::time::Instant::now();
+        let mut receive_attempts: u64 = 0;
+        let mut receive_timeouts: u64 = 0;
+        let mut receive_errors: u64 = 0;
+
         while self.running.load(Ordering::SeqCst) {
             // Get ALL peers (not just connected ones) - we need to attempt connection first
             let peers = self.peers.get_all_peers();
 
-            // Connect to any new peers
+            // Connect to any new peers using the underlying ZMQ socket
             for peer in peers {
                 // Skip if we've already tried this address
-                if connected_addresses.contains(&peer.public_address) {
-                    continue;
-                }
-
                 // Extract host from public_address (may be "host:port" or just "host")
+                // Normalize to just the host for deduplication
                 let host = peer
                     .public_address
                     .split(':')
                     .next()
-                    .unwrap_or(&peer.public_address);
+                    .unwrap_or(&peer.public_address)
+                    .to_string();
+
+                // Skip if we've already connected to this host
+                if connected_addresses.contains(&host) {
+                    continue;
+                }
 
                 // Connect to all message type ports
                 let ports = [
@@ -606,49 +661,111 @@ impl MeshNetwork {
                 let mut connected_any = false;
                 for port in ports {
                     let endpoint = format!("tcp://{}:{}", host, port);
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        sub_socket.connect(&endpoint),
-                    )
-                    .await
-                    {
-                        Ok(Ok(_)) => {
+                    // Use the underlying zmq socket to connect dynamically
+                    match sub_socket.get_socket().connect(&endpoint) {
+                        Ok(_) => {
                             debug!(endpoint = %endpoint, "Connected SUB socket");
                             connected_any = true;
                         }
-                        Ok(Err(e)) => {
+                        Err(e) => {
                             debug!(endpoint = %endpoint, error = %e, "Failed to connect SUB socket");
-                        }
-                        Err(_) => {
-                            debug!(endpoint = %endpoint, "SUB socket connect timed out");
                         }
                     }
                 }
 
                 if connected_any {
-                    info!(address = %peer.public_address, "Connected to peer");
-                    connected_addresses.insert(peer.public_address.clone());
+                    info!(
+                        host = %host,
+                        total_connected = connected_addresses.len() + 1,
+                        "DIAG: SUB socket connected to peer on all ports (libzmq handles reconnection)"
+                    );
+                    connected_addresses.insert(host);
                 } else {
-                    warn!(address = %peer.public_address, "Failed to connect to peer");
+                    warn!(host = %host, "Failed to connect SUB socket to peer");
                 }
             }
 
-            // Try to receive a message
-            match tokio::time::timeout(std::time::Duration::from_millis(100), sub_socket.recv())
+            // Log stats every 30 seconds
+            if last_stats_log.elapsed() > std::time::Duration::from_secs(30) {
+                let total_received = self.messages_received.load(Ordering::Relaxed);
+                info!(
+                    connected_peers = connected_addresses.len(),
+                    receive_attempts,
+                    receive_timeouts,
+                    receive_errors,
+                    total_received,
+                    "DIAG: SUB socket stats"
+                );
+                last_stats_log = std::time::Instant::now();
+            }
+
+            // Try to receive a message using StreamExt::next()
+            receive_attempts += 1;
+            match tokio::time::timeout(std::time::Duration::from_millis(100), sub_socket.next())
                 .await
             {
-                Ok(Ok(msg)) => {
-                    let data: Vec<u8> = msg.into_vec().into_iter().flatten().collect();
+                Ok(Some(Ok(msg))) => {
+                    // ZMQ message with topic prefix - tmq returns Multipart
+                    let raw_data: Vec<u8> = msg.into_iter().flat_map(|frame: tmq::Message| frame.to_vec()).collect();
+
+                    if raw_data.is_empty() {
+                        debug!("Received empty ZMQ message");
+                        continue;
+                    }
+
+                    // Find where the payload starts (after the topic)
+                    // Topics are known fixed strings: health, share, block, vote, discovery, elder, payout
+                    use crate::message::topics;
+                    let known_topics: &[(&str, &[u8])] = &[
+                        ("health", topics::HEALTH),
+                        ("share", topics::SHARE),
+                        ("block", topics::BLOCK),
+                        ("vote", topics::VOTE),
+                        ("discovery", topics::DISCOVERY),
+                        ("elder", topics::ELDER),
+                        ("payout", topics::PAYOUT_PROPOSAL),
+                        ("verify", topics::VERIFICATION),
+                    ];
+
+                    let (topic_name, data): (&str, Vec<u8>) = {
+                        let mut found: Option<(&str, Vec<u8>)> = None;
+                        for (name, topic_bytes) in known_topics {
+                            if raw_data.starts_with(topic_bytes) {
+                                found = Some((*name, raw_data[topic_bytes.len()..].to_vec()));
+                                break;
+                            }
+                        }
+                        found.unwrap_or(("unknown", raw_data))
+                    };
+
+                    // Log verification messages for P2P debugging
+                    if topic_name == "verify" {
+                        info!(
+                            topic = topic_name,
+                            data_len = data.len(),
+                            "DIAG: SUB received verification message"
+                        );
+                    }
+
                     self.messages_received.fetch_add(1, Ordering::Relaxed);
 
                     if let Err(e) = self.inbound_tx.send(data).await {
                         warn!(error = %e, "Failed to queue inbound message");
                     }
                 }
-                Ok(Err(e)) => {
+                Ok(Some(Err(e))) => {
+                    receive_errors += 1;
                     debug!(error = %e, "Receive error");
                 }
-                Err(_) => continue, // Timeout
+                Ok(None) => {
+                    // Stream ended (shouldn't happen with ZMQ)
+                    warn!("SUB socket stream ended unexpectedly");
+                    break;
+                }
+                Err(_) => {
+                    receive_timeouts += 1;
+                    continue; // Timeout
+                }
             }
         }
 
@@ -691,13 +808,13 @@ impl MeshNetwork {
         while self.running.load(Ordering::SeqCst) {
             tokio::time::sleep(interval).await;
 
-            // Create and broadcast health ping
+            // Create and broadcast health ping with actual node capabilities
             let ping = ghost_common::types::HealthPing {
                 node_id: self.identity.node_id(),
                 public_address: self.config.public_address.clone(),
                 block_height: 0, // Would track actual height
                 round_id: 0,     // Would track current round
-                capabilities: ghost_common::types::NodeCapabilities::default(),
+                capabilities: self.config.capabilities.clone(),
                 miner_count: self.peers.peer_count() as u32,
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
             };
@@ -709,6 +826,8 @@ impl MeshNetwork {
                 Ok(envelope) => {
                     if let Err(e) = self.broadcast(envelope).await {
                         debug!(error = %e, "Failed to broadcast health ping");
+                    } else {
+                        debug!(peers = self.peers.peer_count(), "Broadcast health ping");
                     }
                 }
                 Err(e) => {
@@ -791,7 +910,7 @@ impl MeshNetwork {
         info!(address = %address, "Connecting to peer");
 
         // Generate a temporary node ID from the address hash
-        // (actual node ID will be learned from first message received)
+        // (actual node ID will be learned from first health ping received)
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         address.hash(&mut hasher);

@@ -1,0 +1,234 @@
+//|======================================================================================================================|
+//|                                                                                                                      |
+//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+//|       ░              ░                                                                                               |
+//|----------------------------------------------------------------------------------------------------------------------|
+//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|----------------------------------------------------------------------------------------------------------------------|
+//| PROJECT: Bitcoin Ghost                                                                                               |
+//| REPO: https://github.com/bitcoin-ghost                                                                               |
+//| WEB: https://bitcoinghost.org/                                                                                       |
+//| LICENSE: MIT                                                                                                         |
+//| FILE: verification_handler.rs                                                                                        |
+//|======================================================================================================================|
+
+//! Verification result handler
+//!
+//! Handles incoming verification results from other nodes and stores them
+//! in the database for capability qualification calculations.
+
+use async_trait::async_trait;
+use std::sync::Arc;
+use tracing::{info, warn};
+
+use ghost_common::error::GhostResult;
+use ghost_common::identity::verify_signature;
+use ghost_storage::Database;
+
+use crate::mesh::MessageHandler;
+use crate::message::{CapabilityType, MessageEnvelope, MessageType, VerificationResultMessage};
+
+/// Handler for verification result messages
+pub struct VerificationResultHandler {
+    /// Database for storing verification results
+    db: Arc<Database>,
+}
+
+impl VerificationResultHandler {
+    /// Create a new verification result handler
+    pub fn new(db: Arc<Database>) -> Self {
+        Self { db }
+    }
+
+    /// Handle an incoming verification result message
+    async fn handle_verification_result(&self, envelope: &MessageEnvelope) -> GhostResult<()> {
+        // Log entry point at info level for P2P debugging
+        let envelope_sender_hex = hex::encode(&envelope.sender);
+        info!(
+            sender = %&envelope_sender_hex[..8],
+            payload_len = envelope.payload.len(),
+            "DIAG: VerificationResultHandler received message"
+        );
+
+        // Deserialize the verification result message
+        let msg: VerificationResultMessage = serde_json::from_slice(&envelope.payload)
+            .map_err(|e| {
+                warn!(error = %e, "Failed to deserialize verification result message");
+                ghost_common::error::GhostError::P2PMessage(e.to_string())
+            })?;
+
+        let challenger_hex = hex::encode(&msg.challenger_id);
+        let target_hex = hex::encode(&msg.target_node_id);
+        let short_challenger = &challenger_hex[..8];
+        let short_target = &target_hex[..8];
+
+        info!(
+            challenger = %short_challenger,
+            target = %short_target,
+            capability = %msg.capability.as_str(),
+            passed = msg.passed,
+            "DIAG: Parsed verification result from P2P"
+        );
+
+        // Verify that the envelope sender matches the challenger (prevent spoofing)
+        if envelope.sender != msg.challenger_id {
+            warn!(
+                envelope_sender = %hex::encode(&envelope.sender)[..8],
+                msg_challenger = %short_challenger,
+                "Verification result sender mismatch - potential spoofing"
+            );
+            return Ok(()); // Silently ignore invalid messages
+        }
+
+        // Verify the challenger's signature on the result
+        let signing_data = msg.signing_data();
+        let sig_valid = verify_signature(&msg.challenger_id, &signing_data, &msg.signature)
+            .unwrap_or(false);
+        if !sig_valid {
+            warn!(
+                challenger = %short_challenger,
+                "Invalid signature on verification result"
+            );
+            return Ok(()); // Silently ignore invalid signatures
+        }
+
+        // Store the result in the appropriate challenge table
+        // Use idempotent storage - ignore if already exists (based on challenger + target + timestamp)
+        match msg.capability {
+            CapabilityType::Archive => {
+                // For archive challenges, extract block height from challenge_data
+                let block_height = serde_json::from_str::<serde_json::Value>(&msg.challenge_data)
+                    .ok()
+                    .and_then(|v| v.get("block_height").and_then(|h| h.as_u64()))
+                    .unwrap_or(0);
+
+                let expected_hash = serde_json::from_str::<serde_json::Value>(&msg.challenge_data)
+                    .ok()
+                    .and_then(|v| v.get("expected_hash").and_then(|h| h.as_str()).map(String::from))
+                    .unwrap_or_default();
+
+                let response_hash = msg.response_data.as_ref().and_then(|rd| {
+                    serde_json::from_str::<serde_json::Value>(rd)
+                        .ok()
+                        .and_then(|v| v.get("hash").and_then(|h| h.as_str()).map(String::from))
+                });
+
+                if let Err(e) = self.db.insert_archive_challenge(
+                    &target_hex,
+                    &challenger_hex,
+                    block_height,
+                    &expected_hash,
+                    response_hash.as_deref(),
+                    msg.passed,
+                ) {
+                    warn!(error = %e, "Failed to store archive challenge result");
+                }
+            }
+            CapabilityType::Policy => {
+                let txid = serde_json::from_str::<serde_json::Value>(&msg.challenge_data)
+                    .ok()
+                    .and_then(|v| v.get("txid").and_then(|t| t.as_str()).map(String::from))
+                    .unwrap_or_default();
+
+                let expected_tier = serde_json::from_str::<serde_json::Value>(&msg.challenge_data)
+                    .ok()
+                    .and_then(|v| v.get("expected_tier").and_then(|t| t.as_i64()))
+                    .unwrap_or(0) as i32;
+
+                let response_tier = msg.response_data.as_ref().and_then(|rd| {
+                    serde_json::from_str::<serde_json::Value>(rd)
+                        .ok()
+                        .and_then(|v| v.get("tier").and_then(|t| t.as_i64()))
+                        .map(|t| t as i32)
+                });
+
+                if let Err(e) = self.db.insert_policy_challenge(
+                    &target_hex,
+                    &challenger_hex,
+                    &txid,
+                    expected_tier,
+                    response_tier,
+                    msg.passed,
+                ) {
+                    warn!(error = %e, "Failed to store policy challenge result");
+                }
+            }
+            CapabilityType::Stratum => {
+                let connected = msg.response_data.as_ref().map(|rd| {
+                    serde_json::from_str::<serde_json::Value>(rd)
+                        .ok()
+                        .and_then(|v| v.get("connected").and_then(|c| c.as_bool()))
+                        .unwrap_or(false)
+                }).unwrap_or(false);
+
+                let latency_ms = msg.response_data.as_ref().and_then(|rd| {
+                    serde_json::from_str::<serde_json::Value>(rd)
+                        .ok()
+                        .and_then(|v| v.get("latency_ms").and_then(|l| l.as_u64()))
+                        .map(|l| l as u32)
+                });
+
+                if let Err(e) = self.db.insert_stratum_challenge(
+                    &target_hex,
+                    &challenger_hex,
+                    connected,
+                    latency_ms,
+                    msg.passed,
+                ) {
+                    warn!(error = %e, "Failed to store stratum challenge result");
+                }
+            }
+            CapabilityType::GhostPay => {
+                let endpoint = serde_json::from_str::<serde_json::Value>(&msg.challenge_data)
+                    .ok()
+                    .and_then(|v| v.get("endpoint").and_then(|e| e.as_str()).map(String::from))
+                    .unwrap_or_else(|| "ghostpay".to_string());
+
+                let response_valid = msg.response_data.as_ref().map(|rd| {
+                    serde_json::from_str::<serde_json::Value>(rd)
+                        .ok()
+                        .and_then(|v| v.get("valid").and_then(|c| c.as_bool()))
+                        .unwrap_or(false)
+                }).unwrap_or(false);
+
+                if let Err(e) = self.db.insert_ghostpay_challenge(
+                    &target_hex,
+                    &challenger_hex,
+                    &endpoint,
+                    response_valid,
+                    msg.passed,
+                ) {
+                    warn!(error = %e, "Failed to store ghostpay challenge result");
+                }
+            }
+        }
+
+        info!(
+            challenger = %short_challenger,
+            target = %short_target,
+            capability = %msg.capability.as_str(),
+            passed = msg.passed,
+            "DIAG: Successfully stored verification result in database"
+        );
+
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl MessageHandler for VerificationResultHandler {
+    async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+        if envelope.msg_type == MessageType::VerificationResult {
+            self.handle_verification_result(&envelope).await?;
+        }
+        Ok(())
+    }
+}

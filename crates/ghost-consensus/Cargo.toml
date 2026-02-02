@@ -32,7 +32,8 @@ description = "P2P consensus mesh and BFT voting for Bitcoin Ghost"
 ghost-common = { workspace = true }
 ghost-storage = { workspace = true }
 tokio = { workspace = true }
-zeromq = { workspace = true }
+tmq = { workspace = true }
+once_cell = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
@@ -47,3 +48,4 @@ base64 = { workspace = true }
 snow = { workspace = true }
 aes-gcm = { workspace = true }
 getrandom = { workspace = true }
+bytes = { workspace = true }

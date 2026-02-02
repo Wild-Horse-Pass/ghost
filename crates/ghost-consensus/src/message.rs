@@ -52,6 +52,8 @@ pub mod topics {
     pub const ZK_PAYOUT_PROPOSAL: &[u8] = b"zkpayout";
     /// ZK payout vote topic
     pub const ZK_PAYOUT_VOTE: &[u8] = b"zkpvote";
+    /// Verification result topic
+    pub const VERIFICATION: &[u8] = b"verify";
 }
 
 /// Consensus message envelope
@@ -135,6 +137,8 @@ pub enum MessageType {
     ZkPayoutProposal,
     /// ZK payout vote
     ZkPayoutVote,
+    /// Capability verification result
+    VerificationResult,
 }
 
 impl MessageType {
@@ -153,6 +157,7 @@ impl MessageType {
             Self::ZkVote => topics::ZK_VOTE,
             Self::ZkPayoutProposal => topics::ZK_PAYOUT_PROPOSAL,
             Self::ZkPayoutVote => topics::ZK_PAYOUT_VOTE,
+            Self::VerificationResult => topics::VERIFICATION,
         }
     }
 }
@@ -279,6 +284,83 @@ pub struct ShareConvergenceResponse {
     pub total_work: f64,
     /// Missing share hashes (shares the requestor doesn't have)
     pub missing_shares: Vec<ShareProof>,
+}
+
+// =============================================================================
+// CAPABILITY VERIFICATION Messages
+// =============================================================================
+
+/// Capability type for verification
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityType {
+    /// Archive mode capability
+    Archive,
+    /// Policy (Bitcoin Pure) capability
+    Policy,
+    /// Stratum (Public Mining) capability
+    Stratum,
+    /// Ghost Pay capability
+    GhostPay,
+}
+
+impl CapabilityType {
+    /// Convert to string
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Archive => "archive",
+            Self::Policy => "policy",
+            Self::Stratum => "stratum",
+            Self::GhostPay => "ghostpay",
+        }
+    }
+
+    /// Convert from string
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "archive" => Some(Self::Archive),
+            "policy" => Some(Self::Policy),
+            "stratum" => Some(Self::Stratum),
+            "ghostpay" => Some(Self::GhostPay),
+            _ => None,
+        }
+    }
+}
+
+/// Verification result message - broadcast when a node verifies another's capability
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationResultMessage {
+    /// Node ID being verified (target)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub target_node_id: NodeId,
+    /// Node ID that issued the challenge (challenger)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub challenger_id: NodeId,
+    /// Capability being verified
+    pub capability: CapabilityType,
+    /// Whether the verification passed
+    pub passed: bool,
+    /// Challenge details (JSON, capability-specific)
+    pub challenge_data: String,
+    /// Response details (JSON, capability-specific)
+    pub response_data: Option<String>,
+    /// Timestamp when challenge was issued
+    pub timestamp: i64,
+    /// Challenger's signature over (target_node_id || capability || passed || timestamp)
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub signature: [u8; 64],
+}
+
+impl VerificationResultMessage {
+    /// Get the data that should be signed
+    pub fn signing_data(&self) -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(&self.target_node_id);
+        data.extend_from_slice(self.capability.as_str().as_bytes());
+        data.push(if self.passed { 1 } else { 0 });
+        data.extend_from_slice(&self.timestamp.to_le_bytes());
+        data
+    }
 }
 
 // =============================================================================

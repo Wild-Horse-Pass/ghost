@@ -552,6 +552,28 @@ impl Database {
         })
     }
 
+    /// Get all node IDs with payout addresses
+    ///
+    /// Returns node IDs from the nodes table that have a payout address configured.
+    /// Used for payout calculations to include all registered nodes.
+    pub fn get_all_node_ids_with_payout(&self) -> GhostResult<Vec<String>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT node_id FROM nodes WHERE payout_address IS NOT NULL AND payout_address != ''",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let node_ids = stmt
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(node_ids)
+        })
+    }
+
     /// Get top N nodes by shares received
     pub fn get_top_nodes_by_shares(&self, limit: u32) -> GhostResult<Vec<NodeRecord>> {
         self.with_connection(|conn| {
@@ -1623,6 +1645,7 @@ impl Database {
                     is_banned, ban_until, capabilities, protocol_version
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                 ON CONFLICT(peer_id) DO UPDATE SET
+                    address = COALESCE(NULLIF(?2, ''), address),
                     last_seen = ?6,
                     last_success = COALESCE(?7, last_success),
                     last_failure = COALESCE(?8, last_failure),
@@ -2728,6 +2751,347 @@ impl Database {
         }
 
         Ok(false)
+    }
+}
+
+// =============================================================================
+// CAPABILITY VERIFICATION CHALLENGES
+// =============================================================================
+
+impl Database {
+    /// Insert an archive challenge result
+    pub fn insert_archive_challenge(
+        &self,
+        node_id: &str,
+        challenger_id: &str,
+        block_height: u64,
+        expected_hash: &str,
+        response_hash: Option<&str>,
+        passed: bool,
+    ) -> GhostResult<i64> {
+        self.with_connection(|conn| {
+            let timestamp = chrono::Utc::now().timestamp();
+            conn.execute(
+                "INSERT INTO archive_challenges
+                 (node_id, challenger_id, block_height, expected_hash, response_hash, passed, timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    node_id,
+                    challenger_id,
+                    block_height,
+                    expected_hash,
+                    response_hash,
+                    passed,
+                    timestamp,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    /// Insert a policy challenge result
+    pub fn insert_policy_challenge(
+        &self,
+        node_id: &str,
+        challenger_id: &str,
+        txid: &str,
+        expected_tier: i32,
+        response_tier: Option<i32>,
+        passed: bool,
+    ) -> GhostResult<i64> {
+        self.with_connection(|conn| {
+            let timestamp = chrono::Utc::now().timestamp();
+            conn.execute(
+                "INSERT INTO policy_challenges
+                 (node_id, challenger_id, txid, expected_tier, response_tier, passed, timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    node_id,
+                    challenger_id,
+                    txid,
+                    expected_tier,
+                    response_tier,
+                    passed,
+                    timestamp,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    /// Insert a stratum challenge result
+    pub fn insert_stratum_challenge(
+        &self,
+        node_id: &str,
+        challenger_id: &str,
+        connected: bool,
+        latency_ms: Option<u32>,
+        passed: bool,
+    ) -> GhostResult<i64> {
+        self.with_connection(|conn| {
+            let timestamp = chrono::Utc::now().timestamp();
+            conn.execute(
+                "INSERT INTO stratum_challenges
+                 (node_id, challenger_id, connected, latency_ms, passed, timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    node_id,
+                    challenger_id,
+                    connected,
+                    latency_ms,
+                    passed,
+                    timestamp,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    /// Insert a Ghost Pay challenge result
+    pub fn insert_ghostpay_challenge(
+        &self,
+        node_id: &str,
+        challenger_id: &str,
+        endpoint: &str,
+        response_valid: bool,
+        passed: bool,
+    ) -> GhostResult<i64> {
+        self.with_connection(|conn| {
+            let timestamp = chrono::Utc::now().timestamp();
+            conn.execute(
+                "INSERT INTO ghostpay_challenges
+                 (node_id, challenger_id, endpoint, response_valid, passed, timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    node_id,
+                    challenger_id,
+                    endpoint,
+                    response_valid,
+                    passed,
+                    timestamp,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    /// Get archive capability pass rate for a node
+    /// Returns (passed_count, total_count)
+    pub fn get_archive_pass_rate(&self, node_id: &str, since: i64) -> GhostResult<(u32, u32)> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) as passed,
+                        COUNT(*) as total
+                     FROM archive_challenges
+                     WHERE node_id = ?1 AND timestamp >= ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let result = stmt
+                .query_row(params![node_id, since], |row| {
+                    let passed: Option<i64> = row.get(0)?;
+                    let total: i64 = row.get(1)?;
+                    Ok((passed.unwrap_or(0) as u32, total as u32))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(result)
+        })
+    }
+
+    /// Get policy capability pass rate for a node
+    /// Returns (passed_count, total_count)
+    pub fn get_policy_pass_rate(&self, node_id: &str, since: i64) -> GhostResult<(u32, u32)> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) as passed,
+                        COUNT(*) as total
+                     FROM policy_challenges
+                     WHERE node_id = ?1 AND timestamp >= ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let result = stmt
+                .query_row(params![node_id, since], |row| {
+                    let passed: Option<i64> = row.get(0)?;
+                    let total: i64 = row.get(1)?;
+                    Ok((passed.unwrap_or(0) as u32, total as u32))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(result)
+        })
+    }
+
+    /// Get stratum capability pass rate for a node
+    /// Returns (passed_count, total_count)
+    pub fn get_stratum_pass_rate(&self, node_id: &str, since: i64) -> GhostResult<(u32, u32)> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) as passed,
+                        COUNT(*) as total
+                     FROM stratum_challenges
+                     WHERE node_id = ?1 AND timestamp >= ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let result = stmt
+                .query_row(params![node_id, since], |row| {
+                    let passed: Option<i64> = row.get(0)?;
+                    let total: i64 = row.get(1)?;
+                    Ok((passed.unwrap_or(0) as u32, total as u32))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(result)
+        })
+    }
+
+    /// Get Ghost Pay capability pass rate for a node
+    /// Returns (passed_count, total_count)
+    pub fn get_ghostpay_pass_rate(&self, node_id: &str, since: i64) -> GhostResult<(u32, u32)> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) as passed,
+                        COUNT(*) as total
+                     FROM ghostpay_challenges
+                     WHERE node_id = ?1 AND timestamp >= ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let result = stmt
+                .query_row(params![node_id, since], |row| {
+                    let passed: Option<i64> = row.get(0)?;
+                    let total: i64 = row.get(1)?;
+                    Ok((passed.unwrap_or(0) as u32, total as u32))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(result)
+        })
+    }
+
+    /// Record an uptime sample for a node
+    pub fn record_uptime_sample(&self, node_id: &str, sample_time: i64, was_online: bool) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO uptime_samples (node_id, sample_time, was_online)
+                 VALUES (?1, ?2, ?3)",
+                params![node_id, sample_time, was_online],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get uptime percentage for a node over trailing period
+    /// Returns percentage (0.0 to 1.0)
+    pub fn get_uptime_percent(&self, node_id: &str, since: i64) -> GhostResult<f64> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        SUM(CASE WHEN was_online = 1 THEN 1 ELSE 0 END) as online,
+                        COUNT(*) as total
+                     FROM uptime_samples
+                     WHERE node_id = ?1 AND sample_time >= ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let result = stmt
+                .query_row(params![node_id, since], |row| {
+                    let online: Option<i64> = row.get(0)?;
+                    let total: i64 = row.get(1)?;
+                    Ok((online.unwrap_or(0), total))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let (online, total) = result;
+            if total == 0 {
+                return Ok(0.0);
+            }
+            Ok(online as f64 / total as f64)
+        })
+    }
+
+    /// Check if a node has elder status
+    ///
+    /// Elder status is granted to the first 101 registered nodes.
+    /// This is tracked by the is_elder flag in the nodes table.
+    pub fn is_node_elder(&self, node_id: &str) -> GhostResult<bool> {
+        self.with_connection(|conn| {
+            let is_elder: bool = conn
+                .query_row(
+                    "SELECT COALESCE(is_elder, 0) FROM nodes WHERE node_id = ?1",
+                    [node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .unwrap_or(false);
+            Ok(is_elder)
+        })
+    }
+
+    /// Get qualified capabilities for a node
+    ///
+    /// A capability is qualified if:
+    /// 1. Node passes uptime gatekeeper (95% over lookback period)
+    /// 2. Capability has min_challenges or more challenges
+    /// 3. Pass rate is >= min_pass_rate
+    pub fn get_qualified_capabilities(
+        &self,
+        node_id: &str,
+        since: i64,
+        min_challenges: u32,
+        min_pass_rate: f64,
+    ) -> GhostResult<ghost_common::types::NodeCapabilities> {
+        use ghost_common::types::NodeCapabilities;
+
+        // Check each capability
+        let archive_qualified = {
+            let (passed, total) = self.get_archive_pass_rate(node_id, since)?;
+            total >= min_challenges && (passed as f64 / total as f64) >= min_pass_rate
+        };
+
+        let policy_qualified = {
+            let (passed, total) = self.get_policy_pass_rate(node_id, since)?;
+            total >= min_challenges && (passed as f64 / total as f64) >= min_pass_rate
+        };
+
+        let stratum_qualified = {
+            let (passed, total) = self.get_stratum_pass_rate(node_id, since)?;
+            total >= min_challenges && (passed as f64 / total as f64) >= min_pass_rate
+        };
+
+        let ghostpay_qualified = {
+            let (passed, total) = self.get_ghostpay_pass_rate(node_id, since)?;
+            total >= min_challenges && (passed as f64 / total as f64) >= min_pass_rate
+        };
+
+        // Elder status is based on is_elder flag in the nodes table
+        // First 101 registered nodes are elders (registration order tracked by elder_order)
+        let elder_qualified = self.is_node_elder(node_id)?;
+
+        Ok(NodeCapabilities {
+            archive_mode: archive_qualified,
+            ghost_pay: ghostpay_qualified,
+            public_mining: stratum_qualified,
+            bitcoin_pure: policy_qualified,
+            elder_status: elder_qualified,
+        })
     }
 }
 

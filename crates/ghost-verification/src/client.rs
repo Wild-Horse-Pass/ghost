@@ -72,7 +72,7 @@ impl VerificationClient {
 
     /// Get health status of a node
     pub async fn health(&self, node_address: &str) -> GhostResult<HealthResponse> {
-        let url = format!("http://{}/health", node_address);
+        let url = format!("http://{}/health?unsigned=true", node_address);
         debug!(url = %url, "Checking node health");
 
         let response = self
@@ -82,9 +82,19 @@ impl VerificationClient {
             .await
             .map_err(|e| GhostError::VerificationTimeout(e.to_string()))?;
 
-        let health: HealthResponse = response
+        // Health endpoint returns {"signed": bool, "response": HealthResponse}
+        // We request unsigned=true for simplicity, but still need to unwrap
+        let wrapper: serde_json::Value = response
             .json()
             .await
+            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+
+        // Extract the inner response object
+        let inner = wrapper
+            .get("response")
+            .ok_or_else(|| GhostError::InvalidVerificationResponse("Missing 'response' field".to_string()))?;
+
+        let health: HealthResponse = serde_json::from_value(inner.clone())
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
 
         Ok(health)
@@ -99,7 +109,7 @@ impl VerificationClient {
     ) -> GhostResult<ArchiveResponse> {
         let mut url = format!("http://{}/verify/archive", node_address);
 
-        let mut params = Vec::new();
+        let mut params = vec!["unsigned=true".to_string()];
         if let Some(hash) = block_hash {
             params.push(format!("block={}", hash));
         }
@@ -107,9 +117,7 @@ impl VerificationClient {
             params.push(format!("tx={}", tx));
         }
 
-        if !params.is_empty() {
-            url = format!("{}?{}", url, params.join("&"));
-        }
+        url = format!("{}?{}", url, params.join("&"));
 
         debug!(url = %url, "Verifying archive capability");
 
@@ -120,9 +128,17 @@ impl VerificationClient {
             .await
             .map_err(|e| GhostError::VerificationTimeout(e.to_string()))?;
 
-        let result: ArchiveResponse = response
+        // Archive endpoint returns {"signed": bool, "response": ArchiveResponse}
+        let wrapper: serde_json::Value = response
             .json()
             .await
+            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+
+        let inner = wrapper
+            .get("response")
+            .ok_or_else(|| GhostError::InvalidVerificationResponse("Missing 'response' field".to_string()))?;
+
+        let result: ArchiveResponse = serde_json::from_value(inner.clone())
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
 
         Ok(result)
@@ -135,7 +151,7 @@ impl VerificationClient {
         tx_hex: &str,
     ) -> GhostResult<PolicyResponse> {
         let url = format!(
-            "http://{}/verify/policy?tx={}",
+            "http://{}/verify/policy?tx={}&unsigned=true",
             node_address,
             urlencoding::encode(tx_hex)
         );
@@ -149,9 +165,18 @@ impl VerificationClient {
             .await
             .map_err(|e| GhostError::VerificationTimeout(e.to_string()))?;
 
-        let result: PolicyResponse = response
+        // Policy endpoint returns {"signed": bool, "response": PolicyResponse}
+        let wrapper: serde_json::Value = response
             .json()
             .await
+            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+
+        // Extract the inner response object
+        let inner = wrapper
+            .get("response")
+            .ok_or_else(|| GhostError::InvalidVerificationResponse("Missing 'response' field".to_string()))?;
+
+        let result: PolicyResponse = serde_json::from_value(inner.clone())
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
 
         Ok(result)
@@ -169,7 +194,7 @@ impl VerificationClient {
         };
 
         let url = format!(
-            "http://{}/verify/stratum?protocol={}",
+            "http://{}/verify/stratum?protocol={}&unsigned=true",
             node_address, protocol_str
         );
 
@@ -182,9 +207,17 @@ impl VerificationClient {
             .await
             .map_err(|e| GhostError::VerificationTimeout(e.to_string()))?;
 
-        let result: StratumResponse = response
+        // Stratum endpoint returns {"signed": bool, "response": StratumResponse}
+        let wrapper: serde_json::Value = response
             .json()
             .await
+            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+
+        let inner = wrapper
+            .get("response")
+            .ok_or_else(|| GhostError::InvalidVerificationResponse("Missing 'response' field".to_string()))?;
+
+        let result: StratumResponse = serde_json::from_value(inner.clone())
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
 
         Ok(result)
@@ -196,10 +229,10 @@ impl VerificationClient {
         node_address: &str,
         address: Option<&str>,
     ) -> GhostResult<GhostPayResponse> {
-        let mut url = format!("http://{}/verify/ghostpay", node_address);
+        let mut url = format!("http://{}/verify/ghostpay?unsigned=true", node_address);
 
         if let Some(addr) = address {
-            url = format!("{}?address={}", url, urlencoding::encode(addr));
+            url = format!("{}&address={}", url, urlencoding::encode(addr));
         }
 
         debug!(url = %url, "Verifying GhostPay capability");
@@ -211,9 +244,17 @@ impl VerificationClient {
             .await
             .map_err(|e| GhostError::VerificationTimeout(e.to_string()))?;
 
-        let result: GhostPayResponse = response
+        // GhostPay endpoint returns {"signed": bool, "response": GhostPayResponse}
+        let wrapper: serde_json::Value = response
             .json()
             .await
+            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+
+        let inner = wrapper
+            .get("response")
+            .ok_or_else(|| GhostError::InvalidVerificationResponse("Missing 'response' field".to_string()))?;
+
+        let result: GhostPayResponse = serde_json::from_value(inner.clone())
             .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
 
         Ok(result)

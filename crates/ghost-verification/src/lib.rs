@@ -41,14 +41,18 @@ pub mod challenge;
 pub mod client;
 pub mod config;
 pub mod handlers;
+pub mod qualification;
 pub mod routes;
 pub mod server;
+pub mod task;
 pub mod websocket;
 
 pub use challenge::*;
 pub use client::*;
 pub use config::*;
 pub use handlers::*;
+pub use qualification::*;
 pub use routes::*;
 pub use server::*;
+pub use task::*;
 pub use websocket::*;

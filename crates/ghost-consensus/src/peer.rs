@@ -114,9 +114,23 @@ impl PeerManager {
         }
     }
 
-    /// Get peer count
+    /// Get peer count (total entries in peer map)
     pub fn peer_count(&self) -> usize {
         self.peers.read().len()
+    }
+
+    /// Get unique peer count by address
+    ///
+    /// Returns count of unique IP addresses, which represents actual peer nodes.
+    /// This avoids double-counting when temp and real node_ids exist for same peer.
+    pub fn unique_peer_count(&self) -> usize {
+        let peers = self.peers.read();
+        let unique_hosts: std::collections::HashSet<&str> = peers
+            .values()
+            .filter(|p| !p.public_address.is_empty())
+            .map(|p| p.public_address.split(':').next().unwrap_or(&p.public_address))
+            .collect();
+        unique_hosts.len()
     }
 
     /// Get connected peer count

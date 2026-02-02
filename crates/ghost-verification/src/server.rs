@@ -24,6 +24,7 @@
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::Method;
+use ghost_common::constants::{SV1_STRATUM_PORT, SV2_STRATUM_PORT};
 use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::identity::NodeIdentity;
 use ghost_common::rpc::BitcoinRpc;
@@ -315,8 +316,8 @@ impl VerificationState {
             archive_handler: None,
             ghostpay_handler: None,
             gsp_handler: None,
-            stratum_sv2_port: 34255,
-            stratum_sv1_port: 3333,
+            stratum_sv2_port: SV2_STRATUM_PORT,
+            stratum_sv1_port: SV1_STRATUM_PORT,
             database: None,
             rpc: None,
             dashboard_config: parking_lot::RwLock::new(dashboard_config),

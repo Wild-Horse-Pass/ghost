@@ -54,6 +54,8 @@ pub const MAX_ZK_VOTE_SIZE: usize = 1_000;
 pub const MAX_ZK_PAYOUT_PROPOSAL_SIZE: usize = 1_000_000;
 /// ZK payout vote is small (signature + approval + optional rejection reason)
 pub const MAX_ZK_PAYOUT_VOTE_SIZE: usize = 1_000;
+/// Verification result is small (node IDs + capability + result + signature)
+pub const MAX_VERIFICATION_SIZE: usize = 5_000;
 
 /// Message validation errors
 #[derive(Debug, Clone, Error)]
@@ -100,6 +102,14 @@ pub fn validate_envelope_header(data: &[u8]) -> Result<(), MessageValidationErro
         return Err(MessageValidationError::TooLarge(data.len()));
     }
 
+    // Check if this is JSON-serialized (starts with '{')
+    // MessageEnvelope uses serde_json for serialization, so valid messages start with '{'
+    if data[0] == b'{' {
+        // JSON format - can't validate header bytes, will validate during deserialization
+        return Ok(());
+    }
+
+    // Binary format (future use) - validate header bytes
     // Version check (first byte)
     let version = data[0];
     if version != 1 {
@@ -108,8 +118,8 @@ pub fn validate_envelope_header(data: &[u8]) -> Result<(), MessageValidationErro
 
     // Message type check (second byte)
     let msg_type_byte = data[1];
-    if msg_type_byte > 11 {
-        // We have 12 message types (0-11) including ZK payout types
+    if msg_type_byte > 12 {
+        // We have 13 message types (0-12) including ZK payout types and verification result
         return Err(MessageValidationError::InvalidType(msg_type_byte));
     }
 
@@ -131,6 +141,7 @@ pub fn max_payload_size(msg_type: MessageType) -> usize {
         MessageType::ZkVote => MAX_ZK_VOTE_SIZE,
         MessageType::ZkPayoutProposal => MAX_ZK_PAYOUT_PROPOSAL_SIZE,
         MessageType::ZkPayoutVote => MAX_ZK_PAYOUT_VOTE_SIZE,
+        MessageType::VerificationResult => MAX_VERIFICATION_SIZE,
     }
 }
 
