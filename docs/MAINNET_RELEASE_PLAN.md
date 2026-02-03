@@ -3,13 +3,15 @@
 **Version Target:** v2.0.0 (Mainnet)
 **Current Version:** v1.6.0 (Signet)
 **Document Date:** 2026-02-03
-**Last Updated:** 2026-02-03 (Phase 2 & 3 Complete)
+**Last Updated:** 2026-02-03 (Post Round 2 Security Audit)
 
 ---
 
 ## Overview
 
-This plan outlines the path from current signet deployment to mainnet launch. Based on comprehensive audit findings, the following milestones must be completed.
+This plan outlines the path from current signet deployment to mainnet launch. Based on comprehensive audit findings including Round 2 security review, the following milestones must be completed.
+
+**Current Status:** Round 2 security audit identified 3 CRITICAL and 6 HIGH severity issues that must be addressed before mainnet.
 
 ---
 
@@ -114,6 +116,45 @@ This plan outlines the path from current signet deployment to mainnet launch. Ba
 
 ---
 
+## Phase 3.5: Round 2 Security Remediation (v1.9.5) - 🔴 REQUIRED
+
+**Target:** 1-2 weeks
+**Status:** NOT STARTED
+**Blocking:** Mainnet launch
+
+### 3.5.1 CRITICAL Issues (Must Fix)
+
+| ID | Issue | File | Fix Required |
+|----|-------|------|--------------|
+| ZK-R2-C1 | saturating_add/sub in witness types | types.rs:199-204, payment.rs:42-48 | Replace with checked_add/sub |
+| ZK-R2-C2 | Block proofs are hash-based, not real ZK | prover.rs:206-231 | Implement real Groth16 |
+| PO-C3 | Solo mode bypasses verification | payout.rs:779-826 | Add QualifiedCapabilityProvider requirement |
+
+**Estimated Time:** 3-5 days
+
+### 3.5.2 HIGH Issues (Should Fix)
+
+| ID | Issue | File | Fix Required |
+|----|-------|------|--------------|
+| ZK-R2-H1 | MiMC 10 rounds = ~80 bits security | state_transition.rs:387 | Increase to 20+ rounds |
+| ZK-R2-H2 | Hash mismatch (SHA256 vs MiMC) | state_tree.rs:170-186 | Unify hash implementations |
+| WR2-H1 | Token replay across sessions | coordinator.rs:542-568 | Track used tokens |
+| WR2-H2 | Nonce verification timing attack | blind.rs:433-491 | Constant-time verification |
+| P2P-C3 | ZkPayoutVoteHandler no rate limiting | zk_payout_handler.rs:589-609 | Add rate limiter |
+| PO-H4 | tx_fee_allocation_failed not checked | payout.rs:201,427 | Add upstream check |
+
+**Estimated Time:** 3-5 days
+
+### 3.5.3 Acceptance Criteria
+
+- [ ] All CRITICAL issues fixed and verified
+- [ ] All HIGH issues fixed and verified
+- [ ] `cargo test --workspace` passes
+- [ ] `cargo clippy --workspace` shows 0 warnings
+- [ ] 1 week signet deployment without issues
+
+---
+
 ## Phase 4: Mainnet Infrastructure (Pre-Release)
 
 **Target:** 2 weeks
@@ -148,18 +189,24 @@ This plan outlines the path from current signet deployment to mainnet launch. Ba
 
 ---
 
-## Phase 5: Security Audit (External)
+## Phase 5: Security Audit (External) - ✅ ROUND 2 COMPLETE
 
 **Target:** 2-4 weeks
+**Status:** Round 2 Complete (2026-02-03)
 
-### 5.1 Third-Party Audit Scope
+### 5.1 Third-Party Audit Results
 
-**Critical Areas:**
-1. Wraith Protocol blind signatures
-2. Ghost Lock timelock implementation
-3. Payout distribution logic
-4. P2P consensus mechanism
-5. ZK proof verification
+**Round 1 (51 issues):** ✅ ALL REMEDIATED
+**Round 2 (39 issues):** 🔴 REMEDIATION REQUIRED
+
+| Severity | Round 1 | Round 2 |
+|----------|---------|---------|
+| CRITICAL | 11 → 0 | 3 |
+| HIGH | 13 → 0 | 6 |
+| MEDIUM | 15 → 0 | 15 |
+| LOW | 12 → 0 | 15 |
+
+**Round 2 Fix Verification:** 47/49 previous fixes verified (96%)
 
 ### 5.2 Bug Bounty Program
 
@@ -179,7 +226,9 @@ This plan outlines the path from current signet deployment to mainnet launch. Ba
 **Pre-Launch:**
 - [x] All Phase 1 items complete
 - [x] All Phase 2-3 items complete
-- [ ] External security audit complete
+- [ ] **Phase 3.5 Round 2 CRITICAL fixes complete** 🔴 BLOCKING
+- [ ] **Phase 3.5 Round 2 HIGH fixes complete** 🔴 BLOCKING
+- [ ] External security audit Round 2 remediation verified
 - [ ] Mainnet nodes synced and verified
 - [ ] Registry service operational
 - [ ] Monitoring active
@@ -213,11 +262,12 @@ This plan outlines the path from current signet deployment to mainnet launch. Ba
 
 | Version | Focus | Target Date | Status |
 |---------|-------|-------------|--------|
-| v1.7.0 | Critical Security Fixes | +2 weeks | ✅ COMPLETE |
+| v1.7.0 | Critical Security Fixes (Round 1) | +2 weeks | ✅ COMPLETE |
 | v1.8.0 | Documentation & Constants | +3 weeks | ✅ COMPLETE |
 | v1.9.0 | Code Quality | +4 weeks | ✅ COMPLETE |
-| v2.0.0-rc1 | Release Candidate | +6 weeks | Pending |
-| v2.0.0 | Mainnet Launch | +8-10 weeks | Pending |
+| v1.9.5 | **Round 2 Security Remediation** | +5-6 weeks | 🔴 NOT STARTED |
+| v2.0.0-rc1 | Release Candidate | +7 weeks | Pending |
+| v2.0.0 | Mainnet Launch | +9-11 weeks | Pending |
 
 ---
 
@@ -230,7 +280,11 @@ This plan outlines the path from current signet deployment to mainnet launch. Ba
 | Wraith coordinator compromise | Data purging with 6-block confirmation | ✅ Mitigated |
 | Invalid payouts | Groth16 ZK proof verification | ✅ Mitigated |
 | Consensus attacks | Vote signature verification | ✅ Mitigated |
-| Node sybil attacks | 95% uptime gatekeeper already implemented | ✅ Mitigated |
+| Node sybil attacks | 95% uptime gatekeeper + PoW | ✅ Mitigated |
+| **Block proof forgery** | **BlockProver lacks real ZK** | 🔴 OPEN (ZK-R2-C2) |
+| **Payout manipulation** | **Solo mode bypasses verification** | 🔴 OPEN (PO-C3) |
+| **Token replay attacks** | **Wraith token reuse possible** | 🟡 HIGH (WR2-H1) |
+| **Payout vote flooding** | **Missing rate limiting** | 🟡 HIGH (P2P-C3) |
 
 ### Operational Risks
 
@@ -243,6 +297,53 @@ This plan outlines the path from current signet deployment to mainnet launch. Ba
 
 ---
 
+## Round 2 Issues - Full List
+
+### CRITICAL (3) - Must Fix
+
+| ID | Area | Description |
+|----|------|-------------|
+| ZK-R2-C1 | ZK | saturating_add/sub in witness types masks overflows |
+| ZK-R2-C2 | ZK | Block proofs use hash simulation, not real Groth16 |
+| PO-C3 | Payout | Solo mode bypasses capability verification |
+
+### HIGH (6) - Should Fix
+
+| ID | Area | Description |
+|----|------|-------------|
+| ZK-R2-H1 | ZK | MiMC 10 rounds = ~80 bits security |
+| ZK-R2-H2 | ZK | Hash function mismatch (SHA256 vs MiMC) |
+| WR2-H1 | Wraith | Token replay across sessions |
+| WR2-H2 | Wraith | Nonce verification timing attack |
+| P2P-C3 | P2P | ZkPayoutVoteHandler missing rate limiting |
+| PO-H4 | Payout | tx_fee_allocation_failed not checked |
+
+### MEDIUM (15) - Recommended
+
+| ID | Area | Description |
+|----|------|-------------|
+| ZK-R2-M1 | ZK | MiMC round constants use weak small primes |
+| ZK-R2-M2 | ZK | Field element conversion discards top bit |
+| ZK-R2-M3 | ZK | metadata_commitment uses unwrap_or(ZERO) |
+| GL2-M1 | Locks | MIN_RECOVERY_BLOCKS not enforced at creation |
+| GL2-M2 | Locks | Recovery state check is application-layer only |
+| WR2-M1 | Wraith | Phase 2 data not purged after build |
+| WR2-M2 | Wraith | Ghost ID mappings retained after timeout |
+| WR2-M3 | Wraith | ReputationTracker unbounded growth |
+| WR2-M4 | Wraith | OP_RETURN leaks session ID hash |
+| P2P-C4 | P2P | Threshold calculation rounds down |
+| P2P-H3 | P2P | ZK vote equivocation not detected |
+| P2P-H4 | P2P | ZK payout vote equivocation not detected |
+| P2P-M7 | P2P | EquivocationProof not broadcast |
+| PO-M5 | Payout | Floating point in miner work input |
+| PO-M6 | Payout | qualification_provider is Option |
+
+### LOW (15) - Minor
+
+See `docs/SECURITY_AUDIT_ROUND_2.md` for complete list.
+
+---
+
 ## Success Criteria
 
 **Mainnet is successful when:**
@@ -252,6 +353,7 @@ This plan outlines the path from current signet deployment to mainnet launch. Ba
 3. **Ghost Pay L2:** Transactions processing, Wraith sessions completing
 4. **Privacy:** No linkability between Wraith inputs and outputs
 5. **Uptime:** 99.9% availability across node infrastructure
+6. **Security:** All CRITICAL and HIGH issues from Round 2 resolved
 
 ---
 
@@ -261,3 +363,4 @@ This plan outlines the path from current signet deployment to mainnet launch. Ba
 - **Documentation:** https://docs.bitcoinghost.org
 - **Website:** https://bitcoinghost.org
 - **Support:** support@bitcoinghost.org
+- **Security Audit:** `docs/SECURITY_AUDIT_ROUND_2.md`
