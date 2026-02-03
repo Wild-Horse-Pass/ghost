@@ -538,6 +538,7 @@ mod tests {
             tx_fees: 10_000_000,
             subsidy: 625_000_000,
             timestamp: 1700000000,
+            tx_fees_unallocated: 0,
         }
     }
 

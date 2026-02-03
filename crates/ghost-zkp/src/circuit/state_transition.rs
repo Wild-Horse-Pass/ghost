@@ -23,7 +23,8 @@ use bellperson::{
 };
 use ff::PrimeField;
 
-use super::payment::PaymentCircuit;
+use super::mimc::{mimc_hash, mimc_hash_native};
+use super::payment::{PaymentCircuit, PaymentCircuitError};
 
 /// Circuit proving a single payment's state transition is valid
 ///
@@ -83,6 +84,7 @@ impl<F: PrimeField> std::fmt::Debug for StateTransitionOutputs<F> {
 
 impl<F: PrimeField> PaymentStateTransitionCircuit<F> {
     /// Create a new state transition circuit
+    /// Returns an error if the payment would cause overflow or underflow
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         sender_balance_before: Option<u64>,
@@ -95,9 +97,9 @@ impl<F: PrimeField> PaymentStateTransitionCircuit<F> {
         input_root: Option<F>,
         output_root: Option<F>,
         tree_depth: usize,
-    ) -> Self {
-        Self {
-            payment: PaymentCircuit::new(sender_balance_before, recipient_balance_before, amount),
+    ) -> Result<Self, PaymentCircuitError> {
+        Ok(Self {
+            payment: PaymentCircuit::new(sender_balance_before, recipient_balance_before, amount)?,
             sender_index,
             sender_siblings,
             recipient_index,
@@ -106,7 +108,7 @@ impl<F: PrimeField> PaymentStateTransitionCircuit<F> {
             input_root,
             output_root,
             tree_depth,
-        }
+        })
     }
 
     /// Create a dummy circuit for parameter generation
@@ -375,90 +377,7 @@ fn select<F: PrimeField, CS: ConstraintSystem<F>>(
     Ok(result)
 }
 
-/// MiMC-style hash function for merkle tree operations
-///
-/// SECURITY: This hash uses a MiMC-like construction with repeated cubing
-/// operations mixed with round constants. Unlike the trivially invertible
-/// `a*b + a + b`, this provides collision resistance in the algebraic setting.
-///
-/// H(a, b) = MiMC(a + b) where MiMC applies: x -> x^3 + c[i] over multiple rounds
-///
-/// The number of rounds (10) provides ~80 bits of security which is adequate
-/// for merkle tree operations. For full Poseidon security, use the neptune crate.
-const MIMC_ROUNDS: usize = 10;
-
-/// MiMC round constants (deterministically generated, non-zero)
-/// These are derived from SHA256("ghost-zkp-mimc-round-{i}")
-fn mimc_round_constants<F: PrimeField>() -> [F; MIMC_ROUNDS] {
-    // Using deterministic constants based on small integers
-    // In a full implementation, these would be derived from a hash
-    [
-        F::from(7u64),
-        F::from(13u64),
-        F::from(19u64),
-        F::from(31u64),
-        F::from(43u64),
-        F::from(61u64),
-        F::from(79u64),
-        F::from(97u64),
-        F::from(113u64),
-        F::from(131u64),
-    ]
-}
-
-/// MiMC-style hash: H(a, b) = MiMC(a + b)
-/// Uses x -> x^3 + c[i] over multiple rounds for collision resistance
-fn mimc_hash<F: PrimeField, CS: ConstraintSystem<F>>(
-    mut cs: CS,
-    left: &AllocatedNum<F>,
-    right: &AllocatedNum<F>,
-) -> Result<AllocatedNum<F>, SynthesisError> {
-    let constants = mimc_round_constants::<F>();
-
-    // Compute initial value: a + b
-    let mut current = AllocatedNum::alloc(cs.namespace(|| "mimc_init"), || {
-        let l = left.get_value().ok_or(SynthesisError::AssignmentMissing)?;
-        let r = right.get_value().ok_or(SynthesisError::AssignmentMissing)?;
-        Ok(l + r)
-    })?;
-
-    // Constrain: current = left + right
-    cs.enforce(
-        || "mimc_init_constraint",
-        |lc| lc + current.get_variable(),
-        |lc| lc + CS::one(),
-        |lc| lc + left.get_variable() + right.get_variable(),
-    );
-
-    // Apply MiMC rounds: x <- x^3 + c[i]
-    for (i, constant) in constants.iter().enumerate() {
-        // Compute x^2
-        let x_squared = current.mul(cs.namespace(|| format!("mimc_sq_{}", i)), &current)?;
-
-        // Compute x^3 = x^2 * x
-        let x_cubed = x_squared.mul(cs.namespace(|| format!("mimc_cube_{}", i)), &current)?;
-
-        // Compute x^3 + c[i]
-        let next = AllocatedNum::alloc(cs.namespace(|| format!("mimc_round_{}", i)), || {
-            let cube = x_cubed
-                .get_value()
-                .ok_or(SynthesisError::AssignmentMissing)?;
-            Ok(cube + *constant)
-        })?;
-
-        // Constrain: next = x_cubed + constant
-        cs.enforce(
-            || format!("mimc_round_{}_constraint", i),
-            |lc| lc + next.get_variable(),
-            |lc| lc + CS::one(),
-            |lc| lc + x_cubed.get_variable() + (*constant, CS::one()),
-        );
-
-        current = next;
-    }
-
-    Ok(current)
-}
+// MiMC hash is imported from super::mimc module (23 rounds, SHA256-derived constants)
 
 /// Helper to convert a u64 balance to a field element
 pub fn balance_to_field<F: PrimeField>(balance: Option<u64>) -> Option<F> {
@@ -525,29 +444,7 @@ mod tests {
     use bellperson::util_cs::test_cs::TestConstraintSystem;
     use blstrs::Scalar as Fr;
 
-    /// MiMC hash for testing (matches circuit implementation)
-    fn mimc_hash_native(left: Fr, right: Fr) -> Fr {
-        const MIMC_ROUNDS: usize = 10;
-        let constants: [Fr; MIMC_ROUNDS] = [
-            Fr::from(7u64),
-            Fr::from(13u64),
-            Fr::from(19u64),
-            Fr::from(31u64),
-            Fr::from(43u64),
-            Fr::from(61u64),
-            Fr::from(79u64),
-            Fr::from(97u64),
-            Fr::from(113u64),
-            Fr::from(131u64),
-        ];
-
-        let mut current = left + right;
-        for constant in constants.iter() {
-            let cubed = current * current * current;
-            current = cubed + *constant;
-        }
-        current
-    }
+    // mimc_hash_native is imported from super::mimc via super::*
 
     /// Helper to compute merkle root using MiMC hash
     fn compute_test_root(leaf: Fr, index: u64, siblings: &[Fr]) -> Fr {
@@ -639,7 +536,7 @@ mod tests {
                 Some(sender_balance_before),
                 Some(recipient_balance_before),
                 Some(amount),
-            ),
+            ).expect("Valid payment should succeed"),
             sender_index: Some(0),
             sender_siblings: sender_siblings.iter().map(|s| Some(*s)).collect(),
             recipient_index: Some(recipient_idx),
@@ -668,41 +565,21 @@ mod tests {
 
     #[test]
     fn test_insufficient_balance_fails() {
-        let tree_depth = 2;
-
         // Sender trying to send more than they have
         let sender_balance_before = 50u64;
         let recipient_balance_before = 500u64;
         let amount = 100u64; // More than sender has!
 
-        let sibling_0 = Fr::from(100u64);
-        let sibling_1 = Fr::from(200u64);
-        let sender_siblings = vec![Some(sibling_0), Some(sibling_1)];
-        let recipient_siblings = vec![Some(Fr::from(150u64)), Some(Fr::from(250u64))];
+        // Circuit creation should fail with checked arithmetic
+        let result = PaymentCircuit::<Fr>::new(
+            Some(sender_balance_before),
+            Some(recipient_balance_before),
+            Some(amount),
+        );
 
-        let circuit = PaymentStateTransitionCircuit {
-            payment: PaymentCircuit::new(
-                Some(sender_balance_before),
-                Some(recipient_balance_before),
-                Some(amount),
-            ),
-            sender_index: Some(0),
-            sender_siblings,
-            recipient_index: Some(2),
-            recipient_old_balance: Some(recipient_balance_before),
-            recipient_siblings,
-            input_root: Some(Fr::from(1000u64)),
-            output_root: Some(Fr::from(1001u64)),
-            tree_depth,
-        };
-
-        let mut cs = TestConstraintSystem::<Fr>::new();
-        let _ = circuit.synthesize(&mut cs);
-
-        // Should fail because payment circuit enforces balance constraints
         assert!(
-            !cs.is_satisfied(),
-            "Insufficient balance should not satisfy"
+            result.is_err(),
+            "Insufficient balance should fail circuit creation"
         );
     }
 
@@ -729,7 +606,7 @@ mod tests {
                 Some(sender_balance_before),
                 Some(recipient_balance_before),
                 Some(amount),
-            ),
+            ).expect("Valid payment should succeed"),
             sender_index: Some(0),
             sender_siblings: vec![Some(sibling_0), Some(sibling_1)],
             recipient_index: Some(2),

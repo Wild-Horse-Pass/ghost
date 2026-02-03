@@ -20,6 +20,8 @@ use bellperson::{
 };
 use ff::PrimeField;
 
+use super::mimc::mimc_hash;
+
 /// Circuit for verifying a merkle inclusion proof
 pub struct MerkleCircuit<F: PrimeField> {
     /// Leaf value (balance hash)
@@ -171,8 +173,8 @@ impl<F: PrimeField> MerkleCircuit<F> {
 
         let right = Self::select(cs.namespace(|| "select_right"), current, sibling, bit)?;
 
-        // Use MiMC-style hash for collision resistance
-        Self::mimc_hash(cs.namespace(|| "hash"), &left, &right)
+        // Use MiMC-style hash for collision resistance (from mimc module)
+        mimc_hash(cs.namespace(|| "hash"), &left, &right)
     }
 
     /// Select between two values based on a boolean
@@ -235,71 +237,7 @@ impl<F: PrimeField> MerkleCircuit<F> {
         Ok(result)
     }
 
-    /// MiMC-style hash function for merkle tree operations
-    ///
-    /// SECURITY: Uses repeated cubing (x^3) with round constants for
-    /// collision resistance. This replaces the insecure `a*b + a + b` hash.
-    ///
-    /// H(a, b) = MiMC(a + b) where MiMC applies: x -> x^3 + c[i]
-    fn mimc_hash<CS: ConstraintSystem<F>>(
-        mut cs: CS,
-        left: &AllocatedNum<F>,
-        right: &AllocatedNum<F>,
-    ) -> Result<AllocatedNum<F>, SynthesisError> {
-        const MIMC_ROUNDS: usize = 10;
-
-        // Round constants (deterministic, non-zero)
-        let constants: [F; MIMC_ROUNDS] = [
-            F::from(7u64),
-            F::from(13u64),
-            F::from(19u64),
-            F::from(31u64),
-            F::from(43u64),
-            F::from(61u64),
-            F::from(79u64),
-            F::from(97u64),
-            F::from(113u64),
-            F::from(131u64),
-        ];
-
-        // Initial value: a + b
-        let mut current = AllocatedNum::alloc(cs.namespace(|| "mimc_init"), || {
-            let l = left.get_value().ok_or(SynthesisError::AssignmentMissing)?;
-            let r = right.get_value().ok_or(SynthesisError::AssignmentMissing)?;
-            Ok(l + r)
-        })?;
-
-        cs.enforce(
-            || "mimc_init_constraint",
-            |lc| lc + current.get_variable(),
-            |lc| lc + CS::one(),
-            |lc| lc + left.get_variable() + right.get_variable(),
-        );
-
-        // Apply rounds: x <- x^3 + c[i]
-        for (i, constant) in constants.iter().enumerate() {
-            let x_squared = current.mul(cs.namespace(|| format!("mimc_sq_{}", i)), &current)?;
-            let x_cubed = x_squared.mul(cs.namespace(|| format!("mimc_cube_{}", i)), &current)?;
-
-            let next = AllocatedNum::alloc(cs.namespace(|| format!("mimc_round_{}", i)), || {
-                let cube = x_cubed
-                    .get_value()
-                    .ok_or(SynthesisError::AssignmentMissing)?;
-                Ok(cube + *constant)
-            })?;
-
-            cs.enforce(
-                || format!("mimc_round_{}_constraint", i),
-                |lc| lc + next.get_variable(),
-                |lc| lc + CS::one(),
-                |lc| lc + x_cubed.get_variable() + (*constant, CS::one()),
-            );
-
-            current = next;
-        }
-
-        Ok(current)
-    }
+    // MiMC hash is imported from super::mimc module (23 rounds, SHA256-derived constants)
 }
 
 /// Update a merkle tree and return the new root
@@ -359,28 +297,7 @@ mod tests {
     }
 
     /// MiMC hash for testing (must match circuit implementation)
-    fn mimc_hash_native(left: Fr, right: Fr) -> Fr {
-        const MIMC_ROUNDS: usize = 10;
-        let constants: [Fr; MIMC_ROUNDS] = [
-            Fr::from(7u64),
-            Fr::from(13u64),
-            Fr::from(19u64),
-            Fr::from(31u64),
-            Fr::from(43u64),
-            Fr::from(61u64),
-            Fr::from(79u64),
-            Fr::from(97u64),
-            Fr::from(113u64),
-            Fr::from(131u64),
-        ];
-
-        let mut current = left + right;
-        for constant in constants.iter() {
-            let cubed = current * current * current;
-            current = cubed + *constant;
-        }
-        current
-    }
+    // mimc_hash_native is imported from super::mimc via super::*
 
     #[test]
     fn test_simple_merkle_proof() {
@@ -388,8 +305,9 @@ mod tests {
         let leaf = Fr::from(42u64);
         let sibling = Fr::from(100u64);
 
-        // Compute expected root using MiMC hash
+        // Compute expected root using MiMC hash from shared module
         // For index 0 (left child): root = H(leaf, sibling)
+        use crate::circuit::mimc::mimc_hash_native;
         let expected_root = mimc_hash_native(leaf, sibling);
 
         let circuit = MerkleCircuit {

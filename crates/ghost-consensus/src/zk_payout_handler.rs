@@ -43,6 +43,8 @@ use ghost_common::error::GhostResult;
 use ghost_common::identity::NodeIdentity;
 use ghost_common::types::NodeId;
 
+use crate::vote_handler::RateLimiter;
+
 use crate::epoch::{EpochTracker, SettlerRole};
 use crate::mesh::MessageHandler;
 use crate::message::{
@@ -61,6 +63,12 @@ pub type ZkPayoutConsensusCallback =
 /// Arguments: (proof_bytes, total_available, miner_sum, node_sum, treasury_amount)
 pub type ZkPayoutVerifyFn = Arc<dyn Fn(&[u8], u64, u64, u64, u64) -> bool + Send + Sync>;
 
+/// Rate limit max tokens for ZK payout messages (burst capacity)
+const ZK_PAYOUT_RATE_LIMIT_MAX_TOKENS: u32 = 50;
+
+/// Rate limit refill rate for ZK payout messages (tokens per second)
+const ZK_PAYOUT_RATE_LIMIT_REFILL_RATE: u32 = 10;
+
 /// Configuration for ZK payout vote handler
 #[derive(Debug, Clone)]
 pub struct ZkPayoutVoteHandlerConfig {
@@ -72,6 +80,10 @@ pub struct ZkPayoutVoteHandlerConfig {
     pub min_validators: u32,
     /// BFT threshold (67% = 2/3 + 1)
     pub bft_threshold_percent: u32,
+    /// Rate limit max tokens per node (P2P-C3)
+    pub rate_limit_max_tokens: u32,
+    /// Rate limit refill rate - tokens per second (P2P-C3)
+    pub rate_limit_refill_rate: u32,
 }
 
 impl Default for ZkPayoutVoteHandlerConfig {
@@ -81,6 +93,8 @@ impl Default for ZkPayoutVoteHandlerConfig {
             max_pending_proposals: 50,
             min_validators: 4,         // Minimum for BFT (3f+1 where f=1)
             bft_threshold_percent: 67, // 2/3 majority
+            rate_limit_max_tokens: ZK_PAYOUT_RATE_LIMIT_MAX_TOKENS,
+            rate_limit_refill_rate: ZK_PAYOUT_RATE_LIMIT_REFILL_RATE,
         }
     }
 }
@@ -137,6 +151,8 @@ pub struct ZkPayoutVoteHandler {
     verify_fn: Option<ZkPayoutVerifyFn>,
     /// Configuration
     config: ZkPayoutVoteHandlerConfig,
+    /// Rate limiter for incoming messages (P2P-C3)
+    rate_limiter: RateLimiter,
 }
 
 impl ZkPayoutVoteHandler {
@@ -147,6 +163,10 @@ impl ZkPayoutVoteHandler {
 
     /// Create a new ZK payout vote handler with custom config
     pub fn with_config(identity: Arc<NodeIdentity>, config: ZkPayoutVoteHandlerConfig) -> Self {
+        let rate_limiter = RateLimiter::new(
+            config.rate_limit_max_tokens,
+            config.rate_limit_refill_rate,
+        );
         Self {
             identity,
             epoch_tracker: None,
@@ -156,7 +176,13 @@ impl ZkPayoutVoteHandler {
             consensus_callback: None,
             verify_fn: None,
             config,
+            rate_limiter,
         }
+    }
+
+    /// Clean up rate limiter state (call periodically)
+    pub fn cleanup_rate_limiter(&self) {
+        self.rate_limiter.cleanup(300); // 5 minute TTL
     }
 
     /// Set epoch tracker for settler verification
@@ -588,6 +614,19 @@ impl ZkPayoutVoteHandler {
 #[async_trait]
 impl MessageHandler for ZkPayoutVoteHandler {
     async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+        // Rate limit check - reject messages from nodes sending too fast (P2P-C3)
+        if !self.rate_limiter.check_and_consume(&envelope.sender) {
+            warn!(
+                sender = hex::encode(&envelope.sender[..8]),
+                msg_type = ?envelope.msg_type,
+                "Rate limited ZK payout message from peer"
+            );
+            return Err(ghost_common::error::GhostError::RateLimited(format!(
+                "Rate limited ZK payout message from {}",
+                hex::encode(&envelope.sender[..8])
+            )));
+        }
+
         match envelope.msg_type {
             MessageType::ZkPayoutProposal => {
                 let proposal: ZkPayoutProposalMessage = serde_json::from_slice(&envelope.payload)
@@ -887,5 +926,30 @@ mod tests {
         // Cancel it
         handler.cancel_proposal(1);
         assert!(handler.get_status(1).is_none());
+    }
+
+    #[test]
+    fn test_zk_payout_rate_limiting() {
+        // P2P-C3: Rate limiting to prevent DoS
+        let identity = create_test_identity();
+        let config = ZkPayoutVoteHandlerConfig {
+            rate_limit_max_tokens: 2,
+            rate_limit_refill_rate: 1,
+            ..Default::default()
+        };
+        let handler = ZkPayoutVoteHandler::with_config(identity, config);
+
+        let test_node = [42u8; 32];
+
+        // First two messages should pass
+        assert!(handler.rate_limiter.check_and_consume(&test_node));
+        assert!(handler.rate_limiter.check_and_consume(&test_node));
+
+        // Third message should be rate limited
+        assert!(!handler.rate_limiter.check_and_consume(&test_node));
+
+        // Different node should not be affected
+        let other_node = [43u8; 32];
+        assert!(handler.rate_limiter.check_and_consume(&other_node));
     }
 }

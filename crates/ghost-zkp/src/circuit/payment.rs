@@ -31,31 +31,60 @@ pub struct PaymentCircuit<F: PrimeField> {
     _marker: PhantomData<F>,
 }
 
+/// Error type for payment circuit creation
+#[derive(Debug, Clone)]
+pub enum PaymentCircuitError {
+    /// Sender has insufficient balance (underflow)
+    SenderBalanceUnderflow { balance: u64, amount: u64 },
+    /// Recipient balance would overflow
+    RecipientBalanceOverflow { balance: u64, amount: u64 },
+}
+
+impl std::fmt::Display for PaymentCircuitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SenderBalanceUnderflow { balance, amount } => {
+                write!(f, "Sender balance underflow: {} - {} would be negative", balance, amount)
+            }
+            Self::RecipientBalanceOverflow { balance, amount } => {
+                write!(f, "Recipient balance overflow: {} + {} exceeds u64::MAX", balance, amount)
+            }
+        }
+    }
+}
+
+impl std::error::Error for PaymentCircuitError {}
+
 impl<F: PrimeField> PaymentCircuit<F> {
     /// Create a new payment circuit
+    /// Returns an error if the payment would cause overflow or underflow
     pub fn new(
         sender_balance_before: Option<u64>,
         recipient_balance_before: Option<u64>,
         amount: Option<u64>,
-    ) -> Self {
+    ) -> Result<Self, PaymentCircuitError> {
         let sender_balance_after = match (sender_balance_before, amount) {
-            (Some(b), Some(a)) => Some(b.saturating_sub(a)),
+            (Some(b), Some(a)) => Some(b.checked_sub(a).ok_or(
+                PaymentCircuitError::SenderBalanceUnderflow { balance: b, amount: a }
+            )?),
             _ => None,
         };
 
         let recipient_balance_after = match (recipient_balance_before, amount) {
-            (Some(b), Some(a)) => Some(b.saturating_add(a)),
+            (Some(b), Some(a)) => Some(b.checked_add(a).ok_or(
+                PaymentCircuitError::RecipientBalanceOverflow { balance: b, amount: a }
+            )?),
             _ => None,
         };
 
-        Self {
+        Ok(Self {
             sender_balance_before,
             recipient_balance_before,
             amount,
             sender_balance_after,
             recipient_balance_after,
             _marker: PhantomData,
-        }
+        })
     }
 
     /// Create a dummy circuit for parameter generation
@@ -260,7 +289,7 @@ mod tests {
             Some(100), // sender has 100
             Some(50),  // recipient has 50
             Some(30),  // sending 30
-        );
+        ).expect("Valid payment should create circuit");
 
         let mut cs = TestConstraintSystem::new();
         let outputs = circuit.synthesize(&mut cs).unwrap();
@@ -279,21 +308,32 @@ mod tests {
     }
 
     #[test]
-    fn test_insufficient_balance() {
-        let circuit = PaymentCircuit::<Fr>::new(
+    fn test_sender_underflow_detection() {
+        // Circuit creation should fail with insufficient balance
+        let result = PaymentCircuit::<Fr>::new(
             Some(20), // sender only has 20
             Some(50),
             Some(30), // trying to send 30
         );
 
-        let mut cs = TestConstraintSystem::new();
-        let _ = circuit.synthesize(&mut cs);
-
-        // This should NOT satisfy because sender_after would be negative
-        // which fails the range proof
         assert!(
-            !cs.is_satisfied(),
-            "Insufficient balance should not satisfy constraints"
+            matches!(result, Err(PaymentCircuitError::SenderBalanceUnderflow { .. })),
+            "Insufficient balance should return SenderBalanceUnderflow error"
+        );
+    }
+
+    #[test]
+    fn test_recipient_overflow_detection() {
+        // Circuit creation should fail when recipient balance would overflow
+        let result = PaymentCircuit::<Fr>::new(
+            Some(u64::MAX),
+            Some(1),      // recipient has 1
+            Some(u64::MAX), // trying to add u64::MAX would overflow
+        );
+
+        assert!(
+            matches!(result, Err(PaymentCircuitError::RecipientBalanceOverflow { .. })),
+            "Overflow should return RecipientBalanceOverflow error"
         );
     }
 
@@ -303,7 +343,7 @@ mod tests {
             Some(100), // sender has exactly 100
             Some(0),
             Some(100), // sending all 100
-        );
+        ).expect("Exact balance should create circuit");
 
         let mut cs = TestConstraintSystem::new();
         circuit.synthesize(&mut cs).unwrap();
@@ -320,7 +360,7 @@ mod tests {
             Some(100),
             Some(50),
             Some(0), // zero amount
-        );
+        ).expect("Zero amount should create circuit");
 
         let mut cs = TestConstraintSystem::new();
         circuit.synthesize(&mut cs).unwrap();

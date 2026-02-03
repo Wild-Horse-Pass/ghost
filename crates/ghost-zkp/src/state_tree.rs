@@ -8,6 +8,10 @@
 
 use std::collections::HashMap;
 
+use blstrs::Scalar as Fr;
+use ff::Field;
+
+use crate::circuit::mimc::{bytes_to_field, field_to_bytes, mimc_hash_native};
 use crate::errors::{ZkError, ZkResult};
 use crate::types::{MerkleProof, PaymentTransitionWitness};
 
@@ -168,21 +172,26 @@ impl BalanceTree {
     }
 
     /// Hash a leaf (balance value)
+    ///
+    /// Uses MiMC to match the circuit implementation:
+    /// H(balance, domain_separator) where domain_separator = "LEAF" encoded
     fn hash_leaf(&self, balance: u64) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(b"ghost-leaf-v1");
-        hasher.update(balance.to_le_bytes());
-        hasher.finalize().into()
+        let balance_field = Fr::from(balance);
+        // Domain separator: "LEAF" as u32 = 0x4c454146
+        let domain_sep = Fr::from(0x4c454146u64);
+        let hash = mimc_hash_native(balance_field, domain_sep);
+        field_to_bytes(hash)
     }
 
     /// Hash two child nodes
+    ///
+    /// Uses MiMC to match the circuit implementation:
+    /// H(left, right)
     fn hash_pair(&self, left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(left);
-        hasher.update(right);
-        hasher.finalize().into()
+        let left_field = bytes_to_field::<Fr>(left).unwrap_or(Fr::ZERO);
+        let right_field = bytes_to_field::<Fr>(right).unwrap_or(Fr::ZERO);
+        let hash = mimc_hash_native(left_field, right_field);
+        field_to_bytes(hash)
     }
 
     /// Get the number of non-zero accounts
@@ -349,8 +358,8 @@ mod tests {
         assert_eq!(witness.sender_balance_before, 1000);
         assert_eq!(witness.recipient_balance_before, 500);
         assert_eq!(witness.amount, 100);
-        assert_eq!(witness.sender_balance_after(), 900);
-        assert_eq!(witness.recipient_balance_after(), 600);
+        assert_eq!(witness.sender_balance_after(), Some(900));
+        assert_eq!(witness.recipient_balance_after(), Some(600));
 
         // Balances should be updated
         assert_eq!(tree.get_balance(0), 900);

@@ -140,6 +140,8 @@ pub enum WitnessValidationError {
         balance: u64,
         amount: u64,
     },
+    /// Balance overflow detected (recipient balance would exceed u64::MAX)
+    BalanceOverflow { balance: u64, amount: u64 },
     /// Merkle proof is invalid
     InvalidMerkleProof { tx_index: usize },
     /// State roots don't match
@@ -158,6 +160,13 @@ impl std::fmt::Display for WitnessValidationError {
                     f,
                     "Transaction {} has insufficient balance: {} < {}",
                     tx_index, balance, amount
+                )
+            }
+            Self::BalanceOverflow { balance, amount } => {
+                write!(
+                    f,
+                    "Balance overflow: {} + {} exceeds maximum",
+                    balance, amount
                 )
             }
             Self::InvalidMerkleProof { tx_index } => {
@@ -195,13 +204,15 @@ pub struct PaymentWitness {
 
 impl PaymentWitness {
     /// Sender's balance after this payment
-    pub fn sender_balance_after(&self) -> u64 {
-        self.sender_balance_before.saturating_sub(self.amount)
+    /// Returns None if the sender has insufficient balance (underflow)
+    pub fn sender_balance_after(&self) -> Option<u64> {
+        self.sender_balance_before.checked_sub(self.amount)
     }
 
     /// Recipient's balance after this payment
-    pub fn recipient_balance_after(&self) -> u64 {
-        self.recipient_balance_before.saturating_add(self.amount)
+    /// Returns None if the balance would overflow u64::MAX
+    pub fn recipient_balance_after(&self) -> Option<u64> {
+        self.recipient_balance_before.checked_add(self.amount)
     }
 
     /// Create signing message for this payment
@@ -279,30 +290,32 @@ impl MerkleProof {
     }
 
     /// Compute the root from a leaf hash
+    ///
+    /// Uses MiMC hash to match the circuit implementation.
     pub fn compute_root(&self, leaf_hash: [u8; 32]) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
+        use blstrs::Scalar as Fr;
+        use ff::Field;
+        use crate::circuit::mimc::{bytes_to_field, field_to_bytes, mimc_hash_native};
 
-        let mut current = leaf_hash;
+        let mut current = bytes_to_field::<Fr>(&leaf_hash).unwrap_or(Fr::ZERO);
         let mut index = self.leaf_index;
 
         for sibling in &self.siblings {
-            let mut hasher = Sha256::new();
+            let sibling_field = bytes_to_field::<Fr>(sibling).unwrap_or(Fr::ZERO);
 
-            if index.is_multiple_of(2) {
+            let (left, right) = if index % 2 == 0 {
                 // Current is left child
-                hasher.update(current);
-                hasher.update(sibling);
+                (current, sibling_field)
             } else {
                 // Current is right child
-                hasher.update(sibling);
-                hasher.update(current);
-            }
+                (sibling_field, current)
+            };
 
-            current = hasher.finalize().into();
+            current = mimc_hash_native(left, right);
             index /= 2;
         }
 
-        current
+        field_to_bytes(current)
     }
 }
 
@@ -401,21 +414,29 @@ impl PaymentTransitionWitness {
     }
 
     /// Sender's balance after this payment
-    pub fn sender_balance_after(&self) -> u64 {
-        self.sender_balance_before.saturating_sub(self.amount)
+    /// Returns None if the sender has insufficient balance (underflow)
+    pub fn sender_balance_after(&self) -> Option<u64> {
+        self.sender_balance_before.checked_sub(self.amount)
     }
 
     /// Recipient's balance after this payment
-    pub fn recipient_balance_after(&self) -> u64 {
-        self.recipient_balance_before.saturating_add(self.amount)
+    /// Returns None if the balance would overflow u64::MAX
+    pub fn recipient_balance_after(&self) -> Option<u64> {
+        self.recipient_balance_before.checked_add(self.amount)
     }
 
     /// Validate that the witness is internally consistent
     pub fn validate(&self) -> Result<(), WitnessValidationError> {
-        if self.sender_balance_before < self.amount {
+        if self.sender_balance_after().is_none() {
             return Err(WitnessValidationError::InsufficientBalance {
                 tx_index: 0,
                 balance: self.sender_balance_before,
+                amount: self.amount,
+            });
+        }
+        if self.recipient_balance_after().is_none() {
+            return Err(WitnessValidationError::BalanceOverflow {
+                balance: self.recipient_balance_before,
                 amount: self.amount,
             });
         }
@@ -571,8 +592,40 @@ mod tests {
             recipient_merkle_proof: MerkleProof::new(1, vec![]),
         };
 
-        assert_eq!(witness.sender_balance_after(), 400);
-        assert_eq!(witness.recipient_balance_after(), 300);
+        assert_eq!(witness.sender_balance_after(), Some(400));
+        assert_eq!(witness.recipient_balance_after(), Some(300));
+    }
+
+    #[test]
+    fn test_payment_witness_underflow_detection() {
+        let witness = PaymentWitness {
+            sender: [1u8; 32],
+            recipient: [2u8; 32],
+            amount: 600, // More than sender has
+            signature: [0u8; 64],
+            sender_balance_before: 500,
+            sender_merkle_proof: MerkleProof::new(0, vec![]),
+            recipient_balance_before: 200,
+            recipient_merkle_proof: MerkleProof::new(1, vec![]),
+        };
+
+        assert_eq!(witness.sender_balance_after(), None);
+    }
+
+    #[test]
+    fn test_payment_witness_overflow_detection() {
+        let witness = PaymentWitness {
+            sender: [1u8; 32],
+            recipient: [2u8; 32],
+            amount: u64::MAX,
+            signature: [0u8; 64],
+            sender_balance_before: u64::MAX,
+            sender_merkle_proof: MerkleProof::new(0, vec![]),
+            recipient_balance_before: 1, // 1 + u64::MAX would overflow
+            recipient_merkle_proof: MerkleProof::new(1, vec![]),
+        };
+
+        assert_eq!(witness.recipient_balance_after(), None);
     }
 
     #[test]
@@ -624,8 +677,8 @@ mod tests {
             MerkleProof::new(1, vec![[0u8; 32]; 10]),
         );
 
-        assert_eq!(witness.sender_balance_after(), 900);
-        assert_eq!(witness.recipient_balance_after(), 600);
+        assert_eq!(witness.sender_balance_after(), Some(900));
+        assert_eq!(witness.recipient_balance_after(), Some(600));
         assert!(witness.validate().is_ok());
     }
 

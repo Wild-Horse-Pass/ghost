@@ -1027,6 +1027,7 @@ async fn main() -> Result<()> {
             tx_fees: 500_000,
             subsidy: 312_500_000, // 3.125 BTC (signet subsidy)
             timestamp,
+            tx_fees_unallocated: 0,
         };
 
         // Submit to vote handler (broadcasts to peers)

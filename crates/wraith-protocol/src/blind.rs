@@ -430,33 +430,31 @@ impl CoordinatorSigner {
     ///
     /// SECURITY: Verifies that the requestor matches the ghost_id bound to the nonce.
     /// This prevents nonce hijacking attacks.
+    ///
+    /// TIMING ATTACK PREVENTION: The nonce is removed FIRST, before any verification.
+    /// This ensures attackers cannot probe nonce bindings via timing side-channels.
     pub fn sign_blinded_challenge_for_participant(
         &mut self,
         challenge: &BlindedChallenge,
         requesting_ghost_id: &str,
     ) -> Result<BlindSignatureResponse, WraithError> {
-        // Look up the nonce first to verify binding BEFORE removing
+        // SECURITY: Remove nonce FIRST to prevent timing attacks
+        // If we verify before removing, an attacker could probe ghost_id bindings
         let nonce = self
             .active_nonces
-            .get(&challenge.session_id)
-            .ok_or_else(|| WraithError::MissingData("Unknown or expired nonce session".into()))?;
+            .remove(&challenge.session_id)
+            .ok_or_else(|| WraithError::MissingData("Nonce session not found or consumed".into()))?;
 
-        // Verify requestor matches the bound ghost_id
+        // Verify requestor matches the bound ghost_id AFTER removal
         if let Some(ref bound_id) = nonce.bound_ghost_id {
             if bound_id != requesting_ghost_id {
+                // Nonce is already consumed, even though verification failed
                 return Err(WraithError::InvalidSignature(format!(
-                    "Nonce bound to '{}' but requested by '{}'",
-                    bound_id, requesting_ghost_id
+                    "Nonce bound to different participant",
                 )));
             }
         }
         // Note: If nonce is unbound (from deprecated create_nonce), we allow it for backwards compat
-
-        // Now remove the nonce (single use!)
-        let nonce = self
-            .active_nonces
-            .remove(&challenge.session_id)
-            .expect("nonce exists - we just checked");
 
         // Update per-participant count
         if let Some(ref ghost_id) = nonce.bound_ghost_id {

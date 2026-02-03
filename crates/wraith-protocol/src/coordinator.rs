@@ -227,6 +227,9 @@ pub struct WraithCoordinator {
     /// Anonymous token pool - tokens verified but NOT linked to any participant
     /// This is CRITICAL for privacy: coordinator verifies validity without knowing submitter
     anonymous_tokens: Vec<UnblindedToken>,
+    /// Tokens that have been used (for replay prevention) - stores token hash
+    /// SECURITY: Prevents resubmission of the same token
+    used_tokens: HashSet<[u8; 32]>,
     /// All submitted addresses (for duplicate detection)
     submitted_addresses: HashSet<String>,
     /// Optional UTXO verification callback
@@ -272,6 +275,7 @@ impl WraithCoordinator {
             phase1_outputs: Vec::new(),
             broadcast_fn: None,
             anonymous_tokens: Vec::new(),
+            used_tokens: HashSet::new(),
             submitted_addresses: HashSet::new(),
             utxo_verifier: None,
             reputation: None,
@@ -551,6 +555,14 @@ impl WraithCoordinator {
             )));
         }
 
+        // SECURITY: Check for replay BEFORE verification to prevent timing attacks
+        for token in &tokens {
+            let hash = Self::compute_token_hash(token);
+            if self.used_tokens.contains(&hash) {
+                return Err(WraithError::InvalidInput("Token replay detected".into()));
+            }
+        }
+
         // Verify each token using standard Schnorr verification
         // Coordinator proves tokens are valid WITHOUT knowing who submitted them
         for (i, token) in tokens.iter().enumerate() {
@@ -563,9 +575,23 @@ impl WraithCoordinator {
             }
         }
 
+        // Mark tokens as used AFTER verification
+        for token in &tokens {
+            self.used_tokens.insert(Self::compute_token_hash(token));
+        }
+
         // Add to anonymous pool - NO ghost_id linkage!
         self.anonymous_tokens.extend(tokens);
         Ok(())
+    }
+
+    /// Compute a hash of a token for replay prevention
+    fn compute_token_hash(token: &UnblindedToken) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&token.nonce_point);
+        hasher.update(&token.signature_scalar);
+        hasher.finalize().into()
     }
 
     /// DEPRECATED: Submit tokens with ghost_id linking (insecure)

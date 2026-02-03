@@ -256,6 +256,10 @@ pub struct PayoutProposal {
     pub subsidy: Satoshis,
     /// Timestamp
     pub timestamp: u64,
+    /// TX fees that could not be allocated (e.g., block finder has no address)
+    /// This field tracks satoshis that would otherwise be lost (PO-H4)
+    #[serde(default)]
+    pub tx_fees_unallocated: Satoshis,
 }
 
 /// Single payout entry

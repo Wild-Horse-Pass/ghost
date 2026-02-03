@@ -9,7 +9,7 @@ use bellperson::{gadgets::num::AllocatedNum, Circuit, ConstraintSystem, Synthesi
 use ff::PrimeField;
 
 use super::{
-    payment::PaymentCircuit,
+    payment::{PaymentCircuit, PaymentCircuitError},
     state_transition::{PaymentStateTransitionCircuit, StateTransitionOutputs},
     DEFAULT_TREE_DEPTH, MAX_TXS_PER_BLOCK,
 };
@@ -323,18 +323,19 @@ impl<F: PrimeField> BlockCircuitBuilder<F> {
     }
 
     /// Add a payment to the block (legacy mode)
+    /// Returns an error if the payment would cause overflow or underflow
     pub fn add_payment(
         mut self,
         sender_balance_before: u64,
         recipient_balance_before: u64,
         amount: u64,
-    ) -> Self {
+    ) -> Result<Self, PaymentCircuitError> {
         self.payments.push(PaymentCircuit::new(
             Some(sender_balance_before),
             Some(recipient_balance_before),
             Some(amount),
-        ));
-        self
+        )?);
+        Ok(self)
     }
 
     /// Add a state transition to the block (full ZK mode)
@@ -397,6 +398,7 @@ mod tests {
             .prev_state_root(Fr::from(100u64))
             .new_state_root(Fr::from(101u64))
             .add_payment(1000, 500, 100) // sender: 1000, recipient: 500, amount: 100
+            .expect("Valid payment should succeed")
             .build();
 
         let mut cs = TestConstraintSystem::new();
@@ -415,8 +417,11 @@ mod tests {
             .prev_state_root(Fr::from(100u64))
             .new_state_root(Fr::from(103u64))
             .add_payment(1000, 500, 100) // tx1
+            .expect("Valid payment should succeed")
             .add_payment(2000, 100, 50) // tx2
+            .expect("Valid payment should succeed")
             .add_payment(500, 0, 200) // tx3
+            .expect("Valid payment should succeed")
             .build();
 
         let mut cs = TestConstraintSystem::new();
@@ -431,20 +436,16 @@ mod tests {
     #[test]
     fn test_invalid_payment_in_block() {
         // This payment has insufficient balance (trying to send 500 with only 100)
-        let circuit: BlockCircuit<Fr> = BlockCircuitBuilder::new()
+        let result = BlockCircuitBuilder::<Fr>::new()
             .max_txs(10)
             .prev_state_root(Fr::from(100u64))
             .new_state_root(Fr::from(101u64))
-            .add_payment(100, 500, 500) // sender only has 100, trying to send 500
-            .build();
+            .add_payment(100, 500, 500); // sender only has 100, trying to send 500
 
-        let mut cs = TestConstraintSystem::new();
-        circuit.synthesize(&mut cs).unwrap();
-
-        // Should fail because payment circuit enforces balance constraints
+        // Should fail at circuit creation because of checked arithmetic
         assert!(
-            !cs.is_satisfied(),
-            "Block with invalid payment should not satisfy constraints"
+            result.is_err(),
+            "Block with invalid payment should fail circuit creation"
         );
     }
 
@@ -471,6 +472,7 @@ mod tests {
             .prev_state_root(Fr::from(1u64))
             .new_state_root(Fr::from(2u64))
             .add_payment(1000, 500, 100)
+            .expect("Valid payment should succeed")
             .build();
 
         let mut cs = TestConstraintSystem::new();
@@ -597,7 +599,7 @@ mod tests {
                 Some(sender_balance),
                 Some(recipient_balance),
                 Some(amount),
-            ),
+            ).expect("Valid payment should succeed"),
             sender_index: Some(0),
             sender_siblings: vec![Some(sibling0), Some(hash_23)],
             recipient_index: Some(2),

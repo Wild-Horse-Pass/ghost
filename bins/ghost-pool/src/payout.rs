@@ -239,6 +239,9 @@ impl PayoutProposalCreator {
         }
 
         // TX fees go 100% to the node that found the block
+        // Track unallocated TX fees for transparency (PO-H4)
+        let mut tx_fees_unallocated: u64 = 0;
+
         if fee_dist.tx_fees_to_block_finder >= self.config.dust_threshold_sats {
             let block_finder_address = self.get_node_address(&data.winning_node_id)?;
             if !block_finder_address.is_empty() {
@@ -270,9 +273,12 @@ impl PayoutProposalCreator {
                     "TX fees allocated to block finder"
                 );
             } else {
+                // PO-H4: Track unallocated TX fees for transparency
+                tx_fees_unallocated = fee_dist.tx_fees_to_block_finder;
                 warn!(
                     node_id = %hex::encode(&data.winning_node_id[..8]),
-                    "Block finder node has no payout address - TX fees will not be paid"
+                    tx_fees_unallocated,
+                    "Block finder node has no payout address - TX fees cannot be allocated"
                 );
             }
         }
@@ -289,6 +295,7 @@ impl PayoutProposalCreator {
             tx_fees: data.tx_fees_sats,
             subsidy: data.subsidy_sats,
             timestamp: now,
+            tx_fees_unallocated,
         };
 
         // Verify the distribution adds up
@@ -388,6 +395,7 @@ impl PayoutProposalCreator {
             tx_fees: data.tx_fees_sats,
             subsidy: data.subsidy_sats,
             timestamp: now,
+            tx_fees_unallocated: 0, // Solo mode: TX fees always go to solo miner
         };
 
         info!(
@@ -776,7 +784,35 @@ impl PayoutHandler {
     /// In solo mode, all rewards go to the configured solo_payout_address:
     /// - 99% of subsidy + ALL TX fees → solo_payout_address
     /// - 1% pool fee → treasury + node pool per decay schedule
-    pub fn handle_solo_block_found(&self, data: SoloBlockFoundData) -> GhostResult<[u8; 32]> {
+    ///
+    /// SECURITY: This method REQUIRES a QualifiedCapabilityProvider to be configured,
+    /// even in solo mode. Node rewards will only be distributed to nodes with VERIFIED
+    /// capabilities, never to nodes with merely CLAIMED capabilities.
+    pub fn handle_solo_block_found(&self, mut data: SoloBlockFoundData) -> GhostResult<[u8; 32]> {
+        // SECURITY: Require verification provider even in solo mode
+        // Node rewards must only go to VERIFIED nodes, not claimed ones
+        let provider = self.qualification_provider
+            .as_ref()
+            .ok_or_else(|| {
+                warn!("No verification provider configured - node rewards cannot be distributed");
+                ghost_common::error::GhostError::NoVerificationProvider
+            })?;
+
+        // Replace claimed node shares with verified ones
+        // This ensures consistency between pool and solo mode
+        let qualified_shares = provider.get_all_qualified_nodes();
+
+        let claimed_count = data.node_shares.len();
+        let verified_count = qualified_shares.len();
+
+        info!(
+            claimed_nodes = claimed_count,
+            verified_nodes = verified_count,
+            "Solo mode: recalculating node shares using VERIFIED capabilities"
+        );
+
+        data.node_shares = qualified_shares;
+
         // Create the solo proposal
         let mut proposal = self.creator.create_solo_proposal(data)?;
 
@@ -1134,6 +1170,59 @@ mod tests {
             (actual_loss as f64 / total_sats as f64) * 100.0,
             max_loss,
             (max_loss as f64 / total_sats as f64) * 100.0
+        );
+    }
+
+    #[test]
+    fn test_tx_fees_unallocated_tracked() {
+        // PO-H4: Verify that tx_fees_unallocated field exists and can be set
+        // This test documents the expected behavior when block finder has no payout address
+        use ghost_common::types::{PayoutProposal, PayoutEntry, PayoutType};
+
+        // Create a proposal where TX fees could be allocated
+        let allocated_proposal = PayoutProposal {
+            proposal_hash: [0u8; 32],
+            round_id: 1,
+            block_hash: [0u8; 32],
+            block_height: 800_000,
+            proposer: [1u8; 32],
+            miner_payouts: vec![],
+            node_payouts: vec![PayoutEntry {
+                address: b"bc1qnode".to_vec(),
+                amount: 10_000_000,
+                recipient_id: [1u8; 32],
+                payout_type: PayoutType::TxFees,
+            }],
+            treasury_amount: 0,
+            tx_fees: 10_000_000,
+            subsidy: 312_500_000,
+            timestamp: 1700000000,
+            tx_fees_unallocated: 0, // TX fees were allocated successfully
+        };
+        assert_eq!(allocated_proposal.tx_fees_unallocated, 0);
+
+        // Create a proposal where TX fees could NOT be allocated (block finder has no address)
+        let unallocated_proposal = PayoutProposal {
+            proposal_hash: [0u8; 32],
+            round_id: 1,
+            block_hash: [0u8; 32],
+            block_height: 800_000,
+            proposer: [1u8; 32],
+            miner_payouts: vec![],
+            node_payouts: vec![], // No TxFees entry because block finder has no address
+            treasury_amount: 0,
+            tx_fees: 10_000_000,
+            subsidy: 312_500_000,
+            timestamp: 1700000000,
+            tx_fees_unallocated: 10_000_000, // TX fees tracked as unallocated
+        };
+        assert_eq!(unallocated_proposal.tx_fees_unallocated, 10_000_000);
+
+        // The tx_fees_unallocated field allows auditing which blocks had allocation issues
+        assert_eq!(
+            unallocated_proposal.tx_fees,
+            unallocated_proposal.tx_fees_unallocated,
+            "When block finder has no address, all TX fees should be marked as unallocated"
         );
     }
 }

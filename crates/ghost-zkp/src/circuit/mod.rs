@@ -10,13 +10,15 @@
 
 pub mod block;
 pub mod merkle;
+pub mod mimc;
 pub mod payment;
 pub mod payout;
 pub mod state_transition;
 
 pub use block::{BlockCircuit, BlockCircuitBuilder};
 pub use merkle::{MerkleCircuit, MerkleUpdateCircuit};
-pub use payment::{PaymentCircuit, PaymentOutputs};
+pub use mimc::{mimc_hash, mimc_hash_native, field_to_bytes, bytes_to_field, MIMC_ROUNDS};
+pub use payment::{PaymentCircuit, PaymentCircuitError, PaymentOutputs};
 pub use payout::PayoutCircuit;
 pub use state_transition::{PaymentStateTransitionCircuit, StateTransitionOutputs};
 

@@ -8,21 +8,48 @@
 //! - Legacy mode: Proves payment validity only (validators re-execute state)
 //! - Full ZK mode: Proves complete state root transitions (no re-execution needed)
 //!
-//! Note: This is currently a simplified implementation that validates the circuit
-//! constraints. Full Groth16 proving will be integrated in a future update.
+//! # Groth16 Implementation
+//!
+//! This module uses Groth16 proofs on the BLS12-381 curve via bellperson.
+//! Proof generation takes ~2 seconds, verification takes ~10ms.
+//!
+//! # SECURITY WARNING: Trusted Setup Required
+//!
+//! **Groth16 requires a trusted setup ceremony (MPC).**
+//!
+//! The security of Groth16 proofs depends entirely on the trusted setup:
+//! - If the "toxic waste" from setup is known, anyone can forge proofs
+//! - A single malicious participant in setup can compromise the system
+//!
+//! For production use:
+//! 1. **NEVER** use `new_with_setup` in production
+//! 2. Use parameters from a multi-party computation (MPC) ceremony
+//! 3. Verify the ceremony transcript before using parameters
+//! 4. See `docs/ZK_TRUSTED_SETUP.md` for ceremony requirements
+//!
+//! The `new_with_setup` constructor is provided for testing only.
+//! Production deployments MUST use `from_params` with MPC-generated parameters.
 
-use bellperson::{util_cs::test_cs::TestConstraintSystem, Circuit};
-use blstrs::Scalar as Fr;
+use bellperson::{
+    groth16::{
+        create_random_proof, generate_random_parameters, prepare_verifying_key, Parameters,
+        PreparedVerifyingKey,
+    },
+    util_cs::test_cs::TestConstraintSystem,
+    Circuit,
+};
+use blstrs::{Bls12, Scalar as Fr};
 use ff::Field;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::circuit::block::BlockCircuit;
 use crate::circuit::payment::PaymentCircuit;
 use crate::circuit::state_transition::PaymentStateTransitionCircuit;
 use crate::errors::{ZkError, ZkResult};
-use crate::types::{BlockProof, BlockWitness, BlockWitnessV2, ProvingParams, VerificationKey};
+use crate::types::{BlockProof, BlockWitness, BlockWitnessV2, ProvingParams, VerificationKey, GROTH16_PROOF_SIZE};
 
 /// Generates ZK proofs for block validity
 ///
@@ -41,6 +68,10 @@ pub struct BlockProver {
     prover_id: [u8; 32],
     /// Whether to use full state transition mode
     use_state_transitions: bool,
+    /// Groth16 proving parameters (generated during setup)
+    params: Option<Arc<Parameters<Bls12>>>,
+    /// Prepared verifying key for efficient verification
+    prepared_vk: Option<Arc<PreparedVerifyingKey<Bls12>>>,
 }
 
 impl BlockProver {
@@ -77,7 +108,7 @@ impl BlockProver {
 
         // Generate a unique prover ID based on parameters
         let mut hasher = Sha256::new();
-        hasher.update(b"ghost-zkp-prover-v2");
+        hasher.update(b"ghost-zkp-prover-v2-groth16");
         hasher.update(max_txs.to_le_bytes());
         hasher.update(tree_depth.to_le_bytes());
         hasher.update([use_state_transitions as u8]);
@@ -90,12 +121,104 @@ impl BlockProver {
             tree_depth,
             prover_id,
             use_state_transitions,
+            params: None,
+            prepared_vk: None,
+        })
+    }
+
+    /// Create a new prover with full Groth16 setup
+    ///
+    /// **SECURITY WARNING: FOR TESTING ONLY**
+    ///
+    /// This generates the proving and verifying keys using random toxic waste.
+    /// This is convenient for testing but **INSECURE FOR PRODUCTION**:
+    /// - The toxic waste exists in memory and could be extracted
+    /// - Anyone with the toxic waste can forge proofs
+    /// - This bypasses the security of the ZK proof system
+    ///
+    /// For production, use `from_params()` with MPC-generated parameters.
+    /// See `docs/ZK_TRUSTED_SETUP.md` for ceremony requirements.
+    #[instrument(skip_all, fields(max_txs, tree_depth))]
+    pub fn new_with_setup(max_txs: usize, tree_depth: usize) -> ZkResult<Self> {
+        Self::new_with_setup_and_mode(max_txs, tree_depth, false)
+    }
+
+    /// Create a new prover with full Groth16 setup and state transitions
+    pub fn new_with_setup_and_state_transitions(max_txs: usize, tree_depth: usize) -> ZkResult<Self> {
+        Self::new_with_setup_and_mode(max_txs, tree_depth, true)
+    }
+
+    /// Create a new prover with full Groth16 setup (internal)
+    fn new_with_setup_and_mode(
+        max_txs: usize,
+        tree_depth: usize,
+        use_state_transitions: bool,
+    ) -> ZkResult<Self> {
+        warn!(
+            "SECURITY WARNING: Using random trusted setup. \
+             This is INSECURE for production. Use MPC-generated parameters."
+        );
+        info!(
+            "Creating prover with Groth16 setup for {} txs, depth {}, state_transitions={}",
+            max_txs, tree_depth, use_state_transitions
+        );
+        let start = Instant::now();
+
+        // Generate unique prover ID
+        let mut hasher = Sha256::new();
+        hasher.update(b"ghost-zkp-prover-v2-groth16");
+        hasher.update(max_txs.to_le_bytes());
+        hasher.update(tree_depth.to_le_bytes());
+        hasher.update([use_state_transitions as u8]);
+        let prover_id: [u8; 32] = hasher.finalize().into();
+
+        // Create dummy circuit for parameter generation
+        let dummy_circuit = if use_state_transitions {
+            BlockCircuit::<Fr>::dummy_with_state_transitions(max_txs, tree_depth)
+        } else {
+            BlockCircuit::<Fr>::dummy(max_txs)
+        };
+
+        // Generate Groth16 parameters (trusted setup)
+        // SECURITY: This uses random toxic waste - FOR TESTING ONLY
+        info!("Generating Groth16 parameters (TESTING ONLY - NOT SECURE FOR PRODUCTION)...");
+        let setup_start = Instant::now();
+        let params = generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rand::thread_rng())
+            .map_err(|e| ZkError::SetupError(format!("Parameter generation failed: {:?}", e)))?;
+
+        info!("Groth16 parameters generated in {:?}", setup_start.elapsed());
+
+        // Prepare verifying key for efficient verification
+        let prepared_vk = prepare_verifying_key(&params.vk);
+
+        info!(
+            "Prover with Groth16 setup created in {:?}",
+            start.elapsed()
+        );
+
+        Ok(Self {
+            max_txs,
+            tree_depth,
+            prover_id,
+            use_state_transitions,
+            params: Some(Arc::new(params)),
+            prepared_vk: Some(Arc::new(prepared_vk)),
         })
     }
 
     /// Create a prover from existing parameters
     pub fn from_params(params: ProvingParams) -> ZkResult<Self> {
         Self::new(params.max_txs, params.tree_depth)
+    }
+
+    /// Get the prepared verifying key (for external verification)
+    pub fn prepared_verifying_key(&self) -> Option<Arc<PreparedVerifyingKey<Bls12>>> {
+        self.prepared_vk.clone()
+    }
+
+    /// Check if Groth16 parameters are available
+    pub fn has_groth16_params(&self) -> bool {
+        self.params.is_some()
     }
 
     /// Get the verification key for this prover
@@ -120,6 +243,9 @@ impl BlockProver {
     /// This validates all circuit constraints and produces a proof
     /// that can be verified by validators.
     ///
+    /// If Groth16 parameters are available, generates a real cryptographic proof.
+    /// Otherwise, falls back to a simulated proof (for testing/development).
+    ///
     /// # Arguments
     /// * `witness` - Block witness containing all transaction data
     ///
@@ -134,14 +260,15 @@ impl BlockProver {
             .validate()
             .map_err(|e| ZkError::InvalidWitness(e.to_string()))?;
 
-        // Build the circuit from witness
+        // Build the circuit from witness (used for both constraint validation and Groth16)
         let circuit = self.build_circuit(witness)?;
 
         debug!("Circuit built with {} payments", witness.transactions.len());
 
-        // Use TestConstraintSystem to verify all constraints are satisfied
+        // First verify constraints with TestConstraintSystem
+        let test_circuit = self.build_circuit(witness)?;
         let mut cs = TestConstraintSystem::<Fr>::new();
-        circuit
+        test_circuit
             .synthesize(&mut cs)
             .map_err(|e| ZkError::SynthesisError(format!("Circuit synthesis failed: {:?}", e)))?;
 
@@ -158,14 +285,19 @@ impl BlockProver {
             cs.num_constraints()
         );
 
-        // Generate proof bytes (hash of witness + constraints for now)
-        // In production, this would be actual Groth16 proof bytes
-        let proof_bytes = self.generate_proof_bytes(witness, cs.num_constraints());
+        // Generate proof bytes (real Groth16 if params available, otherwise simulated)
+        let proof_bytes = if let Some(ref params) = self.params {
+            self.generate_groth16_proof(circuit, params)?
+        } else {
+            warn!("Groth16 parameters not available, using simulated proof");
+            self.generate_proof_bytes(witness, cs.num_constraints())
+        };
 
         info!(
-            "Proof generated in {:?}, size: {} bytes",
+            "Proof generated in {:?}, size: {} bytes, groth16: {}",
             start.elapsed(),
-            proof_bytes.len()
+            proof_bytes.len(),
+            self.params.is_some()
         );
 
         Ok(BlockProof::new(
@@ -175,6 +307,38 @@ impl BlockProver {
             witness.transactions.len() as u32,
             proof_bytes,
         ))
+    }
+
+    /// Generate a real Groth16 proof
+    fn generate_groth16_proof(
+        &self,
+        circuit: BlockCircuit<Fr>,
+        params: &Parameters<Bls12>,
+    ) -> ZkResult<Vec<u8>> {
+        let proving_start = Instant::now();
+
+        // Generate the Groth16 proof
+        let proof = create_random_proof(circuit, params, &mut rand::thread_rng())
+            .map_err(|e| ZkError::ProvingError(format!("Groth16 proving failed: {:?}", e)))?;
+
+        debug!("Groth16 proof generated in {:?}", proving_start.elapsed());
+
+        // Serialize the proof: A(48) + B(96) + C(48) = 192 bytes
+        let mut proof_bytes = Vec::with_capacity(GROTH16_PROOF_SIZE);
+
+        // Serialize A (G1 point)
+        let a_bytes = proof.a.to_compressed();
+        proof_bytes.extend_from_slice(&a_bytes);
+
+        // Serialize B (G2 point)
+        let b_bytes = proof.b.to_compressed();
+        proof_bytes.extend_from_slice(&b_bytes);
+
+        // Serialize C (G1 point)
+        let c_bytes = proof.c.to_compressed();
+        proof_bytes.extend_from_slice(&c_bytes);
+
+        Ok(proof_bytes)
     }
 
     /// Build a circuit from witness data
@@ -190,7 +354,7 @@ impl BlockProver {
                 Some(tx.sender_balance_before),
                 Some(tx.recipient_balance_before),
                 Some(tx.amount),
-            );
+            ).map_err(|e| ZkError::InvalidWitness(e.to_string()))?;
             payments.push(payment);
         }
 
@@ -252,6 +416,9 @@ impl BlockProver {
     /// - Each payment's merkle proof against the state root
     /// - The complete chain of state root transitions
     ///
+    /// If Groth16 parameters are available, generates a real cryptographic proof.
+    /// Otherwise, falls back to a simulated proof (for testing/development).
+    ///
     /// After verification, validators do NOT need to re-execute state.
     #[instrument(skip_all, fields(height = witness.height, tx_count = witness.tx_count()))]
     pub fn prove_v2(&self, witness: &BlockWitnessV2) -> ZkResult<BlockProof> {
@@ -270,9 +437,10 @@ impl BlockProver {
             witness.transitions.len()
         );
 
-        // Use TestConstraintSystem to verify all constraints are satisfied
+        // First verify constraints with TestConstraintSystem
+        let test_circuit = self.build_circuit_v2(witness)?;
         let mut cs = TestConstraintSystem::<Fr>::new();
-        circuit
+        test_circuit
             .synthesize(&mut cs)
             .map_err(|e| ZkError::SynthesisError(format!("Circuit synthesis failed: {:?}", e)))?;
 
@@ -289,13 +457,19 @@ impl BlockProver {
             cs.num_constraints()
         );
 
-        // Generate proof bytes
-        let proof_bytes = self.generate_proof_bytes_v2(witness, cs.num_constraints());
+        // Generate proof bytes (real Groth16 if params available, otherwise simulated)
+        let proof_bytes = if let Some(ref params) = self.params {
+            self.generate_groth16_proof(circuit, params)?
+        } else {
+            warn!("Groth16 parameters not available, using simulated proof");
+            self.generate_proof_bytes_v2(witness, cs.num_constraints())
+        };
 
         info!(
-            "State transition proof generated in {:?}, size: {} bytes",
+            "State transition proof generated in {:?}, size: {} bytes, groth16: {}",
             start.elapsed(),
-            proof_bytes.len()
+            proof_bytes.len(),
+            self.params.is_some()
         );
 
         Ok(BlockProof::new(
@@ -362,7 +536,7 @@ impl BlockProver {
                 input_root,
                 output_root,
                 witness.tree_depth,
-            );
+            ).map_err(|e| ZkError::InvalidWitness(e.to_string()))?;
 
             state_transitions.push(transition);
         }
