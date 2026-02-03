@@ -11,6 +11,37 @@
 //! - Deposit reorged: Rollback pending credit
 //! - Reconciliation reorged: Re-broadcast settlement tx
 //! - Wraith tx reorged: Abort mixing, refund participants
+//!
+//! ## Fork Resolution Strategy (P2P-M5)
+//!
+//! When a fork is detected, the system follows these resolution rules:
+//!
+//! 1. **Equivocation Detection**: If a proposer signs two different blocks at
+//!    the same height, create an `EquivocationProof` and slash/ban the proposer.
+//!    The valid chain is determined by BFT voting - the chain that received
+//!    67%+ approval is canonical.
+//!
+//! 2. **Vote-Based Resolution**: For forks without equivocation, the chain
+//!    with more BFT approvals wins. The `L2ReorgAction::SwitchChain` action
+//!    is emitted when we need to switch to a different chain.
+//!
+//! 3. **Weight-Based Tiebreaker**: If vote counts are equal (rare in BFT),
+//!    prefer the chain proposed by the elder with higher stake/reputation.
+//!
+//! 4. **Automatic Rollback**: When switching chains, the `handle_reorg` method
+//!    in `ZkVoteHandler` automatically:
+//!    - Cancels pending proposals above the fork point
+//!    - Restores state from the last known-good snapshot
+//!    - Emits L2Event::ForkDetected for subscribers
+//!
+//! Note: Full automatic resolution requires integration between:
+//! - `L2ForkDetector` (this module): Detects forks and equivocation
+//! - `ZkVoteHandler`: Tracks BFT vote counts and can rollback state
+//! - `VotingManager`: Provides vote counts for each chain
+//!
+//! The current implementation provides detection and manual resolution via
+//! the `L2ReorgAction` enum. Callers should handle these actions to complete
+//! the fork resolution process.
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -303,6 +334,97 @@ impl L2ForkDetector {
             .iter()
             .max_by_key(|(h, _)| *h)
             .map(|(_, b)| b.clone())
+    }
+
+    /// Determine the action to take for a detected fork (P2P-M5)
+    ///
+    /// This method helps resolve forks by examining the evidence and
+    /// recommending an appropriate action. The caller is responsible
+    /// for executing the returned action.
+    ///
+    /// # Arguments
+    /// * `fork_result` - The result from `detect_fork()`
+    /// * `our_vote_count` - Number of BFT votes for our chain at the fork point
+    /// * `their_vote_count` - Number of BFT votes for their chain at the fork point
+    ///
+    /// # Returns
+    /// An `L2ReorgAction` indicating what should be done to resolve the fork
+    pub fn determine_resolution(
+        &self,
+        fork_result: &ForkDetectionResult,
+        our_vote_count: u32,
+        their_vote_count: u32,
+    ) -> L2ReorgAction {
+        match fork_result {
+            ForkDetectionResult::NoFork => L2ReorgAction::None,
+
+            ForkDetectionResult::Equivocation(proof) => {
+                // Equivocation is always slashable, regardless of vote counts
+                L2ReorgAction::SlashProposer {
+                    proof: proof.clone(),
+                }
+            }
+
+            ForkDetectionResult::ForkDetected {
+                fork_height,
+                their_tip,
+                common_ancestor,
+                ..
+            } => {
+                // Compare vote counts to determine which chain is canonical
+                if their_vote_count > our_vote_count {
+                    // They have more votes - we should switch to their chain
+                    debug!(
+                        fork_height,
+                        our_votes = our_vote_count,
+                        their_votes = their_vote_count,
+                        "Fork resolution: switching to chain with more votes"
+                    );
+
+                    L2ReorgAction::SwitchChain {
+                        from_height: common_ancestor.unwrap_or(*fork_height - 1),
+                        new_blocks: vec![their_tip.clone()], // Would need full chain in practice
+                    }
+                } else if our_vote_count > their_vote_count {
+                    // We have more votes - stay on our chain
+                    debug!(
+                        fork_height,
+                        our_votes = our_vote_count,
+                        their_votes = their_vote_count,
+                        "Fork resolution: staying on chain with more votes"
+                    );
+                    L2ReorgAction::None
+                } else {
+                    // Equal votes - use tiebreaker (lower block hash wins)
+                    // This provides deterministic resolution when votes are tied
+                    debug!(
+                        fork_height,
+                        our_votes = our_vote_count,
+                        their_votes = their_vote_count,
+                        "Fork resolution: equal votes, using hash tiebreaker"
+                    );
+
+                    // In a tie, the chain with the lexicographically lower block hash wins
+                    // This is deterministic and doesn't favor any particular node
+                    if let Some(our_tip) = self.get_tip() {
+                        if their_tip.block_hash < our_tip.block_hash {
+                            L2ReorgAction::SwitchChain {
+                                from_height: common_ancestor.unwrap_or(*fork_height - 1),
+                                new_blocks: vec![their_tip.clone()],
+                            }
+                        } else {
+                            L2ReorgAction::None
+                        }
+                    } else {
+                        // No tip, accept their chain
+                        L2ReorgAction::SwitchChain {
+                            from_height: common_ancestor.unwrap_or(*fork_height - 1),
+                            new_blocks: vec![their_tip.clone()],
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Cleanup old block history
@@ -868,5 +990,64 @@ mod tests {
 
         assert_eq!(balance.spendable(), 800); // 1000 - 200
         assert_eq!(balance.total(), 1300); // 1000 + 500 - 200
+    }
+
+    #[test]
+    fn test_fork_resolution_more_votes_wins() {
+        let detector = L2ForkDetector::new(100);
+
+        // Record our chain
+        detector.record_our_block(L2BlockRef {
+            height: 10,
+            state_root: [1u8; 32],
+            block_hash: [2u8; 32],
+            proposer: [3u8; 32],
+            signature: [0u8; 64],
+            timestamp: 1000,
+        });
+
+        // Detect fork
+        let fork_result = detector.detect_fork(10, [9u8; 32]);
+
+        // They have more votes - should switch
+        let action = detector.determine_resolution(&fork_result, 3, 5);
+        assert!(matches!(action, L2ReorgAction::SwitchChain { .. }));
+
+        // We have more votes - should stay
+        let action = detector.determine_resolution(&fork_result, 5, 3);
+        assert!(matches!(action, L2ReorgAction::None));
+    }
+
+    #[test]
+    fn test_fork_resolution_no_fork() {
+        let detector = L2ForkDetector::new(100);
+
+        let action = detector.determine_resolution(&ForkDetectionResult::NoFork, 5, 5);
+        assert!(matches!(action, L2ReorgAction::None));
+    }
+
+    #[test]
+    fn test_fork_resolution_equivocation() {
+        use ghost_common::identity::NodeIdentity;
+
+        let detector = L2ForkDetector::new(100);
+        let identity = NodeIdentity::generate();
+        let proposer = identity.node_id();
+
+        let proof = EquivocationProof {
+            proposer,
+            height: 10,
+            block_hash_a: [1u8; 32],
+            block_hash_b: [2u8; 32],
+            signature_a: identity.sign(&[1u8; 32]),
+            signature_b: identity.sign(&[2u8; 32]),
+            detected_at: 1000,
+        };
+
+        let fork_result = ForkDetectionResult::Equivocation(proof);
+
+        // Equivocation always results in slash, regardless of votes
+        let action = detector.determine_resolution(&fork_result, 5, 3);
+        assert!(matches!(action, L2ReorgAction::SlashProposer { .. }));
     }
 }

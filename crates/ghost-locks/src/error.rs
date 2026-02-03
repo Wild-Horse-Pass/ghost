@@ -54,6 +54,14 @@ pub enum GhostLockError {
     /// Insufficient balance
     #[error("Insufficient balance: have {have}, need {need}")]
     InsufficientBalance { have: u64, need: u64 },
+
+    /// Invalid creation height
+    #[error("Invalid creation height: {0}")]
+    InvalidCreationHeight(String),
+
+    /// Timelock too short
+    #[error("Timelock too short: {blocks} blocks, minimum is {minimum}")]
+    TimelockTooShort { blocks: u32, minimum: u32 },
 }
 
 impl From<bitcoin::secp256k1::Error> for GhostLockError {

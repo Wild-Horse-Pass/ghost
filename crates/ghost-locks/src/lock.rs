@@ -34,7 +34,7 @@ use crate::denomination::Denomination;
 use crate::error::GhostLockError;
 use crate::jump::{JumpRiskTier, JumpSchedule};
 use crate::script::{build_lock_script, ghost_lock_id, to_x_only};
-use crate::state::LockState;
+use crate::state::{LockState, StateTransition};
 use crate::timelock::TimelockTier;
 
 /// A Ghost Lock - P2TR UTXO with timelock recovery
@@ -93,6 +93,15 @@ impl GhostLock {
         timelock_tier: TimelockTier,
         creation_height: u32,
     ) -> Result<Self, GhostLockError> {
+        // Validate creation height to prevent overflow
+        if creation_height > crate::timelock::MAX_CREATION_HEIGHT {
+            return Err(GhostLockError::InvalidCreationHeight(format!(
+                "{} exceeds maximum {}",
+                creation_height,
+                crate::timelock::MAX_CREATION_HEIGHT
+            )));
+        }
+
         // Build taproot script
         let spend_info = build_lock_script(
             &lock_pubkey,
@@ -180,9 +189,19 @@ impl GhostLock {
         self.state
     }
 
-    /// Set state
-    pub fn set_state(&mut self, state: LockState) {
-        self.state = state;
+    /// Transition to a new state with validation
+    ///
+    /// This method validates that the requested transition is allowed from the current state
+    /// using the defined state machine rules.
+    pub fn transition(&mut self, transition: StateTransition) -> Result<(), GhostLockError> {
+        if !transition.is_valid_from(self.state) {
+            return Err(GhostLockError::InvalidStateTransition(format!(
+                "Cannot apply {:?} from state {:?}",
+                transition, self.state
+            )));
+        }
+        self.state = transition.result_state();
+        Ok(())
     }
 
     /// Get jump schedule
@@ -201,9 +220,15 @@ impl GhostLock {
     }
 
     /// Check if recovery is available at given height
+    ///
+    /// Recovery is only available if:
+    /// 1. The lock is in Active state (not spent, frozen, etc.)
+    /// 2. The timelock has expired
     pub fn is_recovery_available(&self, current_height: u32) -> bool {
-        self.timelock_tier
-            .is_recovery_available(self.creation_height, current_height)
+        self.state == LockState::Active
+            && self
+                .timelock_tier
+                .is_recovery_available(self.creation_height, current_height)
     }
 
     /// Get blocks until recovery is available
@@ -355,5 +380,143 @@ mod tests {
         let data = GhostLockData::from(&lock);
         assert_eq!(data.denomination, Denomination::Medium);
         assert_eq!(data.timelock_tier, TimelockTier::Short);
+    }
+
+    #[test]
+    fn test_state_transition_valid() {
+        let secp = Secp256k1::new();
+        let mut lock = GhostLock::new(
+            &secp,
+            &generate_secret_key(),
+            &generate_secret_key(),
+            Denomination::Small,
+            TimelockTier::Standard,
+            800_000,
+        )
+        .unwrap();
+
+        assert_eq!(lock.state(), LockState::Active);
+
+        // Valid transition: Active -> InMix
+        assert!(lock.transition(StateTransition::EnterMix).is_ok());
+        assert_eq!(lock.state(), LockState::InMix);
+
+        // Valid transition: InMix -> Active
+        assert!(lock.transition(StateTransition::ExitMix).is_ok());
+        assert_eq!(lock.state(), LockState::Active);
+
+        // Valid transition: Active -> Spent
+        assert!(lock.transition(StateTransition::Spend).is_ok());
+        assert_eq!(lock.state(), LockState::Spent);
+    }
+
+    #[test]
+    fn test_state_transition_invalid() {
+        let secp = Secp256k1::new();
+        let mut lock = GhostLock::new(
+            &secp,
+            &generate_secret_key(),
+            &generate_secret_key(),
+            Denomination::Small,
+            TimelockTier::Standard,
+            800_000,
+        )
+        .unwrap();
+
+        // Enter mix first
+        lock.transition(StateTransition::EnterMix).unwrap();
+
+        // Invalid: InMix cannot enter mix again
+        let result = lock.transition(StateTransition::EnterMix);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            GhostLockError::InvalidStateTransition(_)
+        ));
+
+        // State should remain unchanged
+        assert_eq!(lock.state(), LockState::InMix);
+    }
+
+    #[test]
+    fn test_recovery_requires_active_state() {
+        let secp = Secp256k1::new();
+        let mut lock = GhostLock::new(
+            &secp,
+            &generate_secret_key(),
+            &generate_secret_key(),
+            Denomination::Small,
+            TimelockTier::Short,
+            800_000,
+        )
+        .unwrap();
+
+        let recovery_height = lock.recovery_height();
+
+        // Recovery available when active
+        assert!(lock.is_recovery_available(recovery_height));
+
+        // Mark as spent
+        lock.transition(StateTransition::Spend).unwrap();
+
+        // Recovery not available when spent
+        assert!(!lock.is_recovery_available(recovery_height));
+    }
+
+    #[test]
+    fn test_recovery_not_available_when_frozen() {
+        let secp = Secp256k1::new();
+        let mut lock = GhostLock::new(
+            &secp,
+            &generate_secret_key(),
+            &generate_secret_key(),
+            Denomination::Small,
+            TimelockTier::Short,
+            800_000,
+        )
+        .unwrap();
+
+        let recovery_height = lock.recovery_height();
+
+        // Freeze the lock
+        lock.transition(StateTransition::Freeze).unwrap();
+
+        // Recovery not available when frozen
+        assert!(!lock.is_recovery_available(recovery_height));
+    }
+
+    #[test]
+    fn test_invalid_creation_height() {
+        let secp = Secp256k1::new();
+        let result = GhostLock::new(
+            &secp,
+            &generate_secret_key(),
+            &generate_secret_key(),
+            Denomination::Small,
+            TimelockTier::Standard,
+            crate::timelock::MAX_CREATION_HEIGHT + 1,
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            GhostLockError::InvalidCreationHeight(_)
+        ));
+    }
+
+    #[test]
+    fn test_valid_max_creation_height() {
+        let secp = Secp256k1::new();
+        let result = GhostLock::new(
+            &secp,
+            &generate_secret_key(),
+            &generate_secret_key(),
+            Denomination::Small,
+            TimelockTier::Standard,
+            crate::timelock::MAX_CREATION_HEIGHT,
+        );
+
+        // Should succeed at exactly the max
+        assert!(result.is_ok());
     }
 }

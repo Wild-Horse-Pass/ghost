@@ -51,6 +51,16 @@ use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::WraithError;
+use std::time::Instant;
+
+/// Maximum number of active nonces per participant to prevent memory exhaustion
+const MAX_NONCES_PER_PARTICIPANT: usize = 100;
+
+/// Maximum total active nonces to prevent memory exhaustion
+const MAX_TOTAL_NONCES: usize = 1000;
+
+/// Nonce expiry time (1 hour)
+const NONCE_EXPIRY_SECS: u64 = 3600;
 
 /// Generate random 32 bytes for key material
 fn random_bytes_32() -> [u8; 32] {
@@ -158,6 +168,8 @@ pub struct SigningNonce {
     pub session_id: [u8; 32],
     /// Ghost ID of the participant this nonce was issued to (for verification)
     pub bound_ghost_id: Option<String>,
+    /// Timestamp when nonce was created (for expiry)
+    created_at: Instant,
 }
 
 /// Public nonce sent to participants
@@ -201,6 +213,8 @@ pub struct CoordinatorSigner {
     key_id: [u8; 32],
     /// Active signing nonces (indexed by session_id)
     active_nonces: std::collections::HashMap<[u8; 32], SigningNonce>,
+    /// Per-participant nonce count for rate limiting
+    nonces_per_participant: std::collections::HashMap<String, usize>,
 }
 
 impl std::fmt::Debug for CoordinatorSigner {
@@ -233,6 +247,7 @@ impl CoordinatorSigner {
             public_key,
             key_id,
             active_nonces: std::collections::HashMap::new(),
+            nonces_per_participant: std::collections::HashMap::new(),
         }
     }
 
@@ -255,6 +270,7 @@ impl CoordinatorSigner {
             public_key,
             key_id,
             active_nonces: std::collections::HashMap::new(),
+            nonces_per_participant: std::collections::HashMap::new(),
         })
     }
 
@@ -276,7 +292,30 @@ impl CoordinatorSigner {
     /// SECURITY: The ghost_id is included in session_id generation to bind
     /// the nonce to the requesting participant. This prevents nonce hijacking
     /// where a malicious participant uses another's nonce.
-    pub fn create_nonce_for_participant(&mut self, ghost_id: &str) -> PublicNonce {
+    ///
+    /// RATE LIMITING: Enforces per-participant and total nonce limits to prevent
+    /// memory exhaustion attacks. Returns error if limits exceeded.
+    pub fn create_nonce_for_participant(&mut self, ghost_id: &str) -> Result<PublicNonce, WraithError> {
+        // First, expire old nonces to free up capacity
+        self.expire_old_nonces();
+
+        // Check total nonce limit
+        if self.active_nonces.len() >= MAX_TOTAL_NONCES {
+            return Err(WraithError::PhaseError(format!(
+                "Maximum total nonces reached ({}). Try again later.",
+                MAX_TOTAL_NONCES
+            )));
+        }
+
+        // Check per-participant limit
+        let participant_count = self.nonces_per_participant.get(ghost_id).copied().unwrap_or(0);
+        if participant_count >= MAX_NONCES_PER_PARTICIPANT {
+            return Err(WraithError::PhaseError(format!(
+                "Maximum nonces per participant reached ({}) for {}. Try again later.",
+                MAX_NONCES_PER_PARTICIPANT, ghost_id
+            )));
+        }
+
         let secp = Secp256k1::new();
 
         // Generate random nonce k
@@ -296,6 +335,7 @@ impl CoordinatorSigner {
             public_nonce,
             session_id,
             bound_ghost_id: Some(ghost_id.to_string()),
+            created_at: Instant::now(),
         };
 
         let public = PublicNonce {
@@ -305,7 +345,39 @@ impl CoordinatorSigner {
 
         self.active_nonces.insert(session_id, nonce);
 
-        public
+        // Update per-participant count
+        *self.nonces_per_participant.entry(ghost_id.to_string()).or_insert(0) += 1;
+
+        Ok(public)
+    }
+
+    /// Expire nonces older than NONCE_EXPIRY_SECS (1 hour)
+    ///
+    /// This is called automatically before creating new nonces.
+    fn expire_old_nonces(&mut self) {
+        let now = Instant::now();
+        let expiry_duration = std::time::Duration::from_secs(NONCE_EXPIRY_SECS);
+
+        // Collect expired session IDs
+        let expired: Vec<[u8; 32]> = self.active_nonces
+            .iter()
+            .filter(|(_, nonce)| now.duration_since(nonce.created_at) > expiry_duration)
+            .map(|(id, _)| *id)
+            .collect();
+
+        // Remove expired nonces and update per-participant counts
+        for session_id in expired {
+            if let Some(nonce) = self.active_nonces.remove(&session_id) {
+                if let Some(ref ghost_id) = nonce.bound_ghost_id {
+                    if let Some(count) = self.nonces_per_participant.get_mut(ghost_id) {
+                        *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            self.nonces_per_participant.remove(ghost_id);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Create a new signing nonce (unbound - DEPRECATED)
@@ -317,6 +389,9 @@ impl CoordinatorSigner {
         note = "Use create_nonce_for_participant() to bind nonces to participants"
     )]
     pub fn create_nonce(&mut self) -> PublicNonce {
+        // Expire old nonces first
+        self.expire_old_nonces();
+
         let secp = Secp256k1::new();
 
         // Generate random nonce k
@@ -335,6 +410,7 @@ impl CoordinatorSigner {
             public_nonce,
             session_id,
             bound_ghost_id: None, // Unbound - INSECURE
+            created_at: Instant::now(),
         };
 
         let public = PublicNonce {
@@ -381,6 +457,16 @@ impl CoordinatorSigner {
             .active_nonces
             .remove(&challenge.session_id)
             .expect("nonce exists - we just checked");
+
+        // Update per-participant count
+        if let Some(ref ghost_id) = nonce.bound_ghost_id {
+            if let Some(count) = self.nonces_per_participant.get_mut(ghost_id) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    self.nonces_per_participant.remove(ghost_id);
+                }
+            }
+        }
 
         // Parse challenge as scalar
         let c_prime = SecretKey::from_slice(&challenge.challenge)
@@ -943,7 +1029,7 @@ mod tests {
         let mut signer = CoordinatorSigner::new(&session_id);
 
         // Create a nonce bound to "ghost1"
-        let nonce = signer.create_nonce_for_participant("ghost1");
+        let nonce = signer.create_nonce_for_participant("ghost1").unwrap();
 
         // Participant creates blinding context
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
@@ -962,7 +1048,7 @@ mod tests {
 
         // Create a new nonce for the test since the first was not consumed
         // (we got an error before removal)
-        let nonce2 = signer.create_nonce_for_participant("ghost1");
+        let nonce2 = signer.create_nonce_for_participant("ghost1").unwrap();
         let context2 = BlindingContext::new(
             address.serialize().to_vec(),
             signer.public_key(),
@@ -985,8 +1071,8 @@ mod tests {
         let mut signer2 = CoordinatorSigner::new(&session_id);
 
         // Create nonces for different participants on different signers
-        let nonce1 = signer1.create_nonce_for_participant("ghost1");
-        let nonce2 = signer2.create_nonce_for_participant("ghost2");
+        let nonce1 = signer1.create_nonce_for_participant("ghost1").unwrap();
+        let nonce2 = signer2.create_nonce_for_participant("ghost2").unwrap();
 
         // Even with same coordinator key, different participants get different session IDs
         // (due to random entropy AND ghost_id in hash)
@@ -994,6 +1080,45 @@ mod tests {
             nonce1.session_id, nonce2.session_id,
             "Different participants should get different session IDs"
         );
+    }
+
+    /// WR-M2 Security Test: Rate limiting on nonce generation
+    ///
+    /// This test verifies that:
+    /// 1. Per-participant limits are enforced
+    /// 2. Nonces are properly counted and decremented on use
+    #[test]
+    fn test_nonce_rate_limiting() {
+        let session_id = [10u8; 32];
+        let mut signer = CoordinatorSigner::new(&session_id);
+
+        // Create nonces up to the per-participant limit
+        let mut nonces = Vec::new();
+        for i in 0..super::MAX_NONCES_PER_PARTICIPANT {
+            let result = signer.create_nonce_for_participant("rate_test_ghost");
+            assert!(result.is_ok(), "Nonce {} should succeed", i);
+            nonces.push(result.unwrap());
+        }
+
+        // Next nonce should fail due to rate limit
+        let result = signer.create_nonce_for_participant("rate_test_ghost");
+        assert!(result.is_err(), "Should fail after reaching per-participant limit");
+        assert!(result.unwrap_err().to_string().contains("Maximum nonces per participant"));
+
+        // After consuming a nonce, we should be able to create another
+        let address = generate_test_address();
+        let message = address.serialize().to_vec();
+        let context = BlindingContext::new(message, signer.public_key(), &nonces[0]).unwrap();
+        let challenge = context.create_blinded_challenge().unwrap();
+        signer.sign_blinded_challenge_for_participant(&challenge, "rate_test_ghost").unwrap();
+
+        // Now creating another should succeed
+        let result = signer.create_nonce_for_participant("rate_test_ghost");
+        assert!(result.is_ok(), "Should succeed after consuming a nonce");
+
+        // Different participant should have their own limit
+        let result = signer.create_nonce_for_participant("other_ghost");
+        assert!(result.is_ok(), "Different participant should have separate limit");
     }
 
     /// Test backwards compatibility with unbound nonces (deprecated)

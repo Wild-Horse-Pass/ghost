@@ -349,8 +349,9 @@ impl WraithTransactionBuilder {
         }
 
         // Shuffle inputs using session_id combined with entropy
-        let seed = self.session_shuffle_seed_with_entropy(entropy).wrapping_add(1);
-        shuffle_inputs(&mut all_inputs, seed);
+        let base_seed = self.session_shuffle_seed_with_entropy(entropy);
+        let input_seed = self.derive_seed(&base_seed, 1);
+        shuffle_inputs(&mut all_inputs, input_seed);
 
         // Create TxIn for each intermediate
         for (_p_idx, input) in &all_inputs {
@@ -367,7 +368,8 @@ impl WraithTransactionBuilder {
 
         // Shuffle output order too
         let mut output_indices: Vec<usize> = (0..final_addresses.len()).collect();
-        shuffle_indices(&mut output_indices, seed.wrapping_add(2));
+        let output_seed = self.derive_seed(&base_seed, 2);
+        shuffle_indices(&mut output_indices, output_seed);
 
         // Create outputs (one per participant)
         for &idx in &output_indices {
@@ -435,30 +437,45 @@ impl WraithTransactionBuilder {
         data
     }
 
-    /// Generate shuffle seed from session ID and optional entropy
+    /// Generate 32-byte shuffle seed from session ID and optional entropy
     ///
     /// The entropy parameter adds CSPRNG randomness to the shuffle seed,
     /// making it impossible to predict output ordering even knowing the session ID.
     /// This enhances privacy by preventing timing attacks on shuffle ordering.
     #[allow(dead_code)]
-    fn session_shuffle_seed(&self) -> u64 {
+    fn session_shuffle_seed(&self) -> [u8; 32] {
         self.session_shuffle_seed_with_entropy(&[0u8; 32])
     }
 
-    /// Generate shuffle seed with explicit entropy
+    /// Generate 32-byte shuffle seed with explicit entropy
     ///
     /// Combines the session ID with additional entropy (from CSPRNG) to create
     /// an unpredictable shuffle seed. The entropy should be generated fresh
     /// for each phase transaction using `rand::thread_rng()`.
-    fn session_shuffle_seed_with_entropy(&self, entropy: &[u8; 32]) -> u64 {
+    /// Returns a full 32-byte seed suitable for ChaCha20Rng.
+    fn session_shuffle_seed_with_entropy(&self, entropy: &[u8; 32]) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(self.session_id.as_bytes());
         hasher.update(entropy);
         let hash = hasher.finalize();
-        let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(&hash[..8]);
-        u64::from_le_bytes(bytes)
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&hash);
+        seed
+    }
+
+    /// Generate a derived 32-byte seed from a base seed with an offset
+    ///
+    /// Used to create different but deterministic seeds for different shuffle operations.
+    fn derive_seed(&self, base_seed: &[u8; 32], offset: u8) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(base_seed);
+        hasher.update([offset]);
+        let hash = hasher.finalize();
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&hash);
+        seed
     }
 
     /// Estimate vsize for split transaction
@@ -539,34 +556,43 @@ fn build_op_return_script(data: &[u8]) -> ScriptBuf {
         .into_script()
 }
 
-/// Deterministic shuffle for outputs (Fisher-Yates with seeded RNG)
-fn shuffle_outputs(items: &mut [(usize, usize, &str)], seed: u64) {
-    let mut rng_state = seed;
-    for i in (1..items.len()).rev() {
-        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let j = (rng_state as usize) % (i + 1);
-        items.swap(i, j);
-    }
+/// Cryptographically secure shuffle for outputs using ChaCha20Rng
+///
+/// Uses ChaCha20Rng seeded from a 32-byte seed derived from the session ID and entropy.
+/// This provides cryptographic unpredictability for output ordering.
+fn shuffle_outputs(items: &mut [(usize, usize, &str)], seed_bytes: [u8; 32]) {
+    use rand::seq::SliceRandom;
+    use rand_chacha::ChaCha20Rng;
+    use rand::SeedableRng;
+
+    let mut rng = ChaCha20Rng::from_seed(seed_bytes);
+    items.shuffle(&mut rng);
 }
 
-/// Deterministic shuffle for inputs
-fn shuffle_inputs(items: &mut [(usize, &WraithInput)], seed: u64) {
-    let mut rng_state = seed;
-    for i in (1..items.len()).rev() {
-        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let j = (rng_state as usize) % (i + 1);
-        items.swap(i, j);
-    }
+/// Cryptographically secure shuffle for inputs using ChaCha20Rng
+///
+/// Uses ChaCha20Rng seeded from a 32-byte seed derived from the session ID and entropy.
+/// This provides cryptographic unpredictability for input ordering.
+fn shuffle_inputs(items: &mut [(usize, &WraithInput)], seed_bytes: [u8; 32]) {
+    use rand::seq::SliceRandom;
+    use rand_chacha::ChaCha20Rng;
+    use rand::SeedableRng;
+
+    let mut rng = ChaCha20Rng::from_seed(seed_bytes);
+    items.shuffle(&mut rng);
 }
 
-/// Deterministic shuffle for indices
-fn shuffle_indices(items: &mut [usize], seed: u64) {
-    let mut rng_state = seed;
-    for i in (1..items.len()).rev() {
-        rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let j = (rng_state as usize) % (i + 1);
-        items.swap(i, j);
-    }
+/// Cryptographically secure shuffle for indices using ChaCha20Rng
+///
+/// Uses ChaCha20Rng seeded from a 32-byte seed derived from the session ID and entropy.
+/// This provides cryptographic unpredictability for index ordering.
+fn shuffle_indices(items: &mut [usize], seed_bytes: [u8; 32]) {
+    use rand::seq::SliceRandom;
+    use rand_chacha::ChaCha20Rng;
+    use rand::SeedableRng;
+
+    let mut rng = ChaCha20Rng::from_seed(seed_bytes);
+    items.shuffle(&mut rng);
 }
 
 #[cfg(test)]
@@ -631,10 +657,39 @@ mod tests {
         let mut items1 = vec![(0, 0, "a"), (1, 0, "b"), (2, 0, "c")];
         let mut items2 = vec![(0, 0, "a"), (1, 0, "b"), (2, 0, "c")];
 
-        shuffle_outputs(&mut items1, 12345);
-        shuffle_outputs(&mut items2, 12345);
+        // Use a fixed 32-byte seed for testing
+        let seed = [0x42u8; 32];
+        shuffle_outputs(&mut items1, seed);
+        shuffle_outputs(&mut items2, seed);
 
         assert_eq!(items1, items2);
+    }
+
+    /// WR-M1 Security Test: Verify shuffle uses CSPRNG (ChaCha20Rng)
+    ///
+    /// This test verifies that:
+    /// 1. Different seeds produce different shuffles
+    /// 2. Same seed produces deterministic result
+    #[test]
+    fn test_shuffle_csprng_chacha20() {
+        let mut items1 = vec![(0, 0, "a"), (1, 0, "b"), (2, 0, "c"), (3, 0, "d"), (4, 0, "e")];
+        let mut items2 = vec![(0, 0, "a"), (1, 0, "b"), (2, 0, "c"), (3, 0, "d"), (4, 0, "e")];
+        let mut items3 = vec![(0, 0, "a"), (1, 0, "b"), (2, 0, "c"), (3, 0, "d"), (4, 0, "e")];
+
+        let seed1 = [0x01u8; 32];
+        let seed2 = [0x02u8; 32];
+
+        shuffle_outputs(&mut items1, seed1);
+        shuffle_outputs(&mut items2, seed1);
+        shuffle_outputs(&mut items3, seed2);
+
+        // Same seed = same result (deterministic)
+        assert_eq!(items1, items2, "Same seed should produce same shuffle");
+
+        // Different seed = different result (with high probability)
+        // Note: With 5 elements, there's 1/120 chance they're the same by accident
+        // We use different initial bytes to ensure different results
+        assert_ne!(items1, items3, "Different seeds should produce different shuffles");
     }
 
     #[test]

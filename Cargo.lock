@@ -5610,6 +5610,7 @@ dependencies = [
  "hex",
  "parking_lot",
  "rand",
+ "rand_chacha",
  "serde",
  "sha2 0.10.9",
  "thiserror 1.0.69",

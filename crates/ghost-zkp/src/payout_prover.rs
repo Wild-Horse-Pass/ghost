@@ -88,13 +88,17 @@ pub struct PayoutWitness {
 impl PayoutWitness {
     /// Validate the witness
     pub fn validate(&self) -> ZkResult<()> {
-        // Check sum preservation
-        let sum: u64 = self
+        // Check sum preservation using checked arithmetic to detect overflow
+        let payouts_sum: u64 = self
             .miner_payouts
             .iter()
             .chain(self.node_payouts.iter())
-            .sum::<u64>()
-            .saturating_add(self.treasury_amount);
+            .try_fold(0u64, |acc, &x| acc.checked_add(x))
+            .ok_or_else(|| ZkError::InvalidWitness("Payouts sum overflowed u64".to_string()))?;
+
+        let sum = payouts_sum
+            .checked_add(self.treasury_amount)
+            .ok_or_else(|| ZkError::InvalidWitness("Total sum overflowed u64".to_string()))?;
 
         if sum != self.total_available {
             return Err(ZkError::InvalidWitness(format!(
@@ -287,31 +291,40 @@ impl PayoutProver {
             (witness.miner_payouts.clone(), witness.node_payouts.clone())
         };
 
+        // Track actual counts for metadata commitment (before padding)
+        let actual_miner_count = witness.miner_payouts.len() as u32;
+        let actual_node_count = witness.node_payouts.len() as u32;
+
         // Build circuit for constraint verification (with padding for Groth16)
-        let circuit = PayoutCircuit::<Fr>::new_with_epoch(
+        // Use new_with_counts to preserve actual miner/node counts for metadata commitment
+        let circuit = PayoutCircuit::<Fr>::new_with_counts(
             witness.total_available,
             padded_miner_payouts.clone(),
             padded_node_payouts.clone(),
             witness.treasury_amount,
             witness.epoch,
+            actual_miner_count,
+            actual_node_count,
         );
 
         debug!(
             "Circuit built with {} miners, {} nodes (padded from {}, {}), epoch={}",
             padded_miner_payouts.len(),
             padded_node_payouts.len(),
-            witness.miner_payouts.len(),
-            witness.node_payouts.len(),
+            actual_miner_count,
+            actual_node_count,
             witness.epoch
         );
 
         // First verify constraints with TestConstraintSystem
-        let test_circuit = PayoutCircuit::<Fr>::new_with_epoch(
+        let test_circuit = PayoutCircuit::<Fr>::new_with_counts(
             witness.total_available,
             padded_miner_payouts.clone(),
             padded_node_payouts.clone(),
             witness.treasury_amount,
             witness.epoch,
+            actual_miner_count,
+            actual_node_count,
         );
         let mut cs = TestConstraintSystem::<Fr>::new();
         let outputs = test_circuit
@@ -498,5 +511,38 @@ mod tests {
         };
 
         assert!(witness.validate().is_ok());
+    }
+
+    // ZK-M3: Test overflow detection in witness validation
+    #[test]
+    fn test_witness_validation_overflow() {
+        // Test overflow in payouts sum
+        let witness = PayoutWitness {
+            epoch: 1,
+            total_available: u64::MAX,
+            miner_payouts: vec![u64::MAX, 1], // This should overflow
+            node_payouts: vec![],
+            treasury_amount: 0,
+        };
+
+        let result = witness.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("overflow"));
+    }
+
+    #[test]
+    fn test_witness_validation_treasury_overflow() {
+        // Test overflow when adding treasury
+        let witness = PayoutWitness {
+            epoch: 1,
+            total_available: u64::MAX,
+            miner_payouts: vec![u64::MAX - 100],
+            node_payouts: vec![],
+            treasury_amount: 101, // This should overflow when added
+        };
+
+        let result = witness.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("overflow"));
     }
 }

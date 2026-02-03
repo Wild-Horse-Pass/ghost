@@ -82,7 +82,7 @@ impl Denomination {
     /// Get a short code for this denomination
     pub fn code(&self) -> &'static str {
         match self {
-            Denomination::Micro => "M",
+            Denomination::Micro => "u",  // micro prefix (like microseconds)
             Denomination::Tiny => "T",
             Denomination::Small => "S",
             Denomination::Medium => "M",
@@ -225,5 +225,30 @@ mod tests {
             Denomination::Small.remainder_from_amount(5_500_000),
             500_000
         );
+    }
+
+    #[test]
+    fn test_denomination_codes_unique() {
+        // GL-L1: All denomination codes must be unique
+        let codes: Vec<&str> = Denomination::all().iter().map(|d| d.code()).collect();
+        let mut seen = std::collections::HashSet::new();
+        for code in &codes {
+            assert!(
+                seen.insert(*code),
+                "Duplicate denomination code found: {}",
+                code
+            );
+        }
+    }
+
+    #[test]
+    fn test_specific_denomination_codes() {
+        // Verify specific codes to ensure Micro != Medium
+        assert_eq!(Denomination::Micro.code(), "u");
+        assert_eq!(Denomination::Tiny.code(), "T");
+        assert_eq!(Denomination::Small.code(), "S");
+        assert_eq!(Denomination::Medium.code(), "M");
+        assert_eq!(Denomination::Large.code(), "L");
+        assert_eq!(Denomination::XL.code(), "XL");
     }
 }

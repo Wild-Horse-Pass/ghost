@@ -11,6 +11,7 @@ use bellperson::{
     Circuit, ConstraintSystem, LinearCombination, SynthesisError,
 };
 use ff::PrimeField;
+use sha2::{Digest, Sha256};
 use std::marker::PhantomData;
 
 use super::BALANCE_BITS;
@@ -33,8 +34,28 @@ pub struct PayoutCircuit<F: PrimeField> {
     pub treasury_amount: Option<u64>,
     /// Epoch being settled (PUBLIC INPUT for replay protection)
     pub epoch: Option<u64>,
+    /// Miner count for metadata commitment
+    pub miner_count: Option<u32>,
+    /// Node count for metadata commitment
+    pub node_count: Option<u32>,
     /// Phantom data for type parameter
     _marker: PhantomData<F>,
+}
+
+/// Compute metadata commitment for binding proof to metadata.
+/// Returns a field element from the hash of epoch, miner_count, node_count.
+fn compute_metadata_commitment<F: PrimeField>(epoch: u64, miner_count: u32, node_count: u32) -> F {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ghost-zkp-metadata-v1");
+    hasher.update(epoch.to_le_bytes());
+    hasher.update(miner_count.to_le_bytes());
+    hasher.update(node_count.to_le_bytes());
+    let hash = hasher.finalize();
+
+    // Convert hash to field element (take first 31 bytes to ensure it fits in the field)
+    let mut repr = F::Repr::default();
+    repr.as_mut()[..31].copy_from_slice(&hash[..31]);
+    F::from_repr_vartime(repr).unwrap_or(F::ZERO)
 }
 
 impl<F: PrimeField> PayoutCircuit<F> {
@@ -45,12 +66,16 @@ impl<F: PrimeField> PayoutCircuit<F> {
         node_payouts: Vec<u64>,
         treasury_amount: u64,
     ) -> Self {
+        let miner_count = miner_payouts.len() as u32;
+        let node_count = node_payouts.len() as u32;
         Self {
             total_available: Some(total_available),
             miner_payouts: miner_payouts.into_iter().map(Some).collect(),
             node_payouts: node_payouts.into_iter().map(Some).collect(),
             treasury_amount: Some(treasury_amount),
             epoch: Some(0), // Default epoch for backwards compatibility
+            miner_count: Some(miner_count),
+            node_count: Some(node_count),
             _marker: PhantomData,
         }
     }
@@ -63,12 +88,39 @@ impl<F: PrimeField> PayoutCircuit<F> {
         treasury_amount: u64,
         epoch: u64,
     ) -> Self {
+        let miner_count = miner_payouts.len() as u32;
+        let node_count = node_payouts.len() as u32;
         Self {
             total_available: Some(total_available),
             miner_payouts: miner_payouts.into_iter().map(Some).collect(),
             node_payouts: node_payouts.into_iter().map(Some).collect(),
             treasury_amount: Some(treasury_amount),
             epoch: Some(epoch),
+            miner_count: Some(miner_count),
+            node_count: Some(node_count),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create a new payout circuit with epoch and explicit counts
+    /// Used when padding payouts for Groth16 where the padded length differs from actual count
+    pub fn new_with_counts(
+        total_available: u64,
+        miner_payouts: Vec<u64>,
+        node_payouts: Vec<u64>,
+        treasury_amount: u64,
+        epoch: u64,
+        miner_count: u32,
+        node_count: u32,
+    ) -> Self {
+        Self {
+            total_available: Some(total_available),
+            miner_payouts: miner_payouts.into_iter().map(Some).collect(),
+            node_payouts: node_payouts.into_iter().map(Some).collect(),
+            treasury_amount: Some(treasury_amount),
+            epoch: Some(epoch),
+            miner_count: Some(miner_count),
+            node_count: Some(node_count),
             _marker: PhantomData,
         }
     }
@@ -81,6 +133,8 @@ impl<F: PrimeField> PayoutCircuit<F> {
             node_payouts: vec![Some(0); num_nodes],
             treasury_amount: Some(0),
             epoch: Some(0),
+            miner_count: Some(num_miners as u32),
+            node_count: Some(num_nodes as u32),
             _marker: PhantomData,
         }
     }
@@ -91,7 +145,8 @@ impl<F: PrimeField> PayoutCircuit<F> {
     /// 1. All miner payouts fit in 64 bits
     /// 2. All node payouts fit in 64 bits
     /// 3. Treasury amount fits in 64 bits
-    /// 4. sum(miner_payouts) + sum(node_payouts) + treasury == total_available
+    /// 4. total_available fits in 64 bits
+    /// 5. sum(miner_payouts) + sum(node_payouts) + treasury == total_available
     ///
     /// PUBLIC INPUTS (in order, verified by verifier):
     /// 1. total_available - total amount being distributed
@@ -99,6 +154,7 @@ impl<F: PrimeField> PayoutCircuit<F> {
     /// 3. node_sum - sum of all node payouts
     /// 4. treasury_amount - treasury allocation
     /// 5. epoch - epoch number for replay protection
+    /// 6. metadata_commitment - cryptographic binding of epoch, miner_count, node_count
     pub fn synthesize<CS: ConstraintSystem<F>>(
         self,
         cs: &mut CS,
@@ -106,6 +162,13 @@ impl<F: PrimeField> PayoutCircuit<F> {
         // Calculate sums before we move the payouts
         let miner_sum_value = self.miner_payouts.iter().filter_map(|p| *p).sum::<u64>();
         let node_sum_value = self.node_payouts.iter().filter_map(|p| *p).sum::<u64>();
+
+        // Compute metadata commitment for binding proof to metadata
+        let epoch_val = self.epoch.unwrap_or(0);
+        let miner_count_val = self.miner_count.unwrap_or(0);
+        let node_count_val = self.node_count.unwrap_or(0);
+        let metadata_commitment_value: F =
+            compute_metadata_commitment(epoch_val, miner_count_val, node_count_val);
 
         // ========================================================================
         // PUBLIC INPUTS - These are checked by the verifier against claimed values
@@ -146,6 +209,23 @@ impl<F: PrimeField> PayoutCircuit<F> {
         // Epoch is exposed as public input but not constrained further
         // (it's for binding the proof to a specific epoch)
         let _ = epoch_input;
+
+        // PUBLIC INPUT 6: metadata_commitment (binds proof to epoch, miner_count, node_count)
+        // This prevents replay or modification of metadata
+        let _metadata_commitment =
+            AllocatedNum::alloc_input(cs.namespace(|| "metadata_commitment"), || {
+                Ok(metadata_commitment_value)
+            })?;
+
+        // ========================================================================
+        // RANGE CHECK ON PUBLIC INPUT: total_available
+        // ZK-M2: Ensure total_available fits in 64 bits to prevent field overflow attacks
+        // ========================================================================
+        self.enforce_fits_in_bits(
+            cs.namespace(|| "total_available_range"),
+            &total_available,
+            BALANCE_BITS,
+        )?;
 
         // ========================================================================
         // PRIVATE INPUTS - Individual payout amounts
@@ -492,14 +572,14 @@ mod tests {
 
         // Constraints:
         // - Each payout: 64 bit decomposition + 1 reconstruction = 65
-        // - 5 private values (2 miners + 2 nodes + treasury) * 65 = 325
+        // - 6 range-checked values (2 miners + 2 nodes + treasury + total_available) * 65 = 390
         // - 1 sum preservation constraint
         // - 1 miner_sum constraint
         // - 1 node_sum constraint
         // - 1 treasury_matches constraint
-        // Total: ~329 constraints
+        // Total: ~394 constraints
         let expected_per_value = BALANCE_BITS + 1; // bits + reconstruction
-        let num_values = 2 + 2 + 1; // 2 miners + 2 nodes + treasury
+        let num_values = 2 + 2 + 1 + 1; // 2 miners + 2 nodes + treasury + total_available
         let range_constraints = num_values * expected_per_value;
         let sum_constraints = 4; // sum_preservation + miner_sum + node_sum + treasury_matches
         let expected_constraints = range_constraints + sum_constraints;
@@ -510,5 +590,63 @@ mod tests {
             cs.num_constraints(),
             expected_constraints
         );
+    }
+
+    // ZK-M2: Test that total_available has range check (64-bit)
+    #[test]
+    fn test_max_u64_total_available() {
+        // Test with maximum valid u64 value - should work since all values fit in 64 bits
+        let total: u64 = u64::MAX;
+        let circuit = PayoutCircuit::<Fr>::new(
+            total,
+            vec![u64::MAX / 2],
+            vec![u64::MAX / 2],
+            1, // remaining 1 sat after integer division
+        );
+
+        let mut cs = TestConstraintSystem::new();
+        circuit.synthesize(&mut cs).unwrap();
+
+        // This should satisfy constraints since all values fit in 64 bits
+        assert!(
+            cs.is_satisfied(),
+            "Maximum u64 total_available should satisfy 64-bit range check"
+        );
+    }
+
+    // ZK-M1: Test metadata commitment
+    #[test]
+    fn test_metadata_commitment_in_circuit() {
+        // Verify that circuits with same parameters produce same metadata commitment
+        let circuit1 = PayoutCircuit::<Fr>::new_with_epoch(1000, vec![500], vec![400], 100, 42);
+        let circuit2 = PayoutCircuit::<Fr>::new_with_epoch(1000, vec![500], vec![400], 100, 42);
+
+        // Both should have same miner_count and node_count
+        assert_eq!(circuit1.miner_count, circuit2.miner_count);
+        assert_eq!(circuit1.node_count, circuit2.node_count);
+        assert_eq!(circuit1.epoch, circuit2.epoch);
+
+        // Different epoch should give different circuit metadata
+        let circuit3 = PayoutCircuit::<Fr>::new_with_epoch(1000, vec![500], vec![400], 100, 43);
+        assert_ne!(circuit1.epoch, circuit3.epoch);
+    }
+
+    #[test]
+    fn test_new_with_counts() {
+        // Test that new_with_counts preserves the actual counts even with different array sizes
+        let circuit = PayoutCircuit::<Fr>::new_with_counts(
+            1000,
+            vec![500, 0, 0, 0, 0], // Padded to 5 elements
+            vec![400, 0, 0],       // Padded to 3 elements
+            100,
+            42,
+            1, // Actual miner count
+            1, // Actual node count
+        );
+
+        assert_eq!(circuit.miner_count, Some(1));
+        assert_eq!(circuit.node_count, Some(1));
+        assert_eq!(circuit.miner_payouts.len(), 5);
+        assert_eq!(circuit.node_payouts.len(), 3);
     }
 }

@@ -906,7 +906,7 @@ async fn main() -> Result<()> {
         dust_threshold_sats: config.pool.min_payout_sats.max(546),
         max_miner_outputs: 200,
         max_node_outputs: 100,
-        treasury_address: treasury_script,
+        treasury_address: Some(treasury_script),
     };
 
     // Create qualified capability provider for using VERIFIED capabilities
@@ -919,7 +919,7 @@ async fn main() -> Result<()> {
             Arc::clone(&db),
             Arc::clone(&vote_handler),
             Arc::clone(&template_processor),
-        )
+        )?
         .with_qualification_provider(Arc::clone(&qualification_provider)),
     );
 

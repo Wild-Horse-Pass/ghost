@@ -171,6 +171,15 @@ pub enum GhostError {
     #[error("Amount below dust threshold: {amount} < {threshold}")]
     DustAmount { amount: u64, threshold: u64 },
 
+    #[error("Hash mismatch: expected {expected}, got {actual}")]
+    HashMismatch { expected: String, actual: String },
+
+    // =========================================================================
+    // Configuration Errors (startup validation)
+    // =========================================================================
+    #[error("Configuration error: {0}")]
+    ConfigError(String),
+
     // =========================================================================
     // Storage Errors
     // =========================================================================

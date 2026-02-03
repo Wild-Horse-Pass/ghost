@@ -56,8 +56,9 @@ pub struct PayoutConfig {
     pub max_miner_outputs: usize,
     /// Maximum node outputs per block
     pub max_node_outputs: usize,
-    /// Treasury address (script pubkey bytes)
-    pub treasury_address: Vec<u8>,
+    /// Treasury address (script pubkey bytes) - REQUIRED
+    /// None indicates unconfigured state; must be set before use
+    pub treasury_address: Option<Vec<u8>>,
 }
 
 impl Default for PayoutConfig {
@@ -66,7 +67,37 @@ impl Default for PayoutConfig {
             dust_threshold_sats: 546,
             max_miner_outputs: 200,
             max_node_outputs: 100,
-            treasury_address: Vec::new(),
+            treasury_address: None, // Must be configured at startup
+        }
+    }
+}
+
+impl PayoutConfig {
+    /// Validate that required configuration is present
+    /// Returns error if treasury_address is not configured
+    pub fn validate(&self) -> GhostResult<()> {
+        match &self.treasury_address {
+            None => {
+                Err(ghost_common::error::GhostError::ConfigError(
+                    "treasury_address is required but not configured".to_string()
+                ))
+            }
+            Some(addr) if addr.is_empty() => {
+                Err(ghost_common::error::GhostError::ConfigError(
+                    "treasury_address cannot be empty".to_string()
+                ))
+            }
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// Get treasury address, returning error if not configured
+    pub fn treasury_address(&self) -> GhostResult<&[u8]> {
+        match &self.treasury_address {
+            Some(addr) if !addr.is_empty() => Ok(addr.as_slice()),
+            _ => Err(ghost_common::error::GhostError::ConfigError(
+                "treasury_address is required but not configured".to_string()
+            )),
         }
     }
 }
@@ -134,12 +165,19 @@ pub struct PayoutProposalCreator {
 }
 
 impl PayoutProposalCreator {
-    pub fn new(identity: Arc<NodeIdentity>, config: PayoutConfig, db: Arc<Database>) -> Self {
-        Self {
+    /// Create a new PayoutProposalCreator with validated configuration
+    ///
+    /// # Errors
+    /// Returns error if treasury_address is not configured
+    pub fn new(identity: Arc<NodeIdentity>, config: PayoutConfig, db: Arc<Database>) -> GhostResult<Self> {
+        // Validate configuration at startup - fail early if misconfigured
+        config.validate()?;
+
+        Ok(Self {
             identity,
             config,
             db,
-        }
+        })
     }
 
     /// Create a payout proposal from block found data
@@ -553,9 +591,14 @@ impl PayoutProposalCreator {
             );
             return Ok(payouts);
         } else if dust_total > 0 {
-            warn!(
+            // SECURITY NOTE: This case occurs when ALL nodes have payouts below dust threshold
+            // AND none have valid payout addresses. The dust cannot be redistributed because
+            // there are no eligible recipients. The caller (create_proposal) handles this by
+            // redirecting the entire augmented_node_pool to treasury when node_payouts is empty.
+            // This is NOT lost - it's explicitly handled at the proposal level.
+            debug!(
                 dust_total,
-                "Node dust lost - no eligible nodes to receive it"
+                "No eligible node payouts - dust will be handled at proposal level"
             );
         }
 
@@ -613,20 +656,24 @@ pub struct PayoutHandler {
 }
 
 impl PayoutHandler {
+    /// Create a new PayoutHandler
+    ///
+    /// # Errors
+    /// Returns error if treasury_address is not configured in PayoutConfig
     pub fn new(
         identity: Arc<NodeIdentity>,
         config: PayoutConfig,
         db: Arc<Database>,
         vote_handler: Arc<VoteHandler>,
         template_processor: Arc<TemplateProcessor>,
-    ) -> Self {
-        let creator = PayoutProposalCreator::new(identity, config, db);
-        Self {
+    ) -> GhostResult<Self> {
+        let creator = PayoutProposalCreator::new(identity, config, db)?;
+        Ok(Self {
             creator,
             vote_handler,
             template_processor,
             qualification_provider: None,
-        }
+        })
     }
 
     /// Add a qualified capability provider for using VERIFIED capabilities
@@ -702,8 +749,19 @@ impl PayoutHandler {
 
         let returned_hash = self.vote_handler.handle_proposal(proposal)?;
 
-        // Verify hash matches (sanity check)
-        debug_assert_eq!(proposal_hash, returned_hash, "Proposal hash mismatch");
+        // SECURITY: Verify hash matches - this catches implementation bugs where
+        // the vote handler modifies the proposal or computes the hash differently
+        if proposal_hash != returned_hash {
+            tracing::error!(
+                expected = %hex::encode(&proposal_hash[..8]),
+                actual = %hex::encode(&returned_hash[..8]),
+                "CRITICAL: Proposal hash mismatch between local computation and vote handler"
+            );
+            return Err(ghost_common::error::GhostError::HashMismatch {
+                expected: hex::encode(proposal_hash),
+                actual: hex::encode(returned_hash),
+            });
+        }
 
         info!(
             hash = %hex::encode(&proposal_hash[..8]),
@@ -745,7 +803,19 @@ impl PayoutHandler {
 
         let returned_hash = self.vote_handler.handle_proposal(proposal)?;
 
-        debug_assert_eq!(proposal_hash, returned_hash, "Proposal hash mismatch");
+        // SECURITY: Verify hash matches - this catches implementation bugs where
+        // the vote handler modifies the proposal or computes the hash differently
+        if proposal_hash != returned_hash {
+            tracing::error!(
+                expected = %hex::encode(&proposal_hash[..8]),
+                actual = %hex::encode(&returned_hash[..8]),
+                "CRITICAL: Solo proposal hash mismatch between local computation and vote handler"
+            );
+            return Err(ghost_common::error::GhostError::HashMismatch {
+                expected: hex::encode(proposal_hash),
+                actual: hex::encode(returned_hash),
+            });
+        }
 
         info!(
             hash = %hex::encode(&proposal_hash[..8]),
@@ -770,6 +840,51 @@ mod tests {
         assert_eq!(config.dust_threshold_sats, 546);
         assert_eq!(config.max_miner_outputs, 200);
         assert_eq!(config.max_node_outputs, 100);
+        // Default should have None treasury address (requires configuration)
+        assert!(config.treasury_address.is_none());
+    }
+
+    #[test]
+    fn test_payout_config_validation() {
+        // Default config should fail validation (no treasury address)
+        let config = PayoutConfig::default();
+        assert!(config.validate().is_err());
+
+        // Config with empty treasury address should fail
+        let config_empty = PayoutConfig {
+            treasury_address: Some(Vec::new()),
+            ..Default::default()
+        };
+        assert!(config_empty.validate().is_err());
+
+        // Config with valid treasury address should pass
+        let config_valid = PayoutConfig {
+            treasury_address: Some(vec![1u8; 20]),
+            ..Default::default()
+        };
+        assert!(config_valid.validate().is_ok());
+    }
+
+    #[test]
+    fn test_treasury_address_getter() {
+        // None treasury should return error
+        let config = PayoutConfig::default();
+        assert!(config.treasury_address().is_err());
+
+        // Empty treasury should return error
+        let config_empty = PayoutConfig {
+            treasury_address: Some(Vec::new()),
+            ..Default::default()
+        };
+        assert!(config_empty.treasury_address().is_err());
+
+        // Valid treasury should return the address
+        let expected_addr = vec![1u8, 2u8, 3u8];
+        let config_valid = PayoutConfig {
+            treasury_address: Some(expected_addr.clone()),
+            ..Default::default()
+        };
+        assert_eq!(config_valid.treasury_address().unwrap(), expected_addr.as_slice());
     }
 
     #[test]

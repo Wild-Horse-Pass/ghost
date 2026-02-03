@@ -259,11 +259,13 @@ impl PayoutCalculator {
 
             // Find miner's address
             if let Some((_, address)) = miner_addresses.iter().find(|(id, _)| id == miner_id) {
-                // Convert miner_id to 32 bytes
+                // SECURITY: Convert miner_id to recipient_id using SHA256 hash
+                // This matches the hashing pattern used in ghost-pool/src/payout.rs
+                // for consistent recipient identification across the codebase.
+                // Using hash instead of truncation prevents collisions for long IDs.
                 let mut recipient_id = [0u8; 32];
-                let id_bytes = miner_id.as_bytes();
-                let len = std::cmp::min(id_bytes.len(), 32);
-                recipient_id[..len].copy_from_slice(&id_bytes[..len]);
+                let hash = ghost_common::identity::hash_message(miner_id.as_bytes());
+                recipient_id.copy_from_slice(&hash);
 
                 payouts.push(PayoutEntry {
                     address: address.clone(),
@@ -715,6 +717,63 @@ mod tests {
         assert_eq!(
             total_node_payout, expected_node_pool,
             "Nodes should receive 0.5% of subsidy"
+        );
+    }
+
+    #[test]
+    fn test_recipient_id_uses_hash_not_truncation() {
+        // SECURITY TEST: Verify recipient IDs use SHA256 hash, not truncation
+        // This matches the pattern in ghost-pool for consistent identification
+
+        let mut shares = RoundShares::new(1, 100);
+
+        // Add a miner with a long ID that would be truncated differently by truncation vs hash
+        let long_miner_id = "miner_with_very_long_id_that_exceeds_32_bytes_definitely";
+        shares.add_miner_work(long_miner_id, 100.0);
+
+        let mut caps = NodeCapabilities::default();
+        caps.archive_mode = true;
+        shares.register_node([1u8; 32], caps);
+        shares.increment_node_shares(&[1u8; 32]);
+        shares.calculate_top_100_nodes();
+
+        let calculator = PayoutCalculator::default();
+
+        let miner_addresses = vec![(long_miner_id.to_string(), vec![1u8; 20])];
+        let node_addresses = vec![([1u8; 32], vec![3u8; 20])];
+
+        let result = calculator.calculate_payouts(
+            &shares,
+            312_500_000,
+            0,
+            &miner_addresses,
+            &node_addresses,
+            [1u8; 32],
+            vec![5u8; 20],
+        );
+
+        // Get the miner payout
+        assert!(!result.miner_payouts.is_empty(), "Should have miner payouts");
+        let miner_payout = &result.miner_payouts[0];
+
+        // Calculate expected recipient_id using the same hash method as ghost-pool
+        let expected_hash = ghost_common::identity::hash_message(long_miner_id.as_bytes());
+
+        // Verify the recipient_id is the hash, NOT a truncation
+        assert_eq!(
+            miner_payout.recipient_id,
+            expected_hash.as_slice(),
+            "Recipient ID should be SHA256 hash of miner_id, not truncation"
+        );
+
+        // Verify it's NOT the truncated value (which would just be the first 32 bytes)
+        let mut truncated = [0u8; 32];
+        let bytes = long_miner_id.as_bytes();
+        truncated[..32.min(bytes.len())].copy_from_slice(&bytes[..32.min(bytes.len())]);
+        assert_ne!(
+            miner_payout.recipient_id,
+            truncated,
+            "Recipient ID should NOT be truncation"
         );
     }
 }

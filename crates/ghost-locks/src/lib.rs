@@ -76,7 +76,7 @@ pub use script::{
     ghost_lock_id, to_x_only, RecoveryInputParams, RECOVERY_NSEQUENCE,
 };
 pub use state::{LockState, StateTransition};
-pub use timelock::TimelockTier;
+pub use timelock::{TimelockTier, MAX_CREATION_HEIGHT, MIN_RECOVERY_BLOCKS};
 
 /// OP_RETURN marker for Ghost Lock creation
 pub const GHOST_LOCK_MARKER: &[u8] = b"GPGL";

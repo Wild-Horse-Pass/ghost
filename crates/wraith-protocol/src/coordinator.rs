@@ -28,6 +28,80 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+/// Maximum strike count before a participant is banned
+const MAX_STRIKES: u32 = 3;
+
+/// Reputation tracking for participants across sessions
+///
+/// Tracks participants who fail to complete signing to prevent repeat offenders.
+/// This is a simple strike-based system: 3 strikes and you're banned.
+#[derive(Debug, Clone, Default)]
+pub struct ReputationTracker {
+    /// Strike counts for participants who failed to sign
+    /// ghost_id -> number of failures
+    strikes: HashMap<String, u32>,
+    /// Permanently banned participants
+    banned: HashSet<String>,
+}
+
+impl ReputationTracker {
+    /// Create a new reputation tracker
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check if a participant is allowed to join (not banned)
+    pub fn is_allowed(&self, ghost_id: &str) -> bool {
+        !self.banned.contains(ghost_id)
+    }
+
+    /// Record a failure to sign for a participant
+    ///
+    /// Increments strike count. If strikes >= MAX_STRIKES, the participant is banned.
+    pub fn record_failure(&mut self, ghost_id: &str) {
+        let strikes = self.strikes.entry(ghost_id.to_string()).or_insert(0);
+        *strikes += 1;
+        if *strikes >= MAX_STRIKES {
+            self.banned.insert(ghost_id.to_string());
+        }
+    }
+
+    /// Record successful completion (reduces strike count)
+    ///
+    /// Good behavior reduces strike count by 1 (but not below 0).
+    pub fn record_success(&mut self, ghost_id: &str) {
+        if let Some(strikes) = self.strikes.get_mut(ghost_id) {
+            *strikes = strikes.saturating_sub(1);
+        }
+    }
+
+    /// Get the strike count for a participant
+    pub fn get_strikes(&self, ghost_id: &str) -> u32 {
+        self.strikes.get(ghost_id).copied().unwrap_or(0)
+    }
+
+    /// Check if a participant is banned
+    pub fn is_banned(&self, ghost_id: &str) -> bool {
+        self.banned.contains(ghost_id)
+    }
+
+    /// Manually ban a participant
+    pub fn ban(&mut self, ghost_id: &str) {
+        self.banned.insert(ghost_id.to_string());
+    }
+
+    /// Manually unban a participant (use with caution)
+    pub fn unban(&mut self, ghost_id: &str) {
+        self.banned.remove(ghost_id);
+        self.strikes.remove(ghost_id);
+    }
+
+    /// Get all banned participants
+    pub fn get_banned(&self) -> Vec<String> {
+        self.banned.iter().cloned().collect()
+    }
+}
+
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::XOnlyPublicKey;
 use bitcoin::{Address, Network, ScriptBuf, Txid};
@@ -67,8 +141,9 @@ pub struct SessionAuditRecord {
 pub struct Participant {
     /// Participant index (0-based)
     pub index: u32,
-    /// Ghost ID of participant
-    pub ghost_id: String,
+    /// Session-specific participant ID (derived from ghost_id and session_id)
+    /// This is H(ghost_id || session_id) to prevent cross-session tracking (WR-M4)
+    pub session_participant_id: String,
     /// Input UTXO
     pub input: Option<WraithInput>,
     /// Public nonces issued to this participant (for blind signing)
@@ -88,11 +163,14 @@ pub struct Participant {
 }
 
 impl Participant {
-    /// Create new participant
-    pub fn new(index: u32, ghost_id: String) -> Self {
+    /// Create new participant with session-specific ID
+    ///
+    /// The session_participant_id is H(ghost_id || session_id) to prevent
+    /// cross-session tracking (WR-M4).
+    pub fn new(index: u32, session_participant_id: String) -> Self {
         Self {
             index,
-            ghost_id,
+            session_participant_id,
             input: None,
             issued_nonces: Vec::new(),
             blinded_challenges: Vec::new(),
@@ -105,6 +183,20 @@ impl Participant {
     }
 }
 
+/// Derive session-specific participant ID (WR-M4)
+///
+/// Computes H(ghost_id || session_id) to create a unique identifier
+/// that cannot be linked across sessions.
+fn derive_session_participant_id(ghost_id: &str, session_id: &[u8; 32]) -> String {
+    use bitcoin::hashes::{sha256, Hash, HashEngine};
+    let mut engine = sha256::Hash::engine();
+    engine.input(b"wraith/session-participant-id/v1");
+    engine.input(ghost_id.as_bytes());
+    engine.input(session_id);
+    let hash = sha256::Hash::from_engine(engine);
+    hex::encode(&hash[..16]) // Use first 16 bytes (32 hex chars)
+}
+
 /// Broadcast function type for transaction broadcasting
 type BroadcastFn = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 
@@ -114,9 +206,13 @@ pub struct WraithCoordinator {
     session: WraithSession,
     /// Coordinator's blind signer
     signer: CoordinatorSigner,
-    /// Registered participants
-    participants: HashMap<String, Participant>, // ghost_id -> Participant
-    /// Participant order (for deterministic indexing)
+    /// Registered participants (keyed by session-specific participant ID)
+    participants: HashMap<String, Participant>, // session_participant_id -> Participant
+    /// Mapping from ghost_id to session_participant_id (WR-M4)
+    ghost_id_to_session_id: HashMap<String, String>,
+    /// Reverse mapping from session_participant_id to ghost_id (for reputation tracking)
+    session_id_to_ghost_id: HashMap<String, String>,
+    /// Participant order (for deterministic indexing) - stores session_participant_ids
     participant_order: Vec<String>,
     /// Network (mainnet, testnet, etc.)
     network: Network,
@@ -133,7 +229,16 @@ pub struct WraithCoordinator {
     anonymous_tokens: Vec<UnblindedToken>,
     /// All submitted addresses (for duplicate detection)
     submitted_addresses: HashSet<String>,
+    /// Optional UTXO verification callback
+    utxo_verifier: Option<UtxoVerifier>,
+    /// Reputation tracker for participants (shared across sessions)
+    reputation: Option<Arc<parking_lot::RwLock<ReputationTracker>>>,
 }
+
+/// UTXO verification callback type
+///
+/// Returns true if the UTXO exists and is unspent, false otherwise.
+type UtxoVerifier = Arc<dyn Fn(&Txid, u32) -> Result<bool, String> + Send + Sync>;
 
 impl std::fmt::Debug for WraithCoordinator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -158,6 +263,8 @@ impl WraithCoordinator {
             session,
             signer,
             participants: HashMap::new(),
+            ghost_id_to_session_id: HashMap::new(),
+            session_id_to_ghost_id: HashMap::new(),
             participant_order: Vec::new(),
             network,
             phase1_tx: None,
@@ -166,6 +273,8 @@ impl WraithCoordinator {
             broadcast_fn: None,
             anonymous_tokens: Vec::new(),
             submitted_addresses: HashSet::new(),
+            utxo_verifier: None,
+            reputation: None,
         }
     }
 
@@ -175,6 +284,28 @@ impl WraithCoordinator {
         F: Fn(&str) -> Result<String, String> + Send + Sync + 'static,
     {
         self.broadcast_fn = Some(Arc::new(f));
+        self
+    }
+
+    /// Set UTXO verification callback (WR-L2)
+    ///
+    /// If set, submit_input() will verify the UTXO exists before accepting it.
+    /// The callback should return Ok(true) if the UTXO exists, Ok(false) if not,
+    /// or Err if the verification cannot be performed.
+    pub fn with_utxo_verifier<F>(mut self, f: F) -> Self
+    where
+        F: Fn(&Txid, u32) -> Result<bool, String> + Send + Sync + 'static,
+    {
+        self.utxo_verifier = Some(Arc::new(f));
+        self
+    }
+
+    /// Set reputation tracker (WR-M3)
+    ///
+    /// The reputation tracker is shared across sessions to track participants
+    /// who fail to complete signing.
+    pub fn with_reputation(mut self, reputation: Arc<parking_lot::RwLock<ReputationTracker>>) -> Self {
+        self.reputation = Some(reputation);
         self
     }
 
@@ -204,6 +335,9 @@ impl WraithCoordinator {
     }
 
     /// Register a new participant
+    ///
+    /// Checks reputation (if tracker is set) and rejects banned participants.
+    /// Internally uses session-specific IDs to prevent cross-session tracking (WR-M4).
     pub fn register_participant(&mut self, ghost_id: String) -> Result<u32, WraithError> {
         if !matches!(self.session.state(), SessionState::WaitingForParticipants) {
             return Err(WraithError::InvalidState {
@@ -212,27 +346,55 @@ impl WraithCoordinator {
             });
         }
 
-        if self.participants.contains_key(&ghost_id) {
+        // Check reputation if tracker is set (WR-M3)
+        if let Some(ref reputation) = self.reputation {
+            let rep = reputation.read();
+            if rep.is_banned(&ghost_id) {
+                return Err(WraithError::InvalidInput(format!(
+                    "Participant {} is banned due to prior failures",
+                    ghost_id
+                )));
+            }
+        }
+
+        // Check if already registered using ghost_id mapping
+        if self.ghost_id_to_session_id.contains_key(&ghost_id) {
             return Err(WraithError::InvalidInput(format!(
                 "Participant {} already registered",
                 ghost_id
             )));
         }
 
+        // Derive session-specific participant ID (WR-M4)
+        let session_participant_id = derive_session_participant_id(&ghost_id, self.session.session_id());
+
         let index = self.participants.len() as u32;
-        let participant = Participant::new(index, ghost_id.clone());
-        self.participants.insert(ghost_id.clone(), participant);
-        self.participant_order.push(ghost_id);
+        let participant = Participant::new(index, session_participant_id.clone());
+        self.participants.insert(session_participant_id.clone(), participant);
+        self.ghost_id_to_session_id.insert(ghost_id.clone(), session_participant_id.clone());
+        self.session_id_to_ghost_id.insert(session_participant_id.clone(), ghost_id);
+        self.participant_order.push(session_participant_id);
         self.session.add_participant();
 
         Ok(index)
     }
 
+    /// Get the session-specific participant ID for a ghost_id
+    ///
+    /// Returns None if the ghost_id is not registered.
+    fn get_session_participant_id(&self, ghost_id: &str) -> Option<&String> {
+        self.ghost_id_to_session_id.get(ghost_id)
+    }
+
     /// Submit input UTXO for a participant
+    ///
+    /// If a UTXO verifier is configured, verifies the UTXO exists before accepting (WR-L2).
     pub fn submit_input(&mut self, ghost_id: &str, input: WraithInput) -> Result<(), WraithError> {
-        let participant = self.participants.get_mut(ghost_id).ok_or_else(|| {
-            WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id))
-        })?;
+        let session_id = self.get_session_participant_id(ghost_id)
+            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .clone();
+        let participant = self.participants.get_mut(&session_id)
+            .expect("session_id must exist if ghost_id mapping exists");
 
         // Validate input amount
         let expected = self.session.denomination().input_sats();
@@ -241,6 +403,25 @@ impl WraithCoordinator {
                 "Input amount {} too small, need at least {}",
                 input.amount, expected
             )));
+        }
+
+        // Verify UTXO exists if verifier is configured (WR-L2)
+        if let Some(ref verifier) = self.utxo_verifier {
+            match verifier(&input.txid, input.vout) {
+                Ok(true) => { /* UTXO exists, continue */ }
+                Ok(false) => {
+                    return Err(WraithError::InvalidInput(format!(
+                        "UTXO {}:{} does not exist or is already spent",
+                        input.txid, input.vout
+                    )));
+                }
+                Err(e) => {
+                    return Err(WraithError::RpcError(format!(
+                        "Failed to verify UTXO: {}",
+                        e
+                    )));
+                }
+            }
         }
 
         participant.input = Some(input);
@@ -252,20 +433,24 @@ impl WraithCoordinator {
     /// Participant calls this to get public nonces before creating blinded challenges.
     /// Returns `SPLIT_RATIO` nonces, one for each intermediate output.
     ///
-    /// SECURITY: Each nonce is bound to the requesting ghost_id to prevent
-    /// nonce hijacking attacks where a malicious participant uses another's nonces.
+    /// SECURITY: Each nonce is bound to the requesting participant's session-specific ID
+    /// to prevent nonce hijacking attacks.
+    ///
+    /// RATE LIMITING: May return error if participant has exceeded nonce limits.
     pub fn request_nonces(&mut self, ghost_id: &str) -> Result<Vec<PublicNonce>, WraithError> {
-        let participant = self.participants.get_mut(ghost_id).ok_or_else(|| {
-            WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id))
-        })?;
+        let session_id = self.get_session_participant_id(ghost_id)
+            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .clone();
 
-        // Create nonces for each intermediate output, BOUND to this participant
+        // Create nonces for each intermediate output, BOUND to session-specific participant ID
         let mut nonces = Vec::with_capacity(SPLIT_RATIO);
         for _ in 0..SPLIT_RATIO {
-            let nonce = self.signer.create_nonce_for_participant(ghost_id);
+            let nonce = self.signer.create_nonce_for_participant(&session_id)?;
             nonces.push(nonce);
         }
 
+        let participant = self.participants.get_mut(&session_id)
+            .expect("session_id must exist if ghost_id mapping exists");
         participant.issued_nonces = nonces.clone();
         Ok(nonces)
     }
@@ -275,8 +460,8 @@ impl WraithCoordinator {
     /// Participant sends blinded challenges after receiving nonces and blinding.
     /// Returns signature responses that the participant can unblind.
     ///
-    /// SECURITY: The ghost_id is verified against the nonce binding to ensure
-    /// the participant is using nonces issued to them.
+    /// SECURITY: The session-specific participant ID is verified against the nonce binding
+    /// to ensure the participant is using nonces issued to them.
     pub fn submit_blinded_challenges(
         &mut self,
         ghost_id: &str,
@@ -290,18 +475,21 @@ impl WraithCoordinator {
             )));
         }
 
-        // Sign each blinded challenge WITH participant verification
+        let session_id = self.get_session_participant_id(ghost_id)
+            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .clone();
+
+        // Sign each blinded challenge WITH session-specific participant verification
         let mut responses = Vec::with_capacity(SPLIT_RATIO);
         for challenge in &challenges {
             let response = self
                 .signer
-                .sign_blinded_challenge_for_participant(challenge, ghost_id)?;
+                .sign_blinded_challenge_for_participant(challenge, &session_id)?;
             responses.push(response);
         }
 
-        let participant = self.participants.get_mut(ghost_id).ok_or_else(|| {
-            WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id))
-        })?;
+        let participant = self.participants.get_mut(&session_id)
+            .expect("session_id must exist if ghost_id mapping exists");
 
         participant.blinded_challenges = challenges;
         participant.signature_responses = responses.clone();
@@ -326,9 +514,11 @@ impl WraithCoordinator {
             )));
         }
 
-        let participant = self.participants.get_mut(ghost_id).ok_or_else(|| {
-            WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id))
-        })?;
+        let session_id = self.get_session_participant_id(ghost_id)
+            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .clone();
+        let participant = self.participants.get_mut(&session_id)
+            .expect("session_id must exist if ghost_id mapping exists");
 
         // If this participant previously submitted an address, remove it from the set
         if let Some(ref old_addr) = participant.final_address {
@@ -550,9 +740,11 @@ impl WraithCoordinator {
 
     /// Record Phase 1 signature from participant
     pub fn add_phase1_signature(&mut self, ghost_id: &str) -> Result<bool, WraithError> {
-        let participant = self.participants.get_mut(ghost_id).ok_or_else(|| {
-            WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id))
-        })?;
+        let session_id = self.get_session_participant_id(ghost_id)
+            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .clone();
+        let participant = self.participants.get_mut(&session_id)
+            .expect("session_id must exist if ghost_id mapping exists");
 
         participant.phase1_signed = true;
 
@@ -658,7 +850,7 @@ impl WraithCoordinator {
         let mut intermediate_inputs: Vec<Vec<WraithInput>> = Vec::new();
         let mut output_idx = 0;
 
-        for (p_idx, _ghost_id) in self.participant_order.iter().enumerate() {
+        for (p_idx, _session_id) in self.participant_order.iter().enumerate() {
             let mut participant_inputs = Vec::new();
             for _ in 0..SPLIT_RATIO {
                 let (txid, vout, amount, ref script_pubkey) = self.phase1_outputs[output_idx];
@@ -678,9 +870,9 @@ impl WraithCoordinator {
         let final_addresses: Vec<String> = self
             .participant_order
             .iter()
-            .map(|ghost_id| {
+            .map(|session_id| {
                 self.participants
-                    .get(ghost_id)
+                    .get(session_id)
                     .and_then(|p| p.final_address.clone())
                     .unwrap_or_default()
             })
@@ -698,9 +890,11 @@ impl WraithCoordinator {
 
     /// Record Phase 2 signature from participant
     pub fn add_phase2_signature(&mut self, ghost_id: &str) -> Result<bool, WraithError> {
-        let participant = self.participants.get_mut(ghost_id).ok_or_else(|| {
-            WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id))
-        })?;
+        let session_id = self.get_session_participant_id(ghost_id)
+            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .clone();
+        let participant = self.participants.get_mut(&session_id)
+            .expect("session_id must exist if ghost_id mapping exists");
 
         participant.phase2_signed = true;
 
@@ -735,8 +929,23 @@ impl WraithCoordinator {
     }
 
     /// Confirm Phase 2 on-chain (completes the session)
+    ///
+    /// Also records successful completion in reputation tracker (WR-M3).
     pub fn confirm_phase2(&mut self, block_height: u32) -> Result<(), WraithError> {
-        self.session.confirm_phase2(block_height)
+        self.session.confirm_phase2(block_height)?;
+
+        // Record success for all participants in reputation tracker (WR-M3)
+        // Use reverse mapping to get original ghost_ids
+        if let Some(ref reputation) = self.reputation {
+            let mut rep = reputation.write();
+            for session_id in &self.participant_order {
+                if let Some(ghost_id) = self.session_id_to_ghost_id.get(session_id) {
+                    rep.record_success(ghost_id);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Get Phase 1 transaction (if built)
@@ -841,36 +1050,60 @@ impl WraithCoordinator {
             }
             SessionState::ExecutingPhase1 | SessionState::WaitingPhase1Confirmation => {
                 // Phase 1 failed - funds may be stuck, need manual recovery
-                let missing_sigs: Vec<String> = self
+                let missing_session_ids: Vec<String> = self
                     .participants
                     .iter()
                     .filter(|(_, p)| !p.phase1_signed)
                     .map(|(id, _)| id.clone())
                     .collect();
+
+                // Record failures in reputation tracker (WR-M3)
+                // Use reverse mapping to get original ghost_ids
+                if let Some(ref reputation) = self.reputation {
+                    let mut rep = reputation.write();
+                    for session_id in &missing_session_ids {
+                        if let Some(ghost_id) = self.session_id_to_ghost_id.get(session_id) {
+                            rep.record_failure(ghost_id);
+                        }
+                    }
+                }
+
                 self.session.fail();
                 Ok(TimeoutAction::Failed {
                     phase: 1,
                     reason: format!(
                         "Phase 1 timed out, {} participant(s) didn't sign",
-                        missing_sigs.len()
+                        missing_session_ids.len()
                     ),
                     stuck_funds: self.calculate_stuck_funds(),
                 })
             }
             SessionState::ExecutingPhase2 | SessionState::WaitingPhase2Confirmation => {
                 // Phase 2 failed - intermediate UTXOs may be stuck
-                let missing_sigs: Vec<String> = self
+                let missing_session_ids: Vec<String> = self
                     .participants
                     .iter()
                     .filter(|(_, p)| !p.phase2_signed)
                     .map(|(id, _)| id.clone())
                     .collect();
+
+                // Record failures in reputation tracker (WR-M3)
+                // Use reverse mapping to get original ghost_ids
+                if let Some(ref reputation) = self.reputation {
+                    let mut rep = reputation.write();
+                    for session_id in &missing_session_ids {
+                        if let Some(ghost_id) = self.session_id_to_ghost_id.get(session_id) {
+                            rep.record_failure(ghost_id);
+                        }
+                    }
+                }
+
                 self.session.fail();
                 Ok(TimeoutAction::Failed {
                     phase: 2,
                     reason: format!(
                         "Phase 2 timed out, {} participant(s) didn't sign",
-                        missing_sigs.len()
+                        missing_session_ids.len()
                     ),
                     stuck_funds: self.calculate_stuck_funds(),
                 })
@@ -991,8 +1224,8 @@ impl WraithCoordinator {
             participant.blinded_challenges.clear();
             participant.signature_responses.clear();
 
-            // Sever Ghost ID linkage (the key privacy protection)
-            participant.ghost_id = String::new();
+            // Clear session participant ID (severs the link to ghost_id)
+            participant.session_participant_id = String::new();
 
             // Clear final address (links session to output)
             participant.final_address = None;
@@ -1000,6 +1233,10 @@ impl WraithCoordinator {
 
         // Clear transaction outputs that could be used to trace
         self.phase1_outputs.clear();
+
+        // Clear ghost_id mappings (severs all cross-session tracking ability)
+        self.ghost_id_to_session_id.clear();
+        self.session_id_to_ghost_id.clear();
 
         Some(audit)
     }
@@ -1266,5 +1503,172 @@ mod tests {
             0,
             "Anonymous tokens should be cleared after build"
         );
+    }
+
+    /// WR-M4 Test: Session-specific participant IDs prevent cross-session tracking
+    #[test]
+    fn test_session_specific_participant_ids() {
+        // Create two coordinators with different sessions
+        let coord1 = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        );
+        let coord2 = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        );
+
+        // Same ghost_id in different sessions should produce different session_participant_ids
+        let ghost_id = "same_ghost_id";
+
+        let session_id1 = derive_session_participant_id(ghost_id, coord1.session_id());
+        let session_id2 = derive_session_participant_id(ghost_id, coord2.session_id());
+
+        assert_ne!(
+            session_id1, session_id2,
+            "Same ghost_id should have different session_participant_ids in different sessions"
+        );
+    }
+
+    /// WR-M3 Test: Reputation tracking bans repeat offenders
+    #[test]
+    fn test_reputation_tracking() {
+        let mut reputation = ReputationTracker::new();
+
+        let ghost_id = "bad_actor";
+
+        // Initially allowed
+        assert!(reputation.is_allowed(ghost_id));
+        assert_eq!(reputation.get_strikes(ghost_id), 0);
+
+        // First two failures: still allowed
+        reputation.record_failure(ghost_id);
+        assert!(reputation.is_allowed(ghost_id));
+        assert_eq!(reputation.get_strikes(ghost_id), 1);
+
+        reputation.record_failure(ghost_id);
+        assert!(reputation.is_allowed(ghost_id));
+        assert_eq!(reputation.get_strikes(ghost_id), 2);
+
+        // Third failure: BANNED
+        reputation.record_failure(ghost_id);
+        assert!(!reputation.is_allowed(ghost_id));
+        assert!(reputation.is_banned(ghost_id));
+
+        // Success can reduce strikes (but doesn't unban)
+        let good_actor = "good_actor";
+        reputation.record_failure(good_actor);
+        assert_eq!(reputation.get_strikes(good_actor), 1);
+        reputation.record_success(good_actor);
+        assert_eq!(reputation.get_strikes(good_actor), 0);
+    }
+
+    /// WR-M3 Test: Banned participants cannot register
+    #[test]
+    fn test_banned_participant_rejected() {
+        let reputation = Arc::new(parking_lot::RwLock::new(ReputationTracker::new()));
+
+        // Ban a ghost_id
+        {
+            let mut rep = reputation.write();
+            rep.ban("banned_ghost");
+        }
+
+        let mut coord = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        )
+        .with_reputation(reputation);
+
+        // Banned ghost_id should be rejected
+        let result = coord.register_participant("banned_ghost".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("banned"));
+
+        // Non-banned ghost_id should be accepted
+        let result = coord.register_participant("good_ghost".to_string());
+        assert!(result.is_ok());
+    }
+
+    /// WR-L2 Test: UTXO verification callback is called
+    #[test]
+    fn test_utxo_verification() {
+        use bitcoin::ScriptBuf;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let verification_called = Arc::new(AtomicBool::new(false));
+        let verification_called_clone = verification_called.clone();
+
+        let mut coord = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        )
+        .with_utxo_verifier(move |_txid, _vout| {
+            verification_called_clone.store(true, Ordering::SeqCst);
+            Ok(true) // UTXO exists
+        });
+
+        coord.register_participant("ghost1".to_string()).unwrap();
+
+        let txid = "0000000000000000000000000000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+
+        coord
+            .submit_input(
+                "ghost1",
+                crate::executor::WraithInput {
+                    txid,
+                    vout: 0,
+                    amount: 1_100_000,
+                    script_pubkey: ScriptBuf::new(),
+                    participant_id: 0,
+                },
+            )
+            .unwrap();
+
+        assert!(
+            verification_called.load(Ordering::SeqCst),
+            "UTXO verification callback should have been called"
+        );
+    }
+
+    /// WR-L2 Test: Non-existent UTXO is rejected
+    #[test]
+    fn test_utxo_verification_rejects_nonexistent() {
+        use bitcoin::ScriptBuf;
+
+        let mut coord = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        )
+        .with_utxo_verifier(|_txid, _vout| {
+            Ok(false) // UTXO does NOT exist
+        });
+
+        coord.register_participant("ghost1".to_string()).unwrap();
+
+        let txid = "0000000000000000000000000000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+
+        let result = coord.submit_input(
+            "ghost1",
+            crate::executor::WraithInput {
+                txid,
+                vout: 0,
+                amount: 1_100_000,
+                script_pubkey: ScriptBuf::new(),
+                participant_id: 0,
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
     }
 }

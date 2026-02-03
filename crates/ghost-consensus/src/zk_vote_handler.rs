@@ -10,6 +10,12 @@
 //! - Proofs are ephemeral (verified once, then discarded)
 //! - State is truth (no proof history needed)
 //! - Math guarantees validity (no re-execution needed)
+//!
+//! ## Rate Limiting (P2P-M4)
+//!
+//! Incoming ZK votes and proposals are rate limited per-node using a token bucket
+//! algorithm to prevent DoS attacks. Each node has a bucket that refills at a
+//! configured rate, with messages rejected when the bucket is empty.
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -30,6 +36,7 @@ use crate::message::{
     MessageEnvelope, MessageType, ZkBlockProposalMessage, ZkConsensusResult, ZkRejectionReason,
     ZkVoteMessage,
 };
+use crate::vote_handler::RateLimiter;
 
 /// Callback for broadcasting ZK messages
 pub type ZkBroadcastFn = Arc<dyn Fn(MessageType, Vec<u8>) -> GhostResult<()> + Send + Sync>;
@@ -39,6 +46,10 @@ pub type ZkConsensusCallback = Arc<dyn Fn(ZkConsensusResult) -> GhostResult<()> 
 
 /// Callback for verifying ZK proofs
 pub type ZkVerifyFn = Arc<dyn Fn(&[u8], &[u8; 32], &[u8; 32]) -> bool + Send + Sync>;
+
+/// Default rate limit configuration for ZK messages
+const ZK_RATE_LIMIT_MAX_TOKENS: u32 = 50;
+const ZK_RATE_LIMIT_REFILL_RATE: u32 = 10;
 
 /// Configuration for ZK vote handler
 #[derive(Debug, Clone)]
@@ -51,6 +62,10 @@ pub struct ZkVoteHandlerConfig {
     pub min_validators: u32,
     /// BFT threshold (67% = 2/3 + 1)
     pub bft_threshold_percent: u32,
+    /// Rate limit max tokens per node
+    pub rate_limit_max_tokens: u32,
+    /// Rate limit refill rate (tokens per second)
+    pub rate_limit_refill_rate: u32,
 }
 
 impl Default for ZkVoteHandlerConfig {
@@ -60,6 +75,8 @@ impl Default for ZkVoteHandlerConfig {
             max_pending_proposals: 100,
             min_validators: 4,         // Minimum for BFT (3f+1 where f=1)
             bft_threshold_percent: 67, // 2/3 majority
+            rate_limit_max_tokens: ZK_RATE_LIMIT_MAX_TOKENS,
+            rate_limit_refill_rate: ZK_RATE_LIMIT_REFILL_RATE,
         }
     }
 }
@@ -118,6 +135,8 @@ pub struct ZkVoteHandler {
     verify_fn: Option<ZkVerifyFn>,
     /// Configuration
     config: ZkVoteHandlerConfig,
+    /// Rate limiter for incoming messages (P2P-M4)
+    rate_limiter: RateLimiter,
 }
 
 impl ZkVoteHandler {
@@ -128,6 +147,10 @@ impl ZkVoteHandler {
 
     /// Create a new ZK vote handler with custom config
     pub fn with_config(identity: Arc<NodeIdentity>, config: ZkVoteHandlerConfig) -> Self {
+        let rate_limiter = RateLimiter::new(
+            config.rate_limit_max_tokens,
+            config.rate_limit_refill_rate,
+        );
         Self {
             identity,
             current_state_root: RwLock::new([0u8; 32]),
@@ -138,7 +161,13 @@ impl ZkVoteHandler {
             consensus_callback: None,
             verify_fn: None,
             config,
+            rate_limiter,
         }
+    }
+
+    /// Clean up rate limiter state (call periodically)
+    pub fn cleanup_rate_limiter(&self) {
+        self.rate_limiter.cleanup(300); // 5 minute TTL
     }
 
     /// Set broadcast function
@@ -644,6 +673,19 @@ impl ZkVoteHandler {
 #[async_trait]
 impl MessageHandler for ZkVoteHandler {
     async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+        // Rate limit check - reject messages from nodes sending too fast (P2P-M4)
+        if !self.rate_limiter.check_and_consume(&envelope.sender) {
+            warn!(
+                sender = hex::encode(&envelope.sender[..8]),
+                msg_type = ?envelope.msg_type,
+                "Rate limited ZK message from peer"
+            );
+            return Err(ghost_common::error::GhostError::RateLimited(format!(
+                "Node {} rate limited for ZK messages",
+                hex::encode(&envelope.sender[..8])
+            )));
+        }
+
         match envelope.msg_type {
             MessageType::ZkBlockProposal => {
                 let proposal: ZkBlockProposalMessage = serde_json::from_slice(&envelope.payload)
@@ -841,5 +883,30 @@ mod tests {
         assert!(handler.should_create_snapshot(100, 100));
         assert!(handler.should_create_snapshot(200, 100));
         assert!(!handler.should_create_snapshot(150, 100));
+    }
+
+    #[test]
+    fn test_rate_limiting() {
+        // Test with very restrictive rate limits
+        let identity = create_test_identity();
+        let config = ZkVoteHandlerConfig {
+            rate_limit_max_tokens: 2,
+            rate_limit_refill_rate: 1,
+            ..Default::default()
+        };
+        let handler = ZkVoteHandler::with_config(identity, config);
+
+        let test_node = [42u8; 32];
+
+        // First two messages should pass
+        assert!(handler.rate_limiter.check_and_consume(&test_node));
+        assert!(handler.rate_limiter.check_and_consume(&test_node));
+
+        // Third message should be rate limited
+        assert!(!handler.rate_limiter.check_and_consume(&test_node));
+
+        // Different node should not be affected
+        let other_node = [43u8; 32];
+        assert!(handler.rate_limiter.check_and_consume(&other_node));
     }
 }

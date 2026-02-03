@@ -68,14 +68,14 @@ pub use blind::{
     BlindSignature, BlindedAddress, BlindingContext, CoordinatorSigner, TokenVerifier,
     UnblindedToken,
 };
-pub use coordinator::{Participant, SessionAuditRecord, TimeoutAction, WraithCoordinator};
+pub use coordinator::{Participant, ReputationTracker, SessionAuditRecord, TimeoutAction, WraithCoordinator};
 pub use denomination::WraithDenomination;
 pub use error::WraithError;
 pub use executor::{
     MergeTransaction, SplitTransaction, WraithInput, WraithOutput, WraithTransactionBuilder,
 };
 pub use phase::{Phase, PhaseExecution, PhaseState};
-pub use session::{SessionState, WraithSession};
+pub use session::{SessionRegistry, SessionState, WraithSession};
 pub use tier::ParticipantTier;
 
 /// Protocol version

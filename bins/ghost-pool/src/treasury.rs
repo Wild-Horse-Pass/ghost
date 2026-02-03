@@ -169,6 +169,10 @@ pub struct FeeDistribution {
 
 impl FeeDistribution {
     /// Calculate fee distribution for a block based on current treasury state
+    ///
+    /// SECURITY: Uses integer arithmetic with explicit remainder handling to ensure:
+    /// 1. treasury_amount + node_reward_pool == pool_fee (no satoshis lost)
+    /// 2. miner_pool + pool_fee == subsidy (no satoshis lost)
     pub fn calculate(subsidy_sats: u64, tx_fees_sats: u64, treasury_state: &TreasuryState) -> Self {
         // TX fees go 100% to block finder
         let tx_fees_to_block_finder = tx_fees_sats;
@@ -178,9 +182,12 @@ impl FeeDistribution {
         let pool_fee = subsidy_sats * POOL_FEE_BASIS_POINTS / 10000;
 
         // Split pool fee between treasury and nodes based on decay schedule
-        // SECURITY: Use integer arithmetic with basis points to avoid float rounding errors
+        // SECURITY: Use integer arithmetic with explicit remainder handling
+        // The remainder from truncation goes to the node_reward_pool (benefits nodes)
         let (treasury_rate_bps, node_rate_bps) = treasury_state.get_fee_split_bps();
         let treasury_amount = (pool_fee as u128 * treasury_rate_bps as u128 / 10000) as u64;
+        // SECURITY: Explicit remainder handling - node pool gets everything not going to treasury
+        // This ensures treasury_amount + node_reward_pool == pool_fee exactly
         let node_reward_pool = pool_fee.saturating_sub(treasury_amount);
 
         // Miner pool is 99% of subsidy (subsidy minus pool fee)
@@ -189,6 +196,18 @@ impl FeeDistribution {
         // Convert bps to f64 for backward compatibility with logging
         let treasury_rate = treasury_rate_bps as f64 / 10000.0;
         let node_rate = node_rate_bps as f64 / 10000.0;
+
+        // SECURITY: Debug assertion to verify no satoshis are lost
+        debug_assert_eq!(
+            treasury_amount + node_reward_pool,
+            pool_fee,
+            "Treasury split must equal pool fee"
+        );
+        debug_assert_eq!(
+            miner_pool + pool_fee,
+            subsidy_sats,
+            "Miner pool + pool fee must equal subsidy"
+        );
 
         Self {
             tx_fees_to_block_finder,
@@ -428,5 +447,71 @@ mod tests {
         let (treasury_bps, node_bps) = decayed_state.get_fee_split_bps();
         assert_eq!(treasury_bps, 0);
         assert_eq!(node_bps, 10000);
+    }
+
+    #[test]
+    fn test_treasury_rounding_exact_split() {
+        // SECURITY TEST: Verify treasury + node pool == pool fee (no satoshis lost)
+        let state = TreasuryState::new();
+
+        // Test with various subsidy values including ones that could cause rounding issues
+        let test_subsidies = [
+            312_500_000u64,   // 3.125 BTC (current)
+            312_500_001,     // +1 sat (odd)
+            312_500_003,     // +3 sat (causes 3-way split issue)
+            999_999_999,     // Large odd number
+            1,               // Minimum
+            100,             // Small
+        ];
+
+        for subsidy in test_subsidies {
+            let dist = FeeDistribution::calculate(subsidy, 0, &state);
+
+            // CRITICAL: Treasury + Node pool MUST equal pool fee
+            assert_eq!(
+                dist.treasury_amount + dist.node_reward_pool,
+                dist.pool_fee,
+                "Treasury split failed for subsidy {}: {} + {} != {}",
+                subsidy,
+                dist.treasury_amount,
+                dist.node_reward_pool,
+                dist.pool_fee
+            );
+
+            // CRITICAL: Miner pool + pool fee MUST equal subsidy
+            assert_eq!(
+                dist.miner_pool + dist.pool_fee,
+                subsidy,
+                "Total split failed for subsidy {}: {} + {} != {}",
+                subsidy,
+                dist.miner_pool,
+                dist.pool_fee,
+                subsidy
+            );
+        }
+    }
+
+    #[test]
+    fn test_treasury_rounding_at_decay_years() {
+        // Test rounding at each decay year to ensure exact splits
+        let subsidy = 312_500_001u64; // Odd number to stress test rounding
+
+        // Pre-threshold
+        let state0 = TreasuryState::new();
+        let dist0 = FeeDistribution::calculate(subsidy, 0, &state0);
+        assert_eq!(dist0.treasury_amount + dist0.node_reward_pool, dist0.pool_fee);
+
+        // Year 3 (20% treasury, 80% nodes)
+        let threshold_time = Utc::now() - chrono::Duration::days(365 * 2 + 100);
+        let state3 = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
+        let dist3 = FeeDistribution::calculate(subsidy, 0, &state3);
+        assert_eq!(dist3.treasury_amount + dist3.node_reward_pool, dist3.pool_fee);
+
+        // Year 5+ (0% treasury, 100% nodes)
+        let threshold_time = Utc::now() - chrono::Duration::days(365 * 6);
+        let state5 = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
+        let dist5 = FeeDistribution::calculate(subsidy, 0, &state5);
+        assert_eq!(dist5.treasury_amount + dist5.node_reward_pool, dist5.pool_fee);
+        assert_eq!(dist5.treasury_amount, 0); // Full decay
     }
 }

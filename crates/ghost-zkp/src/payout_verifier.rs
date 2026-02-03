@@ -10,6 +10,8 @@
 
 use bellperson::groth16::{verify_proof, PreparedVerifyingKey, Proof};
 use blstrs::{Bls12, G1Affine, G2Affine, Scalar as Fr};
+use ff::{Field, PrimeField};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, instrument, warn};
@@ -17,6 +19,22 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::errors::{ZkError, ZkResult};
 use crate::payout_prover::{PayoutProof, PayoutProver, MAX_MINERS, MAX_NODES};
 use crate::types::GROTH16_PROOF_SIZE;
+
+/// Compute metadata commitment for binding proof to metadata.
+/// This prevents replay or modification of metadata fields.
+pub fn compute_metadata_commitment(epoch: u64, miner_count: u32, node_count: u32) -> Fr {
+    let mut hasher = Sha256::new();
+    hasher.update(b"ghost-zkp-metadata-v1");
+    hasher.update(epoch.to_le_bytes());
+    hasher.update(miner_count.to_le_bytes());
+    hasher.update(node_count.to_le_bytes());
+    let hash = hasher.finalize();
+
+    // Convert hash to field element (take first 31 bytes to ensure it fits in the field)
+    let mut repr = [0u8; 32];
+    repr[..31].copy_from_slice(&hash[..31]);
+    Fr::from_repr_vartime(repr).unwrap_or(Fr::ZERO)
+}
 
 /// Verifies ZK proofs for payout distribution validity
 ///
@@ -112,11 +130,14 @@ impl PayoutVerifier {
             return Ok(false);
         }
 
-        // Check sum preservation
+        // Check sum preservation using checked arithmetic to detect overflow
         let computed_sum = proof
             .miner_sum
-            .saturating_add(proof.node_sum)
-            .saturating_add(proof.treasury_amount);
+            .checked_add(proof.node_sum)
+            .and_then(|s| s.checked_add(proof.treasury_amount))
+            .ok_or_else(|| {
+                ZkError::InvalidProof("Sum overflow: miner_sum + node_sum + treasury_amount".to_string())
+            })?;
 
         if computed_sum != proof.total_available {
             warn!(
@@ -216,6 +237,7 @@ impl PayoutVerifier {
     /// 3. node_sum - must match sum claimed in proof
     /// 4. treasury_amount - must match claimed treasury
     /// 5. epoch - must match claimed epoch (replay protection)
+    /// 6. metadata_commitment - cryptographic binding of epoch, miner_count, node_count
     fn verify_groth16_proof(
         &self,
         proof: &PayoutProof,
@@ -225,6 +247,10 @@ impl PayoutVerifier {
 
         // Deserialize the proof
         let groth16_proof = self.deserialize_proof(&proof.proof)?;
+
+        // Compute metadata commitment - binds proof to epoch, miner_count, node_count
+        let metadata_commitment =
+            compute_metadata_commitment(proof.epoch, proof.miner_count, proof.node_count);
 
         // Build public inputs from the proof metadata
         // SECURITY: Order must match the order in PayoutCircuit::synthesize
@@ -236,11 +262,12 @@ impl PayoutVerifier {
             Fr::from(proof.node_sum),         // PUBLIC INPUT 3: node_sum
             Fr::from(proof.treasury_amount),  // PUBLIC INPUT 4: treasury_amount
             Fr::from(proof.epoch),            // PUBLIC INPUT 5: epoch
+            metadata_commitment,              // PUBLIC INPUT 6: metadata_commitment
         ];
 
         debug!(
-            "Verifying Groth16 proof with public inputs: total={}, miner_sum={}, node_sum={}, treasury={}, epoch={}",
-            proof.total_available, proof.miner_sum, proof.node_sum, proof.treasury_amount, proof.epoch
+            "Verifying Groth16 proof with public inputs: total={}, miner_sum={}, node_sum={}, treasury={}, epoch={}, metadata_commitment={:?}",
+            proof.total_available, proof.miner_sum, proof.node_sum, proof.treasury_amount, proof.epoch, metadata_commitment
         );
 
         // Verify the Groth16 proof
@@ -352,11 +379,15 @@ impl PayoutVerifier {
             return PayoutVerificationResult::TooManyNodes;
         }
 
-        // Check sum
-        let computed_sum = proof
+        // Check sum using checked arithmetic to detect overflow
+        let computed_sum = match proof
             .miner_sum
-            .saturating_add(proof.node_sum)
-            .saturating_add(proof.treasury_amount);
+            .checked_add(proof.node_sum)
+            .and_then(|s| s.checked_add(proof.treasury_amount))
+        {
+            Some(sum) => sum,
+            None => return PayoutVerificationResult::SumOverflow,
+        };
 
         if computed_sum != proof.total_available {
             return PayoutVerificationResult::SumMismatch {
@@ -391,6 +422,8 @@ pub enum PayoutVerificationResult {
     TooManyNodes,
     /// Sum doesn't match total available
     SumMismatch { expected: u64, computed: u64 },
+    /// Sum calculation overflowed u64
+    SumOverflow,
     /// Proof is empty
     EmptyProof,
     /// Proof structure is invalid
@@ -573,5 +606,60 @@ mod tests {
 
         // Tampered proof should fail verification
         assert!(!verifier.verify(&proof).expect("Verification error"));
+    }
+
+    // ZK-M3: Test overflow detection with checked arithmetic
+    #[test]
+    fn test_sum_overflow_detection() {
+        let (prover, mut proof) = create_valid_proof();
+        let verifier = PayoutVerifier::for_prover(&prover);
+
+        // Set values that would overflow when summed
+        proof.miner_sum = u64::MAX;
+        proof.node_sum = u64::MAX;
+        proof.treasury_amount = u64::MAX;
+
+        // verify() should return an error due to overflow
+        let result = verifier.verify(&proof);
+        assert!(result.is_err());
+
+        // verify_detailed should return SumOverflow
+        let detailed_result = verifier.verify_detailed(&proof);
+        assert_eq!(detailed_result, PayoutVerificationResult::SumOverflow);
+    }
+
+    #[test]
+    fn test_sum_overflow_at_boundary() {
+        let (prover, mut proof) = create_valid_proof();
+        let verifier = PayoutVerifier::for_prover(&prover);
+
+        // Set values that just barely overflow
+        proof.miner_sum = u64::MAX - 100;
+        proof.node_sum = 101;
+        proof.treasury_amount = 0;
+
+        // This should overflow (MAX-100 + 101 overflows)
+        let detailed_result = verifier.verify_detailed(&proof);
+        assert_eq!(detailed_result, PayoutVerificationResult::SumOverflow);
+    }
+
+    // ZK-M1: Test metadata commitment computation
+    #[test]
+    fn test_metadata_commitment_deterministic() {
+        let commit1 = compute_metadata_commitment(100, 5, 3);
+        let commit2 = compute_metadata_commitment(100, 5, 3);
+        assert_eq!(commit1, commit2);
+
+        // Different epoch should produce different commitment
+        let commit3 = compute_metadata_commitment(101, 5, 3);
+        assert_ne!(commit1, commit3);
+
+        // Different miner_count should produce different commitment
+        let commit4 = compute_metadata_commitment(100, 6, 3);
+        assert_ne!(commit1, commit4);
+
+        // Different node_count should produce different commitment
+        let commit5 = compute_metadata_commitment(100, 5, 4);
+        assert_ne!(commit1, commit5);
     }
 }

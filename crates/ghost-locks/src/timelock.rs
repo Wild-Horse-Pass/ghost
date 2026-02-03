@@ -27,6 +27,17 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Minimum recovery timelock in blocks (~1 week at 144 blocks/day)
+///
+/// This matches the C++ implementation's MIN_RECOVERY_TIMELOCK constant.
+/// Enforcing this minimum prevents locks with dangerously short recovery windows.
+pub const MIN_RECOVERY_BLOCKS: u32 = 1008;
+
+/// Maximum allowed creation height to prevent overflow issues
+///
+/// This is well beyond any realistic Bitcoin block height (current ~850k).
+pub const MAX_CREATION_HEIGHT: u32 = 100_000_000;
+
 /// Timelock duration tiers for recovery
 ///
 /// Longer timelocks provide more security against theft attempts
@@ -179,5 +190,31 @@ mod tests {
         );
         assert_eq!(tier.blocks_until_recovery(creation, creation + 52_560), 0);
         assert_eq!(tier.blocks_until_recovery(creation, creation + 100_000), 0);
+    }
+
+    #[test]
+    fn test_min_recovery_blocks_constant() {
+        // GL-L3: Minimum recovery blocks should be 1 week (1008 blocks)
+        assert_eq!(MIN_RECOVERY_BLOCKS, 1008);
+
+        // All tiers should exceed the minimum
+        for tier in TimelockTier::all() {
+            assert!(
+                tier.blocks() >= MIN_RECOVERY_BLOCKS,
+                "Tier {:?} has {} blocks, less than minimum {}",
+                tier,
+                tier.blocks(),
+                MIN_RECOVERY_BLOCKS
+            );
+        }
+    }
+
+    #[test]
+    fn test_max_creation_height_constant() {
+        // GL-L2: Max creation height should be reasonable (100 million)
+        assert_eq!(MAX_CREATION_HEIGHT, 100_000_000);
+
+        // Should be well above current Bitcoin block height (~850k)
+        assert!(MAX_CREATION_HEIGHT > 1_000_000);
     }
 }

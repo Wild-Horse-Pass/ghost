@@ -24,16 +24,35 @@
 //!
 //! Uses ZMQ for efficient message propagation across the node network.
 //!
-//! Architecture:
+//! ## Architecture
+//!
 //! - PUB socket for broadcasting messages to peers
 //! - SUB sockets for receiving messages from peers
 //! - ROUTER/DEALER for request-response patterns
+//!
+//! ## Replay Attack Prevention (P2P-M2)
+//!
+//! Message replay attacks are prevented through a dual-layer defense:
+//!
+//! 1. **Deduplication Window** (`dedup_window_secs`, default 60s):
+//!    Messages are tracked by (sender_id, sequence_number). Duplicate messages
+//!    within this window are silently dropped.
+//!
+//! 2. **Timestamp Validation** (message_validator.rs):
+//!    All messages must have timestamps within 5 minutes of current time.
+//!    Messages with timestamps outside this window are rejected BEFORE
+//!    deduplication checks.
+//!
+//! Together, these ensure that even after the dedup window expires, old messages
+//! cannot be replayed because their timestamps will be too far in the past.
+//! The timestamp validation window (5 minutes) is intentionally larger than the
+//! dedup window (60 seconds) to provide defense in depth.
 
 use async_trait::async_trait;
 use futures::{SinkExt, StreamExt};
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tmq::{publish, subscribe, Context, Multipart};
@@ -133,10 +152,8 @@ pub struct MeshNetwork {
     peers: Arc<PeerManager>,
     /// Message sequence counter
     sequence: AtomicU64,
-    /// Seen message IDs (for deduplication)
-    seen_messages: RwLock<HashSet<MessageId>>,
-    /// Seen message timestamps (for cleanup)
-    seen_timestamps: RwLock<HashMap<MessageId, u64>>,
+    /// Seen message cache for deduplication (P2P-L1: O(1) eviction)
+    seen_messages: RwLock<SeenMessageCache>,
     /// Message handlers
     handlers: RwLock<Vec<Arc<dyn MessageHandler>>>,
     /// Running state
@@ -161,6 +178,81 @@ pub struct MessageId {
     pub sequence: u64,
 }
 
+/// Bounded LRU-like cache for seen message deduplication (P2P-L1)
+///
+/// Uses a HashMap for O(1) lookups combined with a VecDeque for O(1) FIFO eviction.
+/// This is simpler than a full LRU but provides good performance for deduplication
+/// where we mainly care about recent messages.
+///
+/// Eviction Strategy:
+/// - When at capacity, the oldest entries are evicted in FIFO order
+/// - This provides O(1) eviction instead of the O(n log n) sorting approach
+struct SeenMessageCache {
+    /// Map for O(1) lookup
+    map: HashMap<MessageId, u64>, // MessageId -> timestamp
+    /// Queue for O(1) FIFO eviction (oldest at front)
+    queue: VecDeque<MessageId>,
+    /// Maximum capacity
+    capacity: usize,
+}
+
+impl SeenMessageCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            map: HashMap::with_capacity(capacity),
+            queue: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Check if a message has been seen
+    fn contains(&self, id: &MessageId) -> bool {
+        self.map.contains_key(id)
+    }
+
+    /// Insert a message, evicting oldest if at capacity
+    fn insert(&mut self, id: MessageId, timestamp: u64) {
+        // If already present, don't add again (duplicate)
+        if self.map.contains_key(&id) {
+            return;
+        }
+
+        // Evict oldest entries if at capacity (batch eviction for efficiency)
+        while self.queue.len() >= self.capacity {
+            if let Some(old_id) = self.queue.pop_front() {
+                self.map.remove(&old_id);
+            }
+        }
+
+        // Insert new entry
+        self.map.insert(id, timestamp);
+        self.queue.push_back(id);
+    }
+
+    /// Remove entries older than the given timestamp
+    fn cleanup_older_than(&mut self, cutoff_timestamp: u64) {
+        // Remove from front of queue while entries are older than cutoff
+        while let Some(&id) = self.queue.front() {
+            if let Some(&ts) = self.map.get(&id) {
+                if ts < cutoff_timestamp {
+                    self.queue.pop_front();
+                    self.map.remove(&id);
+                } else {
+                    // Queue is ordered by insertion time, so we can stop
+                    break;
+                }
+            } else {
+                // Entry was already removed, just pop from queue
+                self.queue.pop_front();
+            }
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 impl MeshNetwork {
     /// Create a new mesh network
     pub fn new(identity: Arc<NodeIdentity>, config: MeshConfig) -> Self {
@@ -173,11 +265,10 @@ impl MeshNetwork {
 
         Self {
             identity,
-            config,
+            config: config.clone(),
             peers,
             sequence: AtomicU64::new(0),
-            seen_messages: RwLock::new(HashSet::new()),
-            seen_timestamps: RwLock::new(HashMap::new()),
+            seen_messages: RwLock::new(SeenMessageCache::new(config.max_seen_messages)),
             handlers: RwLock::new(Vec::new()),
             running: AtomicBool::new(false),
             outbound_tx,
@@ -221,7 +312,7 @@ impl MeshNetwork {
         seen.contains(&msg_id)
     }
 
-    /// Mark message as seen
+    /// Mark message as seen (P2P-L1: O(1) insertion with automatic eviction)
     fn mark_seen(&self, msg_id: MessageId) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -229,29 +320,7 @@ impl MeshNetwork {
             .as_secs();
 
         let mut seen = self.seen_messages.write();
-        let mut timestamps = self.seen_timestamps.write();
-
-        // Evict oldest entries if at capacity (prevents unbounded memory growth)
-        if seen.len() >= self.config.max_seen_messages {
-            // Find and remove oldest 10% of entries
-            let to_remove_count = self.config.max_seen_messages / 10;
-            let mut entries: Vec<_> = timestamps.iter().map(|(id, ts)| (*id, *ts)).collect();
-            entries.sort_by_key(|(_, ts)| *ts);
-
-            for (id, _) in entries.into_iter().take(to_remove_count) {
-                seen.remove(&id);
-                timestamps.remove(&id);
-            }
-
-            debug!(
-                removed = to_remove_count,
-                remaining = seen.len(),
-                "Evicted oldest seen messages to prevent memory exhaustion"
-            );
-        }
-
-        seen.insert(msg_id);
-        timestamps.insert(msg_id, now);
+        seen.insert(msg_id, now);
     }
 
     /// Create a message envelope
@@ -882,7 +951,7 @@ impl MeshNetwork {
         }
     }
 
-    /// Clean up old seen messages
+    /// Clean up old seen messages (P2P-L1: O(k) where k is number of expired entries)
     pub fn cleanup_seen_messages(&self, max_age_secs: u64) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -891,25 +960,17 @@ impl MeshNetwork {
         let cutoff = now.saturating_sub(max_age_secs);
 
         let mut seen = self.seen_messages.write();
-        let mut timestamps = self.seen_timestamps.write();
+        let before_len = seen.len();
+        seen.cleanup_older_than(cutoff);
+        let after_len = seen.len();
 
-        // Collect IDs to remove
-        let to_remove: Vec<_> = timestamps
-            .iter()
-            .filter(|(_, &ts)| ts < cutoff)
-            .map(|(id, _)| *id)
-            .collect();
-
-        for id in to_remove {
-            seen.remove(&id);
-            timestamps.remove(&id);
+        if before_len != after_len {
+            debug!(
+                remaining = after_len,
+                removed = before_len - after_len,
+                "Cleaned up seen messages"
+            );
         }
-
-        debug!(
-            remaining = seen.len(),
-            removed = timestamps.len(),
-            "Cleaned up seen messages"
-        );
     }
 
     /// Connect to a peer
@@ -1109,5 +1170,72 @@ mod tests {
         assert!(!mesh.is_duplicate(msg_id));
         mesh.mark_seen(msg_id);
         assert!(mesh.is_duplicate(msg_id));
+    }
+
+    #[test]
+    fn test_seen_message_cache_eviction() {
+        // Test with small capacity to verify FIFO eviction
+        let mut cache = SeenMessageCache::new(3);
+
+        let id1 = MessageId { sender: [1u8; 32], sequence: 1 };
+        let id2 = MessageId { sender: [2u8; 32], sequence: 2 };
+        let id3 = MessageId { sender: [3u8; 32], sequence: 3 };
+        let id4 = MessageId { sender: [4u8; 32], sequence: 4 };
+
+        // Insert 3 messages (at capacity)
+        cache.insert(id1, 1000);
+        cache.insert(id2, 1001);
+        cache.insert(id3, 1002);
+
+        assert!(cache.contains(&id1));
+        assert!(cache.contains(&id2));
+        assert!(cache.contains(&id3));
+        assert_eq!(cache.len(), 3);
+
+        // Insert 4th message - should evict oldest (id1)
+        cache.insert(id4, 1003);
+
+        assert!(!cache.contains(&id1), "id1 should have been evicted");
+        assert!(cache.contains(&id2));
+        assert!(cache.contains(&id3));
+        assert!(cache.contains(&id4));
+        assert_eq!(cache.len(), 3);
+    }
+
+    #[test]
+    fn test_seen_message_cache_cleanup() {
+        let mut cache = SeenMessageCache::new(10);
+
+        let id1 = MessageId { sender: [1u8; 32], sequence: 1 };
+        let id2 = MessageId { sender: [2u8; 32], sequence: 2 };
+        let id3 = MessageId { sender: [3u8; 32], sequence: 3 };
+
+        // Insert with different timestamps
+        cache.insert(id1, 1000); // old
+        cache.insert(id2, 1500); // old
+        cache.insert(id3, 2000); // new
+
+        assert_eq!(cache.len(), 3);
+
+        // Cleanup entries older than 1600
+        cache.cleanup_older_than(1600);
+
+        assert!(!cache.contains(&id1), "id1 should have been cleaned up");
+        assert!(!cache.contains(&id2), "id2 should have been cleaned up");
+        assert!(cache.contains(&id3), "id3 should still exist");
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn test_seen_message_cache_duplicate_insert() {
+        let mut cache = SeenMessageCache::new(10);
+
+        let id1 = MessageId { sender: [1u8; 32], sequence: 1 };
+
+        cache.insert(id1, 1000);
+        cache.insert(id1, 1001); // Duplicate - should not increase count
+
+        assert_eq!(cache.len(), 1);
+        assert!(cache.contains(&id1));
     }
 }
