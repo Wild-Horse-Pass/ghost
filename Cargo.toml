@@ -108,6 +108,7 @@ bitcoin = { version = "0.32", features = ["serde"] }
 # Cryptography
 ed25519-dalek = { version = "2.1", features = ["serde", "rand_core"] }
 sha2 = "0.10"
+hmac = "0.12"
 rand = "0.8"
 hex = "0.4"
 

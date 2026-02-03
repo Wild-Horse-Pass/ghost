@@ -135,6 +135,9 @@ pub enum GhostError {
     #[error("Node banned: {0}")]
     NodeBanned(String),
 
+    #[error("Invalid timestamp: {0}")]
+    InvalidTimestamp(String),
+
     // =========================================================================
     // Share Errors
     // =========================================================================

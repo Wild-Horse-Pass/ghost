@@ -43,6 +43,7 @@ use ghost_common::error::GhostResult;
 use ghost_common::identity::NodeIdentity;
 use ghost_common::types::NodeId;
 
+use crate::ban_manager::{BanManager, BanReason};
 use crate::vote_handler::RateLimiter;
 
 use crate::epoch::{EpochTracker, SettlerRole};
@@ -157,6 +158,8 @@ pub struct ZkPayoutVoteHandler {
     config: ZkPayoutVoteHandlerConfig,
     /// Rate limiter for incoming messages (P2P-C3)
     rate_limiter: RateLimiter,
+    /// Shared ban manager for cross-handler enforcement (C1 security fix)
+    ban_manager: Option<Arc<BanManager>>,
 }
 
 impl ZkPayoutVoteHandler {
@@ -181,6 +184,34 @@ impl ZkPayoutVoteHandler {
             verify_fn: None,
             config,
             rate_limiter,
+            ban_manager: None,
+        }
+    }
+
+    /// Set the shared ban manager for cross-handler enforcement (C1 security fix)
+    pub fn with_ban_manager(mut self, ban_manager: Arc<BanManager>) -> Self {
+        self.ban_manager = Some(ban_manager);
+        self
+    }
+
+    /// Ban a node for equivocation (H5 security fix)
+    fn ban_node(&self, node_id: NodeId) {
+        if let Some(ref ban_manager) = self.ban_manager {
+            ban_manager.ban(node_id, BanReason::Equivocation);
+        } else {
+            warn!(
+                node_id = %hex::encode(&node_id[..8]),
+                "Node detected equivocating but no ban manager configured"
+            );
+        }
+    }
+
+    /// Check if node is banned
+    fn is_banned(&self, node_id: &NodeId) -> bool {
+        if let Some(ref ban_manager) = self.ban_manager {
+            ban_manager.is_banned(node_id)
+        } else {
+            false
         }
     }
 
@@ -409,6 +440,9 @@ impl ZkPayoutVoteHandler {
     }
 
     /// Record a vote from any validator
+    ///
+    /// H5 security fix: Includes equivocation detection - if a voter has already
+    /// voted differently, this is Byzantine behavior and they are banned.
     fn record_vote(&self, voter: NodeId, vote: &ZkPayoutVoteMessage) -> GhostResult<()> {
         let epoch = vote.epoch;
 
@@ -439,6 +473,35 @@ impl ZkPayoutVoteHandler {
         if state.proposal.proposal_hash() != vote.proposal_hash {
             warn!(epoch, "Vote for wrong payout proposal hash");
             return Ok(());
+        }
+
+        // H5: Equivocation detection - check if voter already voted differently
+        if vote.approve {
+            // Trying to approve - check if they already rejected
+            if state.rejections.contains_key(&voter) {
+                // EQUIVOCATION: Voter already rejected, now trying to approve
+                warn!(
+                    epoch,
+                    voter = %hex::encode(&voter[..8]),
+                    "EQUIVOCATION DETECTED: voter already rejected, now trying to approve"
+                );
+                drop(proposals); // Release lock before banning
+                self.ban_node(voter);
+                return Ok(());
+            }
+        } else {
+            // Trying to reject - check if they already approved
+            if state.approvals.contains(&voter) {
+                // EQUIVOCATION: Voter already approved, now trying to reject
+                warn!(
+                    epoch,
+                    voter = %hex::encode(&voter[..8]),
+                    "EQUIVOCATION DETECTED: voter already approved, now trying to reject"
+                );
+                drop(proposals); // Release lock before banning
+                self.ban_node(voter);
+                return Ok(());
+            }
         }
 
         // Record the vote
@@ -618,6 +681,14 @@ impl ZkPayoutVoteHandler {
 #[async_trait]
 impl MessageHandler for ZkPayoutVoteHandler {
     async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+        // C1: Check if node is banned using shared BanManager
+        if self.is_banned(&envelope.sender) {
+            return Err(ghost_common::error::GhostError::NodeBanned(format!(
+                "Node {} is banned",
+                hex::encode(&envelope.sender[..8])
+            )));
+        }
+
         // Rate limit check - reject messages from nodes sending too fast (P2P-C3)
         if !self.rate_limiter.check_and_consume(&envelope.sender) {
             warn!(

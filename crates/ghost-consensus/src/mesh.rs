@@ -178,22 +178,33 @@ pub struct MessageId {
     pub sequence: u64,
 }
 
+/// Per-sender message count for H3 security fix
+const MAX_MESSAGES_PER_SENDER: usize = 10_000;
+
 /// Bounded LRU-like cache for seen message deduplication (P2P-L1)
 ///
 /// Uses a HashMap for O(1) lookups combined with a VecDeque for O(1) FIFO eviction.
 /// This is simpler than a full LRU but provides good performance for deduplication
 /// where we mainly care about recent messages.
 ///
-/// Eviction Strategy:
-/// - When at capacity, the oldest entries are evicted in FIFO order
-/// - This provides O(1) eviction instead of the O(n log n) sorting approach
+/// Eviction Strategy (H3 security fix):
+/// - Global capacity limit with FIFO eviction for overall memory protection
+/// - Per-sender tracking ensures one malicious sender can't flush another sender's messages
+/// - Each sender limited to MAX_MESSAGES_PER_SENDER (10k) entries
+/// - When a sender exceeds their limit, only their oldest messages are evicted
 struct SeenMessageCache {
     /// Map for O(1) lookup
     map: HashMap<MessageId, u64>, // MessageId -> timestamp
     /// Queue for O(1) FIFO eviction (oldest at front)
     queue: VecDeque<MessageId>,
-    /// Maximum capacity
+    /// Per-sender message counts (H3 security fix)
+    sender_counts: HashMap<NodeId, usize>,
+    /// Per-sender queues for targeted eviction (H3 security fix)
+    sender_queues: HashMap<NodeId, VecDeque<(u64, u64)>>, // sender -> (sequence, timestamp)
+    /// Maximum global capacity
     capacity: usize,
+    /// Maximum messages per sender (H3 security fix)
+    max_per_sender: usize,
 }
 
 impl SeenMessageCache {
@@ -201,7 +212,10 @@ impl SeenMessageCache {
         Self {
             map: HashMap::with_capacity(capacity),
             queue: VecDeque::with_capacity(capacity),
+            sender_counts: HashMap::new(),
+            sender_queues: HashMap::new(),
             capacity,
+            max_per_sender: MAX_MESSAGES_PER_SENDER,
         }
     }
 
@@ -211,22 +225,54 @@ impl SeenMessageCache {
     }
 
     /// Insert a message, evicting oldest if at capacity
+    ///
+    /// H3 security fix: Uses per-sender tracking to prevent cache flushing attacks.
+    /// A malicious sender flooding messages can only evict their own entries,
+    /// not messages from other legitimate senders.
     fn insert(&mut self, id: MessageId, timestamp: u64) {
         // If already present, don't add again (duplicate)
         if self.map.contains_key(&id) {
             return;
         }
 
-        // Evict oldest entries if at capacity (batch eviction for efficiency)
+        // H3: Check per-sender limit first
+        let sender_count = self.sender_counts.entry(id.sender).or_insert(0);
+        if *sender_count >= self.max_per_sender {
+            // Evict oldest message from THIS sender only
+            if let Some(sender_queue) = self.sender_queues.get_mut(&id.sender) {
+                if let Some((old_seq, _)) = sender_queue.pop_front() {
+                    let old_id = MessageId {
+                        sender: id.sender,
+                        sequence: old_seq,
+                    };
+                    if self.map.remove(&old_id).is_some() {
+                        *sender_count = sender_count.saturating_sub(1);
+                    }
+                }
+            }
+        }
+
+        // Global capacity check (defense in depth)
         while self.queue.len() >= self.capacity {
             if let Some(old_id) = self.queue.pop_front() {
-                self.map.remove(&old_id);
+                if self.map.remove(&old_id).is_some() {
+                    if let Some(count) = self.sender_counts.get_mut(&old_id.sender) {
+                        *count = count.saturating_sub(1);
+                    }
+                }
             }
         }
 
         // Insert new entry
         self.map.insert(id, timestamp);
         self.queue.push_back(id);
+
+        // Track per-sender
+        *self.sender_counts.entry(id.sender).or_insert(0) += 1;
+        self.sender_queues
+            .entry(id.sender)
+            .or_default()
+            .push_back((id.sequence, timestamp));
     }
 
     /// Remove entries older than the given timestamp
@@ -236,7 +282,11 @@ impl SeenMessageCache {
             if let Some(&ts) = self.map.get(&id) {
                 if ts < cutoff_timestamp {
                     self.queue.pop_front();
-                    self.map.remove(&id);
+                    if self.map.remove(&id).is_some() {
+                        if let Some(count) = self.sender_counts.get_mut(&id.sender) {
+                            *count = count.saturating_sub(1);
+                        }
+                    }
                 } else {
                     // Queue is ordered by insertion time, so we can stop
                     break;
@@ -246,6 +296,25 @@ impl SeenMessageCache {
                 self.queue.pop_front();
             }
         }
+
+        // Also cleanup per-sender queues
+        for (sender_id, sender_queue) in self.sender_queues.iter_mut() {
+            while let Some(&(_, ts)) = sender_queue.front() {
+                if ts < cutoff_timestamp {
+                    sender_queue.pop_front();
+                } else {
+                    break;
+                }
+            }
+            // Update count to match actual queue length
+            if let Some(count) = self.sender_counts.get_mut(sender_id) {
+                *count = sender_queue.len();
+            }
+        }
+
+        // Remove empty sender entries to prevent unbounded growth of sender tracking
+        self.sender_counts.retain(|_, &mut count| count > 0);
+        self.sender_queues.retain(|_, queue| !queue.is_empty());
     }
 
     fn len(&self) -> usize {
@@ -1237,5 +1306,74 @@ mod tests {
 
         assert_eq!(cache.len(), 1);
         assert!(cache.contains(&id1));
+    }
+
+    #[test]
+    fn test_seen_message_cache_per_sender_limit() {
+        // H3 security test: Verify per-sender limits prevent cache flushing attacks
+        let mut cache = SeenMessageCache::new(100);
+        // Override max_per_sender for testing
+        cache.max_per_sender = 3;
+
+        let sender1 = [1u8; 32];
+        let sender2 = [2u8; 32];
+
+        // Sender 1 inserts 3 messages (at their limit)
+        for i in 0..3 {
+            let id = MessageId { sender: sender1, sequence: i };
+            cache.insert(id, 1000 + i);
+        }
+
+        // Sender 2 inserts 2 messages
+        for i in 0..2 {
+            let id = MessageId { sender: sender2, sequence: i };
+            cache.insert(id, 2000 + i);
+        }
+
+        assert_eq!(cache.len(), 5);
+
+        // All sender1 messages should exist
+        for i in 0..3 {
+            assert!(cache.contains(&MessageId { sender: sender1, sequence: i }));
+        }
+        // All sender2 messages should exist
+        for i in 0..2 {
+            assert!(cache.contains(&MessageId { sender: sender2, sequence: i }));
+        }
+
+        // Now sender1 sends another message (exceeds their limit)
+        let new_msg = MessageId { sender: sender1, sequence: 10 };
+        cache.insert(new_msg, 3000);
+
+        // Sender1's OLDEST message should be evicted, not sender2's messages!
+        assert!(
+            !cache.contains(&MessageId { sender: sender1, sequence: 0 }),
+            "Sender1's oldest message should be evicted"
+        );
+        assert!(
+            cache.contains(&MessageId { sender: sender1, sequence: 1 }),
+            "Sender1's newer messages should remain"
+        );
+        assert!(
+            cache.contains(&MessageId { sender: sender1, sequence: 2 }),
+            "Sender1's newer messages should remain"
+        );
+        assert!(
+            cache.contains(&new_msg),
+            "Sender1's new message should be present"
+        );
+
+        // Sender2's messages should be UNAFFECTED
+        assert!(
+            cache.contains(&MessageId { sender: sender2, sequence: 0 }),
+            "Sender2's messages should be unaffected"
+        );
+        assert!(
+            cache.contains(&MessageId { sender: sender2, sequence: 1 }),
+            "Sender2's messages should be unaffected"
+        );
+
+        // Total should still be 5 (sender1: 3, sender2: 2)
+        assert_eq!(cache.len(), 5);
     }
 }

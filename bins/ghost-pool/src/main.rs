@@ -47,6 +47,7 @@ use ghost_common::rpc::BitcoinRpc;
 use ghost_common::signer::SignerConfig;
 use ghost_common::types::{ConsensusResult, NodeCapabilities};
 use ghost_common::zmq::{ZmqConfig, ZmqSubscriber};
+use ghost_consensus::ban_manager::BanManager;
 use ghost_consensus::health_handler::HealthPingHandler;
 use ghost_consensus::mesh::{MeshConfig, MeshNetwork};
 use ghost_consensus::message::MessageType;
@@ -758,11 +759,16 @@ async fn main() -> Result<()> {
         Ok(())
     });
 
-    // Create vote handler with callbacks
+    // Create shared ban manager for cross-handler enforcement (C1 security fix)
+    let ban_manager = Arc::new(BanManager::new());
+    info!("Shared BanManager created for cross-handler ban enforcement");
+
+    // Create vote handler with callbacks and shared ban manager
     let vote_handler = Arc::new(
         VoteHandler::new(Arc::clone(&identity), Arc::clone(&voting_manager))
             .with_broadcaster(broadcast_fn)
-            .with_executor(execute_fn),
+            .with_executor(execute_fn)
+            .with_ban_manager(Arc::clone(&ban_manager)),
     );
 
     // Populate elders from database for BFT voting
@@ -819,7 +825,8 @@ async fn main() -> Result<()> {
     let health_handler = Arc::new(
         HealthPingHandler::new(Arc::clone(mesh.peers()), Some(Arc::clone(&db)))
             .with_elder_callback(voter_callback)
-            .with_node_capabilities_callback(node_caps_callback),
+            .with_node_capabilities_callback(node_caps_callback)
+            .with_ban_manager(Arc::clone(&ban_manager)),
     );
     mesh.register_handler(
         Arc::clone(&health_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>
@@ -1302,6 +1309,29 @@ async fn main() -> Result<()> {
         interval_secs = 10,
         "Self-uptime recording task started"
     );
+
+    // Start ban manager cleanup task (C1 security fix)
+    // Periodically cleans up expired bans to prevent memory growth
+    let ban_manager_for_cleanup = Arc::clone(&ban_manager);
+    let mut ban_cleanup_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let removed = ban_manager_for_cleanup.cleanup_expired();
+                    if removed > 0 {
+                        tracing::debug!(removed, "Cleaned up expired bans");
+                    }
+                }
+                _ = ban_cleanup_shutdown.recv() => {
+                    tracing::info!("Ban manager cleanup task shutting down");
+                    break;
+                }
+            }
+        }
+    });
+    info!("Ban manager cleanup task started (60s interval)");
 
     // Clone ws_state for event handlers before moving verification_state
     let _verification_state_for_ws = Arc::clone(&verification_state);

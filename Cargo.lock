@@ -2169,6 +2169,7 @@ dependencies = [
  "ghost-storage",
  "governor",
  "hex",
+ "hmac",
  "libc",
  "parking_lot",
  "rand",

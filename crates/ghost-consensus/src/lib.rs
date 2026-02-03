@@ -34,6 +34,7 @@
 //!
 //! Uses ZMQ PUB/SUB for efficient message propagation.
 
+pub mod ban_manager;
 pub mod discovery_handler;
 pub mod encrypted_proposal;
 pub mod epoch;
@@ -53,6 +54,7 @@ pub mod voting;
 pub mod zk_payout_handler;
 pub mod zk_vote_handler;
 
+pub use ban_manager::*;
 pub use discovery_handler::*;
 pub use encrypted_proposal::*;
 pub use epoch::*;

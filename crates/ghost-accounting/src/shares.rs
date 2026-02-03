@@ -27,18 +27,30 @@ use tracing::{debug, trace};
 
 use ghost_common::types::{NodeCapabilities, NodeId, RoundId};
 
+/// Work scaling factor for integer arithmetic (H7 security fix)
+/// Using 10^12 gives 12 decimal places of precision while fitting in u128
+pub const WORK_SCALE: u128 = 1_000_000_000_000;
+
 /// Share accounting for a round
+///
+/// H7 security fix: Work values are stored as scaled u128 internally
+/// to prevent floating-point precision errors that could benefit attackers.
+/// External APIs still accept f64 for compatibility but convert immediately.
 #[derive(Debug, Clone, Default)]
 pub struct RoundShares {
     /// Round ID
     pub round_id: RoundId,
     /// Block height
     pub block_height: u64,
-    /// Miner shares (miner_id -> work)
+    /// Miner shares (miner_id -> scaled work as u128)
+    miner_shares_scaled: HashMap<String, u128>,
+    /// Miner shares (miner_id -> work) - f64 view for compatibility
     pub miner_shares: HashMap<String, f64>,
     /// Node shares (node_id -> capability shares)
     pub node_shares: HashMap<NodeId, NodeShareInfo>,
-    /// Total miner work
+    /// Total miner work (scaled as u128)
+    total_miner_work_scaled: u128,
+    /// Total miner work - f64 view for compatibility
     pub total_miner_work: f64,
     /// Total node capability shares
     pub total_node_shares: i32,
@@ -65,19 +77,49 @@ impl RoundShares {
         Self {
             round_id,
             block_height,
+            miner_shares_scaled: HashMap::new(),
             miner_shares: HashMap::new(),
             node_shares: HashMap::new(),
+            total_miner_work_scaled: 0,
             total_miner_work: 0.0,
             total_node_shares: 0,
         }
     }
 
-    /// Add miner work
+    /// Add miner work (H7 security fix)
+    ///
+    /// Internally stores as scaled u128 to prevent floating-point accumulation errors.
+    /// The f64 view is updated for compatibility with existing code.
     pub fn add_miner_work(&mut self, miner_id: &str, work: f64) {
         trace!(miner = %miner_id, work = work, "Adding miner work");
 
-        *self.miner_shares.entry(miner_id.to_string()).or_insert(0.0) += work;
-        self.total_miner_work += work;
+        // Convert to scaled integer (H7 security fix)
+        let work_scaled = (work * WORK_SCALE as f64) as u128;
+
+        // Update scaled storage
+        *self
+            .miner_shares_scaled
+            .entry(miner_id.to_string())
+            .or_insert(0) += work_scaled;
+        self.total_miner_work_scaled += work_scaled;
+
+        // Update f64 view from scaled values (ensures consistency)
+        let miner_total_scaled = *self.miner_shares_scaled.get(miner_id).unwrap_or(&0);
+        self.miner_shares.insert(
+            miner_id.to_string(),
+            miner_total_scaled as f64 / WORK_SCALE as f64,
+        );
+        self.total_miner_work = self.total_miner_work_scaled as f64 / WORK_SCALE as f64;
+    }
+
+    /// Get miner work as scaled integer (for precise calculations)
+    pub fn miner_work_scaled(&self, miner_id: &str) -> u128 {
+        *self.miner_shares_scaled.get(miner_id).unwrap_or(&0)
+    }
+
+    /// Get total work as scaled integer (for precise calculations)
+    pub fn total_work_scaled(&self) -> u128 {
+        self.total_miner_work_scaled
     }
 
     /// Register a node's capabilities
