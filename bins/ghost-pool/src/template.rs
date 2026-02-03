@@ -120,6 +120,10 @@ pub struct WorkState {
     pub coinbase_outputs_serialized: Vec<u8>,
     /// Number of coinbase outputs
     pub coinbase_outputs_count: u32,
+    /// H-MINE-2: Snapshot of approved payout hash at template creation time
+    /// This prevents TOCTOU race conditions where the approved payout could change
+    /// between template creation and coinbase building.
+    pub payout_snapshot: Option<[u8; 32]>,
 }
 
 /// Witness data for SegWit coinbase transaction
@@ -239,15 +243,31 @@ impl TemplateProcessor {
     ///
     /// This is used for final block assembly when we have an approved
     /// payout proposal from consensus.
+    ///
+    /// H-MINE-2: This method reads from the live approved_payout lock.
+    /// For TOCTOU-safe operation when reconstructing from a template,
+    /// use build_approved_coinbase_from_snapshot() with the WorkState's payout_snapshot.
     pub fn build_approved_coinbase(
         &self,
         height: u64,
         witness_commitment: &Option<String>,
     ) -> Option<bitcoin::Transaction> {
-        // Get approved payout hash
+        // H-MINE-2: Capture hash once, atomically
         let payout_hash = (*self.approved_payout.read())?;
+        self.build_approved_coinbase_from_snapshot(height, witness_commitment, payout_hash)
+    }
 
-        // Look up the proposal
+    /// H-MINE-2: Build coinbase using a pre-captured payout hash snapshot
+    ///
+    /// This is the TOCTOU-safe version that uses a snapshot of the approved payout
+    /// hash captured at template creation time (stored in WorkState.payout_snapshot).
+    pub fn build_approved_coinbase_from_snapshot(
+        &self,
+        height: u64,
+        witness_commitment: &Option<String>,
+        payout_hash: [u8; 32],
+    ) -> Option<bitcoin::Transaction> {
+        // Look up the proposal using the snapshot hash
         let proposal = self.get_proposal(&payout_hash)?;
 
         // Build using CoinbaseBuilder
@@ -260,18 +280,28 @@ impl TemplateProcessor {
         entries.extend(proposal.miner_payouts.iter().cloned());
         entries.extend(proposal.node_payouts.iter().cloned());
 
-        // Add treasury output if non-zero and treasury address is configured
-        if proposal.treasury_amount > 0 && !self.config.treasury_address.is_empty() {
-            // Use the address string for treasury (multi-sig uses same P2WSH address)
-            let treasury_addr = self.config.treasury_address.address();
-            entries.push(ghost_common::types::PayoutEntry {
-                address: treasury_addr.as_bytes().to_vec(),
-                amount: proposal.treasury_amount,
-                recipient_id: [0u8; 32],
-                payout_type: ghost_common::types::PayoutType::Treasury,
-            });
-        } else if proposal.treasury_amount > 0 {
-            warn!("Treasury amount specified but no treasury address configured");
+        // H-MINE-3: Add treasury output using address from proposal (snapshot), not live config
+        if proposal.treasury_amount > 0 {
+            let treasury_addr = if !proposal.treasury_address.is_empty() {
+                // H-MINE-3: Use the snapshot address from the proposal
+                proposal.treasury_address.clone()
+            } else if !self.config.treasury_address.is_empty() {
+                // Fallback to config if proposal has no address (legacy proposals)
+                warn!("Using treasury address from config (proposal has no snapshot)");
+                self.config.treasury_address.address().as_bytes().to_vec()
+            } else {
+                warn!("Treasury amount specified but no treasury address available");
+                Vec::new()
+            };
+
+            if !treasury_addr.is_empty() {
+                entries.push(ghost_common::types::PayoutEntry {
+                    address: treasury_addr,
+                    amount: proposal.treasury_amount,
+                    recipient_id: [0u8; 32],
+                    payout_type: ghost_common::types::PayoutType::Treasury,
+                });
+            }
         }
 
         match builder.build_from_entries(&entries) {
@@ -312,16 +342,44 @@ impl TemplateProcessor {
     /// When there's an approved payout, this includes all payout outputs.
     /// Otherwise falls back to placeholder single output.
     ///
+    /// H-MINE-2: This method reads from the live approved_payout lock.
+    /// For TOCTOU-safe operation, use build_coinbase_parts_with_payout_snapshot() instead.
+    ///
     /// Returns: (coinbase1, coinbase2, witness_data, outputs_serialized, outputs_count)
+    #[allow(dead_code)]
     fn build_coinbase_parts_with_payout(
         &self,
         height: u64,
         total_value: u64,
         witness_commitment: &Option<String>,
     ) -> (Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32) {
-        // Check for approved payout
+        // Check for approved payout - reads live lock (TOCTOU-vulnerable path)
         let payout_hash = *self.approved_payout.read();
-        let proposal = payout_hash.and_then(|h| self.get_proposal(&h));
+        self.build_coinbase_parts_with_payout_snapshot(height, total_value, witness_commitment, payout_hash)
+    }
+
+    /// H-MINE-2: Build coinbase using a pre-captured payout snapshot
+    ///
+    /// This is the TOCTOU-safe version that uses a snapshot of the approved payout
+    /// hash captured at template creation time.
+    ///
+    /// IMPORTANT: coinbase1/coinbase2 use NON-WITNESS serialization so miners
+    /// compute the correct TXID (not WTXID) for the merkle root.
+    /// Witness data is returned separately for block assembly.
+    ///
+    /// When there's an approved payout, this includes all payout outputs.
+    /// Otherwise falls back to placeholder single output.
+    ///
+    /// Returns: (coinbase1, coinbase2, witness_data, outputs_serialized, outputs_count)
+    fn build_coinbase_parts_with_payout_snapshot(
+        &self,
+        height: u64,
+        total_value: u64,
+        witness_commitment: &Option<String>,
+        payout_snapshot: Option<[u8; 32]>,
+    ) -> (Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32) {
+        // H-MINE-2: Use the snapshot instead of reading from the lock
+        let proposal = payout_snapshot.and_then(|h| self.get_proposal(&h));
 
         // Build coinbase1 - NON-WITNESS format (no marker/flag)
         // Format: version | input_count | prev_txhash | prev_outindex | scriptsig_len | scriptsig_data
@@ -406,13 +464,22 @@ impl TemplateProcessor {
             }
 
             // Treasury
+            // H-MINE-3: Use treasury_address from proposal (snapshot) instead of live config
             if prop.treasury_amount > 0 {
-                let treasury_addr = self.config.treasury_address.address();
                 coinbase2.extend_from_slice(&prop.treasury_amount.to_le_bytes());
-                self.encode_address_script(&mut coinbase2, treasury_addr, "treasury");
-                // Also add to outputs_serialized for TDP
-                outputs_serialized.extend_from_slice(&prop.treasury_amount.to_le_bytes());
-                self.encode_address_script(&mut outputs_serialized, treasury_addr, "treasury_tdp");
+                if !prop.treasury_address.is_empty() {
+                    // H-MINE-3: Use the snapshot address from the proposal
+                    self.encode_script(&mut coinbase2, &prop.treasury_address);
+                    outputs_serialized.extend_from_slice(&prop.treasury_amount.to_le_bytes());
+                    self.encode_script(&mut outputs_serialized, &prop.treasury_address);
+                } else {
+                    // Fallback to config if proposal has no address (legacy proposals)
+                    let treasury_addr = self.config.treasury_address.address();
+                    self.encode_address_script(&mut coinbase2, treasury_addr, "treasury");
+                    outputs_serialized.extend_from_slice(&prop.treasury_amount.to_le_bytes());
+                    self.encode_address_script(&mut outputs_serialized, treasury_addr, "treasury_tdp");
+                    warn!("Using treasury address from config (proposal has no snapshot)");
+                }
             }
 
             info!(
@@ -799,6 +866,11 @@ impl TemplateProcessor {
         // Build merkle tree
         let merkle_branches = self.build_merkle_branches(&filtered_txs);
 
+        // H-MINE-2: Capture payout snapshot ATOMICALLY at template creation time
+        // This prevents TOCTOU race conditions where the approved payout could change
+        // between template creation and coinbase building
+        let payout_snapshot = *self.approved_payout.read();
+
         // Build coinbase transaction parts (uses approved payout if available)
         // Returns NON-WITNESS serialization for TXID computation + separate witness data
         // Also returns serialized outputs for TDP to send to SRI Pool
@@ -808,16 +880,18 @@ impl TemplateProcessor {
         // subsidy (from halving schedule) + filtered tx fees
         let subsidy = Self::calculate_subsidy(template.height);
         let coinbase_value = subsidy + total_fees;
+        // H-MINE-2: Pass snapshot to coinbase builder to use consistent payout data
         let (
             coinbase1,
             coinbase2,
             witness_data,
             coinbase_outputs_serialized,
             coinbase_outputs_count,
-        ) = self.build_coinbase_parts_with_payout(
+        ) = self.build_coinbase_parts_with_payout_snapshot(
             template.height,
             coinbase_value,
             &template.default_witness_commitment,
+            payout_snapshot,
         );
 
         // Create work state
@@ -840,6 +914,7 @@ impl TemplateProcessor {
             template: template.clone(),
             coinbase_outputs_serialized,
             coinbase_outputs_count,
+            payout_snapshot, // H-MINE-2: Store snapshot for consistent coinbase reconstruction
         };
 
         *self.current_work.write() = Some(work);

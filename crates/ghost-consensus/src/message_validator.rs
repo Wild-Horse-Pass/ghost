@@ -88,6 +88,10 @@ pub enum MessageValidationError {
     #[error("Sequence number is zero")]
     ZeroSequence,
 
+    /// H-P2P-2: Signature is all zeros (indicates uninitialized/forged message)
+    #[error("Signature is all zeros")]
+    ZeroSignature,
+
     #[error("Deserialization failed: {0}")]
     DeserializationFailed(String),
 
@@ -173,6 +177,12 @@ pub fn validate_payload_size(
 
 /// Validate a deserialized envelope
 pub fn validate_envelope(envelope: &MessageEnvelope) -> Result<(), MessageValidationError> {
+    // H-P2P-2: Check for zero signatures (must be checked in all handlers, not just vote_handler)
+    // Zero signatures indicate uninitialized or forged messages
+    if envelope.signature == [0u8; 64] {
+        return Err(MessageValidationError::ZeroSignature);
+    }
+
     // Check sender is not all zeros
     if envelope.sender == [0u8; 32] {
         return Err(MessageValidationError::ZeroSender);
@@ -439,5 +449,38 @@ mod tests {
         // The test verifies the boundary logic works
         assert!(future_result.is_ok() || matches!(future_result, Err(MessageValidationError::TimestampInFuture(d)) if d < 1000));
         assert!(past_result.is_ok() || matches!(past_result, Err(MessageValidationError::TimestampInPast(d)) if d < 1000));
+    }
+
+    #[test]
+    fn test_zero_signature_rejected() {
+        // H-P2P-2: Test that zero signatures are rejected by validate_envelope
+        let envelope = MessageEnvelope {
+            msg_type: MessageType::Vote,
+            sender: [1u8; 32],
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            sequence: 1,
+            signature: [0u8; 64], // Zero signature
+            payload: vec![1, 2, 3],
+        };
+
+        let result = validate_envelope(&envelope);
+        assert!(matches!(result, Err(MessageValidationError::ZeroSignature)));
+    }
+
+    #[test]
+    fn test_non_zero_signature_passes_validation() {
+        // Non-zero signature should pass the zero check (actual sig verification is separate)
+        let envelope = MessageEnvelope {
+            msg_type: MessageType::Vote,
+            sender: [1u8; 32],
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            sequence: 1,
+            signature: [1u8; 64], // Non-zero signature (but invalid - that's ok for this test)
+            payload: vec![1, 2, 3],
+        };
+
+        // Should pass validate_envelope (signature validity check is separate)
+        let result = validate_envelope(&envelope);
+        assert!(result.is_ok());
     }
 }

@@ -474,6 +474,7 @@ mod tests {
                 payout_type: PayoutType::NodeReward,
             }],
             treasury_amount: 12_500_000,
+            treasury_address: b"bc1qtreasury".to_vec(), // H-MINE-3: snapshot address
             tx_fees: 1_000_000,
             subsidy: 312_500_000,
             timestamp: 1700000000,

@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -76,6 +76,10 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
 
     if current_version < 8 {
         migrate_v8(conn)?;
+    }
+
+    if current_version < 9 {
+        migrate_v9(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -693,6 +697,28 @@ fn migrate_v8(conn: &Connection) -> GhostResult<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_equivocation_proofs_node ON equivocation_proofs(node_id);
         CREATE INDEX IF NOT EXISTS idx_equivocation_proofs_round ON equivocation_proofs(round_number);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Migration to v9: Prevent double-spend race condition on withdrawals (C-PAY-3)
+///
+/// Adds a partial unique index to prevent concurrent withdrawal requests for the same lock.
+/// Only one pending or batched withdrawal can exist per lock at any time.
+fn migrate_v9(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v9: Adding partial unique index for withdrawal race condition prevention");
+
+    conn.execute_batch(
+        r#"
+        -- Partial unique index to prevent double-withdrawal race condition (C-PAY-3)
+        -- Ensures only one pending/batched withdrawal can exist per lock_id
+        -- This provides defense-in-depth at the database level
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_withdrawals_pending_lock
+        ON withdrawal_requests(lock_id)
+        WHERE status IN ('pending', 'batched');
         "#,
     )
     .map_err(|e| GhostError::Migration(e.to_string()))?;

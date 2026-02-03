@@ -202,7 +202,9 @@ impl WraithTransactionBuilder {
                     vout: input.vout,
                 },
                 script_sig: ScriptBuf::new(), // Will be filled by signing
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                // H-WRAITH-1: Disable RBF to prevent transaction replacement attacks
+                // Multi-party transactions must not be replaceable by any single participant
+                sequence: Sequence::MAX,
                 witness: Witness::new(), // Will be filled by signing
             });
         }
@@ -361,7 +363,9 @@ impl WraithTransactionBuilder {
                     vout: input.vout,
                 },
                 script_sig: ScriptBuf::new(),
-                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                // H-WRAITH-1: Disable RBF to prevent transaction replacement attacks
+                // Multi-party transactions must not be replaceable by any single participant
+                sequence: Sequence::MAX,
                 witness: Witness::new(),
             });
         }

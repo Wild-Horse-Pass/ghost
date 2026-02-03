@@ -28,6 +28,10 @@
 //! - Prune old snapshots beyond retention limit
 
 use std::collections::HashMap;
+
+/// L-STOR-1: Maximum allowed JSON size for deserialization from database (10 MB)
+/// Prevents OOM attacks from maliciously large data
+const MAX_JSON_SIZE: usize = 10 * 1024 * 1024;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::params;
@@ -210,6 +214,24 @@ impl SnapshotManager {
 
             match result {
                 Ok((id, h, state_root, balances_json, nonces_json, created_at)) => {
+                    // L-STOR-1: Check size before deserializing to prevent OOM
+                    if balances_json.len() > MAX_JSON_SIZE {
+                        return Err(GhostError::Database(format!(
+                            "Snapshot balances JSON too large: {} bytes (max {})",
+                            balances_json.len(),
+                            MAX_JSON_SIZE
+                        )));
+                    }
+                    if let Some(ref nonces) = nonces_json {
+                        if nonces.len() > MAX_JSON_SIZE {
+                            return Err(GhostError::Database(format!(
+                                "Snapshot nonces JSON too large: {} bytes (max {})",
+                                nonces.len(),
+                                MAX_JSON_SIZE
+                            )));
+                        }
+                    }
+
                     let balances: HashMap<String, u64> = serde_json::from_str(&balances_json)
                         .map_err(|e| GhostError::Serialization(e.to_string()))?;
                     let nonces: Option<HashMap<String, u64>> = nonces_json
@@ -254,6 +276,24 @@ impl SnapshotManager {
 
             match result {
                 Ok((id, h, state_root, balances_json, nonces_json, created_at)) => {
+                    // L-STOR-1: Check size before deserializing to prevent OOM
+                    if balances_json.len() > MAX_JSON_SIZE {
+                        return Err(GhostError::Database(format!(
+                            "Snapshot balances JSON too large: {} bytes (max {})",
+                            balances_json.len(),
+                            MAX_JSON_SIZE
+                        )));
+                    }
+                    if let Some(ref nonces) = nonces_json {
+                        if nonces.len() > MAX_JSON_SIZE {
+                            return Err(GhostError::Database(format!(
+                                "Snapshot nonces JSON too large: {} bytes (max {})",
+                                nonces.len(),
+                                MAX_JSON_SIZE
+                            )));
+                        }
+                    }
+
                     let balances: HashMap<String, u64> = serde_json::from_str(&balances_json)
                         .map_err(|e| GhostError::Serialization(e.to_string()))?;
                     let nonces: Option<HashMap<String, u64>> = nonces_json
@@ -549,5 +589,36 @@ mod tests {
 
         // Non-existent
         assert!(mgr.get_proposer_at(50).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_json_size_limit_enforced() {
+        // L-STOR-1: Test that oversized JSON is rejected
+        let db = setup_test_db();
+
+        // Insert a snapshot with oversized balances_json directly via SQL
+        db.with_connection(|conn| {
+            let oversized_json = "x".repeat(super::MAX_JSON_SIZE + 1);
+            conn.execute(
+                "INSERT INTO state_snapshots (height, state_root, balances_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![100i64, "abc", oversized_json, 12345i64],
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        let mgr = SnapshotManager::new(db, 100, 50);
+
+        // Should fail with size limit error
+        let result = mgr.get_snapshot_at(100);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("too large"),
+            "Expected size limit error, got: {}",
+            err_msg
+        );
     }
 }

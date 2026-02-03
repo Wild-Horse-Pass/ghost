@@ -27,6 +27,7 @@
 use rand::rngs::OsRng;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
+use subtle::ConstantTimeEq;
 
 use crate::derivation::{compute_tweak, derive_shared_secret, derive_spend_key};
 use crate::error::GhostKeyError;
@@ -40,6 +41,15 @@ pub const MAX_DETECTION_NONCE: u16 = 100;
 /// Consists of:
 /// - Scan key: Used to detect incoming payments via ECDH
 /// - Spend key: Used to spend received funds
+///
+/// # Security (L-CRYPTO-1)
+///
+/// This struct implements `Drop` to attempt erasure of secret keys from memory
+/// when the struct is dropped. Note that due to Rust compiler optimizations,
+/// complete memory zeroing cannot be guaranteed - the compiler may copy or move
+/// secret data elsewhere in memory. This is a defense-in-depth measure, not a
+/// guarantee. See the [`zeroize`](https://docs.rs/zeroize) crate documentation
+/// for a detailed discussion of the challenges involved.
 #[derive(Clone)]
 pub struct GhostKeys {
     scan_secret: SecretKey,
@@ -50,6 +60,18 @@ pub struct GhostKeys {
 
 impl GhostKeys {
     /// Generate new random Ghost Keys
+    ///
+    /// # Security Note (M-CRYPTO-2)
+    ///
+    /// This operation involves cryptographic key generation which is computationally
+    /// expensive. Public APIs calling this method should implement rate limiting to
+    /// prevent resource exhaustion attacks. Consider:
+    ///
+    /// - Limiting key generation requests per IP/user
+    /// - Adding delays between consecutive generation requests
+    /// - Implementing CAPTCHA or proof-of-work for untrusted callers
+    ///
+    /// This function uses the system's CSPRNG (OsRng) for key material.
     pub fn generate() -> Self {
         let secp = Secp256k1::new();
         let (scan_secret, scan_pubkey) = secp.generate_keypair(&mut OsRng);
@@ -143,7 +165,12 @@ impl GhostKeys {
             if let Ok(tweak_secret) = SecretKey::from_slice(&tweak) {
                 let tweak_pubkey = PublicKey::from_secret_key(&secp, &tweak_secret);
                 if let Ok(expected_pubkey) = self.spend_pubkey.combine(&tweak_pubkey) {
-                    if &expected_pubkey == output_pubkey {
+                    // M-CRYPTO-3: Use constant-time comparison to prevent timing attacks
+                    if expected_pubkey
+                        .serialize()
+                        .ct_eq(&output_pubkey.serialize())
+                        .into()
+                    {
                         // Found it! Derive spend key
                         if let Ok(spend_key) = derive_spend_key(&self.spend_secret, &tweak) {
                             return Some(spend_key);
@@ -177,7 +204,15 @@ impl GhostKeys {
     ///
     /// This is used to create new Ghost Locks. Each lock gets a unique
     /// key derived from the spend key.
-    pub fn derive_lock_pubkey(&self, index: u32) -> [u8; 33] {
+    ///
+    /// # Errors
+    ///
+    /// Returns `GhostKeyError::DerivationError` if the derived tweak produces
+    /// an invalid secret key or if the pubkey combination fails. This should
+    /// be extremely rare in practice (only if SHA256 output happens to be 0 or
+    /// \>= curve order), but callers must handle the error to avoid silent
+    /// address reuse. See L-CRYPTO-2.
+    pub fn derive_lock_pubkey(&self, index: u32) -> Result<[u8; 33], GhostKeyError> {
         use sha2::{Digest, Sha256};
 
         let secp = Secp256k1::new();
@@ -190,21 +225,29 @@ impl GhostKeys {
         let tweak: [u8; 32] = hasher.finalize().into();
 
         // Derive lock pubkey = spend_pubkey + tweak*G
-        if let Ok(tweak_secret) = SecretKey::from_slice(&tweak) {
-            let tweak_pubkey = PublicKey::from_secret_key(&secp, &tweak_secret);
-            if let Ok(lock_pubkey) = self.spend_pubkey.combine(&tweak_pubkey) {
-                return lock_pubkey.serialize();
-            }
-        }
+        let tweak_secret = SecretKey::from_slice(&tweak).map_err(|e| {
+            GhostKeyError::DerivationError(format!("Invalid tweak for lock pubkey: {}", e))
+        })?;
+        let tweak_pubkey = PublicKey::from_secret_key(&secp, &tweak_secret);
+        let lock_pubkey = self.spend_pubkey.combine(&tweak_pubkey).map_err(|e| {
+            GhostKeyError::DerivationError(format!("Failed to combine pubkeys for lock: {}", e))
+        })?;
 
-        // Fallback to spend pubkey if derivation fails
-        self.spend_pubkey.serialize()
+        Ok(lock_pubkey.serialize())
     }
 
     /// Derive a recovery pubkey for a specific index
     ///
     /// Recovery keys are used for timelock recovery paths.
-    pub fn derive_recovery_pubkey(&self, index: u32) -> [u8; 33] {
+    ///
+    /// # Errors
+    ///
+    /// Returns `GhostKeyError::DerivationError` if the derived tweak produces
+    /// an invalid secret key or if the pubkey combination fails. This should
+    /// be extremely rare in practice (only if SHA256 output happens to be 0 or
+    /// \>= curve order), but callers must handle the error to avoid silent
+    /// address reuse. See L-CRYPTO-2.
+    pub fn derive_recovery_pubkey(&self, index: u32) -> Result<[u8; 33], GhostKeyError> {
         use sha2::{Digest, Sha256};
 
         let secp = Secp256k1::new();
@@ -217,15 +260,18 @@ impl GhostKeys {
         let tweak: [u8; 32] = hasher.finalize().into();
 
         // Derive recovery pubkey = scan_pubkey + tweak*G
-        if let Ok(tweak_secret) = SecretKey::from_slice(&tweak) {
-            let tweak_pubkey = PublicKey::from_secret_key(&secp, &tweak_secret);
-            if let Ok(recovery_pubkey) = self.scan_pubkey.combine(&tweak_pubkey) {
-                return recovery_pubkey.serialize();
-            }
-        }
+        let tweak_secret = SecretKey::from_slice(&tweak).map_err(|e| {
+            GhostKeyError::DerivationError(format!("Invalid tweak for recovery pubkey: {}", e))
+        })?;
+        let tweak_pubkey = PublicKey::from_secret_key(&secp, &tweak_secret);
+        let recovery_pubkey = self.scan_pubkey.combine(&tweak_pubkey).map_err(|e| {
+            GhostKeyError::DerivationError(format!(
+                "Failed to combine pubkeys for recovery: {}",
+                e
+            ))
+        })?;
 
-        // Fallback to scan pubkey if derivation fails
-        self.scan_pubkey.serialize()
+        Ok(recovery_pubkey.serialize())
     }
 
     /// Derive the secret key for a specific lock index
@@ -256,6 +302,21 @@ impl GhostKeys {
 
         // recovery_secret = scan_secret + tweak
         derive_spend_key(&self.scan_secret, &tweak)
+    }
+}
+
+/// L-CRYPTO-1: Implement Drop to attempt erasure of secret keys from memory.
+///
+/// Note: Due to compiler optimizations, this is not guaranteed to completely
+/// erase all copies of the secret key material. This is a defense-in-depth
+/// measure. See secp256k1's `non_secure_erase` documentation.
+impl Drop for GhostKeys {
+    fn drop(&mut self) {
+        // Call non_secure_erase on both secret keys
+        // This attempts to overwrite the secret key bytes, though the compiler
+        // may have made copies elsewhere in memory.
+        self.scan_secret.non_secure_erase();
+        self.spend_secret.non_secure_erase();
     }
 }
 

@@ -77,8 +77,8 @@ mod ghost_keys {
         let keys = GhostKeys::generate();
 
         // Derive lock pubkey at different indices
-        let pubkey1 = keys.derive_lock_pubkey(0);
-        let pubkey2 = keys.derive_lock_pubkey(1);
+        let pubkey1 = keys.derive_lock_pubkey(0).expect("derivation should succeed");
+        let pubkey2 = keys.derive_lock_pubkey(1).expect("derivation should succeed");
 
         // Different indices should produce different pubkeys
         assert_ne!(pubkey1, pubkey2);
@@ -93,8 +93,8 @@ mod ghost_keys {
         let keys = GhostKeys::generate();
 
         // Derive recovery pubkeys
-        let recovery1 = keys.derive_recovery_pubkey(0);
-        let recovery2 = keys.derive_recovery_pubkey(1);
+        let recovery1 = keys.derive_recovery_pubkey(0).expect("derivation should succeed");
+        let recovery2 = keys.derive_recovery_pubkey(1).expect("derivation should succeed");
 
         // Different indices should produce different pubkeys
         assert_ne!(recovery1, recovery2);
@@ -715,7 +715,7 @@ mod full_stack {
         assert!(!ghost_id_str.is_empty());
 
         // 3. Derive lock pubkey
-        let lock_pubkey = keys.derive_lock_pubkey(0);
+        let lock_pubkey = keys.derive_lock_pubkey(0).expect("derivation should succeed");
         assert_eq!(lock_pubkey.len(), 33);
 
         // 4. Export public data (hex-encoded)

@@ -229,6 +229,10 @@ pub struct ShareProof {
     pub timestamp: u64,
     /// Node that received the share
     pub received_by: NodeId,
+    /// M-MINE-1: Template ID (prev_block_hash) this share is for
+    /// Used to validate share is for current or recent template
+    #[serde(default)]
+    pub template_id: Option<[u8; 32]>,
 }
 
 /// Payout proposal for consensus
@@ -250,6 +254,11 @@ pub struct PayoutProposal {
     pub node_payouts: Vec<PayoutEntry>,
     /// Treasury amount
     pub treasury_amount: Satoshis,
+    /// H-MINE-3: Treasury address snapshot taken at round/proposal creation
+    /// This prevents TOCTOU issues where the config might change between
+    /// proposal creation and coinbase building. Used instead of live config.
+    #[serde(default)]
+    pub treasury_address: Vec<u8>,
     /// TX fees (to node operator)
     pub tx_fees: Satoshis,
     /// Total subsidy

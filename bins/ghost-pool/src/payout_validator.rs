@@ -535,6 +535,7 @@ mod tests {
             miner_payouts: vec![test_payout(300_000_000)],
             node_payouts: vec![],
             treasury_amount: 6_350_000, // ~1%
+            treasury_address: b"bc1qtreasury".to_vec(), // H-MINE-3: snapshot address
             tx_fees: 10_000_000,
             subsidy: 625_000_000,
             timestamp: 1700000000,

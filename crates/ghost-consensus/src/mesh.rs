@@ -91,6 +91,15 @@ pub struct MeshConfig {
     pub max_seen_messages: usize,
     /// Node capabilities to advertise in health pings
     pub capabilities: ghost_common::types::NodeCapabilities,
+    /// H-P2P-1: Enable Noise Protocol for transport encryption
+    ///
+    /// TODO: Integrate Noise Protocol for transport encryption.
+    /// The noise.rs module exists but is not yet integrated with ZMQ sockets.
+    /// For production, set noise_enabled = true and wrap sockets with Noise.
+    ///
+    /// When false, P2P messages are sent in plaintext (current behavior).
+    /// When true, all P2P communication will be encrypted using Noise_XX pattern.
+    pub noise_enabled: bool,
 }
 
 impl Default for MeshConfig {
@@ -103,6 +112,7 @@ impl Default for MeshConfig {
             health_ping_interval_secs: 10,
             max_seen_messages: 100_000, // Cap at 100k messages (~3.2MB with 32-byte IDs)
             capabilities: ghost_common::types::NodeCapabilities::default(),
+            noise_enabled: false, // H-P2P-1: Disabled by default until Noise integration complete
         }
     }
 }
@@ -178,6 +188,9 @@ pub struct MessageId {
     pub sequence: u64,
 }
 
+/// M-P2P-4: Maximum connection states to track (prevents unbounded memory growth)
+const MAX_CONNECTION_STATES: usize = 1000;
+
 /// P2P4-L6: Connection state for exponential backoff
 ///
 /// Tracks connection attempts per peer to implement exponential backoff
@@ -240,6 +253,10 @@ const MAX_MESSAGES_PER_SENDER: usize = 10_000;
 /// - Per-sender tracking ensures one malicious sender can't flush another sender's messages
 /// - Each sender limited to MAX_MESSAGES_PER_SENDER (10k) entries
 /// - When a sender exceeds their limit, only their oldest messages are evicted
+///
+/// Replay Prevention (H-P2P-4):
+/// - Tracks highest sequence number seen from each sender
+/// - Rejects messages with sequence <= highest seen (prevents replay of old messages)
 struct SeenMessageCache {
     /// Map for O(1) lookup
     map: HashMap<MessageId, u64>, // MessageId -> timestamp
@@ -249,6 +266,9 @@ struct SeenMessageCache {
     sender_counts: HashMap<NodeId, usize>,
     /// Per-sender queues for targeted eviction (H3 security fix)
     sender_queues: HashMap<NodeId, VecDeque<(u64, u64)>>, // sender -> (sequence, timestamp)
+    /// H-P2P-4: Highest sequence number seen from each sender
+    /// Used to reject replayed messages with old/duplicate sequences
+    highest_seq: HashMap<NodeId, u64>,
     /// Maximum global capacity
     capacity: usize,
     /// Maximum messages per sender (H3 security fix)
@@ -262,9 +282,31 @@ impl SeenMessageCache {
             queue: VecDeque::with_capacity(capacity),
             sender_counts: HashMap::new(),
             sender_queues: HashMap::new(),
+            highest_seq: HashMap::new(),
             capacity,
             max_per_sender: MAX_MESSAGES_PER_SENDER,
         }
+    }
+
+    /// H-P2P-4: Check if a sequence number is valid (monotonically increasing)
+    ///
+    /// Returns true if this sequence is greater than the highest seen from this sender.
+    /// Returns false if this is a replay (sequence <= highest seen).
+    fn is_sequence_valid(&self, sender: &NodeId, sequence: u64) -> bool {
+        match self.highest_seq.get(sender) {
+            Some(&highest) if sequence <= highest => false, // Reject old/duplicate sequences
+            _ => true,
+        }
+    }
+
+    /// H-P2P-4: Update the highest sequence seen from a sender
+    ///
+    /// Should be called after accepting a valid message.
+    fn update_highest_seq(&mut self, sender: &NodeId, sequence: u64) {
+        self.highest_seq
+            .entry(*sender)
+            .and_modify(|h| *h = (*h).max(sequence))
+            .or_insert(sequence);
     }
 
     /// Check if a message has been seen
@@ -423,13 +465,21 @@ impl MeshNetwork {
         self.sequence.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// Check if message is duplicate
+    /// Check if message is duplicate or has invalid sequence (H-P2P-4)
+    ///
+    /// Returns true if the message should be rejected because:
+    /// 1. We've already seen this exact (sender, sequence) pair, OR
+    /// 2. The sequence is <= the highest sequence we've seen from this sender
+    ///
+    /// This prevents replay attacks where old messages are re-sent.
     fn is_duplicate(&self, msg_id: MessageId) -> bool {
         let seen = self.seen_messages.read();
-        seen.contains(&msg_id)
+        // Check both exact duplicate AND sequence monotonicity (H-P2P-4)
+        seen.contains(&msg_id) || !seen.is_sequence_valid(&msg_id.sender, msg_id.sequence)
     }
 
     /// Mark message as seen (P2P-L1: O(1) insertion with automatic eviction)
+    /// Also updates highest sequence tracking for H-P2P-4
     fn mark_seen(&self, msg_id: MessageId) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -438,6 +488,8 @@ impl MeshNetwork {
 
         let mut seen = self.seen_messages.write();
         seen.insert(msg_id, now);
+        // H-P2P-4: Update highest sequence tracking
+        seen.update_highest_seq(&msg_id.sender, msg_id.sequence);
     }
 
     /// Create a message envelope
@@ -653,6 +705,14 @@ impl MeshNetwork {
             "Starting mesh network"
         );
 
+        // H-P2P-1: Warn if Noise Protocol is disabled (plaintext P2P)
+        if !self.config.noise_enabled {
+            warn!(
+                "P2P transport encryption (Noise Protocol) is DISABLED. \
+                 Messages are sent in plaintext. Set noise_enabled=true for production."
+            );
+        }
+
         self.running.store(true, Ordering::SeqCst);
 
         // Spawn publisher task
@@ -865,6 +925,22 @@ impl MeshNetwork {
                     continue;
                 }
 
+                // M-P2P-4: Evict oldest entry if at capacity (LRU eviction)
+                if connection_states.len() >= MAX_CONNECTION_STATES {
+                    // Remove oldest entry (one with earliest last_attempt)
+                    if let Some(oldest_key) = connection_states
+                        .iter()
+                        .min_by_key(|(_, state)| state.last_attempt)
+                        .map(|(k, _)| k.clone())
+                    {
+                        connection_states.remove(&oldest_key);
+                        debug!(
+                            evicted = %oldest_key,
+                            "Evicted oldest connection state (LRU)"
+                        );
+                    }
+                }
+
                 // P2P4-L6: Check backoff state before attempting connection
                 let conn_state = connection_states
                     .entry(host.clone())
@@ -986,6 +1062,22 @@ impl MeshNetwork {
                         }
                         found.unwrap_or(("unknown", raw_data))
                     };
+
+                    // M-P2P-1: Validate topic matches envelope's msg_type
+                    // Skip messages where the topic doesn't match the declared message type
+                    if let Ok(envelope) = MessageEnvelope::deserialize(&data) {
+                        let expected_topic = envelope.msg_type.topic_str();
+                        if topic_name != expected_topic {
+                            warn!(
+                                received_topic = topic_name,
+                                expected_topic = expected_topic,
+                                msg_type = ?envelope.msg_type,
+                                "Topic mismatch: received on '{}', envelope says '{:?}' (expected topic '{}')",
+                                topic_name, envelope.msg_type, expected_topic
+                            );
+                            continue; // Skip this message
+                        }
+                    }
 
                     // Log verification messages for P2P debugging
                     if topic_name == "verify" {
@@ -1484,5 +1576,89 @@ mod tests {
 
         // Total should still be 5 (sender1: 3, sender2: 2)
         assert_eq!(cache.len(), 5);
+    }
+
+    #[test]
+    fn test_sequence_monotonicity_validation() {
+        // H-P2P-4: Test that old sequence numbers are rejected
+        let mut cache = SeenMessageCache::new(100);
+        let sender = [1u8; 32];
+
+        // Insert message with sequence 10
+        let id1 = MessageId { sender, sequence: 10 };
+        cache.insert(id1, 1000);
+        cache.update_highest_seq(&sender, 10);
+
+        // Sequence 11 should be valid (greater than highest)
+        assert!(cache.is_sequence_valid(&sender, 11));
+
+        // Sequence 10 should be invalid (equal to highest - replay)
+        assert!(!cache.is_sequence_valid(&sender, 10));
+
+        // Sequence 5 should be invalid (less than highest - old message replay)
+        assert!(!cache.is_sequence_valid(&sender, 5));
+
+        // Insert message with sequence 20, update highest
+        let id2 = MessageId { sender, sequence: 20 };
+        cache.insert(id2, 1001);
+        cache.update_highest_seq(&sender, 20);
+
+        // Sequence 15 should now be invalid (less than new highest of 20)
+        assert!(!cache.is_sequence_valid(&sender, 15));
+
+        // Sequence 21 should be valid
+        assert!(cache.is_sequence_valid(&sender, 21));
+    }
+
+    #[test]
+    fn test_sequence_validation_different_senders() {
+        // H-P2P-4: Sequence tracking is per-sender
+        let mut cache = SeenMessageCache::new(100);
+        let sender1 = [1u8; 32];
+        let sender2 = [2u8; 32];
+
+        // Sender1 at sequence 100
+        cache.update_highest_seq(&sender1, 100);
+
+        // Sender2 at sequence 5
+        cache.update_highest_seq(&sender2, 5);
+
+        // Sender1's sequence 50 should be invalid (less than 100)
+        assert!(!cache.is_sequence_valid(&sender1, 50));
+
+        // Sender2's sequence 50 should be valid (greater than 5)
+        assert!(cache.is_sequence_valid(&sender2, 50));
+
+        // New sender (sender3) should accept any sequence
+        let sender3 = [3u8; 32];
+        assert!(cache.is_sequence_valid(&sender3, 1));
+        assert!(cache.is_sequence_valid(&sender3, 1000));
+    }
+
+    #[test]
+    fn test_mesh_deduplication_with_sequence_check() {
+        // H-P2P-4: Integration test - MeshNetwork should reject old sequences
+        let identity = Arc::new(NodeIdentity::generate());
+        let config = MeshConfig::default();
+        let mesh = MeshNetwork::new(identity, config);
+
+        let sender = [1u8; 32];
+
+        // First message with sequence 10 should not be duplicate
+        let msg1 = MessageId { sender, sequence: 10 };
+        assert!(!mesh.is_duplicate(msg1));
+        mesh.mark_seen(msg1);
+
+        // Same message should now be duplicate
+        assert!(mesh.is_duplicate(msg1));
+
+        // Message with sequence 5 (old) should be rejected as duplicate
+        // even though we haven't seen this exact (sender, seq) pair
+        let msg_old = MessageId { sender, sequence: 5 };
+        assert!(mesh.is_duplicate(msg_old), "Old sequence should be rejected");
+
+        // Message with sequence 11 (new) should not be duplicate
+        let msg_new = MessageId { sender, sequence: 11 };
+        assert!(!mesh.is_duplicate(msg_new), "New sequence should be accepted");
     }
 }

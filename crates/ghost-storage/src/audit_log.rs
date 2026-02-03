@@ -30,6 +30,10 @@
 //! Log entries are chained via cryptographic hashes to detect tampering.
 
 use rusqlite::params;
+
+/// L-STOR-1: Maximum allowed JSON size for deserialization from database (10 MB)
+/// Prevents OOM attacks from maliciously large data
+const MAX_JSON_SIZE: usize = 10 * 1024 * 1024;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -386,6 +390,13 @@ impl AuditLog {
 
             let entries = stmt
                 .query_map(params![start_time, end_time, limit as i64], |row| {
+                    let details_str: String = row.get(5)?;
+                    // L-STOR-1: Check size before deserializing to prevent OOM
+                    let details = if details_str.len() > MAX_JSON_SIZE {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null)
+                    };
                     Ok(AuditEntry {
                         id: row.get(0)?,
                         timestamp: row.get(1)?,
@@ -396,8 +407,7 @@ impl AuditLog {
                         .unwrap_or(AuditEventType::ManualIntervention),
                         actor: row.get(3)?,
                         target: row.get(4)?,
-                        details: serde_json::from_str(&row.get::<_, String>(5)?)
-                            .unwrap_or(serde_json::Value::Null),
+                        details,
                         prev_hash: row.get(6)?,
                         entry_hash: row.get(7)?,
                     })
@@ -429,14 +439,20 @@ impl AuditLog {
 
             let entries = stmt
                 .query_map(params![event_type.to_string(), limit as i64], |row| {
+                    let details_str: String = row.get(5)?;
+                    // L-STOR-1: Check size before deserializing to prevent OOM
+                    let details = if details_str.len() > MAX_JSON_SIZE {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null)
+                    };
                     Ok(AuditEntry {
                         id: row.get(0)?,
                         timestamp: row.get(1)?,
                         event_type,
                         actor: row.get(3)?,
                         target: row.get(4)?,
-                        details: serde_json::from_str(&row.get::<_, String>(5)?)
-                            .unwrap_or(serde_json::Value::Null),
+                        details,
                         prev_hash: row.get(6)?,
                         entry_hash: row.get(7)?,
                     })
@@ -464,6 +480,13 @@ impl AuditLog {
 
             let entries = stmt
                 .query_map(params![actor, limit as i64], |row| {
+                    let details_str: String = row.get(5)?;
+                    // L-STOR-1: Check size before deserializing to prevent OOM
+                    let details = if details_str.len() > MAX_JSON_SIZE {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null)
+                    };
                     Ok(AuditEntry {
                         id: row.get(0)?,
                         timestamp: row.get(1)?,
@@ -474,8 +497,7 @@ impl AuditLog {
                         .unwrap_or(AuditEventType::ManualIntervention),
                         actor: row.get(3)?,
                         target: row.get(4)?,
-                        details: serde_json::from_str(&row.get::<_, String>(5)?)
-                            .unwrap_or(serde_json::Value::Null),
+                        details,
                         prev_hash: row.get(6)?,
                         entry_hash: row.get(7)?,
                     })

@@ -162,7 +162,12 @@ impl Database {
     /// Search miners by ID/address (partial match) and get their stats
     pub fn search_miners(&self, query: &str) -> GhostResult<Vec<MinerSearchResult>> {
         self.with_connection(|conn| {
-            let search_pattern = format!("%{}%", query);
+            // M-STOR-1: Escape SQL LIKE wildcards to prevent injection
+            let escaped_query = query
+                .replace('\\', "\\\\") // Escape backslash first
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            let search_pattern = format!("%{}%", escaped_query);
             let mut stmt = conn
                 .prepare(
                     "SELECT
@@ -174,7 +179,7 @@ impl Database {
                         MAX(timestamp) as last_seen,
                         AVG(difficulty) as avg_difficulty
                      FROM shares
-                     WHERE miner_id LIKE ?1
+                     WHERE miner_id LIKE ?1 ESCAPE '\\'
                      GROUP BY miner_id
                      ORDER BY total_work DESC
                      LIMIT 50",
@@ -2060,6 +2065,76 @@ impl Database {
         })
     }
 
+    /// Atomically insert a withdrawal request if no pending/batched withdrawal exists for the lock
+    ///
+    /// This prevents double-spend race conditions (C-PAY-3) by:
+    /// 1. Using a transaction to ensure atomicity
+    /// 2. Checking for existing pending/batched withdrawals within the transaction
+    /// 3. Relying on the database partial unique index as defense-in-depth
+    ///
+    /// Returns:
+    /// - Ok(Some(id)) - Successfully inserted, returns the new withdrawal ID
+    /// - Ok(None) - A pending/batched withdrawal already exists for this lock
+    /// - Err(_) - Database error
+    pub fn insert_withdrawal_request_atomic(
+        &self,
+        request: &WithdrawalRequest,
+    ) -> GhostResult<Option<i64>> {
+        self.transaction(|tx| {
+            // First check if there's an existing pending/batched withdrawal for this lock
+            let existing_count: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM withdrawal_requests
+                     WHERE lock_id = ?1 AND status IN ('pending', 'batched')",
+                    params![request.lock_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if existing_count > 0 {
+                // A pending/batched withdrawal already exists
+                return Ok(None);
+            }
+
+            // Insert the new withdrawal request
+            // The partial unique index provides defense-in-depth if a race occurred
+            let result = tx.execute(
+                "INSERT INTO withdrawal_requests (
+                    ghost_id, lock_id, destination_address, amount_sats, fee_sats,
+                    status, batch_id, l1_txid, created_at, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    request.ghost_id,
+                    request.lock_id,
+                    request.destination_address,
+                    request.amount_sats,
+                    request.fee_sats,
+                    request.status.as_str(),
+                    request.batch_id,
+                    request.l1_txid,
+                    request.created_at,
+                    request.updated_at,
+                ],
+            );
+
+            match result {
+                Ok(_) => Ok(Some(tx.last_insert_rowid())),
+                Err(e) => {
+                    // Check if this is a unique constraint violation (race condition caught by index)
+                    let err_str = e.to_string();
+                    if err_str.contains("UNIQUE constraint failed")
+                        || err_str.contains("idx_withdrawals_pending_lock")
+                    {
+                        // Race condition caught by the partial unique index
+                        Ok(None)
+                    } else {
+                        Err(GhostError::Database(err_str))
+                    }
+                }
+            }
+        })
+    }
+
     /// Get a withdrawal request by ID
     pub fn get_withdrawal_request(&self, id: i64) -> GhostResult<Option<WithdrawalRequest>> {
         self.with_connection(|conn| {
@@ -3613,5 +3688,220 @@ mod tests {
 
         let count = db.get_payout_round_count(Some(800002), Some(800003)).unwrap();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_withdrawal_atomic_insert_prevents_duplicates() {
+        let db = Database::in_memory().unwrap();
+        let now = chrono::Utc::now().timestamp();
+
+        // First, create a ghost lock that we can withdraw from
+        let lock = GhostLockRecord {
+            lock_id: "lock_atomic_test".to_string(),
+            owner_ghost_id: "ghost_atomic".to_string(),
+            lock_pubkey: "02abc123".to_string(),
+            recovery_pubkey: "02def456".to_string(),
+            denomination: "Medium".to_string(),
+            amount_sats: 10_000_000,
+            timelock_tier: "Standard".to_string(),
+            creation_height: 800000,
+            recovery_height: 807200,
+            state: GhostLockState::Active,
+            funding_txid: Some("abc123".to_string()),
+            funding_vout: Some(0),
+            spend_txid: None,
+            output_script: "script".to_string(),
+            jump_risk_tier: "Low".to_string(),
+            next_jump_height: None,
+            created_at: now,
+            updated_at: now,
+        };
+        db.insert_ghost_lock(&lock).unwrap();
+
+        // First withdrawal request should succeed
+        let withdrawal1 = WithdrawalRequest {
+            id: None,
+            ghost_id: "ghost_atomic".to_string(),
+            lock_id: "lock_atomic_test".to_string(),
+            destination_address: "bc1qtest1".to_string(),
+            amount_sats: 1_000_000,
+            fee_sats: 1000,
+            status: WithdrawalStatus::Pending,
+            batch_id: None,
+            l1_txid: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let result = db.insert_withdrawal_request_atomic(&withdrawal1).unwrap();
+        assert!(result.is_some(), "First withdrawal should succeed");
+        let first_id = result.unwrap();
+        assert!(first_id > 0);
+
+        // Second withdrawal for the same lock should be rejected
+        let withdrawal2 = WithdrawalRequest {
+            id: None,
+            ghost_id: "ghost_atomic".to_string(),
+            lock_id: "lock_atomic_test".to_string(),
+            destination_address: "bc1qtest2".to_string(),
+            amount_sats: 2_000_000,
+            fee_sats: 1000,
+            status: WithdrawalStatus::Pending,
+            batch_id: None,
+            l1_txid: None,
+            created_at: now + 1,
+            updated_at: now + 1,
+        };
+
+        let result = db.insert_withdrawal_request_atomic(&withdrawal2).unwrap();
+        assert!(result.is_none(), "Second withdrawal should be rejected");
+
+        // Verify only one withdrawal exists
+        let withdrawals = db.get_withdrawals_by_lock("lock_atomic_test").unwrap();
+        assert_eq!(withdrawals.len(), 1);
+        assert_eq!(withdrawals[0].destination_address, "bc1qtest1");
+    }
+
+    #[test]
+    fn test_withdrawal_atomic_allows_after_completion() {
+        let db = Database::in_memory().unwrap();
+        let now = chrono::Utc::now().timestamp();
+
+        // Create a ghost lock
+        let lock = GhostLockRecord {
+            lock_id: "lock_complete_test".to_string(),
+            owner_ghost_id: "ghost_complete".to_string(),
+            lock_pubkey: "02abc123".to_string(),
+            recovery_pubkey: "02def456".to_string(),
+            denomination: "Medium".to_string(),
+            amount_sats: 10_000_000,
+            timelock_tier: "Standard".to_string(),
+            creation_height: 800000,
+            recovery_height: 807200,
+            state: GhostLockState::Active,
+            funding_txid: Some("abc123".to_string()),
+            funding_vout: Some(0),
+            spend_txid: None,
+            output_script: "script".to_string(),
+            jump_risk_tier: "Low".to_string(),
+            next_jump_height: None,
+            created_at: now,
+            updated_at: now,
+        };
+        db.insert_ghost_lock(&lock).unwrap();
+
+        // First withdrawal
+        let withdrawal1 = WithdrawalRequest {
+            id: None,
+            ghost_id: "ghost_complete".to_string(),
+            lock_id: "lock_complete_test".to_string(),
+            destination_address: "bc1qtest1".to_string(),
+            amount_sats: 1_000_000,
+            fee_sats: 1000,
+            status: WithdrawalStatus::Pending,
+            batch_id: None,
+            l1_txid: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let result = db.insert_withdrawal_request_atomic(&withdrawal1).unwrap();
+        let first_id = result.unwrap();
+
+        // Mark the first withdrawal as completed
+        db.update_withdrawal_status(first_id, WithdrawalStatus::Confirmed)
+            .unwrap();
+
+        // Now a second withdrawal should succeed (since the first is confirmed)
+        let withdrawal2 = WithdrawalRequest {
+            id: None,
+            ghost_id: "ghost_complete".to_string(),
+            lock_id: "lock_complete_test".to_string(),
+            destination_address: "bc1qtest2".to_string(),
+            amount_sats: 2_000_000,
+            fee_sats: 1000,
+            status: WithdrawalStatus::Pending,
+            batch_id: None,
+            l1_txid: None,
+            created_at: now + 1,
+            updated_at: now + 1,
+        };
+
+        let result = db.insert_withdrawal_request_atomic(&withdrawal2).unwrap();
+        assert!(
+            result.is_some(),
+            "Second withdrawal should succeed after first is confirmed"
+        );
+    }
+
+    #[test]
+    fn test_withdrawal_atomic_blocks_batched() {
+        let db = Database::in_memory().unwrap();
+        let now = chrono::Utc::now().timestamp();
+
+        // Create a ghost lock
+        let lock = GhostLockRecord {
+            lock_id: "lock_batched_test".to_string(),
+            owner_ghost_id: "ghost_batched".to_string(),
+            lock_pubkey: "02abc123".to_string(),
+            recovery_pubkey: "02def456".to_string(),
+            denomination: "Medium".to_string(),
+            amount_sats: 10_000_000,
+            timelock_tier: "Standard".to_string(),
+            creation_height: 800000,
+            recovery_height: 807200,
+            state: GhostLockState::Active,
+            funding_txid: Some("abc123".to_string()),
+            funding_vout: Some(0),
+            spend_txid: None,
+            output_script: "script".to_string(),
+            jump_risk_tier: "Low".to_string(),
+            next_jump_height: None,
+            created_at: now,
+            updated_at: now,
+        };
+        db.insert_ghost_lock(&lock).unwrap();
+
+        // First withdrawal with pending status
+        let withdrawal1 = WithdrawalRequest {
+            id: None,
+            ghost_id: "ghost_batched".to_string(),
+            lock_id: "lock_batched_test".to_string(),
+            destination_address: "bc1qtest1".to_string(),
+            amount_sats: 1_000_000,
+            fee_sats: 1000,
+            status: WithdrawalStatus::Pending,
+            batch_id: None,
+            l1_txid: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let result = db.insert_withdrawal_request_atomic(&withdrawal1).unwrap();
+        let first_id = result.unwrap();
+
+        // Mark the first withdrawal as batched
+        db.update_withdrawal_batched(first_id, "batch123").unwrap();
+
+        // Second withdrawal should still be rejected (batched also blocks)
+        let withdrawal2 = WithdrawalRequest {
+            id: None,
+            ghost_id: "ghost_batched".to_string(),
+            lock_id: "lock_batched_test".to_string(),
+            destination_address: "bc1qtest2".to_string(),
+            amount_sats: 2_000_000,
+            fee_sats: 1000,
+            status: WithdrawalStatus::Pending,
+            batch_id: None,
+            l1_txid: None,
+            created_at: now + 1,
+            updated_at: now + 1,
+        };
+
+        let result = db.insert_withdrawal_request_atomic(&withdrawal2).unwrap();
+        assert!(
+            result.is_none(),
+            "Second withdrawal should be rejected when first is batched"
+        );
     }
 }

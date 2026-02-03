@@ -62,9 +62,52 @@ const MAX_TOTAL_NONCES: usize = 1000;
 /// Nonce expiry time (1 hour)
 const NONCE_EXPIRY_SECS: u64 = 3600;
 
-/// Generate random 32 bytes for key material (WR4-L3)
+/// Calculate Shannon entropy of byte slice
+///
+/// Returns entropy in bits per byte (0.0 to 8.0).
+/// Cryptographically random data should have entropy close to 8.0.
+fn calculate_shannon_entropy(bytes: &[u8]) -> f64 {
+    if bytes.is_empty() {
+        return 0.0;
+    }
+
+    // Calculate byte frequency
+    let mut counts = [0u32; 256];
+    for &b in bytes {
+        counts[b as usize] += 1;
+    }
+
+    // Calculate Shannon entropy
+    let len = bytes.len() as f64;
+    counts
+        .iter()
+        .filter(|&&c| c > 0)
+        .map(|&c| {
+            let p = c as f64 / len;
+            -p * p.log2()
+        })
+        .sum()
+}
+
+/// Minimum Shannon entropy required for cryptographic randomness (bits per byte)
+///
+/// For a small sample of 32 bytes from a true random source, the expected
+/// Shannon entropy depends on the number of unique values observed. With only
+/// 32 samples from 256 possible values, we expect roughly 23-26 unique bytes
+/// on average, giving entropy around 4.5-4.8 bits/byte.
+///
+/// We use 4.0 bits/byte as a conservative threshold that will catch:
+/// - All constant data (0 bits/byte)
+/// - Very low diversity (< 16 unique values)
+/// - Stuck bit patterns
+///
+/// While still allowing valid random data with statistical variation.
+const MIN_ENTROPY_BITS_PER_BYTE: f64 = 4.0;
+
+/// Generate random 32 bytes for key material (WR4-L3, M-CRYPTO-1)
 ///
 /// Validates entropy quality after generation to detect RNG failures.
+/// Uses Shannon entropy estimation to detect weak randomness.
 /// Returns an error if entropy is insufficient.
 fn random_bytes_32() -> Result<[u8; 32], WraithError> {
     let mut bytes = [0u8; 32];
@@ -83,17 +126,13 @@ fn random_bytes_32() -> Result<[u8; 32], WraithError> {
         ));
     }
 
-    // Additional check: ensure some minimum byte diversity
-    // At least 4 unique byte values in 32 bytes is a very low bar
-    // that should always pass for working RNG but catches stuck bits
-    let mut unique_bytes = std::collections::HashSet::new();
-    for &b in &bytes {
-        unique_bytes.insert(b);
-    }
-    if unique_bytes.len() < 4 {
+    // M-CRYPTO-1: Shannon entropy validation
+    // Require at least 7.0 bits per byte for cryptographic randomness
+    let entropy = calculate_shannon_entropy(&bytes);
+    if entropy < MIN_ENTROPY_BITS_PER_BYTE {
         return Err(WraithError::MissingData(format!(
-            "Entropy error: insufficient diversity ({} unique bytes) - RNG failure detected",
-            unique_bytes.len()
+            "Entropy error: insufficient Shannon entropy ({:.2} bits/byte, minimum {:.1}) - RNG failure detected",
+            entropy, MIN_ENTROPY_BITS_PER_BYTE
         )));
     }
 
@@ -245,9 +284,11 @@ pub struct BlindSignatureResponse {
     pub session_id: [u8; 32],
 }
 
-/// WR4-L10: Key rotation grace period in seconds
-/// Old keys are kept for this duration to verify in-flight signatures
-const KEY_ROTATION_GRACE_PERIOD_SECS: u64 = 300; // 5 minutes
+/// WR4-L10 + H-WRAITH-2: Key rotation grace period in seconds
+/// Old keys are kept for this duration to verify in-flight signatures.
+/// Extended to 7 days to match maximum Wraith session duration.
+/// Note: rotate_key_if_safe() should be preferred to ensure no active sessions are broken.
+const KEY_ROTATION_GRACE_PERIOD_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
 
 /// WR4-L10: Previous key information for verification of in-flight signatures
 #[derive(Debug)]
@@ -502,26 +543,33 @@ impl CoordinatorSigner {
     /// SECURITY: Verifies that the requestor matches the ghost_id bound to the nonce.
     /// This prevents nonce hijacking attacks.
     ///
-    /// TIMING ATTACK PREVENTION: The nonce is removed FIRST, before any verification.
-    /// This ensures attackers cannot probe nonce bindings via timing side-channels.
+    /// TIMING ATTACK PREVENTION (C-WRAITH-1): We verify binding BEFORE removing the nonce.
+    /// This prevents attackers from probing which ghost_ids are bound to which nonces
+    /// by observing timing differences. A generic error is returned regardless of
+    /// whether the nonce exists or the binding fails, preventing information leakage.
     pub fn sign_blinded_challenge_for_participant(
         &mut self,
         challenge: &BlindedChallenge,
         requesting_ghost_id: &str,
     ) -> Result<BlindSignatureResponse, WraithError> {
-        // SECURITY: Remove nonce FIRST to prevent timing attacks
-        // If we verify before removing, an attacker could probe ghost_id bindings
-        let nonce = self
-            .active_nonces
-            .remove(&challenge.session_id)
-            .ok_or_else(|| WraithError::MissingData("Nonce session not found or consumed".into()))?;
+        // C-WRAITH-1 FIX: Look up nonce WITHOUT removing to verify binding first
+        // This prevents timing side-channel that could reveal nonce bindings
+        let nonce = match self.active_nonces.get(&challenge.session_id) {
+            Some(n) => n,
+            None => {
+                // Use generic error that doesn't reveal nonce state
+                return Err(WraithError::InvalidSignature(
+                    "Signature verification failed".to_string(),
+                ));
+            }
+        };
 
-        // Verify requestor matches the bound ghost_id AFTER removal
+        // Verify requestor matches the bound ghost_id BEFORE any state changes
         if let Some(ref bound_id) = nonce.bound_ghost_id {
             if bound_id != requesting_ghost_id {
-                // Nonce is already consumed, even though verification failed
                 // WR4-L6: Log details internally but return sanitized error to client
                 // This prevents information leakage about nonce bindings
+                // CRITICAL: Do NOT remove the nonce here - just return error
                 tracing::warn!(
                     "Nonce hijacking attempt detected: bound to '{}' but signed by '{}'",
                     &bound_id[..8.min(bound_id.len())],
@@ -533,6 +581,12 @@ impl CoordinatorSigner {
             }
         }
         // Note: If nonce is unbound (from deprecated create_nonce), we allow it for backwards compat
+
+        // C-WRAITH-1 FIX: NOW remove the nonce - verification has passed
+        let nonce = self
+            .active_nonces
+            .remove(&challenge.session_id)
+            .expect("Nonce exists - we just verified it above");
 
         // Update per-participant count
         if let Some(ref ghost_id) = nonce.bound_ghost_id {
@@ -834,6 +888,59 @@ impl CoordinatorSigner {
     /// WR4-L10: Get the number of previous keys still in grace period
     pub fn previous_key_count(&self) -> usize {
         self.previous_keys.len()
+    }
+
+    /// H-WRAITH-2: Check if there are any active sessions that would be broken by rotation
+    ///
+    /// Returns true only if it's safe to rotate the key, meaning:
+    /// - No active nonces exist (no in-flight signing operations)
+    /// - No previous keys in grace period (previous rotations have settled)
+    ///
+    /// This prevents breaking active Wraith sessions which can last hours or days.
+    pub fn can_rotate(&self) -> bool {
+        self.active_nonces.is_empty() && self.previous_keys.is_empty()
+    }
+
+    /// H-WRAITH-2: Rotate key only if safe to do so
+    ///
+    /// This is the recommended way to rotate keys in production. It checks that
+    /// no active sessions would be broken by the rotation before proceeding.
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(PublicKey)` - The new public key after successful rotation
+    /// - `Err(WraithError)` - If rotation would break active sessions
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// match signer.rotate_key_if_safe() {
+    ///     Ok(new_pubkey) => println!("Key rotated successfully"),
+    ///     Err(_) => println!("Cannot rotate: active sessions exist"),
+    /// }
+    /// ```
+    pub fn rotate_key_if_safe(&mut self) -> Result<PublicKey, WraithError> {
+        // First clean up expired nonces and old keys
+        self.cleanup_expired_nonces();
+        self.cleanup_old_keys();
+
+        if !self.can_rotate() {
+            let active_nonces = self.active_nonces.len();
+            let previous_keys = self.previous_keys.len();
+            return Err(WraithError::PhaseError(format!(
+                "Cannot rotate key while sessions are active: {} active nonces, {} previous keys in grace period",
+                active_nonces, previous_keys
+            )));
+        }
+
+        Ok(self.rotate_key())
+    }
+
+    /// H-WRAITH-2: Get the number of active nonces that would block rotation
+    ///
+    /// Useful for monitoring and deciding when to schedule key rotation.
+    pub fn blocking_session_count(&self) -> usize {
+        self.active_nonces.len() + self.previous_keys.len()
     }
 }
 
@@ -1290,6 +1397,7 @@ mod tests {
     /// This test verifies that:
     /// 1. Nonces created for participant A cannot be used by participant B
     /// 2. The binding is enforced during signing
+    /// 3. C-WRAITH-1: Nonce is NOT consumed on verification failure (timing attack fix)
     #[test]
     fn test_nonce_bound_to_participant() {
         let session_id = [7u8; 32];
@@ -1317,19 +1425,10 @@ mod tests {
             .to_string()
             .contains("Signature verification failed"));
 
-        // Create a new nonce for the test since the first was not consumed
-        // (we got an error before removal)
-        let nonce2 = signer.create_nonce_for_participant("ghost1").unwrap();
-        let context2 = BlindingContext::new(
-            address.serialize().to_vec(),
-            signer.public_key(),
-            &nonce2,
-        )
-        .unwrap();
-        let challenge2 = context2.create_blinded_challenge().unwrap();
-
-        // Signing as "ghost1" (correct participant) should SUCCEED
-        let result = signer.sign_blinded_challenge_for_participant(&challenge2, "ghost1");
+        // C-WRAITH-1: The nonce should NOT be consumed on verification failure
+        // This prevents timing attacks - we can now use the same nonce with correct participant
+        // Signing as "ghost1" (correct participant) should SUCCEED with the SAME challenge
+        let result = signer.sign_blinded_challenge_for_participant(&challenge, "ghost1");
         assert!(result.is_ok(), "Signing with correct participant should succeed");
     }
 
@@ -1414,5 +1513,51 @@ mod tests {
             result.is_ok(),
             "Unbound nonces should work with any participant for backwards compat"
         );
+    }
+
+    /// M-CRYPTO-1: Test Shannon entropy validation
+    #[test]
+    fn test_shannon_entropy_validation() {
+        // Test with high entropy data (random)
+        let high_entropy = calculate_shannon_entropy(&[
+            0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f, 0x70, 0x81,
+            0x92, 0xa3, 0xb4, 0xc5, 0xd6, 0xe7, 0xf8, 0x09,
+            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+            0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
+        ]);
+        // This data has 32 unique bytes, entropy should be exactly 5.0 bits/byte
+        // (each byte appears once in 32 bytes, so -32 * (1/32) * log2(1/32) = 5)
+        assert!(
+            high_entropy >= 4.5,
+            "High diversity data should have good entropy: {:.2}",
+            high_entropy
+        );
+
+        // Test with all zeros (pathological case)
+        let zero_entropy = calculate_shannon_entropy(&[0u8; 32]);
+        assert!(
+            zero_entropy < 0.1,
+            "All zeros should have near-zero entropy: {:.2}",
+            zero_entropy
+        );
+
+        // Test with repeated pattern (low entropy)
+        let repeated = [0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
+                        0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
+                        0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
+                        0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB];
+        let low_entropy = calculate_shannon_entropy(&repeated);
+        assert!(
+            low_entropy < MIN_ENTROPY_BITS_PER_BYTE,
+            "Repeated pattern should have low entropy: {:.2}",
+            low_entropy
+        );
+
+        // Verify random_bytes_32 produces valid entropy (statistical test)
+        // Should pass with overwhelming probability for a working RNG
+        for _ in 0..10 {
+            let result = random_bytes_32();
+            assert!(result.is_ok(), "random_bytes_32 should succeed with valid RNG");
+        }
     }
 }

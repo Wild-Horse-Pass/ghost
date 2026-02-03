@@ -1872,6 +1872,7 @@ dependencies = [
  "secp256k1 0.29.1",
  "serde",
  "sha2 0.10.9",
+ "subtle",
  "thiserror 1.0.69",
 ]
 
@@ -1897,6 +1898,7 @@ dependencies = [
  "rand",
  "rusqlite",
  "scrypt",
+ "secp256k1 0.29.1",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1989,11 +1991,13 @@ dependencies = [
 name = "ghost-pay"
 version = "1.6.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "axum",
  "bitcoin",
  "chrono",
  "clap",
+ "getrandom 0.2.17",
  "ghost-common",
  "ghost-keys",
  "ghost-locks",
@@ -2001,6 +2005,7 @@ dependencies = [
  "ghost-storage",
  "hex",
  "parking_lot",
+ "scrypt",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

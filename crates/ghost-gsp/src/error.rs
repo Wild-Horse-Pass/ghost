@@ -65,6 +65,12 @@ pub enum GspError {
     #[error("Signature verification failed: {0}")]
     SignatureVerification(String),
 
+    #[error("Wallet ID mismatch: public key does not derive to claimed wallet ID")]
+    WalletIdMismatch,
+
+    #[error("Nonce replay detected")]
+    NonceReplay,
+
     // =========================================================================
     // Request Errors
     // =========================================================================
@@ -167,6 +173,16 @@ impl IntoResponse for GspError {
                 StatusCode::UNAUTHORIZED,
                 "SIGNATURE_VERIFICATION_FAILED",
                 msg.clone(),
+            ),
+            GspError::WalletIdMismatch => (
+                StatusCode::UNAUTHORIZED,
+                "WALLET_ID_MISMATCH",
+                "Public key does not derive to claimed wallet ID".to_string(),
+            ),
+            GspError::NonceReplay => (
+                StatusCode::UNAUTHORIZED,
+                "NONCE_REPLAY",
+                "Nonce has already been used".to_string(),
             ),
             GspError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
             GspError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),

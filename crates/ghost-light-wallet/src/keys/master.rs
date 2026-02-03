@@ -23,8 +23,9 @@
 //! Master key derivation and management
 
 use bip39::{Language, Mnemonic};
+use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
-use sha2::{Digest, Sha256};
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 use ghost_gsp_proto::WalletId;
 use ghost_keys::{GhostId, GhostKeys};
@@ -33,13 +34,17 @@ use crate::error::{LightWalletError, WalletResult};
 
 /// Master key for the light wallet
 ///
-/// Derived from BIP-39 mnemonic and manages all sub-keys.
+/// Derived from BIP-39 mnemonic using BIP-32 HD key derivation.
+/// All keys are derived from the master seed following BIP-352 paths.
 #[derive(Clone)]
 pub struct MasterKey {
     /// Ghost Keys for payments
     ghost_keys: GhostKeys,
 
-    /// Auth key for GSP authentication (derived at m/352'/0'/0'/0/0)
+    /// Auth secret key for GSP authentication (derived at m/352'/0'/0'/2')
+    auth_secret: SecretKey,
+
+    /// Auth public key (x-only, 32 bytes) for verification
     auth_pubkey: [u8; 32],
 
     /// Bitcoin network
@@ -59,34 +64,75 @@ impl MasterKey {
         Ok(mnemonic)
     }
 
-    /// Create master key from mnemonic
+    /// Create master key from mnemonic using BIP-32 HD key derivation
+    ///
+    /// Derivation paths (BIP-352 style):
+    /// - m/352'/0'/0'/0' - Scan key for detecting payments
+    /// - m/352'/0'/0'/1' - Spend key for spending funds
+    /// - m/352'/0'/0'/2' - Auth key for GSP authentication
     pub fn from_mnemonic(mnemonic_str: &str, network: Network) -> WalletResult<Self> {
         let mnemonic = Mnemonic::parse_in(Language::English, mnemonic_str)?;
+        let secp = Secp256k1::new();
 
-        // Derive seed
+        // Derive seed from mnemonic (no passphrase)
         let seed = mnemonic.to_seed("");
 
-        // Derive Ghost Keys from seed
-        // In production, this would use proper BIP-32 derivation
-        let mut scan_seed = [0u8; 32];
-        let mut spend_seed = [0u8; 32];
+        // Create master extended private key
+        let master = Xpriv::new_master(network, &seed)
+            .map_err(|e| LightWalletError::KeyDerivation(format!("Failed to create master key: {}", e)))?;
 
-        let scan_hash = Sha256::digest([&seed[..], b"ghost_scan"].concat());
-        let spend_hash = Sha256::digest([&seed[..], b"ghost_spend"].concat());
+        // BIP-352 base path: m/352'/0'/0'
+        // Using coin_type=0 for Bitcoin mainnet compatibility
+        let base_path: DerivationPath = vec![
+            ChildNumber::from_hardened_idx(352).expect("valid index"),
+            ChildNumber::from_hardened_idx(0).expect("valid index"),
+            ChildNumber::from_hardened_idx(0).expect("valid index"),
+        ]
+        .into();
 
-        scan_seed.copy_from_slice(&scan_hash);
-        spend_seed.copy_from_slice(&spend_hash);
+        let base_xpriv = master
+            .derive_priv(&secp, &base_path)
+            .map_err(|e| LightWalletError::KeyDerivation(format!("Failed to derive base path: {}", e)))?;
 
-        let ghost_keys = GhostKeys::from_bytes(&scan_seed, &spend_seed)
+        // Derive scan key at m/352'/0'/0'/0'
+        let scan_path = vec![ChildNumber::from_hardened_idx(0).expect("valid index")];
+        let scan_xpriv = base_xpriv
+            .derive_priv(&secp, &scan_path)
+            .map_err(|e| LightWalletError::KeyDerivation(format!("Failed to derive scan key: {}", e)))?;
+        let scan_secret = scan_xpriv.private_key;
+
+        // Derive spend key at m/352'/0'/0'/1'
+        let spend_path = vec![ChildNumber::from_hardened_idx(1).expect("valid index")];
+        let spend_xpriv = base_xpriv
+            .derive_priv(&secp, &spend_path)
+            .map_err(|e| LightWalletError::KeyDerivation(format!("Failed to derive spend key: {}", e)))?;
+        let spend_secret = spend_xpriv.private_key;
+
+        // Derive auth key at m/352'/0'/0'/2'
+        let auth_path = vec![ChildNumber::from_hardened_idx(2).expect("valid index")];
+        let auth_xpriv = base_xpriv
+            .derive_priv(&secp, &auth_path)
+            .map_err(|e| LightWalletError::KeyDerivation(format!("Failed to derive auth key: {}", e)))?;
+        let auth_secret = auth_xpriv.private_key;
+
+        // Create Ghost Keys from the derived scan and spend secrets
+        let scan_bytes = scan_secret.secret_bytes();
+        let spend_bytes = spend_secret.secret_bytes();
+        let ghost_keys = GhostKeys::from_bytes(&scan_bytes, &spend_bytes)
             .map_err(|e| LightWalletError::KeyDerivation(e.to_string()))?;
 
-        // Derive auth key for GSP authentication
-        let auth_hash = Sha256::digest([&seed[..], b"ghost_auth"].concat());
-        let mut auth_pubkey = [0u8; 32];
-        auth_pubkey.copy_from_slice(&auth_hash);
+        // Convert auth secret to secp256k1::SecretKey for signing
+        let auth_secret = SecretKey::from_slice(&auth_secret.secret_bytes())
+            .map_err(|e| LightWalletError::KeyDerivation(format!("Invalid auth key: {}", e)))?;
+
+        // Derive auth public key (x-only, 32 bytes) for BIP-340 Schnorr
+        let auth_pubkey_full = PublicKey::from_secret_key(&secp, &auth_secret);
+        let (auth_xonly, _parity) = auth_pubkey_full.x_only_public_key();
+        let auth_pubkey = auth_xonly.serialize();
 
         Ok(Self {
             ghost_keys,
+            auth_secret,
             auth_pubkey,
             network,
         })
@@ -102,9 +148,14 @@ impl MasterKey {
         WalletId::from_pubkey(&self.auth_pubkey)
     }
 
-    /// Get the auth public key
+    /// Get the auth public key (x-only, 32 bytes)
     pub fn auth_pubkey(&self) -> &[u8; 32] {
         &self.auth_pubkey
+    }
+
+    /// Get the auth secret key for signing
+    pub fn auth_secret(&self) -> &SecretKey {
+        &self.auth_secret
     }
 
     /// Get reference to ghost keys
@@ -123,6 +174,7 @@ impl MasterKey {
         MasterKeyExport {
             scan_secret: scan,
             spend_secret: spend,
+            auth_secret: self.auth_secret.secret_bytes(),
             auth_pubkey: self.auth_pubkey,
             network: self.network,
         }
@@ -133,8 +185,12 @@ impl MasterKey {
         let ghost_keys = GhostKeys::from_bytes(&export.scan_secret, &export.spend_secret)
             .map_err(|e| LightWalletError::KeyDerivation(e.to_string()))?;
 
+        let auth_secret = SecretKey::from_slice(&export.auth_secret)
+            .map_err(|e| LightWalletError::KeyDerivation(format!("Invalid auth secret: {}", e)))?;
+
         Ok(Self {
             ghost_keys,
+            auth_secret,
             auth_pubkey: export.auth_pubkey,
             network: export.network,
         })
@@ -146,16 +202,19 @@ impl MasterKey {
 pub struct MasterKeyExport {
     pub scan_secret: [u8; 32],
     pub spend_secret: [u8; 32],
+    pub auth_secret: [u8; 32],
     pub auth_pubkey: [u8; 32],
     pub network: Network,
 }
 
 impl MasterKeyExport {
     /// Serialize to bytes
+    /// Format: scan_secret(32) || spend_secret(32) || auth_secret(32) || auth_pubkey(32) || network(1)
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(97);
+        let mut bytes = Vec::with_capacity(129);
         bytes.extend_from_slice(&self.scan_secret);
         bytes.extend_from_slice(&self.spend_secret);
+        bytes.extend_from_slice(&self.auth_secret);
         bytes.extend_from_slice(&self.auth_pubkey);
         bytes.push(network_to_byte(self.network));
         bytes
@@ -163,7 +222,7 @@ impl MasterKeyExport {
 
     /// Deserialize from bytes
     pub fn from_bytes(bytes: &[u8]) -> WalletResult<Self> {
-        if bytes.len() != 97 {
+        if bytes.len() != 129 {
             return Err(LightWalletError::KeyDerivation(
                 "Invalid export data length".to_string(),
             ));
@@ -171,16 +230,19 @@ impl MasterKeyExport {
 
         let mut scan_secret = [0u8; 32];
         let mut spend_secret = [0u8; 32];
+        let mut auth_secret = [0u8; 32];
         let mut auth_pubkey = [0u8; 32];
 
         scan_secret.copy_from_slice(&bytes[0..32]);
         spend_secret.copy_from_slice(&bytes[32..64]);
-        auth_pubkey.copy_from_slice(&bytes[64..96]);
-        let network = byte_to_network(bytes[96])?;
+        auth_secret.copy_from_slice(&bytes[64..96]);
+        auth_pubkey.copy_from_slice(&bytes[96..128]);
+        let network = byte_to_network(bytes[128])?;
 
         Ok(Self {
             scan_secret,
             spend_secret,
+            auth_secret,
             auth_pubkey,
             network,
         })
@@ -251,11 +313,12 @@ mod tests {
         let export = key.export_secrets();
 
         let bytes = export.to_bytes();
-        assert_eq!(bytes.len(), 97);
+        assert_eq!(bytes.len(), 129);
 
         let restored = MasterKeyExport::from_bytes(&bytes).unwrap();
         assert_eq!(export.scan_secret, restored.scan_secret);
         assert_eq!(export.spend_secret, restored.spend_secret);
+        assert_eq!(export.auth_secret, restored.auth_secret);
         assert_eq!(export.auth_pubkey, restored.auth_pubkey);
         assert_eq!(export.network, restored.network);
     }

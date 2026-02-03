@@ -29,7 +29,7 @@ use rusqlite::{params, Connection};
 
 use ghost_gsp_proto::{WalletId, WalletProof};
 
-use crate::auth::verify_schnorr_proof;
+use crate::auth::{verify_proof_and_extract_wallet_id, verify_proof_with_wallet_id};
 use crate::error::{GspError, GspResult};
 
 /// Wallet registry backed by SQLite
@@ -186,23 +186,47 @@ impl WalletRegistry {
         Ok(deleted)
     }
 
-    /// Verify a wallet proof (signature + nonce)
+    /// Verify a wallet proof for registration (signature + nonce + extract wallet ID)
+    ///
+    /// This is used during registration when we don't yet have an expected wallet ID.
+    /// The wallet ID is derived from the proof's public key.
     pub fn verify_proof(&self, proof: &WalletProof) -> GspResult<()> {
-        // Check nonce hasn't been used
+        // Check nonce hasn't been used (replay protection)
         if self.is_nonce_used(&proof.nonce)? {
-            return Err(GspError::InvalidCredentials(
-                "Nonce already used".to_string(),
-            ));
+            return Err(GspError::NonceReplay);
         }
 
-        // Verify Schnorr signature
-        verify_schnorr_proof(proof)?;
+        // Verify signature and extract wallet ID
+        let wallet_id = verify_proof_and_extract_wallet_id(proof)?;
 
-        // Mark nonce as used
-        let wallet_id = proof
-            .wallet_id()
-            .map_err(|e| GspError::InvalidCredentials(format!("Invalid wallet ID: {}", e)))?;
+        // Mark nonce as used to prevent replay attacks
         self.mark_nonce_used(&proof.nonce, &wallet_id)?;
+
+        Ok(())
+    }
+
+    /// Verify a wallet proof against an expected wallet ID (signature + nonce + wallet ID validation)
+    ///
+    /// This is used for authenticated operations where we have a session wallet ID.
+    /// It verifies:
+    /// 1. Schnorr signature is valid
+    /// 2. Public key in proof derives to the expected wallet ID
+    /// 3. Nonce hasn't been used (replay protection)
+    pub fn verify_proof_for_wallet(
+        &self,
+        proof: &WalletProof,
+        expected_wallet_id: &WalletId,
+    ) -> GspResult<()> {
+        // Check nonce hasn't been used (replay protection)
+        if self.is_nonce_used(&proof.nonce)? {
+            return Err(GspError::NonceReplay);
+        }
+
+        // Verify signature and wallet ID derivation
+        verify_proof_with_wallet_id(proof, expected_wallet_id)?;
+
+        // Mark nonce as used to prevent replay attacks
+        self.mark_nonce_used(&proof.nonce, expected_wallet_id)?;
 
         Ok(())
     }

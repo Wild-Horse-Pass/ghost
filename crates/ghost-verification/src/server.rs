@@ -237,6 +237,13 @@ pub struct DashboardConfig {
     pub stratum_port: Option<u16>,
     /// Public HTTP API port
     pub http_port: Option<u16>,
+    /// M-STOR-2: Enable debug endpoints (logs, system info)
+    /// Should be false in production
+    pub enable_debug_endpoints: bool,
+    /// M-STOR-3: Allowed paths for /proc filesystem access
+    pub proc_paths_allowed: Vec<String>,
+    /// M-STOR-3: Backup directory path
+    pub backup_dir: String,
 }
 
 impl Default for DashboardConfig {
@@ -258,6 +265,16 @@ impl Default for DashboardConfig {
             stratum_host: None,
             stratum_port: None,
             http_port: None,
+            // M-STOR-2: Debug endpoints disabled by default for security
+            enable_debug_endpoints: false,
+            // M-STOR-3: Allowed /proc paths for system monitoring
+            proc_paths_allowed: vec![
+                "/proc/meminfo".to_string(),
+                "/proc/loadavg".to_string(),
+                "/proc/cpuinfo".to_string(),
+            ],
+            // M-STOR-3: Default backup directory
+            backup_dir: "/home/ghost/.ghost/backups".to_string(),
         }
     }
 }

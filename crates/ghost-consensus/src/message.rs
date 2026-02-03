@@ -160,6 +160,27 @@ impl MessageType {
             Self::VerificationResult => topics::VERIFICATION,
         }
     }
+
+    /// M-P2P-1: Get the topic as a string for validation
+    ///
+    /// Used to validate that a message received on a topic actually matches
+    /// the message type declared in the envelope.
+    pub fn topic_str(&self) -> &'static str {
+        match self {
+            Self::ShareProof | Self::ShareConvergence => "share",
+            Self::BlockFound => "block",
+            Self::PayoutProposal => "payout",
+            Self::Vote => "vote",
+            Self::HealthPing => "health",
+            Self::Discovery => "discovery",
+            Self::ElderUpdate => "elder",
+            Self::ZkBlockProposal => "zkproposal",
+            Self::ZkVote => "zkvote",
+            Self::ZkPayoutProposal => "zkpayout",
+            Self::ZkPayoutVote => "zkpvote",
+            Self::VerificationResult => "verify",
+        }
+    }
 }
 
 /// Share proof message
@@ -703,6 +724,55 @@ mod tests {
         assert_eq!(MessageType::Vote.topic(), topics::VOTE);
         assert_eq!(MessageType::ZkBlockProposal.topic(), topics::ZK_PROPOSAL);
         assert_eq!(MessageType::ZkVote.topic(), topics::ZK_VOTE);
+    }
+
+    #[test]
+    fn test_message_topic_str() {
+        // M-P2P-1: Test that topic_str() returns correct string for each message type
+        assert_eq!(MessageType::ShareProof.topic_str(), "share");
+        assert_eq!(MessageType::ShareConvergence.topic_str(), "share");
+        assert_eq!(MessageType::BlockFound.topic_str(), "block");
+        assert_eq!(MessageType::PayoutProposal.topic_str(), "payout");
+        assert_eq!(MessageType::Vote.topic_str(), "vote");
+        assert_eq!(MessageType::HealthPing.topic_str(), "health");
+        assert_eq!(MessageType::Discovery.topic_str(), "discovery");
+        assert_eq!(MessageType::ElderUpdate.topic_str(), "elder");
+        assert_eq!(MessageType::ZkBlockProposal.topic_str(), "zkproposal");
+        assert_eq!(MessageType::ZkVote.topic_str(), "zkvote");
+        assert_eq!(MessageType::ZkPayoutProposal.topic_str(), "zkpayout");
+        assert_eq!(MessageType::ZkPayoutVote.topic_str(), "zkpvote");
+        assert_eq!(MessageType::VerificationResult.topic_str(), "verify");
+    }
+
+    #[test]
+    fn test_topic_str_matches_topic_bytes() {
+        // M-P2P-1: Verify that topic_str() is consistent with topic() bytes
+        // This ensures the validation logic works correctly
+        let message_types = [
+            MessageType::ShareProof,
+            MessageType::BlockFound,
+            MessageType::PayoutProposal,
+            MessageType::Vote,
+            MessageType::HealthPing,
+            MessageType::Discovery,
+            MessageType::ElderUpdate,
+            MessageType::ZkBlockProposal,
+            MessageType::ZkVote,
+            MessageType::ZkPayoutProposal,
+            MessageType::ZkPayoutVote,
+            MessageType::VerificationResult,
+        ];
+
+        for msg_type in message_types {
+            let topic_bytes = msg_type.topic();
+            let topic_str = msg_type.topic_str();
+            assert_eq!(
+                topic_bytes,
+                topic_str.as_bytes(),
+                "topic() and topic_str() mismatch for {:?}",
+                msg_type
+            );
+        }
     }
 
     #[test]

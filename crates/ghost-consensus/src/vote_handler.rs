@@ -29,6 +29,7 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info, warn};
@@ -171,10 +172,18 @@ impl RateLimiter {
             last_update_unix: now_unix,
         });
 
-        // Refill tokens based on time elapsed
-        let elapsed = now.duration_since(bucket.last_update).as_secs_f64();
-        bucket.tokens =
-            (bucket.tokens + elapsed * self.refill_rate as f64).min(self.max_tokens as f64);
+        // H-P2P-3: Refill tokens based on time elapsed, with overflow protection
+        // Cap elapsed time to 1 hour to prevent overflow from clock jumps or Instant wraparound
+        let elapsed = now.duration_since(bucket.last_update).as_secs_f64().min(3600.0);
+
+        // Calculate new token count with NaN/Infinity protection
+        let new_tokens = bucket.tokens + elapsed * self.refill_rate as f64;
+        if new_tokens.is_nan() || new_tokens.is_infinite() {
+            // Reset to max on overflow (defensive)
+            bucket.tokens = self.max_tokens as f64;
+        } else {
+            bucket.tokens = new_tokens.min(self.max_tokens as f64);
+        }
         bucket.last_update = now;
         bucket.last_update_unix = now_unix;
 
@@ -326,7 +335,7 @@ pub struct VoteHandler {
     /// Execute function (called when consensus reached)
     execute_fn: Option<ExecuteFn>,
     /// Rate limiter for incoming messages
-    rate_limiter: RateLimiter,
+    rate_limiter: Arc<RateLimiter>,
     /// Configuration
     config: VoteHandlerConfig,
     /// Shared ban manager for cross-handler enforcement (C1 security fix)
@@ -338,6 +347,8 @@ pub struct VoteHandler {
     ban_duration: std::time::Duration,
     /// P2P4-L7: Optional database for persisting equivocation proofs
     db: Option<Arc<ghost_storage::Database>>,
+    /// M-P2P-2: Path for rate limiter persistence
+    rate_limiter_persist_path: Option<PathBuf>,
 }
 
 impl VoteHandler {
@@ -359,15 +370,16 @@ impl VoteHandler {
             pending_proposals: RwLock::new(std::collections::HashMap::new()),
             broadcast_fn: None,
             execute_fn: None,
-            rate_limiter: RateLimiter::new(
+            rate_limiter: Arc::new(RateLimiter::new(
                 config.rate_limit_max_tokens,
                 config.rate_limit_refill_rate,
-            ),
+            )),
             config,
             ban_manager: None,
             banned_nodes: RwLock::new(HashMap::new()),
             ban_duration: std::time::Duration::from_secs(EQUIVOCATION_BAN_DURATION_SECS),
             db: None,
+            rate_limiter_persist_path: None,
         }
     }
 
@@ -387,6 +399,85 @@ impl VoteHandler {
     pub fn with_ban_manager(mut self, ban_manager: Arc<BanManager>) -> Self {
         self.ban_manager = Some(ban_manager);
         self
+    }
+
+    /// M-P2P-2: Enable rate limiter persistence to survive restarts
+    ///
+    /// When enabled:
+    /// - Loads existing rate limiter state from file at initialization
+    /// - Spawns a background task to persist state every 60 seconds
+    ///
+    /// This prevents attackers from bypassing rate limits by triggering node restarts.
+    ///
+    /// # Arguments
+    /// * `persist_path` - Path to store the rate limiter state (e.g., "/var/lib/ghost/rate_limiter.json")
+    ///
+    /// # Returns
+    /// Self with persistence enabled
+    pub fn with_rate_limiter_persistence(mut self, persist_path: PathBuf) -> Self {
+        // Load existing state if file exists
+        if persist_path.exists() {
+            match RateLimiter::from_persisted_file(
+                self.config.rate_limit_max_tokens,
+                self.config.rate_limit_refill_rate,
+                &persist_path,
+            ) {
+                Ok(loaded_limiter) => {
+                    info!(
+                        path = %persist_path.display(),
+                        buckets = loaded_limiter.bucket_count(),
+                        "Loaded rate limiter state from persistence"
+                    );
+                    self.rate_limiter = Arc::new(loaded_limiter);
+                }
+                Err(e) => {
+                    warn!(
+                        path = %persist_path.display(),
+                        error = %e,
+                        "Failed to load rate limiter state, using fresh state"
+                    );
+                }
+            }
+        }
+
+        self.rate_limiter_persist_path = Some(persist_path);
+        self
+    }
+
+    /// M-P2P-2: Start the background persistence task for the rate limiter
+    ///
+    /// Call this after constructing the VoteHandler if persistence is enabled.
+    /// The task will persist rate limiter state every 60 seconds.
+    pub fn start_persistence_task(&self) {
+        if let Some(ref persist_path) = self.rate_limiter_persist_path {
+            let rate_limiter = Arc::clone(&self.rate_limiter);
+            let path = persist_path.clone();
+
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    if let Err(e) = rate_limiter.persist_to_file(&path) {
+                        warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "Failed to persist rate limiter state"
+                        );
+                    } else {
+                        debug!(
+                            path = %path.display(),
+                            buckets = rate_limiter.bucket_count(),
+                            "Persisted rate limiter state"
+                        );
+                    }
+                }
+            });
+
+            info!(
+                path = %persist_path.display(),
+                "Started rate limiter persistence task (60 second interval)"
+            );
+        }
     }
 
     /// Ban a node for equivocation
@@ -1092,6 +1183,7 @@ mod tests {
             }],
             node_payouts: vec![],
             treasury_amount: 25_000_000,
+            treasury_address: b"bc1qtreasury".to_vec(), // H-MINE-3: snapshot address
             tx_fees: 10_000_000,
             subsidy: 625_000_000,
             timestamp: 1700000000,

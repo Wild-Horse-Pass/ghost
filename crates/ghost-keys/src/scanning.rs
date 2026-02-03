@@ -28,6 +28,7 @@
 use rayon::prelude::*;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use subtle::ConstantTimeEq;
 
 use crate::derivation::{compute_tweak, derive_shared_secret, derive_spend_key};
 use crate::GhostKeys;
@@ -141,7 +142,12 @@ impl<'a> PaymentDetector<'a> {
             if let Ok(tweak_secret) = SecretKey::from_slice(&tweak) {
                 let tweak_pubkey = PublicKey::from_secret_key(&self.secp, &tweak_secret);
                 if let Ok(expected_pubkey) = self.keys.spend_pubkey().combine(&tweak_pubkey) {
-                    if &expected_pubkey == output_pubkey {
+                    // M-CRYPTO-3: Use constant-time comparison to prevent timing attacks
+                    if expected_pubkey
+                        .serialize()
+                        .ct_eq(&output_pubkey.serialize())
+                        .into()
+                    {
                         // Found it! Compute spend key
                         if let Ok(spend_key) = derive_spend_key(self.keys.spend_secret(), &tweak) {
                             return Some(ScannedPayment {
@@ -176,7 +182,11 @@ impl<'a> PaymentDetector<'a> {
         if let Ok(tweak_secret) = SecretKey::from_slice(&tweak) {
             let tweak_pubkey = PublicKey::from_secret_key(&self.secp, &tweak_secret);
             if let Ok(expected_pubkey) = self.keys.spend_pubkey().combine(&tweak_pubkey) {
-                return &expected_pubkey == output_pubkey;
+                // M-CRYPTO-3: Use constant-time comparison to prevent timing attacks
+                return expected_pubkey
+                    .serialize()
+                    .ct_eq(&output_pubkey.serialize())
+                    .into();
             }
         }
 

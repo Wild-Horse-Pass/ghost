@@ -69,6 +69,13 @@ use ghost_storage::{
 };
 use wraith_protocol::{ParticipantTier, WraithCoordinator, WraithDenomination};
 
+// H-PAY-2: Cryptography for encrypted key storage
+use aes_gcm::{
+    aead::{Aead, KeyInit},
+    Aes256Gcm, Nonce,
+};
+use scrypt::{scrypt, Params as ScryptParams};
+
 /// Ghost Pay L2 Node
 #[derive(Parser, Debug)]
 #[command(name = "ghost-pay")]
@@ -105,6 +112,114 @@ struct Args {
     /// Treasury address for settlement batches
     #[arg(long, default_value = "")]
     treasury_address: String,
+
+    /// Password for encrypting keys at rest (H-PAY-2 security fix)
+    /// If not provided, keys will be stored encrypted with a derived password
+    #[arg(long, env = "GHOST_PAY_PASSWORD")]
+    key_password: Option<String>,
+}
+
+// =============================================================================
+// H-PAY-2: ENCRYPTED KEY STORAGE
+// =============================================================================
+
+/// Salt size for scrypt key derivation
+const SALT_SIZE: usize = 32;
+/// Nonce size for AES-GCM
+const NONCE_SIZE: usize = 12;
+/// scrypt parameters (N=2^15, r=8, p=1) - secure but not too slow
+const SCRYPT_LOG_N: u8 = 15;
+const SCRYPT_R: u32 = 8;
+const SCRYPT_P: u32 = 1;
+
+/// Derive encryption key from password using scrypt
+fn derive_encryption_key(password: &str, salt: &[u8]) -> Result<[u8; 32], anyhow::Error> {
+    let params = ScryptParams::new(SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P, 32)
+        .map_err(|e| anyhow::anyhow!("scrypt params error: {}", e))?;
+
+    let mut key = [0u8; 32];
+    scrypt(password.as_bytes(), salt, &params, &mut key)
+        .map_err(|e| anyhow::anyhow!("scrypt error: {}", e))?;
+
+    Ok(key)
+}
+
+/// Encrypt data with password using AES-256-GCM
+/// Returns: salt (32) || nonce (12) || ciphertext
+fn encrypt_keys(plaintext: &[u8], password: &str) -> Result<Vec<u8>, anyhow::Error> {
+    // Generate random salt and nonce
+    let mut salt = [0u8; SALT_SIZE];
+    let mut nonce_bytes = [0u8; NONCE_SIZE];
+
+    getrandom::getrandom(&mut salt)
+        .map_err(|e| anyhow::anyhow!("RNG error: {}", e))?;
+    getrandom::getrandom(&mut nonce_bytes)
+        .map_err(|e| anyhow::anyhow!("RNG error: {}", e))?;
+
+    // Derive key from password
+    let key = derive_encryption_key(password, &salt)?;
+
+    // Encrypt with AES-256-GCM
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|e| anyhow::anyhow!("cipher error: {}", e))?;
+
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| anyhow::anyhow!("encryption error: {}", e))?;
+
+    // Combine: salt || nonce || ciphertext
+    let mut result = Vec::with_capacity(SALT_SIZE + NONCE_SIZE + ciphertext.len());
+    result.extend_from_slice(&salt);
+    result.extend_from_slice(&nonce_bytes);
+    result.extend_from_slice(&ciphertext);
+
+    Ok(result)
+}
+
+/// Decrypt data with password using AES-256-GCM
+/// Expects: salt (32) || nonce (12) || ciphertext
+fn decrypt_keys(encrypted: &[u8], password: &str) -> Result<Vec<u8>, anyhow::Error> {
+    if encrypted.len() < SALT_SIZE + NONCE_SIZE + 16 {
+        // 16 is min auth tag
+        return Err(anyhow::anyhow!("encrypted data too short"));
+    }
+
+    // Extract components
+    let salt = &encrypted[0..SALT_SIZE];
+    let nonce_bytes = &encrypted[SALT_SIZE..SALT_SIZE + NONCE_SIZE];
+    let ciphertext = &encrypted[SALT_SIZE + NONCE_SIZE..];
+
+    // Derive key
+    let key = derive_encryption_key(password, salt)?;
+
+    // Decrypt
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|e| anyhow::anyhow!("cipher error: {}", e))?;
+
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| anyhow::anyhow!("decryption failed - wrong password?"))?;
+
+    Ok(plaintext)
+}
+
+/// Get or derive the encryption password
+/// Uses provided password or derives one from machine-specific data
+fn get_encryption_password(args: &Args) -> String {
+    if let Some(ref password) = args.key_password {
+        return password.clone();
+    }
+
+    // Derive a machine-specific password from hostname + data directory
+    // This provides basic protection while allowing unattended startup
+    // For production, users should provide GHOST_PAY_PASSWORD env var
+    let hostname = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "ghost-pay-node".to_string());
+
+    format!("ghost-pay:{}:{}", hostname, args.data_dir)
 }
 
 /// Application state
@@ -269,47 +384,140 @@ async fn main() -> Result<()> {
         rpc,
     });
 
-    // Load existing keys from database (if any)
-    if let Ok(Some(keys_json)) = db.kv_get("ghost_keys") {
-        if let Ok(keys_export) = serde_json::from_str::<GhostKeysExport>(&keys_json) {
-            if let Ok(keys) = GhostKeys::try_from(keys_export) {
-                let ghost_id = keys.ghost_id();
-                let ghost_id_str = ghost_id.to_string();
+    // H-PAY-2 FIX: Load existing keys from database with encryption support
+    // Try encrypted keys first (new format), fall back to legacy plaintext for migration
+    let encryption_password = get_encryption_password(&state.config);
+    let mut keys_loaded = false;
 
-                // Load locks for this ghost_id (pending and active, not spent)
-                if let Ok(db_locks) = db.get_ghost_locks_by_owner(&ghost_id_str) {
-                    let lock_infos: Vec<LockInfo> = db_locks
-                        .iter()
-                        .filter(|r| r.state != ghost_storage::GhostLockState::Spent)
-                        .map(|r| LockInfo {
-                            id: r.lock_id.clone(),
-                            denomination: r.denomination.clone(),
-                            amount_sats: r.amount_sats,
-                            state: r.state.as_str().to_string(),
-                            created_at: r.created_at as u64,
-                            timelock_tier: r.timelock_tier.clone(),
-                            jump_risk: r.jump_risk_tier.clone(),
-                            needs_jump: r
-                                .next_jump_height
-                                .map(|h| h <= r.creation_height + 1000)
-                                .unwrap_or(false),
-                            address: pubkey_hex_to_p2tr_address(&r.lock_pubkey, network),
-                            output_pubkey: r.lock_pubkey.clone(),
-                            recovery_height: r.recovery_height,
-                            blocks_until_jump: r
-                                .next_jump_height
-                                .unwrap_or(0)
-                                .saturating_sub(r.creation_height),
-                        })
-                        .collect();
+    // Try to load encrypted keys first (new secure format)
+    if let Ok(Some(encrypted_hex)) = db.kv_get("ghost_keys_encrypted") {
+        if let Ok(encrypted_bytes) = hex::decode(&encrypted_hex) {
+            match decrypt_keys(&encrypted_bytes, &encryption_password) {
+                Ok(decrypted) => {
+                    if let Ok(keys_json) = String::from_utf8(decrypted) {
+                        if let Ok(keys_export) = serde_json::from_str::<GhostKeysExport>(&keys_json) {
+                            if let Ok(keys) = GhostKeys::try_from(keys_export) {
+                                let ghost_id = keys.ghost_id();
+                                let ghost_id_str = ghost_id.to_string();
 
-                    info!("Loaded {} existing locks from database", lock_infos.len());
-                    *state.locks.write() = lock_infos;
+                                // Load locks for this ghost_id
+                                if let Ok(db_locks) = db.get_ghost_locks_by_owner(&ghost_id_str) {
+                                    let lock_infos: Vec<LockInfo> = db_locks
+                                        .iter()
+                                        .filter(|r| {
+                                            r.state != ghost_storage::GhostLockState::Spent
+                                                && r.state != ghost_storage::GhostLockState::PendingSettlement
+                                        })
+                                        .map(|r| LockInfo {
+                                            id: r.lock_id.clone(),
+                                            denomination: r.denomination.clone(),
+                                            amount_sats: r.amount_sats,
+                                            state: r.state.as_str().to_string(),
+                                            created_at: r.created_at as u64,
+                                            timelock_tier: r.timelock_tier.clone(),
+                                            jump_risk: r.jump_risk_tier.clone(),
+                                            needs_jump: r
+                                                .next_jump_height
+                                                .map(|h| h <= r.creation_height + 1000)
+                                                .unwrap_or(false),
+                                            address: pubkey_hex_to_p2tr_address(&r.lock_pubkey, network),
+                                            output_pubkey: r.lock_pubkey.clone(),
+                                            recovery_height: r.recovery_height,
+                                            blocks_until_jump: r
+                                                .next_jump_height
+                                                .unwrap_or(0)
+                                                .saturating_sub(r.creation_height),
+                                        })
+                                        .collect();
+
+                                    info!("Loaded {} existing locks from database", lock_infos.len());
+                                    *state.locks.write() = lock_infos;
+                                }
+
+                                info!("Loaded existing ghost keys (encrypted): {}", ghost_id);
+                                *state.keys.write() = Some(keys);
+                                *state.ghost_id.write() = Some(ghost_id_str);
+                                keys_loaded = true;
+                            }
+                        }
+                    }
                 }
+                Err(e) => {
+                    warn!("Failed to decrypt keys: {}. Check GHOST_PAY_PASSWORD.", e);
+                }
+            }
+        }
+    }
 
-                info!("Loaded existing ghost keys: {}", ghost_id);
-                *state.keys.write() = Some(keys);
-                *state.ghost_id.write() = Some(ghost_id_str);
+    // Fall back to legacy plaintext keys (migrate to encrypted)
+    if !keys_loaded {
+        if let Ok(Some(keys_json)) = db.kv_get("ghost_keys") {
+            if let Ok(keys_export) = serde_json::from_str::<GhostKeysExport>(&keys_json) {
+                if let Ok(keys) = GhostKeys::try_from(keys_export.clone()) {
+                    let ghost_id = keys.ghost_id();
+                    let ghost_id_str = ghost_id.to_string();
+
+                    // Migrate: encrypt and save, then delete plaintext
+                    warn!("Migrating plaintext keys to encrypted storage (H-PAY-2 security fix)");
+                    if let Ok(keys_json_bytes) = serde_json::to_vec(&keys_export) {
+                        match encrypt_keys(&keys_json_bytes, &encryption_password) {
+                            Ok(encrypted) => {
+                                let encrypted_hex = hex::encode(&encrypted);
+                                if let Err(e) = db.kv_set("ghost_keys_encrypted", &encrypted_hex) {
+                                    warn!("Failed to save encrypted keys: {}", e);
+                                } else {
+                                    // Delete plaintext keys after successful encryption
+                                    if let Err(e) = db.kv_delete("ghost_keys") {
+                                        warn!("Failed to delete plaintext keys: {}", e);
+                                    } else {
+                                        info!("Successfully migrated keys to encrypted storage");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to encrypt keys during migration: {}", e);
+                            }
+                        }
+                    }
+
+                    // Load locks for this ghost_id
+                    if let Ok(db_locks) = db.get_ghost_locks_by_owner(&ghost_id_str) {
+                        let lock_infos: Vec<LockInfo> = db_locks
+                            .iter()
+                            .filter(|r| {
+                                r.state != ghost_storage::GhostLockState::Spent
+                                    && r.state != ghost_storage::GhostLockState::PendingSettlement
+                            })
+                            .map(|r| LockInfo {
+                                id: r.lock_id.clone(),
+                                denomination: r.denomination.clone(),
+                                amount_sats: r.amount_sats,
+                                state: r.state.as_str().to_string(),
+                                created_at: r.created_at as u64,
+                                timelock_tier: r.timelock_tier.clone(),
+                                jump_risk: r.jump_risk_tier.clone(),
+                                needs_jump: r
+                                    .next_jump_height
+                                    .map(|h| h <= r.creation_height + 1000)
+                                    .unwrap_or(false),
+                                address: pubkey_hex_to_p2tr_address(&r.lock_pubkey, network),
+                                output_pubkey: r.lock_pubkey.clone(),
+                                recovery_height: r.recovery_height,
+                                blocks_until_jump: r
+                                    .next_jump_height
+                                    .unwrap_or(0)
+                                    .saturating_sub(r.creation_height),
+                            })
+                            .collect();
+
+                        info!("Loaded {} existing locks from database", lock_infos.len());
+                        *state.locks.write() = lock_infos;
+                    }
+
+                    info!("Loaded existing ghost keys (migrated from plaintext): {}", ghost_id);
+                    *state.keys.write() = Some(keys);
+                    *state.ghost_id.write() = Some(ghost_id_str);
+                }
             }
         }
     }
@@ -391,23 +599,38 @@ async fn generate_keys(
     let ghost_id = keys.ghost_id();
     let ghost_id_str = ghost_id.to_string();
 
-    // Save keys to database for persistence
+    // H-PAY-2 FIX: Save keys to database with encryption
     let keys_export = GhostKeysExport::from(&keys);
-    if let Ok(keys_json) = serde_json::to_string(&keys_export) {
-        if let Err(e) = state.db.kv_set("ghost_keys", &keys_json) {
-            warn!("Failed to persist keys: {}", e);
+    if let Ok(keys_json) = serde_json::to_vec(&keys_export) {
+        let encryption_password = get_encryption_password(&state.config);
+        match encrypt_keys(&keys_json, &encryption_password) {
+            Ok(encrypted) => {
+                let encrypted_hex = hex::encode(&encrypted);
+                if let Err(e) = state.db.kv_set("ghost_keys_encrypted", &encrypted_hex) {
+                    warn!("Failed to persist encrypted keys: {}", e);
+                }
+                // Ensure no plaintext keys exist
+                let _ = state.db.kv_delete("ghost_keys");
+            }
+            Err(e) => {
+                warn!("Failed to encrypt keys: {}", e);
+            }
         }
     }
 
     *state.keys.write() = Some(keys);
     *state.ghost_id.write() = Some(ghost_id_str.clone());
 
-    // Load existing locks from database for this ghost_id (pending and active, not spent)
+    // Load existing locks from database for this ghost_id (pending and active, not spent/settling)
     if let Ok(db_locks) = state.db.get_ghost_locks_by_owner(&ghost_id_str) {
         let network = state.network;
         let lock_infos: Vec<LockInfo> = db_locks
             .iter()
-            .filter(|r| r.state != ghost_storage::GhostLockState::Spent)
+            // H-PAY-1 FIX: Exclude both Spent and PendingSettlement locks
+            .filter(|r| {
+                r.state != ghost_storage::GhostLockState::Spent
+                    && r.state != ghost_storage::GhostLockState::PendingSettlement
+            })
             .map(|r| LockInfo {
                 id: r.lock_id.clone(),
                 denomination: r.denomination.clone(),
@@ -933,22 +1156,6 @@ async fn request_withdrawal(
         })));
     }
 
-    // Check for existing pending withdrawal on this lock
-    let existing = state
-        .db
-        .get_withdrawals_by_lock(&req.lock_id)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    if existing
-        .iter()
-        .any(|w| w.status == WithdrawalStatus::Pending || w.status == WithdrawalStatus::Batched)
-    {
-        return Ok(Json(serde_json::json!({
-            "success": false,
-            "error": "A withdrawal is already pending for this lock"
-        })));
-    }
-
     let now = chrono::Utc::now().timestamp();
 
     // Create withdrawal request
@@ -966,10 +1173,23 @@ async fn request_withdrawal(
         updated_at: now,
     };
 
-    let id = state
+    // Atomically check for existing pending/batched withdrawal and insert if none exists
+    // This prevents double-spend race conditions (C-PAY-3) by using a database transaction
+    // with a partial unique index as defense-in-depth
+    let id = match state
         .db
-        .insert_withdrawal_request(&withdrawal)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .insert_withdrawal_request_atomic(&withdrawal)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+    {
+        Some(id) => id,
+        None => {
+            // A pending/batched withdrawal already exists for this lock
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": "A withdrawal is already pending for this lock"
+            })));
+        }
+    };
 
     info!(
         id = id,
@@ -1162,11 +1382,19 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
 
             // Check for P2TR output (5120 = OP_1 PUSH32)
             if script_bytes.len() == 34 && script_bytes[0] == 0x51 && script_bytes[1] == 0x20 {
-                // For P2TR, we need to convert x-only key to full pubkey
-                // This requires assuming even Y coordinate
-                let mut full_key = vec![0x02]; // Even Y
-                full_key.extend_from_slice(&script_bytes[2..34]);
-                if let Ok(pubkey) = PublicKey::from_slice(&full_key) {
+                // For P2TR, we need to convert x-only key to full pubkey.
+                // P2TR only stores the 32-byte x-coordinate, so we must try both
+                // Y coordinate parities (even=0x02, odd=0x03) since we don't know
+                // which was used. Add both to outputs for the scanner to check.
+                let mut full_key_even = vec![0x02]; // Even Y
+                full_key_even.extend_from_slice(&script_bytes[2..34]);
+                if let Ok(pubkey) = PublicKey::from_slice(&full_key_even) {
+                    outputs.push((pubkey, Some(value_sats)));
+                }
+
+                let mut full_key_odd = vec![0x03]; // Odd Y
+                full_key_odd.extend_from_slice(&script_bytes[2..34]);
+                if let Ok(pubkey) = PublicKey::from_slice(&full_key_odd) {
                     outputs.push((pubkey, Some(value_sats)));
                 }
             }
@@ -1639,6 +1867,35 @@ async fn run_settlement_loop(state: Arc<AppState>) {
             }
         };
 
+        // H-PAY-1 FIX: Check for stale PendingSettlement locks and revert them to Active
+        // Locks stuck in PendingSettlement for > 24 hours are reverted (broadcast likely failed)
+        const STALE_SETTLEMENT_TIMEOUT_SECS: i64 = 24 * 60 * 60; // 24 hours
+        if let Ok(db_locks) = state.db.get_ghost_locks_by_owner(&ghost_id) {
+            let now = chrono::Utc::now().timestamp();
+            for lock in db_locks {
+                if lock.state == DbLockState::PendingSettlement {
+                    let age_secs = now - lock.updated_at;
+                    if age_secs > STALE_SETTLEMENT_TIMEOUT_SECS {
+                        warn!(
+                            lock_id = %lock.lock_id,
+                            age_hours = age_secs / 3600,
+                            "Reverting stale PendingSettlement lock to Active"
+                        );
+                        if let Err(e) = state.db.update_ghost_lock_state(
+                            &lock.lock_id,
+                            DbLockState::Active,
+                        ) {
+                            error!(
+                                lock_id = %lock.lock_id,
+                                error = %e,
+                                "Failed to revert stale lock to Active"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         // Estimate fee rate from recent network activity
         // In production, this would call Bitcoin Core's estimatesmartfee RPC
         let fee_rate = estimate_fee_rate(&state).await;
@@ -1777,17 +2034,19 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                 }
                             }
 
-                            // Mark associated locks as spent
+                            // H-PAY-1 FIX: Mark associated locks as PendingSettlement BEFORE broadcast
+                            // This prevents double-spend if broadcast succeeds but we crash before
+                            // updating state. Safe to revert to Active if broadcast fails.
                             for withdrawal in &pending_withdrawals {
                                 if processed_withdrawal_ids.contains(&withdrawal.id.unwrap_or(-1)) {
                                     if let Err(e) = state.db.update_ghost_lock_state(
                                         &withdrawal.lock_id,
-                                        DbLockState::Spent,
+                                        DbLockState::PendingSettlement,
                                     ) {
                                         error!(
                                             lock_id = %withdrawal.lock_id,
                                             error = %e,
-                                            "Failed to update lock state"
+                                            "Failed to update lock state to PendingSettlement"
                                         );
                                     }
                                 }
@@ -1921,6 +2180,19 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                     {
                                         for withdrawal in withdrawals {
                                             if withdrawal.batch_id.as_deref() == Some(&batch_id) {
+                                                // H-PAY-1 FIX: Now mark locks as Spent after confirmations
+                                                // This is the safe point - transaction is confirmed on-chain
+                                                if let Err(e) = state.db.update_ghost_lock_state(
+                                                    &withdrawal.lock_id,
+                                                    DbLockState::Spent,
+                                                ) {
+                                                    error!(
+                                                        lock_id = %withdrawal.lock_id,
+                                                        error = %e,
+                                                        "Failed to update lock state to Spent"
+                                                    );
+                                                }
+
                                                 if let Some(id) = withdrawal.id {
                                                     if let Err(e) =
                                                         state.db.update_withdrawal_confirmed(id)

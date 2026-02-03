@@ -141,6 +141,11 @@ pub struct RoundManager {
     submitted_shares: RwLock<HashMap<RoundId, std::collections::HashSet<[u8; 32]>>>,
     /// Per-miner rate limiting (H6 security fix)
     miner_rate_limits: RwLock<HashMap<String, MinerRateLimitEntry>>,
+    /// M-MINE-1: Current template ID (prev_block_hash) for share validation
+    current_template_id: RwLock<Option<[u8; 32]>>,
+    /// M-MINE-1: Recent template IDs for accepting shares during template transitions
+    /// Keeps last N templates to avoid rejecting shares during brief overlap periods
+    recent_template_ids: RwLock<Vec<[u8; 32]>>,
 }
 
 impl RoundManager {
@@ -162,6 +167,8 @@ impl RoundManager {
             our_node_id,
             submitted_shares: RwLock::new(HashMap::new()),
             miner_rate_limits: RwLock::new(HashMap::new()),
+            current_template_id: RwLock::new(None),
+            recent_template_ids: RwLock::new(Vec::new()),
         }
     }
 
@@ -349,10 +356,24 @@ impl RoundManager {
 
     /// Handle a share proof from the P2P network
     ///
-    /// Security fixes C4 and C5:
+    /// Security fixes C4, C5, and M-MINE-1:
     /// - C4: Cryptographic verification that share_hash meets claimed difficulty
     /// - C5: Duplicate detection using submitted_shares HashMap
+    /// - M-MINE-1: Template validation to reject stale shares
     pub fn handle_share_proof(&self, proof: ShareProof) -> Result<(), ShareError> {
+        // M-MINE-1: Validate template if provided
+        // This prevents accepting shares for old/stale templates
+        if let Some(template_id) = proof.template_id {
+            if !self.is_valid_template(&template_id) {
+                warn!(
+                    template_id = %hex::encode(&template_id[..8]),
+                    round_id = proof.round_id,
+                    "Share proof references stale template"
+                );
+                return Err(ShareError::StaleTemplate);
+            }
+        }
+
         let diff_calc = self.difficulty.read();
 
         // C4: Cryptographic verification - verify the hash actually meets the claimed difficulty
@@ -690,6 +711,50 @@ impl RoundManager {
     pub fn is_solo_mode(&self) -> bool {
         matches!(self.config.mining_mode, MiningMode::PrivateSolo)
     }
+
+    /// M-MINE-1: Set the current template ID (prev_block_hash)
+    ///
+    /// Called when a new template is received. Tracks recent templates
+    /// to allow shares during brief transition periods.
+    pub fn set_template_id(&self, template_id: [u8; 32]) {
+        // Update current template
+        *self.current_template_id.write() = Some(template_id);
+
+        // Add to recent templates (keep last 3)
+        const MAX_RECENT_TEMPLATES: usize = 3;
+        let mut recent = self.recent_template_ids.write();
+        if !recent.contains(&template_id) {
+            recent.push(template_id);
+            if recent.len() > MAX_RECENT_TEMPLATES {
+                recent.remove(0);
+            }
+        }
+
+        debug!(
+            template_id = %hex::encode(&template_id[..8]),
+            recent_count = recent.len(),
+            "Updated current template ID"
+        );
+    }
+
+    /// M-MINE-1: Get the current template ID
+    pub fn current_template_id(&self) -> Option<[u8; 32]> {
+        *self.current_template_id.read()
+    }
+
+    /// M-MINE-1: Check if a template ID is valid (current or recent)
+    pub fn is_valid_template(&self, template_id: &[u8; 32]) -> bool {
+        // Check current template
+        if let Some(current) = *self.current_template_id.read() {
+            if &current == template_id {
+                return true;
+            }
+        }
+
+        // Check recent templates (for transition periods)
+        let recent = self.recent_template_ids.read();
+        recent.contains(template_id)
+    }
 }
 
 /// Result of submitting a share
@@ -740,6 +805,10 @@ pub enum ShareError {
         current_percent: f64,
         max_percent: f64,
     },
+
+    /// M-MINE-1: Share references a stale/unknown template
+    #[error("Stale template: share references template that is not current or recent")]
+    StaleTemplate,
 }
 
 /// Round statistics
@@ -927,5 +996,66 @@ mod tests {
         // Negative work should be rejected
         let result = manager.record_share("miner2", -100.0, node_id);
         assert!(matches!(result, Err(ShareError::InvalidWork)));
+    }
+
+    #[test]
+    fn test_m_mine_1_template_validation() {
+        // M-MINE-1: Test template ID tracking and validation
+        let node_id = [1u8; 32];
+        let manager = RoundManager::new(node_id, RoundConfig::default());
+
+        // Initially no template
+        assert!(manager.current_template_id().is_none());
+
+        // Set first template
+        let template1 = [1u8; 32];
+        manager.set_template_id(template1);
+        assert_eq!(manager.current_template_id(), Some(template1));
+        assert!(manager.is_valid_template(&template1));
+
+        // Set second template - first should still be valid (recent)
+        let template2 = [2u8; 32];
+        manager.set_template_id(template2);
+        assert_eq!(manager.current_template_id(), Some(template2));
+        assert!(manager.is_valid_template(&template2));
+        assert!(manager.is_valid_template(&template1)); // Recent template still valid
+
+        // Set third template
+        let template3 = [3u8; 32];
+        manager.set_template_id(template3);
+        assert!(manager.is_valid_template(&template3));
+        assert!(manager.is_valid_template(&template2));
+        assert!(manager.is_valid_template(&template1));
+
+        // Set fourth template - first should be evicted (only keep 3)
+        let template4 = [4u8; 32];
+        manager.set_template_id(template4);
+        assert!(manager.is_valid_template(&template4));
+        assert!(manager.is_valid_template(&template3));
+        assert!(manager.is_valid_template(&template2));
+        assert!(!manager.is_valid_template(&template1)); // Evicted
+
+        // Unknown template should be invalid
+        let unknown = [99u8; 32];
+        assert!(!manager.is_valid_template(&unknown));
+    }
+
+    #[test]
+    fn test_m_mine_2_rate_limit_cleanup() {
+        // M-MINE-2: Test rate limit cleanup
+        let node_id = [1u8; 32];
+        let manager = RoundManager::new(node_id, RoundConfig::default());
+        manager.start_round(100);
+
+        // Record some shares to create rate limit entries
+        let _ = manager.record_share("miner1", 100.0, node_id);
+        let _ = manager.record_share("miner2", 100.0, node_id);
+
+        // Cleanup should not panic and should work with fresh entries
+        manager.cleanup_rate_limits();
+
+        // More shares should still work after cleanup
+        let result = manager.record_share("miner3", 100.0, node_id);
+        assert!(result.is_ok());
     }
 }

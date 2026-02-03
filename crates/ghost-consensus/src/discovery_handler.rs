@@ -34,6 +34,7 @@ use tracing::{debug, info};
 use ghost_common::error::GhostResult;
 use ghost_common::types::NodeId;
 
+use crate::ban_manager::BanManager;
 use crate::mesh::MessageHandler;
 use crate::message::{DiscoveryMessage, MessageEnvelope, MessageType, PeerInfo};
 use crate::peer::PeerManager;
@@ -57,6 +58,8 @@ pub struct DiscoveryHandler {
     known_addresses: RwLock<HashMap<NodeId, String>>,
     /// Callback to connect to new peers
     connect_callback: Option<ConnectCallback>,
+    /// M-P2P-3: Shared ban manager for cross-handler enforcement
+    ban_manager: Option<Arc<BanManager>>,
 }
 
 impl DiscoveryHandler {
@@ -68,6 +71,7 @@ impl DiscoveryHandler {
             peers,
             known_addresses: RwLock::new(HashMap::new()),
             connect_callback: None,
+            ban_manager: None,
         }
     }
 
@@ -75,6 +79,21 @@ impl DiscoveryHandler {
     pub fn with_connect_callback(mut self, callback: ConnectCallback) -> Self {
         self.connect_callback = Some(callback);
         self
+    }
+
+    /// M-P2P-3: Set the shared ban manager for cross-handler enforcement
+    ///
+    /// When set, discovery messages from banned nodes are silently ignored.
+    pub fn with_ban_manager(mut self, ban_manager: Arc<BanManager>) -> Self {
+        self.ban_manager = Some(ban_manager);
+        self
+    }
+
+    /// M-P2P-3: Check if a node is currently banned
+    fn is_banned(&self, node_id: &NodeId) -> bool {
+        self.ban_manager
+            .as_ref()
+            .is_some_and(|bm| bm.is_banned(node_id))
     }
 
     /// Add a known peer address
@@ -113,6 +132,11 @@ impl DiscoveryHandler {
 
     /// Handle a discovery message
     async fn handle_discovery(&self, envelope: &MessageEnvelope) -> GhostResult<()> {
+        // M-P2P-3: Silently ignore discovery messages from banned nodes
+        if self.is_banned(&envelope.sender) {
+            return Ok(()); // Silently ignore banned nodes
+        }
+
         let discovery_msg: DiscoveryMessage = serde_json::from_slice(&envelope.payload)
             .map_err(|e| ghost_common::error::GhostError::P2PMessage(e.to_string()))?;
 
@@ -202,6 +226,7 @@ impl MessageHandler for DiscoveryHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ban_manager::BanReason;
 
     #[test]
     fn test_discovery_handler_creation() {
@@ -220,5 +245,39 @@ mod tests {
 
         let msg = handler.get_discovery_message();
         assert_eq!(msg.known_peers.len(), 1);
+    }
+
+    #[test]
+    fn test_ban_manager_integration() {
+        // M-P2P-3: Test that BanManager properly integrates with DiscoveryHandler
+        let peers = Arc::new(PeerManager::new([1u8; 32], 100));
+        let ban_manager = Arc::new(BanManager::new());
+        let handler = DiscoveryHandler::new([1u8; 32], "tcp://127.0.0.1:8559".to_string(), peers)
+            .with_ban_manager(ban_manager.clone());
+
+        let node_id = [2u8; 32];
+
+        // Initially not banned
+        assert!(!handler.is_banned(&node_id));
+
+        // Ban the node via shared manager
+        ban_manager.ban(node_id, BanReason::Equivocation);
+
+        // Now should be banned
+        assert!(handler.is_banned(&node_id));
+
+        // Unban
+        ban_manager.unban(&node_id);
+        assert!(!handler.is_banned(&node_id));
+    }
+
+    #[test]
+    fn test_no_ban_manager_returns_false() {
+        // Without a ban manager, is_banned should always return false
+        let peers = Arc::new(PeerManager::new([1u8; 32], 100));
+        let handler = DiscoveryHandler::new([1u8; 32], "tcp://127.0.0.1:8559".to_string(), peers);
+
+        // Without ban manager, should never be considered banned
+        assert!(!handler.is_banned(&[2u8; 32]));
     }
 }

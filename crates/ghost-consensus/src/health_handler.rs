@@ -112,10 +112,18 @@ impl HealthRateLimiter {
             last_update: now,
         });
 
-        // Refill tokens based on time elapsed
-        let elapsed = now.duration_since(bucket.last_update).as_secs_f64();
-        bucket.tokens =
-            (bucket.tokens + elapsed * self.refill_rate as f64).min(self.max_tokens as f64);
+        // H-P2P-3: Refill tokens based on time elapsed, with overflow protection
+        // Cap elapsed time to 1 hour to prevent overflow from clock jumps or Instant wraparound
+        let elapsed = now.duration_since(bucket.last_update).as_secs_f64().min(3600.0);
+
+        // Calculate new token count with NaN/Infinity protection
+        let new_tokens = bucket.tokens + elapsed * self.refill_rate as f64;
+        if new_tokens.is_nan() || new_tokens.is_infinite() {
+            // Reset to max on overflow (defensive)
+            bucket.tokens = self.max_tokens as f64;
+        } else {
+            bucket.tokens = new_tokens.min(self.max_tokens as f64);
+        }
         bucket.last_update = now;
 
         // Try to consume a token

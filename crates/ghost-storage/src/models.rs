@@ -454,6 +454,9 @@ pub enum GhostLockState {
     Active,
     /// Lock being jumped to new address
     Jumping,
+    /// Lock is being settled, awaiting broadcast confirmation (H-PAY-1 fix)
+    /// Safe to revert to Active if broadcast fails
+    PendingSettlement,
     /// Lock spent normally (key path)
     Spent,
     /// Lock recovered (script path after timelock)
@@ -468,6 +471,7 @@ impl GhostLockState {
             Self::Pending => "pending",
             Self::Active => "active",
             Self::Jumping => "jumping",
+            Self::PendingSettlement => "pending_settlement",
             Self::Spent => "spent",
             Self::Recovered => "recovered",
             Self::Expired => "expired",
@@ -479,6 +483,7 @@ impl GhostLockState {
             "pending" => Some(Self::Pending),
             "active" => Some(Self::Active),
             "jumping" => Some(Self::Jumping),
+            "pending_settlement" => Some(Self::PendingSettlement),
             "spent" => Some(Self::Spent),
             "recovered" => Some(Self::Recovered),
             "expired" => Some(Self::Expired),

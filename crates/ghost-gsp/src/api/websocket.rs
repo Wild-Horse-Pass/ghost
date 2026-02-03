@@ -39,9 +39,33 @@ use ghost_gsp_proto::{
     WalletId, WalletProof,
 };
 
-use crate::auth::verify_schnorr_proof;
 use crate::error::GspError;
 use crate::server::GspState;
+
+/// Verify a wallet proof for WebSocket operations
+///
+/// This performs comprehensive verification:
+/// 1. Structure validation
+/// 2. Timestamp validation
+/// 3. Schnorr signature verification
+/// 4. Wallet ID derivation validation (pubkey -> wallet ID)
+/// 5. Nonce replay protection (tracked in registry database)
+///
+/// Returns Ok(()) on success or a descriptive error message.
+fn verify_websocket_proof(
+    state: &Arc<GspState>,
+    proof: &WalletProof,
+    session_wallet_id: &WalletId,
+) -> Result<(), String> {
+    // Use the registry's comprehensive verification which includes:
+    // - Signature verification
+    // - Wallet ID derivation check
+    // - Nonce replay protection
+    state
+        .registry
+        .verify_proof_for_wallet(proof, session_wallet_id)
+        .map_err(|e| e.to_string())
+}
 
 /// WebSocket upgrade handler
 pub async fn ws_handler(
@@ -450,55 +474,17 @@ async fn handle_request_jump(
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
-    // Validate proof structure first
-    if let Err(e) = proof.validate_structure() {
+    // Comprehensive proof verification:
+    // - Structure and timestamp validation
+    // - Schnorr signature verification
+    // - Wallet ID derivation check (pubkey -> wallet ID)
+    // - Nonce replay protection
+    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
         return Ok(Some(ServerMessage::JumpRequested {
             success: false,
             lock_id: lock_id.to_string(),
             jump_txid: None,
-            error: Some(format!("Invalid proof structure: {}", e)),
-        }));
-    }
-
-    // Check timestamp is within acceptable range
-    if !proof.is_timestamp_valid() {
-        return Ok(Some(ServerMessage::JumpRequested {
-            success: false,
-            lock_id: lock_id.to_string(),
-            jump_txid: None,
-            error: Some("Proof timestamp expired or too far in future".to_string()),
-        }));
-    }
-
-    // Verify the Schnorr signature
-    if let Err(e) = verify_schnorr_proof(proof) {
-        return Ok(Some(ServerMessage::JumpRequested {
-            success: false,
-            lock_id: lock_id.to_string(),
-            jump_txid: None,
-            error: Some(format!("Invalid wallet proof signature: {}", e)),
-        }));
-    }
-
-    // Verify proof matches authenticated wallet
-    let proof_wallet_id = match proof.wallet_id() {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(Some(ServerMessage::JumpRequested {
-                success: false,
-                lock_id: lock_id.to_string(),
-                jump_txid: None,
-                error: Some(format!("Invalid proof public key: {}", e)),
-            }));
-        }
-    };
-
-    if proof_wallet_id != *wallet_id {
-        return Ok(Some(ServerMessage::JumpRequested {
-            success: false,
-            lock_id: lock_id.to_string(),
-            jump_txid: None,
-            error: Some("Wallet proof does not match authenticated session".to_string()),
+            error: Some(e),
         }));
     }
 
@@ -572,50 +558,16 @@ async fn handle_prepare_payment(
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
-    // Validate proof structure
-    if let Err(e) = proof.validate_structure() {
+    // Comprehensive proof verification:
+    // - Structure and timestamp validation
+    // - Schnorr signature verification
+    // - Wallet ID derivation check (pubkey -> wallet ID)
+    // - Nonce replay protection
+    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
         return Ok(Some(ServerMessage::PaymentPrepared {
             success: false,
             payment: None,
-            error: Some(format!("Invalid proof structure: {}", e)),
-        }));
-    }
-
-    // Check timestamp
-    if !proof.is_timestamp_valid() {
-        return Ok(Some(ServerMessage::PaymentPrepared {
-            success: false,
-            payment: None,
-            error: Some("Proof timestamp expired or too far in future".to_string()),
-        }));
-    }
-
-    // Verify signature
-    if let Err(e) = verify_schnorr_proof(proof) {
-        return Ok(Some(ServerMessage::PaymentPrepared {
-            success: false,
-            payment: None,
-            error: Some(format!("Invalid wallet proof signature: {}", e)),
-        }));
-    }
-
-    // Verify proof matches authenticated wallet
-    let proof_wallet_id = match proof.wallet_id() {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(Some(ServerMessage::PaymentPrepared {
-                success: false,
-                payment: None,
-                error: Some(format!("Invalid proof public key: {}", e)),
-            }));
-        }
-    };
-
-    if proof_wallet_id != *wallet_id {
-        return Ok(Some(ServerMessage::PaymentPrepared {
-            success: false,
-            payment: None,
-            error: Some("Wallet proof does not match authenticated session".to_string()),
+            error: Some(e),
         }));
     }
 
@@ -834,55 +786,17 @@ async fn handle_cancel_payment(
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
-    // Validate proof structure
-    if let Err(e) = proof.validate_structure() {
+    // Comprehensive proof verification:
+    // - Structure and timestamp validation
+    // - Schnorr signature verification
+    // - Wallet ID derivation check (pubkey -> wallet ID)
+    // - Nonce replay protection
+    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
         return Ok(Some(ServerMessage::PaymentSubmitted {
             success: false,
             payment_id: payment_id.to_string(),
             txid: None,
-            error: Some(format!("Invalid proof structure: {}", e)),
-        }));
-    }
-
-    // Check timestamp
-    if !proof.is_timestamp_valid() {
-        return Ok(Some(ServerMessage::PaymentSubmitted {
-            success: false,
-            payment_id: payment_id.to_string(),
-            txid: None,
-            error: Some("Proof timestamp expired or too far in future".to_string()),
-        }));
-    }
-
-    // Verify signature
-    if let Err(e) = verify_schnorr_proof(proof) {
-        return Ok(Some(ServerMessage::PaymentSubmitted {
-            success: false,
-            payment_id: payment_id.to_string(),
-            txid: None,
-            error: Some(format!("Invalid wallet proof signature: {}", e)),
-        }));
-    }
-
-    // Verify proof matches authenticated wallet
-    let proof_wallet_id = match proof.wallet_id() {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(Some(ServerMessage::PaymentSubmitted {
-                success: false,
-                payment_id: payment_id.to_string(),
-                txid: None,
-                error: Some(format!("Invalid proof public key: {}", e)),
-            }));
-        }
-    };
-
-    if proof_wallet_id != *wallet_id {
-        return Ok(Some(ServerMessage::PaymentSubmitted {
-            success: false,
-            payment_id: payment_id.to_string(),
-            txid: None,
-            error: Some("Wallet proof does not match authenticated session".to_string()),
+            error: Some(e),
         }));
     }
 
@@ -988,49 +902,15 @@ async fn handle_confirm_ghost_lock_funding(
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
-    // Validate proof structure
-    if let Err(e) = proof.validate_structure() {
+    // Comprehensive proof verification:
+    // - Structure and timestamp validation
+    // - Schnorr signature verification
+    // - Wallet ID derivation check (pubkey -> wallet ID)
+    // - Nonce replay protection
+    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
         return Ok(Some(ServerMessage::Error {
-            code: "INVALID_PROOF".to_string(),
-            message: format!("Invalid proof structure: {}", e),
-            request_id: None,
-        }));
-    }
-
-    // Check timestamp
-    if !proof.is_timestamp_valid() {
-        return Ok(Some(ServerMessage::Error {
-            code: "EXPIRED_PROOF".to_string(),
-            message: "Proof timestamp expired or too far in future".to_string(),
-            request_id: None,
-        }));
-    }
-
-    // Verify signature
-    if let Err(e) = verify_schnorr_proof(proof) {
-        return Ok(Some(ServerMessage::Error {
-            code: "INVALID_SIGNATURE".to_string(),
-            message: format!("Invalid wallet proof signature: {}", e),
-            request_id: None,
-        }));
-    }
-
-    // Verify proof matches authenticated wallet
-    let proof_wallet_id = match proof.wallet_id() {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(Some(ServerMessage::Error {
-                code: "INVALID_PUBLIC_KEY".to_string(),
-                message: format!("Invalid proof public key: {}", e),
-                request_id: None,
-            }));
-        }
-    };
-
-    if proof_wallet_id != *wallet_id {
-        return Ok(Some(ServerMessage::Error {
-            code: "WALLET_MISMATCH".to_string(),
-            message: "Wallet proof does not match authenticated session".to_string(),
+            code: "PROOF_VERIFICATION_FAILED".to_string(),
+            message: e,
             request_id: None,
         }));
     }
@@ -1225,47 +1105,15 @@ async fn handle_accept_instant_payment(
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
-    // Validate proof
-    if let Err(e) = proof.validate_structure() {
+    // Comprehensive proof verification:
+    // - Structure and timestamp validation
+    // - Schnorr signature verification
+    // - Wallet ID derivation check (pubkey -> wallet ID)
+    // - Nonce replay protection
+    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
         return Ok(Some(ServerMessage::Error {
-            code: "INVALID_PROOF".to_string(),
-            message: format!("Invalid proof structure: {}", e),
-            request_id: None,
-        }));
-    }
-
-    if !proof.is_timestamp_valid() {
-        return Ok(Some(ServerMessage::Error {
-            code: "EXPIRED_PROOF".to_string(),
-            message: "Proof timestamp expired or too far in future".to_string(),
-            request_id: None,
-        }));
-    }
-
-    if let Err(e) = verify_schnorr_proof(proof) {
-        return Ok(Some(ServerMessage::Error {
-            code: "INVALID_SIGNATURE".to_string(),
-            message: format!("Invalid wallet proof signature: {}", e),
-            request_id: None,
-        }));
-    }
-
-    // Verify proof matches authenticated wallet
-    let proof_wallet_id = match proof.wallet_id() {
-        Ok(id) => id,
-        Err(e) => {
-            return Ok(Some(ServerMessage::Error {
-                code: "INVALID_PUBLIC_KEY".to_string(),
-                message: format!("Invalid proof public key: {}", e),
-                request_id: None,
-            }));
-        }
-    };
-
-    if proof_wallet_id != *wallet_id {
-        return Ok(Some(ServerMessage::Error {
-            code: "WALLET_MISMATCH".to_string(),
-            message: "Wallet proof does not match authenticated session".to_string(),
+            code: "PROOF_VERIFICATION_FAILED".to_string(),
+            message: e,
             request_id: None,
         }));
     }

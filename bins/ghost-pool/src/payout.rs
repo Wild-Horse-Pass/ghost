@@ -314,6 +314,17 @@ impl PayoutProposalCreator {
             }
         }
 
+        // H-MINE-3: Use treasury address snapshot from BlockFoundData
+        // This ensures the coinbase is built with the address that was valid
+        // at the time the round started, not a potentially changed address
+        let treasury_address = data.treasury_address_snapshot
+            .clone()
+            .unwrap_or_else(|| {
+                // Fallback to current config if no snapshot (shouldn't happen)
+                warn!("No treasury address snapshot - using current config (potential TOCTOU)");
+                self.config.treasury_address.clone().unwrap_or_default()
+            });
+
         let proposal = PayoutProposal {
             proposal_hash: [0u8; 32], // Will be computed by vote handler
             round_id: data.round_id,
@@ -323,6 +334,7 @@ impl PayoutProposalCreator {
             miner_payouts,
             node_payouts,
             treasury_amount: final_treasury,
+            treasury_address, // H-MINE-3: Snapshot address
             tx_fees: data.tx_fees_sats,
             subsidy: data.subsidy_sats,
             timestamp: now,
@@ -414,6 +426,14 @@ impl PayoutProposalCreator {
             final_treasury = final_treasury.saturating_add(fee_dist.node_reward_pool);
         }
 
+        // H-MINE-3: Use treasury address snapshot from SoloBlockFoundData
+        let treasury_address = data.treasury_address_snapshot
+            .clone()
+            .unwrap_or_else(|| {
+                warn!("No treasury address snapshot in solo mode - using current config");
+                self.config.treasury_address.clone().unwrap_or_default()
+            });
+
         let proposal = PayoutProposal {
             proposal_hash: [0u8; 32], // Will be computed by vote handler
             round_id: data.round_id,
@@ -423,6 +443,7 @@ impl PayoutProposalCreator {
             miner_payouts,
             node_payouts,
             treasury_amount: final_treasury,
+            treasury_address, // H-MINE-3: Snapshot address
             tx_fees: data.tx_fees_sats,
             subsidy: data.subsidy_sats,
             timestamp: now,
@@ -742,38 +763,43 @@ pub struct PayoutHandler {
     creator: PayoutProposalCreator,
     vote_handler: Arc<VoteHandler>,
     template_processor: Arc<TemplateProcessor>,
-    /// Qualification provider for calculating VERIFIED capabilities
-    qualification_provider: Option<Arc<QualifiedCapabilityProvider>>,
+    /// H-MINE-1: Qualification provider for calculating VERIFIED capabilities - REQUIRED
+    /// This is mandatory because node rewards must only be distributed based on
+    /// verified capabilities, never unverified claimed ones.
+    qualification_provider: Arc<QualifiedCapabilityProvider>,
 }
 
 impl PayoutHandler {
-    /// Create a new PayoutHandler
+    /// Create a new PayoutHandler with REQUIRED QualifiedCapabilityProvider
+    ///
+    /// H-MINE-1 SECURITY: The qualification_provider is required, not optional.
+    /// This ensures node rewards are NEVER distributed based on unverified
+    /// claimed capabilities. The provider validates capabilities through the
+    /// challenge-response system before they count toward payout shares.
     ///
     /// # Errors
-    /// Returns error if treasury_address is not configured in PayoutConfig
+    /// Returns error if:
+    /// - treasury_address is not configured in PayoutConfig
     pub fn new(
         identity: Arc<NodeIdentity>,
         config: PayoutConfig,
         db: Arc<Database>,
         vote_handler: Arc<VoteHandler>,
         template_processor: Arc<TemplateProcessor>,
+        qualification_provider: Arc<QualifiedCapabilityProvider>,
     ) -> GhostResult<Self> {
         let creator = PayoutProposalCreator::new(identity, config, db)?;
+
+        info!(
+            "PayoutHandler initialized with required verification provider"
+        );
+
         Ok(Self {
             creator,
             vote_handler,
             template_processor,
-            qualification_provider: None,
+            qualification_provider,
         })
-    }
-
-    /// Add a qualified capability provider for using VERIFIED capabilities
-    pub fn with_qualification_provider(
-        mut self,
-        provider: Arc<QualifiedCapabilityProvider>,
-    ) -> Self {
-        self.qualification_provider = Some(provider);
-        self
     }
 
     /// PO4-M2: Get a snapshot of the treasury address
@@ -786,22 +812,16 @@ impl PayoutHandler {
 
     /// Handle a block found event by creating and submitting a payout proposal
     ///
-    /// SECURITY: This method REQUIRES a QualifiedCapabilityProvider to be configured.
+    /// H-MINE-1 SECURITY: The QualifiedCapabilityProvider is REQUIRED in the constructor.
     /// Node rewards will only be distributed to nodes with VERIFIED capabilities,
     /// never to nodes with merely CLAIMED capabilities.
     pub fn handle_block_found(&self, mut data: BlockFoundData) -> GhostResult<[u8; 32]> {
-        // SECURITY: Require verification provider - never distribute node rewards
-        // based on unverified claimed capabilities
-        let provider = self.qualification_provider
-            .as_ref()
-            .ok_or_else(|| {
-                warn!("No verification provider configured - node rewards cannot be distributed");
-                ghost_common::error::GhostError::NoVerificationProvider
-            })?;
+        // H-MINE-1: Provider is now required at construction time, no Option check needed
+        // This guarantees node rewards are always based on verified capabilities
 
         // Get all nodes with verified capabilities from the database
         // This ensures all verified nodes get payouts, not just ones that received shares directly
-        let qualified_shares = provider.get_all_qualified_nodes();
+        let qualified_shares = self.qualification_provider.get_all_qualified_nodes();
 
         let claimed_count = data.node_shares.len();
         let verified_count = qualified_shares.len();
@@ -876,22 +896,16 @@ impl PayoutHandler {
     /// - 99% of subsidy + ALL TX fees → solo_payout_address
     /// - 1% pool fee → treasury + node pool per decay schedule
     ///
-    /// SECURITY: This method REQUIRES a QualifiedCapabilityProvider to be configured,
+    /// H-MINE-1 SECURITY: The QualifiedCapabilityProvider is REQUIRED in the constructor,
     /// even in solo mode. Node rewards will only be distributed to nodes with VERIFIED
     /// capabilities, never to nodes with merely CLAIMED capabilities.
     pub fn handle_solo_block_found(&self, mut data: SoloBlockFoundData) -> GhostResult<[u8; 32]> {
-        // SECURITY: Require verification provider even in solo mode
-        // Node rewards must only go to VERIFIED nodes, not claimed ones
-        let provider = self.qualification_provider
-            .as_ref()
-            .ok_or_else(|| {
-                warn!("No verification provider configured - node rewards cannot be distributed");
-                ghost_common::error::GhostError::NoVerificationProvider
-            })?;
+        // H-MINE-1: Provider is now required at construction time, no Option check needed
+        // This guarantees node rewards are always based on verified capabilities
 
         // Replace claimed node shares with verified ones
         // This ensures consistency between pool and solo mode
-        let qualified_shares = provider.get_all_qualified_nodes();
+        let qualified_shares = self.qualification_provider.get_all_qualified_nodes();
 
         let claimed_count = data.node_shares.len();
         let verified_count = qualified_shares.len();
@@ -1325,6 +1339,7 @@ mod tests {
                 payout_type: PayoutType::TxFees,
             }],
             treasury_amount: 0,
+            treasury_address: Vec::new(), // H-MINE-3: no treasury in this test
             tx_fees: 10_000_000,
             subsidy: 312_500_000,
             timestamp: 1700000000,
@@ -1342,6 +1357,7 @@ mod tests {
             miner_payouts: vec![],
             node_payouts: vec![], // No TxFees entry because block finder has no address
             treasury_amount: 0,
+            treasury_address: Vec::new(), // H-MINE-3: no treasury in this test
             tx_fees: 10_000_000,
             subsidy: 312_500_000,
             timestamp: 1700000000,

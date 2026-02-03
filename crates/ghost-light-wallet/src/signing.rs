@@ -23,7 +23,9 @@
 //! Local signing utilities for Light Wallet
 //!
 //! All signing operations happen locally - keys never leave the device.
+//! Uses BIP-340 Schnorr signatures for all signing operations.
 
+use secp256k1::{Keypair, Message, Secp256k1, XOnlyPublicKey};
 use sha2::{Digest, Sha256};
 use tracing::debug;
 
@@ -86,15 +88,40 @@ pub fn sign_data(master_key: &MasterKey, data: &[u8]) -> WalletResult<[u8; 64]> 
     sign_schnorr(master_key, &hash)
 }
 
-/// Verify a signature (for testing)
+/// Verify a BIP-340 Schnorr signature
+///
+/// Uses the secp256k1 library for proper cryptographic verification.
+/// This function applies tagged hashing to the message before verification.
 pub fn verify_signature(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
-    // In production, this would use proper secp256k1 verification
-    // For now, we just verify the signature format is valid
-    let _ = public_key;
-    let _ = message;
+    // Create tagged hash of the message (same as signing uses GHOST_TAG)
+    let message_hash = tagged_hash(GHOST_TAG, message);
+    verify_signature_raw(public_key, &message_hash, signature)
+}
 
-    // Check signature is not all zeros (basic sanity check)
-    signature.iter().any(|&b| b != 0)
+/// Verify a BIP-340 Schnorr signature with a pre-hashed message
+///
+/// Uses the secp256k1 library for proper cryptographic verification.
+/// This function expects the message to already be a 32-byte hash.
+pub fn verify_signature_raw(public_key: &[u8; 32], message_hash: &[u8; 32], signature: &[u8; 64]) -> bool {
+    let secp = Secp256k1::verification_only();
+
+    // Parse the x-only public key
+    let xonly_pubkey = match XOnlyPublicKey::from_slice(public_key) {
+        Ok(pk) => pk,
+        Err(_) => return false,
+    };
+
+    // Parse the signature
+    let schnorr_sig = match secp256k1::schnorr::Signature::from_slice(signature) {
+        Ok(sig) => sig,
+        Err(_) => return false,
+    };
+
+    // Create message from the hash
+    let msg = Message::from_digest(*message_hash);
+
+    // Verify the signature
+    secp.verify_schnorr(&schnorr_sig, &msg, &xonly_pubkey).is_ok()
 }
 
 /// Create a tagged hash (BIP-340 style)
@@ -113,34 +140,27 @@ fn tagged_hash(tag: &[u8], data: &[u8]) -> [u8; 32] {
     output
 }
 
-/// Sign with Schnorr (simplified implementation)
+/// Sign with BIP-340 Schnorr signature
 ///
-/// In production, this would use proper secp256k1 Schnorr signatures.
-/// This is a placeholder that demonstrates the interface.
+/// Uses the secp256k1 library for proper cryptographic signing.
+/// The signature is created using the auth secret key from the master key.
 fn sign_schnorr(master_key: &MasterKey, message_hash: &[u8; 32]) -> WalletResult<[u8; 64]> {
-    // Get auth key for signing
-    let auth_key = master_key.auth_pubkey();
+    let secp = Secp256k1::new();
 
-    // In production: use secp256k1 Schnorr signing
-    // For now: create a deterministic "signature" for testing
-    let mut signature = [0u8; 64];
+    // Get the auth secret key for signing
+    let auth_secret = master_key.auth_secret();
 
-    // First 32 bytes: hash of (key || message)
-    let mut hasher = Sha256::new();
-    hasher.update(auth_key);
-    hasher.update(message_hash);
-    let r = hasher.finalize();
-    signature[..32].copy_from_slice(&r);
+    // Create a keypair from the secret key (required for Schnorr signing)
+    let keypair = Keypair::from_secret_key(&secp, auth_secret);
 
-    // Second 32 bytes: hash of (r || key || message)
-    let mut hasher = Sha256::new();
-    hasher.update(r);
-    hasher.update(auth_key);
-    hasher.update(message_hash);
-    let s = hasher.finalize();
-    signature[32..].copy_from_slice(&s);
+    // Create the message from the hash
+    let message = Message::from_digest(*message_hash);
 
-    Ok(signature)
+    // Sign with BIP-340 Schnorr using a secure RNG
+    let mut rng = rand::thread_rng();
+    let signature = secp.sign_schnorr_with_rng(&message, &keypair, &mut rng);
+
+    Ok(signature.serialize())
 }
 
 /// Generate a random challenge for signatures
@@ -173,15 +193,22 @@ mod tests {
         let key = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
         let tx_data = b"test transaction data";
 
-        let sig1 = sign_transaction(&key, tx_data).unwrap();
-        let sig2 = sign_transaction(&key, tx_data).unwrap();
+        // Sign the transaction
+        let sig = sign_transaction(&key, tx_data).unwrap();
 
-        // Signatures should be deterministic for same input
-        assert_eq!(sig1, sig2);
+        // Verify the signature is not empty (64 bytes)
+        assert_eq!(sig.len(), 64);
+        assert!(sig.iter().any(|&b| b != 0), "Signature should not be all zeros");
+
+        // Verify the signature using the verify function
+        // Note: sign_transaction uses b"Ghost/TxSign/v1" tag internally
+        let tx_hash = tagged_hash(b"Ghost/TxSign/v1", tx_data);
+        let verify_result = verify_signature_raw(key.auth_pubkey(), &tx_hash, &sig);
+        assert!(verify_result, "Signature should verify against the auth public key");
 
         // Different data should produce different signature
-        let sig3 = sign_transaction(&key, b"different data").unwrap();
-        assert_ne!(sig1, sig3);
+        let sig2 = sign_transaction(&key, b"different data").unwrap();
+        assert_ne!(sig, sig2);
     }
 
     #[test]

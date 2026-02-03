@@ -48,5 +48,8 @@ bitcoin = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
+# Constant-time operations for side-channel resistance
+subtle = "2"
+
 [dev-dependencies]
 rand = "0.8"

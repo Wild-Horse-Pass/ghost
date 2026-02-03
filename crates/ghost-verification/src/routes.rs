@@ -41,11 +41,25 @@ use crate::challenge::*;
 use crate::server::{ShareBatch, ShareNotification, VerificationState};
 use crate::websocket::{ws_handler, WsAuthQuery};
 
+/// M-STOR-3: Check if a path is in the allowed list
+fn is_safe_proc_path(path: &str, allowed: &[String]) -> bool {
+    allowed.iter().any(|a| a == path)
+}
+
+/// M-STOR-3: Safely read a /proc file if it's in the allowed list
+fn safe_read_proc_file(path: &str, allowed: &[String]) -> Option<String> {
+    if is_safe_proc_path(path, allowed) {
+        std::fs::read_to_string(path).ok()
+    } else {
+        None
+    }
+}
+
 /// Get system resource usage (CPU %, Memory %, Disk %)
-fn get_system_resources() -> (f64, f64, f64) {
-    // Read memory info from /proc/meminfo
-    let memory_percent = std::fs::read_to_string("/proc/meminfo")
-        .ok()
+/// M-STOR-3: Takes allowed proc paths to validate before reading
+fn get_system_resources(proc_paths_allowed: &[String]) -> (f64, f64, f64) {
+    // Read memory info from /proc/meminfo (only if allowed)
+    let memory_percent = safe_read_proc_file("/proc/meminfo", proc_paths_allowed)
         .and_then(|content| {
             let mut total: u64 = 0;
             let mut available: u64 = 0;
@@ -96,13 +110,12 @@ fn get_system_resources() -> (f64, f64, f64) {
     };
 
     // CPU usage requires sampling over time, return a simple load average estimate
-    let cpu_percent = std::fs::read_to_string("/proc/loadavg")
-        .ok()
+    // M-STOR-3: Only read if paths are allowed
+    let cpu_percent = safe_read_proc_file("/proc/loadavg", proc_paths_allowed)
         .and_then(|content| {
             let load_1min: f64 = content.split_whitespace().next()?.parse().ok()?;
-            // Get number of CPUs
-            let num_cpus = std::fs::read_to_string("/proc/cpuinfo")
-                .ok()
+            // Get number of CPUs (only if /proc/cpuinfo is allowed)
+            let num_cpus = safe_read_proc_file("/proc/cpuinfo", proc_paths_allowed)
                 .map(|c| c.matches("processor").count())
                 .unwrap_or(1) as f64;
             // Convert load average to percentage (capped at 100%)
@@ -1260,8 +1273,14 @@ async fn api_config_handler(State(state): State<Arc<VerificationState>>) -> impl
 async fn api_resources_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
+    // M-STOR-3: Get allowed proc paths from config
+    let proc_paths_allowed = {
+        let config = state.dashboard_config.read();
+        config.proc_paths_allowed.clone()
+    };
+
     // Get actual system resource usage
-    let (cpu_percent, memory_percent, disk_percent) = get_system_resources();
+    let (cpu_percent, memory_percent, disk_percent) = get_system_resources(&proc_paths_allowed);
 
     Json(serde_json::json!({
         "cpu_percent": cpu_percent,
@@ -1500,6 +1519,18 @@ async fn api_rewards_history_handler(
 
 /// API v1 Logs handler
 async fn api_logs_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
+    // M-STOR-2: Check if debug endpoints are enabled
+    {
+        let config = state.dashboard_config.read();
+        if !config.enable_debug_endpoints {
+            return Json(serde_json::json!({
+                "error": "Debug endpoints disabled",
+                "entries": [],
+                "total": 0
+            }));
+        }
+    }
+
     // Try to read recent log entries from journalctl
     let entries = match tokio::process::Command::new("journalctl")
         .args(["-u", "ghost-pool", "-n", "100", "--no-pager", "-o", "json"])
@@ -1997,10 +2028,14 @@ async fn api_payments_handler(State(state): State<Arc<VerificationState>>) -> im
 
 /// API v1 Backup history handler
 async fn api_backup_history_handler(
-    State(_state): State<Arc<VerificationState>>,
+    State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
-    // Look for backup files in the data directory
-    let backup_dir = std::path::Path::new("/home/ghost/.ghost/backups");
+    // M-STOR-3: Get backup directory from config instead of hardcoded path
+    let backup_dir_path = {
+        let config = state.dashboard_config.read();
+        config.backup_dir.clone()
+    };
+    let backup_dir = std::path::Path::new(&backup_dir_path);
     let backups = if backup_dir.exists() {
         match std::fs::read_dir(backup_dir) {
             Ok(entries) => entries

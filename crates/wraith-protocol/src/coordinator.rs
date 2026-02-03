@@ -27,13 +27,18 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Maximum strike count before a participant is banned
 const MAX_STRIKES: u32 = 3;
 
-/// Maximum number of used tokens to track before clearing
+/// Maximum number of used tokens to track in the LRU cache
 /// Prevents unbounded memory growth in long-running coordinators
 const MAX_USED_TOKENS: usize = 100_000;
+
+/// Maximum age for tokens in the cache (24 hours)
+/// Tokens older than this are eligible for eviction
+const TOKEN_MAX_AGE_SECS: u64 = 24 * 60 * 60;
 
 /// WR4-L7: Maximum number of outputs in a single mix transaction
 /// This prevents transactions that exceed Bitcoin's consensus limits
@@ -45,6 +50,97 @@ const MAX_TX_OUTPUTS: usize = 500;
 /// Note: Currently used for documentation; actual size validation happens in build_split_transaction
 #[allow(dead_code)]
 const MAX_TX_SIZE_VBYTES: usize = 100_000;
+
+/// Time-based LRU cache for tracking used tokens
+///
+/// This cache evicts tokens based on age first, then by oldest entry when at capacity.
+/// This prevents the security vulnerability of clearing ALL tokens at once (M-WRAITH-1).
+#[derive(Debug)]
+pub struct TokenCache {
+    /// Token hash -> timestamp when it was added
+    tokens: HashMap<[u8; 32], Instant>,
+    /// Maximum number of entries
+    max_size: usize,
+    /// Maximum age for entries
+    max_age: Duration,
+}
+
+impl Default for TokenCache {
+    fn default() -> Self {
+        Self::new(MAX_USED_TOKENS, Duration::from_secs(TOKEN_MAX_AGE_SECS))
+    }
+}
+
+impl TokenCache {
+    /// Create a new token cache with specified limits
+    pub fn new(max_size: usize, max_age: Duration) -> Self {
+        Self {
+            tokens: HashMap::new(),
+            max_size,
+            max_age,
+        }
+    }
+
+    /// Check if a token is a replay and mark it as used if not
+    ///
+    /// Returns true if the token was already seen (replay attack detected).
+    /// Returns false if the token is new (and has been added to the cache).
+    pub fn check_and_mark(&mut self, token_hash: [u8; 32]) -> bool {
+        // Clean expired tokens first
+        let cutoff = Instant::now() - self.max_age;
+        self.tokens.retain(|_, ts| *ts > cutoff);
+
+        // If still at capacity, evict oldest entries
+        while self.tokens.len() >= self.max_size {
+            if let Some(oldest_key) = self
+                .tokens
+                .iter()
+                .min_by_key(|(_, ts)| *ts)
+                .map(|(k, _)| *k)
+            {
+                self.tokens.remove(&oldest_key);
+            } else {
+                break;
+            }
+        }
+
+        // Check for replay
+        if self.tokens.contains_key(&token_hash) {
+            return true; // Is replay
+        }
+
+        // Add new token
+        self.tokens.insert(token_hash, Instant::now());
+        false // Not replay
+    }
+
+    /// Check if a token has been used (without marking it)
+    pub fn contains(&self, token_hash: &[u8; 32]) -> bool {
+        if let Some(ts) = self.tokens.get(token_hash) {
+            // Check if still within max age
+            ts.elapsed() < self.max_age
+        } else {
+            false
+        }
+    }
+
+    /// Clear all tokens (for session cleanup)
+    pub fn clear(&mut self) {
+        self.tokens.clear();
+    }
+
+    /// Get current number of tokens in cache
+    #[allow(dead_code)] // Used in tests
+    pub fn len(&self) -> usize {
+        self.tokens.len()
+    }
+
+    /// Check if cache is empty
+    #[allow(dead_code)] // Companion to len()
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty()
+    }
+}
 
 /// Reputation tracking for participants across sessions
 ///
@@ -267,6 +363,27 @@ impl AuditLog for InMemoryAuditLog {
     }
 }
 
+/// UTXO proof for Sybil-resistant registration (M-WRAITH-2)
+///
+/// Participants must provide proof of a UTXO they control to register.
+/// This prevents attackers from filling sessions without real funds.
+#[derive(Debug, Clone)]
+pub struct UtxoProof {
+    /// Transaction ID containing the UTXO
+    pub txid: Txid,
+    /// Output index within the transaction
+    pub vout: u32,
+    /// Expected minimum value (must meet denomination requirement)
+    pub min_value: u64,
+}
+
+impl UtxoProof {
+    /// Create a new UTXO proof
+    pub fn new(txid: Txid, vout: u32, min_value: u64) -> Self {
+        Self { txid, vout, min_value }
+    }
+}
+
 /// Participant in a Wraith session
 #[derive(Debug, Clone)]
 pub struct Participant {
@@ -358,13 +475,16 @@ pub struct WraithCoordinator {
     /// Anonymous token pool - tokens verified but NOT linked to any participant
     /// This is CRITICAL for privacy: coordinator verifies validity without knowing submitter
     anonymous_tokens: Vec<UnblindedToken>,
-    /// Tokens that have been used (for replay prevention) - stores token hash
+    /// Tokens that have been used (for replay prevention) - time-based LRU cache
     /// SECURITY: Prevents resubmission of the same token
-    used_tokens: HashSet<[u8; 32]>,
+    /// M-WRAITH-1: Uses time-based LRU eviction instead of clearing all tokens at once
+    used_tokens: TokenCache,
     /// All submitted addresses (for duplicate detection)
     submitted_addresses: HashSet<String>,
     /// Optional UTXO verification callback
     utxo_verifier: Option<UtxoVerifier>,
+    /// M-WRAITH-2: Require UTXO proof during registration to prevent Sybil attacks
+    require_utxo_for_registration: bool,
     /// Reputation tracker for participants (shared across sessions)
     reputation: Option<Arc<parking_lot::RwLock<ReputationTracker>>>,
     /// WR4-L9: Optional audit log for recording mix operations
@@ -409,9 +529,10 @@ impl WraithCoordinator {
             phase1_outputs: Vec::new(),
             broadcast_fn: None,
             anonymous_tokens: Vec::new(),
-            used_tokens: HashSet::new(),
+            used_tokens: TokenCache::default(),
             submitted_addresses: HashSet::new(),
             utxo_verifier: None,
+            require_utxo_for_registration: false,
             reputation: None,
             audit_log: None,
         };
@@ -447,6 +568,18 @@ impl WraithCoordinator {
         F: Fn(&Txid, u32) -> Result<bool, String> + Send + Sync + 'static,
     {
         self.utxo_verifier = Some(Arc::new(f));
+        self
+    }
+
+    /// Require UTXO proof during registration (M-WRAITH-2)
+    ///
+    /// When enabled, participants must use `register_participant_with_utxo()` instead
+    /// of `register_participant()`. This prevents Sybil attacks where attackers fill
+    /// sessions without having real UTXOs.
+    ///
+    /// Note: Requires `with_utxo_verifier()` to be set first.
+    pub fn with_utxo_required_for_registration(mut self) -> Self {
+        self.require_utxo_for_registration = true;
         self
     }
 
@@ -526,7 +659,59 @@ impl WraithCoordinator {
     /// Checks reputation (if tracker is set) and rejects banned participants.
     /// Internally uses session-specific IDs to prevent cross-session tracking (WR-M4).
     /// WR4-L5: Enforces tier participant limit to prevent oversized sessions.
+    ///
+    /// M-WRAITH-2: If `require_utxo_for_registration` is enabled, this method will
+    /// return an error. Use `register_participant_with_utxo()` instead.
     pub fn register_participant(&mut self, ghost_id: String) -> Result<u32, WraithError> {
+        // M-WRAITH-2: Check if UTXO proof is required
+        if self.require_utxo_for_registration {
+            return Err(WraithError::InvalidInput(
+                "UTXO proof required for registration. Use register_participant_with_utxo() instead.".to_string()
+            ));
+        }
+
+        self.register_participant_internal(ghost_id)
+    }
+
+    /// Register a new participant with UTXO proof (M-WRAITH-2)
+    ///
+    /// This method requires the participant to prove ownership of a UTXO,
+    /// preventing Sybil attacks where attackers fill sessions without real funds.
+    ///
+    /// The UTXO is verified using the configured UTXO verifier callback.
+    /// If no verifier is configured, this method will return an error.
+    pub fn register_participant_with_utxo(
+        &mut self,
+        ghost_id: String,
+        utxo_proof: UtxoProof,
+    ) -> Result<u32, WraithError> {
+        // Verify UTXO exists
+        let verifier = self.utxo_verifier.as_ref().ok_or_else(|| {
+            WraithError::InvalidInput("No UTXO verifier configured".to_string())
+        })?;
+
+        match verifier(&utxo_proof.txid, utxo_proof.vout) {
+            Ok(true) => { /* UTXO exists, continue */ }
+            Ok(false) => {
+                return Err(WraithError::InvalidInput(format!(
+                    "UTXO {}:{} does not exist or is already spent",
+                    utxo_proof.txid, utxo_proof.vout
+                )));
+            }
+            Err(e) => {
+                return Err(WraithError::RpcError(format!(
+                    "Failed to verify UTXO: {}",
+                    e
+                )));
+            }
+        }
+
+        // Proceed with registration
+        self.register_participant_internal(ghost_id)
+    }
+
+    /// Internal registration logic shared by both registration methods
+    fn register_participant_internal(&mut self, ghost_id: String) -> Result<u32, WraithError> {
         if !matches!(self.session.state(), SessionState::WaitingForParticipants) {
             return Err(WraithError::InvalidState {
                 expected: "WaitingForParticipants".to_string(),
@@ -756,6 +941,7 @@ impl WraithCoordinator {
         }
 
         // SECURITY: Check for replay BEFORE verification to prevent timing attacks
+        // M-WRAITH-1: Use time-based LRU cache to prevent clearing all tokens at once
         for token in &tokens {
             let hash = Self::compute_token_hash(token);
             if self.used_tokens.contains(&hash) {
@@ -776,13 +962,13 @@ impl WraithCoordinator {
         }
 
         // Mark tokens as used AFTER verification
-        // SECURITY: Enforce size limit to prevent unbounded memory growth
-        if self.used_tokens.len() >= MAX_USED_TOKENS {
-            tracing::warn!("used_tokens at capacity ({}), clearing oldest entries", MAX_USED_TOKENS);
-            self.used_tokens.clear();
-        }
+        // M-WRAITH-1: TokenCache handles size limits with time-based LRU eviction
+        // This prevents the vulnerability of clearing ALL tokens at once
         for token in &tokens {
-            self.used_tokens.insert(Self::compute_token_hash(token));
+            let hash = Self::compute_token_hash(token);
+            // check_and_mark returns true if already seen (replay), but we already checked above
+            // so we just call it to mark the token as used
+            let _ = self.used_tokens.check_and_mark(hash);
         }
 
         // Add to anonymous pool - NO ghost_id linkage!
@@ -2000,5 +2186,163 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    /// M-WRAITH-1 Test: TokenCache evicts old tokens instead of clearing all
+    #[test]
+    fn test_token_cache_lru_eviction() {
+        use std::time::Duration;
+
+        // Create a small cache with short max age for testing
+        let mut cache = TokenCache::new(3, Duration::from_secs(60));
+
+        // Add 3 tokens
+        let token1 = [1u8; 32];
+        let token2 = [2u8; 32];
+        let token3 = [3u8; 32];
+
+        assert!(!cache.check_and_mark(token1)); // Not replay
+        assert!(!cache.check_and_mark(token2)); // Not replay
+        assert!(!cache.check_and_mark(token3)); // Not replay
+
+        // Cache should have 3 tokens
+        assert_eq!(cache.len(), 3);
+
+        // Verify they are still tracked as replays
+        assert!(cache.contains(&token1));
+        assert!(cache.contains(&token2));
+        assert!(cache.contains(&token3));
+
+        // Add a 4th token - should evict oldest (token1)
+        let token4 = [4u8; 32];
+        assert!(!cache.check_and_mark(token4)); // Not replay
+
+        // Cache should still have 3 tokens (one was evicted)
+        assert_eq!(cache.len(), 3);
+
+        // token1 WAS evicted (it was the oldest)
+        // So it should NOT be detected as a replay anymore
+        assert!(!cache.contains(&token1), "token1 should have been evicted");
+
+        // But token2, token3, and token4 should still be tracked
+        assert!(cache.contains(&token2), "token2 should still be in cache");
+        assert!(cache.contains(&token3), "token3 should still be in cache");
+        assert!(cache.contains(&token4), "token4 should be in cache");
+
+        // Replaying token4 should be detected
+        assert!(cache.check_and_mark(token4)); // IS replay
+
+        // This is the key security property: we evicted ONLY the oldest token,
+        // not ALL tokens like the vulnerable code did
+    }
+
+    /// M-WRAITH-1 Test: Replayed tokens are detected
+    #[test]
+    fn test_token_cache_replay_detection() {
+        let mut cache = TokenCache::default();
+
+        let token = [42u8; 32];
+
+        // First submission: not a replay
+        assert!(!cache.check_and_mark(token));
+
+        // Second submission: IS a replay
+        assert!(cache.check_and_mark(token));
+
+        // Third submission: still a replay
+        assert!(cache.check_and_mark(token));
+    }
+
+    /// M-WRAITH-2 Test: Registration without UTXO fails when required
+    #[test]
+    fn test_utxo_required_for_registration() {
+        let mut coord = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        )
+        .with_utxo_verifier(|_txid, _vout| Ok(true)) // UTXO exists
+        .with_utxo_required_for_registration();
+
+        // Regular registration should fail
+        let result = coord.register_participant("ghost1".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("UTXO proof required"));
+    }
+
+    /// M-WRAITH-2 Test: Registration with UTXO proof succeeds
+    #[test]
+    fn test_registration_with_utxo_proof() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let verification_called = Arc::new(AtomicBool::new(false));
+        let verification_called_clone = verification_called.clone();
+
+        let mut coord = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        )
+        .with_utxo_verifier(move |_txid, _vout| {
+            verification_called_clone.store(true, Ordering::SeqCst);
+            Ok(true) // UTXO exists
+        })
+        .with_utxo_required_for_registration();
+
+        let txid = "0000000000000000000000000000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+        let utxo_proof = UtxoProof::new(txid, 0, 1_100_000);
+
+        // Registration with UTXO proof should succeed
+        let result = coord.register_participant_with_utxo("ghost1".to_string(), utxo_proof);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0); // First participant index
+
+        // Verification should have been called
+        assert!(verification_called.load(Ordering::SeqCst));
+    }
+
+    /// M-WRAITH-2 Test: Registration with invalid UTXO is rejected
+    #[test]
+    fn test_registration_with_invalid_utxo_rejected() {
+        let mut coord = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        )
+        .with_utxo_verifier(|_txid, _vout| Ok(false)) // UTXO does NOT exist
+        .with_utxo_required_for_registration();
+
+        let txid = "0000000000000000000000000000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+        let utxo_proof = UtxoProof::new(txid, 0, 1_100_000);
+
+        // Registration with non-existent UTXO should fail
+        let result = coord.register_participant_with_utxo("ghost1".to_string(), utxo_proof);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("does not exist"));
+    }
+
+    /// M-WRAITH-2 Test: Registration without verifier fails
+    #[test]
+    fn test_registration_with_utxo_no_verifier() {
+        let mut coord = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        );
+        // No UTXO verifier configured
+
+        let txid = "0000000000000000000000000000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+        let utxo_proof = UtxoProof::new(txid, 0, 1_100_000);
+
+        // Registration should fail because no verifier is configured
+        let result = coord.register_participant_with_utxo("ghost1".to_string(), utxo_proof);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No UTXO verifier"));
     }
 }

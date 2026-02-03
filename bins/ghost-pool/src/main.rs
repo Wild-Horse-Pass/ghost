@@ -916,9 +916,11 @@ async fn main() -> Result<()> {
         treasury_address: Some(treasury_script),
     };
 
-    // Create qualified capability provider for using VERIFIED capabilities
+    // H-MINE-1: Create qualified capability provider - REQUIRED for PayoutHandler
+    // This ensures node rewards are only distributed based on VERIFIED capabilities
     let qualification_provider = Arc::new(QualifiedCapabilityProvider::new(Arc::clone(&db)));
 
+    // H-MINE-1: PayoutHandler now requires qualification_provider in constructor
     let payout_handler = Arc::new(
         PayoutHandler::new(
             Arc::clone(&identity),
@@ -926,8 +928,8 @@ async fn main() -> Result<()> {
             Arc::clone(&db),
             Arc::clone(&vote_handler),
             Arc::clone(&template_processor),
-        )?
-        .with_qualification_provider(Arc::clone(&qualification_provider)),
+            Arc::clone(&qualification_provider), // H-MINE-1: Required parameter
+        )?,
     );
 
     // Start verification HTTP server
@@ -1050,6 +1052,7 @@ async fn main() -> Result<()> {
             }],
             node_payouts: vec![],
             treasury_amount: 1_000_000, // 0.01 BTC
+            treasury_address: b"tb1qtreasury".to_vec(), // H-MINE-3: snapshot address (test)
             tx_fees: 500_000,
             subsidy: 312_500_000, // 3.125 BTC (signet subsidy)
             timestamp,
@@ -1359,6 +1362,26 @@ async fn main() -> Result<()> {
         }
     });
     info!("Ban manager cleanup task started (60s interval)");
+
+    // M-MINE-2: Start rate limit cleanup task for RoundManager
+    // Periodically cleans up old rate limit entries to prevent memory growth
+    let rm_for_cleanup = Arc::clone(&round_manager);
+    let mut rate_limit_cleanup_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    rm_for_cleanup.cleanup_rate_limits();
+                }
+                _ = rate_limit_cleanup_shutdown.recv() => {
+                    tracing::info!("Rate limit cleanup task shutting down");
+                    break;
+                }
+            }
+        }
+    });
+    info!("Rate limit cleanup task started (60s interval)");
 
     // Clone ws_state for event handlers before moving verification_state
     let _verification_state_for_ws = Arc::clone(&verification_state);
@@ -1670,6 +1693,7 @@ async fn main() -> Result<()> {
     // (subscription was created earlier before template processor started)
     // Note: Job notifications to miners now handled by SRI via TDP
     let rm_notify = Arc::clone(&round_manager);
+    let tp_for_template_events = Arc::clone(&template_processor);
 
     tokio::spawn(async move {
         while let Ok(event) = template_events_early.recv().await {
@@ -1677,6 +1701,19 @@ async fn main() -> Result<()> {
                 TemplateEvent::NewWork { job_id: _, height } => {
                     // Start new round (SRI gets jobs via TDP automatically)
                     rm_notify.start_round(height);
+
+                    // M-MINE-1: Update template ID for share validation
+                    // The template ID is the prev_block_hash which uniquely identifies the template
+                    if let Some(work_state) = tp_for_template_events.current_work() {
+                        // Parse prev_hash hex string to [u8; 32]
+                        if let Ok(prev_hash_bytes) = hex::decode(&work_state.prev_hash) {
+                            if prev_hash_bytes.len() == 32 {
+                                let mut template_id = [0u8; 32];
+                                template_id.copy_from_slice(&prev_hash_bytes);
+                                rm_notify.set_template_id(template_id);
+                            }
+                        }
+                    }
                 }
                 TemplateEvent::TransactionsFiltered {
                     original_count,

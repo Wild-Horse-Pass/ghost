@@ -44,8 +44,8 @@ wraith-protocol = { workspace = true }
 # Async runtime
 tokio = { workspace = true }
 
-# CLI
-clap = { workspace = true }
+# CLI (need env feature for GHOST_PAY_PASSWORD)
+clap = { version = "4.5", features = ["derive", "env"] }
 
 # Networking
 axum = { workspace = true }
@@ -72,3 +72,8 @@ hex = { workspace = true }
 chrono = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
+
+# Cryptography (H-PAY-2: encrypted key storage)
+aes-gcm = { workspace = true }
+scrypt = "0.11"
+getrandom = { workspace = true }

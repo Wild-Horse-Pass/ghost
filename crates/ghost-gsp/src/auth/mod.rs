@@ -26,6 +26,9 @@ mod proof;
 mod registry;
 mod session;
 
-pub use proof::verify_schnorr_proof;
+pub use proof::{
+    verify_proof_and_extract_wallet_id, verify_proof_with_wallet_id, verify_schnorr_proof,
+    verify_wallet_ownership,
+};
 pub use registry::WalletRegistry;
 pub use session::JwtManager;
