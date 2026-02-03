@@ -27,7 +27,7 @@
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use tokio::sync::broadcast;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use ghost_accounting::shares::{DifficultyCalculator, RoundShares};
 use ghost_common::config::MiningMode;
@@ -49,6 +49,12 @@ pub struct RoundConfig {
     /// Maximum percentage of total round work a single miner can accumulate (0.0 to 1.0)
     /// Default: 0.10 (10%) - prevents any single miner from dominating a round
     pub max_miner_share_percent: f64,
+    /// Maximum shares per miner per second (H6 rate limiting)
+    /// Default: 100 shares/sec - prevents spam attacks
+    pub max_shares_per_miner_per_sec: u32,
+    /// Maximum work value per share (H6 anomaly detection)
+    /// Shares with work > this * network_difficulty are suspicious
+    pub max_work_multiplier: f64,
 }
 
 impl Default for RoundConfig {
@@ -60,6 +66,8 @@ impl Default for RoundConfig {
             rounds_to_keep: 10,
             mining_mode: MiningMode::PublicPool,
             max_miner_share_percent: 0.10, // 10% cap per miner
+            max_shares_per_miner_per_sec: 100, // H6: Rate limit per miner
+            max_work_multiplier: 1.0, // H6: Work cannot exceed network difficulty
         }
     }
 }
@@ -90,6 +98,14 @@ pub enum RoundEvent {
         total_shares: u64,
         total_work: f64,
     },
+}
+
+/// Per-miner rate limit tracking for H6 security fix
+struct MinerRateLimitEntry {
+    /// Timestamp of last share (Unix seconds)
+    last_second: u64,
+    /// Number of shares in current second
+    count: u32,
 }
 
 /// Manages mining rounds and share accounting
@@ -123,6 +139,8 @@ pub struct RoundManager {
     /// Persisting to database would add latency to every share submission
     /// without meaningful security benefit given the round-scoped design.
     submitted_shares: RwLock<HashMap<RoundId, std::collections::HashSet<[u8; 32]>>>,
+    /// Per-miner rate limiting (H6 security fix)
+    miner_rate_limits: RwLock<HashMap<String, MinerRateLimitEntry>>,
 }
 
 impl RoundManager {
@@ -143,6 +161,7 @@ impl RoundManager {
             event_tx,
             our_node_id,
             submitted_shares: RwLock::new(HashMap::new()),
+            miner_rate_limits: RwLock::new(HashMap::new()),
         }
     }
 
@@ -329,7 +348,51 @@ impl RoundManager {
     }
 
     /// Handle a share proof from the P2P network
+    ///
+    /// Security fixes C4 and C5:
+    /// - C4: Cryptographic verification that share_hash meets claimed difficulty
+    /// - C5: Duplicate detection using submitted_shares HashMap
     pub fn handle_share_proof(&self, proof: ShareProof) -> Result<(), ShareError> {
+        let diff_calc = self.difficulty.read();
+
+        // C4: Cryptographic verification - verify the hash actually meets the claimed difficulty
+        if !diff_calc.verify_share_difficulty(&proof.share_hash, proof.difficulty) {
+            return Err(ShareError::InvalidShareHash);
+        }
+
+        // C4: Verify work consistency - calculated work should match claimed work
+        let calculated_work = diff_calc.calculate_work(proof.difficulty);
+        let tolerance = calculated_work * 0.01; // 1% tolerance for floating point
+        if (proof.work - calculated_work).abs() > tolerance {
+            tracing::warn!(
+                claimed_work = proof.work,
+                calculated_work = calculated_work,
+                "Share proof work mismatch"
+            );
+            return Err(ShareError::WorkValueTooHigh {
+                got: proof.work,
+                max: calculated_work,
+            });
+        }
+
+        // C4: Work upper bound - work cannot exceed network difficulty
+        if proof.work > diff_calc.network_difficulty {
+            return Err(ShareError::WorkValueTooHigh {
+                got: proof.work,
+                max: diff_calc.network_difficulty,
+            });
+        }
+
+        // C5: Duplicate detection using submitted_shares
+        {
+            let mut submitted = self.submitted_shares.write();
+            let round_shares = submitted.entry(proof.round_id).or_default();
+            if !round_shares.insert(proof.share_hash) {
+                return Err(ShareError::DuplicateShare);
+            }
+        }
+
+        // Now safe to credit work
         let mut rounds = self.rounds.write();
 
         // Find or create round
@@ -337,9 +400,9 @@ impl RoundManager {
             .entry(proof.round_id)
             .or_insert_with(|| RoundShares::new(proof.round_id, 0));
 
-        // Add miner work
+        // Add miner work using the CALCULATED work, not claimed work
         let miner_id = hex::encode(&proof.miner_id[..8]);
-        round.add_miner_work(&miner_id, proof.work);
+        round.add_miner_work(&miner_id, calculated_work);
 
         // Credit the node that received it
         round.increment_node_shares(&proof.received_by);
@@ -347,9 +410,9 @@ impl RoundManager {
         debug!(
             round_id = proof.round_id,
             miner = %miner_id,
-            work = proof.work,
+            work = calculated_work,
             from_node = ?hex::encode(&proof.received_by[..4]),
-            "Processed share proof"
+            "Processed share proof (verified)"
         );
 
         Ok(())
@@ -455,6 +518,8 @@ impl RoundManager {
 
     /// Record a share forwarded from SRI (already validated by SRI)
     /// Used when ghost-pool runs in TDP-only mode without direct stratum access
+    ///
+    /// H6 security fix: Adds rate limiting and anomaly detection
     pub fn record_share(
         &self,
         miner_id: &str,
@@ -464,6 +529,60 @@ impl RoundManager {
         let round_id = *self.current_round.read();
         if round_id == 0 {
             return Err(ShareError::NoActiveRound);
+        }
+
+        // H6: Rate limiting check
+        {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            let mut rate_limits = self.miner_rate_limits.write();
+            let entry = rate_limits
+                .entry(miner_id.to_string())
+                .or_insert(MinerRateLimitEntry {
+                    last_second: now_secs,
+                    count: 0,
+                });
+
+            if entry.last_second == now_secs {
+                entry.count += 1;
+                if entry.count > self.config.max_shares_per_miner_per_sec {
+                    warn!(
+                        miner_id,
+                        shares_this_second = entry.count,
+                        max = self.config.max_shares_per_miner_per_sec,
+                        "H6: Miner rate limited"
+                    );
+                    return Err(ShareError::RateLimited);
+                }
+            } else {
+                // New second, reset counter
+                entry.last_second = now_secs;
+                entry.count = 1;
+            }
+        }
+
+        // H6: Anomaly detection - work value sanity check
+        {
+            let diff_calc = self.difficulty.read();
+            let max_work = diff_calc.network_difficulty * self.config.max_work_multiplier;
+            if work > max_work {
+                warn!(
+                    miner_id,
+                    work,
+                    max_work,
+                    "H6: Anomalous work value detected - exceeds network difficulty"
+                );
+                return Err(ShareError::WorkValueTooHigh { got: work, max: max_work });
+            }
+
+            // Also check for negative or zero work
+            if work <= 0.0 {
+                warn!(miner_id, work, "H6: Invalid work value (non-positive)");
+                return Err(ShareError::InvalidWork);
+            }
         }
 
         let mut rounds = self.rounds.write();
@@ -496,6 +615,18 @@ impl RoundManager {
         });
 
         Ok(())
+    }
+
+    /// Clean up old rate limit entries (call periodically)
+    pub fn cleanup_rate_limits(&self) {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut rate_limits = self.miner_rate_limits.write();
+        // Remove entries older than 60 seconds
+        rate_limits.retain(|_, entry| now_secs - entry.last_second < 60);
     }
 
     /// Get a miner's share percentage in current round
@@ -593,6 +724,22 @@ pub enum ShareError {
 
     #[error("Work value too high: got {got}, maximum {max}")]
     WorkValueTooHigh { got: f64, max: f64 },
+
+    /// H6: Miner rate limited
+    #[error("Rate limited: too many shares per second")]
+    RateLimited,
+
+    /// H6: Invalid work value
+    #[error("Invalid work value")]
+    InvalidWork,
+
+    /// H6: Miner share cap exceeded (enforced rejection)
+    #[error("Miner share cap exceeded: {miner_id} has {current_percent:.1}% (max {max_percent:.1}%)")]
+    MinerShareCapExceeded {
+        miner_id: String,
+        current_percent: f64,
+        max_percent: f64,
+    },
 }
 
 /// Round statistics
@@ -727,5 +874,58 @@ mod tests {
         // The error type should be WorkValueTooHigh
         let error = ShareError::WorkValueTooHigh { got: claimed_work, max: max_work };
         assert!(error.to_string().contains("too high"));
+    }
+
+    #[test]
+    fn test_h8_work_cap_before_round_addition() {
+        // H8 SECURITY TEST: Verify work cap is applied BEFORE adding to round
+        // This prevents inflated work values from affecting payout calculations
+        let node_id = [1u8; 32];
+        let config = RoundConfig {
+            network_difficulty: 1_000_000.0,
+            max_work_multiplier: 1.0, // Work cannot exceed network difficulty
+            ..Default::default()
+        };
+        let manager = RoundManager::new(node_id, config);
+        manager.start_round(100);
+
+        // Try to record work that exceeds network difficulty
+        let excessive_work = 2_000_000.0; // 2x network difficulty
+        let result = manager.record_share("malicious_miner", excessive_work, node_id);
+
+        // Should be rejected with WorkValueTooHigh error
+        assert!(result.is_err());
+        match result {
+            Err(ShareError::WorkValueTooHigh { got, max }) => {
+                assert_eq!(got, excessive_work);
+                assert_eq!(max, 1_000_000.0);
+            }
+            _ => panic!("Expected WorkValueTooHigh error, got {:?}", result),
+        }
+
+        // Valid work should be accepted
+        let valid_work = 500_000.0;
+        let result = manager.record_share("honest_miner", valid_work, node_id);
+        assert!(result.is_ok());
+
+        // Verify the miner's work was recorded correctly
+        let percent = manager.miner_share_percent("honest_miner");
+        assert!((percent - 1.0).abs() < 0.01, "Honest miner should have 100% of work");
+    }
+
+    #[test]
+    fn test_h8_zero_and_negative_work_rejected() {
+        // H8 SECURITY TEST: Zero and negative work should be rejected
+        let node_id = [1u8; 32];
+        let manager = RoundManager::new(node_id, RoundConfig::default());
+        manager.start_round(100);
+
+        // Zero work should be rejected
+        let result = manager.record_share("miner1", 0.0, node_id);
+        assert!(matches!(result, Err(ShareError::InvalidWork)));
+
+        // Negative work should be rejected
+        let result = manager.record_share("miner2", -100.0, node_id);
+        assert!(matches!(result, Err(ShareError::InvalidWork)));
     }
 }

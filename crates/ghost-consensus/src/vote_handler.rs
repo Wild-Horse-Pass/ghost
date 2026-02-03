@@ -37,6 +37,7 @@ use ghost_common::error::GhostResult;
 use ghost_common::identity::NodeIdentity;
 use ghost_common::types::{ConsensusResult, NodeId, PayoutProposal, RoundId, VoteType};
 
+use crate::ban_manager::{BanManager, BanReason};
 use crate::mesh::MessageHandler;
 use crate::message::{MessageEnvelope, MessageType, PayoutProposalMessage, VoteMessage};
 use crate::voting::{compute_vote_signing_message, Vote, VoteResult, VotingManager, VotingSession};
@@ -231,6 +232,26 @@ impl RateLimiter {
     pub fn bucket_count(&self) -> usize {
         self.buckets.read().len()
     }
+
+    /// Persist rate limiter state to a file (C3 security fix)
+    ///
+    /// Call this periodically (e.g., every 60 seconds) to survive crashes.
+    pub fn persist_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let json = self.to_persisted();
+        std::fs::write(path, json)
+    }
+
+    /// Load rate limiter state from a file (C3 security fix)
+    ///
+    /// Call this at startup to restore state after crashes.
+    pub fn from_persisted_file(
+        max_tokens: u32,
+        refill_rate: u32,
+        path: &std::path::Path,
+    ) -> std::io::Result<Self> {
+        let json = std::fs::read_to_string(path)?;
+        Ok(Self::from_persisted(max_tokens, refill_rate, &json))
+    }
 }
 
 /// Default voting timeout (5 minutes)
@@ -308,7 +329,10 @@ pub struct VoteHandler {
     rate_limiter: RateLimiter,
     /// Configuration
     config: VoteHandlerConfig,
-    /// Temporarily banned nodes (equivocation) with expiration timestamp
+    /// Shared ban manager for cross-handler enforcement (C1 security fix)
+    /// If None, uses local ban tracking (legacy behavior for tests)
+    ban_manager: Option<Arc<BanManager>>,
+    /// Legacy: local banned nodes (only used if ban_manager is None)
     banned_nodes: RwLock<HashMap<NodeId, Instant>>,
     /// Ban duration for equivocating nodes
     ban_duration: std::time::Duration,
@@ -338,28 +362,54 @@ impl VoteHandler {
                 config.rate_limit_refill_rate,
             ),
             config,
+            ban_manager: None,
             banned_nodes: RwLock::new(HashMap::new()),
             ban_duration: std::time::Duration::from_secs(EQUIVOCATION_BAN_DURATION_SECS),
         }
     }
 
+    /// Set the shared ban manager for cross-handler enforcement (C1 security fix)
+    ///
+    /// When set, bans are recorded in the shared BanManager and enforced by all handlers.
+    /// Without this, bans are local to this handler only (legacy behavior).
+    pub fn with_ban_manager(mut self, ban_manager: Arc<BanManager>) -> Self {
+        self.ban_manager = Some(ban_manager);
+        self
+    }
+
     /// Ban a node for equivocation
+    ///
+    /// Uses shared BanManager if available (C1 fix), otherwise local tracking.
     fn ban_node(&self, node_id: NodeId) {
-        let expire_at = Instant::now() + self.ban_duration;
-        self.banned_nodes.write().insert(node_id, expire_at);
-        warn!(
-            node_id = %hex::encode(&node_id[..8]),
-            duration_mins = 10,
-            "Node banned for equivocation"
-        );
+        if let Some(ref ban_manager) = self.ban_manager {
+            // Use shared BanManager for cross-handler enforcement
+            ban_manager.ban(node_id, BanReason::Equivocation);
+        } else {
+            // Legacy: local ban tracking
+            let expire_at = Instant::now() + self.ban_duration;
+            self.banned_nodes.write().insert(node_id, expire_at);
+            warn!(
+                node_id = %hex::encode(&node_id[..8]),
+                duration_mins = 10,
+                "Node banned for equivocation (local)"
+            );
+        }
     }
 
     /// Check if a node is currently banned
+    ///
+    /// Checks shared BanManager if available (C1 fix), otherwise local tracking.
     fn is_banned(&self, node_id: &NodeId) -> bool {
-        let mut banned = self.banned_nodes.write();
-        // Clean up expired bans
-        banned.retain(|_, expire_at| *expire_at > Instant::now());
-        banned.contains_key(node_id)
+        if let Some(ref ban_manager) = self.ban_manager {
+            // Use shared BanManager
+            ban_manager.is_banned(node_id)
+        } else {
+            // Legacy: local ban tracking
+            let mut banned = self.banned_nodes.write();
+            // Clean up expired bans
+            banned.retain(|_, expire_at| *expire_at > Instant::now());
+            banned.contains_key(node_id)
+        }
     }
 
     /// Clean up rate limiter state (call periodically)
@@ -664,6 +714,19 @@ impl VoteHandler {
     }
 
     /// Handle a vote from another node
+    ///
+    /// ## Security Note (H2 TOCTOU Mitigation)
+    ///
+    /// There is a theoretical TOCTOU race between the ban check in `handle_message()`
+    /// and vote processing here. If a node is banned after the initial check but
+    /// before this function completes, one vote could slip through.
+    ///
+    /// This is considered acceptable because:
+    /// 1. The vote was valid at submission time (before equivocation was detected)
+    /// 2. BFT consensus can tolerate f Byzantine votes - one extra doesn't break security
+    /// 3. The node will be rejected for all subsequent messages
+    ///
+    /// For extra safety, we check ban status again before executing consensus decisions.
     fn handle_incoming_vote(&self, sender: NodeId, vote_msg: VoteMessage) -> GhostResult<()> {
         // Create vote from message
         let vote = Vote::new(sender, vote_msg.approve, vote_msg.signature);
@@ -675,6 +738,17 @@ impl VoteHandler {
         {
             match result {
                 VoteResult::Decided(consensus_result) => {
+                    // H2 TOCTOU mitigation: Re-check ban status before executing consensus
+                    // This prevents executing decisions influenced by votes that arrived
+                    // just before the sender was banned for equivocation
+                    if self.is_banned(&sender) {
+                        warn!(
+                            sender = hex::encode(&sender[..8]),
+                            round_id = vote_msg.round_id,
+                            "Ignoring consensus decision - deciding vote was from now-banned node"
+                        );
+                        return Ok(());
+                    }
                     self.handle_decision(
                         vote_msg.round_id,
                         vote_msg.proposal_hash,
@@ -964,5 +1038,40 @@ mod tests {
         // Remove one
         handler.remove_elder(&[2u8; 32]);
         assert_eq!(handler.elder_count(), 2);
+    }
+
+    #[test]
+    fn test_ban_manager_integration() {
+        // H2: Test that shared BanManager works with VoteHandler
+        let identity = create_test_identity();
+        let voting_manager = Arc::new(VotingManager::new(100));
+        let ban_manager = Arc::new(BanManager::new());
+
+        let handler = VoteHandler::new(identity.clone(), voting_manager)
+            .with_ban_manager(ban_manager.clone());
+
+        let node_id = [1u8; 32];
+
+        // Initially not banned
+        assert!(!handler.is_banned(&node_id));
+
+        // Ban the node via shared manager
+        ban_manager.ban(node_id, BanReason::Equivocation);
+
+        // Now should be banned
+        assert!(handler.is_banned(&node_id));
+
+        // Unban
+        ban_manager.unban(&node_id);
+        assert!(!handler.is_banned(&node_id));
+    }
+
+    #[test]
+    fn test_ban_reason_durations() {
+        // Verify ban durations are reasonable
+        assert_eq!(BanReason::Equivocation.default_duration().as_secs(), 600);
+        assert_eq!(BanReason::RateLimitExceeded.default_duration().as_secs(), 300);
+        assert_eq!(BanReason::InvalidMessages.default_duration().as_secs(), 180);
+        assert_eq!(BanReason::ProtocolViolation.default_duration().as_secs(), 900);
     }
 }

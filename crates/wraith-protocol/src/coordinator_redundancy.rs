@@ -882,8 +882,12 @@ mod tests {
 
     #[test]
     fn test_heartbeat() {
+        // Use 2-second timeout with 4-second sleep for reliable testing
+        // The `is_stale()` uses `>` (not `>=`), so we need seconds_since > timeout
+        // With 2-second timeout, we need at least 3 seconds elapsed (3 > 2 = true)
+        // Using 4-second sleep gives us margin for timing variations
         let policy = RotationPolicy {
-            heartbeat_timeout_secs: 1, // Very short for testing
+            heartbeat_timeout_secs: 2,
             ..Default::default()
         };
         let pool = CoordinatorPool::new(policy).unwrap();
@@ -895,12 +899,24 @@ mod tests {
         // Record heartbeat
         pool.record_heartbeat(&coord.id).unwrap();
 
-        // Wait for timeout
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        // Verify coordinator is not stale immediately
+        let failed_immediate = pool.check_health();
+        assert!(
+            failed_immediate.is_empty(),
+            "Coordinator should not be stale immediately after heartbeat"
+        );
+
+        // Wait well past the timeout (4 seconds > 2 second timeout)
+        std::thread::sleep(std::time::Duration::from_secs(4));
 
         // Check health should detect stale
         let failed = pool.check_health();
-        assert_eq!(failed.len(), 1);
+        assert_eq!(
+            failed.len(),
+            1,
+            "Coordinator should be detected as stale after {} seconds (timeout: 2s)",
+            4
+        );
     }
 
     #[test]

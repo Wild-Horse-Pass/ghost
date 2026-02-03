@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tracing::{debug, warn};
 
 use ghost_common::error::GhostResult;
@@ -45,6 +45,7 @@ use ghost_common::identity::{NodeIdProof, NODE_ID_POW_DIFFICULTY};
 use ghost_common::types::NodeId;
 use ghost_storage::{Database, PeerRecord};
 
+use crate::ban_manager::BanManager;
 use crate::mesh::MessageHandler;
 use crate::message::{HealthPingMessage, MessageEnvelope, MessageType};
 use crate::peer::PeerManager;
@@ -127,6 +128,15 @@ impl HealthRateLimiter {
     }
 }
 
+/// Maximum timestamp drift allowed for health pings (H4 security fix)
+const MAX_TIMESTAMP_DRIFT_SECS: u64 = 300; // 5 minutes
+
+/// Default minimum uptime for voter registration (C2 security fix)
+const DEFAULT_MIN_UPTIME_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+
+/// Default registration cooldown (C2 security fix)
+const DEFAULT_REGISTRATION_COOLDOWN_SECS: u64 = 3600; // 1 hour
+
 /// Configuration for the health ping handler
 #[derive(Debug, Clone)]
 pub struct HealthHandlerConfig {
@@ -138,6 +148,12 @@ pub struct HealthHandlerConfig {
     pub rate_limit_max_tokens: u32,
     /// Rate limit refill rate (tokens per second)
     pub rate_limit_refill_rate: u32,
+    /// Minimum uptime (seconds) required for voter registration (C2 security fix)
+    pub min_uptime_for_voting_secs: u64,
+    /// Cooldown between registration attempts (C2 security fix)
+    pub registration_cooldown_secs: u64,
+    /// Maximum timestamp drift for health pings (H4 security fix)
+    pub max_timestamp_drift_secs: u64,
 }
 
 impl Default for HealthHandlerConfig {
@@ -147,6 +163,9 @@ impl Default for HealthHandlerConfig {
             pow_difficulty: NODE_ID_POW_DIFFICULTY,
             rate_limit_max_tokens: HEALTH_RATE_LIMIT_MAX_TOKENS,
             rate_limit_refill_rate: HEALTH_RATE_LIMIT_REFILL_RATE,
+            min_uptime_for_voting_secs: DEFAULT_MIN_UPTIME_SECS,
+            registration_cooldown_secs: DEFAULT_REGISTRATION_COOLDOWN_SECS,
+            max_timestamp_drift_secs: MAX_TIMESTAMP_DRIFT_SECS,
         }
     }
 }
@@ -165,6 +184,12 @@ pub struct HealthPingHandler {
     rate_limiter: HealthRateLimiter,
     /// Configuration
     config: HealthHandlerConfig,
+    /// Shared ban manager for cross-handler enforcement (C1 security fix)
+    ban_manager: Option<Arc<BanManager>>,
+    /// Last registration time per node (C2 security fix - cooldown tracking)
+    last_registration: RwLock<HashMap<NodeId, Instant>>,
+    /// First seen time per node (C2 security fix - uptime tracking)
+    first_seen_times: RwLock<HashMap<NodeId, Instant>>,
 }
 
 impl HealthPingHandler {
@@ -189,7 +214,16 @@ impl HealthPingHandler {
                 config.rate_limit_refill_rate,
             ),
             config,
+            ban_manager: None,
+            last_registration: RwLock::new(HashMap::new()),
+            first_seen_times: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Set the shared ban manager for cross-handler enforcement (C1 security fix)
+    pub fn with_ban_manager(mut self, ban_manager: Arc<BanManager>) -> Self {
+        self.ban_manager = Some(ban_manager);
+        self
     }
 
     /// Set the database for persistence
@@ -245,10 +279,110 @@ impl HealthPingHandler {
         }
     }
 
+    /// Validate health ping timestamp (H4 security fix)
+    ///
+    /// Returns true if timestamp is within acceptable drift of current time.
+    fn validate_timestamp(&self, timestamp: u64) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let max_drift_ms = self.config.max_timestamp_drift_secs * 1000;
+        let diff = if timestamp > now {
+            timestamp - now
+        } else {
+            now - timestamp
+        };
+        diff <= max_drift_ms
+    }
+
+    /// Check if node can register as voter (C2 security fix)
+    ///
+    /// Implements two protections against validator set manipulation:
+    /// 1. Minimum uptime requirement - node must be known for min_uptime_for_voting_secs
+    /// 2. Registration cooldown - can't re-register within registration_cooldown_secs
+    fn can_register_as_voter(&self, node_id: &NodeId) -> bool {
+        let now = Instant::now();
+
+        // Check registration cooldown
+        {
+            let last_reg = self.last_registration.read();
+            if let Some(last_time) = last_reg.get(node_id) {
+                let cooldown = Duration::from_secs(self.config.registration_cooldown_secs);
+                if now.duration_since(*last_time) < cooldown {
+                    debug!(
+                        node_id = %hex::encode(&node_id[..8]),
+                        "Registration cooldown not elapsed"
+                    );
+                    return false;
+                }
+            }
+        }
+
+        // Check minimum uptime requirement
+        {
+            let first_seen = self.first_seen_times.read();
+            if let Some(first_time) = first_seen.get(node_id) {
+                let min_uptime = Duration::from_secs(self.config.min_uptime_for_voting_secs);
+                if now.duration_since(*first_time) < min_uptime {
+                    debug!(
+                        node_id = %hex::encode(&node_id[..8]),
+                        elapsed_secs = now.duration_since(*first_time).as_secs(),
+                        required_secs = min_uptime.as_secs(),
+                        "Node has not met minimum uptime requirement for voting"
+                    );
+                    return false;
+                }
+            } else {
+                // First time seeing this node - record it but don't allow registration yet
+                drop(first_seen);
+                self.first_seen_times.write().insert(*node_id, now);
+                debug!(
+                    node_id = %hex::encode(&node_id[..8]),
+                    "First time seeing node - starting uptime tracking"
+                );
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Record a successful voter registration (C2 security fix)
+    fn record_registration(&self, node_id: &NodeId) {
+        self.last_registration.write().insert(*node_id, Instant::now());
+    }
+
+    /// Check if node is banned (uses shared BanManager if available)
+    fn is_banned(&self, node_id: &NodeId) -> bool {
+        if let Some(ref ban_manager) = self.ban_manager {
+            ban_manager.is_banned(node_id)
+        } else {
+            false
+        }
+    }
+
     /// Handle a health ping message
+    ///
+    /// ## Security Note (H2 TOCTOU Mitigation)
+    ///
+    /// There is a theoretical TOCTOU race between the ban check and processing.
+    /// However, health pings have no critical security impact:
+    /// - They only update peer information and capabilities
+    /// - Voter registration requires PoW + uptime requirements (C2)
+    /// - One extra ping from a soon-to-be-banned node doesn't affect consensus
+    ///
+    /// The ban check is still performed for defense-in-depth.
     async fn handle_ping(&self, envelope: &MessageEnvelope) -> GhostResult<()> {
         let node_id_hex = hex::encode(envelope.sender);
         let short_id = node_id_hex[..8].to_string();
+
+        // C1: Check if node is banned using shared BanManager
+        if self.is_banned(&envelope.sender) {
+            debug!(node_id = %short_id, "Ignoring health ping from banned node");
+            return Ok(());
+        }
 
         // Rate limit check - reject pings from nodes sending too fast
         if !self.rate_limiter.check_and_consume(&envelope.sender) {
@@ -267,6 +401,19 @@ impl HealthPingHandler {
             .map_err(|e| ghost_common::error::GhostError::P2PMessage(e.to_string()))?;
 
         let ping = &ping_msg.ping;
+
+        // H4: Validate timestamp to prevent replay attacks
+        if !self.validate_timestamp(ping.timestamp) {
+            warn!(
+                node_id = %short_id,
+                timestamp = ping.timestamp,
+                "Rejected health ping with invalid timestamp"
+            );
+            return Err(ghost_common::error::GhostError::InvalidTimestamp(format!(
+                "Health ping timestamp {} out of range",
+                ping.timestamp
+            )));
+        }
 
         debug!(
             node_id = %short_id,
@@ -290,12 +437,14 @@ impl HealthPingHandler {
             // Still update peer info but don't register as voter
         }
 
-        // Register node as voter for BFT consensus ONLY if PoW is valid
-        // This is the critical security fix - previously any node could register
-        if pow_valid {
+        // Register node as voter for BFT consensus ONLY if:
+        // 1. PoW is valid (Sybil resistance)
+        // 2. C2: Node meets uptime requirements and cooldown elapsed
+        if pow_valid && self.can_register_as_voter(&envelope.sender) {
             if let Some(ref callback) = self.elder_callback {
                 callback(envelope.sender);
-                debug!(node_id = %short_id, "Registered node as BFT voter from health ping (PoW verified)");
+                self.record_registration(&envelope.sender);
+                debug!(node_id = %short_id, "Registered node as BFT voter from health ping (PoW verified, uptime met)");
             }
 
             // Register node capabilities for payout calculations (only with valid PoW)
@@ -303,6 +452,12 @@ impl HealthPingHandler {
                 callback(envelope.sender, ping.capabilities);
                 debug!(node_id = %short_id, "Registered node capabilities for payout");
             }
+        } else if pow_valid {
+            // PoW valid but uptime/cooldown requirements not met
+            debug!(
+                node_id = %short_id,
+                "Node has valid PoW but does not meet voter registration requirements"
+            );
         }
 
         // Update peer's last seen time in memory (regardless of PoW - for tracking)
