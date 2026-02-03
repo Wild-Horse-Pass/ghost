@@ -25,6 +25,7 @@
 use axum::{
     extract::{ws::WebSocketUpgrade, Query, State},
     http::StatusCode,
+    middleware::{self, Next},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -35,6 +36,7 @@ use tracing::{debug, error, warn};
 
 use ghost_buds::{BudsClassifier, BudsTier};
 
+use crate::auth::{verify_internal_auth, InternalAuth};
 use crate::challenge::*;
 use crate::server::{ShareBatch, ShareNotification, VerificationState};
 use crate::websocket::ws_handler;
@@ -116,7 +118,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
     // Clone ws_state for the WebSocket handler
     let ws_state = Arc::clone(&state.ws_state);
 
-    Router::new()
+    // Public routes (no authentication required)
+    let public_router = Router::new()
         // WebSocket for real-time updates
         .route(
             "/ws",
@@ -295,14 +298,76 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/backup/import", get(api_backup_import_handler))
         .route("/api/v1/backup/verify", get(api_backup_verify_handler))
         // Auth endpoint (returns empty token for dashboard compatibility)
-        .route("/auth/token", get(api_auth_token_handler))
+        .route("/auth/token", get(api_auth_token_handler));
+
+    // Internal/admin endpoints with optional HMAC authentication (AUTH4-1 fix)
+    let internal_router = Router::new()
         // Admin endpoints for testing
         .route("/admin/test-consensus", post(admin_test_consensus_handler))
         // Internal API for SRI Pool share notifications
         .route("/api/internal/share", post(share_notification_handler))
         // Internal API for SRI Pool batch share notifications (native webhook)
-        .route("/api/internal/shares", post(share_batch_handler))
+        .route("/api/internal/shares", post(share_batch_handler));
+
+    // Apply authentication middleware if internal_auth is configured
+    let internal_router = if let Some(ref auth) = state.internal_auth {
+        tracing::info!("Internal API authentication enabled for /api/internal/* and /admin/*");
+        let auth_clone = Arc::clone(auth);
+        internal_router.layer(middleware::from_fn(move |request, next| {
+            let auth = Arc::clone(&auth_clone);
+            internal_auth_middleware(auth, request, next)
+        }))
+    } else {
+        // SECURITY WARNING: Internal endpoints are unprotected without authentication
+        tracing::warn!(
+            "AUTH4-1 WARNING: Internal API authentication NOT configured! \
+             /api/internal/* and /admin/* endpoints are UNPROTECTED. \
+             Configure internal_api_secret in pool.toml for production deployments."
+        );
+        internal_router
+    };
+
+    // Merge routers
+    public_router
+        .merge(internal_router)
         .with_state(state)
+}
+
+/// Middleware to verify HMAC authentication for internal endpoints
+///
+/// # Security (AUTH4-1)
+///
+/// This middleware protects internal endpoints from unauthorized access by requiring
+/// HMAC-SHA256 signatures on all requests. Without this, attackers could:
+/// - Inject fake shares to manipulate payout calculations
+/// - Trigger admin operations (test-consensus)
+/// - Submit fraudulent block notifications
+async fn internal_auth_middleware(
+    auth: Arc<InternalAuth>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    // Extract headers and body for authentication
+    let (parts, body) = request.into_parts();
+    let headers = &parts.headers;
+
+    // Read body bytes for HMAC verification
+    let body_bytes = axum::body::to_bytes(body, 10 * 1024 * 1024) // 10MB limit
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("Failed to read request body: {}", e),
+            )
+        })?;
+
+    // Verify authentication
+    verify_internal_auth(&auth, headers, &body_bytes)?;
+
+    // Reconstruct request with body and continue
+    let request = axum::http::Request::from_parts(parts, axum::body::Body::from(body_bytes));
+
+    Ok(next.run(request).await)
 }
 
 /// Health check query parameters (optional nonce for signed response)

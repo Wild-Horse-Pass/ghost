@@ -682,6 +682,19 @@ pub struct NetworkConfig {
     /// Must be a valid bech32 address for the configured network.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solo_payout_address: Option<String>,
+    /// Internal API authentication secret (REQUIRED for production deployments)
+    ///
+    /// Protects `/api/internal/*` and `/admin/*` endpoints with HMAC-SHA256 authentication.
+    /// Must be 64 hex characters (32 bytes). Generate with: openssl rand -hex 32
+    ///
+    /// # Security (AUTH4-1)
+    ///
+    /// Without this, internal endpoints are UNPROTECTED and attackers could:
+    /// - Inject fake shares to manipulate payout calculations
+    /// - Trigger admin operations (test-consensus)
+    /// - Submit fraudulent block notifications
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal_api_secret: Option<String>,
 }
 
 impl Default for NetworkConfig {
@@ -699,6 +712,7 @@ impl Default for NetworkConfig {
             mining_mode: MiningMode::default(),
             private_mining_password: None,
             solo_payout_address: None,
+            internal_api_secret: None,
         }
     }
 }

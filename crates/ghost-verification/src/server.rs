@@ -246,6 +246,9 @@ pub struct VerificationState {
     record_share_fn: Option<RecordShareFn>,
     /// Block found callback (triggers payout proposal when is_block == true)
     block_found_fn: Option<BlockFoundFn>,
+    /// Internal API authentication (H10/H11 security fix)
+    /// When Some, internal endpoints require HMAC-SHA256 authentication
+    pub internal_auth: Option<Arc<crate::auth::InternalAuth>>,
 }
 
 /// Archive handler trait
@@ -327,7 +330,17 @@ impl VerificationState {
             test_proposal_fn: None,
             record_share_fn: None,
             block_found_fn: None,
+            internal_auth: None,
         }
+    }
+
+    /// Set internal API authentication (H10/H11 security fix)
+    ///
+    /// When configured, internal endpoints (`/api/internal/*`, `/admin/*`) require
+    /// HMAC-SHA256 authentication via X-Ghost-Signature and X-Ghost-Timestamp headers.
+    pub fn with_internal_auth(mut self, auth: crate::auth::InternalAuth) -> Self {
+        self.internal_auth = Some(Arc::new(auth));
+        self
     }
 
     /// Set share recording callback (for SRI Pool share notifications)

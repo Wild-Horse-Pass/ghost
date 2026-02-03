@@ -1004,6 +1004,25 @@ async fn main() -> Result<()> {
     verification_state = verification_state.with_database((*db).clone());
     verification_state = verification_state.with_rpc(Arc::clone(&rpc));
 
+    // Configure internal API authentication (AUTH4-1 security fix)
+    if let Some(ref secret_hex) = config.network.internal_api_secret {
+        match ghost_verification::InternalAuth::from_hex(secret_hex) {
+            Ok(auth) => {
+                info!("Internal API authentication configured for /api/internal/* and /admin/*");
+                verification_state = verification_state.with_internal_auth(auth);
+            }
+            Err(e) => {
+                error!("Invalid internal_api_secret: {} - internal endpoints will be UNPROTECTED", e);
+            }
+        }
+    } else {
+        warn!(
+            "AUTH4-1 WARNING: network.internal_api_secret not configured! \
+             Internal endpoints (/api/internal/*, /admin/*) are UNPROTECTED. \
+             Generate a secret with: openssl rand -hex 32"
+        );
+    }
+
     // Configure test proposal callback for BFT consensus testing
     let vh_for_test = Arc::clone(&vote_handler);
     let identity_for_test = Arc::clone(&identity);

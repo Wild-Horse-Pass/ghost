@@ -882,12 +882,12 @@ mod tests {
 
     #[test]
     fn test_heartbeat() {
-        // Use 2-second timeout with 4-second sleep for reliable testing
+        // Use 1-second timeout with 3-second sleep for reliable testing
         // The `is_stale()` uses `>` (not `>=`), so we need seconds_since > timeout
-        // With 2-second timeout, we need at least 3 seconds elapsed (3 > 2 = true)
-        // Using 4-second sleep gives us margin for timing variations
+        // With 1-second timeout, we need at least 2 seconds elapsed (2 > 1 = true)
+        // Using 3-second sleep gives us margin for timing variations
         let policy = RotationPolicy {
-            heartbeat_timeout_secs: 2,
+            heartbeat_timeout_secs: 1,
             ..Default::default()
         };
         let pool = CoordinatorPool::new(policy).unwrap();
@@ -896,26 +896,41 @@ mod tests {
         pool.register_coordinator(coord.clone()).unwrap();
         pool.activate_coordinator(&coord.id).unwrap();
 
-        // Record heartbeat
+        // Record heartbeat to reset the timer
         pool.record_heartbeat(&coord.id).unwrap();
 
-        // Verify coordinator is not stale immediately
+        // Verify coordinator is not stale immediately after heartbeat
         let failed_immediate = pool.check_health();
         assert!(
             failed_immediate.is_empty(),
             "Coordinator should not be stale immediately after heartbeat"
         );
 
-        // Wait well past the timeout (4 seconds > 2 second timeout)
-        std::thread::sleep(std::time::Duration::from_secs(4));
+        // Wait well past the timeout (3 seconds >> 1 second timeout)
+        // The >2x margin accounts for:
+        // - Thread scheduling delays
+        // - System clock resolution
+        // - Test framework overhead
+        std::thread::sleep(std::time::Duration::from_secs(3));
 
-        // Check health should detect stale
+        // Verify enough time has elapsed
+        let elapsed = {
+            let coordinators = pool.coordinators.read();
+            coordinators.get(&coord.id).unwrap().seconds_since_heartbeat()
+        };
+        assert!(
+            elapsed > 1,
+            "Expected >1 second elapsed, got {} seconds",
+            elapsed
+        );
+
+        // Check health should detect stale (elapsed > timeout)
         let failed = pool.check_health();
         assert_eq!(
             failed.len(),
             1,
-            "Coordinator should be detected as stale after {} seconds (timeout: 2s)",
-            4
+            "Coordinator should be detected as stale: {} seconds elapsed > 1 second timeout",
+            elapsed
         );
     }
 
