@@ -34,12 +34,12 @@ const DECAY_SCHEDULE: [(f64, f64); 6] = [
 /// SECURITY: Use integer arithmetic to avoid floating point rounding errors.
 /// 5000 bps = 50% of the pool fee, 10000 bps = 100% of the pool fee
 const DECAY_SCHEDULE_BPS: [(u64, u64); 6] = [
-    (5000, 5000),   // Pre-threshold / Year 0: 50/50
-    (4000, 6000),   // Year 1: 40/60
-    (3000, 7000),   // Year 2: 30/70
-    (2000, 8000),   // Year 3: 20/80
-    (1000, 9000),   // Year 4: 10/90
-    (0, 10000),     // Year 5+: 0/100
+    (5000, 5000), // Pre-threshold / Year 0: 50/50
+    (4000, 6000), // Year 1: 40/60
+    (3000, 7000), // Year 2: 30/70
+    (2000, 8000), // Year 3: 20/80
+    (1000, 9000), // Year 4: 10/90
+    (0, 10000),   // Year 5+: 0/100
 ];
 
 /// Treasury state for decay calculation
@@ -369,7 +369,10 @@ mod tests {
     #[test]
     fn test_pool_fee_basis_points_matches_common() {
         // SECURITY TEST: Verify our local constant matches ghost-common
-        assert_eq!(POOL_FEE_BASIS_POINTS, ghost_common::constants::POOL_FEE_BASIS_POINTS);
+        assert_eq!(
+            POOL_FEE_BASIS_POINTS,
+            ghost_common::constants::POOL_FEE_BASIS_POINTS
+        );
         assert_eq!(POOL_FEE_BASIS_POINTS, 100); // 1% = 100 bps
     }
 
@@ -380,11 +383,11 @@ mod tests {
 
         // Test with various subsidy values to ensure no rounding errors
         let test_subsidies = [
-            312_500_000u64,   // 3.125 BTC (current)
-            625_000_000,     // 6.25 BTC
-            156_250_000,     // 1.5625 BTC
-            78_125_000,      // 0.78125 BTC
-            39_062_500,      // 0.390625 BTC
+            312_500_000u64, // 3.125 BTC (current)
+            625_000_000,    // 6.25 BTC
+            156_250_000,    // 1.5625 BTC
+            78_125_000,     // 0.78125 BTC
+            39_062_500,     // 0.390625 BTC
         ];
 
         for subsidy in test_subsidies {
@@ -392,24 +395,34 @@ mod tests {
 
             // Pool fee should be exactly 1% of subsidy
             let expected_pool_fee = subsidy / 100;
-            assert_eq!(dist.pool_fee, expected_pool_fee, "Pool fee incorrect for subsidy {}", subsidy);
+            assert_eq!(
+                dist.pool_fee, expected_pool_fee,
+                "Pool fee incorrect for subsidy {}",
+                subsidy
+            );
 
             // Miner pool should be exactly 99% of subsidy
             let expected_miner_pool = subsidy - expected_pool_fee;
-            assert_eq!(dist.miner_pool, expected_miner_pool, "Miner pool incorrect for subsidy {}", subsidy);
+            assert_eq!(
+                dist.miner_pool, expected_miner_pool,
+                "Miner pool incorrect for subsidy {}",
+                subsidy
+            );
 
             // Treasury + node pool should equal pool fee
             assert_eq!(
                 dist.treasury_amount + dist.node_reward_pool,
                 dist.pool_fee,
-                "Treasury + node pool doesn't equal pool fee for subsidy {}", subsidy
+                "Treasury + node pool doesn't equal pool fee for subsidy {}",
+                subsidy
             );
 
             // Total distribution should equal subsidy (no TX fees in this test)
             assert_eq!(
                 dist.treasury_amount + dist.node_reward_pool + dist.miner_pool,
                 subsidy,
-                "Total distribution doesn't equal subsidy for {}", subsidy
+                "Total distribution doesn't equal subsidy for {}",
+                subsidy
             );
         }
     }
@@ -424,11 +437,24 @@ mod tests {
             let expected_treasury_bps = (*f64_treasury * 10000.0) as u64;
             let expected_node_bps = (*f64_node * 10000.0) as u64;
 
-            assert_eq!(bps_treasury, expected_treasury_bps, "Treasury BPS mismatch at index {}", i);
-            assert_eq!(bps_node, expected_node_bps, "Node BPS mismatch at index {}", i);
+            assert_eq!(
+                bps_treasury, expected_treasury_bps,
+                "Treasury BPS mismatch at index {}",
+                i
+            );
+            assert_eq!(
+                bps_node, expected_node_bps,
+                "Node BPS mismatch at index {}",
+                i
+            );
 
             // Sum should always be 10000 (100%)
-            assert_eq!(bps_treasury + bps_node, 10000, "BPS sum not 100% at index {}", i);
+            assert_eq!(
+                bps_treasury + bps_node,
+                10000,
+                "BPS sum not 100% at index {}",
+                i
+            );
         }
     }
 
@@ -443,7 +469,8 @@ mod tests {
 
         // Test year 5+ (full decay to nodes)
         let threshold_time = Utc::now() - chrono::Duration::days(365 * 6);
-        let decayed_state = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
+        let decayed_state =
+            TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
         let (treasury_bps, node_bps) = decayed_state.get_fee_split_bps();
         assert_eq!(treasury_bps, 0);
         assert_eq!(node_bps, 10000);
@@ -456,12 +483,12 @@ mod tests {
 
         // Test with various subsidy values including ones that could cause rounding issues
         let test_subsidies = [
-            312_500_000u64,   // 3.125 BTC (current)
-            312_500_001,     // +1 sat (odd)
-            312_500_003,     // +3 sat (causes 3-way split issue)
-            999_999_999,     // Large odd number
-            1,               // Minimum
-            100,             // Small
+            312_500_000u64, // 3.125 BTC (current)
+            312_500_001,    // +1 sat (odd)
+            312_500_003,    // +3 sat (causes 3-way split issue)
+            999_999_999,    // Large odd number
+            1,              // Minimum
+            100,            // Small
         ];
 
         for subsidy in test_subsidies {
@@ -499,19 +526,28 @@ mod tests {
         // Pre-threshold
         let state0 = TreasuryState::new();
         let dist0 = FeeDistribution::calculate(subsidy, 0, &state0);
-        assert_eq!(dist0.treasury_amount + dist0.node_reward_pool, dist0.pool_fee);
+        assert_eq!(
+            dist0.treasury_amount + dist0.node_reward_pool,
+            dist0.pool_fee
+        );
 
         // Year 3 (20% treasury, 80% nodes)
         let threshold_time = Utc::now() - chrono::Duration::days(365 * 2 + 100);
         let state3 = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
         let dist3 = FeeDistribution::calculate(subsidy, 0, &state3);
-        assert_eq!(dist3.treasury_amount + dist3.node_reward_pool, dist3.pool_fee);
+        assert_eq!(
+            dist3.treasury_amount + dist3.node_reward_pool,
+            dist3.pool_fee
+        );
 
         // Year 5+ (0% treasury, 100% nodes)
         let threshold_time = Utc::now() - chrono::Duration::days(365 * 6);
         let state5 = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
         let dist5 = FeeDistribution::calculate(subsidy, 0, &state5);
-        assert_eq!(dist5.treasury_amount + dist5.node_reward_pool, dist5.pool_fee);
+        assert_eq!(
+            dist5.treasury_amount + dist5.node_reward_pool,
+            dist5.pool_fee
+        );
         assert_eq!(dist5.treasury_amount, 0); // Full decay
     }
 }

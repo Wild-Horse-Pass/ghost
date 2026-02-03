@@ -293,9 +293,9 @@ impl MerkleProof {
     ///
     /// Uses MiMC hash to match the circuit implementation.
     pub fn compute_root(&self, leaf_hash: [u8; 32]) -> [u8; 32] {
+        use crate::circuit::mimc::{bytes_to_field, field_to_bytes, mimc_hash_native};
         use blstrs::Scalar as Fr;
         use ff::Field;
-        use crate::circuit::mimc::{bytes_to_field, field_to_bytes, mimc_hash_native};
 
         let mut current = bytes_to_field::<Fr>(&leaf_hash).unwrap_or(Fr::ZERO);
         let mut index = self.leaf_index;

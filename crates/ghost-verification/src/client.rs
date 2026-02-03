@@ -139,7 +139,11 @@ impl VerificationClient {
 
     /// Get the URL scheme based on configuration
     fn scheme(&self) -> &'static str {
-        if self.config.use_https { "https" } else { "http" }
+        if self.config.use_https {
+            "https"
+        } else {
+            "http"
+        }
     }
 
     /// Build a URL with the configured scheme
@@ -152,15 +156,10 @@ impl VerificationClient {
         let url = self.build_url(node_address, "/health?unsigned=true");
         debug!(url = %url, "Checking node health");
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                debug!("Health check request failed: {}", e);
-                GhostError::VerificationTimeout("Health check request failed".to_string())
-            })?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            debug!("Health check request failed: {}", e);
+            GhostError::VerificationTimeout("Health check request failed".to_string())
+        })?;
 
         // Health endpoint returns {"signed": bool, "response": HealthResponse}
         // We request unsigned=true for simplicity, but still need to unwrap
@@ -197,19 +196,17 @@ impl VerificationClient {
             params.push(format!("tx={}", tx));
         }
 
-        let url = self.build_url(node_address, &format!("/verify/archive?{}", params.join("&")));
+        let url = self.build_url(
+            node_address,
+            &format!("/verify/archive?{}", params.join("&")),
+        );
 
         debug!(url = %url, "Verifying archive capability");
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                debug!("Archive verification request failed: {}", e);
-                GhostError::VerificationTimeout("Archive verification request failed".to_string())
-            })?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            debug!("Archive verification request failed: {}", e);
+            GhostError::VerificationTimeout("Archive verification request failed".to_string())
+        })?;
 
         // Archive endpoint returns {"signed": bool, "response": ArchiveResponse}
         let wrapper: serde_json::Value = response.json().await.map_err(|e| {
@@ -237,20 +234,18 @@ impl VerificationClient {
     ) -> GhostResult<PolicyResponse> {
         let url = self.build_url(
             node_address,
-            &format!("/verify/policy?tx={}&unsigned=true", urlencoding::encode(tx_hex))
+            &format!(
+                "/verify/policy?tx={}&unsigned=true",
+                urlencoding::encode(tx_hex)
+            ),
         );
 
         debug!(url = %url, "Verifying policy capability");
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                debug!("Policy verification request failed: {}", e);
-                GhostError::VerificationTimeout("Policy verification request failed".to_string())
-            })?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            debug!("Policy verification request failed: {}", e);
+            GhostError::VerificationTimeout("Policy verification request failed".to_string())
+        })?;
 
         // Policy endpoint returns {"signed": bool, "response": PolicyResponse}
         let wrapper: serde_json::Value = response.json().await.map_err(|e| {
@@ -284,20 +279,15 @@ impl VerificationClient {
 
         let url = self.build_url(
             node_address,
-            &format!("/verify/stratum?protocol={}&unsigned=true", protocol_str)
+            &format!("/verify/stratum?protocol={}&unsigned=true", protocol_str),
         );
 
         debug!(url = %url, "Verifying stratum capability");
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                debug!("Stratum verification request failed: {}", e);
-                GhostError::VerificationTimeout("Stratum verification request failed".to_string())
-            })?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            debug!("Stratum verification request failed: {}", e);
+            GhostError::VerificationTimeout("Stratum verification request failed".to_string())
+        })?;
 
         // Stratum endpoint returns {"signed": bool, "response": StratumResponse}
         let wrapper: serde_json::Value = response.json().await.map_err(|e| {
@@ -324,7 +314,10 @@ impl VerificationClient {
         address: Option<&str>,
     ) -> GhostResult<GhostPayResponse> {
         let path = if let Some(addr) = address {
-            format!("/verify/ghostpay?unsigned=true&address={}", urlencoding::encode(addr))
+            format!(
+                "/verify/ghostpay?unsigned=true&address={}",
+                urlencoding::encode(addr)
+            )
         } else {
             "/verify/ghostpay?unsigned=true".to_string()
         };
@@ -332,15 +325,10 @@ impl VerificationClient {
 
         debug!(url = %url, "Verifying GhostPay capability");
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                debug!("GhostPay verification request failed: {}", e);
-                GhostError::VerificationTimeout("GhostPay verification request failed".to_string())
-            })?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            debug!("GhostPay verification request failed: {}", e);
+            GhostError::VerificationTimeout("GhostPay verification request failed".to_string())
+        })?;
 
         // GhostPay endpoint returns {"signed": bool, "response": GhostPayResponse}
         let wrapper: serde_json::Value = response.json().await.map_err(|e| {

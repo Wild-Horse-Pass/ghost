@@ -998,8 +998,7 @@ fn create_new_template(
         .map(|branch| U256::from(*branch))
         .collect();
 
-    let merkle_path_seq: Seq0255<'static, U256<'static>> = merkle_path
-        .into();
+    let merkle_path_seq: Seq0255<'static, U256<'static>> = merkle_path.into();
 
     // Use Ghost's pre-built coinbase outputs instead of letting SRI Pool add its own
     // This gives Ghost full control over payouts (BFT consensus, treasury, etc.)

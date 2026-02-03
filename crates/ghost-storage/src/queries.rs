@@ -30,7 +30,13 @@ use crate::database::Database;
 use crate::models::*;
 
 /// Type alias for node rotation data: (is_elder, elder_order, pow_proof, capabilities, first_seen)
-type NodeRotationData = (bool, Option<u32>, Option<String>, Option<String>, Option<i64>);
+type NodeRotationData = (
+    bool,
+    Option<u32>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
 
 // =============================================================================
 // SHARE QUERIES
@@ -2026,8 +2032,7 @@ fn reconciliation_from_row(row: &rusqlite::Row) -> rusqlite::Result<Reconciliati
         l1_txid: row.get(5)?,
         l1_block_height: row.get(6)?,
         dispute_deadline: row.get(7)?,
-        status: ReconciliationStatus::parse(&status_str)
-            .unwrap_or(ReconciliationStatus::Pending),
+        status: ReconciliationStatus::parse(&status_str).unwrap_or(ReconciliationStatus::Pending),
         created_at: row.get(9)?,
         finalized_at: row.get(10)?,
     })
@@ -2847,8 +2852,7 @@ fn payout_from_row(row: &rusqlite::Row) -> rusqlite::Result<PayoutRecord> {
         id: Some(row.get(0)?),
         round_id: row.get(1)?,
         recipient_id: row.get(2)?,
-        recipient_type: RecipientType::parse(&recipient_type_str)
-            .unwrap_or(RecipientType::Miner),
+        recipient_type: RecipientType::parse(&recipient_type_str).unwrap_or(RecipientType::Miner),
         address: row.get(4)?,
         amount_sats: row.get(5)?,
         txid: row.get(6)?,
@@ -3318,7 +3322,10 @@ impl Database {
     /// Get equivocation proofs for a node
     ///
     /// Returns all stored equivocation proofs for forensic analysis.
-    pub fn get_equivocation_proofs(&self, node_id: &[u8; 32]) -> GhostResult<Vec<EquivocationProofRecord>> {
+    pub fn get_equivocation_proofs(
+        &self,
+        node_id: &[u8; 32],
+    ) -> GhostResult<Vec<EquivocationProofRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -3686,7 +3693,9 @@ mod tests {
         let count = db.get_payout_round_count(None, None).unwrap();
         assert_eq!(count, 5);
 
-        let count = db.get_payout_round_count(Some(800002), Some(800003)).unwrap();
+        let count = db
+            .get_payout_round_count(Some(800002), Some(800003))
+            .unwrap();
         assert_eq!(count, 2);
     }
 

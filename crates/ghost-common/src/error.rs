@@ -162,7 +162,9 @@ pub enum GhostError {
     #[error("Invalid payout proposal: {0}")]
     InvalidPayoutProposal(String),
 
-    #[error("No verification provider configured - cannot distribute node rewards without verification")]
+    #[error(
+        "No verification provider configured - cannot distribute node rewards without verification"
+    )]
     NoVerificationProvider,
 
     #[error("Block finder address not found - cannot distribute TX fees")]

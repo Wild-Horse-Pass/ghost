@@ -30,8 +30,7 @@ pub fn mimc_round_constants<F: PrimeField>() -> [F; MIMC_ROUNDS] {
     // We derive deterministic constants from small primes + index
     // This is simpler and more portable than hash-to-field
     let primes: [u64; MIMC_ROUNDS] = [
-        7, 13, 19, 31, 43, 61, 79, 97, 113, 131,
-        149, 167, 181, 199, 211, 229, 241, 263, 277, 293,
+        7, 13, 19, 31, 43, 61, 79, 97, 113, 131, 149, 167, 181, 199, 211, 229, 241, 263, 277, 293,
         307, 317, 337,
     ];
 
@@ -169,7 +168,10 @@ mod tests {
     fn test_round_constants_deterministic() {
         let constants1 = mimc_round_constants::<Fr>();
         let constants2 = mimc_round_constants::<Fr>();
-        assert_eq!(constants1, constants2, "Round constants should be deterministic");
+        assert_eq!(
+            constants1, constants2,
+            "Round constants should be deterministic"
+        );
     }
 
     #[test]
@@ -212,9 +214,18 @@ mod tests {
         let hash_ac = mimc_hash_native(a, c);
         let hash_bc = mimc_hash_native(b, c);
 
-        assert_ne!(hash_ab, hash_ac, "Different inputs should produce different hashes");
-        assert_ne!(hash_ab, hash_bc, "Different inputs should produce different hashes");
-        assert_ne!(hash_ac, hash_bc, "Different inputs should produce different hashes");
+        assert_ne!(
+            hash_ab, hash_ac,
+            "Different inputs should produce different hashes"
+        );
+        assert_ne!(
+            hash_ab, hash_bc,
+            "Different inputs should produce different hashes"
+        );
+        assert_ne!(
+            hash_ac, hash_bc,
+            "Different inputs should produce different hashes"
+        );
     }
 
     #[test]
@@ -222,6 +233,9 @@ mod tests {
         let original = Fr::from(0x123456789ABCDEFu64);
         let bytes = field_to_bytes(original);
         let recovered = bytes_to_field::<Fr>(&bytes).unwrap();
-        assert_eq!(original, recovered, "Field element should survive roundtrip");
+        assert_eq!(
+            original, recovered,
+            "Field element should survive roundtrip"
+        );
     }
 }

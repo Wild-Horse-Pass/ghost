@@ -80,16 +80,12 @@ impl PayoutConfig {
     /// Returns error if treasury_address is not configured
     pub fn validate(&self) -> GhostResult<()> {
         match &self.treasury_address {
-            None => {
-                Err(ghost_common::error::GhostError::ConfigError(
-                    "treasury_address is required but not configured".to_string()
-                ))
-            }
-            Some(addr) if addr.is_empty() => {
-                Err(ghost_common::error::GhostError::ConfigError(
-                    "treasury_address cannot be empty".to_string()
-                ))
-            }
+            None => Err(ghost_common::error::GhostError::ConfigError(
+                "treasury_address is required but not configured".to_string(),
+            )),
+            Some(addr) if addr.is_empty() => Err(ghost_common::error::GhostError::ConfigError(
+                "treasury_address cannot be empty".to_string(),
+            )),
             Some(_) => Ok(()),
         }
     }
@@ -99,7 +95,7 @@ impl PayoutConfig {
         match &self.treasury_address {
             Some(addr) if !addr.is_empty() => Ok(addr.as_slice()),
             _ => Err(ghost_common::error::GhostError::ConfigError(
-                "treasury_address is required but not configured".to_string()
+                "treasury_address is required but not configured".to_string(),
             )),
         }
     }
@@ -177,7 +173,11 @@ impl PayoutProposalCreator {
     ///
     /// # Errors
     /// Returns error if treasury_address is not configured
-    pub fn new(identity: Arc<NodeIdentity>, config: PayoutConfig, db: Arc<Database>) -> GhostResult<Self> {
+    pub fn new(
+        identity: Arc<NodeIdentity>,
+        config: PayoutConfig,
+        db: Arc<Database>,
+    ) -> GhostResult<Self> {
         // Validate configuration at startup - fail early if misconfigured
         config.validate()?;
 
@@ -202,7 +202,7 @@ impl PayoutProposalCreator {
     fn validate_block_hash(block_hash: &[u8; 32]) -> GhostResult<()> {
         if block_hash == &[0u8; 32] {
             return Err(ghost_common::error::GhostError::PayoutCalculation(
-                "block_hash is all zeros - invalid block hash".to_string()
+                "block_hash is all zeros - invalid block hash".to_string(),
             ));
         }
         Ok(())
@@ -317,13 +317,11 @@ impl PayoutProposalCreator {
         // H-MINE-3: Use treasury address snapshot from BlockFoundData
         // This ensures the coinbase is built with the address that was valid
         // at the time the round started, not a potentially changed address
-        let treasury_address = data.treasury_address_snapshot
-            .clone()
-            .unwrap_or_else(|| {
-                // Fallback to current config if no snapshot (shouldn't happen)
-                warn!("No treasury address snapshot - using current config (potential TOCTOU)");
-                self.config.treasury_address.clone().unwrap_or_default()
-            });
+        let treasury_address = data.treasury_address_snapshot.clone().unwrap_or_else(|| {
+            // Fallback to current config if no snapshot (shouldn't happen)
+            warn!("No treasury address snapshot - using current config (potential TOCTOU)");
+            self.config.treasury_address.clone().unwrap_or_default()
+        });
 
         let proposal = PayoutProposal {
             proposal_hash: [0u8; 32], // Will be computed by vote handler
@@ -427,12 +425,10 @@ impl PayoutProposalCreator {
         }
 
         // H-MINE-3: Use treasury address snapshot from SoloBlockFoundData
-        let treasury_address = data.treasury_address_snapshot
-            .clone()
-            .unwrap_or_else(|| {
-                warn!("No treasury address snapshot in solo mode - using current config");
-                self.config.treasury_address.clone().unwrap_or_default()
-            });
+        let treasury_address = data.treasury_address_snapshot.clone().unwrap_or_else(|| {
+            warn!("No treasury address snapshot in solo mode - using current config");
+            self.config.treasury_address.clone().unwrap_or_default()
+        });
 
         let proposal = PayoutProposal {
             proposal_hash: [0u8; 32], // Will be computed by vote handler
@@ -544,9 +540,7 @@ impl PayoutProposalCreator {
             dust_total = dust_total.saturating_add(rounding_remainder);
             debug!(
                 rounding_remainder,
-                allocated_total,
-                total_sats,
-                "Miner payout rounding remainder captured"
+                allocated_total, total_sats, "Miner payout rounding remainder captured"
             );
         }
 
@@ -651,9 +645,7 @@ impl PayoutProposalCreator {
             dust_total = dust_total.saturating_add(rounding_remainder);
             debug!(
                 rounding_remainder,
-                allocated_total,
-                total_sats,
-                "Node payout rounding remainder captured"
+                allocated_total, total_sats, "Node payout rounding remainder captured"
             );
         }
 
@@ -753,7 +745,10 @@ impl PayoutProposalCreator {
     ///
     /// # Returns
     /// Vec of RoundPayoutSummary containing aggregated payout info per round
-    pub fn get_payout_history(&self, query: PayoutHistoryQuery) -> GhostResult<Vec<RoundPayoutSummary>> {
+    pub fn get_payout_history(
+        &self,
+        query: PayoutHistoryQuery,
+    ) -> GhostResult<Vec<RoundPayoutSummary>> {
         self.db.query_payout_history(query)
     }
 }
@@ -790,9 +785,7 @@ impl PayoutHandler {
     ) -> GhostResult<Self> {
         let creator = PayoutProposalCreator::new(identity, config, db)?;
 
-        info!(
-            "PayoutHandler initialized with required verification provider"
-        );
+        info!("PayoutHandler initialized with required verification provider");
 
         Ok(Self {
             creator,
@@ -1025,7 +1018,10 @@ mod tests {
             treasury_address: Some(expected_addr.clone()),
             ..Default::default()
         };
-        assert_eq!(config_valid.treasury_address().unwrap(), expected_addr.as_slice());
+        assert_eq!(
+            config_valid.treasury_address().unwrap(),
+            expected_addr.as_slice()
+        );
     }
 
     #[test]
@@ -1239,7 +1235,12 @@ mod tests {
 
         // Key assertions:
         // 1. Total should not exceed available funds (prevents over-allocation)
-        assert!(bps_total <= total_sats, "Allocated {} but only {} available", bps_total, total_sats);
+        assert!(
+            bps_total <= total_sats,
+            "Allocated {} but only {} available",
+            bps_total,
+            total_sats
+        );
 
         // 2. Each miner should get approximately 1/3 (within 1% tolerance)
         let expected_per_miner = total_sats / 3;
@@ -1254,7 +1255,11 @@ mod tests {
             assert!(
                 diff <= tolerance,
                 "Miner {} got {} but expected ~{} (diff {} > tolerance {})",
-                i, amount, expected_per_miner, diff, tolerance
+                i,
+                amount,
+                expected_per_miner,
+                diff,
+                tolerance
             );
         }
 
@@ -1311,18 +1316,25 @@ mod tests {
         // 3 * 3333 = 9999 bps, leaving 1 bp = 0.01%
         // For 1M sats: 0.01% = 100 sats remainder
         assert!(remainder > 0, "Expected rounding remainder, got 0");
-        assert!(remainder < total_sats / 100, "Remainder {} too large", remainder);
+        assert!(
+            remainder < total_sats / 100,
+            "Remainder {} too large",
+            remainder
+        );
 
         // Total should be preserved when remainder is captured
         let total_with_remainder = allocated + remainder;
-        assert_eq!(total_with_remainder, total_sats, "Total should be exactly preserved");
+        assert_eq!(
+            total_with_remainder, total_sats,
+            "Total should be exactly preserved"
+        );
     }
 
     #[test]
     fn test_tx_fees_unallocated_tracked() {
         // PO-H4: Verify that tx_fees_unallocated field exists and can be set
         // This test documents the expected behavior when block finder has no payout address
-        use ghost_common::types::{PayoutProposal, PayoutEntry, PayoutType};
+        use ghost_common::types::{PayoutEntry, PayoutProposal, PayoutType};
 
         // Create a proposal where TX fees could be allocated
         let allocated_proposal = PayoutProposal {
@@ -1367,8 +1379,7 @@ mod tests {
 
         // The tx_fees_unallocated field allows auditing which blocks had allocation issues
         assert_eq!(
-            unallocated_proposal.tx_fees,
-            unallocated_proposal.tx_fees_unallocated,
+            unallocated_proposal.tx_fees, unallocated_proposal.tx_fees_unallocated,
             "When block finder has no address, all TX fees should be marked as unallocated"
         );
     }

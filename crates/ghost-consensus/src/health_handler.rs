@@ -114,7 +114,10 @@ impl HealthRateLimiter {
 
         // H-P2P-3: Refill tokens based on time elapsed, with overflow protection
         // Cap elapsed time to 1 hour to prevent overflow from clock jumps or Instant wraparound
-        let elapsed = now.duration_since(bucket.last_update).as_secs_f64().min(3600.0);
+        let elapsed = now
+            .duration_since(bucket.last_update)
+            .as_secs_f64()
+            .min(3600.0);
 
         // Calculate new token count with NaN/Infinity protection
         let new_tokens = bucket.tokens + elapsed * self.refill_rate as f64;
@@ -388,7 +391,9 @@ impl HealthPingHandler {
 
     /// Record a successful voter registration (C2 security fix)
     fn record_registration(&self, node_id: &NodeId) {
-        self.last_registration.write().insert(*node_id, Instant::now());
+        self.last_registration
+            .write()
+            .insert(*node_id, Instant::now());
     }
 
     /// Check if node is banned (uses shared BanManager if available)

@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ghost_common::identity::NodeIdentity;
-use ghost_common::types::{ConsensusResult, NodeId, VoteType};
-use ghost_consensus::voting::{Vote, VoteResult, VotingSession};
+use ghost_common::types::{ConsensusResult, NodeId, RoundId, VoteType};
+use ghost_consensus::voting::{compute_vote_signing_message, Vote, VoteResult, VotingSession};
 use ghost_storage::models::{PayoutStatus, RoundRecord, ShareRecord};
 use ghost_storage::Database;
 use sha2::{Digest, Sha256};
@@ -49,7 +49,22 @@ fn test_proposal_hash(round_id: u64, block_height: u64) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// Create a signed vote
+/// Create a signed vote with proper signing message (includes round_id for replay protection)
+fn create_signed_vote_for_round(
+    identity: &NodeIdentity,
+    round_id: RoundId,
+    proposal_hash: &[u8; 32],
+    approve: bool,
+) -> Vote {
+    let message =
+        compute_vote_signing_message(round_id, proposal_hash, &identity.node_id(), approve);
+    let signature = identity.sign_hash(&message);
+    Vote::new(identity.node_id(), approve, signature)
+}
+
+/// Create a signed vote (legacy helper - kept for backward compatibility)
+/// Note: This signs only the proposal_hash, not the full signing message.
+/// Use create_signed_vote_for_round for tests using VotingSession.
 fn create_signed_vote(identity: &NodeIdentity, proposal_hash: &[u8; 32], approve: bool) -> Vote {
     let signature = identity.sign_hash(proposal_hash);
     Vote::new(identity.node_id(), approve, signature)
@@ -217,19 +232,22 @@ fn test_voting_session_with_real_signatures() {
     );
 
     // First 3 voters vote yes (should not reach quorum yet with 5 voters)
-    for voter in &voters[0..3] {
-        let vote = create_signed_vote(voter, &proposal_hash, true);
+    for (i, voter) in voters[0..3].iter().enumerate() {
+        let vote = create_signed_vote_for_round(voter, round_id, &proposal_hash, true);
         let result = session.add_vote(vote);
 
-        // With 5 voters, 67% = 4 votes needed
-        // After 3 votes, still pending
-        if voter.node_id() != voters[2].node_id() {
-            assert!(matches!(result, VoteResult::ApprovalRecorded));
-        }
+        // With 5 voters, 67% = ceiling(5 * 0.67) = 4 votes needed
+        // Votes 1-3 should all return ApprovalRecorded (not yet at threshold)
+        assert!(
+            matches!(result, VoteResult::ApprovalRecorded),
+            "Vote {} should be ApprovalRecorded, got {:?}",
+            i,
+            result
+        );
     }
 
     // 4th voter votes yes - should reach quorum
-    let vote = create_signed_vote(&voters[3], &proposal_hash, true);
+    let vote = create_signed_vote_for_round(&voters[3], round_id, &proposal_hash, true);
     let result = session.add_vote(vote);
 
     // Should be decided now (4/5 = 80% > 67%)
@@ -258,7 +276,7 @@ fn test_voting_rejection_threshold() {
 
     // All 5 voters vote no
     for voter in &voters {
-        let vote = create_signed_vote(voter, &proposal_hash, false);
+        let vote = create_signed_vote_for_round(voter, round_id, &proposal_hash, false);
         session.add_vote(vote);
     }
 
@@ -275,10 +293,11 @@ fn test_duplicate_vote_prevention() {
     let voters: Vec<NodeIdentity> = (0..3).map(test_identity).collect();
     let voter_ids: HashSet<NodeId> = voters.iter().map(|e| e.node_id()).collect();
 
-    let proposal_hash = test_proposal_hash(1, 850_000);
+    let round_id = 1;
+    let proposal_hash = test_proposal_hash(round_id, 850_000);
 
     let mut session = VotingSession::new(
-        1,
+        round_id,
         proposal_hash,
         VoteType::PayoutApproval,
         voter_ids,
@@ -286,12 +305,12 @@ fn test_duplicate_vote_prevention() {
     );
 
     // First vote succeeds
-    let vote1 = create_signed_vote(&voters[0], &proposal_hash, true);
+    let vote1 = create_signed_vote_for_round(&voters[0], round_id, &proposal_hash, true);
     let result1 = session.add_vote(vote1);
     assert!(matches!(result1, VoteResult::ApprovalRecorded));
 
-    // Duplicate vote fails
-    let vote2 = create_signed_vote(&voters[0], &proposal_hash, false);
+    // Duplicate vote fails (same approve value = duplicate)
+    let vote2 = create_signed_vote_for_round(&voters[0], round_id, &proposal_hash, true);
     let result2 = session.add_vote(vote2);
     assert!(matches!(result2, VoteResult::DuplicateVote));
 }
@@ -304,18 +323,19 @@ fn test_ineligible_voter_rejected() {
     // Create an outsider not in the eligible voter set
     let outsider = test_identity(99);
 
-    let proposal_hash = test_proposal_hash(1, 850_000);
+    let round_id = 1;
+    let proposal_hash = test_proposal_hash(round_id, 850_000);
 
     let mut session = VotingSession::new(
-        1,
+        round_id,
         proposal_hash,
         VoteType::PayoutApproval,
         voter_ids,
         60_000,
     );
 
-    // Vote from non-eligible node should be rejected
-    let vote = create_signed_vote(&outsider, &proposal_hash, true);
+    // Vote from non-eligible node should be rejected (checked before signature)
+    let vote = create_signed_vote_for_round(&outsider, round_id, &proposal_hash, true);
     let result = session.add_vote(vote);
     assert!(matches!(result, VoteResult::NotEligible));
 }
@@ -453,7 +473,7 @@ fn test_complete_share_to_consensus_flow() {
 
     // 4 out of 5 voters approve (80% > 67%)
     for i in 0..4 {
-        let vote = create_signed_vote(&voters[i], &proposal_hash, true);
+        let vote = create_signed_vote_for_round(&voters[i], round_id, &proposal_hash, true);
         let result = session.add_vote(vote);
 
         if i == 3 {
@@ -481,10 +501,11 @@ fn test_consensus_with_minimum_voters() {
     let voters: Vec<NodeIdentity> = (0..3).map(test_identity).collect();
     let voter_ids: HashSet<NodeId> = voters.iter().map(|e| e.node_id()).collect();
 
-    let proposal_hash = test_proposal_hash(1, 850_000);
+    let round_id = 1;
+    let proposal_hash = test_proposal_hash(round_id, 850_000);
 
     let mut session = VotingSession::new(
-        1,
+        round_id,
         proposal_hash,
         VoteType::PayoutApproval,
         voter_ids,
@@ -493,17 +514,17 @@ fn test_consensus_with_minimum_voters() {
 
     // With 3 voters, 67% = 3 votes needed (ceiling of 2.01)
     // Vote 1 - pending
-    let vote1 = create_signed_vote(&voters[0], &proposal_hash, true);
+    let vote1 = create_signed_vote_for_round(&voters[0], round_id, &proposal_hash, true);
     let result1 = session.add_vote(vote1);
     assert!(matches!(result1, VoteResult::ApprovalRecorded));
 
     // Vote 2 - still pending
-    let vote2 = create_signed_vote(&voters[1], &proposal_hash, true);
+    let vote2 = create_signed_vote_for_round(&voters[1], round_id, &proposal_hash, true);
     let result2 = session.add_vote(vote2);
     assert!(matches!(result2, VoteResult::ApprovalRecorded));
 
     // Vote 3 - approved (3/3 = 100%)
-    let vote3 = create_signed_vote(&voters[2], &proposal_hash, true);
+    let vote3 = create_signed_vote_for_round(&voters[2], round_id, &proposal_hash, true);
     let result3 = session.add_vote(vote3);
     assert!(matches!(
         result3,
@@ -517,10 +538,11 @@ fn test_consensus_with_split_votes() {
     let voters: Vec<NodeIdentity> = (0..7).map(test_identity).collect();
     let voter_ids: HashSet<NodeId> = voters.iter().map(|e| e.node_id()).collect();
 
-    let proposal_hash = test_proposal_hash(1, 850_000);
+    let round_id = 1;
+    let proposal_hash = test_proposal_hash(round_id, 850_000);
 
     let mut session = VotingSession::new(
-        1,
+        round_id,
         proposal_hash,
         VoteType::PayoutApproval,
         voter_ids,
@@ -529,13 +551,13 @@ fn test_consensus_with_split_votes() {
 
     // 2 yes votes
     for i in 0..2 {
-        let vote = create_signed_vote(&voters[i], &proposal_hash, true);
+        let vote = create_signed_vote_for_round(&voters[i], round_id, &proposal_hash, true);
         session.add_vote(vote);
     }
 
     // 5 no votes
     for i in 2..7 {
-        let vote = create_signed_vote(&voters[i], &proposal_hash, false);
+        let vote = create_signed_vote_for_round(&voters[i], round_id, &proposal_hash, false);
         session.add_vote(vote);
     }
 
@@ -576,10 +598,11 @@ fn test_large_voter_set() {
     let voters: Vec<NodeIdentity> = (0..21).map(test_identity).collect();
     let voter_ids: HashSet<NodeId> = voters.iter().map(|e| e.node_id()).collect();
 
-    let proposal_hash = test_proposal_hash(1, 850_000);
+    let round_id = 1;
+    let proposal_hash = test_proposal_hash(round_id, 850_000);
 
     let mut session = VotingSession::new(
-        1,
+        round_id,
         proposal_hash,
         VoteType::PayoutApproval,
         voter_ids,
@@ -589,7 +612,7 @@ fn test_large_voter_set() {
     // 67% of 21 = 14.07, ceil = 15 votes needed
     // Cast 15 yes votes
     for i in 0..15 {
-        let vote = create_signed_vote(&voters[i], &proposal_hash, true);
+        let vote = create_signed_vote_for_round(&voters[i], round_id, &proposal_hash, true);
         let result = session.add_vote(vote);
 
         if i == 14 {

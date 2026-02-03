@@ -174,7 +174,10 @@ impl RateLimiter {
 
         // H-P2P-3: Refill tokens based on time elapsed, with overflow protection
         // Cap elapsed time to 1 hour to prevent overflow from clock jumps or Instant wraparound
-        let elapsed = now.duration_since(bucket.last_update).as_secs_f64().min(3600.0);
+        let elapsed = now
+            .duration_since(bucket.last_update)
+            .as_secs_f64()
+            .min(3600.0);
 
         // Calculate new token count with NaN/Infinity protection
         let new_tokens = bucket.tokens + elapsed * self.refill_rate as f64;
@@ -811,7 +814,8 @@ impl VoteHandler {
         // Sign with round_id included to prevent replay attacks
         // Format: H(round_id || proposal_hash || voter_id || decision)
         let voter_id = self.identity.node_id();
-        let signing_message = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, approve);
+        let signing_message =
+            compute_vote_signing_message(round_id, &proposal_hash, &voter_id, approve);
         let signature = self.identity.sign(&signing_message);
 
         // Create vote
@@ -1258,8 +1262,14 @@ mod tests {
     fn test_ban_reason_durations() {
         // Verify ban durations are reasonable
         assert_eq!(BanReason::Equivocation.default_duration().as_secs(), 600);
-        assert_eq!(BanReason::RateLimitExceeded.default_duration().as_secs(), 300);
+        assert_eq!(
+            BanReason::RateLimitExceeded.default_duration().as_secs(),
+            300
+        );
         assert_eq!(BanReason::InvalidMessages.default_duration().as_secs(), 180);
-        assert_eq!(BanReason::ProtocolViolation.default_duration().as_secs(), 900);
+        assert_eq!(
+            BanReason::ProtocolViolation.default_duration().as_secs(),
+            900
+        );
     }
 }

@@ -102,7 +102,11 @@ pub fn verify_signature(public_key: &[u8; 32], message: &[u8], signature: &[u8; 
 ///
 /// Uses the secp256k1 library for proper cryptographic verification.
 /// This function expects the message to already be a 32-byte hash.
-pub fn verify_signature_raw(public_key: &[u8; 32], message_hash: &[u8; 32], signature: &[u8; 64]) -> bool {
+pub fn verify_signature_raw(
+    public_key: &[u8; 32],
+    message_hash: &[u8; 32],
+    signature: &[u8; 64],
+) -> bool {
     let secp = Secp256k1::verification_only();
 
     // Parse the x-only public key
@@ -121,7 +125,8 @@ pub fn verify_signature_raw(public_key: &[u8; 32], message_hash: &[u8; 32], sign
     let msg = Message::from_digest(*message_hash);
 
     // Verify the signature
-    secp.verify_schnorr(&schnorr_sig, &msg, &xonly_pubkey).is_ok()
+    secp.verify_schnorr(&schnorr_sig, &msg, &xonly_pubkey)
+        .is_ok()
 }
 
 /// Create a tagged hash (BIP-340 style)
@@ -198,13 +203,19 @@ mod tests {
 
         // Verify the signature is not empty (64 bytes)
         assert_eq!(sig.len(), 64);
-        assert!(sig.iter().any(|&b| b != 0), "Signature should not be all zeros");
+        assert!(
+            sig.iter().any(|&b| b != 0),
+            "Signature should not be all zeros"
+        );
 
         // Verify the signature using the verify function
         // Note: sign_transaction uses b"Ghost/TxSign/v1" tag internally
         let tx_hash = tagged_hash(b"Ghost/TxSign/v1", tx_data);
         let verify_result = verify_signature_raw(key.auth_pubkey(), &tx_hash, &sig);
-        assert!(verify_result, "Signature should verify against the auth public key");
+        assert!(
+            verify_result,
+            "Signature should verify against the auth public key"
+        );
 
         // Different data should produce different signature
         let sig2 = sign_transaction(&key, b"different data").unwrap();

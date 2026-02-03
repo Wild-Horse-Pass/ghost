@@ -26,8 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Main registry service configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RegistryServiceConfig {
     /// Server configuration
     pub server: ServerConfig,
@@ -40,7 +39,6 @@ pub struct RegistryServiceConfig {
     /// Database configuration
     pub database: DatabaseConfig,
 }
-
 
 /// HTTP server configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

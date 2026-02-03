@@ -265,10 +265,7 @@ impl GhostKeys {
         })?;
         let tweak_pubkey = PublicKey::from_secret_key(&secp, &tweak_secret);
         let recovery_pubkey = self.scan_pubkey.combine(&tweak_pubkey).map_err(|e| {
-            GhostKeyError::DerivationError(format!(
-                "Failed to combine pubkeys for recovery: {}",
-                e
-            ))
+            GhostKeyError::DerivationError(format!("Failed to combine pubkeys for recovery: {}", e))
         })?;
 
         Ok(recovery_pubkey.serialize())

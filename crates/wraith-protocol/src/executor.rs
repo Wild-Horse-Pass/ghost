@@ -566,8 +566,8 @@ fn build_op_return_script(data: &[u8]) -> ScriptBuf {
 /// This provides cryptographic unpredictability for output ordering.
 fn shuffle_outputs(items: &mut [(usize, usize, &str)], seed_bytes: [u8; 32]) {
     use rand::seq::SliceRandom;
-    use rand_chacha::ChaCha20Rng;
     use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
 
     let mut rng = ChaCha20Rng::from_seed(seed_bytes);
     items.shuffle(&mut rng);
@@ -579,8 +579,8 @@ fn shuffle_outputs(items: &mut [(usize, usize, &str)], seed_bytes: [u8; 32]) {
 /// This provides cryptographic unpredictability for input ordering.
 fn shuffle_inputs(items: &mut [(usize, &WraithInput)], seed_bytes: [u8; 32]) {
     use rand::seq::SliceRandom;
-    use rand_chacha::ChaCha20Rng;
     use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
 
     let mut rng = ChaCha20Rng::from_seed(seed_bytes);
     items.shuffle(&mut rng);
@@ -592,8 +592,8 @@ fn shuffle_inputs(items: &mut [(usize, &WraithInput)], seed_bytes: [u8; 32]) {
 /// This provides cryptographic unpredictability for index ordering.
 fn shuffle_indices(items: &mut [usize], seed_bytes: [u8; 32]) {
     use rand::seq::SliceRandom;
-    use rand_chacha::ChaCha20Rng;
     use rand::SeedableRng;
+    use rand_chacha::ChaCha20Rng;
 
     let mut rng = ChaCha20Rng::from_seed(seed_bytes);
     items.shuffle(&mut rng);
@@ -676,9 +676,27 @@ mod tests {
     /// 2. Same seed produces deterministic result
     #[test]
     fn test_shuffle_csprng_chacha20() {
-        let mut items1 = vec![(0, 0, "a"), (1, 0, "b"), (2, 0, "c"), (3, 0, "d"), (4, 0, "e")];
-        let mut items2 = vec![(0, 0, "a"), (1, 0, "b"), (2, 0, "c"), (3, 0, "d"), (4, 0, "e")];
-        let mut items3 = vec![(0, 0, "a"), (1, 0, "b"), (2, 0, "c"), (3, 0, "d"), (4, 0, "e")];
+        let mut items1 = vec![
+            (0, 0, "a"),
+            (1, 0, "b"),
+            (2, 0, "c"),
+            (3, 0, "d"),
+            (4, 0, "e"),
+        ];
+        let mut items2 = vec![
+            (0, 0, "a"),
+            (1, 0, "b"),
+            (2, 0, "c"),
+            (3, 0, "d"),
+            (4, 0, "e"),
+        ];
+        let mut items3 = vec![
+            (0, 0, "a"),
+            (1, 0, "b"),
+            (2, 0, "c"),
+            (3, 0, "d"),
+            (4, 0, "e"),
+        ];
 
         let seed1 = [0x01u8; 32];
         let seed2 = [0x02u8; 32];
@@ -693,7 +711,10 @@ mod tests {
         // Different seed = different result (with high probability)
         // Note: With 5 elements, there's 1/120 chance they're the same by accident
         // We use different initial bytes to ensure different results
-        assert_ne!(items1, items3, "Different seeds should produce different shuffles");
+        assert_ne!(
+            items1, items3,
+            "Different seeds should produce different shuffles"
+        );
     }
 
     #[test]

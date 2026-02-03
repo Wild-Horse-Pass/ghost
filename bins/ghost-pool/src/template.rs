@@ -355,7 +355,12 @@ impl TemplateProcessor {
     ) -> (Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32) {
         // Check for approved payout - reads live lock (TOCTOU-vulnerable path)
         let payout_hash = *self.approved_payout.read();
-        self.build_coinbase_parts_with_payout_snapshot(height, total_value, witness_commitment, payout_hash)
+        self.build_coinbase_parts_with_payout_snapshot(
+            height,
+            total_value,
+            witness_commitment,
+            payout_hash,
+        )
     }
 
     /// H-MINE-2: Build coinbase using a pre-captured payout snapshot
@@ -477,7 +482,11 @@ impl TemplateProcessor {
                     let treasury_addr = self.config.treasury_address.address();
                     self.encode_address_script(&mut coinbase2, treasury_addr, "treasury");
                     outputs_serialized.extend_from_slice(&prop.treasury_amount.to_le_bytes());
-                    self.encode_address_script(&mut outputs_serialized, treasury_addr, "treasury_tdp");
+                    self.encode_address_script(
+                        &mut outputs_serialized,
+                        treasury_addr,
+                        "treasury_tdp",
+                    );
                     warn!("Using treasury address from config (proposal has no snapshot)");
                 }
             }

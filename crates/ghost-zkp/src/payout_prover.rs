@@ -219,10 +219,16 @@ impl PayoutProver {
         // Production MUST use MPC-generated parameters
         info!("Generating Groth16 parameters (TESTING ONLY - NOT SECURE FOR PRODUCTION)...");
         let setup_start = Instant::now();
-        let params = generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rand::thread_rng())
-            .map_err(|e| ZkError::SetupError(format!("Parameter generation failed: {:?}", e)))?;
+        let params =
+            generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rand::thread_rng())
+                .map_err(|e| {
+                    ZkError::SetupError(format!("Parameter generation failed: {:?}", e))
+                })?;
 
-        info!("Groth16 parameters generated in {:?}", setup_start.elapsed());
+        info!(
+            "Groth16 parameters generated in {:?}",
+            setup_start.elapsed()
+        );
 
         // Prepare verifying key for efficient verification
         let prepared_vk = prepare_verifying_key(&params.vk);

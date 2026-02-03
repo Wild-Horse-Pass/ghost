@@ -173,10 +173,8 @@ impl ZkPayoutVoteHandler {
 
     /// Create a new ZK payout vote handler with custom config
     pub fn with_config(identity: Arc<NodeIdentity>, config: ZkPayoutVoteHandlerConfig) -> Self {
-        let rate_limiter = RateLimiter::new(
-            config.rate_limit_max_tokens,
-            config.rate_limit_refill_rate,
-        );
+        let rate_limiter =
+            RateLimiter::new(config.rate_limit_max_tokens, config.rate_limit_refill_rate);
         Self {
             identity,
             epoch_tracker: None,
@@ -222,7 +220,8 @@ impl ZkPayoutVoteHandler {
     ///
     /// P2P4-L5: Uses configurable window from config
     pub fn cleanup_rate_limiter(&self) {
-        self.rate_limiter.cleanup(self.config.rate_limit_window_secs);
+        self.rate_limiter
+            .cleanup(self.config.rate_limit_window_secs);
     }
 
     /// Set epoch tracker for settler verification

@@ -500,7 +500,7 @@ mod tests {
         // Root: hash(hash_01, hash_23)
 
         let sibling_0 = Fr::from(100u64); // Leaf at index 1
-        let leaf_3 = Fr::from(300u64);    // Leaf at index 3
+        let leaf_3 = Fr::from(300u64); // Leaf at index 3
         let recipient_idx = 2u64;
 
         // Compute hashes using MiMC (matches circuit)
@@ -525,10 +525,17 @@ mod tests {
 
         // Verify our native computation matches what the circuit expects
         let check_input = compute_test_root(sender_leaf, 0, &sender_siblings);
-        assert_eq!(check_input, input_root, "Input root computation should match");
+        assert_eq!(
+            check_input, input_root,
+            "Input root computation should match"
+        );
 
-        let check_intermediate = compute_test_root(recipient_leaf, recipient_idx, &recipient_siblings);
-        assert_eq!(check_intermediate, intermediate_root, "Intermediate root computation should match");
+        let check_intermediate =
+            compute_test_root(recipient_leaf, recipient_idx, &recipient_siblings);
+        assert_eq!(
+            check_intermediate, intermediate_root,
+            "Intermediate root computation should match"
+        );
 
         // Create the circuit
         let circuit = PaymentStateTransitionCircuit {
@@ -536,7 +543,8 @@ mod tests {
                 Some(sender_balance_before),
                 Some(recipient_balance_before),
                 Some(amount),
-            ).expect("Valid payment should succeed"),
+            )
+            .expect("Valid payment should succeed"),
             sender_index: Some(0),
             sender_siblings: sender_siblings.iter().map(|s| Some(*s)).collect(),
             recipient_index: Some(recipient_idx),
@@ -606,7 +614,8 @@ mod tests {
                 Some(sender_balance_before),
                 Some(recipient_balance_before),
                 Some(amount),
-            ).expect("Valid payment should succeed"),
+            )
+            .expect("Valid payment should succeed"),
             sender_index: Some(0),
             sender_siblings: vec![Some(sibling_0), Some(sibling_1)],
             recipient_index: Some(2),

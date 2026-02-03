@@ -380,7 +380,11 @@ pub struct UtxoProof {
 impl UtxoProof {
     /// Create a new UTXO proof
     pub fn new(txid: Txid, vout: u32, min_value: u64) -> Self {
-        Self { txid, vout, min_value }
+        Self {
+            txid,
+            vout,
+            min_value,
+        }
     }
 }
 
@@ -587,7 +591,10 @@ impl WraithCoordinator {
     ///
     /// The reputation tracker is shared across sessions to track participants
     /// who fail to complete signing.
-    pub fn with_reputation(mut self, reputation: Arc<parking_lot::RwLock<ReputationTracker>>) -> Self {
+    pub fn with_reputation(
+        mut self,
+        reputation: Arc<parking_lot::RwLock<ReputationTracker>>,
+    ) -> Self {
         self.reputation = Some(reputation);
         self
     }
@@ -686,9 +693,10 @@ impl WraithCoordinator {
         utxo_proof: UtxoProof,
     ) -> Result<u32, WraithError> {
         // Verify UTXO exists
-        let verifier = self.utxo_verifier.as_ref().ok_or_else(|| {
-            WraithError::InvalidInput("No UTXO verifier configured".to_string())
-        })?;
+        let verifier = self
+            .utxo_verifier
+            .as_ref()
+            .ok_or_else(|| WraithError::InvalidInput("No UTXO verifier configured".to_string()))?;
 
         match verifier(&utxo_proof.txid, utxo_proof.vout) {
             Ok(true) => { /* UTXO exists, continue */ }
@@ -748,13 +756,17 @@ impl WraithCoordinator {
         }
 
         // Derive session-specific participant ID (WR-M4)
-        let session_participant_id = derive_session_participant_id(&ghost_id, self.session.session_id());
+        let session_participant_id =
+            derive_session_participant_id(&ghost_id, self.session.session_id());
 
         let index = self.participants.len() as u32;
         let participant = Participant::new(index, session_participant_id.clone());
-        self.participants.insert(session_participant_id.clone(), participant);
-        self.ghost_id_to_session_id.insert(ghost_id.clone(), session_participant_id.clone());
-        self.session_id_to_ghost_id.insert(session_participant_id.clone(), ghost_id);
+        self.participants
+            .insert(session_participant_id.clone(), participant);
+        self.ghost_id_to_session_id
+            .insert(ghost_id.clone(), session_participant_id.clone());
+        self.session_id_to_ghost_id
+            .insert(session_participant_id.clone(), ghost_id);
         self.participant_order.push(session_participant_id);
         self.session.add_participant();
 
@@ -779,10 +791,13 @@ impl WraithCoordinator {
     ///
     /// If a UTXO verifier is configured, verifies the UTXO exists before accepting (WR-L2).
     pub fn submit_input(&mut self, ghost_id: &str, input: WraithInput) -> Result<(), WraithError> {
-        let session_id = self.get_session_participant_id(ghost_id)
+        let session_id = self
+            .get_session_participant_id(ghost_id)
             .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
             .clone();
-        let participant = self.participants.get_mut(&session_id)
+        let participant = self
+            .participants
+            .get_mut(&session_id)
             .expect("session_id must exist if ghost_id mapping exists");
 
         // Validate input amount
@@ -827,7 +842,8 @@ impl WraithCoordinator {
     ///
     /// RATE LIMITING: May return error if participant has exceeded nonce limits.
     pub fn request_nonces(&mut self, ghost_id: &str) -> Result<Vec<PublicNonce>, WraithError> {
-        let session_id = self.get_session_participant_id(ghost_id)
+        let session_id = self
+            .get_session_participant_id(ghost_id)
             .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
             .clone();
 
@@ -838,7 +854,9 @@ impl WraithCoordinator {
             nonces.push(nonce);
         }
 
-        let participant = self.participants.get_mut(&session_id)
+        let participant = self
+            .participants
+            .get_mut(&session_id)
             .expect("session_id must exist if ghost_id mapping exists");
         participant.issued_nonces = nonces.clone();
         Ok(nonces)
@@ -864,7 +882,8 @@ impl WraithCoordinator {
             )));
         }
 
-        let session_id = self.get_session_participant_id(ghost_id)
+        let session_id = self
+            .get_session_participant_id(ghost_id)
             .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
             .clone();
 
@@ -877,7 +896,9 @@ impl WraithCoordinator {
             responses.push(response);
         }
 
-        let participant = self.participants.get_mut(&session_id)
+        let participant = self
+            .participants
+            .get_mut(&session_id)
             .expect("session_id must exist if ghost_id mapping exists");
 
         participant.blinded_challenges = challenges;
@@ -903,10 +924,13 @@ impl WraithCoordinator {
             )));
         }
 
-        let session_id = self.get_session_participant_id(ghost_id)
+        let session_id = self
+            .get_session_participant_id(ghost_id)
             .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
             .clone();
-        let participant = self.participants.get_mut(&session_id)
+        let participant = self
+            .participants
+            .get_mut(&session_id)
             .expect("session_id must exist if ghost_id mapping exists");
 
         // If this participant previously submitted an address, remove it from the set
@@ -1066,7 +1090,8 @@ impl WraithCoordinator {
     pub fn build_phase1(&mut self) -> Result<&SplitTransaction, WraithError> {
         if !self.ready_for_phase1() {
             return Err(WraithError::PhaseError(
-                "Not all participants have submitted inputs or not enough anonymous tokens".to_string(),
+                "Not all participants have submitted inputs or not enough anonymous tokens"
+                    .to_string(),
             ));
         }
 
@@ -1170,10 +1195,13 @@ impl WraithCoordinator {
 
     /// Record Phase 1 signature from participant
     pub fn add_phase1_signature(&mut self, ghost_id: &str) -> Result<bool, WraithError> {
-        let session_id = self.get_session_participant_id(ghost_id)
+        let session_id = self
+            .get_session_participant_id(ghost_id)
             .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
             .clone();
-        let participant = self.participants.get_mut(&session_id)
+        let participant = self
+            .participants
+            .get_mut(&session_id)
             .expect("session_id must exist if ghost_id mapping exists");
 
         participant.phase1_signed = true;
@@ -1340,10 +1368,13 @@ impl WraithCoordinator {
 
     /// Record Phase 2 signature from participant
     pub fn add_phase2_signature(&mut self, ghost_id: &str) -> Result<bool, WraithError> {
-        let session_id = self.get_session_participant_id(ghost_id)
+        let session_id = self
+            .get_session_participant_id(ghost_id)
             .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
             .clone();
-        let participant = self.participants.get_mut(&session_id)
+        let participant = self
+            .participants
+            .get_mut(&session_id)
             .expect("session_id must exist if ghost_id mapping exists");
 
         participant.phase2_signed = true;
@@ -2267,7 +2298,10 @@ mod tests {
         // Regular registration should fail
         let result = coord.register_participant("ghost1".to_string());
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("UTXO proof required"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("UTXO proof required"));
     }
 
     /// M-WRAITH-2 Test: Registration with UTXO proof succeeds

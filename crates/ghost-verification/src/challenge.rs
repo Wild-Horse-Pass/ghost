@@ -686,7 +686,10 @@ mod tests {
 
         // Should no longer be valid (already used)
         assert!(!cache.is_valid(&nonce));
-        assert_eq!(cache.validate_and_consume(&nonce), Err(NonceError::AlreadyUsed));
+        assert_eq!(
+            cache.validate_and_consume(&nonce),
+            Err(NonceError::AlreadyUsed)
+        );
     }
 
     #[test]

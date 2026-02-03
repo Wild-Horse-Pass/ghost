@@ -65,9 +65,9 @@ impl Default for RoundConfig {
             max_shares_per_round: 1_000_000,
             rounds_to_keep: 10,
             mining_mode: MiningMode::PublicPool,
-            max_miner_share_percent: 0.10, // 10% cap per miner
+            max_miner_share_percent: 0.10,     // 10% cap per miner
             max_shares_per_miner_per_sec: 100, // H6: Rate limit per miner
-            max_work_multiplier: 1.0, // H6: Work cannot exceed network difficulty
+            max_work_multiplier: 1.0,          // H6: Work cannot exceed network difficulty
         }
     }
 }
@@ -277,7 +277,10 @@ impl RoundManager {
         // (e.g., if someone finds a hash collision or exploits weak verification)
         let max_work = diff_calc.network_difficulty;
         if work > max_work {
-            return Err(ShareError::WorkValueTooHigh { got: work, max: max_work });
+            return Err(ShareError::WorkValueTooHigh {
+                got: work,
+                max: max_work,
+            });
         }
 
         // Add to round
@@ -596,7 +599,10 @@ impl RoundManager {
                     max_work,
                     "H6: Anomalous work value detected - exceeds network difficulty"
                 );
-                return Err(ShareError::WorkValueTooHigh { got: work, max: max_work });
+                return Err(ShareError::WorkValueTooHigh {
+                    got: work,
+                    max: max_work,
+                });
             }
 
             // Also check for negative or zero work
@@ -799,7 +805,9 @@ pub enum ShareError {
     InvalidWork,
 
     /// H6: Miner share cap exceeded (enforced rejection)
-    #[error("Miner share cap exceeded: {miner_id} has {current_percent:.1}% (max {max_percent:.1}%)")]
+    #[error(
+        "Miner share cap exceeded: {miner_id} has {current_percent:.1}% (max {max_percent:.1}%)"
+    )]
     MinerShareCapExceeded {
         miner_id: String,
         current_percent: f64,
@@ -883,8 +891,10 @@ mod tests {
 
         // Verify default has a reasonable cap
         let default_config = RoundConfig::default();
-        assert!(default_config.network_difficulty > default_config.share_difficulty,
-            "Network difficulty should be greater than share difficulty");
+        assert!(
+            default_config.network_difficulty > default_config.share_difficulty,
+            "Network difficulty should be greater than share difficulty"
+        );
     }
 
     #[test]
@@ -920,13 +930,29 @@ mod tests {
         let m3_pct = manager.miner_share_percent("miner3");
 
         // Each should be approximately 33.3%
-        assert!(m1_pct > 0.30 && m1_pct < 0.35, "miner1 should be ~33%, got {}", m1_pct);
-        assert!(m2_pct > 0.30 && m2_pct < 0.35, "miner2 should be ~33%, got {}", m2_pct);
-        assert!(m3_pct > 0.30 && m3_pct < 0.35, "miner3 should be ~33%, got {}", m3_pct);
+        assert!(
+            m1_pct > 0.30 && m1_pct < 0.35,
+            "miner1 should be ~33%, got {}",
+            m1_pct
+        );
+        assert!(
+            m2_pct > 0.30 && m2_pct < 0.35,
+            "miner2 should be ~33%, got {}",
+            m2_pct
+        );
+        assert!(
+            m3_pct > 0.30 && m3_pct < 0.35,
+            "miner3 should be ~33%, got {}",
+            m3_pct
+        );
 
         // Sum should be 100%
         let total = m1_pct + m2_pct + m3_pct;
-        assert!((total - 1.0).abs() < 0.01, "Total should be 100%, got {}", total);
+        assert!(
+            (total - 1.0).abs() < 0.01,
+            "Total should be 100%, got {}",
+            total
+        );
     }
 
     #[test]
@@ -938,10 +964,16 @@ mod tests {
 
         // This mimics the check in submit_share
         let max_work = network_difficulty;
-        assert!(claimed_work > max_work, "Test setup: claimed work should exceed max");
+        assert!(
+            claimed_work > max_work,
+            "Test setup: claimed work should exceed max"
+        );
 
         // The error type should be WorkValueTooHigh
-        let error = ShareError::WorkValueTooHigh { got: claimed_work, max: max_work };
+        let error = ShareError::WorkValueTooHigh {
+            got: claimed_work,
+            max: max_work,
+        };
         assert!(error.to_string().contains("too high"));
     }
 
@@ -979,7 +1011,10 @@ mod tests {
 
         // Verify the miner's work was recorded correctly
         let percent = manager.miner_share_percent("honest_miner");
-        assert!((percent - 1.0).abs() < 0.01, "Honest miner should have 100% of work");
+        assert!(
+            (percent - 1.0).abs() < 0.01,
+            "Honest miner should have 100% of work"
+        );
     }
 
     #[test]

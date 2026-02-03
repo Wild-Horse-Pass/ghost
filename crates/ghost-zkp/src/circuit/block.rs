@@ -599,7 +599,8 @@ mod tests {
                 Some(sender_balance),
                 Some(recipient_balance),
                 Some(amount),
-            ).expect("Valid payment should succeed"),
+            )
+            .expect("Valid payment should succeed"),
             sender_index: Some(0),
             sender_siblings: vec![Some(sibling0), Some(hash_23)],
             recipient_index: Some(2),

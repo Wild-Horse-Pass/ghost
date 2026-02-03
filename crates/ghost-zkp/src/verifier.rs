@@ -106,7 +106,10 @@ impl BlockVerifier {
             ZkError::ParameterError("Invalid tree_depth in verification key".to_string())
         })?);
 
-        debug!("BlockVerifier created with Groth16 VK for {} txs, depth {}", max_txs, tree_depth);
+        debug!(
+            "BlockVerifier created with Groth16 VK for {} txs, depth {}",
+            max_txs, tree_depth
+        );
 
         Ok(Self {
             prover_id,
@@ -219,7 +222,10 @@ impl BlockVerifier {
         // Verify the Groth16 proof
         let result = groth16_verify_proof(prepared_vk, &groth16_proof, &public_inputs);
 
-        debug!("Groth16 verification completed in {:?}", verify_start.elapsed());
+        debug!(
+            "Groth16 verification completed in {:?}",
+            verify_start.elapsed()
+        );
 
         match result {
             Ok(valid) => {
@@ -318,9 +324,7 @@ impl BlockVerifier {
 
         debug!(
             "Simulated proof verified: height={}, txs={}, constraints={}",
-            proof.height,
-            proof.tx_count,
-            constraint_count
+            proof.height, proof.tx_count, constraint_count
         );
 
         Ok(true)

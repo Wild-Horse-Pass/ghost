@@ -921,16 +921,14 @@ async fn main() -> Result<()> {
     let qualification_provider = Arc::new(QualifiedCapabilityProvider::new(Arc::clone(&db)));
 
     // H-MINE-1: PayoutHandler now requires qualification_provider in constructor
-    let payout_handler = Arc::new(
-        PayoutHandler::new(
-            Arc::clone(&identity),
-            payout_config,
-            Arc::clone(&db),
-            Arc::clone(&vote_handler),
-            Arc::clone(&template_processor),
-            Arc::clone(&qualification_provider), // H-MINE-1: Required parameter
-        )?,
-    );
+    let payout_handler = Arc::new(PayoutHandler::new(
+        Arc::clone(&identity),
+        payout_config,
+        Arc::clone(&db),
+        Arc::clone(&vote_handler),
+        Arc::clone(&template_processor),
+        Arc::clone(&qualification_provider), // H-MINE-1: Required parameter
+    )?);
 
     // Start verification HTTP server
     let rpc_for_verification = Arc::clone(&rpc);
@@ -1014,7 +1012,10 @@ async fn main() -> Result<()> {
                 verification_state = verification_state.with_internal_auth(auth);
             }
             Err(e) => {
-                error!("Invalid internal_api_secret: {} - internal endpoints will be UNPROTECTED", e);
+                error!(
+                    "Invalid internal_api_secret: {} - internal endpoints will be UNPROTECTED",
+                    e
+                );
             }
         }
     } else {
@@ -1051,7 +1052,7 @@ async fn main() -> Result<()> {
                 payout_type: PayoutType::Mining,
             }],
             node_payouts: vec![],
-            treasury_amount: 1_000_000, // 0.01 BTC
+            treasury_amount: 1_000_000,                 // 0.01 BTC
             treasury_address: b"tb1qtreasury".to_vec(), // H-MINE-3: snapshot address (test)
             tx_fees: 500_000,
             subsidy: 312_500_000, // 3.125 BTC (signet subsidy)
@@ -1798,7 +1799,8 @@ async fn main() -> Result<()> {
                         };
 
                         // PO4-M2: Capture treasury address snapshot
-                        let treasury_address_snapshot = payout_for_events.get_treasury_address_snapshot();
+                        let treasury_address_snapshot =
+                            payout_for_events.get_treasury_address_snapshot();
 
                         let solo_data = SoloBlockFoundData {
                             round_id,
@@ -1832,7 +1834,8 @@ async fn main() -> Result<()> {
                         let winning_node_id = identity_for_events.node_id();
 
                         // PO4-M2: Capture treasury address snapshot
-                        let treasury_address_snapshot = payout_for_events.get_treasury_address_snapshot();
+                        let treasury_address_snapshot =
+                            payout_for_events.get_treasury_address_snapshot();
 
                         let block_data = BlockFoundData {
                             round_id,

@@ -49,7 +49,9 @@ use crate::circuit::block::BlockCircuit;
 use crate::circuit::payment::PaymentCircuit;
 use crate::circuit::state_transition::PaymentStateTransitionCircuit;
 use crate::errors::{ZkError, ZkResult};
-use crate::types::{BlockProof, BlockWitness, BlockWitnessV2, ProvingParams, VerificationKey, GROTH16_PROOF_SIZE};
+use crate::types::{
+    BlockProof, BlockWitness, BlockWitnessV2, ProvingParams, VerificationKey, GROTH16_PROOF_SIZE,
+};
 
 /// Generates ZK proofs for block validity
 ///
@@ -144,7 +146,10 @@ impl BlockProver {
     }
 
     /// Create a new prover with full Groth16 setup and state transitions
-    pub fn new_with_setup_and_state_transitions(max_txs: usize, tree_depth: usize) -> ZkResult<Self> {
+    pub fn new_with_setup_and_state_transitions(
+        max_txs: usize,
+        tree_depth: usize,
+    ) -> ZkResult<Self> {
         Self::new_with_setup_and_mode(max_txs, tree_depth, true)
     }
 
@@ -183,18 +188,21 @@ impl BlockProver {
         // SECURITY: This uses random toxic waste - FOR TESTING ONLY
         info!("Generating Groth16 parameters (TESTING ONLY - NOT SECURE FOR PRODUCTION)...");
         let setup_start = Instant::now();
-        let params = generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rand::thread_rng())
-            .map_err(|e| ZkError::SetupError(format!("Parameter generation failed: {:?}", e)))?;
+        let params =
+            generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rand::thread_rng())
+                .map_err(|e| {
+                    ZkError::SetupError(format!("Parameter generation failed: {:?}", e))
+                })?;
 
-        info!("Groth16 parameters generated in {:?}", setup_start.elapsed());
+        info!(
+            "Groth16 parameters generated in {:?}",
+            setup_start.elapsed()
+        );
 
         // Prepare verifying key for efficient verification
         let prepared_vk = prepare_verifying_key(&params.vk);
 
-        info!(
-            "Prover with Groth16 setup created in {:?}",
-            start.elapsed()
-        );
+        info!("Prover with Groth16 setup created in {:?}", start.elapsed());
 
         Ok(Self {
             max_txs,
@@ -295,7 +303,8 @@ impl BlockProver {
                 error!("SECURITY: Groth16 parameters not loaded - cannot generate valid proof");
                 return Err(ZkError::ProvingError(
                     "Groth16 parameters required but not available. \
-                     Use BlockProver::new_with_setup() to load parameters.".to_string()
+                     Use BlockProver::new_with_setup() to load parameters."
+                        .to_string(),
                 ));
             }
             // Allow simulated proofs in test mode only
@@ -367,7 +376,8 @@ impl BlockProver {
                 Some(tx.sender_balance_before),
                 Some(tx.recipient_balance_before),
                 Some(tx.amount),
-            ).map_err(|e| ZkError::InvalidWitness(e.to_string()))?;
+            )
+            .map_err(|e| ZkError::InvalidWitness(e.to_string()))?;
             payments.push(payment);
         }
 
@@ -481,7 +491,8 @@ impl BlockProver {
                 error!("SECURITY: Groth16 parameters not loaded - cannot generate valid proof");
                 return Err(ZkError::ProvingError(
                     "Groth16 parameters required but not available. \
-                     Use BlockProver::new_with_setup() to load parameters.".to_string()
+                     Use BlockProver::new_with_setup() to load parameters."
+                        .to_string(),
                 ));
             }
             // Allow simulated proofs in test mode only
@@ -563,7 +574,8 @@ impl BlockProver {
                 input_root,
                 output_root,
                 witness.tree_depth,
-            ).map_err(|e| ZkError::InvalidWitness(e.to_string()))?;
+            )
+            .map_err(|e| ZkError::InvalidWitness(e.to_string()))?;
 
             state_transitions.push(transition);
         }

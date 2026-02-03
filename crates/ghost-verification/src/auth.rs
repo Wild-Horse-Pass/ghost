@@ -269,7 +269,10 @@ pub fn verify_internal_auth(
     // Verify signature
     auth.verify(signature, timestamp, body).map_err(|e| {
         warn!(error = %e, "Internal API authentication failed");
-        (StatusCode::UNAUTHORIZED, format!("Authentication failed: {}", e))
+        (
+            StatusCode::UNAUTHORIZED,
+            format!("Authentication failed: {}", e),
+        )
     })
 }
 

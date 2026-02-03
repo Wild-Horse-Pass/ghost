@@ -151,17 +151,15 @@ fn encrypt_keys(plaintext: &[u8], password: &str) -> Result<Vec<u8>, anyhow::Err
     let mut salt = [0u8; SALT_SIZE];
     let mut nonce_bytes = [0u8; NONCE_SIZE];
 
-    getrandom::getrandom(&mut salt)
-        .map_err(|e| anyhow::anyhow!("RNG error: {}", e))?;
-    getrandom::getrandom(&mut nonce_bytes)
-        .map_err(|e| anyhow::anyhow!("RNG error: {}", e))?;
+    getrandom::getrandom(&mut salt).map_err(|e| anyhow::anyhow!("RNG error: {}", e))?;
+    getrandom::getrandom(&mut nonce_bytes).map_err(|e| anyhow::anyhow!("RNG error: {}", e))?;
 
     // Derive key from password
     let key = derive_encryption_key(password, &salt)?;
 
     // Encrypt with AES-256-GCM
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| anyhow::anyhow!("cipher error: {}", e))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| anyhow::anyhow!("cipher error: {}", e))?;
 
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
@@ -194,8 +192,8 @@ fn decrypt_keys(encrypted: &[u8], password: &str) -> Result<Vec<u8>, anyhow::Err
     let key = derive_encryption_key(password, salt)?;
 
     // Decrypt
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|e| anyhow::anyhow!("cipher error: {}", e))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| anyhow::anyhow!("cipher error: {}", e))?;
 
     let nonce = Nonce::from_slice(nonce_bytes);
     let plaintext = cipher
@@ -395,7 +393,8 @@ async fn main() -> Result<()> {
             match decrypt_keys(&encrypted_bytes, &encryption_password) {
                 Ok(decrypted) => {
                     if let Ok(keys_json) = String::from_utf8(decrypted) {
-                        if let Ok(keys_export) = serde_json::from_str::<GhostKeysExport>(&keys_json) {
+                        if let Ok(keys_export) = serde_json::from_str::<GhostKeysExport>(&keys_json)
+                        {
                             if let Ok(keys) = GhostKeys::try_from(keys_export) {
                                 let ghost_id = keys.ghost_id();
                                 let ghost_id_str = ghost_id.to_string();
@@ -430,7 +429,10 @@ async fn main() -> Result<()> {
                                         })
                                         .collect();
 
-                                    info!("Loaded {} existing locks from database", lock_infos.len());
+                                    info!(
+                                        "Loaded {} existing locks from database",
+                                        lock_infos.len()
+                                    );
                                     *state.locks.write() = lock_infos;
                                 }
 
@@ -514,7 +516,10 @@ async fn main() -> Result<()> {
                         *state.locks.write() = lock_infos;
                     }
 
-                    info!("Loaded existing ghost keys (migrated from plaintext): {}", ghost_id);
+                    info!(
+                        "Loaded existing ghost keys (migrated from plaintext): {}",
+                        ghost_id
+                    );
                     *state.keys.write() = Some(keys);
                     *state.ghost_id.write() = Some(ghost_id_str);
                 }
@@ -1881,10 +1886,10 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                             age_hours = age_secs / 3600,
                             "Reverting stale PendingSettlement lock to Active"
                         );
-                        if let Err(e) = state.db.update_ghost_lock_state(
-                            &lock.lock_id,
-                            DbLockState::Active,
-                        ) {
+                        if let Err(e) = state
+                            .db
+                            .update_ghost_lock_state(&lock.lock_id, DbLockState::Active)
+                        {
                             error!(
                                 lock_id = %lock.lock_id,
                                 error = %e,

@@ -502,6 +502,107 @@ impl Database {
         })
     }
 
+    /// Prune old uptime samples
+    ///
+    /// Deletes uptime samples older than the specified number of days.
+    /// STOR-1: uptime_samples grows ~8,640/day/node without cleanup.
+    pub fn prune_old_uptime_samples(&self, keep_days: u32) -> GhostResult<usize> {
+        self.with_connection(|conn| {
+            let cutoff = chrono::Utc::now().timestamp() - (keep_days as i64 * 86400);
+
+            let deleted = conn
+                .execute(
+                    "DELETE FROM uptime_samples WHERE sample_time < ?1",
+                    [cutoff],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if deleted > 0 {
+                info!(deleted, keep_days, "Pruned old uptime samples");
+            }
+
+            Ok(deleted)
+        })
+    }
+
+    /// Prune old challenge results
+    ///
+    /// Deletes challenge records older than the specified number of days from all
+    /// challenge tables: archive_challenges, policy_challenges, stratum_challenges,
+    /// and ghostpay_challenges.
+    /// STOR-2/3/4/5: Each table grows ~864/day without cleanup.
+    pub fn prune_old_challenges(&self, keep_days: u32) -> GhostResult<ChallengesPruneResult> {
+        self.with_connection(|conn| {
+            let cutoff = chrono::Utc::now().timestamp() - (keep_days as i64 * 86400);
+
+            let archive = conn
+                .execute(
+                    "DELETE FROM archive_challenges WHERE timestamp < ?1",
+                    [cutoff],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let policy = conn
+                .execute(
+                    "DELETE FROM policy_challenges WHERE timestamp < ?1",
+                    [cutoff],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let stratum = conn
+                .execute(
+                    "DELETE FROM stratum_challenges WHERE timestamp < ?1",
+                    [cutoff],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let ghostpay = conn
+                .execute(
+                    "DELETE FROM ghostpay_challenges WHERE timestamp < ?1",
+                    [cutoff],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let total = archive + policy + stratum + ghostpay;
+            if total > 0 {
+                info!(
+                    archive,
+                    policy, stratum, ghostpay, keep_days, "Pruned old challenges"
+                );
+            }
+
+            Ok(ChallengesPruneResult {
+                archive,
+                policy,
+                stratum,
+                ghostpay,
+            })
+        })
+    }
+
+    /// Prune old verification records
+    ///
+    /// Deletes verification records older than the specified number of days.
+    /// STOR-6: verifications grows ~864/day without cleanup.
+    pub fn prune_old_verifications(&self, keep_days: u32) -> GhostResult<usize> {
+        self.with_connection(|conn| {
+            let cutoff = chrono::Utc::now().timestamp() - (keep_days as i64 * 86400);
+
+            let deleted = conn
+                .execute(
+                    "DELETE FROM verifications WHERE completed_at < ?1 OR (completed_at IS NULL AND started_at < ?1)",
+                    [cutoff],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if deleted > 0 {
+                info!(deleted, keep_days, "Pruned old verifications");
+            }
+
+            Ok(deleted)
+        })
+    }
+
     /// Run full maintenance (prune + checkpoint + optimize)
     ///
     /// This should be called periodically (e.g., once per hour).
@@ -512,12 +613,21 @@ impl Database {
         let rounds_deleted = self.prune_old_rounds(config.keep_rounds)?;
         let pings_deleted = self.prune_old_health_pings(config.keep_health_ping_days)?;
         let votes_deleted = self.prune_old_votes(config.keep_rounds)?;
+        let uptime_deleted = self.prune_old_uptime_samples(config.keep_uptime_sample_days)?;
+        let challenges_deleted = self.prune_old_challenges(config.keep_challenge_days)?;
+        let verifications_deleted = self.prune_old_verifications(config.keep_verification_days)?;
 
         // Checkpoint WAL
         self.checkpoint()?;
 
         // Optimize if significant data was deleted
-        let total_deleted = shares_deleted + rounds_deleted + pings_deleted + votes_deleted;
+        let total_deleted = shares_deleted
+            + rounds_deleted
+            + pings_deleted
+            + votes_deleted
+            + uptime_deleted
+            + challenges_deleted.total()
+            + verifications_deleted;
         if total_deleted > 1000 || config.force_optimize {
             self.optimize()?;
         }
@@ -529,6 +639,9 @@ impl Database {
             rounds_deleted,
             pings_deleted,
             votes_deleted,
+            uptime_deleted,
+            challenges_deleted = challenges_deleted.total(),
+            verifications_deleted,
             db_size_mb = stats.size_mb(),
             "Database maintenance complete"
         );
@@ -538,6 +651,9 @@ impl Database {
             rounds_deleted,
             pings_deleted,
             votes_deleted,
+            uptime_deleted,
+            challenges_deleted,
+            verifications_deleted,
             db_size_bytes: stats.size_bytes,
         })
     }
@@ -550,6 +666,12 @@ pub struct MaintenanceConfig {
     pub keep_rounds: u64,
     /// Number of days to keep health pings
     pub keep_health_ping_days: u32,
+    /// Number of days to keep uptime samples (STOR-1)
+    pub keep_uptime_sample_days: u32,
+    /// Number of days to keep challenge results (STOR-2/3/4/5)
+    pub keep_challenge_days: u32,
+    /// Number of days to keep verification records (STOR-6)
+    pub keep_verification_days: u32,
     /// Force optimize even if little was deleted
     pub force_optimize: bool,
 }
@@ -557,8 +679,11 @@ pub struct MaintenanceConfig {
 impl Default for MaintenanceConfig {
     fn default() -> Self {
         Self {
-            keep_rounds: 1000,        // Keep ~1000 rounds of data
-            keep_health_ping_days: 7, // 7 days of health pings
+            keep_rounds: 1000,          // Keep ~1000 rounds of data
+            keep_health_ping_days: 7,   // 7 days of health pings
+            keep_uptime_sample_days: 7, // 7 days of uptime samples (STOR-1)
+            keep_challenge_days: 30,    // 30 days of challenge results (STOR-2/3/4/5)
+            keep_verification_days: 30, // 30 days of verification records (STOR-6)
             force_optimize: false,
         }
     }
@@ -571,7 +696,26 @@ pub struct MaintenanceResult {
     pub rounds_deleted: usize,
     pub pings_deleted: usize,
     pub votes_deleted: usize,
+    pub uptime_deleted: usize,
+    pub challenges_deleted: ChallengesPruneResult,
+    pub verifications_deleted: usize,
     pub db_size_bytes: i64,
+}
+
+/// Result of pruning challenge tables
+#[derive(Debug, Clone, Default)]
+pub struct ChallengesPruneResult {
+    pub archive: usize,
+    pub policy: usize,
+    pub stratum: usize,
+    pub ghostpay: usize,
+}
+
+impl ChallengesPruneResult {
+    /// Get total challenges deleted across all tables
+    pub fn total(&self) -> usize {
+        self.archive + self.policy + self.stratum + self.ghostpay
+    }
 }
 
 /// Database statistics

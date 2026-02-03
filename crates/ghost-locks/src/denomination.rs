@@ -82,7 +82,7 @@ impl Denomination {
     /// Get a short code for this denomination
     pub fn code(&self) -> &'static str {
         match self {
-            Denomination::Micro => "u",  // micro prefix (like microseconds)
+            Denomination::Micro => "u", // micro prefix (like microseconds)
             Denomination::Tiny => "T",
             Denomination::Small => "S",
             Denomination::Medium => "M",

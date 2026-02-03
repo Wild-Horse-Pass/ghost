@@ -78,8 +78,9 @@ impl MasterKey {
         let seed = mnemonic.to_seed("");
 
         // Create master extended private key
-        let master = Xpriv::new_master(network, &seed)
-            .map_err(|e| LightWalletError::KeyDerivation(format!("Failed to create master key: {}", e)))?;
+        let master = Xpriv::new_master(network, &seed).map_err(|e| {
+            LightWalletError::KeyDerivation(format!("Failed to create master key: {}", e))
+        })?;
 
         // BIP-352 base path: m/352'/0'/0'
         // Using coin_type=0 for Bitcoin mainnet compatibility
@@ -90,29 +91,29 @@ impl MasterKey {
         ]
         .into();
 
-        let base_xpriv = master
-            .derive_priv(&secp, &base_path)
-            .map_err(|e| LightWalletError::KeyDerivation(format!("Failed to derive base path: {}", e)))?;
+        let base_xpriv = master.derive_priv(&secp, &base_path).map_err(|e| {
+            LightWalletError::KeyDerivation(format!("Failed to derive base path: {}", e))
+        })?;
 
         // Derive scan key at m/352'/0'/0'/0'
         let scan_path = vec![ChildNumber::from_hardened_idx(0).expect("valid index")];
-        let scan_xpriv = base_xpriv
-            .derive_priv(&secp, &scan_path)
-            .map_err(|e| LightWalletError::KeyDerivation(format!("Failed to derive scan key: {}", e)))?;
+        let scan_xpriv = base_xpriv.derive_priv(&secp, &scan_path).map_err(|e| {
+            LightWalletError::KeyDerivation(format!("Failed to derive scan key: {}", e))
+        })?;
         let scan_secret = scan_xpriv.private_key;
 
         // Derive spend key at m/352'/0'/0'/1'
         let spend_path = vec![ChildNumber::from_hardened_idx(1).expect("valid index")];
-        let spend_xpriv = base_xpriv
-            .derive_priv(&secp, &spend_path)
-            .map_err(|e| LightWalletError::KeyDerivation(format!("Failed to derive spend key: {}", e)))?;
+        let spend_xpriv = base_xpriv.derive_priv(&secp, &spend_path).map_err(|e| {
+            LightWalletError::KeyDerivation(format!("Failed to derive spend key: {}", e))
+        })?;
         let spend_secret = spend_xpriv.private_key;
 
         // Derive auth key at m/352'/0'/0'/2'
         let auth_path = vec![ChildNumber::from_hardened_idx(2).expect("valid index")];
-        let auth_xpriv = base_xpriv
-            .derive_priv(&secp, &auth_path)
-            .map_err(|e| LightWalletError::KeyDerivation(format!("Failed to derive auth key: {}", e)))?;
+        let auth_xpriv = base_xpriv.derive_priv(&secp, &auth_path).map_err(|e| {
+            LightWalletError::KeyDerivation(format!("Failed to derive auth key: {}", e))
+        })?;
         let auth_secret = auth_xpriv.private_key;
 
         // Create Ghost Keys from the derived scan and spend secrets

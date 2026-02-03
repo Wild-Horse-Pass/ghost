@@ -1036,7 +1036,10 @@ mod tests {
         // Verify enough time has elapsed
         let elapsed = {
             let coordinators = pool.coordinators.read();
-            coordinators.get(&coord.id).unwrap().seconds_since_heartbeat()
+            coordinators
+                .get(&coord.id)
+                .unwrap()
+                .seconds_since_heartbeat()
         };
         assert!(
             elapsed > 1,

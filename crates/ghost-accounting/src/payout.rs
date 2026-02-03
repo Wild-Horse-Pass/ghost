@@ -588,7 +588,10 @@ mod tests {
         // Miner pool = 312,500,000 - 3,125,000 = 309,375,000
         // But we may have some dust collected
         assert!(total_miner_payout > 0, "Miner payouts should not be empty");
-        assert!(total_node_payout >= 0, "Node payouts should not be negative");
+        assert!(
+            total_node_payout >= 0,
+            "Node payouts should not be negative"
+        );
 
         // Total should not exceed available funds
         let pool_fee = 312_500_000 / 100; // 1%
@@ -597,11 +600,14 @@ mod tests {
 
         assert!(
             total_miner_payout <= miner_pool,
-            "Miner payouts {} exceed pool {}", total_miner_payout, miner_pool
+            "Miner payouts {} exceed pool {}",
+            total_miner_payout,
+            miner_pool
         );
         assert!(
             total_node_payout <= node_pool + (miner_pool - total_miner_payout), // May include dust
-            "Node payouts {} exceed available funds", total_node_payout
+            "Node payouts {} exceed available funds",
+            total_node_payout
         );
     }
 
@@ -753,7 +759,10 @@ mod tests {
         );
 
         // Get the miner payout
-        assert!(!result.miner_payouts.is_empty(), "Should have miner payouts");
+        assert!(
+            !result.miner_payouts.is_empty(),
+            "Should have miner payouts"
+        );
         let miner_payout = &result.miner_payouts[0];
 
         // Calculate expected recipient_id using the same hash method as ghost-pool
@@ -771,8 +780,7 @@ mod tests {
         let bytes = long_miner_id.as_bytes();
         truncated[..32.min(bytes.len())].copy_from_slice(&bytes[..32.min(bytes.len())]);
         assert_ne!(
-            miner_payout.recipient_id,
-            truncated,
+            miner_payout.recipient_id, truncated,
             "Recipient ID should NOT be truncation"
         );
     }

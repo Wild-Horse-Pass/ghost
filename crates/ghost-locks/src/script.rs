@@ -312,10 +312,7 @@ mod tests {
 
         // Should have TWO scripts in the script map (normal + recovery)
         let script_map = spend_info.script_map();
-        assert!(
-            !script_map.is_empty(),
-            "Script map should not be empty"
-        );
+        assert!(!script_map.is_empty(), "Script map should not be empty");
 
         // Verify we have two script leaves by checking total scripts
         let total_scripts: usize = script_map.values().map(|v| v.len()).sum();

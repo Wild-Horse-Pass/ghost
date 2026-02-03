@@ -118,12 +118,18 @@ impl EquivocationProof {
         }
 
         // Verify both signatures are from the proposer
-        let sig_a_valid =
-            ghost_common::identity::verify_signature(&self.proposer, &self.block_hash_a, &self.signature_a)
-                .unwrap_or(false);
-        let sig_b_valid =
-            ghost_common::identity::verify_signature(&self.proposer, &self.block_hash_b, &self.signature_b)
-                .unwrap_or(false);
+        let sig_a_valid = ghost_common::identity::verify_signature(
+            &self.proposer,
+            &self.block_hash_a,
+            &self.signature_a,
+        )
+        .unwrap_or(false);
+        let sig_b_valid = ghost_common::identity::verify_signature(
+            &self.proposer,
+            &self.block_hash_b,
+            &self.signature_b,
+        )
+        .unwrap_or(false);
 
         sig_a_valid && sig_b_valid
     }
@@ -191,9 +197,10 @@ impl L2ForkDetector {
         self.our_chain.write().insert(height, block.clone());
 
         // Record for equivocation detection (with signature for proof creation)
-        self.proposer_blocks
-            .write()
-            .insert((height, block.proposer), (block.block_hash, block.signature));
+        self.proposer_blocks.write().insert(
+            (height, block.proposer),
+            (block.block_hash, block.signature),
+        );
 
         // Cleanup old history
         self.cleanup_old_blocks(height);
@@ -289,9 +296,9 @@ impl L2ForkDetector {
                     their_tip: L2BlockRef {
                         height: their_height,
                         state_root: their_state_root,
-                        block_hash: [0u8; 32],  // Unknown
-                        proposer: [0u8; 32],    // Unknown
-                        signature: [0u8; 64],   // Unknown
+                        block_hash: [0u8; 32], // Unknown
+                        proposer: [0u8; 32],   // Unknown
+                        signature: [0u8; 64],  // Unknown
                         timestamp: 0,
                     },
                     common_ancestor,

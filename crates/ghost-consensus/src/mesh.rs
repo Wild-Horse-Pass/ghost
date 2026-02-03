@@ -883,9 +883,9 @@ impl MeshNetwork {
         ];
 
         for (topic, name) in additional_topics {
-            sub_socket
-                .subscribe(topic)
-                .map_err(|e| GhostError::P2PMessage(format!("Failed to subscribe to {}: {}", name, e)))?;
+            sub_socket.subscribe(topic).map_err(|e| {
+                GhostError::P2PMessage(format!("Failed to subscribe to {}: {}", name, e))
+            })?;
         }
 
         info!("DIAG: SUB socket created with reconnection support (ivl=100ms, max=5000ms)");
@@ -1447,10 +1447,22 @@ mod tests {
         // Test with small capacity to verify FIFO eviction
         let mut cache = SeenMessageCache::new(3);
 
-        let id1 = MessageId { sender: [1u8; 32], sequence: 1 };
-        let id2 = MessageId { sender: [2u8; 32], sequence: 2 };
-        let id3 = MessageId { sender: [3u8; 32], sequence: 3 };
-        let id4 = MessageId { sender: [4u8; 32], sequence: 4 };
+        let id1 = MessageId {
+            sender: [1u8; 32],
+            sequence: 1,
+        };
+        let id2 = MessageId {
+            sender: [2u8; 32],
+            sequence: 2,
+        };
+        let id3 = MessageId {
+            sender: [3u8; 32],
+            sequence: 3,
+        };
+        let id4 = MessageId {
+            sender: [4u8; 32],
+            sequence: 4,
+        };
 
         // Insert 3 messages (at capacity)
         cache.insert(id1, 1000);
@@ -1476,9 +1488,18 @@ mod tests {
     fn test_seen_message_cache_cleanup() {
         let mut cache = SeenMessageCache::new(10);
 
-        let id1 = MessageId { sender: [1u8; 32], sequence: 1 };
-        let id2 = MessageId { sender: [2u8; 32], sequence: 2 };
-        let id3 = MessageId { sender: [3u8; 32], sequence: 3 };
+        let id1 = MessageId {
+            sender: [1u8; 32],
+            sequence: 1,
+        };
+        let id2 = MessageId {
+            sender: [2u8; 32],
+            sequence: 2,
+        };
+        let id3 = MessageId {
+            sender: [3u8; 32],
+            sequence: 3,
+        };
 
         // Insert with different timestamps
         cache.insert(id1, 1000); // old
@@ -1500,7 +1521,10 @@ mod tests {
     fn test_seen_message_cache_duplicate_insert() {
         let mut cache = SeenMessageCache::new(10);
 
-        let id1 = MessageId { sender: [1u8; 32], sequence: 1 };
+        let id1 = MessageId {
+            sender: [1u8; 32],
+            sequence: 1,
+        };
 
         cache.insert(id1, 1000);
         cache.insert(id1, 1001); // Duplicate - should not increase count
@@ -1521,13 +1545,19 @@ mod tests {
 
         // Sender 1 inserts 3 messages (at their limit)
         for i in 0..3 {
-            let id = MessageId { sender: sender1, sequence: i };
+            let id = MessageId {
+                sender: sender1,
+                sequence: i,
+            };
             cache.insert(id, 1000 + i);
         }
 
         // Sender 2 inserts 2 messages
         for i in 0..2 {
-            let id = MessageId { sender: sender2, sequence: i };
+            let id = MessageId {
+                sender: sender2,
+                sequence: i,
+            };
             cache.insert(id, 2000 + i);
         }
 
@@ -1535,28 +1565,46 @@ mod tests {
 
         // All sender1 messages should exist
         for i in 0..3 {
-            assert!(cache.contains(&MessageId { sender: sender1, sequence: i }));
+            assert!(cache.contains(&MessageId {
+                sender: sender1,
+                sequence: i
+            }));
         }
         // All sender2 messages should exist
         for i in 0..2 {
-            assert!(cache.contains(&MessageId { sender: sender2, sequence: i }));
+            assert!(cache.contains(&MessageId {
+                sender: sender2,
+                sequence: i
+            }));
         }
 
         // Now sender1 sends another message (exceeds their limit)
-        let new_msg = MessageId { sender: sender1, sequence: 10 };
+        let new_msg = MessageId {
+            sender: sender1,
+            sequence: 10,
+        };
         cache.insert(new_msg, 3000);
 
         // Sender1's OLDEST message should be evicted, not sender2's messages!
         assert!(
-            !cache.contains(&MessageId { sender: sender1, sequence: 0 }),
+            !cache.contains(&MessageId {
+                sender: sender1,
+                sequence: 0
+            }),
             "Sender1's oldest message should be evicted"
         );
         assert!(
-            cache.contains(&MessageId { sender: sender1, sequence: 1 }),
+            cache.contains(&MessageId {
+                sender: sender1,
+                sequence: 1
+            }),
             "Sender1's newer messages should remain"
         );
         assert!(
-            cache.contains(&MessageId { sender: sender1, sequence: 2 }),
+            cache.contains(&MessageId {
+                sender: sender1,
+                sequence: 2
+            }),
             "Sender1's newer messages should remain"
         );
         assert!(
@@ -1566,11 +1614,17 @@ mod tests {
 
         // Sender2's messages should be UNAFFECTED
         assert!(
-            cache.contains(&MessageId { sender: sender2, sequence: 0 }),
+            cache.contains(&MessageId {
+                sender: sender2,
+                sequence: 0
+            }),
             "Sender2's messages should be unaffected"
         );
         assert!(
-            cache.contains(&MessageId { sender: sender2, sequence: 1 }),
+            cache.contains(&MessageId {
+                sender: sender2,
+                sequence: 1
+            }),
             "Sender2's messages should be unaffected"
         );
 
@@ -1585,7 +1639,10 @@ mod tests {
         let sender = [1u8; 32];
 
         // Insert message with sequence 10
-        let id1 = MessageId { sender, sequence: 10 };
+        let id1 = MessageId {
+            sender,
+            sequence: 10,
+        };
         cache.insert(id1, 1000);
         cache.update_highest_seq(&sender, 10);
 
@@ -1599,7 +1656,10 @@ mod tests {
         assert!(!cache.is_sequence_valid(&sender, 5));
 
         // Insert message with sequence 20, update highest
-        let id2 = MessageId { sender, sequence: 20 };
+        let id2 = MessageId {
+            sender,
+            sequence: 20,
+        };
         cache.insert(id2, 1001);
         cache.update_highest_seq(&sender, 20);
 
@@ -1645,7 +1705,10 @@ mod tests {
         let sender = [1u8; 32];
 
         // First message with sequence 10 should not be duplicate
-        let msg1 = MessageId { sender, sequence: 10 };
+        let msg1 = MessageId {
+            sender,
+            sequence: 10,
+        };
         assert!(!mesh.is_duplicate(msg1));
         mesh.mark_seen(msg1);
 
@@ -1654,11 +1717,23 @@ mod tests {
 
         // Message with sequence 5 (old) should be rejected as duplicate
         // even though we haven't seen this exact (sender, seq) pair
-        let msg_old = MessageId { sender, sequence: 5 };
-        assert!(mesh.is_duplicate(msg_old), "Old sequence should be rejected");
+        let msg_old = MessageId {
+            sender,
+            sequence: 5,
+        };
+        assert!(
+            mesh.is_duplicate(msg_old),
+            "Old sequence should be rejected"
+        );
 
         // Message with sequence 11 (new) should not be duplicate
-        let msg_new = MessageId { sender, sequence: 11 };
-        assert!(!mesh.is_duplicate(msg_new), "New sequence should be accepted");
+        let msg_new = MessageId {
+            sender,
+            sequence: 11,
+        };
+        assert!(
+            !mesh.is_duplicate(msg_new),
+            "New sequence should be accepted"
+        );
     }
 }

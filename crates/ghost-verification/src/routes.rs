@@ -341,9 +341,7 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
     };
 
     // Merge routers
-    public_router
-        .merge(internal_router)
-        .with_state(state)
+    public_router.merge(internal_router).with_state(state)
 }
 
 /// Middleware to verify HMAC authentication for internal endpoints

@@ -147,10 +147,8 @@ impl ZkVoteHandler {
 
     /// Create a new ZK vote handler with custom config
     pub fn with_config(identity: Arc<NodeIdentity>, config: ZkVoteHandlerConfig) -> Self {
-        let rate_limiter = RateLimiter::new(
-            config.rate_limit_max_tokens,
-            config.rate_limit_refill_rate,
-        );
+        let rate_limiter =
+            RateLimiter::new(config.rate_limit_max_tokens, config.rate_limit_refill_rate);
         Self {
             identity,
             current_state_root: RwLock::new([0u8; 32]),

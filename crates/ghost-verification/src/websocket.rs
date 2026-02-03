@@ -168,14 +168,17 @@ impl WsAuthQuery {
             .unwrap_or(false);
 
         // Check timestamp is recent (within 5 minutes)
-        let valid_timestamp = self.timestamp.map(|ts| {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            let diff = if ts > now { ts - now } else { now - ts };
-            diff < 300 // 5 minutes
-        }).unwrap_or(false);
+        let valid_timestamp = self
+            .timestamp
+            .map(|ts| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let diff = if ts > now { ts - now } else { now - ts };
+                diff < 300 // 5 minutes
+            })
+            .unwrap_or(false);
 
         // Check signature is present and non-empty
         let valid_signature = self

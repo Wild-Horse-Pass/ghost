@@ -1431,6 +1431,9 @@ fn test_595_run_maintenance() {
     let config = MaintenanceConfig {
         keep_rounds: 5,
         keep_health_ping_days: 1,
+        keep_uptime_sample_days: 7,
+        keep_challenge_days: 30,
+        keep_verification_days: 30,
         force_optimize: false,
     };
 

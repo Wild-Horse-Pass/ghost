@@ -60,7 +60,7 @@ impl BanReason {
             BanReason::RateLimitExceeded => Duration::from_secs(300), // 5 minutes
             BanReason::InvalidMessages => Duration::from_secs(180), // 3 minutes
             BanReason::ProtocolViolation => Duration::from_secs(900), // 15 minutes
-            BanReason::Custom => Duration::from_secs(600), // 10 minutes default
+            BanReason::Custom => Duration::from_secs(600),       // 10 minutes default
         }
     }
 }
@@ -297,14 +297,18 @@ mod tests {
         let manager = BanManager::new();
         let node_id = [2u8; 32];
 
-        // Ban for very short duration
-        manager.ban_for_duration(node_id, BanReason::RateLimitExceeded, Duration::from_millis(1));
+        // Ban for short duration (50ms to avoid platform timing flakiness)
+        manager.ban_for_duration(
+            node_id,
+            BanReason::RateLimitExceeded,
+            Duration::from_millis(50),
+        );
 
         // Should be banned initially
         assert!(manager.is_banned(&node_id));
 
-        // Wait for expiration
-        std::thread::sleep(Duration::from_millis(10));
+        // Wait for expiration (100ms margin for cross-platform reliability)
+        std::thread::sleep(Duration::from_millis(100));
 
         // Should no longer be banned
         assert!(!manager.is_banned(&node_id));

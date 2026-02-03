@@ -183,8 +183,7 @@ pub enum InputMode {
 }
 
 /// Connection status for a node
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ConnectionStatus {
     Connected,
     #[allow(dead_code)]
@@ -193,7 +192,6 @@ pub enum ConnectionStatus {
     Disconnected,
     Error(String),
 }
-
 
 /// Cached data from API responses
 #[derive(Default)]

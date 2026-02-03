@@ -213,12 +213,8 @@ impl VotingSession {
         }
 
         // Verify signature (includes round_id to prevent replay)
-        if !verify_vote_signature_with_round(
-            &vote,
-            self.round_id,
-            &self.proposal_hash,
-            &vote.voter,
-        ) {
+        if !verify_vote_signature_with_round(&vote, self.round_id, &self.proposal_hash, &vote.voter)
+        {
             return VoteResult::InvalidSignature;
         }
 
@@ -230,8 +226,12 @@ impl VotingSession {
             }
 
             // Different decision = EQUIVOCATION (Byzantine behavior!)
-            let proof =
-                VoteEquivocationProof::from_votes(self.round_id, self.proposal_hash, existing, &vote);
+            let proof = VoteEquivocationProof::from_votes(
+                self.round_id,
+                self.proposal_hash,
+                existing,
+                &vote,
+            );
 
             warn!(
                 voter = %hex::encode(&vote.voter[..8]),
@@ -695,7 +695,10 @@ mod tests {
         let msg1 = compute_vote_signing_message(100, &proposal_hash, &voter_id, true);
         let msg2 = compute_vote_signing_message(200, &proposal_hash, &voter_id, true);
 
-        assert_ne!(msg1, msg2, "Different round_ids must produce different messages");
+        assert_ne!(
+            msg1, msg2,
+            "Different round_ids must produce different messages"
+        );
     }
 
     #[test]
@@ -741,8 +744,15 @@ mod tests {
             eligible.insert([i as u8 + 100; 32]);
         }
 
-        let mut session1 = VotingSession::new(100, proposal_hash, VoteType::PayoutApproval, eligible.clone(), 5000);
-        let mut session2 = VotingSession::new(200, proposal_hash, VoteType::PayoutApproval, eligible, 5000);
+        let mut session1 = VotingSession::new(
+            100,
+            proposal_hash,
+            VoteType::PayoutApproval,
+            eligible.clone(),
+            5000,
+        );
+        let mut session2 =
+            VotingSession::new(200, proposal_hash, VoteType::PayoutApproval, eligible, 5000);
 
         // Sign vote for round 100
         let msg = compute_vote_signing_message(100, &proposal_hash, &voter_id, true);
@@ -780,7 +790,13 @@ mod tests {
             eligible.insert([i as u8 + 100; 32]);
         }
 
-        let mut session = VotingSession::new(round_id, proposal_hash, VoteType::PayoutApproval, eligible, 5000);
+        let mut session = VotingSession::new(
+            round_id,
+            proposal_hash,
+            VoteType::PayoutApproval,
+            eligible,
+            5000,
+        );
 
         // First vote: approve
         let msg1 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
@@ -827,7 +843,13 @@ mod tests {
             eligible.insert([i as u8 + 100; 32]);
         }
 
-        let mut session = VotingSession::new(round_id, proposal_hash, VoteType::PayoutApproval, eligible, 5000);
+        let mut session = VotingSession::new(
+            round_id,
+            proposal_hash,
+            VoteType::PayoutApproval,
+            eligible,
+            5000,
+        );
 
         // First vote: approve
         let msg = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);

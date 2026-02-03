@@ -136,7 +136,9 @@ impl PayoutVerifier {
             .checked_add(proof.node_sum)
             .and_then(|s| s.checked_add(proof.treasury_amount))
             .ok_or_else(|| {
-                ZkError::InvalidProof("Sum overflow: miner_sum + node_sum + treasury_amount".to_string())
+                ZkError::InvalidProof(
+                    "Sum overflow: miner_sum + node_sum + treasury_amount".to_string(),
+                )
             })?;
 
         if computed_sum != proof.total_available {
@@ -257,12 +259,12 @@ impl PayoutVerifier {
         // All values are exposed as public inputs so the verifier can confirm
         // the proof is for the claimed payout distribution
         let public_inputs = vec![
-            Fr::from(proof.total_available),  // PUBLIC INPUT 1: total_available
-            Fr::from(proof.miner_sum),        // PUBLIC INPUT 2: miner_sum
-            Fr::from(proof.node_sum),         // PUBLIC INPUT 3: node_sum
-            Fr::from(proof.treasury_amount),  // PUBLIC INPUT 4: treasury_amount
-            Fr::from(proof.epoch),            // PUBLIC INPUT 5: epoch
-            metadata_commitment,              // PUBLIC INPUT 6: metadata_commitment
+            Fr::from(proof.total_available), // PUBLIC INPUT 1: total_available
+            Fr::from(proof.miner_sum),       // PUBLIC INPUT 2: miner_sum
+            Fr::from(proof.node_sum),        // PUBLIC INPUT 3: node_sum
+            Fr::from(proof.treasury_amount), // PUBLIC INPUT 4: treasury_amount
+            Fr::from(proof.epoch),           // PUBLIC INPUT 5: epoch
+            metadata_commitment,             // PUBLIC INPUT 6: metadata_commitment
         ];
 
         debug!(
@@ -273,7 +275,10 @@ impl PayoutVerifier {
         // Verify the Groth16 proof
         let result = verify_proof(prepared_vk, &groth16_proof, &public_inputs);
 
-        debug!("Groth16 verification completed in {:?}", verify_start.elapsed());
+        debug!(
+            "Groth16 verification completed in {:?}",
+            verify_start.elapsed()
+        );
 
         match result {
             Ok(valid) => {
@@ -554,7 +559,8 @@ mod tests {
         // Run with: cargo test -p ghost-zkp -- --ignored
 
         // Create prover with full Groth16 setup
-        let prover = PayoutProver::new_with_setup(10, 5).expect("Failed to create prover with setup");
+        let prover =
+            PayoutProver::new_with_setup(10, 5).expect("Failed to create prover with setup");
         assert!(prover.has_groth16_params());
 
         let witness = PayoutWitness {
@@ -585,7 +591,8 @@ mod tests {
     #[ignore]
     fn test_groth16_tampered_proof_fails() {
         // Create prover with full Groth16 setup
-        let prover = PayoutProver::new_with_setup(5, 3).expect("Failed to create prover with setup");
+        let prover =
+            PayoutProver::new_with_setup(5, 3).expect("Failed to create prover with setup");
 
         let witness = PayoutWitness {
             epoch: 1,

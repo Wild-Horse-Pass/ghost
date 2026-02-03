@@ -176,11 +176,12 @@ impl<F: PrimeField> PayoutCircuit<F> {
         // ========================================================================
 
         // PUBLIC INPUT 1: total_available
-        let total_available = AllocatedNum::alloc_input(cs.namespace(|| "total_available"), || {
-            self.total_available
-                .map(F::from)
-                .ok_or(SynthesisError::AssignmentMissing)
-        })?;
+        let total_available =
+            AllocatedNum::alloc_input(cs.namespace(|| "total_available"), || {
+                self.total_available
+                    .map(F::from)
+                    .ok_or(SynthesisError::AssignmentMissing)
+            })?;
 
         // PUBLIC INPUT 2: miner_sum
         let miner_sum_input = AllocatedNum::alloc_input(cs.namespace(|| "miner_sum"), || {
@@ -188,9 +189,8 @@ impl<F: PrimeField> PayoutCircuit<F> {
         })?;
 
         // PUBLIC INPUT 3: node_sum
-        let node_sum_input = AllocatedNum::alloc_input(cs.namespace(|| "node_sum"), || {
-            Ok(F::from(node_sum_value))
-        })?;
+        let node_sum_input =
+            AllocatedNum::alloc_input(cs.namespace(|| "node_sum"), || Ok(F::from(node_sum_value)))?;
 
         // PUBLIC INPUT 4: treasury_amount
         let treasury_input = AllocatedNum::alloc_input(cs.namespace(|| "treasury_amount"), || {

@@ -407,7 +407,10 @@ impl CoordinatorSigner {
     ///
     /// RATE LIMITING: Enforces per-participant and total nonce limits to prevent
     /// memory exhaustion attacks. Returns error if limits exceeded.
-    pub fn create_nonce_for_participant(&mut self, ghost_id: &str) -> Result<PublicNonce, WraithError> {
+    pub fn create_nonce_for_participant(
+        &mut self,
+        ghost_id: &str,
+    ) -> Result<PublicNonce, WraithError> {
         // First, expire old nonces to free up capacity
         self.expire_old_nonces();
 
@@ -420,7 +423,11 @@ impl CoordinatorSigner {
         }
 
         // Check per-participant limit
-        let participant_count = self.nonces_per_participant.get(ghost_id).copied().unwrap_or(0);
+        let participant_count = self
+            .nonces_per_participant
+            .get(ghost_id)
+            .copied()
+            .unwrap_or(0);
         if participant_count >= MAX_NONCES_PER_PARTICIPANT {
             return Err(WraithError::PhaseError(format!(
                 "Maximum nonces per participant reached ({}) for {}. Try again later.",
@@ -458,7 +465,10 @@ impl CoordinatorSigner {
         self.active_nonces.insert(session_id, nonce);
 
         // Update per-participant count
-        *self.nonces_per_participant.entry(ghost_id.to_string()).or_insert(0) += 1;
+        *self
+            .nonces_per_participant
+            .entry(ghost_id.to_string())
+            .or_insert(0) += 1;
 
         Ok(public)
     }
@@ -471,7 +481,8 @@ impl CoordinatorSigner {
         let expiry_duration = std::time::Duration::from_secs(NONCE_EXPIRY_SECS);
 
         // Collect expired session IDs
-        let expired: Vec<[u8; 32]> = self.active_nonces
+        let expired: Vec<[u8; 32]> = self
+            .active_nonces
             .iter()
             .filter(|(_, nonce)| now.duration_since(nonce.created_at) > expiry_duration)
             .map(|(id, _)| *id)
@@ -727,7 +738,8 @@ impl CoordinatorSigner {
         let before = self.active_nonces.len();
 
         // Collect expired session IDs
-        let expired: Vec<[u8; 32]> = self.active_nonces
+        let expired: Vec<[u8; 32]> = self
+            .active_nonces
             .iter()
             .filter(|(_, nonce)| now.duration_since(nonce.created_at) > expiry_duration)
             .map(|(id, _)| *id)
@@ -806,7 +818,8 @@ impl CoordinatorSigner {
 
     /// WR4-L10: Clean up old keys that are past the grace period
     fn cleanup_old_keys(&mut self) {
-        let cutoff = Instant::now() - std::time::Duration::from_secs(KEY_ROTATION_GRACE_PERIOD_SECS);
+        let cutoff =
+            Instant::now() - std::time::Duration::from_secs(KEY_ROTATION_GRACE_PERIOD_SECS);
         let before = self.previous_keys.len();
         self.previous_keys.retain(|pk| pk.rotated_at > cutoff);
         let removed = before - self.previous_keys.len();
@@ -823,7 +836,10 @@ impl CoordinatorSigner {
     ///
     /// This allows verification of signatures created before a key rotation,
     /// as long as they're within the grace period.
-    pub fn verify_signature_with_rotation(&self, token: &UnblindedToken) -> Result<bool, WraithError> {
+    pub fn verify_signature_with_rotation(
+        &self,
+        token: &UnblindedToken,
+    ) -> Result<bool, WraithError> {
         // First try current key
         if token.session_key_id == self.key_id {
             return self.verify_signature(token);
@@ -1429,7 +1445,10 @@ mod tests {
         // This prevents timing attacks - we can now use the same nonce with correct participant
         // Signing as "ghost1" (correct participant) should SUCCEED with the SAME challenge
         let result = signer.sign_blinded_challenge_for_participant(&challenge, "ghost1");
-        assert!(result.is_ok(), "Signing with correct participant should succeed");
+        assert!(
+            result.is_ok(),
+            "Signing with correct participant should succeed"
+        );
     }
 
     /// Test that nonce binding includes ghost_id in session_id generation
@@ -1472,15 +1491,23 @@ mod tests {
 
         // Next nonce should fail due to rate limit
         let result = signer.create_nonce_for_participant("rate_test_ghost");
-        assert!(result.is_err(), "Should fail after reaching per-participant limit");
-        assert!(result.unwrap_err().to_string().contains("Maximum nonces per participant"));
+        assert!(
+            result.is_err(),
+            "Should fail after reaching per-participant limit"
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Maximum nonces per participant"));
 
         // After consuming a nonce, we should be able to create another
         let address = generate_test_address();
         let message = address.serialize().to_vec();
         let context = BlindingContext::new(message, signer.public_key(), &nonces[0]).unwrap();
         let challenge = context.create_blinded_challenge().unwrap();
-        signer.sign_blinded_challenge_for_participant(&challenge, "rate_test_ghost").unwrap();
+        signer
+            .sign_blinded_challenge_for_participant(&challenge, "rate_test_ghost")
+            .unwrap();
 
         // Now creating another should succeed
         let result = signer.create_nonce_for_participant("rate_test_ghost");
@@ -1488,7 +1515,10 @@ mod tests {
 
         // Different participant should have their own limit
         let result = signer.create_nonce_for_participant("other_ghost");
-        assert!(result.is_ok(), "Different participant should have separate limit");
+        assert!(
+            result.is_ok(),
+            "Different participant should have separate limit"
+        );
     }
 
     /// Test backwards compatibility with unbound nonces (deprecated)
@@ -1520,10 +1550,9 @@ mod tests {
     fn test_shannon_entropy_validation() {
         // Test with high entropy data (random)
         let high_entropy = calculate_shannon_entropy(&[
-            0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f, 0x70, 0x81,
-            0x92, 0xa3, 0xb4, 0xc5, 0xd6, 0xe7, 0xf8, 0x09,
-            0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
-            0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00,
+            0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f, 0x70, 0x81, 0x92, 0xa3, 0xb4, 0xc5, 0xd6, 0xe7,
+            0xf8, 0x09, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+            0xdd, 0xee, 0xff, 0x00,
         ]);
         // This data has 32 unique bytes, entropy should be exactly 5.0 bits/byte
         // (each byte appears once in 32 bytes, so -32 * (1/32) * log2(1/32) = 5)
@@ -1542,10 +1571,11 @@ mod tests {
         );
 
         // Test with repeated pattern (low entropy)
-        let repeated = [0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
-                        0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
-                        0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
-                        0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB];
+        let repeated = [
+            0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
+            0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
+            0xAA, 0xBB, 0xAA, 0xBB,
+        ];
         let low_entropy = calculate_shannon_entropy(&repeated);
         assert!(
             low_entropy < MIN_ENTROPY_BITS_PER_BYTE,
@@ -1557,7 +1587,10 @@ mod tests {
         // Should pass with overwhelming probability for a working RNG
         for _ in 0..10 {
             let result = random_bytes_32();
-            assert!(result.is_ok(), "random_bytes_32 should succeed with valid RNG");
+            assert!(
+                result.is_ok(),
+                "random_bytes_32 should succeed with valid RNG"
+            );
         }
     }
 }

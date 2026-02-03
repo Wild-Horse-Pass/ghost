@@ -447,8 +447,14 @@ mod tests {
 
         // At least one of these should pass (timing dependent)
         // The test verifies the boundary logic works
-        assert!(future_result.is_ok() || matches!(future_result, Err(MessageValidationError::TimestampInFuture(d)) if d < 1000));
-        assert!(past_result.is_ok() || matches!(past_result, Err(MessageValidationError::TimestampInPast(d)) if d < 1000));
+        assert!(
+            future_result.is_ok()
+                || matches!(future_result, Err(MessageValidationError::TimestampInFuture(d)) if d < 1000)
+        );
+        assert!(
+            past_result.is_ok()
+                || matches!(past_result, Err(MessageValidationError::TimestampInPast(d)) if d < 1000)
+        );
     }
 
     #[test]
