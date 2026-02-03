@@ -146,7 +146,7 @@ CoinJoin-style mixing:
 ### Building from Source
 
 ```bash
-git clone https://github.com/anthropics/bitcoin-ghost.git
+git clone https://github.com/bitcoin-ghost/ghost.git
 cd bitcoin-ghost
 
 # Build Rust crates

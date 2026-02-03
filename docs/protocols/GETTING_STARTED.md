@@ -94,7 +94,7 @@ ghost-cli miner stats bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4
 
 ```bash
 # 1. Clone repository
-git clone https://github.com/AquaticLabs/bitcoin-ghost.git
+git clone https://github.com/bitcoin-ghost/ghost.git
 cd bitcoin-ghost
 
 # 2. Build
@@ -316,7 +316,7 @@ If stuck:
 ## Getting Help
 
 - **Documentation**: [docs/protocols/](./README.md)
-- **Issues**: https://github.com/AquaticLabs/bitcoin-ghost/issues
+- **Issues**: https://github.com/bitcoin-ghost/ghost/issues
 - **Community**: (links when available)
 
 ## Next Steps

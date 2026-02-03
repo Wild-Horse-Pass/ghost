@@ -26,7 +26,7 @@ The Bitcoin Ghost Light Wallet provides full wallet functionality without runnin
 
 ```bash
 # Download the latest release
-curl -LO https://github.com/anthropics/bitcoin-ghost/releases/latest/download/ghost-light-wallet-cli-linux-x64.tar.gz
+curl -LO https://github.com/bitcoin-ghost/ghost/releases/latest/download/ghost-light-wallet-cli-linux-x64.tar.gz
 
 # Extract
 tar -xzf ghost-light-wallet-cli-linux-x64.tar.gz
@@ -42,7 +42,7 @@ ghost-light-wallet-cli --version
 
 ```bash
 # Clone repository
-git clone https://github.com/anthropics/bitcoin-ghost.git
+git clone https://github.com/bitcoin-ghost/ghost.git
 cd bitcoin-ghost
 
 # Build light wallet CLI

@@ -71,7 +71,7 @@ edition = "2021"
 rust-version = "1.75"
 authors = ["Bitcoin Ghost Team"]
 license = "MIT"
-repository = "https://github.com/AquaticLabs/bitcoin-ghost"
+repository = "https://github.com/bitcoin-ghost/ghost"
 
 [workspace.dependencies]
 # Internal crates

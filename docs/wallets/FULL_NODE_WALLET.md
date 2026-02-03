@@ -39,7 +39,7 @@ The Bitcoin Ghost Full Node Wallet runs alongside `ghostd` (the Ghost-enhanced B
 
 ```bash
 # Download the latest release
-curl -LO https://github.com/anthropics/bitcoin-ghost/releases/latest/download/ghostd-linux-x64.tar.gz
+curl -LO https://github.com/bitcoin-ghost/ghost/releases/latest/download/ghostd-linux-x64.tar.gz
 
 # Extract
 tar -xzf ghostd-linux-x64.tar.gz
@@ -56,7 +56,7 @@ ghost-cli --version
 
 ```bash
 # Clone repository
-git clone https://github.com/anthropics/bitcoin-ghost.git
+git clone https://github.com/bitcoin-ghost/ghost.git
 cd bitcoin-ghost/ghost-core
 
 # Install dependencies (Ubuntu/Debian)
