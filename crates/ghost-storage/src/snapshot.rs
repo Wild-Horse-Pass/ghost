@@ -170,7 +170,7 @@ impl SnapshotManager {
             .map_err(|e| GhostError::Serialization(e.to_string()))?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         self.db.with_connection(|conn| {
@@ -393,7 +393,7 @@ impl SnapshotManager {
         let state_root_hex = hex::encode(state_root);
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_secs() as i64;
 
         self.db.with_connection(|conn| {
