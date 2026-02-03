@@ -38,7 +38,14 @@ pub const SATS_PER_BTC_F64: f64 = 100_000_000.0;
 // ECONOMIC CONSTANTS
 // =============================================================================
 
+/// Pool fee in basis points (100 bps = 1% of block subsidy)
+/// SECURITY: Use basis points for integer arithmetic to avoid float ambiguity.
+/// This is the single source of truth for pool fee calculation.
+pub const POOL_FEE_BASIS_POINTS: u64 = 100;
+
 /// Pool fee percentage (1% of block subsidy)
+/// DEPRECATED: Use POOL_FEE_BASIS_POINTS for new code
+#[deprecated(note = "Use POOL_FEE_BASIS_POINTS for integer arithmetic")]
 pub const POOL_FEE_PERCENT: f64 = 1.0;
 
 /// Treasury threshold in satoshis (21 BTC)
@@ -289,5 +296,32 @@ mod tests {
         // 67% means we need 2/3 majority
         assert!(BFT_THRESHOLD_PERCENT > 50);
         assert!(BFT_THRESHOLD_PERCENT < 100);
+    }
+
+    #[test]
+    fn test_pool_fee_basis_points_correct() {
+        // SECURITY TEST: Verify POOL_FEE_BASIS_POINTS represents 1% correctly
+        // 100 basis points = 1%
+        assert_eq!(POOL_FEE_BASIS_POINTS, 100);
+
+        // Verify the calculation produces correct results
+        // For 312,500,000 sats (3.125 BTC), 1% should be 3,125,000 sats
+        let subsidy = 312_500_000u64;
+        let pool_fee = subsidy * POOL_FEE_BASIS_POINTS / 10000;
+        assert_eq!(pool_fee, 3_125_000);
+
+        // Verify miner pool is 99% of subsidy
+        let miner_pool = subsidy - pool_fee;
+        assert_eq!(miner_pool, 309_375_000);
+
+        // Verify there's no precision loss with different subsidy values
+        for subsidy in [625_000_000u64, 312_500_000, 156_250_000, 78_125_000] {
+            let fee = subsidy * POOL_FEE_BASIS_POINTS / 10000;
+            let remainder = subsidy - fee;
+            // Total should equal original subsidy
+            assert_eq!(fee + remainder, subsidy);
+            // Fee should be exactly 1%
+            assert_eq!(fee, subsidy / 100);
+        }
     }
 }
