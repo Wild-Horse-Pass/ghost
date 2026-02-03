@@ -5,10 +5,10 @@
 //! 2. All payouts are non-negative and fit in 64 bits
 //! 3. Treasury fee is within expected bounds
 
-use bellpepper_core::{
-    boolean::{AllocatedBit, Boolean},
-    num::AllocatedNum,
-    ConstraintSystem, SynthesisError,
+use bellperson::{
+    gadgets::boolean::{AllocatedBit, Boolean},
+    gadgets::num::AllocatedNum,
+    Circuit, ConstraintSystem, LinearCombination, SynthesisError,
 };
 use ff::PrimeField;
 use std::marker::PhantomData;
@@ -74,8 +74,9 @@ impl<F: PrimeField> PayoutCircuit<F> {
         self,
         cs: &mut CS,
     ) -> Result<PayoutOutputs<F>, SynthesisError> {
-        // Allocate total available
-        let total_available = AllocatedNum::alloc(cs.namespace(|| "total_available"), || {
+        // Allocate total available as PUBLIC INPUT for Groth16 verification
+        // This allows the verifier to check that the proof is for the claimed total
+        let total_available = AllocatedNum::alloc_input(cs.namespace(|| "total_available"), || {
             self.total_available
                 .map(F::from)
                 .ok_or(SynthesisError::AssignmentMissing)
@@ -127,7 +128,7 @@ impl<F: PrimeField> PayoutCircuit<F> {
 
         // Sum preservation: sum(miners) + sum(nodes) + treasury == total
         // Build linear combination: sum of all payouts + treasury
-        let mut sum_lc = bellpepper_core::LinearCombination::<F>::zero();
+        let mut sum_lc = LinearCombination::<F>::zero();
 
         for var in &miner_payout_vars {
             sum_lc = sum_lc + var.get_variable();
@@ -171,7 +172,7 @@ impl<F: PrimeField> PayoutCircuit<F> {
 
         // Reconstruct value from bits and verify it matches
         let mut coeff = F::ONE;
-        let mut lc_sum = bellpepper_core::LinearCombination::<F>::zero();
+        let mut lc_sum = LinearCombination::<F>::zero();
 
         for bit in bits.iter() {
             match bit {
@@ -230,6 +231,16 @@ impl<F: PrimeField> PayoutCircuit<F> {
     }
 }
 
+/// Implement the bellpepper Circuit trait for Groth16 compatibility
+impl<F: PrimeField> Circuit<F> for PayoutCircuit<F> {
+    fn synthesize<CS: ConstraintSystem<F>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
+        // Delegate to our synthesize method and discard the outputs
+        // The constraints are what matter for Groth16
+        let _ = PayoutCircuit::synthesize(self, cs)?;
+        Ok(())
+    }
+}
+
 /// Outputs from payout circuit synthesis
 pub struct PayoutOutputs<F: PrimeField> {
     /// Total available for distribution
@@ -249,7 +260,7 @@ pub struct PayoutOutputs<F: PrimeField> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bellpepper_core::test_cs::TestConstraintSystem;
+    use bellperson::util_cs::test_cs::TestConstraintSystem;
     use blstrs::Scalar as Fr;
 
     #[test]

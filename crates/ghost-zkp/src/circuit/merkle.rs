@@ -3,9 +3,9 @@
 //! Provides circuits for verifying merkle inclusion proofs and
 //! computing merkle root updates within the ZK circuit.
 
-use bellpepper_core::{
-    boolean::{AllocatedBit, Boolean},
-    num::AllocatedNum,
+use bellperson::{
+    gadgets::boolean::{AllocatedBit, Boolean},
+    gadgets::num::AllocatedNum,
     ConstraintSystem, SynthesisError,
 };
 use ff::PrimeField;
@@ -303,7 +303,7 @@ impl<F: PrimeField> MerkleUpdateCircuit<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bellpepper_core::test_cs::TestConstraintSystem;
+    use bellperson::util_cs::test_cs::TestConstraintSystem;
     use blstrs::Scalar as Fr;
 
     #[test]

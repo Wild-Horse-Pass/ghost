@@ -11,7 +11,7 @@
 //! Note: This is currently a simplified implementation that validates the circuit
 //! constraints. Full Groth16 proving will be integrated in a future update.
 
-use bellpepper_core::{test_cs::TestConstraintSystem, Circuit};
+use bellperson::{util_cs::test_cs::TestConstraintSystem, Circuit};
 use blstrs::Scalar as Fr;
 use ff::Field;
 use sha2::{Digest, Sha256};
@@ -78,9 +78,9 @@ impl BlockProver {
         // Generate a unique prover ID based on parameters
         let mut hasher = Sha256::new();
         hasher.update(b"ghost-zkp-prover-v2");
-        hasher.update(&max_txs.to_le_bytes());
-        hasher.update(&tree_depth.to_le_bytes());
-        hasher.update(&[use_state_transitions as u8]);
+        hasher.update(max_txs.to_le_bytes());
+        hasher.update(tree_depth.to_le_bytes());
+        hasher.update([use_state_transitions as u8]);
         let prover_id: [u8; 32] = hasher.finalize().into();
 
         info!("Prover created in {:?}", start.elapsed());
@@ -206,18 +206,18 @@ impl BlockProver {
     fn generate_proof_bytes(&self, witness: &BlockWitness, num_constraints: usize) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(b"ghost-zkp-proof-v1");
-        hasher.update(&self.prover_id);
-        hasher.update(&witness.height.to_le_bytes());
-        hasher.update(&witness.prev_state.root);
-        hasher.update(&witness.new_state.root);
-        hasher.update(&(witness.transactions.len() as u64).to_le_bytes());
-        hasher.update(&(num_constraints as u64).to_le_bytes());
+        hasher.update(self.prover_id);
+        hasher.update(witness.height.to_le_bytes());
+        hasher.update(witness.prev_state.root);
+        hasher.update(witness.new_state.root);
+        hasher.update((witness.transactions.len() as u64).to_le_bytes());
+        hasher.update((num_constraints as u64).to_le_bytes());
 
         // Include transaction hashes
         for tx in &witness.transactions {
-            hasher.update(&tx.sender);
-            hasher.update(&tx.recipient);
-            hasher.update(&tx.amount.to_le_bytes());
+            hasher.update(tx.sender);
+            hasher.update(tx.recipient);
+            hasher.update(tx.amount.to_le_bytes());
         }
 
         let hash: [u8; 32] = hasher.finalize().into();
@@ -383,18 +383,18 @@ impl BlockProver {
     fn generate_proof_bytes_v2(&self, witness: &BlockWitnessV2, num_constraints: usize) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(b"ghost-zkp-proof-v2-state");
-        hasher.update(&self.prover_id);
-        hasher.update(&witness.height.to_le_bytes());
-        hasher.update(&witness.prev_state_root);
-        hasher.update(&witness.new_state_root);
-        hasher.update(&(witness.transitions.len() as u64).to_le_bytes());
-        hasher.update(&(num_constraints as u64).to_le_bytes());
+        hasher.update(self.prover_id);
+        hasher.update(witness.height.to_le_bytes());
+        hasher.update(witness.prev_state_root);
+        hasher.update(witness.new_state_root);
+        hasher.update((witness.transitions.len() as u64).to_le_bytes());
+        hasher.update((num_constraints as u64).to_le_bytes());
 
         // Include transition data
         for tx in &witness.transitions {
-            hasher.update(&tx.sender_index.to_le_bytes());
-            hasher.update(&tx.recipient_index.to_le_bytes());
-            hasher.update(&tx.amount.to_le_bytes());
+            hasher.update(tx.sender_index.to_le_bytes());
+            hasher.update(tx.recipient_index.to_le_bytes());
+            hasher.update(tx.amount.to_le_bytes());
         }
 
         let hash: [u8; 32] = hasher.finalize().into();
@@ -420,7 +420,7 @@ fn bytes_to_field(bytes: &[u8; 32]) -> ZkResult<Fr> {
     // BLS12-381 scalar field is slightly less than 2^255
     repr[31] &= 0x7F; // Clear top bit to ensure it fits
 
-    Fr::from_repr_vartime(repr.into()).ok_or_else(|| {
+    Fr::from_repr_vartime(repr).ok_or_else(|| {
         ZkError::ProvingError("Failed to convert bytes to field element".to_string())
     })
 }

@@ -41,6 +41,9 @@ pub struct L2BlockRef {
     /// Proposer node ID
     #[serde(with = "ghost_common::serde_hex::bytes32")]
     pub proposer: NodeId,
+    /// Proposer's signature on the block hash (for equivocation proof)
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub signature: [u8; 64],
     /// Timestamp when received
     pub timestamp: u64,
 }
@@ -70,9 +73,25 @@ pub struct EquivocationProof {
 
 impl EquivocationProof {
     /// Verify this proof is valid (two different blocks, same proposer, same height)
+    ///
+    /// Validates:
+    /// 1. Block hashes are different (actual equivocation)
+    /// 2. Both signatures are valid from the same proposer
     pub fn is_valid(&self) -> bool {
-        self.block_hash_a != self.block_hash_b
-        // TODO: Verify both signatures are from the same proposer
+        // Must be different blocks
+        if self.block_hash_a == self.block_hash_b {
+            return false;
+        }
+
+        // Verify both signatures are from the proposer
+        let sig_a_valid =
+            ghost_common::identity::verify_signature(&self.proposer, &self.block_hash_a, &self.signature_a)
+                .unwrap_or(false);
+        let sig_b_valid =
+            ghost_common::identity::verify_signature(&self.proposer, &self.block_hash_b, &self.signature_b)
+                .unwrap_or(false);
+
+        sig_a_valid && sig_b_valid
     }
 }
 
@@ -102,8 +121,8 @@ pub struct L2ForkDetector {
     our_chain: RwLock<HashMap<u64, L2BlockRef>>,
     /// Known blocks from peers: (height, block_hash) -> block ref
     peer_blocks: RwLock<HashMap<(u64, [u8; 32]), L2BlockRef>>,
-    /// Track proposers by (height, proposer) -> block_hash for equivocation detection
-    proposer_blocks: RwLock<HashMap<(u64, NodeId), [u8; 32]>>,
+    /// Track proposers by (height, proposer) -> (block_hash, signature) for equivocation detection
+    proposer_blocks: RwLock<HashMap<(u64, NodeId), ([u8; 32], [u8; 64])>>,
     /// Maximum history to keep
     max_history: u64,
     /// Broadcast sender for L2 events
@@ -137,10 +156,10 @@ impl L2ForkDetector {
         // Record in our chain
         self.our_chain.write().insert(height, block.clone());
 
-        // Record for equivocation detection
+        // Record for equivocation detection (with signature for proof creation)
         self.proposer_blocks
             .write()
-            .insert((height, block.proposer), block.block_hash);
+            .insert((height, block.proposer), (block.block_hash, block.signature));
 
         // Cleanup old history
         self.cleanup_old_blocks(height);
@@ -159,10 +178,11 @@ impl L2ForkDetector {
         let height = block.height;
         let proposer = block.proposer;
         let block_hash = block.block_hash;
+        let signature = block.signature;
 
         // Check for equivocation
         let mut proposer_blocks = self.proposer_blocks.write();
-        if let Some(&existing_hash) = proposer_blocks.get(&(height, proposer)) {
+        if let Some(&(existing_hash, existing_sig)) = proposer_blocks.get(&(height, proposer)) {
             if existing_hash != block_hash {
                 // Equivocation detected!
                 warn!(
@@ -179,18 +199,19 @@ impl L2ForkDetector {
                     block_hash_b: block_hash,
                 });
 
+                // Create proof with actual signatures for cryptographic verification
                 return Some(EquivocationProof {
                     proposer,
                     height,
                     block_hash_a: existing_hash,
                     block_hash_b: block_hash,
-                    signature_a: [0u8; 64], // TODO: Store signatures
-                    signature_b: [0u8; 64],
+                    signature_a: existing_sig,
+                    signature_b: signature,
                     detected_at: chrono::Utc::now().timestamp_millis() as u64,
                 });
             }
         } else {
-            proposer_blocks.insert((height, proposer), block_hash);
+            proposer_blocks.insert((height, proposer), (block_hash, signature));
         }
         drop(proposer_blocks);
 
@@ -234,8 +255,9 @@ impl L2ForkDetector {
                     their_tip: L2BlockRef {
                         height: their_height,
                         state_root: their_state_root,
-                        block_hash: [0u8; 32], // Unknown
-                        proposer: [0u8; 32],   // Unknown
+                        block_hash: [0u8; 32],  // Unknown
+                        proposer: [0u8; 32],    // Unknown
+                        signature: [0u8; 64],   // Unknown
                         timestamp: 0,
                     },
                     common_ancestor,
@@ -675,6 +697,7 @@ mod tests {
             state_root: [1u8; 32],
             block_hash: [2u8; 32],
             proposer: [3u8; 32],
+            signature: [0u8; 64],
             timestamp: 1000,
         };
 
@@ -687,25 +710,40 @@ mod tests {
 
     #[test]
     fn test_equivocation_detection() {
+        use ghost_common::identity::NodeIdentity;
+
         let detector = L2ForkDetector::new(100);
-        let proposer = [1u8; 32];
+
+        // Create a real identity for valid signatures
+        let identity = NodeIdentity::generate();
+        let proposer = identity.node_id();
+
+        // Create and sign first block hash
+        let block_hash_1 = [3u8; 32];
+        let signature_1 = identity.sign(&block_hash_1);
 
         // First block
         let block1 = L2BlockRef {
             height: 10,
             state_root: [2u8; 32],
-            block_hash: [3u8; 32],
+            block_hash: block_hash_1,
             proposer,
+            signature: signature_1,
             timestamp: 1000,
         };
         detector.record_our_block(block1);
+
+        // Create and sign second (different) block hash
+        let block_hash_2 = [5u8; 32];
+        let signature_2 = identity.sign(&block_hash_2);
 
         // Same proposer, same height, different block hash = equivocation
         let block2 = L2BlockRef {
             height: 10,
             state_root: [4u8; 32],
-            block_hash: [5u8; 32], // Different hash!
+            block_hash: block_hash_2,
             proposer,
+            signature: signature_2,
             timestamp: 1001,
         };
 
@@ -715,6 +753,7 @@ mod tests {
         let proof = result.unwrap();
         assert_eq!(proof.proposer, proposer);
         assert_eq!(proof.height, 10);
+        // With real signatures, is_valid() should now pass
         assert!(proof.is_valid());
     }
 
@@ -728,6 +767,7 @@ mod tests {
             state_root: [1u8; 32],
             block_hash: [2u8; 32],
             proposer: [3u8; 32],
+            signature: [0u8; 64],
             timestamp: 1000,
         });
 

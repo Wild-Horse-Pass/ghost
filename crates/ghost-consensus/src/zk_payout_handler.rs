@@ -506,7 +506,16 @@ impl ZkPayoutVoteHandler {
 
     /// Handle incoming vote from another validator
     fn handle_incoming_vote(&self, sender: NodeId, vote: ZkPayoutVoteMessage) -> GhostResult<()> {
-        // TODO: Verify vote signature
+        // Verify vote signature
+        let message = vote.signing_message();
+        if !ghost_common::identity::verify_signature(&sender, &message, &vote.signature)? {
+            warn!(
+                sender = hex::encode(&sender[..8]),
+                epoch = vote.epoch,
+                "Invalid payout vote signature, ignoring"
+            );
+            return Ok(());
+        }
         self.record_vote(sender, &vote)
     }
 

@@ -49,6 +49,14 @@ pub enum ZkError {
     #[error("Block height mismatch: expected {expected}, got {actual}")]
     HeightMismatch { expected: u64, actual: u64 },
 
+    /// Invalid proof format or data
+    #[error("Invalid proof: {0}")]
+    InvalidProof(String),
+
+    /// Setup/trusted setup failed
+    #[error("Setup error: {0}")]
+    SetupError(String),
+
     /// IO error
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),

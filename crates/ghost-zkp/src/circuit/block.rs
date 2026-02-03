@@ -5,7 +5,7 @@
 //! 2. State transitions are correct (old root -> new root via chained merkle updates)
 //! 3. All merkle proofs verify
 
-use bellpepper_core::{num::AllocatedNum, Circuit, ConstraintSystem, SynthesisError};
+use bellperson::{gadgets::num::AllocatedNum, Circuit, ConstraintSystem, SynthesisError};
 use ff::PrimeField;
 
 use super::{
@@ -373,7 +373,7 @@ impl<F: PrimeField> Default for BlockCircuitBuilder<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bellpepper_core::test_cs::TestConstraintSystem;
+    use bellperson::util_cs::test_cs::TestConstraintSystem;
     use blstrs::Scalar as Fr;
 
     #[test]

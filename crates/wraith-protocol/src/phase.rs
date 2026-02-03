@@ -156,6 +156,10 @@ pub struct PhaseExecution {
     started_at: Option<u64>,
     /// Completed at (Unix timestamp)
     completed_at: Option<u64>,
+    /// Confirmation depth (blocks since first confirmed)
+    confirmation_depth: u32,
+    /// Block height where first confirmed (for depth tracking)
+    first_confirmed_height: Option<u32>,
 }
 
 impl PhaseExecution {
@@ -170,6 +174,8 @@ impl PhaseExecution {
             signatures_required: participants,
             started_at: None,
             completed_at: None,
+            confirmation_depth: 0,
+            first_confirmed_height: None,
         }
     }
 
@@ -241,6 +247,8 @@ impl PhaseExecution {
         if self.state == PhaseState::Broadcasting {
             self.state = PhaseState::Confirmed;
             self.confirmed_height = Some(height);
+            self.first_confirmed_height = Some(height);
+            self.confirmation_depth = 0; // Will be updated by update_depth()
             self.completed_at = Some(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -259,6 +267,35 @@ impl PhaseExecution {
                 .unwrap_or_default()
                 .as_secs(),
         );
+    }
+
+    /// Get current confirmation depth
+    pub fn confirmation_depth(&self) -> u32 {
+        self.confirmation_depth
+    }
+
+    /// Get first confirmed height
+    pub fn first_confirmed_height(&self) -> Option<u32> {
+        self.first_confirmed_height
+    }
+
+    /// Update confirmation depth based on current block height
+    ///
+    /// Call this as new blocks arrive to track how deep in the chain
+    /// the confirmation is. Used for reorg-safe data purging.
+    pub fn update_depth(&mut self, current_height: u32) {
+        if let Some(first) = self.first_confirmed_height {
+            self.confirmation_depth = current_height.saturating_sub(first);
+        }
+    }
+
+    /// Check if the phase has sufficient confirmation depth
+    ///
+    /// Returns true if the transaction has been confirmed for at least
+    /// `required_depth` blocks. This is used to determine when it's safe
+    /// to purge sensitive session data (typically 6 blocks for reorg safety).
+    pub fn is_deep_confirmed(&self, required_depth: u32) -> bool {
+        self.confirmation_depth >= required_depth
     }
 }
 
@@ -305,5 +342,51 @@ mod tests {
         exec.confirm(800_000);
         assert_eq!(exec.state(), PhaseState::Confirmed);
         assert_eq!(exec.confirmed_height(), Some(800_000));
+    }
+
+    #[test]
+    fn test_confirmation_depth_tracking() {
+        let mut exec = PhaseExecution::new(Phase::Split, 1);
+
+        // Initial state - no depth tracking
+        assert_eq!(exec.confirmation_depth(), 0);
+        assert!(!exec.is_deep_confirmed(6));
+        assert!(exec.first_confirmed_height().is_none());
+
+        // Start and complete phase
+        exec.start();
+        exec.add_signature();
+        exec.broadcast("txid".to_string());
+        exec.confirm(100);
+
+        // Just confirmed - depth is 0
+        assert_eq!(exec.first_confirmed_height(), Some(100));
+        assert_eq!(exec.confirmation_depth(), 0);
+        assert!(!exec.is_deep_confirmed(6));
+
+        // Update depth as blocks arrive
+        exec.update_depth(103);
+        assert_eq!(exec.confirmation_depth(), 3);
+        assert!(!exec.is_deep_confirmed(6));
+
+        // After 6 blocks, should be deep confirmed
+        exec.update_depth(106);
+        assert_eq!(exec.confirmation_depth(), 6);
+        assert!(exec.is_deep_confirmed(6));
+
+        // More blocks make it deeper
+        exec.update_depth(110);
+        assert_eq!(exec.confirmation_depth(), 10);
+        assert!(exec.is_deep_confirmed(6));
+    }
+
+    #[test]
+    fn test_depth_not_updated_before_confirm() {
+        let mut exec = PhaseExecution::new(Phase::Split, 1);
+
+        // Update depth before confirm should have no effect
+        exec.update_depth(100);
+        assert_eq!(exec.confirmation_depth(), 0);
+        assert!(exec.first_confirmed_height().is_none());
     }
 }

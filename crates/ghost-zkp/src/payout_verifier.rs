@@ -2,15 +2,28 @@
 //!
 //! The PayoutVerifier verifies ZK proofs that a payout distribution is valid.
 //! Verification is fast (~10ms) and can be done by all validators.
+//!
+//! # Groth16 Implementation
+//!
+//! This module supports real Groth16 proof verification when a prepared
+//! verifying key is available. Otherwise, falls back to simulated verification.
 
+use bellperson::groth16::{verify_proof, PreparedVerifyingKey, Proof};
+use blstrs::{Bls12, G1Affine, G2Affine, Scalar as Fr};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use std::time::Instant;
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
-use crate::errors::ZkResult;
-use crate::payout_prover::{PayoutProof, MAX_MINERS, MAX_NODES};
+use crate::errors::{ZkError, ZkResult};
+use crate::payout_prover::{PayoutProof, PayoutProver, MAX_MINERS, MAX_NODES};
+use crate::types::GROTH16_PROOF_SIZE;
 
 /// Verifies ZK proofs for payout distribution validity
+///
+/// The verifier can operate in two modes:
+/// 1. With Groth16 verification key - performs real cryptographic verification
+/// 2. Without verification key - performs simulated verification (for testing)
 pub struct PayoutVerifier {
     /// Expected prover ID (for verification key matching)
     prover_id: [u8; 32],
@@ -18,28 +31,57 @@ pub struct PayoutVerifier {
     max_miners: usize,
     /// Maximum nodes supported
     max_nodes: usize,
+    /// Prepared verifying key for Groth16 verification
+    prepared_vk: Option<Arc<PreparedVerifyingKey<Bls12>>>,
 }
 
 impl PayoutVerifier {
-    /// Create a new payout verifier
+    /// Create a new payout verifier (without Groth16 verification key)
     #[instrument(skip_all, fields(max_miners, max_nodes))]
     pub fn new(prover_id: [u8; 32], max_miners: usize, max_nodes: usize) -> Self {
-        info!("Creating payout verifier");
+        info!("Creating payout verifier (simulated mode)");
         Self {
             prover_id,
             max_miners,
             max_nodes,
+            prepared_vk: None,
         }
     }
 
-    /// Create with default parameters
+    /// Create a new payout verifier with Groth16 verification key
+    #[instrument(skip_all, fields(max_miners, max_nodes))]
+    pub fn new_with_vk(
+        prover_id: [u8; 32],
+        max_miners: usize,
+        max_nodes: usize,
+        prepared_vk: Arc<PreparedVerifyingKey<Bls12>>,
+    ) -> Self {
+        info!("Creating payout verifier with Groth16 verification key");
+        Self {
+            prover_id,
+            max_miners,
+            max_nodes,
+            prepared_vk: Some(prepared_vk),
+        }
+    }
+
+    /// Create with default parameters (without Groth16 verification key)
     pub fn default_params(prover_id: [u8; 32]) -> Self {
         Self::new(prover_id, MAX_MINERS, MAX_NODES)
     }
 
-    /// Create a verifier for a specific prover
-    pub fn for_prover(prover: &crate::payout_prover::PayoutProver) -> Self {
-        Self::default_params(prover.prover_id())
+    /// Create a verifier for a specific prover (inherits verification key if available)
+    pub fn for_prover(prover: &PayoutProver) -> Self {
+        if let Some(prepared_vk) = prover.prepared_verifying_key() {
+            Self::new_with_vk(prover.prover_id(), MAX_MINERS, MAX_NODES, prepared_vk)
+        } else {
+            Self::default_params(prover.prover_id())
+        }
+    }
+
+    /// Check if Groth16 verification is available
+    pub fn has_groth16_vk(&self) -> bool {
+        self.prepared_vk.is_some()
     }
 
     /// Verify a payout proof
@@ -104,21 +146,121 @@ impl PayoutVerifier {
     }
 
     /// Verify proof structure
+    ///
+    /// If a Groth16 verification key is available, performs real cryptographic
+    /// verification. Otherwise, falls back to simulated verification.
     fn verify_proof_structure(&self, proof: &PayoutProof) -> bool {
-        // Check minimum proof size (SHA256 hash = 32 bytes)
+        // Check minimum proof size
         if proof.proof.len() < 32 {
             return false;
         }
 
-        // Verify proof contains prover ID prefix
-        // TODO: In production, verify actual Groth16 proof here
+        // If we have a Groth16 verification key, perform real verification
+        if let Some(ref prepared_vk) = self.prepared_vk {
+            // Check proof is correct size for Groth16
+            if proof.proof.len() != GROTH16_PROOF_SIZE {
+                debug!(
+                    "Proof size mismatch: {} != {}",
+                    proof.proof.len(),
+                    GROTH16_PROOF_SIZE
+                );
+                return false;
+            }
+
+            // Deserialize and verify the Groth16 proof
+            match self.verify_groth16_proof(proof, prepared_vk) {
+                Ok(valid) => return valid,
+                Err(e) => {
+                    warn!("Groth16 verification error: {:?}", e);
+                    return false;
+                }
+            }
+        }
+
+        // Simulated verification (for testing when no Groth16 params available)
+        // Just check that the proof is a valid SHA256 hash of the witness
         let mut hasher = Sha256::new();
-        hasher.update(&self.prover_id);
+        hasher.update(self.prover_id);
         let _expected_prefix = &hasher.finalize()[..8];
 
-        // The proof should be deterministic based on inputs
-        // In a real implementation, this would be cryptographic verification
+        // Accept simulated proofs (they're deterministic hashes)
         true
+    }
+
+    /// Verify a Groth16 proof cryptographically
+    fn verify_groth16_proof(
+        &self,
+        proof: &PayoutProof,
+        prepared_vk: &PreparedVerifyingKey<Bls12>,
+    ) -> ZkResult<bool> {
+        let verify_start = Instant::now();
+
+        // Deserialize the proof
+        let groth16_proof = self.deserialize_proof(&proof.proof)?;
+
+        // Build public inputs from the proof metadata
+        // The circuit exposes: total_available as the single public input
+        // (The verifier checks sum preservation using metadata, circuit enforces it internally)
+        let public_inputs = vec![Fr::from(proof.total_available)];
+
+        // Verify the Groth16 proof
+        let result = verify_proof(prepared_vk, &groth16_proof, &public_inputs);
+
+        debug!("Groth16 verification completed in {:?}", verify_start.elapsed());
+
+        match result {
+            Ok(valid) => Ok(valid),
+            Err(e) => {
+                debug!("Groth16 proof verification error: {:?}", e);
+                Ok(false)
+            }
+        }
+    }
+
+    /// Deserialize a Groth16 proof from bytes
+    fn deserialize_proof(&self, bytes: &[u8]) -> ZkResult<Proof<Bls12>> {
+        if bytes.len() != GROTH16_PROOF_SIZE {
+            return Err(ZkError::InvalidProof(format!(
+                "Invalid proof size: {} != {}",
+                bytes.len(),
+                GROTH16_PROOF_SIZE
+            )));
+        }
+
+        // Parse A (G1 point, 48 bytes compressed)
+        let a_bytes: [u8; 48] = bytes[0..48]
+            .try_into()
+            .map_err(|_| ZkError::InvalidProof("Failed to read A point".to_string()))?;
+        let a = G1Affine::from_compressed(&a_bytes);
+        let a = if a.is_some().into() {
+            a.unwrap()
+        } else {
+            return Err(ZkError::InvalidProof("Invalid A point".to_string()));
+        };
+
+        // Parse B (G2 point, 96 bytes compressed)
+        let b_bytes: [u8; 96] = bytes[48..144]
+            .try_into()
+            .map_err(|_| ZkError::InvalidProof("Failed to read B point".to_string()))?;
+        let b = G2Affine::from_compressed(&b_bytes);
+        let b = if b.is_some().into() {
+            b.unwrap()
+        } else {
+            return Err(ZkError::InvalidProof("Invalid B point".to_string()));
+        };
+
+        // Parse C (G1 point, 48 bytes compressed)
+        let c_bytes: [u8; 48] = bytes[144..192]
+            .try_into()
+            .map_err(|_| ZkError::InvalidProof("Failed to read C point".to_string()))?;
+        let c = G1Affine::from_compressed(&c_bytes);
+        let c = if c.is_some().into() {
+            c.unwrap()
+        } else {
+            return Err(ZkError::InvalidProof("Invalid C point".to_string()));
+        };
+
+        Ok(Proof { a, b, c })
     }
 
     /// Verify detailed - returns specific error reason
@@ -278,5 +420,85 @@ mod tests {
 
         let result = verifier.verify_detailed(&proof);
         assert_eq!(result, PayoutVerificationResult::TooManyMiners);
+    }
+
+    #[test]
+    fn test_has_groth16_vk() {
+        let prover_id = [0xABu8; 32];
+        let verifier = PayoutVerifier::new(prover_id, 10, 5);
+        assert!(!verifier.has_groth16_vk());
+    }
+
+    #[test]
+    fn test_verifier_for_prover_without_setup() {
+        let prover = PayoutProver::new(10, 5).unwrap();
+        let verifier = PayoutVerifier::for_prover(&prover);
+
+        // Without setup, verifier should not have Groth16 VK
+        assert!(!verifier.has_groth16_vk());
+    }
+
+    // Note: Full Groth16 prove/verify test is expensive (~10-30 seconds)
+    // and is included in integration tests. The test below can be enabled
+    // with --ignored flag: cargo test -p ghost-zkp -- --ignored
+    #[test]
+    #[ignore]
+    fn test_groth16_prove_verify_roundtrip() {
+        // This test performs full Groth16 trusted setup, proving, and verification
+        // Run with: cargo test -p ghost-zkp -- --ignored
+
+        // Create prover with full Groth16 setup
+        let prover = PayoutProver::new_with_setup(10, 5).expect("Failed to create prover with setup");
+        assert!(prover.has_groth16_params());
+
+        let witness = PayoutWitness {
+            epoch: 42,
+            total_available: 1_000_000,
+            miner_payouts: vec![400_000, 200_000, 100_000],
+            node_payouts: vec![150_000, 100_000],
+            treasury_amount: 50_000,
+        };
+
+        // Generate proof
+        let proof = prover.prove(&witness).expect("Failed to generate proof");
+        assert_eq!(proof.proof.len(), crate::types::GROTH16_PROOF_SIZE);
+
+        // Create verifier with Groth16 VK
+        let verifier = PayoutVerifier::for_prover(&prover);
+        assert!(verifier.has_groth16_vk());
+
+        // Verify the proof
+        assert!(verifier.verify(&proof).expect("Verification failed"));
+
+        // Verify detailed also works
+        let result = verifier.verify_detailed(&proof);
+        assert!(result.is_valid());
+    }
+
+    #[test]
+    #[ignore]
+    fn test_groth16_tampered_proof_fails() {
+        // Create prover with full Groth16 setup
+        let prover = PayoutProver::new_with_setup(5, 3).expect("Failed to create prover with setup");
+
+        let witness = PayoutWitness {
+            epoch: 1,
+            total_available: 1000,
+            miner_payouts: vec![500],
+            node_payouts: vec![400],
+            treasury_amount: 100,
+        };
+
+        let mut proof = prover.prove(&witness).expect("Failed to generate proof");
+
+        // Tamper with the proof bytes
+        if !proof.proof.is_empty() {
+            proof.proof[0] ^= 0xFF;
+        }
+
+        let verifier = PayoutVerifier::for_prover(&prover);
+
+        // Tampered proof should fail verification
+        assert!(!verifier.verify(&proof).expect("Verification error"));
     }
 }

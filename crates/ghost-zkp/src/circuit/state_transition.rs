@@ -3,10 +3,10 @@
 //! Proves that a single payment correctly transitions state from one root
 //! to another via sender and recipient merkle leaf updates.
 
-use bellpepper_core::{
-    boolean::{AllocatedBit, Boolean},
-    num::AllocatedNum,
-    ConstraintSystem, SynthesisError,
+use bellperson::{
+    gadgets::boolean::{AllocatedBit, Boolean},
+    gadgets::num::AllocatedNum,
+    ConstraintSystem, LinearCombination, SynthesisError,
 };
 use ff::PrimeField;
 
@@ -46,7 +46,6 @@ pub struct PaymentStateTransitionCircuit<F: PrimeField> {
 }
 
 /// Outputs from state transition synthesis
-#[derive(Debug)]
 pub struct StateTransitionOutputs<F: PrimeField> {
     /// Input root variable (constrained by parent)
     pub input_root: AllocatedNum<F>,
@@ -56,6 +55,17 @@ pub struct StateTransitionOutputs<F: PrimeField> {
     pub sender_after: AllocatedNum<F>,
     /// Recipient's balance after payment
     pub recipient_after: AllocatedNum<F>,
+}
+
+impl<F: PrimeField> std::fmt::Debug for StateTransitionOutputs<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateTransitionOutputs")
+            .field("input_root", &self.input_root.get_value())
+            .field("output_root", &self.output_root.get_value())
+            .field("sender_after", &self.sender_after.get_value())
+            .field("recipient_after", &self.recipient_after.get_value())
+            .finish()
+    }
 }
 
 impl<F: PrimeField> PaymentStateTransitionCircuit<F> {
@@ -408,7 +418,7 @@ pub fn enforce_fits_in_bits<F: PrimeField, CS: ConstraintSystem<F>>(
 
     // Reconstruct and constrain
     let mut coeff = F::ONE;
-    let mut lc_sum = bellpepper_core::LinearCombination::<F>::zero();
+    let mut lc_sum = LinearCombination::<F>::zero();
 
     for bit in bits.iter() {
         match bit {
@@ -440,7 +450,7 @@ pub fn enforce_fits_in_bits<F: PrimeField, CS: ConstraintSystem<F>>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bellpepper_core::test_cs::TestConstraintSystem;
+    use bellperson::util_cs::test_cs::TestConstraintSystem;
     use blstrs::Scalar as Fr;
 
     /// Helper to compute merkle root using simple hash

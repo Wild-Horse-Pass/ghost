@@ -6,9 +6,9 @@ description = "Zero-knowledge proof infrastructure for Ghost Pay ZK-BFT consensu
 license = "MIT"
 
 [dependencies]
-# ZK proving system (Groth16 via bellpepper)
-bellpepper-core = "0.4"
-bellpepper = "0.4"
+# ZK proving system (Groth16 via bellperson)
+# Note: bellperson 0.26 requires bellpepper-core 0.2, not 0.4
+bellperson = "0.26"
 
 # Finite field and curve arithmetic
 ff = "0.13"

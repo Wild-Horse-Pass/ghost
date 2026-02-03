@@ -126,13 +126,44 @@ impl WraithTransactionBuilder {
         self.inputs.len()
     }
 
+    /// Build Phase 1 (Split) transaction with CSPRNG entropy
+    ///
+    /// Takes N inputs and creates 10N intermediate outputs.
+    /// Each participant's input is split into 10 equal-sized intermediate Ghost Locks.
+    ///
+    /// This version uses CSPRNG entropy for unpredictable output ordering,
+    /// enhancing privacy by preventing timing attacks on shuffle ordering.
+    pub fn build_split_transaction_with_entropy(
+        &self,
+        intermediate_addresses: &[Vec<String>],
+    ) -> Result<SplitTransaction, WraithError> {
+        // Generate fresh CSPRNG entropy
+        let mut entropy = [0u8; 32];
+        getrandom::getrandom(&mut entropy)
+            .map_err(|e| WraithError::InvalidInput(format!("Failed to generate entropy: {}", e)))?;
+
+        self.build_split_transaction_internal(intermediate_addresses, &entropy)
+    }
+
     /// Build Phase 1 (Split) transaction
     ///
     /// Takes N inputs and creates 10N intermediate outputs.
     /// Each participant's input is split into 10 equal-sized intermediate Ghost Locks.
+    ///
+    /// Note: For production use, prefer `build_split_transaction_with_entropy()` which
+    /// adds CSPRNG randomness to prevent predictable output ordering.
     pub fn build_split_transaction(
         &self,
         intermediate_addresses: &[Vec<String>], // [participant_id][output_index]
+    ) -> Result<SplitTransaction, WraithError> {
+        self.build_split_transaction_internal(intermediate_addresses, &[0u8; 32])
+    }
+
+    /// Internal implementation of split transaction building
+    fn build_split_transaction_internal(
+        &self,
+        intermediate_addresses: &[Vec<String>],
+        entropy: &[u8; 32],
     ) -> Result<SplitTransaction, WraithError> {
         if self.inputs.is_empty() {
             return Err(WraithError::NotEnoughParticipants(0, 1));
@@ -185,8 +216,8 @@ impl WraithTransactionBuilder {
             }
         }
 
-        // Shuffle outputs (deterministic shuffle based on session_id for reproducibility)
-        let seed = self.session_shuffle_seed();
+        // Shuffle outputs using session_id combined with entropy for unpredictability
+        let seed = self.session_shuffle_seed_with_entropy(entropy);
         shuffle_outputs(&mut all_outputs, seed);
 
         // Create TxOut for each intermediate
@@ -239,14 +270,46 @@ impl WraithTransactionBuilder {
         })
     }
 
+    /// Build Phase 2 (Merge) transaction with CSPRNG entropy
+    ///
+    /// Takes 10N intermediate inputs and creates N final outputs.
+    /// Each participant's 10 intermediates are merged into 1 final Ghost Lock.
+    ///
+    /// This version uses CSPRNG entropy for unpredictable ordering.
+    pub fn build_merge_transaction_with_entropy(
+        &self,
+        intermediate_inputs: &[Vec<WraithInput>],
+        final_addresses: &[String],
+    ) -> Result<MergeTransaction, WraithError> {
+        // Generate fresh CSPRNG entropy
+        let mut entropy = [0u8; 32];
+        getrandom::getrandom(&mut entropy)
+            .map_err(|e| WraithError::InvalidInput(format!("Failed to generate entropy: {}", e)))?;
+
+        self.build_merge_transaction_internal(intermediate_inputs, final_addresses, &entropy)
+    }
+
     /// Build Phase 2 (Merge) transaction
     ///
     /// Takes 10N intermediate inputs and creates N final outputs.
     /// Each participant's 10 intermediates are merged into 1 final Ghost Lock.
+    ///
+    /// Note: For production use, prefer `build_merge_transaction_with_entropy()` which
+    /// adds CSPRNG randomness to prevent predictable ordering.
     pub fn build_merge_transaction(
         &self,
         intermediate_inputs: &[Vec<WraithInput>], // [participant_id][input_index]
         final_addresses: &[String],               // [participant_id]
+    ) -> Result<MergeTransaction, WraithError> {
+        self.build_merge_transaction_internal(intermediate_inputs, final_addresses, &[0u8; 32])
+    }
+
+    /// Internal implementation of merge transaction building
+    fn build_merge_transaction_internal(
+        &self,
+        intermediate_inputs: &[Vec<WraithInput>],
+        final_addresses: &[String],
+        entropy: &[u8; 32],
     ) -> Result<MergeTransaction, WraithError> {
         if intermediate_inputs.is_empty() {
             return Err(WraithError::NotEnoughParticipants(0, 1));
@@ -285,8 +348,8 @@ impl WraithTransactionBuilder {
             }
         }
 
-        // Shuffle inputs
-        let seed = self.session_shuffle_seed().wrapping_add(1);
+        // Shuffle inputs using session_id combined with entropy
+        let seed = self.session_shuffle_seed_with_entropy(entropy).wrapping_add(1);
         shuffle_inputs(&mut all_inputs, seed);
 
         // Create TxIn for each intermediate
@@ -372,10 +435,29 @@ impl WraithTransactionBuilder {
         data
     }
 
-    /// Generate deterministic shuffle seed from session ID
+    /// Generate shuffle seed from session ID and optional entropy
+    ///
+    /// The entropy parameter adds CSPRNG randomness to the shuffle seed,
+    /// making it impossible to predict output ordering even knowing the session ID.
+    /// This enhances privacy by preventing timing attacks on shuffle ordering.
     fn session_shuffle_seed(&self) -> u64 {
-        let hash = sha256_first_8(&self.session_id);
-        u64::from_le_bytes(hash)
+        self.session_shuffle_seed_with_entropy(&[0u8; 32])
+    }
+
+    /// Generate shuffle seed with explicit entropy
+    ///
+    /// Combines the session ID with additional entropy (from CSPRNG) to create
+    /// an unpredictable shuffle seed. The entropy should be generated fresh
+    /// for each phase transaction using `rand::thread_rng()`.
+    fn session_shuffle_seed_with_entropy(&self, entropy: &[u8; 32]) -> u64 {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(self.session_id.as_bytes());
+        hasher.update(entropy);
+        let hash = hasher.finalize();
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&hash[..8]);
+        u64::from_le_bytes(bytes)
     }
 
     /// Estimate vsize for split transaction

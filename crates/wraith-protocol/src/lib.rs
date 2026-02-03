@@ -68,7 +68,7 @@ pub use blind::{
     BlindSignature, BlindedAddress, BlindingContext, CoordinatorSigner, TokenVerifier,
     UnblindedToken,
 };
-pub use coordinator::{Participant, TimeoutAction, WraithCoordinator};
+pub use coordinator::{Participant, SessionAuditRecord, TimeoutAction, WraithCoordinator};
 pub use denomination::WraithDenomination;
 pub use error::WraithError;
 pub use executor::{

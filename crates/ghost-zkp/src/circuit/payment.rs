@@ -5,10 +5,10 @@
 //! 2. Balance updates are correct (sender -= amount, recipient += amount)
 //! 3. No overflow in recipient balance
 
-use bellpepper_core::{
-    boolean::{AllocatedBit, Boolean},
-    num::AllocatedNum,
-    ConstraintSystem, SynthesisError,
+use bellperson::{
+    gadgets::boolean::{AllocatedBit, Boolean},
+    gadgets::num::AllocatedNum,
+    ConstraintSystem, LinearCombination, SynthesisError,
 };
 use ff::PrimeField;
 use std::marker::PhantomData;
@@ -178,9 +178,9 @@ impl<F: PrimeField> PaymentCircuit<F> {
         // We build this incrementally using linear combinations
 
         let mut coeff = F::ONE;
-        let mut lc_sum = bellpepper_core::LinearCombination::<F>::zero();
+        let mut lc_sum = LinearCombination::<F>::zero();
 
-        for (_i, bit) in bits.iter().enumerate() {
+        for bit in bits.iter() {
             match bit {
                 Boolean::Is(ref b) => {
                     lc_sum = lc_sum + (coeff, b.get_variable());
@@ -251,7 +251,7 @@ pub struct PaymentOutputs<F: PrimeField> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bellpepper_core::test_cs::TestConstraintSystem;
+    use bellperson::util_cs::test_cs::TestConstraintSystem;
     use blstrs::Scalar as Fr;
 
     #[test]

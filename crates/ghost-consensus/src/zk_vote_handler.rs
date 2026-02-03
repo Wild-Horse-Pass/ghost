@@ -396,19 +396,17 @@ impl ZkVoteHandler {
                     "Approval recorded"
                 );
             }
-        } else {
-            if let std::collections::hash_map::Entry::Vacant(e) = state.rejections.entry(voter) {
-                e.insert(
-                    vote.rejection_reason
-                        .clone()
-                        .unwrap_or(ZkRejectionReason::Other("No reason given".to_string())),
-                );
-                debug!(
-                    height,
-                    voter = hex::encode(&voter[..8]),
-                    "Rejection recorded"
-                );
-            }
+        } else if let std::collections::hash_map::Entry::Vacant(e) = state.rejections.entry(voter) {
+            e.insert(
+                vote.rejection_reason
+                    .clone()
+                    .unwrap_or(ZkRejectionReason::Other("No reason given".to_string())),
+            );
+            debug!(
+                height,
+                voter = hex::encode(&voter[..8]),
+                "Rejection recorded"
+            );
         }
 
         // Check for consensus
@@ -489,7 +487,16 @@ impl ZkVoteHandler {
 
     /// Handle incoming vote from another validator
     fn handle_incoming_vote(&self, sender: NodeId, vote: ZkVoteMessage) -> GhostResult<()> {
-        // TODO: Verify vote signature
+        // Verify vote signature
+        let message = vote.signing_message();
+        if !ghost_common::identity::verify_signature(&sender, &message, &vote.signature)? {
+            warn!(
+                sender = hex::encode(&sender[..8]),
+                height = vote.height,
+                "Invalid vote signature, ignoring"
+            );
+            return Ok(());
+        }
         self.record_vote(sender, &vote)
     }
 
@@ -620,7 +627,7 @@ impl ZkVoteHandler {
     /// Returns true if a snapshot should be created at this height.
     /// The actual snapshot creation is done by the caller with the balances.
     pub fn should_create_snapshot(&self, height: u64, snapshot_interval: u64) -> bool {
-        height > 0 && height % snapshot_interval == 0
+        height > 0 && height.is_multiple_of(snapshot_interval)
     }
 
     /// Get all heights with pending (undecided) proposals

@@ -28,6 +28,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::XOnlyPublicKey;
 use bitcoin::{Address, Network, ScriptBuf, Txid};
 
@@ -41,6 +42,25 @@ use crate::phase::PhaseState;
 use crate::session::{SessionState, WraithSession};
 use crate::tier::ParticipantTier;
 use crate::SPLIT_RATIO;
+
+/// Minimal audit record retained after purging sensitive session data
+///
+/// This contains only the information needed for potential emergency recovery
+/// (e.g., if a reorg somehow requires transaction rebroadcast) without
+/// retaining any data that could link participants to their Ghost Locks.
+#[derive(Debug, Clone)]
+pub struct SessionAuditRecord {
+    /// Session ID (for correlation)
+    pub session_id: [u8; 32],
+    /// Phase 1 transaction ID (for potential rebroadcast)
+    pub phase1_txid: Option<[u8; 32]>,
+    /// Phase 2 transaction ID (for potential rebroadcast)
+    pub phase2_txid: Option<[u8; 32]>,
+    /// Number of participants (for statistics only)
+    pub participant_count: usize,
+    /// Unix timestamp when session was confirmed
+    pub confirmed_at: u64,
+}
 
 /// Participant in a Wraith session
 #[derive(Debug, Clone)]
@@ -360,7 +380,7 @@ impl WraithCoordinator {
         // Build transaction
         let mut builder = WraithTransactionBuilder::new(
             self.session_id_hex(),
-            self.session.denomination().clone(),
+            *self.session.denomination(),
             self.network,
         );
 
@@ -508,7 +528,7 @@ impl WraithCoordinator {
 
         let builder = WraithTransactionBuilder::new(
             self.session_id_hex(),
-            self.session.denomination().clone(),
+            *self.session.denomination(),
             self.network,
         );
 
@@ -756,6 +776,110 @@ impl WraithCoordinator {
         self.session
             .timeout_at()
             .saturating_sub(crate::DEFAULT_TIMEOUT_SECS)
+    }
+
+    /// Check if the session has deep confirmation (safe for purging)
+    ///
+    /// Both Phase 1 and Phase 2 must be confirmed with sufficient depth
+    /// before we consider it safe to purge sensitive data.
+    pub fn is_deep_confirmed(&self, required_depth: u32, current_height: u32) -> bool {
+        // Update depths first
+        let phase1_deep = if let Some(phase1) = self.session.phase1() {
+            let mut phase1_clone = phase1.clone();
+            phase1_clone.update_depth(current_height);
+            phase1_clone.is_deep_confirmed(required_depth)
+        } else {
+            false
+        };
+
+        let phase2_deep = if let Some(phase2) = self.session.phase2() {
+            let mut phase2_clone = phase2.clone();
+            phase2_clone.update_depth(current_height);
+            phase2_clone.is_deep_confirmed(required_depth)
+        } else {
+            false
+        };
+
+        phase1_deep && phase2_deep
+    }
+
+    /// Update confirmation depths from current block height
+    ///
+    /// Call this when new blocks arrive to track confirmation depth.
+    pub fn update_confirmation_depth(&mut self, current_height: u32) {
+        if let Some(phase1) = self.session.phase1_mut() {
+            phase1.update_depth(current_height);
+        }
+        if let Some(phase2) = self.session.phase2_mut() {
+            phase2.update_depth(current_height);
+        }
+    }
+
+    /// Purge sensitive data after deep confirmation
+    ///
+    /// This removes all data that could link participants to their Ghost Locks
+    /// while retaining minimal audit information for emergency recovery.
+    ///
+    /// # Safety
+    ///
+    /// Only call this after `is_deep_confirmed()` returns true with at least 6 blocks.
+    /// The 6-block depth requirement ensures the transaction is extremely unlikely
+    /// to be reorged (would require >50% hash power attacking for 6+ blocks).
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(SessionAuditRecord)` if data was purged, `None` if the session
+    /// doesn't have deep enough confirmations yet.
+    pub fn purge_sensitive_data(
+        &mut self,
+        required_depth: u32,
+        current_height: u32,
+    ) -> Option<SessionAuditRecord> {
+        // Only purge if deeply confirmed
+        if !self.is_deep_confirmed(required_depth, current_height) {
+            return None;
+        }
+
+        // Create audit record before purging
+        let phase1_txid = self.phase1_txid().map(|txid| *txid.as_byte_array());
+
+        let phase2_txid = self.phase2_txid().map(|txid| *txid.as_byte_array());
+
+        let confirmed_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let audit = SessionAuditRecord {
+            session_id: *self.session.session_id(),
+            phase1_txid,
+            phase2_txid,
+            participant_count: self.participants.len(),
+            confirmed_at,
+        };
+
+        // Purge sensitive data from all participants
+        for participant in self.participants.values_mut() {
+            // Clear input UTXO data (links public Bitcoin to this session)
+            participant.input = None;
+
+            // Clear blind signature tokens (could be used to trace)
+            participant.tokens.clear();
+            participant.issued_nonces.clear();
+            participant.blinded_challenges.clear();
+            participant.signature_responses.clear();
+
+            // Sever Ghost ID linkage (the key privacy protection)
+            participant.ghost_id = String::new();
+
+            // Clear final address (links session to output)
+            participant.final_address = None;
+        }
+
+        // Clear transaction outputs that could be used to trace
+        self.phase1_outputs.clear();
+
+        Some(audit)
     }
 }
 
