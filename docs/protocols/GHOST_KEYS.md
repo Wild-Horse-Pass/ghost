@@ -172,8 +172,7 @@ fn derive_spend_key(
     output_index: u32,
     nonce: &[u8],
 ) -> SecretKey {
-    let tweak = tagged_hash("GhostPay/tweak",
-        shared_secret || output_index || nonce);
+    let tweak = SHA256(shared_secret || output_index || nonce);
     spend_secret + tweak
 }
 

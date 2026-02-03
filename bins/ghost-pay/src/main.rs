@@ -1211,7 +1211,7 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
                                 if let Err(e) = state.db.update_ghost_lock_funding(
                                     &lock.lock_id,
                                     &req.txid,
-                                    payment.output_index as u32,
+                                    payment.output_index,
                                 ) {
                                     error!(error = %e, "Failed to update lock funding");
                                 } else {
@@ -1986,7 +1986,7 @@ async fn estimate_fee_rate(state: &Arc<AppState>) -> u64 {
                 // 1 BTC = 100_000_000 sats, 1 kvB = 1000 vB
                 // sat/vB = (BTC/kvB) * 100_000_000 / 1000 = BTC/kvB * 100_000
                 let sat_per_vb = (feerate_btc_kvb * 100_000.0) as u64;
-                let rate = sat_per_vb.max(1).min(1000); // Clamp to 1-1000 sat/vB
+                let rate = sat_per_vb.clamp(1, 1000); // Clamp to 1-1000 sat/vB
 
                 // Cache the rate with timestamp
                 let cached_value = format!("{}:{}", rate, chrono::Utc::now().timestamp());
@@ -2027,7 +2027,7 @@ async fn estimate_fee_rate(state: &Arc<AppState>) -> u64 {
                         source = "cache",
                         "Using cached fee rate"
                     );
-                    return rate.max(1).min(1000);
+                    return rate.clamp(1, 1000);
                 }
             }
         }

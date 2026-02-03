@@ -148,7 +148,7 @@ ls -la target/release/ghost-pay
 # Download latest release
 wget https://releases.bitcoin-ghost.org/v1.4/ghost-pool-linux-amd64.tar.gz
 tar -xzf ghost-pool-linux-amd64.tar.gz
-sudo mv ghost-pool /usr/local/bin/
+sudo mv ghost-pool /opt/ghost/bin/
 ```
 
 ### Install ghost-core (Bitcoin Core Fork)
@@ -376,7 +376,7 @@ Wants=bitcoind.service
 Type=simple
 User=ghost
 Group=ghost
-ExecStart=/usr/local/bin/ghost-pool --config /etc/ghost/config.toml
+ExecStart=/opt/ghost/bin/ghost-pool --config /etc/ghost/config.toml
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
@@ -725,7 +725,7 @@ sudo systemctl stop ghost-pool
 /etc/cron.daily/ghost-backup
 
 # 6. Deploy new binary
-sudo cp target/release/ghost-pool /usr/local/bin/ghost-pool
+sudo cp target/release/ghost-pool /opt/ghost/bin/ghost-pool
 
 # 7. Validate config (new version may have changes)
 ghost-pool --config /etc/ghost/config.toml --validate

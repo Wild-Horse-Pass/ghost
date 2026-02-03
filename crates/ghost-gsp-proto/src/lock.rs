@@ -198,19 +198,15 @@ pub struct LockResponse {
 /// Jump request priority
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum JumpPriority {
     /// Normal priority (queued)
+    #[default]
     Normal,
     /// High priority (expedited)
     High,
     /// Urgent (immediate, higher fee)
     Urgent,
-}
-
-impl Default for JumpPriority {
-    fn default() -> Self {
-        JumpPriority::Normal
-    }
 }
 
 impl std::fmt::Display for JumpPriority {

@@ -304,6 +304,7 @@ impl LogLevel {
         }
     }
 
+    #[allow(dead_code)]
     pub fn all() -> &'static [LogLevel] {
         &[
             LogLevel::Error,
@@ -316,6 +317,7 @@ impl LogLevel {
 }
 
 /// Swarm node info from /api/v1/swarm/nodes
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SwarmNodeInfo {
     pub node_id: String,
@@ -330,6 +332,7 @@ pub struct SwarmNodeInfo {
 }
 
 /// API response wrapper
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ApiResponse<T> {
     #[serde(default)]
@@ -339,11 +342,13 @@ pub struct ApiResponse<T> {
 }
 
 /// Error response from API
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ApiError {
     pub error: ErrorDetail,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ErrorDetail {
     pub code: String,

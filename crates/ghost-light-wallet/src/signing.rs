@@ -47,7 +47,7 @@ pub fn create_wallet_proof(master_key: &MasterKey, action: &str) -> WalletResult
     getrandom::getrandom(&mut nonce_bytes)
         .map_err(|e| LightWalletError::SigningFailed(format!("RNG error: {}", e)))?;
 
-    let nonce = hex::encode(&nonce_bytes);
+    let nonce = hex::encode(nonce_bytes);
 
     // Create message to sign
     let message = format!("ghost-{}:{}:{}", action, timestamp, nonce);
@@ -64,7 +64,7 @@ pub fn create_wallet_proof(master_key: &MasterKey, action: &str) -> WalletResult
         timestamp,
         nonce,
         message,
-        signature: hex::encode(&signature_bytes),
+        signature: hex::encode(signature_bytes),
         public_key: hex::encode(master_key.auth_pubkey()),
     })
 }
@@ -103,8 +103,8 @@ fn tagged_hash(tag: &[u8], data: &[u8]) -> [u8; 32] {
     let tag_hash = Sha256::digest(tag);
 
     let mut hasher = Sha256::new();
-    hasher.update(&tag_hash);
-    hasher.update(&tag_hash);
+    hasher.update(tag_hash);
+    hasher.update(tag_hash);
     hasher.update(data);
 
     let result = hasher.finalize();
@@ -134,7 +134,7 @@ fn sign_schnorr(master_key: &MasterKey, message_hash: &[u8; 32]) -> WalletResult
 
     // Second 32 bytes: hash of (r || key || message)
     let mut hasher = Sha256::new();
-    hasher.update(&r);
+    hasher.update(r);
     hasher.update(auth_key);
     hasher.update(message_hash);
     let s = hasher.finalize();

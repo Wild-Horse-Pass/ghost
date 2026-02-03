@@ -98,7 +98,7 @@ impl HealthPingHandler {
             .map_err(|e| ghost_common::error::GhostError::P2PMessage(e.to_string()))?;
 
         let ping = &ping_msg.ping;
-        let node_id_hex = hex::encode(&envelope.sender);
+        let node_id_hex = hex::encode(envelope.sender);
         let short_id = node_id_hex[..8].to_string();
 
         debug!(
@@ -119,7 +119,7 @@ impl HealthPingHandler {
 
         // Register node capabilities for payout calculations
         if let Some(ref callback) = self.node_capabilities_callback {
-            callback(envelope.sender, ping.capabilities.clone());
+            callback(envelope.sender, ping.capabilities);
             debug!(node_id = %short_id, "Registered node capabilities for payout");
         }
 

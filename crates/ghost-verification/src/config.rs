@@ -31,16 +31,10 @@ use tracing::{debug, error, warn};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Node configuration that persists to disk
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeConfig {
     /// Ghost mode: do not relay/announce unconfirmed transactions
     pub ghost_mode: bool,
-}
-
-impl Default for NodeConfig {
-    fn default() -> Self {
-        Self { ghost_mode: false }
-    }
 }
 
 impl NodeConfig {

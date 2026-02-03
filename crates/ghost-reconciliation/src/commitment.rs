@@ -95,11 +95,11 @@ impl L1Commitment {
     pub fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"ghost_commitment_v1");
-        hasher.update(&self.batch_id);
-        hasher.update(&self.merkle_root);
-        hasher.update(&self.settlement_count.to_le_bytes());
-        hasher.update(&self.total_amount_sats.to_le_bytes());
-        hasher.update(&self.timestamp.to_le_bytes());
+        hasher.update(self.batch_id);
+        hasher.update(self.merkle_root);
+        hasher.update(self.settlement_count.to_le_bytes());
+        hasher.update(self.total_amount_sats.to_le_bytes());
+        hasher.update(self.timestamp.to_le_bytes());
         hasher.finalize().into()
     }
 

@@ -12,6 +12,7 @@ pub struct App {
     // Navigation
     pub current_tab: Tab,
     pub input_mode: InputMode,
+    #[allow(dead_code)]
     pub should_quit: bool,
 
     // Swarm Management
@@ -31,6 +32,7 @@ pub struct App {
     pub input_buffer: String,
 
     // Refresh tracking
+    #[allow(dead_code)]
     pub last_refresh: Instant,
 }
 
@@ -57,6 +59,7 @@ pub enum Tab {
 }
 
 impl Tab {
+    #[allow(dead_code)]
     pub fn all() -> &'static [Tab] {
         &[
             Tab::Overview,
@@ -71,6 +74,7 @@ impl Tab {
         ]
     }
 
+    #[allow(dead_code)]
     pub fn name(&self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
@@ -85,6 +89,7 @@ impl Tab {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_number(n: u8) -> Option<Tab> {
         match n {
             1 => Some(Tab::Overview),
@@ -169,6 +174,7 @@ pub enum InputMode {
     /// Search mode
     Search,
     /// Filter mode
+    #[allow(dead_code)]
     Filter,
     /// Confirmation dialog (delete node)
     ConfirmDelete,
@@ -178,18 +184,16 @@ pub enum InputMode {
 
 /// Connection status for a node
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ConnectionStatus {
     Connected,
+    #[allow(dead_code)]
     Connecting,
+    #[default]
     Disconnected,
     Error(String),
 }
 
-impl Default for ConnectionStatus {
-    fn default() -> Self {
-        ConnectionStatus::Disconnected
-    }
-}
 
 /// Cached data from API responses
 #[derive(Default)]
@@ -229,13 +233,18 @@ pub struct NodeDataCache {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DataType {
     NodeStatus,
+    #[allow(dead_code)]
     Resources,
+    #[allow(dead_code)]
     Rewards,
     Peers,
     Mining,
+    #[allow(dead_code)]
     Miners,
     GhostPay,
+    #[allow(dead_code)]
     Wraith,
+    #[allow(dead_code)]
     Locks,
     Watchdog,
     Backup,
@@ -280,26 +289,31 @@ impl App {
             .unwrap_or(ConnectionStatus::Disconnected)
     }
 
+    #[allow(dead_code)]
     pub fn set_status_message(&mut self, msg: impl Into<String>) {
         self.status_message = msg.into();
     }
 
+    #[allow(dead_code)]
     pub fn clear_status_message(&mut self) {
         self.status_message.clear();
     }
 
+    #[allow(dead_code)]
     pub fn next_tab(&mut self) {
         self.current_tab = self.current_tab.next();
         self.scroll_offset = 0;
         self.selected_row = 0;
     }
 
+    #[allow(dead_code)]
     pub fn prev_tab(&mut self) {
         self.current_tab = self.current_tab.prev();
         self.scroll_offset = 0;
         self.selected_row = 0;
     }
 
+    #[allow(dead_code)]
     pub fn goto_tab(&mut self, tab: Tab) {
         self.current_tab = tab;
         self.scroll_offset = 0;
@@ -308,6 +322,7 @@ impl App {
 }
 
 impl NodeDataCache {
+    #[allow(dead_code)]
     pub fn is_stale(&self, data_type: DataType, max_age_secs: u64) -> bool {
         self.last_updated
             .get(&data_type)
@@ -315,7 +330,7 @@ impl NodeDataCache {
             .unwrap_or(true)
     }
 
-    pub fn mark_updated(&mut self, data_type: DataType) {
+    fn mark_updated(&mut self, data_type: DataType) {
         self.last_updated.insert(data_type, Instant::now());
     }
 
@@ -323,6 +338,7 @@ impl NodeDataCache {
         self.mark_updated(data_type);
     }
 
+    #[allow(dead_code)]
     pub fn clear(&mut self) {
         *self = Self::default();
     }

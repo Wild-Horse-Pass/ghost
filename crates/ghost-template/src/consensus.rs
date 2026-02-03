@@ -181,13 +181,13 @@ pub fn compute_proposal_hash(template: &FilteredTemplate) -> [u8; 32] {
 
     // Include template identifying info
     hasher.update(b"ghost_proposal_v1");
-    hasher.update(&template.original.height.to_le_bytes());
-    hasher.update(&template.merkle_root);
-    hasher.update(&template.original.coinbasevalue.to_le_bytes());
-    hasher.update(&template.total_fee.to_le_bytes());
+    hasher.update(template.original.height.to_le_bytes());
+    hasher.update(template.merkle_root);
+    hasher.update(template.original.coinbasevalue.to_le_bytes());
+    hasher.update(template.total_fee.to_le_bytes());
 
     // Include transaction count
-    hasher.update(&(template.included_indices.len() as u32).to_le_bytes());
+    hasher.update((template.included_indices.len() as u32).to_le_bytes());
 
     hasher.finalize().into()
 }
@@ -233,14 +233,14 @@ impl PayoutProposal {
     pub fn compute_hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"ghost_payout_v1");
-        hasher.update(&self.height.to_le_bytes());
-        hasher.update(&self.coinbase_value.to_le_bytes());
-        hasher.update(&self.pool_fee.to_le_bytes());
-        hasher.update(&self.merkle_root);
+        hasher.update(self.height.to_le_bytes());
+        hasher.update(self.coinbase_value.to_le_bytes());
+        hasher.update(self.pool_fee.to_le_bytes());
+        hasher.update(self.merkle_root);
 
         // Include payout merkle
         for payout in &self.payouts {
-            hasher.update(&payout.hash());
+            hasher.update(payout.hash());
         }
 
         hasher.finalize().into()
@@ -287,7 +287,7 @@ impl PayoutEntry {
     pub fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(self.address.as_bytes());
-        hasher.update(&self.amount.to_le_bytes());
+        hasher.update(self.amount.to_le_bytes());
         hasher.finalize().into()
     }
 }

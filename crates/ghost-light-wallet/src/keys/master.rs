@@ -34,6 +34,7 @@ use crate::error::{LightWalletError, WalletResult};
 /// Master key for the light wallet
 ///
 /// Derived from BIP-39 mnemonic and manages all sub-keys.
+#[derive(Clone)]
 pub struct MasterKey {
     /// Ghost Keys for payments
     ghost_keys: GhostKeys,

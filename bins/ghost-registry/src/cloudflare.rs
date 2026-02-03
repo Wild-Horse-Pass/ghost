@@ -379,6 +379,7 @@ fn region_prefix(region: Region) -> &'static str {
 }
 
 /// Get all active regions
+#[allow(dead_code)]
 pub fn all_regions() -> Vec<Region> {
     vec![
         Region::UsEast,

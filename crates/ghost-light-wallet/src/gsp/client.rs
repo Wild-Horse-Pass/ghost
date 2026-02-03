@@ -53,6 +53,7 @@ use crate::error::{LightWalletError, WalletResult};
 pub type LockStateCallback = Arc<dyn Fn(String, LockStateSnapshot) + Send + Sync>;
 
 /// GSP client for WebSocket communication
+#[derive(Clone)]
 pub struct GspClient {
     /// GSP URL
     url: String,

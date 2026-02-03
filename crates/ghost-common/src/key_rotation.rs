@@ -172,12 +172,10 @@ impl KeyRotationProof {
         }
 
         // Verify PoW if required
-        if ROTATION_POW_DIFFICULTY > 0 {
-            if !self.verify_pow(ROTATION_POW_DIFFICULTY) {
-                return Err(GhostError::SignatureVerification(
-                    "Rotation proof PoW is invalid".to_string(),
-                ));
-            }
+        if ROTATION_POW_DIFFICULTY > 0 && !self.verify_pow(ROTATION_POW_DIFFICULTY) {
+            return Err(GhostError::SignatureVerification(
+                "Rotation proof PoW is invalid".to_string(),
+            ));
         }
 
         // Verify old key signature
@@ -226,8 +224,8 @@ impl KeyRotationProof {
     fn create_old_key_message(new_node_id: &NodeId, timestamp: u64, nonce: u64) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(new_node_id);
-        hasher.update(&timestamp.to_le_bytes());
-        hasher.update(&nonce.to_le_bytes());
+        hasher.update(timestamp.to_le_bytes());
+        hasher.update(nonce.to_le_bytes());
         hasher.update(b"rotate_from");
         hasher.finalize().into()
     }
@@ -236,8 +234,8 @@ impl KeyRotationProof {
     fn create_new_key_message(old_node_id: &NodeId, timestamp: u64, nonce: u64) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(old_node_id);
-        hasher.update(&timestamp.to_le_bytes());
-        hasher.update(&nonce.to_le_bytes());
+        hasher.update(timestamp.to_le_bytes());
+        hasher.update(nonce.to_le_bytes());
         hasher.update(b"rotate_to");
         hasher.finalize().into()
     }
@@ -268,8 +266,8 @@ impl KeyRotationProof {
         let mut hasher = Sha256::new();
         hasher.update(old_node_id);
         hasher.update(new_node_id);
-        hasher.update(&timestamp.to_le_bytes());
-        hasher.update(&nonce.to_le_bytes());
+        hasher.update(timestamp.to_le_bytes());
+        hasher.update(nonce.to_le_bytes());
         hasher.update(b"rotation_pow");
         hasher.finalize().into()
     }
@@ -455,14 +453,14 @@ impl RotationRevocation {
 
     fn hash_rotation_proof(proof: &KeyRotationProof) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(&proof.to_bytes());
+        hasher.update(proof.to_bytes());
         hasher.finalize().into()
     }
 
     fn create_message(rotation_proof_hash: &[u8; 32], timestamp: u64) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(rotation_proof_hash);
-        hasher.update(&timestamp.to_le_bytes());
+        hasher.update(timestamp.to_le_bytes());
         hasher.update(b"revoke");
         hasher.finalize().into()
     }

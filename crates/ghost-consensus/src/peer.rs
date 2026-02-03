@@ -226,9 +226,10 @@ impl Peer {
 }
 
 /// Peer connection state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PeerState {
     /// Connecting to peer
+    #[default]
     Connecting,
     /// Connected and healthy
     Connected,
@@ -236,12 +237,6 @@ pub enum PeerState {
     Disconnected,
     /// Banned (misbehavior)
     Banned,
-}
-
-impl Default for PeerState {
-    fn default() -> Self {
-        Self::Connecting
-    }
 }
 
 /// Peer scoring for selection

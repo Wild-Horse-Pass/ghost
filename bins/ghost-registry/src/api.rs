@@ -83,6 +83,7 @@ pub struct NodeHeartbeat {
 }
 
 /// Node deregistration request
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeDeregistration {
     pub node_id: String,
@@ -151,11 +152,7 @@ async fn handle_register(
         .unwrap()
         .as_secs();
 
-    let drift = if now > req.timestamp {
-        now - req.timestamp
-    } else {
-        req.timestamp - now
-    };
+    let drift = now.abs_diff(req.timestamp);
 
     if drift > state.health_config.max_timestamp_drift_secs {
         return (
@@ -245,11 +242,7 @@ async fn handle_heartbeat(
         .unwrap()
         .as_secs();
 
-    let drift = if now > req.timestamp {
-        now - req.timestamp
-    } else {
-        req.timestamp - now
-    };
+    let drift = now.abs_diff(req.timestamp);
 
     if drift > state.health_config.max_timestamp_drift_secs {
         return (

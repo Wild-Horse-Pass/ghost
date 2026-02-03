@@ -11,6 +11,7 @@ use std::collections::HashMap;
 /// - A point (G1): 48 bytes (compressed BLS12-381)
 /// - B point (G2): 96 bytes (compressed BLS12-381)
 /// - C point (G1): 48 bytes (compressed BLS12-381)
+///
 /// Total: 192 bytes
 pub const GROTH16_PROOF_SIZE: usize = 192;
 

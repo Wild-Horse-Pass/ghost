@@ -51,12 +51,15 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use ghost_common::types::{NodeId, PayoutEntry};
 
 /// Maximum number of shares (voting nodes)
 pub const MAX_SHARES: usize = 256;
+
+/// Type alias for pending proposals storage
+type PendingProposals = HashMap<[u8; 32], (EncryptedProposal, Vec<SecretShare>)>;
 
 /// Minimum shares required (at least 3 for any meaningful threshold)
 pub const MIN_SHARES: usize = 3;
@@ -189,7 +192,7 @@ impl ProposalContent {
 /// Proposal encryption/decryption manager
 pub struct ProposalCrypto {
     /// Pending proposals awaiting reveal (id -> (proposal, collected_shares))
-    pending: RwLock<HashMap<[u8; 32], (EncryptedProposal, Vec<SecretShare>)>>,
+    pending: RwLock<PendingProposals>,
     /// Revealed proposals
     revealed: RwLock<HashMap<[u8; 32], ProposalContent>>,
 }
@@ -615,11 +618,11 @@ fn shamir_split(
     let mut shares = vec![(0u8, [0u8; 32]); n];
 
     // Process each byte of the secret independently
-    for byte_idx in 0..32 {
+    for (byte_idx, &secret_byte) in secret.iter().enumerate() {
         // Generate random polynomial coefficients (degree k-1)
         // coeffs[0] = secret byte, others are random
         let mut coeffs = vec![0u8; k];
-        coeffs[0] = secret[byte_idx];
+        coeffs[0] = secret_byte;
 
         // Generate random coefficients for higher degrees
         for coeff in coeffs.iter_mut().skip(1) {

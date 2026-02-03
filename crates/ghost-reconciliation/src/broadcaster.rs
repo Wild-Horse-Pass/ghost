@@ -46,14 +46,20 @@ pub trait L1Broadcaster: Send + Sync {
     fn is_confirmed(&self, txid: &str) -> Result<Option<u32>, String>;
 }
 
+/// RPC call function type
+type RpcFn = Arc<dyn Fn(&str, &str) -> Result<String, String> + Send + Sync>;
+
+/// Confirmation check function type
+type ConfirmFn = Arc<dyn Fn(&str) -> Result<Option<u32>, String> + Send + Sync>;
+
 /// RPC-based broadcaster using Bitcoin Core
 pub struct RpcBroadcaster {
     /// RPC client (injected)
-    rpc_fn: Arc<dyn Fn(&str, &str) -> Result<String, String> + Send + Sync>,
+    rpc_fn: RpcFn,
     /// Get height function
     height_fn: Arc<dyn Fn() -> Result<u64, String> + Send + Sync>,
     /// Check confirmation function
-    confirm_fn: Arc<dyn Fn(&str) -> Result<Option<u32>, String> + Send + Sync>,
+    confirm_fn: ConfirmFn,
 }
 
 impl RpcBroadcaster {
@@ -150,11 +156,8 @@ impl<B: L1Broadcaster> SettlementBroadcaster<B> {
         match confirm_height {
             Some(height) => {
                 let confirmations = current_height.saturating_sub(height as u64) + 1;
-                let dispute_remaining = if confirmations >= DISPUTE_WINDOW_BLOCKS as u64 {
-                    0
-                } else {
-                    DISPUTE_WINDOW_BLOCKS as u64 - confirmations
-                };
+                let dispute_remaining =
+                    (DISPUTE_WINDOW_BLOCKS as u64).saturating_sub(confirmations);
 
                 Ok(ConfirmationStatus::Confirmed {
                     block_height: height,

@@ -57,7 +57,7 @@ pub fn compute_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
 
 /// Compute the next level of the merkle tree
 fn compute_next_level(hashes: &[[u8; 32]]) -> Vec<[u8; 32]> {
-    let mut next_level = Vec::with_capacity((hashes.len() + 1) / 2);
+    let mut next_level = Vec::with_capacity(hashes.len().div_ceil(2));
 
     let mut i = 0;
     while i < hashes.len() {
@@ -93,7 +93,7 @@ pub fn compute_merkle_branch(txids: &[[u8; 32]], index: usize) -> Vec<[u8; 32]> 
 
     while level.len() > 1 {
         // Sibling index
-        let sibling_idx = if idx % 2 == 0 {
+        let sibling_idx = if idx.is_multiple_of(2) {
             if idx + 1 < level.len() {
                 idx + 1
             } else {
@@ -126,7 +126,7 @@ pub fn verify_merkle_branch(
     for sibling in branch {
         let mut combined = [0u8; 64];
 
-        if idx % 2 == 0 {
+        if idx.is_multiple_of(2) {
             combined[..32].copy_from_slice(&current);
             combined[32..].copy_from_slice(sibling);
         } else {

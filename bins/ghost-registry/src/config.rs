@@ -27,6 +27,7 @@ use std::path::PathBuf;
 
 /// Main registry service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct RegistryServiceConfig {
     /// Server configuration
     pub server: ServerConfig,
@@ -40,17 +41,6 @@ pub struct RegistryServiceConfig {
     pub database: DatabaseConfig,
 }
 
-impl Default for RegistryServiceConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            cloudflare: CloudflareConfig::default(),
-            dns: DnsConfig::default(),
-            health: HealthConfig::default(),
-            database: DatabaseConfig::default(),
-        }
-    }
-}
 
 /// HTTP server configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]

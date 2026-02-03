@@ -38,11 +38,13 @@ impl NodeApiClient {
     }
 
     /// Set authentication token
+    #[allow(dead_code)]
     pub fn set_auth_token(&mut self, token: Option<String>) {
         self.auth_token = token;
     }
 
     /// Get the base URL
+    #[allow(dead_code)]
     pub fn base_url(&self) -> &str {
         &self.base_url
     }
@@ -50,6 +52,7 @@ impl NodeApiClient {
     // === Health Check ===
 
     /// Check if node is reachable
+    #[allow(dead_code)]
     pub async fn health_check(&self) -> Result<bool> {
         let url = format!("{}/health", self.base_url);
         let resp = self.client.get(&url).send().await?;
@@ -64,6 +67,7 @@ impl NodeApiClient {
     }
 
     /// Get node nickname
+    #[allow(dead_code)]
     pub async fn get_node_nickname(&self) -> Result<String> {
         #[derive(Deserialize)]
         struct NicknameResponse {
@@ -190,6 +194,7 @@ impl NodeApiClient {
     // === Swarm ===
 
     /// Get swarm nodes
+    #[allow(dead_code)]
     pub async fn get_swarm_nodes(&self) -> Result<Vec<SwarmNodeInfo>> {
         #[derive(Deserialize)]
         struct SwarmResponse {

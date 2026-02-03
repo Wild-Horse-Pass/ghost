@@ -623,7 +623,7 @@ async fn handle_submit_solution(
         work_state.merkle_branches.len()
     );
     let merkle_root = compute_merkle_root(&coinbase_txid, &work_state.merkle_branches);
-    info!("Computed merkle root: {}", hex::encode(&merkle_root));
+    info!("Computed merkle root: {}", hex::encode(merkle_root));
 
     // Build the 80-byte block header
     let header = build_block_header(
@@ -636,7 +636,7 @@ async fn handle_submit_solution(
     )?;
 
     // Log full header for debugging
-    info!("Block header (80 bytes): {}", hex::encode(&header));
+    info!("Block header (80 bytes): {}", hex::encode(header));
     // Compute block hash for verification
     let block_hash = double_sha256(&header);
     info!(
@@ -783,7 +783,7 @@ fn double_sha256(data: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
 
     let first = Sha256::digest(data);
-    let second = Sha256::digest(&first);
+    let second = Sha256::digest(first);
 
     let mut result = [0u8; 32];
     result.copy_from_slice(&second);
@@ -995,15 +995,11 @@ fn create_new_template(
     let merkle_path: Vec<U256<'static>> = work_state
         .merkle_branches
         .iter()
-        .map(|branch| {
-            U256::try_from(branch.clone())
-                .unwrap_or_else(|_| U256::try_from(vec![0u8; 32]).unwrap())
-        })
+        .map(|branch| U256::from(*branch))
         .collect();
 
     let merkle_path_seq: Seq0255<'static, U256<'static>> = merkle_path
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("Too many merkle branches"))?;
+        .into();
 
     // Use Ghost's pre-built coinbase outputs instead of letting SRI Pool add its own
     // This gives Ghost full control over payouts (BFT consensus, treasury, etc.)

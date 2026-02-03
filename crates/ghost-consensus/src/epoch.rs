@@ -105,7 +105,7 @@ impl EpochTracker {
 
     /// Check if a height is the last block of an epoch
     pub fn is_epoch_boundary(height: u64) -> bool {
-        height > 0 && height % L2_EPOCH_BLOCKS == 0
+        height > 0 && height.is_multiple_of(L2_EPOCH_BLOCKS)
     }
 
     /// Get current epoch

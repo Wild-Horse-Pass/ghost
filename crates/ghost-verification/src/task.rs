@@ -263,9 +263,9 @@ impl VerificationTask {
 
     /// Verify a single peer's capabilities
     async fn verify_peer(&self, peer: &VerifiablePeer) {
-        let peer_id_hex = hex::encode(&peer.node_id);
+        let peer_id_hex = hex::encode(peer.node_id);
         let short_id = &peer_id_hex[..8];
-        let our_id_hex = hex::encode(&self.our_node_id);
+        let our_id_hex = hex::encode(self.our_node_id);
 
         debug!(peer = %short_id, address = %peer.http_address, "Verifying peer");
 
@@ -283,22 +283,22 @@ impl VerificationTask {
 
         // Verify each claimed capability
         if capabilities.archive_mode {
-            self.verify_archive(&peer, &peer_id_hex, &our_id_hex, timestamp)
+            self.verify_archive(peer, &peer_id_hex, &our_id_hex, timestamp)
                 .await;
         }
 
         if capabilities.bitcoin_pure {
-            self.verify_policy(&peer, &peer_id_hex, &our_id_hex, timestamp)
+            self.verify_policy(peer, &peer_id_hex, &our_id_hex, timestamp)
                 .await;
         }
 
         if capabilities.public_mining {
-            self.verify_stratum(&peer, &peer_id_hex, &our_id_hex, timestamp)
+            self.verify_stratum(peer, &peer_id_hex, &our_id_hex, timestamp)
                 .await;
         }
 
         if capabilities.ghost_pay {
-            self.verify_ghostpay(&peer, &peer_id_hex, &our_id_hex, timestamp)
+            self.verify_ghostpay(peer, &peer_id_hex, &our_id_hex, timestamp)
                 .await;
         }
     }

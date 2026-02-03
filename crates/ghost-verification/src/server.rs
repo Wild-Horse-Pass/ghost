@@ -461,6 +461,7 @@ impl VerificationState {
     }
 
     /// Parse a share hash hex string to [u8; 32]
+    #[allow(dead_code)]
     fn parse_share_hash_internal(hash_str: &str) -> [u8; 32] {
         parse_share_hash(hash_str)
     }

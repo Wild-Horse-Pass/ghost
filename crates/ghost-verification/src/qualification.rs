@@ -27,7 +27,7 @@
 //! 2. Per-capability verification: 10+ challenges with 95% pass rate
 
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use ghost_common::types::{NodeCapabilities, NodeId};
 use ghost_storage::Database;

@@ -271,8 +271,8 @@ Light wallet backend for Silent Payment scanning.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/health` | Health check |
-| GET | `/api/v1/info` | Server info (version, network, sync) |
+| GET | `/gsp/health` | Health check |
+| GET | `/gsp/api/v1/info` | Server info (version, network, sync) |
 
 **Info Response:**
 ```json
@@ -290,7 +290,7 @@ Light wallet backend for Silent Payment scanning.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/register` | Register wallet with proof of ownership |
+| POST | `/gsp/api/v1/register` | Register wallet with proof of ownership |
 
 **Register Request:**
 ```json
@@ -306,7 +306,7 @@ Light wallet backend for Silent Payment scanning.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/api/v1/session` | Create authenticated session |
+| POST | `/gsp/api/v1/session` | Create authenticated session |
 
 **Session Response:**
 ```json
@@ -320,7 +320,7 @@ Light wallet backend for Silent Payment scanning.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET/WS | `/ws/v1` | WebSocket for real-time notifications |
+| GET/WS | `/gsp/ws/v1` | WebSocket for real-time notifications |
 
 **WebSocket Messages:**
 ```json
@@ -388,12 +388,12 @@ For endpoints returning lists:
 
 ```bash
 # Get session token
-curl -X POST http://localhost:8900/api/v1/session \
+curl -X POST http://localhost:8900/gsp/api/v1/session \
   -H "Content-Type: application/json" \
   -d '{"ghost_id": "sp1q...", "signature": "..."}'
 
 # Use token
-curl http://localhost:8900/api/v1/protected \
+curl http://localhost:8900/gsp/api/v1/protected \
   -H "Authorization: Bearer <token>"
 ```
 
@@ -431,7 +431,7 @@ ws.onmessage = (event) => {
 ### GSP WebSocket
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8900/ws/v1');
+const ws = new WebSocket('ws://localhost:8900/gsp/ws/v1');
 
 // Authenticate after connection
 ws.onopen = () => {
@@ -505,7 +505,7 @@ curl -X POST http://localhost:8800/api/v1/locks/create \
 ### Register with GSP
 
 ```bash
-curl -X POST http://localhost:8900/api/v1/register \
+curl -X POST http://localhost:8900/gsp/api/v1/register \
   -H "Content-Type: application/json" \
   -d '{
     "ghost_id": "sp1q...",

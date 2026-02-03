@@ -163,46 +163,43 @@ impl PolicyEngine {
         }
 
         // Check specific feature restrictions
-        if !self.profile.allow_inscriptions {
-            if classification
+        if !self.profile.allow_inscriptions
+            && classification
                 .features
                 .iter()
                 .any(|f| matches!(f, ghost_buds::DetectedFeature::InscriptionEnvelope))
-            {
-                self.stats.rejected_inscription += 1;
-                return PolicyDecision::Reject {
-                    reason: RejectionReason::InscriptionsNotAllowed,
-                    classification,
-                };
-            }
+        {
+            self.stats.rejected_inscription += 1;
+            return PolicyDecision::Reject {
+                reason: RejectionReason::InscriptionsNotAllowed,
+                classification,
+            };
         }
 
-        if !self.profile.allow_runes {
-            if classification
+        if !self.profile.allow_runes
+            && classification
                 .features
                 .iter()
                 .any(|f| matches!(f, ghost_buds::DetectedFeature::RunesRunestone))
-            {
-                self.stats.rejected_runes += 1;
-                return PolicyDecision::Reject {
-                    reason: RejectionReason::RunesNotAllowed,
-                    classification,
-                };
-            }
+        {
+            self.stats.rejected_runes += 1;
+            return PolicyDecision::Reject {
+                reason: RejectionReason::RunesNotAllowed,
+                classification,
+            };
         }
 
-        if !self.profile.allow_brc20 {
-            if classification
+        if !self.profile.allow_brc20
+            && classification
                 .features
                 .iter()
                 .any(|f| matches!(f, ghost_buds::DetectedFeature::Brc20Pattern))
-            {
-                self.stats.rejected_brc20 += 1;
-                return PolicyDecision::Reject {
-                    reason: RejectionReason::Brc20NotAllowed,
-                    classification,
-                };
-            }
+        {
+            self.stats.rejected_brc20 += 1;
+            return PolicyDecision::Reject {
+                reason: RejectionReason::Brc20NotAllowed,
+                classification,
+            };
         }
 
         // Calculate priority

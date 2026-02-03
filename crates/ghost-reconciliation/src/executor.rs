@@ -256,7 +256,7 @@ impl BatchExecutor {
                     use sha2::{Digest, Sha256};
                     let mut hasher = Sha256::new();
                     hasher.update(<bitcoin::Txid as AsRef<[u8]>>::as_ref(&input.txid));
-                    hasher.update(&input.vout.to_le_bytes());
+                    hasher.update(input.vout.to_le_bytes());
                     hasher.finalize().into()
                 });
                 input_lock_ids.push(lock_id);

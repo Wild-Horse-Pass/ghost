@@ -655,7 +655,7 @@ async fn main() -> Result<()> {
     let template_config = TemplateConfig {
         treasury_address: config.pool.treasury_address.clone(),
         pool_payout_address: config.pool.treasury_address.address().to_string(), // Use same as treasury for now
-        network: config.bitcoin.network.clone(),
+        network: config.bitcoin.network,
         mining_mode,
         solo_payout_address: config.network.solo_payout_address.clone(),
         ..Default::default()
@@ -678,7 +678,7 @@ async fn main() -> Result<()> {
             .clone()
             .unwrap_or_else(|| "127.0.0.1".to_string()),
         ports: config.network.p2p.clone(),
-        capabilities: capabilities.clone(),
+        capabilities,
         ..Default::default()
     };
     let mesh = Arc::new(MeshNetwork::new(Arc::clone(&identity), mesh_config));
@@ -1131,8 +1131,7 @@ async fn main() -> Result<()> {
                     .get_treasury_threshold_reached()
                     .ok()
                     .flatten()
-                    .map(|ts| chrono::DateTime::from_timestamp(ts, 0))
-                    .flatten()
+                    .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
                     .map(|dt| dt.with_timezone(&chrono::Utc));
                 TreasuryState::from_stored(balance, threshold_ts)
             }
@@ -1270,7 +1269,7 @@ async fn main() -> Result<()> {
                         Ok(_) => {
                             sample_count += 1;
                             // Log every 360 samples (~1 hour) to confirm it's working
-                            if sample_count % 360 == 0 {
+                            if sample_count.is_multiple_of(360) {
                                 tracing::debug!(
                                     samples = sample_count,
                                     node_id = %&node_id_for_uptime[..8],
@@ -1680,8 +1679,7 @@ async fn main() -> Result<()> {
                                 .get_treasury_threshold_reached()
                                 .ok()
                                 .flatten()
-                                .map(|ts| chrono::DateTime::from_timestamp(ts, 0))
-                                .flatten()
+                                .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
                                 .map(|dt| dt.with_timezone(&chrono::Utc));
                             TreasuryState::from_stored(balance, threshold_ts)
                         }
@@ -1901,20 +1899,20 @@ async fn main() -> Result<()> {
 }
 
 /// Expand ~ in path
-fn expand_path(path: &PathBuf) -> Result<PathBuf> {
+fn expand_path(path: &std::path::Path) -> Result<PathBuf> {
     let path_str = path.to_string_lossy();
-    if path_str.starts_with("~/") {
+    if let Some(stripped) = path_str.strip_prefix("~/") {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .map_err(|_| anyhow::anyhow!("Could not determine home directory"))?;
-        Ok(PathBuf::from(home).join(&path_str[2..]))
+        Ok(PathBuf::from(home).join(stripped))
     } else {
-        Ok(path.clone())
+        Ok(path.to_path_buf())
     }
 }
 
 /// Load configuration from file
-fn load_config(path: &PathBuf) -> Result<NodeConfig> {
+fn load_config(path: &std::path::Path) -> Result<NodeConfig> {
     let config = if path.exists() {
         let content = std::fs::read_to_string(path)?;
         let config: NodeConfig = toml::from_str(&content)?;

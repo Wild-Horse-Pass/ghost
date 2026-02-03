@@ -520,7 +520,7 @@ async fn consensus_state_handler(State(state): State<Arc<VerificationState>>) ->
 
     // Query database for elder count and peer info
     let (elder_count, peer_count) = if let Some(ref db) = state.database {
-        let elders = db.get_elder_count().unwrap_or(0) as u32;
+        let elders = db.get_elder_count().unwrap_or(0);
         let peers = db.get_active_peers(100).map(|p| p.len()).unwrap_or(0) as u32;
         (elders, peers)
     } else {
@@ -1592,8 +1592,7 @@ async fn api_rewards_full_handler(
             .collect();
         let last = payouts
             .iter()
-            .filter(|p| p.recipient_id == health.node_id)
-            .next()
+            .find(|p| p.recipient_id == health.node_id)
             .map(|p| {
                 serde_json::json!({
                     "round_id": p.round_id,
@@ -1653,8 +1652,7 @@ async fn api_settlement_status_handler(
         let all_pending = db.get_pending_reconciliation_batches().unwrap_or_default();
         let last = all_pending
             .iter()
-            .filter(|b| b.finalized_at.is_some())
-            .next()
+            .find(|b| b.finalized_at.is_some())
             .map(|b| {
                 serde_json::json!({
                     "batch_id": b.batch_id,
@@ -1787,7 +1785,7 @@ async fn api_node_public_info_handler(
     }
 
     // Determine status based on miner count vs capacity
-    let status = if health.miner_count >= config.max_miners as u32 {
+    let status = if health.miner_count >= config.max_miners {
         "full"
     } else if health.miner_count as f64 >= config.max_miners as f64 * 0.8 {
         "busy"

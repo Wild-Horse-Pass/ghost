@@ -61,6 +61,7 @@ pub async fn ws_handler(
 }
 
 /// Connection state
+#[derive(Default)]
 struct ConnectionState {
     /// Authenticated wallet ID (None if not yet authenticated)
     wallet_id: Option<WalletId>,
@@ -70,16 +71,6 @@ struct ConnectionState {
 
     /// Lock state subscriptions (lock_id)
     lock_state_subscriptions: Vec<String>,
-}
-
-impl Default for ConnectionState {
-    fn default() -> Self {
-        Self {
-            wallet_id: None,
-            subscriptions: Vec::new(),
-            lock_state_subscriptions: Vec::new(),
-        }
-    }
 }
 
 /// Handle a WebSocket connection
@@ -1337,7 +1328,7 @@ async fn handle_accept_instant_payment(
     // Record the instant payment acceptance (for later settlement verification)
     // In production, this would record to the database for reconciliation
     info!(
-        payment_id = hex::encode(&payment_id),
+        payment_id = hex::encode(payment_id),
         sender_lock_id = sender_lock_id,
         amount_sats = amount_sats,
         settlement_block = settlement_block,
@@ -1346,7 +1337,7 @@ async fn handle_accept_instant_payment(
     );
 
     Ok(Some(ServerMessage::InstantPaymentAccepted {
-        payment_id: hex::encode(&payment_id),
+        payment_id: hex::encode(payment_id),
         sender_lock_id: sender_lock_id.to_string(),
         amount_sats,
         settlement_block,
@@ -1361,10 +1352,10 @@ fn generate_instant_payment_id(lock_id: &str, amount: u64, height: u64) -> [u8; 
     let mut hasher = Sha256::new();
     hasher.update(b"ghost-instant-payment-v1");
     hasher.update(lock_id.as_bytes());
-    hasher.update(&amount.to_le_bytes());
-    hasher.update(&height.to_le_bytes());
+    hasher.update(amount.to_le_bytes());
+    hasher.update(height.to_le_bytes());
     hasher.update(
-        &chrono::Utc::now()
+        chrono::Utc::now()
             .timestamp_nanos_opt()
             .unwrap_or(0)
             .to_le_bytes(),

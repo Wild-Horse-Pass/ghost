@@ -109,8 +109,8 @@ impl Batch {
         // Generate unique ID
         let mut hasher = Sha256::new();
         hasher.update(b"batch");
-        hasher.update(&now.to_le_bytes());
-        hasher.update(&rand_bytes());
+        hasher.update(now.to_le_bytes());
+        hasher.update(rand_bytes());
         let id: [u8; 32] = hasher.finalize().into();
 
         Self {
@@ -352,7 +352,7 @@ pub fn compute_merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
         // Empty tree has deterministic zero root with domain separation
         let mut hasher = Sha256::new();
         hasher.update(MERKLE_DOMAIN);
-        hasher.update(&0u64.to_le_bytes());
+        hasher.update(0u64.to_le_bytes());
         return hasher.finalize().into();
     }
 
@@ -360,8 +360,8 @@ pub fn compute_merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
         // Single leaf: hash with domain and count
         let mut hasher = Sha256::new();
         hasher.update(MERKLE_DOMAIN);
-        hasher.update(&1u64.to_le_bytes());
-        hasher.update(&leaves[0]);
+        hasher.update(1u64.to_le_bytes());
+        hasher.update(leaves[0]);
         return hasher.finalize().into();
     }
 
@@ -378,8 +378,8 @@ pub fn compute_merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
             if i + 1 < current_level.len() {
                 // Two elements: hash them together
                 let mut hasher = Sha256::new();
-                hasher.update(&current_level[i]);
-                hasher.update(&current_level[i + 1]);
+                hasher.update(current_level[i]);
+                hasher.update(current_level[i + 1]);
                 next_level.push(hasher.finalize().into());
                 i += 2;
             } else {
@@ -397,8 +397,8 @@ pub fn compute_merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
     // This makes roots unique per list length
     let mut final_hasher = Sha256::new();
     final_hasher.update(MERKLE_DOMAIN);
-    final_hasher.update(&leaf_count.to_le_bytes());
-    final_hasher.update(&current_level[0]);
+    final_hasher.update(leaf_count.to_le_bytes());
+    final_hasher.update(current_level[0]);
     final_hasher.finalize().into()
 }
 
@@ -416,7 +416,11 @@ pub fn compute_merkle_proof(leaves: &[[u8; 32]], index: usize) -> Vec<[u8; 32]> 
     let mut idx = index;
 
     while current_level.len() > 1 {
-        let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+        let sibling_idx = if idx.is_multiple_of(2) {
+            idx + 1
+        } else {
+            idx - 1
+        };
 
         if sibling_idx < current_level.len() {
             // Normal case: include sibling
@@ -431,8 +435,8 @@ pub fn compute_merkle_proof(leaves: &[[u8; 32]], index: usize) -> Vec<[u8; 32]> 
         while i < current_level.len() {
             if i + 1 < current_level.len() {
                 let mut hasher = Sha256::new();
-                hasher.update(&current_level[i]);
-                hasher.update(&current_level[i + 1]);
+                hasher.update(current_level[i]);
+                hasher.update(current_level[i + 1]);
                 next_level.push(hasher.finalize().into());
                 i += 2;
             } else {
@@ -487,9 +491,9 @@ pub fn verify_merkle_proof(
             let mut hasher = Sha256::new();
             if is_right {
                 hasher.update(sibling);
-                hasher.update(&current);
+                hasher.update(current);
             } else {
-                hasher.update(&current);
+                hasher.update(current);
                 hasher.update(sibling);
             }
             current = hasher.finalize().into();
@@ -497,14 +501,14 @@ pub fn verify_merkle_proof(
         // If no sibling, current is carried forward unchanged
 
         idx /= 2;
-        level_size = (level_size + 1) / 2;
+        level_size = level_size.div_ceil(2);
     }
 
     // Final hash must include domain and leaf count
     let mut final_hasher = Sha256::new();
     final_hasher.update(MERKLE_DOMAIN);
-    final_hasher.update(&(leaf_count as u64).to_le_bytes());
-    final_hasher.update(&current);
+    final_hasher.update((leaf_count as u64).to_le_bytes());
+    final_hasher.update(current);
     let computed_root: [u8; 32] = final_hasher.finalize().into();
 
     &computed_root == root

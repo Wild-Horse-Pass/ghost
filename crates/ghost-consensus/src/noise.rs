@@ -63,7 +63,7 @@ use serde::{Deserialize, Serialize};
 use snow::{Builder, HandshakeState, TransportState};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use ghost_common::types::NodeId;
 
@@ -152,6 +152,8 @@ impl NoiseKeypair {
         clamped[0] &= 248;
         clamped[31] &= 127;
         clamped[31] |= 64;
+        // `clamped` is now ready for X25519 scalar multiplication
+        let _ = clamped; // Mark as intentionally unused (keypair.public used directly below)
 
         // Use curve25519-dalek or similar for proper derivation
         // For now, we'll just store both from generation

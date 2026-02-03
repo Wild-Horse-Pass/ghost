@@ -105,6 +105,9 @@ impl Participant {
     }
 }
 
+/// Broadcast function type for transaction broadcasting
+type BroadcastFn = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
+
 /// Wraith Coordinator - manages a single session's full lifecycle
 pub struct WraithCoordinator {
     /// The underlying session
@@ -124,7 +127,7 @@ pub struct WraithCoordinator {
     /// Phase 1 intermediate outputs (for Phase 2 inputs)
     phase1_outputs: Vec<(Txid, u32, u64, ScriptBuf)>, // (txid, vout, amount, script_pubkey)
     /// Broadcast callback
-    broadcast_fn: Option<Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>>,
+    broadcast_fn: Option<BroadcastFn>,
 }
 
 impl std::fmt::Debug for WraithCoordinator {

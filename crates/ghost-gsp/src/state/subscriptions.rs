@@ -87,7 +87,7 @@ impl SubscriptionManager {
         if let Some(sub_type) = SubscriptionType::from_str(subscription) {
             let mut subs = self.subscriptions.write();
             subs.entry(wallet_id.to_string())
-                .or_insert_with(HashSet::new)
+                .or_default()
                 .insert(sub_type);
         }
     }
@@ -147,7 +147,7 @@ impl SubscriptionManager {
     pub fn subscribe_lock_state(&self, wallet_id: &WalletId, lock_id: &str) {
         let mut subs = self.lock_state_subscriptions.write();
         subs.entry(lock_id.to_string())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(wallet_id.to_string());
     }
 
@@ -221,7 +221,7 @@ impl SubscriptionManager {
     pub fn subscribe_reorgs(&self, wallet_id: &WalletId) {
         let mut subs = self.subscriptions.write();
         subs.entry(wallet_id.to_string())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(SubscriptionType::Reorgs);
     }
 

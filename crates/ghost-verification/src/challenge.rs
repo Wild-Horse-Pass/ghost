@@ -346,7 +346,7 @@ impl<T: Serialize> SignedResponse<T> {
 
         // Hash metadata
         hasher.update(signer.as_bytes());
-        hasher.update(&timestamp.to_le_bytes());
+        hasher.update(timestamp.to_le_bytes());
         hasher.update(nonce.as_bytes());
 
         // Include challenge nonce if present
@@ -361,7 +361,7 @@ impl<T: Serialize> SignedResponse<T> {
     ///
     /// # Arguments
     /// * `verify_fn` - Closure that takes (public_key_hex, message_hash, signature_bytes)
-    ///                 and returns true if the signature is valid
+    ///   and returns true if the signature is valid
     ///
     /// # Returns
     /// * `Ok(())` if signature is valid

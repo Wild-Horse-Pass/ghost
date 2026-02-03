@@ -427,6 +427,9 @@ pub struct StratumVerifyResult {
     pub error: Option<String>,
 }
 
+/// Balance lookup function type
+type BalanceFn = Box<dyn Fn(&str) -> GhostResult<u64> + Send + Sync>;
+
 /// Ghost Pay handler backed by L2 state
 pub struct GhostPayL2Handler {
     /// Whether L2 is enabled
@@ -436,7 +439,7 @@ pub struct GhostPayL2Handler {
     /// Current epoch getter
     epoch_fn: Box<dyn Fn() -> u64 + Send + Sync>,
     /// Balance lookup function
-    balance_fn: Box<dyn Fn(&str) -> GhostResult<u64> + Send + Sync>,
+    balance_fn: BalanceFn,
     /// Whether Wraith protocol is enabled
     wraith_enabled: bool,
 }

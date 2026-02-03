@@ -39,6 +39,10 @@ use ghost_common::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
 use ghost_common::types::{PayoutProposal, TreasuryAddress};
 use ghost_policy::PolicyProfile;
 
+/// Type alias for coinbase build result:
+/// (coinbase1, coinbase2, witness_data, outputs_serialized, outputs_count)
+type CoinbaseBuildResult = (Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32);
+
 /// Template processor configuration
 #[derive(Debug, Clone)]
 pub struct TemplateConfig {
@@ -358,7 +362,7 @@ impl TemplateProcessor {
         // Track serialized outputs for TDP (Bitcoin consensus format: Vec<TxOut>)
         // This is sent to SRI Pool so it uses Ghost's coinbase outputs
         let mut outputs_serialized = Vec::new();
-        let mut outputs_count: u32 = 0;
+        let outputs_count: u32;
 
         // Build outputs based on whether we have an approved payout
         // Note: witness commitment output is NOT included in txid outputs
@@ -492,7 +496,7 @@ impl TemplateProcessor {
         treasury_amount: u64,
         node_pool_amount: u64,
         witness_commitment: &Option<String>,
-    ) -> Option<(Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32)> {
+    ) -> Option<CoinbaseBuildResult> {
         // Solo mode requires solo_payout_address to be configured
         let solo_address = self.config.solo_payout_address.as_ref()?;
         if solo_address.is_empty() {
@@ -971,7 +975,7 @@ impl TemplateProcessor {
         let first = hasher.finalize();
 
         let mut hasher = Sha256::new();
-        hasher.update(&first);
+        hasher.update(first);
         let result = hasher.finalize();
 
         let mut hash = [0u8; 32];

@@ -42,7 +42,7 @@
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use thiserror::Error;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use crate::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
 
@@ -434,7 +434,7 @@ fn compute_txid(tx_bytes: &[u8]) -> String {
 
     // Double SHA256
     let hash1 = Sha256::digest(bytes_to_hash);
-    let hash2 = Sha256::digest(&hash1);
+    let hash2 = Sha256::digest(hash1);
 
     // Reverse for display
     let mut reversed = [0u8; 32];
@@ -501,8 +501,8 @@ fn double_sha256_pair(a: &[u8; 32], b: &[u8; 32]) -> [u8; 32] {
     combined[..32].copy_from_slice(a);
     combined[32..].copy_from_slice(b);
 
-    let hash1 = Sha256::digest(&combined);
-    let hash2 = Sha256::digest(&hash1);
+    let hash1 = Sha256::digest(combined);
+    let hash2 = Sha256::digest(hash1);
 
     let mut result = [0u8; 32];
     result.copy_from_slice(&hash2);

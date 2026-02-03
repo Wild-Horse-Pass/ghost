@@ -221,9 +221,7 @@ impl RoundManager {
         // Check for duplicate share submission
         {
             let mut submitted = self.submitted_shares.write();
-            let round_shares = submitted
-                .entry(round_id)
-                .or_insert_with(std::collections::HashSet::new);
+            let round_shares = submitted.entry(round_id).or_default();
             if !round_shares.insert(share_hash) {
                 return Err(ShareError::DuplicateShare);
             }

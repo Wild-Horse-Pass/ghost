@@ -52,7 +52,7 @@ struct Args {
 enum AppEvent {
     Tick,
     Key(KeyCode, KeyModifiers),
-    Resize(u16, u16),
+    Resize(#[allow(dead_code)] u16, #[allow(dead_code)] u16),
 }
 
 #[tokio::main]
@@ -199,7 +199,7 @@ async fn run_app(
                 AppEvent::Tick => {
                     tick_count += 1;
                     // Refresh data every N ticks (based on refresh_interval)
-                    if tick_count % (refresh_interval as u64 * 4) == 0 {
+                    if tick_count.is_multiple_of(refresh_interval * 4) {
                         refresh_data(app).await;
                     }
                 }

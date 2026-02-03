@@ -960,7 +960,7 @@ fn target_to_difficulty(target_bytes: &[u8]) -> f64 {
     let difficulty = POOL_TARGET_1 / target_value;
 
     // Clamp to reasonable range and round to 6 decimal places
-    let clamped = difficulty.max(0.001).min(1e18);
+    let clamped = difficulty.clamp(0.001, 1e18);
     (clamped * 1_000_000.0).round() / 1_000_000.0
 }
 

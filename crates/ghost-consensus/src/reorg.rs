@@ -23,6 +23,9 @@ use ghost_common::types::NodeId;
 /// Channel capacity for reorg event broadcasts
 const REORG_EVENT_CHANNEL_CAPACITY: usize = 64;
 
+/// Type alias for proposer block tracking (height, proposer) -> (block_hash, signature)
+type ProposerBlocks = HashMap<(u64, NodeId), ([u8; 32], [u8; 64])>;
+
 // =============================================================================
 // L2 (Ghost Pay) Reorg Handling
 // =============================================================================
@@ -122,7 +125,7 @@ pub struct L2ForkDetector {
     /// Known blocks from peers: (height, block_hash) -> block ref
     peer_blocks: RwLock<HashMap<(u64, [u8; 32]), L2BlockRef>>,
     /// Track proposers by (height, proposer) -> (block_hash, signature) for equivocation detection
-    proposer_blocks: RwLock<HashMap<(u64, NodeId), ([u8; 32], [u8; 64])>>,
+    proposer_blocks: RwLock<ProposerBlocks>,
     /// Maximum history to keep
     max_history: u64,
     /// Broadcast sender for L2 events

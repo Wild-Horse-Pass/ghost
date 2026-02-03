@@ -132,10 +132,10 @@ impl BudsClassifier {
 
             // Check for inscription/BRC-20
             for item in witness.iter() {
-                if is_inscription_envelope(item.as_ref()) {
+                if is_inscription_envelope(item) {
                     has_inscription = true;
                 }
-                if contains_brc20_pattern(item.as_ref()) {
+                if contains_brc20_pattern(item) {
                     has_brc20 = true;
                 }
             }

@@ -32,7 +32,7 @@ use crate::signer::SignerConfig;
 use crate::types::TreasuryAddress;
 
 /// Main node configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NodeConfig {
     /// Node identity configuration
     pub identity: IdentityConfig,
@@ -50,21 +50,6 @@ pub struct NodeConfig {
     pub ghost_pay: Option<GhostPayConfig>,
     /// Registry configuration (optional, for load balancer registration)
     pub registry: Option<RegistryConfig>,
-}
-
-impl Default for NodeConfig {
-    fn default() -> Self {
-        Self {
-            identity: IdentityConfig::default(),
-            bitcoin: BitcoinConfig::default(),
-            network: NetworkConfig::default(),
-            policy: PolicyConfig::default(),
-            storage: StorageConfig::default(),
-            pool: PoolConfig::default(),
-            ghost_pay: None,
-            registry: None,
-        }
-    }
 }
 
 /// Configuration validation error
@@ -892,6 +877,7 @@ impl Default for GhostPayConfig {
 /// Geographic region for miner routing
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Region {
     UsEast,
     UsWest,
@@ -902,13 +888,8 @@ pub enum Region {
     Oceania,
     SouthAmerica,
     Africa,
+    #[default]
     Unknown,
-}
-
-impl Default for Region {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 impl std::fmt::Display for Region {

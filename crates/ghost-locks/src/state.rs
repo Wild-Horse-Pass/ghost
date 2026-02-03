@@ -123,17 +123,17 @@ pub enum StateTransition {
 impl StateTransition {
     /// Check if this transition is valid from the given state
     pub fn is_valid_from(&self, state: LockState) -> bool {
-        match (state, self) {
-            (LockState::Active, StateTransition::EnterMix) => true,
-            (LockState::Active, StateTransition::StartJump) => true,
-            (LockState::Active, StateTransition::Spend) => true,
-            (LockState::Active, StateTransition::Recover) => true,
-            (LockState::Active, StateTransition::Freeze) => true,
-            (LockState::InMix, StateTransition::ExitMix) => true,
-            (LockState::Jumping, StateTransition::CompleteJump) => true,
-            (LockState::Frozen, StateTransition::Unfreeze) => true,
-            _ => false,
-        }
+        matches!(
+            (state, self),
+            (LockState::Active, StateTransition::EnterMix)
+                | (LockState::Active, StateTransition::StartJump)
+                | (LockState::Active, StateTransition::Spend)
+                | (LockState::Active, StateTransition::Recover)
+                | (LockState::Active, StateTransition::Freeze)
+                | (LockState::InMix, StateTransition::ExitMix)
+                | (LockState::Jumping, StateTransition::CompleteJump)
+                | (LockState::Frozen, StateTransition::Unfreeze)
+        )
     }
 
     /// Get the resulting state after this transition

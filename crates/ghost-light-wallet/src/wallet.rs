@@ -146,6 +146,9 @@ impl LightWallet {
 
         info!("Created new wallet from mnemonic");
 
+        // WalletCache contains rusqlite::Connection which is not Sync by design.
+        // The Arc is still useful for shared ownership even in single-threaded async.
+        #[allow(clippy::arc_with_non_send_sync)]
         Ok(Self {
             master_key: Arc::new(RwLock::new(Some(master_key))),
             config,
@@ -180,6 +183,9 @@ impl LightWallet {
 
         info!("Opened existing wallet");
 
+        // WalletCache contains rusqlite::Connection which is not Sync by design.
+        // The Arc is still useful for shared ownership even in single-threaded async.
+        #[allow(clippy::arc_with_non_send_sync)]
         Ok(Self {
             master_key: Arc::new(RwLock::new(Some(master_key))),
             config,
@@ -227,8 +233,8 @@ impl LightWallet {
 
     /// Disconnect from GSP
     pub async fn disconnect(&self) {
-        let mut client_guard = self.gsp_client.write();
-        if let Some(client) = client_guard.take() {
+        let client = self.gsp_client.write().take();
+        if let Some(client) = client {
             client.close().await;
         }
         *self.status.write() = WalletStatus::Disconnected;
@@ -247,10 +253,14 @@ impl LightWallet {
 
     /// Refresh balance from GSP
     pub async fn refresh_balance(&self) -> WalletResult<WalletBalance> {
-        let client_guard = self.gsp_client.read();
-        let client = client_guard
-            .as_ref()
-            .ok_or(LightWalletError::NotConnected)?;
+        // Clone the client to release the lock before await
+        let client = {
+            let client_guard = self.gsp_client.read();
+            client_guard
+                .as_ref()
+                .ok_or(LightWalletError::NotConnected)?
+                .clone()
+        };
 
         let balance = client.get_balance().await?;
 
@@ -324,13 +334,22 @@ impl LightWallet {
         amount_sats: u64,
         use_wraith: bool,
     ) -> WalletResult<ghost_gsp_proto::PreparedPayment> {
-        let key_guard = self.master_key.read();
-        let master_key = key_guard.as_ref().ok_or(LightWalletError::NotInitialized)?;
+        // Clone the key and client to release locks before await
+        let master_key = {
+            let key_guard = self.master_key.read();
+            key_guard
+                .as_ref()
+                .ok_or(LightWalletError::NotInitialized)?
+                .clone()
+        };
 
-        let client_guard = self.gsp_client.read();
-        let client = client_guard
-            .as_ref()
-            .ok_or(LightWalletError::NotConnected)?;
+        let client = {
+            let client_guard = self.gsp_client.read();
+            client_guard
+                .as_ref()
+                .ok_or(LightWalletError::NotConnected)?
+                .clone()
+        };
 
         let request = if use_wraith {
             crate::payments::PaymentRequest::wraith(recipient, amount_sats)
@@ -338,7 +357,7 @@ impl LightWallet {
             crate::payments::PaymentRequest::ghost_pay(recipient, amount_sats)
         };
 
-        crate::payments::prepare_payment(client, master_key, &request).await
+        crate::payments::prepare_payment(&client, &master_key, &request).await
     }
 
     /// Sign and submit a prepared payment
@@ -346,15 +365,24 @@ impl LightWallet {
         &self,
         prepared: &ghost_gsp_proto::PreparedPayment,
     ) -> WalletResult<String> {
-        let key_guard = self.master_key.read();
-        let master_key = key_guard.as_ref().ok_or(LightWalletError::NotInitialized)?;
+        // Clone the key and client to release locks before await
+        let master_key = {
+            let key_guard = self.master_key.read();
+            key_guard
+                .as_ref()
+                .ok_or(LightWalletError::NotInitialized)?
+                .clone()
+        };
 
-        let client_guard = self.gsp_client.read();
-        let client = client_guard
-            .as_ref()
-            .ok_or(LightWalletError::NotConnected)?;
+        let client = {
+            let client_guard = self.gsp_client.read();
+            client_guard
+                .as_ref()
+                .ok_or(LightWalletError::NotConnected)?
+                .clone()
+        };
 
-        crate::payments::sign_and_submit(client, master_key, prepared).await
+        crate::payments::sign_and_submit(&client, &master_key, prepared).await
     }
 
     /// Send a payment (prepare, sign, and submit in one step)

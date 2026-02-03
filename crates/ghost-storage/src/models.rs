@@ -109,7 +109,7 @@ impl PayoutStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "active" => Some(Self::Active),
             "pending" => Some(Self::Pending),
@@ -272,7 +272,7 @@ impl RecipientType {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "miner" => Some(Self::Miner),
             "node" => Some(Self::Node),
@@ -351,7 +351,7 @@ impl VerificationResult {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "pending" => Some(Self::Pending),
             "pass" => Some(Self::Pass),
@@ -474,7 +474,7 @@ impl GhostLockState {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "pending" => Some(Self::Pending),
             "active" => Some(Self::Active),
@@ -608,7 +608,7 @@ impl WraithPhase {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "registration" => Some(Self::Registration),
             "signing" => Some(Self::Signing),
@@ -641,7 +641,7 @@ impl WraithStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "active" => Some(Self::Active),
             "completed" => Some(Self::Completed),
@@ -705,7 +705,7 @@ impl ReconciliationStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "pending" => Some(Self::Pending),
             "submitted" => Some(Self::Submitted),
@@ -778,7 +778,7 @@ impl WithdrawalStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "pending" => Some(Self::Pending),
             "batched" => Some(Self::Batched),
@@ -860,13 +860,13 @@ mod tests {
 
     #[test]
     fn test_payout_status() {
-        assert_eq!(PayoutStatus::from_str("active"), Some(PayoutStatus::Active));
+        assert_eq!(PayoutStatus::parse("active"), Some(PayoutStatus::Active));
         assert_eq!(PayoutStatus::Confirmed.as_str(), "confirmed");
     }
 
     #[test]
     fn test_recipient_type() {
-        assert_eq!(RecipientType::from_str("miner"), Some(RecipientType::Miner));
+        assert_eq!(RecipientType::parse("miner"), Some(RecipientType::Miner));
         assert_eq!(RecipientType::Treasury.as_str(), "treasury");
     }
 }

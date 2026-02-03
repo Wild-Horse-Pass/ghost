@@ -150,17 +150,15 @@ impl ZmqSubscriber {
             &config.rawtx_endpoint,
             &config.sequence_endpoint,
         ];
-        for opt_endpoint in &endpoints {
-            if let Some(endpoint) = opt_endpoint {
-                if !is_localhost_endpoint(endpoint) {
-                    panic!(
-                        "ZMQ SECURITY ERROR: Non-localhost endpoint '{}' is not allowed. \
-                         ZMQ does not support authentication - remote endpoints would allow \
-                         attackers to inject fake block notifications. Use localhost only, \
-                         or tunnel through SSH/VPN.",
-                        endpoint
-                    );
-                }
+        for endpoint in endpoints.iter().copied().flatten() {
+            if !is_localhost_endpoint(endpoint) {
+                panic!(
+                    "ZMQ SECURITY ERROR: Non-localhost endpoint '{}' is not allowed. \
+                     ZMQ does not support authentication - remote endpoints would allow \
+                     attackers to inject fake block notifications. Use localhost only, \
+                     or tunnel through SSH/VPN.",
+                    endpoint
+                );
             }
         }
 
@@ -291,7 +289,7 @@ impl ZmqSubscriber {
 
         // Create ZMQ socket with tmq
         // Order: context -> options -> connect -> subscribe (returns Subscribe which implements Stream)
-        let mut socket = match subscribe(&*ZMQ_CONTEXT)
+        let mut socket = match subscribe(&ZMQ_CONTEXT)
             .set_reconnect_ivl(100) // Initial reconnect interval: 100ms
             .set_reconnect_ivl_max(5000) // Max reconnect interval: 5 seconds
             .connect(endpoint)
@@ -362,7 +360,7 @@ impl ZmqSubscriber {
         );
 
         // Create socket with tmq - connect then subscribe (returns Subscribe which implements Stream)
-        let mut socket = match subscribe(&*ZMQ_CONTEXT)
+        let mut socket = match subscribe(&ZMQ_CONTEXT)
             .set_reconnect_ivl(100)
             .set_reconnect_ivl_max(5000)
             .connect(endpoint)

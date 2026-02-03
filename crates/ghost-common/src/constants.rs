@@ -127,11 +127,11 @@ pub const VERIFICATION_INTERVAL_SECS: u64 = 300;
 /// Verification HTTP timeout in seconds
 pub const VERIFICATION_TIMEOUT_SECS: u64 = 10;
 
-/// Nodes to verify per round (2 peers every 5 minutes = ~2 verifications per 10 min)
-pub const NODES_TO_VERIFY_PER_ROUND: usize = 2;
+/// Nodes to verify per round (3 peers every 5 minutes)
+pub const NODES_TO_VERIFY_PER_ROUND: usize = 3;
 
-/// Minimum challenges required for capability qualification (3 for testing, 10 for production)
-pub const MIN_CHALLENGES_FOR_QUALIFICATION: usize = 3;
+/// Minimum challenges required for capability qualification
+pub const MIN_CHALLENGES_FOR_QUALIFICATION: usize = 10;
 
 /// Archive mode pass rate threshold
 pub const ARCHIVE_PASS_RATE: f64 = 0.95;

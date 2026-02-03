@@ -100,7 +100,7 @@ pub fn compute_output_key(
 
 /// Convert a secp256k1 PublicKey to x-only format
 pub fn to_x_only(pubkey: &PublicKey) -> XOnlyPublicKey {
-    XOnlyPublicKey::from(pubkey.clone())
+    XOnlyPublicKey::from(*pubkey)
 }
 
 /// Compute the tagged hash for Ghost Lock ID

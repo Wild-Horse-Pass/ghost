@@ -24,8 +24,8 @@
 //!
 //! The pool fee (1% of block subsidy) is split between treasury and node pool:
 //! - Pre-threshold: 50/50 split (0.5% treasury, 0.5% node pool)
-//! - Post-threshold: Treasury decays 0.5% → 0% over 5 years
-//!                   Node pool inversely increases 0.5% → 1%
+//! - Post-threshold: Treasury decays 0.5% to 0% over 5 years
+//!   Node pool inversely increases 0.5% to 1%
 //!
 //! # Treasury Balance Model
 //!

@@ -822,18 +822,18 @@ pub struct VotingStatus {
 pub fn compute_proposal_hash(proposal: &PayoutProposal) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"PayoutProposal/v1");
-    hasher.update(&proposal.round_id.to_le_bytes());
-    hasher.update(&proposal.block_hash);
-    hasher.update(&proposal.subsidy.to_le_bytes());
+    hasher.update(proposal.round_id.to_le_bytes());
+    hasher.update(proposal.block_hash);
+    hasher.update(proposal.subsidy.to_le_bytes());
 
     for payout in &proposal.miner_payouts {
         hasher.update(&payout.address);
-        hasher.update(&payout.amount.to_le_bytes());
+        hasher.update(payout.amount.to_le_bytes());
     }
 
     for payout in &proposal.node_payouts {
         hasher.update(&payout.address);
-        hasher.update(&payout.amount.to_le_bytes());
+        hasher.update(payout.amount.to_le_bytes());
     }
 
     hasher.finalize().into()

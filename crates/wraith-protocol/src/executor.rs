@@ -440,6 +440,7 @@ impl WraithTransactionBuilder {
     /// The entropy parameter adds CSPRNG randomness to the shuffle seed,
     /// making it impossible to predict output ordering even knowing the session ID.
     /// This enhances privacy by preventing timing attacks on shuffle ordering.
+    #[allow(dead_code)]
     fn session_shuffle_seed(&self) -> u64 {
         self.session_shuffle_seed_with_entropy(&[0u8; 32])
     }

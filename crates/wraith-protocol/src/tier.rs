@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 /// Participant tier for Wraith mixing sessions
 ///
 /// Higher tiers have larger anonymity sets but longer wait times.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum ParticipantTier {
     /// 25 participants - fastest, moderate anonymity
     Express,
@@ -40,6 +40,7 @@ pub enum ParticipantTier {
     /// 250 participants - medium batch, strong anonymity
     Medium,
     /// 500 participants - standard batch, very strong anonymity
+    #[default]
     Standard,
     /// 750 participants - large batch, excellent anonymity
     Large,
@@ -126,12 +127,6 @@ impl ParticipantTier {
     /// Calculate fill percentage
     pub fn fill_percentage(&self, count: usize) -> f64 {
         (count as f64 / self.min_participants() as f64 * 100.0).min(100.0)
-    }
-}
-
-impl Default for ParticipantTier {
-    fn default() -> Self {
-        ParticipantTier::Standard
     }
 }
 

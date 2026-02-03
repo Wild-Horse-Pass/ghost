@@ -70,6 +70,7 @@ impl<F: PrimeField> std::fmt::Debug for StateTransitionOutputs<F> {
 
 impl<F: PrimeField> PaymentStateTransitionCircuit<F> {
     /// Create a new state transition circuit
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sender_balance_before: Option<u64>,
         recipient_balance_before: Option<u64>,

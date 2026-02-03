@@ -72,6 +72,7 @@ impl PayoutCalculator {
     }
 
     /// Calculate payouts for a round
+    #[allow(clippy::too_many_arguments)]
     pub fn calculate_payouts(
         &self,
         shares: &RoundShares,

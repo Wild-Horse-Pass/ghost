@@ -172,7 +172,7 @@ impl BalanceTree {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(b"ghost-leaf-v1");
-        hasher.update(&balance.to_le_bytes());
+        hasher.update(balance.to_le_bytes());
         hasher.finalize().into()
     }
 
@@ -229,7 +229,7 @@ pub fn compute_root_simple_hash(leaf: u64, index: u64, siblings: &[u64]) -> u64 
     let mut idx = index;
 
     for sibling in siblings {
-        let (left, right) = if idx % 2 == 0 {
+        let (left, right) = if idx.is_multiple_of(2) {
             (current, *sibling)
         } else {
             (*sibling, current)

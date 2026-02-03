@@ -308,10 +308,10 @@ impl InstantPaymentChecker {
         let mut hasher = Sha256::new();
         hasher.update(b"ghost-instant-payment-v1");
         hasher.update(lock_id.as_bytes());
-        hasher.update(&amount.to_le_bytes());
-        hasher.update(&height.to_le_bytes());
+        hasher.update(amount.to_le_bytes());
+        hasher.update(height.to_le_bytes());
         hasher.update(
-            &chrono::Utc::now()
+            chrono::Utc::now()
                 .timestamp_nanos_opt()
                 .unwrap_or(0)
                 .to_le_bytes(),

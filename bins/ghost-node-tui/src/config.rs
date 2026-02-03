@@ -164,6 +164,7 @@ impl SwarmConfig {
     }
 
     /// Save to a specific path
+    #[allow(dead_code)]
     pub fn save_to(&self, path: &PathBuf) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
@@ -180,6 +181,7 @@ impl SwarmConfig {
     }
 
     /// Add a new node
+    #[allow(dead_code)]
     pub fn add_node(&mut self, node: NodeEntry) {
         // If this is the first node, make it default
         let make_default = self.nodes.is_empty();
@@ -193,6 +195,7 @@ impl SwarmConfig {
     }
 
     /// Remove a node by index
+    #[allow(dead_code)]
     pub fn remove_node(&mut self, idx: usize) -> Option<NodeEntry> {
         if idx >= self.nodes.len() {
             return None;
@@ -209,6 +212,7 @@ impl SwarmConfig {
     }
 
     /// Set a node as default
+    #[allow(dead_code)]
     pub fn set_default(&mut self, idx: usize) {
         for (i, node) in self.nodes.iter_mut().enumerate() {
             node.default = i == idx;
@@ -216,6 +220,7 @@ impl SwarmConfig {
     }
 
     /// Get the default node index
+    #[allow(dead_code)]
     pub fn default_node_idx(&self) -> Option<usize> {
         self.nodes.iter().position(|n| n.default)
     }
@@ -223,6 +228,7 @@ impl SwarmConfig {
 
 impl NodeEntry {
     /// Create a new node entry
+    #[allow(dead_code)]
     pub fn new(name: impl Into<String>, url: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -235,6 +241,7 @@ impl NodeEntry {
     }
 
     /// Create with URL only (name will be set later from API)
+    #[allow(dead_code)]
     pub fn from_url(url: impl Into<String>) -> Self {
         let url = url.into();
         let name = url

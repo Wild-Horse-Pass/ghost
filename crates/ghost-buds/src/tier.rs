@@ -26,7 +26,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// BUDS transaction tier
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 pub enum BudsTier {
     /// T0: Core financial transactions
     ///
@@ -35,6 +37,7 @@ pub enum BudsTier {
     /// - Standard P2WSH with simple spending conditions
     /// - No OP_RETURN outputs
     /// - Witness size ≤ 108 bytes per input (standard sig + pubkey)
+    #[default]
     T0,
 
     /// T1: Extended financial transactions
@@ -112,12 +115,6 @@ impl fmt::Display for BudsTier {
             Self::T2 => write!(f, "T2"),
             Self::T3 => write!(f, "T3"),
         }
-    }
-}
-
-impl Default for BudsTier {
-    fn default() -> Self {
-        Self::T0
     }
 }
 

@@ -130,7 +130,7 @@ impl PeerReputation {
 
         // Slow reputation increase for good behavior
         // Only increase every 10 good messages
-        if self.good_messages % 10 == 0 {
+        if self.good_messages.is_multiple_of(10) {
             self.score = self.score.saturating_add(1).min(MAX_REPUTATION);
         }
     }

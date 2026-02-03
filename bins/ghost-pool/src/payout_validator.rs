@@ -346,7 +346,7 @@ pub fn validate_multisig_witness_script(
 
     // Check OP_M (0x51 = OP_1, 0x52 = OP_2, etc.)
     let m_opcode = script[0];
-    if m_opcode < 0x51 || m_opcode > 0x60 {
+    if !(0x51..=0x60).contains(&m_opcode) {
         return Err(PayoutValidationError::InvalidScript(
             "invalid OP_M in multi-sig script".into(),
         ));
@@ -370,7 +370,7 @@ pub fn validate_multisig_witness_script(
             // Valid pubkey length (compressed or uncompressed)
             pos += 1 + len;
             pubkey_count += 1;
-        } else if len >= 0x51 && len <= 0x60 {
+        } else if (0x51..=0x60).contains(&len) {
             // This is OP_N
             break;
         } else {
@@ -396,7 +396,7 @@ pub fn validate_multisig_witness_script(
     }
 
     let n_opcode = script[pos];
-    if n_opcode < 0x51 || n_opcode > 0x60 {
+    if !(0x51..=0x60).contains(&n_opcode) {
         return Err(PayoutValidationError::InvalidScript(
             "invalid OP_N in multi-sig script".into(),
         ));

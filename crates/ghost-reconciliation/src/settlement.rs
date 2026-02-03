@@ -134,10 +134,10 @@ impl Settlement {
         // Generate unique ID (includes lock_id for uniqueness)
         let mut hasher = Sha256::new();
         hasher.update(&source_ghost_id);
-        hasher.update(&source_lock_id);
+        hasher.update(source_lock_id);
         hasher.update(&destination_address);
-        hasher.update(&amount_sats.to_le_bytes());
-        hasher.update(&now.to_le_bytes());
+        hasher.update(amount_sats.to_le_bytes());
+        hasher.update(now.to_le_bytes());
         let id: [u8; 32] = hasher.finalize().into();
 
         Ok(Self {
@@ -219,12 +219,12 @@ impl Settlement {
     /// Compute the settlement hash (leaf in merkle tree)
     pub fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(&self.id);
+        hasher.update(self.id);
         hasher.update(&self.source_ghost_id);
-        hasher.update(&self.source_lock_id);
+        hasher.update(self.source_lock_id);
         hasher.update(&self.destination_address);
-        hasher.update(&self.amount_sats.to_le_bytes());
-        hasher.update(&self.fee_sats.to_le_bytes());
+        hasher.update(self.amount_sats.to_le_bytes());
+        hasher.update(self.fee_sats.to_le_bytes());
         hasher.finalize().into()
     }
 

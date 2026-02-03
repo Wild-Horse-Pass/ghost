@@ -118,7 +118,7 @@ impl EpochSettlementStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "pending" => Some(Self::Pending),
             "in_progress" => Some(Self::InProgress),
@@ -151,7 +151,7 @@ impl SnapshotManager {
 
     /// Check if a snapshot should be created at this height
     pub fn should_snapshot(&self, height: u64) -> bool {
-        height > 0 && height % self.snapshot_interval == 0
+        height > 0 && height.is_multiple_of(self.snapshot_interval)
     }
 
     /// Create a snapshot at the given height

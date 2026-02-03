@@ -315,8 +315,8 @@ impl CapabilityType {
         }
     }
 
-    /// Convert from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    /// Parse from string
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "archive" => Some(Self::Archive),
             "policy" => Some(Self::Policy),
@@ -404,11 +404,11 @@ impl ZkBlockProposalMessage {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(b"ZkBlockProposal/v1");
-        hasher.update(&self.height.to_le_bytes());
-        hasher.update(&self.prev_state_root);
-        hasher.update(&self.new_state_root);
-        hasher.update(&self.tx_count.to_le_bytes());
-        hasher.update(&self.transactions_hash);
+        hasher.update(self.height.to_le_bytes());
+        hasher.update(self.prev_state_root);
+        hasher.update(self.new_state_root);
+        hasher.update(self.tx_count.to_le_bytes());
+        hasher.update(self.transactions_hash);
         hasher.finalize().into()
     }
 }
@@ -460,9 +460,9 @@ impl ZkVoteMessage {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(b"ZkVote/v1");
-        hasher.update(&self.height.to_le_bytes());
-        hasher.update(&self.proposal_hash);
-        hasher.update(&[if self.approve { 1u8 } else { 0u8 }]);
+        hasher.update(self.height.to_le_bytes());
+        hasher.update(self.proposal_hash);
+        hasher.update([if self.approve { 1u8 } else { 0u8 }]);
         hasher.finalize().into()
     }
 }
@@ -567,14 +567,14 @@ impl ZkPayoutProposalMessage {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(b"ZkPayoutProposal/v1");
-        hasher.update(&self.epoch.to_le_bytes());
-        hasher.update(&self.round_id.to_le_bytes());
-        hasher.update(&self.block_hash);
-        hasher.update(&self.total_available.to_le_bytes());
-        hasher.update(&self.miner_sum.to_le_bytes());
-        hasher.update(&self.node_sum.to_le_bytes());
-        hasher.update(&self.treasury_amount.to_le_bytes());
-        hasher.update(&self.payout_merkle_root);
+        hasher.update(self.epoch.to_le_bytes());
+        hasher.update(self.round_id.to_le_bytes());
+        hasher.update(self.block_hash);
+        hasher.update(self.total_available.to_le_bytes());
+        hasher.update(self.miner_sum.to_le_bytes());
+        hasher.update(self.node_sum.to_le_bytes());
+        hasher.update(self.treasury_amount.to_le_bytes());
+        hasher.update(self.payout_merkle_root);
         hasher.finalize().into()
     }
 }
@@ -622,9 +622,9 @@ impl ZkPayoutVoteMessage {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(b"ZkPayoutVote/v1");
-        hasher.update(&self.epoch.to_le_bytes());
-        hasher.update(&self.proposal_hash);
-        hasher.update(&[if self.approve { 1u8 } else { 0u8 }]);
+        hasher.update(self.epoch.to_le_bytes());
+        hasher.update(self.proposal_hash);
+        hasher.update([if self.approve { 1u8 } else { 0u8 }]);
         hasher.finalize().into()
     }
 }

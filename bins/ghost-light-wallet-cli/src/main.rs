@@ -49,7 +49,7 @@
 //! ghost-wallet history
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use bitcoin::Network;
@@ -662,7 +662,7 @@ async fn cmd_lock_wallet(config: WalletConfig) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_backup(config: WalletConfig, output: &PathBuf) -> Result<()> {
+async fn cmd_backup(config: WalletConfig, output: &Path) -> Result<()> {
     let password = rpassword::prompt_password("Enter wallet password: ")?;
     let _wallet = LightWallet::open(&password, config)?;
 

@@ -31,17 +31,13 @@ use crate::auth::WalletProof;
 /// Payment mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum PaymentMode {
     /// Standard Ghost Pay payment (direct, fast)
+    #[default]
     GhostPay,
     /// Wraith Protocol payment (mixing, more private)
     Wraith,
-}
-
-impl Default for PaymentMode {
-    fn default() -> Self {
-        PaymentMode::GhostPay
-    }
 }
 
 impl std::fmt::Display for PaymentMode {

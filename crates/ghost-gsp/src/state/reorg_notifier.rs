@@ -227,6 +227,7 @@ impl ReorgNotifier {
     }
 
     /// Broadcast an L2 reorg event
+    #[allow(clippy::too_many_arguments)]
     pub fn notify_l2_reorg(
         &self,
         reorg_height: u64,
@@ -297,6 +298,7 @@ impl ReorgNotifier {
     }
 
     /// Broadcast lock reorg notification
+    #[allow(clippy::too_many_arguments)]
     pub fn notify_lock_reorged(
         &self,
         lock_id: String,

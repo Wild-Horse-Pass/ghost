@@ -114,9 +114,9 @@ Nodes communicate via ZeroMQ sockets:
 |------|---------|---------|
 | 8555 | PUB/SUB | Share propagation |
 | 8556 | PUB/SUB | Block announcements |
-| 8557 | DEALER/ROUTER | Consensus voting |
+| 8557 | PUB/SUB | Consensus voting |
 | 8558 | PUB/SUB | Health monitoring |
-| 8559 | REQ/REP | Peer discovery |
+| 8559 | PUB/SUB | Peer discovery |
 | 8560 | PUB/SUB | Elder management |
 | 8561 | PUB/SUB | Payout proposals |
 | 8562 | PUB/SUB | Payout transactions |

@@ -192,7 +192,7 @@ fn run_app<B: ratatui::backend::Backend>(
                     },
                     InputMode::Password => match key.code {
                         KeyCode::Enter => {
-                            app.status_message = format!("Unlocking wallet...");
+                            app.status_message = "Unlocking wallet...".to_string();
                             app.password_input.clear();
                             app.input_mode = InputMode::Normal;
                         }

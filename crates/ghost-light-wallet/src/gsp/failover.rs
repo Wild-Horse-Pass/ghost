@@ -184,7 +184,8 @@ impl GspFailover {
 
     /// Disconnect current client
     pub async fn disconnect(&self) {
-        if let Some(client) = self.client.write().take() {
+        let client = self.client.write().take();
+        if let Some(client) = client {
             client.close().await;
         }
     }

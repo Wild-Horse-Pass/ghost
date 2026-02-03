@@ -434,9 +434,9 @@ pub fn create_or_generate_signer(config: &SignerConfig) -> Result<Arc<dyn Signer
 /// Expand ~ in path to home directory
 fn expand_tilde(path: &Path) -> PathBuf {
     let path_str = path.to_string_lossy();
-    if path_str.starts_with("~/") {
+    if let Some(stripped) = path_str.strip_prefix("~/") {
         if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-            return PathBuf::from(home).join(&path_str[2..]);
+            return PathBuf::from(home).join(stripped);
         }
     }
     path.to_path_buf()

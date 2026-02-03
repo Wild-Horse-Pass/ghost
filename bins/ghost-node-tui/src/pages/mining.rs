@@ -227,7 +227,7 @@ fn render_workers_table(f: &mut Frame, area: Rect, app: &App) {
                     Cell::from(
                         miner
                             .avg_hashrate_ths
-                            .map(|h| format_hashrate(h))
+                            .map(format_hashrate)
                             .unwrap_or_else(|| "-".to_string()),
                     ),
                     Cell::from(format_number(miner.shares_this_round)),

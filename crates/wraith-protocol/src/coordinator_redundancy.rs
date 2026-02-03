@@ -77,7 +77,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 /// Coordinator pool errors
 #[derive(Debug, Error)]

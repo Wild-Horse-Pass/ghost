@@ -53,24 +53,20 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Transport type for mesh connections
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum TransportType {
     /// Direct TCP (clearnet) - default, no privacy protection
+    #[default]
     Tcp,
     /// Tor SOCKS5 proxy - hides IP via onion routing
     Tor,
     /// I2P SAM bridge - hides IP via garlic routing
     I2p,
-}
-
-impl Default for TransportType {
-    fn default() -> Self {
-        Self::Tcp
-    }
 }
 
 impl fmt::Display for TransportType {
@@ -193,7 +189,7 @@ impl Default for I2pConfig {
 }
 
 /// I2P signature types for destination generation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum I2pSignatureType {
     /// DSA-SHA1 (legacy, not recommended)
     DsaSha1,
@@ -204,13 +200,8 @@ pub enum I2pSignatureType {
     /// ECDSA-SHA512-P521
     EcdsaSha512P521,
     /// Ed25519-SHA512 (recommended)
+    #[default]
     EdDsaSha512Ed25519,
-}
-
-impl Default for I2pSignatureType {
-    fn default() -> Self {
-        Self::EdDsaSha512Ed25519
-    }
 }
 
 impl I2pSignatureType {

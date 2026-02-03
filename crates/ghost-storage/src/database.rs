@@ -187,7 +187,7 @@ impl Database {
         };
 
         // Run migrations
-        db.with_connection(|conn| run_migrations(conn))?;
+        db.with_connection(run_migrations)?;
 
         Ok(db)
     }
@@ -209,7 +209,7 @@ impl Database {
         };
 
         // Run migrations
-        db.with_connection(|conn| run_migrations(conn))?;
+        db.with_connection(run_migrations)?;
 
         Ok(db)
     }

@@ -162,7 +162,7 @@ fn render_epoch_progress(f: &mut Frame, area: Rect, app: &App) {
             lines.push(Line::from(vec![
                 Span::styled("Next reconciliation: ", Style::default().fg(Color::Gray)),
                 Span::styled(
-                    format_duration(remaining_secs as u64),
+                    format_duration(remaining_secs),
                     Style::default().fg(Color::Yellow),
                 ),
             ]));

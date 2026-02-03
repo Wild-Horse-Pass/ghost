@@ -104,18 +104,18 @@ impl CoinbaseCommitment {
 
         // Domain separator to prevent hash collisions
         hasher.update(b"CoinbaseCommitment/v1");
-        hasher.update(&proposal.proposal_hash);
-        hasher.update(&proposal.block_height.to_le_bytes());
+        hasher.update(proposal.proposal_hash);
+        hasher.update(proposal.block_height.to_le_bytes());
 
         let mut total_value = 0u64;
         let mut output_count = 0usize;
 
         // Hash miner payouts (order-sensitive)
         hasher.update(b"miners:");
-        hasher.update(&(proposal.miner_payouts.len() as u32).to_le_bytes());
+        hasher.update((proposal.miner_payouts.len() as u32).to_le_bytes());
         for payout in &proposal.miner_payouts {
-            hasher.update(&payout.amount.to_le_bytes());
-            hasher.update(&(payout.address.len() as u32).to_le_bytes());
+            hasher.update(payout.amount.to_le_bytes());
+            hasher.update((payout.address.len() as u32).to_le_bytes());
             hasher.update(&payout.address);
             total_value = total_value.saturating_add(payout.amount);
             output_count += 1;
@@ -123,10 +123,10 @@ impl CoinbaseCommitment {
 
         // Hash node payouts (order-sensitive)
         hasher.update(b"nodes:");
-        hasher.update(&(proposal.node_payouts.len() as u32).to_le_bytes());
+        hasher.update((proposal.node_payouts.len() as u32).to_le_bytes());
         for payout in &proposal.node_payouts {
-            hasher.update(&payout.amount.to_le_bytes());
-            hasher.update(&(payout.address.len() as u32).to_le_bytes());
+            hasher.update(payout.amount.to_le_bytes());
+            hasher.update((payout.address.len() as u32).to_le_bytes());
             hasher.update(&payout.address);
             total_value = total_value.saturating_add(payout.amount);
             output_count += 1;
@@ -134,9 +134,9 @@ impl CoinbaseCommitment {
 
         // Hash treasury output
         hasher.update(b"treasury:");
-        hasher.update(&proposal.treasury_amount.to_le_bytes());
+        hasher.update(proposal.treasury_amount.to_le_bytes());
         if proposal.treasury_amount > 0 {
-            hasher.update(&(treasury_address.len() as u32).to_le_bytes());
+            hasher.update((treasury_address.len() as u32).to_le_bytes());
             hasher.update(treasury_address);
             total_value = total_value.saturating_add(proposal.treasury_amount);
             output_count += 1;
@@ -201,8 +201,8 @@ impl CoinbaseCommitment {
                 "COINBASE COMMITMENT MISMATCH - possible address substitution attack!"
             );
             return Err(CoinbaseVerificationError::CommitmentMismatch {
-                expected: hex::encode(&self.output_hash),
-                actual: hex::encode(&actual_hash),
+                expected: hex::encode(self.output_hash),
+                actual: hex::encode(actual_hash),
             });
         }
 
@@ -220,13 +220,13 @@ impl CoinbaseCommitment {
     fn compute_outputs_hash(outputs: &[CoinbaseOutput]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"CoinbaseOutputs/v1");
-        hasher.update(&(outputs.len() as u32).to_le_bytes());
+        hasher.update((outputs.len() as u32).to_le_bytes());
 
         for output in outputs {
             if output.value > 0 {
                 // Only hash value outputs (skip witness commitment)
-                hasher.update(&output.value.to_le_bytes());
-                hasher.update(&(output.script_pubkey.len() as u32).to_le_bytes());
+                hasher.update(output.value.to_le_bytes());
+                hasher.update((output.script_pubkey.len() as u32).to_le_bytes());
                 hasher.update(&output.script_pubkey);
             }
         }

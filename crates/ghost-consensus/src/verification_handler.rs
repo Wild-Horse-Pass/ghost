@@ -51,7 +51,7 @@ impl VerificationResultHandler {
     /// Handle an incoming verification result message
     async fn handle_verification_result(&self, envelope: &MessageEnvelope) -> GhostResult<()> {
         // Log entry point at info level for P2P debugging
-        let envelope_sender_hex = hex::encode(&envelope.sender);
+        let envelope_sender_hex = hex::encode(envelope.sender);
         info!(
             sender = %&envelope_sender_hex[..8],
             payload_len = envelope.payload.len(),
@@ -65,8 +65,8 @@ impl VerificationResultHandler {
                 ghost_common::error::GhostError::P2PMessage(e.to_string())
             })?;
 
-        let challenger_hex = hex::encode(&msg.challenger_id);
-        let target_hex = hex::encode(&msg.target_node_id);
+        let challenger_hex = hex::encode(msg.challenger_id);
+        let target_hex = hex::encode(msg.target_node_id);
         let short_challenger = &challenger_hex[..8];
         let short_target = &target_hex[..8];
 
@@ -81,7 +81,7 @@ impl VerificationResultHandler {
         // Verify that the envelope sender matches the challenger (prevent spoofing)
         if envelope.sender != msg.challenger_id {
             warn!(
-                envelope_sender = %hex::encode(&envelope.sender)[..8],
+                envelope_sender = %hex::encode(envelope.sender)[..8],
                 msg_challenger = %short_challenger,
                 "Verification result sender mismatch - potential spoofing"
             );

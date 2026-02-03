@@ -52,6 +52,9 @@ use crate::message::{MessageEnvelope, MessageType};
 use crate::message_validator::{validate_and_verify, ValidationStats};
 use crate::peer::{Peer, PeerManager};
 
+/// Type alias for optional outbound message receiver storage
+type OptionalOutboundReceiver = Option<mpsc::Receiver<(String, Vec<u8>)>>;
+
 /// Mesh network configuration
 #[derive(Debug, Clone)]
 pub struct MeshConfig {
@@ -140,7 +143,7 @@ pub struct MeshNetwork {
     running: AtomicBool,
     /// Outbound message channel
     outbound_tx: mpsc::Sender<(String, Vec<u8>)>,
-    outbound_rx: RwLock<Option<mpsc::Receiver<(String, Vec<u8>)>>>,
+    outbound_rx: RwLock<OptionalOutboundReceiver>,
     /// Inbound message channel
     inbound_tx: mpsc::Sender<Vec<u8>>,
     inbound_rx: RwLock<Option<mpsc::Receiver<Vec<u8>>>>,
@@ -405,7 +408,7 @@ impl MeshNetwork {
 
         // Log verification messages for P2P debugging
         if matches!(envelope.msg_type, MessageType::VerificationResult) {
-            let sender_hex = hex::encode(&envelope.sender);
+            let sender_hex = hex::encode(envelope.sender);
             info!(
                 sender = %&sender_hex[..8],
                 msg_type = ?envelope.msg_type,
@@ -509,7 +512,7 @@ impl MeshNetwork {
         use tmq::AsZmqSocket;
 
         // Create PUB socket using tmq with shared context - bind first port
-        let mut pub_socket = publish(&*ZMQ_CONTEXT)
+        let mut pub_socket = publish(&ZMQ_CONTEXT)
             .bind(&format!(
                 "tcp://0.0.0.0:{}",
                 self.config.ports.share_propagation
@@ -603,7 +606,7 @@ impl MeshNetwork {
         let dummy_endpoint = format!("inproc://mesh-sub-bootstrap-{}", std::process::id());
 
         // bind() returns SubscribeWithoutTopic, then subscribe() returns Subscribe (which implements Stream)
-        let mut sub_socket = subscribe(&*ZMQ_CONTEXT)
+        let mut sub_socket = subscribe(&ZMQ_CONTEXT)
             .set_reconnect_ivl(100) // Initial reconnect interval: 100ms
             .set_reconnect_ivl_max(5000) // Max reconnect interval: 5 seconds
             .bind(&dummy_endpoint)
@@ -815,7 +818,7 @@ impl MeshNetwork {
                 public_address: self.config.public_address.clone(),
                 block_height: 0, // Would track actual height
                 round_id: 0,     // Would track current round
-                capabilities: self.config.capabilities.clone(),
+                capabilities: self.config.capabilities,
                 miner_count: self.peers.peer_count() as u32,
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
             };

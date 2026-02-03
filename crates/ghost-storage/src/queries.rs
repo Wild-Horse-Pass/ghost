@@ -29,6 +29,9 @@ use ghost_common::error::{GhostError, GhostResult};
 use crate::database::Database;
 use crate::models::*;
 
+/// Type alias for node rotation data: (is_elder, elder_order, pow_proof, capabilities, first_seen)
+type NodeRotationData = (bool, Option<u32>, Option<String>, Option<String>, Option<i64>);
+
 // =============================================================================
 // SHARE QUERIES
 // =============================================================================
@@ -317,7 +320,7 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: PayoutStatus::from_str(&status_str)
+                        payout_status: PayoutStatus::parse(&status_str)
                             .unwrap_or(PayoutStatus::Active),
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
@@ -433,7 +436,7 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: PayoutStatus::from_str(&status_str)
+                        payout_status: PayoutStatus::parse(&status_str)
                             .unwrap_or(PayoutStatus::Active),
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
@@ -472,7 +475,7 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: PayoutStatus::from_str(&status_str)
+                        payout_status: PayoutStatus::parse(&status_str)
                             .unwrap_or(PayoutStatus::Active),
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
@@ -1618,7 +1621,7 @@ fn ghost_lock_from_row(row: &rusqlite::Row) -> rusqlite::Result<GhostLockRecord>
         timelock_tier: row.get(6)?,
         creation_height: row.get(7)?,
         recovery_height: row.get(8)?,
-        state: GhostLockState::from_str(&state_str).unwrap_or(GhostLockState::Pending),
+        state: GhostLockState::parse(&state_str).unwrap_or(GhostLockState::Pending),
         funding_txid: row.get(10)?,
         funding_vout: row.get(11)?,
         spend_txid: row.get(12)?,
@@ -1879,7 +1882,7 @@ fn wraith_round_from_row(row: &rusqlite::Row) -> rusqlite::Result<WraithRoundRec
         coordinator_id: row.get(1)?,
         denomination: row.get(2)?,
         amount_sats: row.get(3)?,
-        phase: WraithPhase::from_str(&phase_str).unwrap_or(WraithPhase::Registration),
+        phase: WraithPhase::parse(&phase_str).unwrap_or(WraithPhase::Registration),
         participant_count: row.get(5)?,
         min_participants: row.get(6)?,
         max_participants: row.get(7)?,
@@ -1887,7 +1890,7 @@ fn wraith_round_from_row(row: &rusqlite::Row) -> rusqlite::Result<WraithRoundRec
         execution_deadline: row.get(9)?,
         split_txid: row.get(10)?,
         merge_txid: row.get(11)?,
-        status: WraithStatus::from_str(&status_str).unwrap_or(WraithStatus::Active),
+        status: WraithStatus::parse(&status_str).unwrap_or(WraithStatus::Active),
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
     })
@@ -2018,7 +2021,7 @@ fn reconciliation_from_row(row: &rusqlite::Row) -> rusqlite::Result<Reconciliati
         l1_txid: row.get(5)?,
         l1_block_height: row.get(6)?,
         dispute_deadline: row.get(7)?,
-        status: ReconciliationStatus::from_str(&status_str)
+        status: ReconciliationStatus::parse(&status_str)
             .unwrap_or(ReconciliationStatus::Pending),
         created_at: row.get(9)?,
         finalized_at: row.get(10)?,
@@ -2424,7 +2427,7 @@ impl Database {
                 .optional()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            if let Some(_) = existing_new {
+            if existing_new.is_some() {
                 // New node_id exists and wasn't from a rotation - could be hijack attempt
                 return Err(GhostError::SignatureVerification(format!(
                     "New node_id {} is already registered by another identity",
@@ -2438,7 +2441,7 @@ impl Database {
 
             let result: GhostResult<(bool, bool)> = (|| {
                 // Get old node's elder status and other transferable attributes
-                let old_node: Option<(bool, Option<u32>, Option<String>, Option<String>, Option<i64>)> = conn
+                let old_node: Option<NodeRotationData> = conn
                     .query_row(
                         "SELECT is_elder, elder_order, pow_proof, capabilities, first_seen
                          FROM nodes WHERE node_id = ?1",
@@ -2659,7 +2662,7 @@ fn withdrawal_from_row(row: &rusqlite::Row) -> rusqlite::Result<WithdrawalReques
         destination_address: row.get(3)?,
         amount_sats: row.get(4)?,
         fee_sats: row.get(5)?,
-        status: WithdrawalStatus::from_str(&status_str).unwrap_or(WithdrawalStatus::Pending),
+        status: WithdrawalStatus::parse(&status_str).unwrap_or(WithdrawalStatus::Pending),
         batch_id: row.get(7)?,
         l1_txid: row.get(8)?,
         created_at: row.get(9)?,
@@ -2674,13 +2677,13 @@ fn payout_from_row(row: &rusqlite::Row) -> rusqlite::Result<PayoutRecord> {
         id: Some(row.get(0)?),
         round_id: row.get(1)?,
         recipient_id: row.get(2)?,
-        recipient_type: RecipientType::from_str(&recipient_type_str)
+        recipient_type: RecipientType::parse(&recipient_type_str)
             .unwrap_or(RecipientType::Miner),
         address: row.get(4)?,
         amount_sats: row.get(5)?,
         txid: row.get(6)?,
         vout: row.get(7)?,
-        status: PayoutStatus::from_str(&status_str).unwrap_or(PayoutStatus::Pending),
+        status: PayoutStatus::parse(&status_str).unwrap_or(PayoutStatus::Pending),
         created_at: row.get(9)?,
         confirmed_at: row.get(10)?,
     })

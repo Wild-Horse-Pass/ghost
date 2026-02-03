@@ -66,7 +66,7 @@ impl NodeIdProof {
     pub fn compute_hash(public_key: &[u8; 32], nonce: u64) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(public_key);
-        hasher.update(&nonce.to_le_bytes());
+        hasher.update(nonce.to_le_bytes());
         hasher.finalize().into()
     }
 

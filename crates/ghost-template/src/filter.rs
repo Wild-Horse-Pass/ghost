@@ -85,7 +85,7 @@ impl TemplateFilter {
 
         let mut included_indices = Vec::new();
         let mut rejected_indices = Vec::new();
-        let mut tier_rejections = TierRejections::default();
+        let mut _tier_rejections = TierRejections::default();
         let mut total_fee = 0u64;
         let mut total_weight = 0u64;
 
@@ -137,10 +137,10 @@ impl TemplateFilter {
 
                 // Track rejection by tier
                 match decision.tier() {
-                    ghost_buds::BudsTier::T0 => tier_rejections.t0 += 1,
-                    ghost_buds::BudsTier::T1 => tier_rejections.t1 += 1,
-                    ghost_buds::BudsTier::T2 => tier_rejections.t2 += 1,
-                    ghost_buds::BudsTier::T3 => tier_rejections.t3 += 1,
+                    ghost_buds::BudsTier::T0 => _tier_rejections.t0 += 1,
+                    ghost_buds::BudsTier::T1 => _tier_rejections.t1 += 1,
+                    ghost_buds::BudsTier::T2 => _tier_rejections.t2 += 1,
+                    ghost_buds::BudsTier::T3 => _tier_rejections.t3 += 1,
                 }
 
                 debug!(

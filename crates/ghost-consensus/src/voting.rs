@@ -131,7 +131,7 @@ impl VotingSession {
         let total = self.eligible_voters.len() as u32;
         // Use ceiling division: (total * 67 + 99) / 100 to round up
         // For 4 nodes: (4 * 67 + 99) / 100 = 367 / 100 = 3
-        let threshold = ((total as u64 * BFT_THRESHOLD_PERCENT + 99) / 100) as u32;
+        let threshold = (total as u64 * BFT_THRESHOLD_PERCENT).div_ceil(100) as u32;
 
         let approvals = self.votes.values().filter(|v| v.approve).count() as u32;
         let rejections = self.votes.values().filter(|v| !v.approve).count() as u32;
@@ -204,7 +204,7 @@ impl VotingSession {
     pub fn threshold(&self) -> u32 {
         let total = self.eligible_voters.len() as u64;
         // Use ceiling division to ensure proper 67% threshold
-        ((total * BFT_THRESHOLD_PERCENT + 99) / 100) as u32
+        (total * BFT_THRESHOLD_PERCENT).div_ceil(100) as u32
     }
 }
 
@@ -254,10 +254,7 @@ pub enum VoteResult {
 
 /// Verify vote signature
 fn verify_vote_signature(vote: &Vote, proposal_hash: &[u8; 32]) -> bool {
-    match verify_signature(&vote.voter, proposal_hash, &vote.signature) {
-        Ok(valid) => valid,
-        Err(_) => false,
-    }
+    verify_signature(&vote.voter, proposal_hash, &vote.signature).unwrap_or_default()
 }
 
 /// Voting manager for multiple sessions

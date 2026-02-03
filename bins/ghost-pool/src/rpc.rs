@@ -279,6 +279,7 @@ pub fn set_difficulty(difficulty: f64) -> String {
 }
 
 /// Create mining.notify notification
+#[allow(clippy::too_many_arguments)]
 pub fn mining_notify(
     job_id: &str,
     prev_hash: &str,

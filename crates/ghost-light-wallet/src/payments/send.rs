@@ -119,7 +119,7 @@ pub async fn prepare_payment(
     let msg = ClientMessage::PreparePayment {
         recipient: request.recipient.clone(),
         amount_sats: request.amount_sats,
-        mode: request.mode.clone(),
+        mode: request.mode,
         proof,
     };
 
@@ -131,7 +131,7 @@ pub async fn prepare_payment(
     // Placeholder - actual implementation would parse GSP response
     Ok(PreparedPayment {
         payment_id: "placeholder".to_string(),
-        mode: request.mode.clone(),
+        mode: request.mode,
         recipient_address: request.recipient.clone(),
         original_recipient: request.recipient.clone(),
         amount_sats: request.amount_sats,

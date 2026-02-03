@@ -8,7 +8,6 @@ use ratatui::{
     Frame,
 };
 
-use crate::api::types::LogLevel;
 use crate::app::App;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
