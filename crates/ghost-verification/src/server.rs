@@ -38,10 +38,76 @@ use std::time::{Duration, Instant};
 use crate::config::NodeConfig;
 use tokio::net::TcpListener;
 use tower_governor::{
-    governor::GovernorConfigBuilder, key_extractor::SmartIpKeyExtractor, GovernorLayer,
+    errors::GovernorError, governor::GovernorConfigBuilder, key_extractor::KeyExtractor,
+    GovernorLayer,
 };
 use tower_http::cors::CorsLayer;
 use tracing::info;
+
+/// AUTH4-M1: Custom key extractor that uses NodeId from X-Ghost-NodeId header
+/// with fallback to IP address
+///
+/// This provides better rate limiting by identifying nodes by their cryptographic
+/// identity rather than just IP, preventing attackers from bypassing limits by
+/// changing IPs while still providing a fallback for anonymous requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeIdKeyExtractor;
+
+/// Key type for NodeId-based rate limiting
+/// Either a 32-byte NodeId or an IP address (encoded as string for simplicity)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NodeIdOrIpKey(String);
+
+impl KeyExtractor for NodeIdKeyExtractor {
+    type Key = NodeIdOrIpKey;
+
+    fn extract<T>(&self, req: &axum::http::Request<T>) -> Result<Self::Key, GovernorError> {
+        // Try X-Ghost-NodeId header first (64-char hex-encoded NodeId)
+        if let Some(node_id) = req.headers().get("X-Ghost-NodeId") {
+            if let Ok(node_id_str) = node_id.to_str() {
+                let s: &str = node_id_str;
+                // Validate it looks like a valid node ID (64 hex chars = 32 bytes)
+                if s.len() == 64 && s.chars().all(|c: char| c.is_ascii_hexdigit()) {
+                    return Ok(NodeIdOrIpKey(format!("node:{}", s)));
+                }
+            }
+        }
+
+        // Fall back to IP address extraction
+        // Try X-Forwarded-For first
+        if let Some(xff) = req.headers().get("X-Forwarded-For") {
+            if let Ok(xff_str) = xff.to_str() {
+                let s: &str = xff_str;
+                if let Some(ip_str) = s.split(',').next() {
+                    let ip_trimmed: &str = ip_str.trim();
+                    if !ip_trimmed.is_empty() {
+                        return Ok(NodeIdOrIpKey(format!("ip:{}", ip_trimmed)));
+                    }
+                }
+            }
+        }
+
+        // Try X-Real-IP
+        if let Some(xri) = req.headers().get("X-Real-IP") {
+            if let Ok(ip_str) = xri.to_str() {
+                let s: &str = ip_str;
+                return Ok(NodeIdOrIpKey(format!("ip:{}", s)));
+            }
+        }
+
+        // Fall back to peer IP from ConnectInfo
+        if let Some(connect_info) = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        {
+            let addr: &std::net::SocketAddr = &connect_info.0;
+            return Ok(NodeIdOrIpKey(format!("ip:{}", addr.ip())));
+        }
+
+        // Last resort: unknown source
+        Err(GovernorError::UnableToExtractKey)
+    }
+}
 
 use crate::challenge::*;
 use crate::routes::create_router;
@@ -925,15 +991,15 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
         ])
         .max_age(Duration::from_secs(3600));
 
-    // Rate limiting configuration
+    // Rate limiting configuration - AUTH4-M1: NodeId-based rate limiting
     // - 50 requests per second burst capacity
     // - Refills at 10 requests per second
-    // - Per IP address rate limiting
+    // - Per NodeId (from X-Ghost-NodeId header) with IP fallback
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
             .per_second(10)
             .burst_size(50)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(NodeIdKeyExtractor)
             .finish()
             .expect("valid governor config"),
     );
@@ -949,7 +1015,7 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
     });
 
     // Build service with security layers
-    // - Rate limiting: 50 req/s burst, 10 req/s sustained per IP
+    // - Rate limiting: 50 req/s burst, 10 req/s sustained per NodeId/IP
     // - CORS: restrict to allowed origins
     // - Request body limit: 1MB max to prevent DoS
     let app = create_router(state)
@@ -960,7 +1026,7 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
         .layer(DefaultBodyLimit::max(1024 * 1024)); // 1MB limit
 
     let addr = format!("0.0.0.0:{}", port);
-    info!(address = %addr, rate_limit = "50 burst / 10 per sec", "Starting verification server");
+    info!(address = %addr, rate_limit = "50 burst / 10 per sec (NodeId/IP keyed)", "Starting verification server");
 
     let listener = TcpListener::bind(&addr)
         .await

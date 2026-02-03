@@ -57,6 +57,18 @@ pub type ElderCallback = Arc<dyn Fn(NodeId) + Send + Sync>;
 pub type NodeCapabilitiesCallback =
     Arc<dyn Fn(NodeId, ghost_common::types::NodeCapabilities) + Send + Sync>;
 
+/// P2P4-M2: Callback to verify capabilities against challenge results
+///
+/// This callback queries the verification system to determine which capabilities
+/// have been verified for a given node. It takes the node ID and returns the
+/// set of VERIFIED capabilities (not just claimed ones).
+///
+/// The verification system maintains challenge results and pass rates. Only
+/// capabilities with sufficient challenge passes (e.g., 10+ challenges, 95% pass)
+/// should be included in the returned capabilities.
+pub type CapabilityVerifierCallback =
+    Arc<dyn Fn(&NodeId) -> ghost_common::types::NodeCapabilities + Send + Sync>;
+
 /// Rate limit configuration for health pings
 ///
 /// Default: 10 pings burst, 1/second sustained per node
@@ -154,6 +166,12 @@ pub struct HealthHandlerConfig {
     pub registration_cooldown_secs: u64,
     /// Maximum timestamp drift for health pings (H4 security fix)
     pub max_timestamp_drift_secs: u64,
+    /// AUTH4-3: Reject peers with invalid PoW (don't update peer info)
+    ///
+    /// When true, health pings from nodes without valid PoW are completely ignored.
+    /// When false, peer info is still updated but node is not registered as voter.
+    /// Default: true (strict mode for production)
+    pub reject_invalid_pow_peers: bool,
 }
 
 impl Default for HealthHandlerConfig {
@@ -166,6 +184,7 @@ impl Default for HealthHandlerConfig {
             min_uptime_for_voting_secs: DEFAULT_MIN_UPTIME_SECS,
             registration_cooldown_secs: DEFAULT_REGISTRATION_COOLDOWN_SECS,
             max_timestamp_drift_secs: MAX_TIMESTAMP_DRIFT_SECS,
+            reject_invalid_pow_peers: true, // AUTH4-3: Strict mode by default
         }
     }
 }
@@ -180,6 +199,8 @@ pub struct HealthPingHandler {
     elder_callback: Option<ElderCallback>,
     /// Callback to register node capabilities for payout calculations
     node_capabilities_callback: Option<NodeCapabilitiesCallback>,
+    /// P2P4-M2: Callback to verify capabilities against challenge results
+    capability_verifier: Option<CapabilityVerifierCallback>,
     /// Rate limiter for incoming pings
     rate_limiter: HealthRateLimiter,
     /// Configuration
@@ -209,6 +230,7 @@ impl HealthPingHandler {
             db,
             elder_callback: None,
             node_capabilities_callback: None,
+            capability_verifier: None,
             rate_limiter: HealthRateLimiter::new(
                 config.rate_limit_max_tokens,
                 config.rate_limit_refill_rate,
@@ -247,6 +269,18 @@ impl HealthPingHandler {
     /// register the node's capabilities for payout calculations.
     pub fn with_node_capabilities_callback(mut self, callback: NodeCapabilitiesCallback) -> Self {
         self.node_capabilities_callback = Some(callback);
+        self
+    }
+
+    /// P2P4-M2: Set callback for capability verification
+    ///
+    /// When set, capabilities from health pings will be verified against
+    /// challenge results before being registered. Only VERIFIED capabilities
+    /// (those that have passed sufficient challenges) will be registered.
+    ///
+    /// If not set, claimed capabilities are registered as-is (legacy behavior).
+    pub fn with_capability_verifier(mut self, verifier: CapabilityVerifierCallback) -> Self {
+        self.capability_verifier = Some(verifier);
         self
     }
 
@@ -428,13 +462,23 @@ impl HealthPingHandler {
         // Verify PoW before registering as voter (Sybil resistance)
         let pow_valid = self.verify_pow(&envelope.sender, ping.pow_proof);
 
+        // AUTH4-3: Optionally reject peers entirely if PoW is invalid
+        if !pow_valid && self.config.reject_invalid_pow_peers {
+            warn!(
+                node_id = %short_id,
+                has_pow = ping.pow_proof.is_some(),
+                "Rejecting health ping - invalid PoW (strict mode enabled)"
+            );
+            return Ok(()); // Don't update any peer state
+        }
+
         if !pow_valid {
             warn!(
                 node_id = %short_id,
                 has_pow = ping.pow_proof.is_some(),
-                "Rejected node without valid PoW - not registering as voter"
+                "Node without valid PoW - not registering as voter (lenient mode)"
             );
-            // Still update peer info but don't register as voter
+            // In lenient mode, still update peer info but don't register as voter
         }
 
         // Register node as voter for BFT consensus ONLY if:
@@ -449,7 +493,31 @@ impl HealthPingHandler {
 
             // Register node capabilities for payout calculations (only with valid PoW)
             if let Some(ref callback) = self.node_capabilities_callback {
-                callback(envelope.sender, ping.capabilities);
+                // P2P4-M2: If capability verifier is set, use VERIFIED capabilities
+                // instead of just trusting CLAIMED capabilities from the health ping
+                let capabilities = if let Some(ref verifier) = self.capability_verifier {
+                    let verified_caps = verifier(&envelope.sender);
+                    debug!(
+                        node_id = %short_id,
+                        claimed_archive = ping.capabilities.archive_mode,
+                        verified_archive = verified_caps.archive_mode,
+                        claimed_ghost_pay = ping.capabilities.ghost_pay,
+                        verified_ghost_pay = verified_caps.ghost_pay,
+                        claimed_public_mining = ping.capabilities.public_mining,
+                        verified_public_mining = verified_caps.public_mining,
+                        claimed_bitcoin_pure = ping.capabilities.bitcoin_pure,
+                        verified_bitcoin_pure = verified_caps.bitcoin_pure,
+                        claimed_elder = ping.capabilities.elder_status,
+                        verified_elder = verified_caps.elder_status,
+                        "Using verified capabilities instead of claimed"
+                    );
+                    verified_caps
+                } else {
+                    // Legacy behavior: trust claimed capabilities
+                    ping.capabilities
+                };
+
+                callback(envelope.sender, capabilities);
                 debug!(node_id = %short_id, "Registered node capabilities for payout");
             }
         } else if pow_valid {

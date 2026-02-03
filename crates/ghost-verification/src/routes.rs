@@ -39,7 +39,7 @@ use ghost_buds::{BudsClassifier, BudsTier};
 use crate::auth::{verify_internal_auth, InternalAuth};
 use crate::challenge::*;
 use crate::server::{ShareBatch, ShareNotification, VerificationState};
-use crate::websocket::ws_handler;
+use crate::websocket::{ws_handler, WsAuthQuery};
 
 /// Get system resource usage (CPU %, Memory %, Disk %)
 fn get_system_resources() -> (f64, f64, f64) {
@@ -120,12 +120,12 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
 
     // Public routes (no authentication required)
     let public_router = Router::new()
-        // WebSocket for real-time updates
+        // WebSocket for real-time updates (AUTH4-M3: supports optional authentication)
         .route(
             "/ws",
-            get(move |ws: WebSocketUpgrade| {
+            get(move |ws: WebSocketUpgrade, auth: Query<WsAuthQuery>| {
                 let ws_state = Arc::clone(&ws_state);
-                async move { ws_handler(ws, State(ws_state)).await }
+                async move { ws_handler(ws, auth, State(ws_state)).await }
             }),
         )
         // Health and node info

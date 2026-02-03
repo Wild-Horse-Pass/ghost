@@ -84,6 +84,47 @@ impl BanEntry {
     }
 }
 
+/// P2P4-M3: Configurable ban durations per reason
+#[derive(Debug, Clone)]
+pub struct BanManagerConfig {
+    /// Ban duration for equivocation (default: 600 seconds / 10 minutes)
+    pub equivocation_secs: u64,
+    /// Ban duration for rate limit exceeded (default: 300 seconds / 5 minutes)
+    pub rate_limit_secs: u64,
+    /// Ban duration for invalid messages (default: 180 seconds / 3 minutes)
+    pub invalid_messages_secs: u64,
+    /// Ban duration for protocol violation (default: 900 seconds / 15 minutes)
+    pub protocol_violation_secs: u64,
+    /// Default duration for custom bans (default: 600 seconds / 10 minutes)
+    pub custom_secs: u64,
+}
+
+impl Default for BanManagerConfig {
+    fn default() -> Self {
+        Self {
+            equivocation_secs: 600,
+            rate_limit_secs: 300,
+            invalid_messages_secs: 180,
+            protocol_violation_secs: 900,
+            custom_secs: 600,
+        }
+    }
+}
+
+impl BanManagerConfig {
+    /// Get duration for a specific ban reason
+    pub fn duration_for_reason(&self, reason: BanReason) -> Duration {
+        let secs = match reason {
+            BanReason::Equivocation => self.equivocation_secs,
+            BanReason::RateLimitExceeded => self.rate_limit_secs,
+            BanReason::InvalidMessages => self.invalid_messages_secs,
+            BanReason::ProtocolViolation => self.protocol_violation_secs,
+            BanReason::Custom => self.custom_secs,
+        };
+        Duration::from_secs(secs)
+    }
+}
+
 /// Shared ban manager for cross-handler enforcement
 ///
 /// Thread-safe via RwLock - can be shared across multiple handlers using Arc<BanManager>
@@ -92,6 +133,8 @@ pub struct BanManager {
     banned_nodes: RwLock<HashMap<NodeId, BanEntry>>,
     /// Default ban duration (can be overridden per-ban)
     default_duration: Duration,
+    /// P2P4-M3: Configurable durations per reason
+    config: BanManagerConfig,
 }
 
 impl BanManager {
@@ -105,12 +148,25 @@ impl BanManager {
         Self {
             banned_nodes: RwLock::new(HashMap::new()),
             default_duration,
+            config: BanManagerConfig::default(),
         }
     }
 
-    /// Ban a node for a specific reason using that reason's default duration
+    /// P2P4-M3: Create a ban manager with custom configuration
+    pub fn with_config(config: BanManagerConfig) -> Self {
+        Self {
+            banned_nodes: RwLock::new(HashMap::new()),
+            default_duration: Duration::from_secs(config.custom_secs),
+            config,
+        }
+    }
+
+    /// Ban a node for a specific reason using configured duration for that reason
+    ///
+    /// P2P4-M3: Uses configurable durations from BanManagerConfig
     pub fn ban(&self, node_id: NodeId, reason: BanReason) {
-        self.ban_for_duration(node_id, reason, reason.default_duration());
+        let duration = self.config.duration_for_reason(reason);
+        self.ban_for_duration(node_id, reason, duration);
     }
 
     /// Ban a node for a specific duration

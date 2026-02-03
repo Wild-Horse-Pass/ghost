@@ -579,9 +579,51 @@ impl CoordinatorSigner {
         self.active_nonces.len()
     }
 
-    /// Clear expired nonces (call periodically)
+    /// Clear all nonces (for testing or session reset)
     pub fn clear_nonces(&mut self) {
         self.active_nonces.clear();
+        self.nonces_per_participant.clear();
+    }
+
+    /// WR4-M1: Clean up expired nonces (call periodically from coordinator)
+    ///
+    /// This method is public to allow external scheduling of nonce cleanup.
+    /// Returns the number of nonces that were expired and removed.
+    ///
+    /// Recommended: Call every 5 minutes or when memory pressure is detected.
+    pub fn cleanup_expired_nonces(&mut self) -> usize {
+        let now = Instant::now();
+        let expiry_duration = std::time::Duration::from_secs(NONCE_EXPIRY_SECS);
+
+        let before = self.active_nonces.len();
+
+        // Collect expired session IDs
+        let expired: Vec<[u8; 32]> = self.active_nonces
+            .iter()
+            .filter(|(_, nonce)| now.duration_since(nonce.created_at) > expiry_duration)
+            .map(|(id, _)| *id)
+            .collect();
+
+        // Remove expired nonces and update per-participant counts
+        for session_id in &expired {
+            if let Some(nonce) = self.active_nonces.remove(session_id) {
+                if let Some(ref ghost_id) = nonce.bound_ghost_id {
+                    if let Some(count) = self.nonces_per_participant.get_mut(ghost_id) {
+                        *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            self.nonces_per_participant.remove(ghost_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        before - self.active_nonces.len()
+    }
+
+    /// Get the number of nonces per participant (for monitoring)
+    pub fn nonces_per_participant(&self) -> &std::collections::HashMap<String, usize> {
+        &self.nonces_per_participant
     }
 }
 
@@ -717,6 +759,9 @@ impl BlindingContext {
     }
 }
 
+/// WR4-M2: Maximum size for token messages to prevent memory exhaustion
+const MAX_TOKEN_MESSAGE_SIZE: usize = 1024; // 1 KB max - more than enough for addresses
+
 /// Unblinded token proving message was signed by coordinator
 ///
 /// This is a standard Schnorr signature (R', s') on the message m.
@@ -735,6 +780,20 @@ pub struct UnblindedToken {
 }
 
 impl UnblindedToken {
+    /// WR4-M2: Validate that the token message size is within limits
+    ///
+    /// Prevents memory exhaustion attacks via oversized messages.
+    pub fn validate_size(&self) -> Result<(), WraithError> {
+        if self.message.len() > MAX_TOKEN_MESSAGE_SIZE {
+            return Err(WraithError::InvalidInput(format!(
+                "Token message too large: {} bytes (max {})",
+                self.message.len(),
+                MAX_TOKEN_MESSAGE_SIZE
+            )));
+        }
+        Ok(())
+    }
+
     /// Convert to standard 64-byte Schnorr signature format
     ///
     /// Format: R' (32 bytes x-only) || s' (32 bytes)

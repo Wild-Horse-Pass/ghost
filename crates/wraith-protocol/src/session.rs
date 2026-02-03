@@ -400,14 +400,36 @@ impl WraithSession {
         Ok(())
     }
 
-    /// Mark session as failed
-    pub fn fail(&mut self) {
+    /// WR4-M3: Mark session as failed (returns Result to prevent invalid transitions)
+    ///
+    /// Returns an error if the session is already in a terminal state.
+    /// This prevents confusing state tracking where a completed session
+    /// could be marked as failed.
+    pub fn fail(&mut self) -> Result<(), crate::WraithError> {
+        if self.state.is_terminal() {
+            return Err(crate::WraithError::InvalidState {
+                expected: "non-terminal state".to_string(),
+                actual: format!("{:?}", self.state),
+            });
+        }
         self.state = SessionState::Failed;
+        Ok(())
     }
 
-    /// Mark session as refunded
-    pub fn refund(&mut self) {
+    /// WR4-M3: Mark session as refunded (returns Result to prevent invalid transitions)
+    ///
+    /// Returns an error if the session is already in a terminal state.
+    /// This prevents confusing state tracking where a completed session
+    /// could be marked as refunded.
+    pub fn refund(&mut self) -> Result<(), crate::WraithError> {
+        if self.state.is_terminal() {
+            return Err(crate::WraithError::InvalidState {
+                expected: "non-terminal state".to_string(),
+                actual: format!("{:?}", self.state),
+            });
+        }
         self.state = SessionState::Refunded;
+        Ok(())
     }
 
     /// Get phase 1 execution

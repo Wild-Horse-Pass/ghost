@@ -1184,12 +1184,16 @@ async fn main() -> Result<()> {
                 }
             };
 
+            // PO4-M2: Capture treasury address snapshot to prevent TOCTOU issues
+            let treasury_address_snapshot = payout_for_block.get_treasury_address_snapshot();
+
             let solo_data = SoloBlockFoundData {
                 round_id,
                 block_hash: notification.block_hash,
                 block_height: height,
                 solo_payout_address: solo_address,
                 subsidy_sats: subsidy,
+                treasury_address_snapshot,
                 tx_fees_sats: fees,
                 node_shares,
                 treasury_state,
@@ -1213,12 +1217,16 @@ async fn main() -> Result<()> {
             // Pool mode: proportional distribution to all miners
             let miner_work = rm_for_block.get_miner_work(round_id);
 
+            // PO4-M2: Capture treasury address snapshot to prevent TOCTOU issues
+            let treasury_address_snapshot = payout_for_block.get_treasury_address_snapshot();
+
             let block_data = BlockFoundData {
                 round_id,
                 block_hash: notification.block_hash,
                 block_height: height,
                 winning_miner_id: notification.miner_id.clone(),
                 winning_miner_payout_address: notification.payout_address.clone(),
+                treasury_address_snapshot,
                 winning_node_id,
                 subsidy_sats: subsidy,
                 tx_fees_sats: fees,
@@ -1752,12 +1760,16 @@ async fn main() -> Result<()> {
                             }
                         };
 
+                        // PO4-M2: Capture treasury address snapshot
+                        let treasury_address_snapshot = payout_for_events.get_treasury_address_snapshot();
+
                         let solo_data = SoloBlockFoundData {
                             round_id,
                             block_hash,
                             block_height: height,
                             solo_payout_address: solo_address,
                             subsidy_sats: subsidy,
+                            treasury_address_snapshot,
                             tx_fees_sats: fees,
                             node_shares,
                             treasury_state,
@@ -1782,12 +1794,16 @@ async fn main() -> Result<()> {
                         let miner_work = rm_for_events.get_miner_work(round_id);
                         let winning_node_id = identity_for_events.node_id();
 
+                        // PO4-M2: Capture treasury address snapshot
+                        let treasury_address_snapshot = payout_for_events.get_treasury_address_snapshot();
+
                         let block_data = BlockFoundData {
                             round_id,
                             block_hash,
                             block_height: height,
                             winning_miner_id: miner_id.clone(),
                             winning_miner_payout_address: None, // Address looked up from DB
+                            treasury_address_snapshot,
                             winning_node_id,
                             subsidy_sats: subsidy,
                             tx_fees_sats: fees,

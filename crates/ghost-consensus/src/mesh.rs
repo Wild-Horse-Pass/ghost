@@ -743,14 +743,42 @@ impl MeshNetwork {
         // We'll use a dummy inproc endpoint that we create just to bootstrap the socket.
         let dummy_endpoint = format!("inproc://mesh-sub-bootstrap-{}", std::process::id());
 
+        // P2P4-5: Subscribe to specific known topics only (not empty filter)
+        // This prevents processing of unknown/malicious topic prefixes
+        use crate::message::topics;
+
         // bind() returns SubscribeWithoutTopic, then subscribe() returns Subscribe (which implements Stream)
+        // P2P4-5: Subscribe to specific known topics only (not empty filter)
+        // First subscribe() converts SubscribeWithoutTopic -> Subscribe, then we add more topics
         let mut sub_socket = subscribe(&ZMQ_CONTEXT)
             .set_reconnect_ivl(100) // Initial reconnect interval: 100ms
             .set_reconnect_ivl_max(5000) // Max reconnect interval: 5 seconds
             .bind(&dummy_endpoint)
             .map_err(|e| GhostError::P2PMessage(format!("Failed to create SUB socket: {}", e)))?
-            .subscribe(b"") // Subscribe to all topics (empty filter) - this returns Subscribe
-            .map_err(|e| GhostError::P2PMessage(format!("Failed to subscribe: {}", e)))?;
+            .subscribe(topics::SHARE)
+            .map_err(|e| GhostError::P2PMessage(format!("Failed to subscribe to share: {}", e)))?;
+
+        // P2P4-5: Subscribe to remaining topics using mutable Subscribe reference
+        // After the first subscribe(), we have a Subscribe struct that takes &mut self
+        let additional_topics: &[(&[u8], &str)] = &[
+            (topics::BLOCK, "block"),
+            (topics::VOTE, "vote"),
+            (topics::HEALTH, "health"),
+            (topics::DISCOVERY, "discovery"),
+            (topics::ELDER, "elder"),
+            (topics::PAYOUT_PROPOSAL, "payout_proposal"),
+            (topics::ZK_PROPOSAL, "zk_proposal"),
+            (topics::ZK_VOTE, "zk_vote"),
+            (topics::ZK_PAYOUT_PROPOSAL, "zk_payout_proposal"),
+            (topics::ZK_PAYOUT_VOTE, "zk_payout_vote"),
+            (topics::VERIFICATION, "verification"),
+        ];
+
+        for (topic, name) in additional_topics {
+            sub_socket
+                .subscribe(topic)
+                .map_err(|e| GhostError::P2PMessage(format!("Failed to subscribe to {}: {}", name, e)))?;
+        }
 
         info!("DIAG: SUB socket created with reconnection support (ivl=100ms, max=5000ms)");
 
@@ -1093,8 +1121,10 @@ impl MeshNetwork {
 
         let sequence = self.next_sequence();
 
-        // Sign the payload
-        let signature = self.identity.sign(&payload);
+        // Sign the payload + sequence (must match create_envelope for P2P4-M1 verification)
+        let mut signed_data = payload.clone();
+        signed_data.extend_from_slice(&sequence.to_le_bytes());
+        let signature = self.identity.sign(&signed_data);
 
         // Create envelope
         let envelope = MessageEnvelope::new(

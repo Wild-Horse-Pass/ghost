@@ -262,6 +262,222 @@ pub const MAX_RESPONSE_AGE_SECS: u64 = 300;
 /// Maximum time in the future a response timestamp can be (2 minutes)
 pub const MAX_FUTURE_TIME_SECS: u64 = 120;
 
+/// Default nonce TTL for verification challenges (5 minutes)
+pub const DEFAULT_NONCE_TTL_SECS: u64 = 300;
+
+/// Maximum number of nonces to track (prevent memory exhaustion)
+pub const MAX_NONCE_CACHE_SIZE: usize = 10_000;
+
+// ============================================================================
+// AUTH4-M2: Nonce Expiry Cache
+// ============================================================================
+
+/// Error types for nonce validation
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NonceError {
+    /// Nonce was not issued by this server
+    Unknown,
+    /// Nonce has already been used (replay attack)
+    AlreadyUsed,
+    /// Nonce has expired
+    Expired,
+    /// Cache is full (rate limiting)
+    CacheFull,
+}
+
+impl std::fmt::Display for NonceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NonceError::Unknown => write!(f, "unknown nonce"),
+            NonceError::AlreadyUsed => write!(f, "nonce already used"),
+            NonceError::Expired => write!(f, "nonce expired"),
+            NonceError::CacheFull => write!(f, "nonce cache full"),
+        }
+    }
+}
+
+impl std::error::Error for NonceError {}
+
+/// AUTH4-M2: Nonce cache for tracking issued and used nonces
+///
+/// This cache ensures:
+/// 1. Nonces are only valid if issued by this server
+/// 2. Each nonce can only be used once (prevents replay attacks)
+/// 3. Nonces expire after a configurable TTL
+/// 4. Memory usage is bounded by MAX_NONCE_CACHE_SIZE
+pub struct NonceCache {
+    /// Nonces that have been issued but not yet used
+    /// Maps nonce string -> timestamp when issued (seconds since epoch)
+    issued: parking_lot::RwLock<std::collections::HashMap<String, u64>>,
+    /// Nonces that have been used (for preventing replay)
+    /// We keep used nonces until they would have expired anyway
+    used: parking_lot::RwLock<std::collections::HashSet<String>>,
+    /// TTL in seconds for nonces
+    ttl_secs: u64,
+    /// Maximum cache size
+    max_size: usize,
+}
+
+impl NonceCache {
+    /// Create a new nonce cache with default TTL
+    pub fn new() -> Self {
+        Self::with_ttl(DEFAULT_NONCE_TTL_SECS)
+    }
+
+    /// Create a nonce cache with custom TTL
+    pub fn with_ttl(ttl_secs: u64) -> Self {
+        Self {
+            issued: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            used: parking_lot::RwLock::new(std::collections::HashSet::new()),
+            ttl_secs,
+            max_size: MAX_NONCE_CACHE_SIZE,
+        }
+    }
+
+    /// Generate and track a new nonce
+    pub fn generate_nonce(&self) -> Result<String, NonceError> {
+        let mut issued = self.issued.write();
+
+        // Check cache size limit
+        if issued.len() >= self.max_size {
+            // Try cleanup first
+            drop(issued);
+            self.cleanup();
+            issued = self.issued.write();
+
+            if issued.len() >= self.max_size {
+                return Err(NonceError::CacheFull);
+            }
+        }
+
+        let nonce_bytes: [u8; 16] = rand::random();
+        let nonce = hex::encode(nonce_bytes);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        issued.insert(nonce.clone(), now);
+        Ok(nonce)
+    }
+
+    /// Validate and consume a nonce
+    ///
+    /// Returns Ok(()) if the nonce is valid and has not been used before.
+    /// The nonce is marked as used and cannot be reused.
+    pub fn validate_and_consume(&self, nonce: &str) -> Result<(), NonceError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Check if already used
+        {
+            let used = self.used.read();
+            if used.contains(nonce) {
+                return Err(NonceError::AlreadyUsed);
+            }
+        }
+
+        // Check if issued and not expired
+        let issued_at = {
+            let issued = self.issued.read();
+            match issued.get(nonce) {
+                Some(&ts) => ts,
+                None => return Err(NonceError::Unknown),
+            }
+        };
+
+        // Check expiry
+        if now > issued_at + self.ttl_secs {
+            return Err(NonceError::Expired);
+        }
+
+        // Mark as used and remove from issued
+        {
+            let mut issued = self.issued.write();
+            let mut used = self.used.write();
+
+            issued.remove(nonce);
+            used.insert(nonce.to_string());
+        }
+
+        Ok(())
+    }
+
+    /// Check if a nonce is valid without consuming it
+    pub fn is_valid(&self, nonce: &str) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Check if used
+        {
+            let used = self.used.read();
+            if used.contains(nonce) {
+                return false;
+            }
+        }
+
+        // Check if issued and not expired
+        let issued = self.issued.read();
+        match issued.get(nonce) {
+            Some(&ts) => now <= ts + self.ttl_secs,
+            None => false,
+        }
+    }
+
+    /// Clean up expired nonces
+    ///
+    /// Returns the number of entries removed
+    pub fn cleanup(&self) -> usize {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let cutoff = now.saturating_sub(self.ttl_secs);
+        let mut removed = 0;
+
+        // Clean up expired issued nonces
+        {
+            let mut issued = self.issued.write();
+            let before = issued.len();
+            issued.retain(|_, &mut ts| ts > cutoff);
+            removed += before - issued.len();
+        }
+
+        // Clean up expired used nonces (we keep them for TTL duration)
+        // Since we don't track when they were used, we use issued time as proxy
+        // For safety, just clear the whole used set when doing cleanup
+        // This is acceptable because expired nonces can't be validated anyway
+        {
+            let mut used = self.used.write();
+            if !used.is_empty() {
+                removed += used.len();
+                used.clear();
+            }
+        }
+
+        removed
+    }
+
+    /// Get statistics about the cache
+    pub fn stats(&self) -> (usize, usize) {
+        let issued = self.issued.read().len();
+        let used = self.used.read().len();
+        (issued, used)
+    }
+}
+
+impl Default for NonceCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Signed verification response wrapper
 ///
 /// Wraps any verification response with a cryptographic signature to:
@@ -453,6 +669,75 @@ impl<T> VerificationRequest<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_nonce_cache_basic() {
+        let cache = NonceCache::new();
+
+        // Generate a nonce
+        let nonce = cache.generate_nonce().unwrap();
+        assert_eq!(nonce.len(), 32); // 16 bytes = 32 hex chars
+
+        // Should be valid
+        assert!(cache.is_valid(&nonce));
+
+        // Consume it
+        assert!(cache.validate_and_consume(&nonce).is_ok());
+
+        // Should no longer be valid (already used)
+        assert!(!cache.is_valid(&nonce));
+        assert_eq!(cache.validate_and_consume(&nonce), Err(NonceError::AlreadyUsed));
+    }
+
+    #[test]
+    fn test_nonce_cache_unknown() {
+        let cache = NonceCache::new();
+
+        // Unknown nonce should fail
+        let result = cache.validate_and_consume("unknown_nonce_12345678");
+        assert_eq!(result, Err(NonceError::Unknown));
+    }
+
+    #[test]
+    fn test_nonce_cache_cleanup() {
+        // Use TTL of 1 second and wait for it to expire
+        // Note: timestamps are in seconds, so we need to wait > 1 second
+        // Use 2 second wait to be safe under parallel test load
+        let cache = NonceCache::with_ttl(1);
+
+        // Generate a nonce
+        let nonce = cache.generate_nonce().unwrap();
+
+        // Verify it's valid initially
+        assert!(cache.is_valid(&nonce));
+
+        // Wait for expiry - use 2 seconds to be safe under parallel test load
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // Should be expired
+        assert!(!cache.is_valid(&nonce));
+        assert_eq!(cache.validate_and_consume(&nonce), Err(NonceError::Expired));
+    }
+
+    #[test]
+    fn test_nonce_cache_stats() {
+        let cache = NonceCache::new();
+
+        let (issued, used) = cache.stats();
+        assert_eq!(issued, 0);
+        assert_eq!(used, 0);
+
+        // Generate and consume
+        let nonce = cache.generate_nonce().unwrap();
+        let (issued, used) = cache.stats();
+        assert_eq!(issued, 1);
+        assert_eq!(used, 0);
+
+        cache.validate_and_consume(&nonce).unwrap();
+        let (issued, used) = cache.stats();
+        assert_eq!(issued, 0);
+        assert_eq!(used, 1);
+    }
 
     #[test]
     fn test_challenge_serialization() {

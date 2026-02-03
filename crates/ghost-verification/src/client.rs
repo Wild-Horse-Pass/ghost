@@ -30,49 +30,125 @@ use ghost_common::error::{GhostError, GhostResult};
 
 use crate::challenge::*;
 
+/// Configuration for the verification client
+///
+/// AUTH4-2: Configurable HTTPS support to prevent MITM attacks on verification requests.
+#[derive(Debug, Clone)]
+pub struct VerificationClientConfig {
+    /// Use HTTPS for verification requests (default: true)
+    ///
+    /// SECURITY: Should always be true in production. Set to false only for
+    /// local testing where TLS certificates are not available.
+    pub use_https: bool,
+    /// Request timeout
+    pub timeout: Duration,
+    /// Accept invalid TLS certificates (DANGEROUS - testing only)
+    pub danger_accept_invalid_certs: bool,
+}
+
+impl Default for VerificationClientConfig {
+    fn default() -> Self {
+        Self {
+            use_https: true,
+            timeout: Duration::from_secs(VERIFICATION_TIMEOUT_SECS),
+            danger_accept_invalid_certs: false,
+        }
+    }
+}
+
+impl VerificationClientConfig {
+    /// Create a config for production (HTTPS required)
+    pub fn production() -> Self {
+        Self::default()
+    }
+
+    /// Create a config for testing (HTTP allowed)
+    ///
+    /// WARNING: Do not use in production - allows MITM attacks.
+    pub fn insecure_for_testing() -> Self {
+        Self {
+            use_https: false,
+            timeout: Duration::from_secs(VERIFICATION_TIMEOUT_SECS),
+            danger_accept_invalid_certs: false,
+        }
+    }
+}
+
 /// Verification client
 #[derive(Debug, Clone)]
 pub struct VerificationClient {
     /// HTTP client
     client: reqwest::Client,
-    /// Request timeout (configured, used implicitly by reqwest)
-    #[allow(dead_code)]
-    timeout: Duration,
+    /// Configuration
+    config: VerificationClientConfig,
 }
 
 impl VerificationClient {
-    /// Create a new verification client
+    /// Create a new verification client with default configuration (HTTPS required)
+    ///
+    /// AUTH4-2: Uses HTTPS by default to prevent MITM attacks.
     ///
     /// # Errors
     /// Returns an error if the HTTP client cannot be created
     pub fn new() -> GhostResult<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(VERIFICATION_TIMEOUT_SECS))
+        Self::with_config(VerificationClientConfig::default())
+    }
+
+    /// Create with custom configuration
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP client cannot be created
+    pub fn with_config(config: VerificationClientConfig) -> GhostResult<Self> {
+        let mut builder = reqwest::Client::builder().timeout(config.timeout);
+
+        if config.danger_accept_invalid_certs {
+            warn!("DANGER: Verification client configured to accept invalid TLS certificates");
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+
+        let client = builder
             .build()
             .map_err(|e| GhostError::Internal(format!("Failed to create HTTP client: {}", e)))?;
 
-        Ok(Self {
-            client,
-            timeout: Duration::from_secs(VERIFICATION_TIMEOUT_SECS),
-        })
+        Ok(Self { client, config })
     }
 
-    /// Create with custom timeout
+    /// Create with custom timeout (uses HTTPS)
     ///
     /// # Errors
     /// Returns an error if the HTTP client cannot be created
     pub fn with_timeout(timeout: Duration) -> GhostResult<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .build()
-            .map_err(|e| GhostError::Internal(format!("Failed to create HTTP client: {}", e)))?;
+        Self::with_config(VerificationClientConfig {
+            timeout,
+            ..Default::default()
+        })
+    }
 
-        Ok(Self { client, timeout })
+    /// Create an insecure client for testing only
+    ///
+    /// WARNING: This client uses HTTP without TLS, allowing MITM attacks.
+    /// Do not use in production.
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP client cannot be created
+    pub fn new_insecure() -> GhostResult<Self> {
+        warn!("Creating INSECURE verification client - for testing only!");
+        Self::with_config(VerificationClientConfig::insecure_for_testing())
+    }
+
+    /// Get the URL scheme based on configuration
+    fn scheme(&self) -> &'static str {
+        if self.config.use_https { "https" } else { "http" }
+    }
+
+    /// Build a URL with the configured scheme
+    fn build_url(&self, host: &str, path: &str) -> String {
+        format!("{}://{}{}", self.scheme(), host, path)
     }
 
     /// Get health status of a node
     pub async fn health(&self, node_address: &str) -> GhostResult<HealthResponse> {
-        let url = format!("http://{}/health?unsigned=true", node_address);
+        let url = self.build_url(node_address, "/health?unsigned=true");
         debug!(url = %url, "Checking node health");
 
         let response = self
@@ -107,8 +183,6 @@ impl VerificationClient {
         block_hash: Option<&str>,
         txid: Option<&str>,
     ) -> GhostResult<ArchiveResponse> {
-        let mut url = format!("http://{}/verify/archive", node_address);
-
         let mut params = vec!["unsigned=true".to_string()];
         if let Some(hash) = block_hash {
             params.push(format!("block={}", hash));
@@ -117,7 +191,7 @@ impl VerificationClient {
             params.push(format!("tx={}", tx));
         }
 
-        url = format!("{}?{}", url, params.join("&"));
+        let url = self.build_url(node_address, &format!("/verify/archive?{}", params.join("&")));
 
         debug!(url = %url, "Verifying archive capability");
 
@@ -150,10 +224,9 @@ impl VerificationClient {
         node_address: &str,
         tx_hex: &str,
     ) -> GhostResult<PolicyResponse> {
-        let url = format!(
-            "http://{}/verify/policy?tx={}&unsigned=true",
+        let url = self.build_url(
             node_address,
-            urlencoding::encode(tx_hex)
+            &format!("/verify/policy?tx={}&unsigned=true", urlencoding::encode(tx_hex))
         );
 
         debug!(url = %url, "Verifying policy capability");
@@ -193,9 +266,9 @@ impl VerificationClient {
             StratumProtocol::Sv2 => "sv2",
         };
 
-        let url = format!(
-            "http://{}/verify/stratum?protocol={}&unsigned=true",
-            node_address, protocol_str
+        let url = self.build_url(
+            node_address,
+            &format!("/verify/stratum?protocol={}&unsigned=true", protocol_str)
         );
 
         debug!(url = %url, "Verifying stratum capability");
@@ -229,11 +302,12 @@ impl VerificationClient {
         node_address: &str,
         address: Option<&str>,
     ) -> GhostResult<GhostPayResponse> {
-        let mut url = format!("http://{}/verify/ghostpay?unsigned=true", node_address);
-
-        if let Some(addr) = address {
-            url = format!("{}&address={}", url, urlencoding::encode(addr));
-        }
+        let path = if let Some(addr) = address {
+            format!("/verify/ghostpay?unsigned=true&address={}", urlencoding::encode(addr))
+        } else {
+            "/verify/ghostpay?unsigned=true".to_string()
+        };
+        let url = self.build_url(node_address, &path);
 
         debug!(url = %url, "Verifying GhostPay capability");
 

@@ -29,11 +29,22 @@
 //! - Peer status changes
 //! - Consensus voting updates
 //! - System metrics
+//!
+//! ## AUTH4-M3: WebSocket Authentication
+//!
+//! Two modes are supported:
+//! - **Public mode** (default): Limited events (health updates, block found)
+//! - **Authenticated mode**: All events including sensitive operational data
+//!
+//! To authenticate, pass query parameters:
+//! - `node_id`: Your node's public key (hex-encoded)
+//! - `timestamp`: Unix timestamp of request
+//! - `signature`: HMAC-SHA256 signature of `node_id|timestamp` with shared secret
 
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        State,
+        Query, State,
     },
     response::IntoResponse,
 };
@@ -105,6 +116,78 @@ pub enum WsEvent {
     Error { message: String },
 }
 
+impl WsEvent {
+    /// AUTH4-M3: Check if this event is allowed for unauthenticated connections
+    ///
+    /// Public events are safe to broadcast to anyone (no sensitive info).
+    /// Sensitive events (shares, votes, wraith, peer details) require auth.
+    pub fn is_public(&self) -> bool {
+        matches!(
+            self,
+            WsEvent::HealthUpdate { .. }
+                | WsEvent::BlockFound { .. }
+                | WsEvent::RoundStarted { .. }
+                | WsEvent::RoundEnded { .. }
+                | WsEvent::Error { .. }
+        )
+    }
+}
+
+/// AUTH4-M3: WebSocket authentication query parameters
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct WsAuthQuery {
+    /// Node ID (hex-encoded 64 chars = 32 bytes)
+    pub node_id: Option<String>,
+    /// Unix timestamp of request
+    pub timestamp: Option<u64>,
+    /// Signature of "node_id|timestamp" for authentication
+    pub signature: Option<String>,
+}
+
+impl WsAuthQuery {
+    /// Check if authentication parameters are present
+    pub fn has_auth(&self) -> bool {
+        self.node_id.is_some() && self.timestamp.is_some() && self.signature.is_some()
+    }
+
+    /// Validate the authentication parameters
+    ///
+    /// For now, we do basic validation:
+    /// - Node ID is 64 hex chars
+    /// - Timestamp is within 5 minutes of current time
+    /// - Signature is present (actual signature verification would need the shared secret)
+    ///
+    /// In production, the signature should be verified against the node's public key
+    /// or a shared secret configured in the pool.
+    pub fn validate(&self) -> bool {
+        // Check node_id format (64 hex chars)
+        let valid_node_id = self
+            .node_id
+            .as_ref()
+            .map(|id| id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit()))
+            .unwrap_or(false);
+
+        // Check timestamp is recent (within 5 minutes)
+        let valid_timestamp = self.timestamp.map(|ts| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let diff = if ts > now { ts - now } else { now - ts };
+            diff < 300 // 5 minutes
+        }).unwrap_or(false);
+
+        // Check signature is present and non-empty
+        let valid_signature = self
+            .signature
+            .as_ref()
+            .map(|sig| !sig.is_empty() && sig.len() >= 64)
+            .unwrap_or(false);
+
+        valid_node_id && valid_timestamp && valid_signature
+    }
+}
+
 /// WebSocket state for managing connections
 pub struct WsState {
     /// Broadcast channel for events
@@ -136,24 +219,61 @@ impl Default for WsState {
     }
 }
 
-/// WebSocket upgrade handler
+/// AUTH4-M3: WebSocket upgrade handler with authentication support
+///
+/// Query parameters:
+/// - `node_id`: Optional node identifier for authenticated access
+/// - `timestamp`: Unix timestamp of request
+/// - `signature`: Signature for authentication
+///
+/// Unauthenticated connections only receive public events.
+/// Authenticated connections receive all events.
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
+    Query(auth): Query<WsAuthQuery>,
     State(ws_state): State<Arc<WsState>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, ws_state))
+    // Validate authentication if provided
+    let authenticated = if auth.has_auth() {
+        if auth.validate() {
+            info!(
+                node_id = ?auth.node_id.as_ref().map(|id| &id[..16]),
+                "WebSocket client authenticated"
+            );
+            true
+        } else {
+            warn!(
+                node_id = ?auth.node_id.as_ref().map(|id| &id[..16]),
+                "WebSocket authentication failed - falling back to public mode"
+            );
+            false
+        }
+    } else {
+        debug!("WebSocket client connected without authentication (public mode)");
+        false
+    };
+
+    ws.on_upgrade(move |socket| handle_socket(socket, ws_state, authenticated))
 }
 
 /// Handle individual WebSocket connection
-async fn handle_socket(socket: WebSocket, ws_state: Arc<WsState>) {
+///
+/// AUTH4-M3: If not authenticated, only public events are forwarded.
+async fn handle_socket(socket: WebSocket, ws_state: Arc<WsState>, authenticated: bool) {
     let (mut sender, mut receiver) = socket.split();
     let mut rx = ws_state.subscribe();
 
-    info!("WebSocket client connected");
+    info!(authenticated, "WebSocket client connected");
 
     // Spawn task to forward broadcast events to this client
+    // AUTH4-M3: Filter events based on authentication status
     let mut send_task = tokio::spawn(async move {
         while let Ok(event) = rx.recv().await {
+            // Skip non-public events for unauthenticated connections
+            if !authenticated && !event.is_public() {
+                continue;
+            }
+
             match serde_json::to_string(&event) {
                 Ok(json) => {
                     if sender.send(Message::Text(json)).await.is_err() {

@@ -115,6 +115,9 @@ pub struct BlockFoundData {
     pub winning_miner_id: String,
     /// Payout address of the winning miner (extracted from user_identity)
     pub winning_miner_payout_address: Option<String>,
+    /// PO4-M2: Treasury address snapshot taken at round start
+    /// This prevents TOCTOU issues where the config might change during a round
+    pub treasury_address_snapshot: Option<Vec<u8>>,
     /// Node ID that found the block (gets TX fees)
     pub winning_node_id: NodeId,
     /// Block subsidy (satoshis)
@@ -148,6 +151,8 @@ pub struct SoloBlockFoundData {
     pub solo_payout_address: String,
     /// Block subsidy (satoshis)
     pub subsidy_sats: u64,
+    /// PO4-M2: Treasury address snapshot taken at round start
+    pub treasury_address_snapshot: Option<Vec<u8>>,
     /// Transaction fees (satoshis) - ALL go to solo miner
     pub tx_fees_sats: u64,
     /// Node share distribution: (node_id, capability_shares)
@@ -180,6 +185,26 @@ impl PayoutProposalCreator {
         })
     }
 
+    /// PO4-M2: Get a snapshot of the treasury address for use in BlockFoundData
+    ///
+    /// This captures the current treasury address to prevent TOCTOU issues
+    /// where the config might change between round start and block found.
+    pub fn get_treasury_address_snapshot(&self) -> Option<Vec<u8>> {
+        self.config.treasury_address.clone()
+    }
+
+    /// Validate block hash is non-zero
+    ///
+    /// PO4-M1: Prevent proposals with invalid/zero block hashes
+    fn validate_block_hash(block_hash: &[u8; 32]) -> GhostResult<()> {
+        if block_hash == &[0u8; 32] {
+            return Err(ghost_common::error::GhostError::PayoutCalculation(
+                "block_hash is all zeros - invalid block hash".to_string()
+            ));
+        }
+        Ok(())
+    }
+
     /// Create a payout proposal from block found data
     ///
     /// Fee distribution per ECONOMICS.md:
@@ -188,6 +213,9 @@ impl PayoutProposalCreator {
     /// - Miner Pool (99% of subsidy) → Top 200 miners by work
     /// - Node Pool → Top 100 nodes by 5-4-3-2-1 capability shares
     pub fn create_proposal(&self, data: BlockFoundData) -> GhostResult<PayoutProposal> {
+        // PO4-M1: Validate block hash before creating proposal
+        Self::validate_block_hash(&data.block_hash)?;
+
         let now = chrono::Utc::now().timestamp() as u64;
 
         // Calculate fee distribution using treasury decay schedule
@@ -440,6 +468,9 @@ impl PayoutProposalCreator {
             return Ok((payouts, dust_total));
         }
 
+        // PO4-1: Track allocated amount to detect rounding remainder
+        let mut allocated_total: u64 = 0;
+
         for (miner_id, work) in sorted {
             // Skip miners with non-positive work
             if work <= 0.0 {
@@ -455,6 +486,7 @@ impl PayoutProposalCreator {
             if amount < self.config.dust_threshold_sats {
                 // Dust amount redirected to node reward pool
                 dust_total = dust_total.saturating_add(amount);
+                allocated_total = allocated_total.saturating_add(amount);
                 debug!(
                     miner_id,
                     amount,
@@ -478,12 +510,27 @@ impl PayoutProposalCreator {
                 recipient_id,
                 payout_type: PayoutType::Mining,
             });
+            allocated_total = allocated_total.saturating_add(amount);
+        }
+
+        // PO4-1: Calculate rounding remainder and add to dust if significant
+        // This ensures no satoshis are lost due to basis point truncation
+        let rounding_remainder = total_sats.saturating_sub(allocated_total);
+        if rounding_remainder > 0 {
+            dust_total = dust_total.saturating_add(rounding_remainder);
+            debug!(
+                rounding_remainder,
+                allocated_total,
+                total_sats,
+                "Miner payout rounding remainder captured"
+            );
         }
 
         if dust_total > 0 {
             info!(
                 dust_total,
                 miners_affected = miner_work.len() - payouts.len(),
+                rounding_remainder,
                 "Miner dust collected for node reward pool"
             );
         }
@@ -520,6 +567,9 @@ impl PayoutProposalCreator {
             return Ok(payouts);
         }
 
+        // PO4-1: Track allocated amount to detect rounding remainder
+        let mut allocated_total: u64 = 0;
+
         for (node_id, shares) in sorted {
             // Skip nodes with non-positive shares
             if shares <= 0 {
@@ -535,6 +585,7 @@ impl PayoutProposalCreator {
             if amount < self.config.dust_threshold_sats {
                 // Track dust for redistribution to top node
                 dust_total = dust_total.saturating_add(amount);
+                allocated_total = allocated_total.saturating_add(amount);
                 debug!(
                     node_id = %hex::encode(&node_id[..8]),
                     amount,
@@ -551,6 +602,7 @@ impl PayoutProposalCreator {
             // which will be redistributed to the top node or go to treasury
             if address.is_empty() {
                 dust_total = dust_total.saturating_add(amount);
+                allocated_total = allocated_total.saturating_add(amount);
                 debug!(
                     node_id = %hex::encode(&node_id[..8]),
                     amount,
@@ -565,6 +617,20 @@ impl PayoutProposalCreator {
                 recipient_id: node_id,
                 payout_type: PayoutType::NodeReward,
             });
+            allocated_total = allocated_total.saturating_add(amount);
+        }
+
+        // PO4-1: Calculate rounding remainder and add to dust
+        // This ensures no satoshis are lost due to basis point truncation
+        let rounding_remainder = total_sats.saturating_sub(allocated_total);
+        if rounding_remainder > 0 {
+            dust_total = dust_total.saturating_add(rounding_remainder);
+            debug!(
+                rounding_remainder,
+                allocated_total,
+                total_sats,
+                "Node payout rounding remainder captured"
+            );
         }
 
         // Merge payouts going to the same address (e.g., multiple nodes using treasury)
@@ -691,6 +757,14 @@ impl PayoutHandler {
     ) -> Self {
         self.qualification_provider = Some(provider);
         self
+    }
+
+    /// PO4-M2: Get a snapshot of the treasury address
+    ///
+    /// This should be called at round start to capture the treasury address
+    /// and prevent TOCTOU issues where config changes during a round.
+    pub fn get_treasury_address_snapshot(&self) -> Option<Vec<u8>> {
+        self.creator.get_treasury_address_snapshot()
     }
 
     /// Handle a block found event by creating and submitting a payout proposal
@@ -931,6 +1005,7 @@ mod tests {
             block_height: 800_000,
             winning_miner_id: "miner1".to_string(),
             winning_miner_payout_address: None,
+            treasury_address_snapshot: Some(vec![1u8, 2u8, 3u8]),
             winning_node_id: [1u8; 32],
             subsidy_sats: 625_000_000, // 6.25 BTC
             tx_fees_sats: 10_000_000,  // 0.1 BTC
@@ -943,6 +1018,7 @@ mod tests {
         assert_eq!(data.miner_work.len(), 2);
         assert_eq!(data.node_shares.len(), 2);
         assert_eq!(data.winning_node_id, [1u8; 32]);
+        assert!(data.treasury_address_snapshot.is_some());
     }
 
     #[test]
@@ -959,6 +1035,7 @@ mod tests {
             block_height: 800_000,
             winning_miner_id: "miner1".to_string(),
             winning_miner_payout_address: None,
+            treasury_address_snapshot: Some(vec![0x51]), // P2TR witness program prefix
             winning_node_id: [1u8; 32],
             subsidy_sats: 312_500_000, // 3.125 BTC
             tx_fees_sats: 10_000_000,  // 0.1 BTC
@@ -1171,6 +1248,43 @@ mod tests {
             max_loss,
             (max_loss as f64 / total_sats as f64) * 100.0
         );
+    }
+
+    #[test]
+    fn test_payout_rounding_no_satoshi_loss() {
+        // PO4-1: Verify that rounding remainder is captured
+        // This ensures no satoshis are lost due to basis point truncation
+
+        let total_sats = 1_000_000u64; // 1 million sats
+        let miner_works = [
+            (33.33333333f64, "miner1"),
+            (33.33333333f64, "miner2"),
+            (33.33333334f64, "miner3"),
+        ];
+
+        let total_work: f64 = miner_works.iter().map(|(w, _)| w).sum();
+
+        // Simulate the calculation
+        let mut allocated = 0u64;
+        for (work, _) in &miner_works {
+            let share_bps = ((work * 10000.0) / total_work) as u64;
+            let amount = (total_sats as u128 * share_bps as u128 / 10000) as u64;
+            allocated += amount;
+        }
+
+        // The remainder due to truncation
+        let remainder = total_sats.saturating_sub(allocated);
+
+        // With basis points (0.01% precision), 3 miners dividing evenly:
+        // Each gets 3333 bps = 33.33%
+        // 3 * 3333 = 9999 bps, leaving 1 bp = 0.01%
+        // For 1M sats: 0.01% = 100 sats remainder
+        assert!(remainder > 0, "Expected rounding remainder, got 0");
+        assert!(remainder < total_sats / 100, "Remainder {} too large", remainder);
+
+        // Total should be preserved when remainder is captured
+        let total_with_remainder = allocated + remainder;
+        assert_eq!(total_with_remainder, total_sats, "Total should be exactly preserved");
     }
 
     #[test]

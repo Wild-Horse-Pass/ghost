@@ -412,6 +412,40 @@ impl VoteHandler {
         }
     }
 
+    /// P2P4-M1: Verify the signature on a message envelope
+    ///
+    /// The message signed is: payload + sequence (as per mesh.rs create_envelope)
+    fn verify_envelope_signature(&self, envelope: &MessageEnvelope) -> bool {
+        // Reconstruct the message that was signed (matches mesh.rs create_envelope)
+        // Signed data is: payload_bytes + sequence.to_le_bytes()
+        let mut signed_data = envelope.payload.clone();
+        signed_data.extend_from_slice(&envelope.sequence.to_le_bytes());
+
+        // Verify using the sender's public key (which is their NodeId)
+        match ghost_common::identity::verify_signature(
+            &envelope.sender,
+            &signed_data,
+            &envelope.signature,
+        ) {
+            Ok(true) => true,
+            Ok(false) => {
+                debug!(
+                    sender = hex::encode(&envelope.sender[..8]),
+                    "Signature verification returned false"
+                );
+                false
+            }
+            Err(e) => {
+                debug!(
+                    sender = hex::encode(&envelope.sender[..8]),
+                    error = %e,
+                    "Signature verification error"
+                );
+                false
+            }
+        }
+    }
+
     /// Clean up rate limiter state (call periodically)
     pub fn cleanup_rate_limiter(&self) {
         self.rate_limiter.cleanup(300); // 5 minute TTL
@@ -893,6 +927,31 @@ impl VoteHandler {
 #[async_trait]
 impl MessageHandler for VoteHandler {
     async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+        // P2P4-M1: Require non-zero signature
+        if envelope.signature == [0u8; 64] {
+            warn!(
+                sender = hex::encode(&envelope.sender[..8]),
+                msg_type = ?envelope.msg_type,
+                "Rejecting message with zero signature"
+            );
+            return Err(ghost_common::error::GhostError::SignatureVerification(
+                "Message has zero signature".to_string(),
+            ));
+        }
+
+        // P2P4-M1: Verify signature before processing
+        // The sender's public key is the NodeId, which is Ed25519 public key bytes
+        if !self.verify_envelope_signature(&envelope) {
+            warn!(
+                sender = hex::encode(&envelope.sender[..8]),
+                msg_type = ?envelope.msg_type,
+                "Rejecting message with invalid signature"
+            );
+            return Err(ghost_common::error::GhostError::SignatureVerification(
+                "Invalid message signature".to_string(),
+            ));
+        }
+
         // Check if node is banned for equivocation
         if self.is_banned(&envelope.sender) {
             return Err(ghost_common::error::GhostError::NodeBanned(format!(
