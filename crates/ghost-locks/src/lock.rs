@@ -262,13 +262,20 @@ impl From<&GhostLock> for GhostLockData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoin::secp256k1::rand::rngs::OsRng;
+    use rand::RngCore;
+
+    fn generate_secret_key() -> SecretKey {
+        let mut rng = rand::thread_rng();
+        let mut secret_bytes = [0u8; 32];
+        rng.fill_bytes(&mut secret_bytes);
+        SecretKey::from_slice(&secret_bytes).expect("32 bytes, within curve order")
+    }
 
     #[test]
     fn test_create_lock() {
         let secp = Secp256k1::new();
-        let lock_secret = SecretKey::new(&mut OsRng);
-        let recovery_secret = SecretKey::new(&mut OsRng);
+        let lock_secret = generate_secret_key();
+        let recovery_secret = generate_secret_key();
 
         let lock = GhostLock::new(
             &secp,
@@ -291,8 +298,8 @@ mod tests {
 
         let lock1 = GhostLock::new(
             &secp,
-            &SecretKey::new(&mut OsRng),
-            &SecretKey::new(&mut OsRng),
+            &generate_secret_key(),
+            &generate_secret_key(),
             Denomination::Small,
             TimelockTier::Standard,
             800_000,
@@ -301,8 +308,8 @@ mod tests {
 
         let lock2 = GhostLock::new(
             &secp,
-            &SecretKey::new(&mut OsRng),
-            &SecretKey::new(&mut OsRng),
+            &generate_secret_key(),
+            &generate_secret_key(),
             Denomination::Small,
             TimelockTier::Standard,
             800_000,
@@ -318,8 +325,8 @@ mod tests {
 
         let lock = GhostLock::new(
             &secp,
-            &SecretKey::new(&mut OsRng),
-            &SecretKey::new(&mut OsRng),
+            &generate_secret_key(),
+            &generate_secret_key(),
             Denomination::Large, // High risk tier
             TimelockTier::Standard,
             800_000,
@@ -337,8 +344,8 @@ mod tests {
 
         let lock = GhostLock::new(
             &secp,
-            &SecretKey::new(&mut OsRng),
-            &SecretKey::new(&mut OsRng),
+            &generate_secret_key(),
+            &generate_secret_key(),
             Denomination::Medium,
             TimelockTier::Short,
             800_000,

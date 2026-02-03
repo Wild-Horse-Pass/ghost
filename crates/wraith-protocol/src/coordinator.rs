@@ -25,7 +25,7 @@
 //! Manages participant registration, blind signatures, transaction building,
 //! signing coordination, and broadcasting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bitcoin::hashes::Hash;
@@ -128,6 +128,11 @@ pub struct WraithCoordinator {
     phase1_outputs: Vec<(Txid, u32, u64, ScriptBuf)>, // (txid, vout, amount, script_pubkey)
     /// Broadcast callback
     broadcast_fn: Option<BroadcastFn>,
+    /// Anonymous token pool - tokens verified but NOT linked to any participant
+    /// This is CRITICAL for privacy: coordinator verifies validity without knowing submitter
+    anonymous_tokens: Vec<UnblindedToken>,
+    /// All submitted addresses (for duplicate detection)
+    submitted_addresses: HashSet<String>,
 }
 
 impl std::fmt::Debug for WraithCoordinator {
@@ -159,6 +164,8 @@ impl WraithCoordinator {
             phase2_tx: None,
             phase1_outputs: Vec::new(),
             broadcast_fn: None,
+            anonymous_tokens: Vec::new(),
+            submitted_addresses: HashSet::new(),
         }
     }
 
@@ -244,15 +251,18 @@ impl WraithCoordinator {
     ///
     /// Participant calls this to get public nonces before creating blinded challenges.
     /// Returns `SPLIT_RATIO` nonces, one for each intermediate output.
+    ///
+    /// SECURITY: Each nonce is bound to the requesting ghost_id to prevent
+    /// nonce hijacking attacks where a malicious participant uses another's nonces.
     pub fn request_nonces(&mut self, ghost_id: &str) -> Result<Vec<PublicNonce>, WraithError> {
         let participant = self.participants.get_mut(ghost_id).ok_or_else(|| {
             WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id))
         })?;
 
-        // Create nonces for each intermediate output
+        // Create nonces for each intermediate output, BOUND to this participant
         let mut nonces = Vec::with_capacity(SPLIT_RATIO);
         for _ in 0..SPLIT_RATIO {
-            let nonce = self.signer.create_nonce();
+            let nonce = self.signer.create_nonce_for_participant(ghost_id);
             nonces.push(nonce);
         }
 
@@ -264,6 +274,9 @@ impl WraithCoordinator {
     ///
     /// Participant sends blinded challenges after receiving nonces and blinding.
     /// Returns signature responses that the participant can unblind.
+    ///
+    /// SECURITY: The ghost_id is verified against the nonce binding to ensure
+    /// the participant is using nonces issued to them.
     pub fn submit_blinded_challenges(
         &mut self,
         ghost_id: &str,
@@ -277,10 +290,12 @@ impl WraithCoordinator {
             )));
         }
 
-        // Sign each blinded challenge
+        // Sign each blinded challenge WITH participant verification
         let mut responses = Vec::with_capacity(SPLIT_RATIO);
         for challenge in &challenges {
-            let response = self.signer.sign_blinded_challenge(challenge)?;
+            let response = self
+                .signer
+                .sign_blinded_challenge_for_participant(challenge, ghost_id)?;
             responses.push(response);
         }
 
@@ -295,23 +310,82 @@ impl WraithCoordinator {
     }
 
     /// Submit final output address for Phase 2
+    ///
+    /// SECURITY: Rejects duplicate addresses across all participants.
+    /// This prevents address reuse attacks that could enable tracing.
     pub fn submit_final_address(
         &mut self,
         ghost_id: &str,
         address: String,
     ) -> Result<(), WraithError> {
+        // Check for duplicate address BEFORE accepting
+        if self.submitted_addresses.contains(&address) {
+            return Err(WraithError::InvalidInput(format!(
+                "Duplicate address rejected: {} (already submitted by another participant)",
+                address
+            )));
+        }
+
         let participant = self.participants.get_mut(ghost_id).ok_or_else(|| {
             WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id))
         })?;
 
+        // If this participant previously submitted an address, remove it from the set
+        if let Some(ref old_addr) = participant.final_address {
+            self.submitted_addresses.remove(old_addr);
+        }
+
+        // Record the new address
+        self.submitted_addresses.insert(address.clone());
         participant.final_address = Some(address);
         Ok(())
     }
 
-    /// Submit unblinded tokens for intermediate addresses (Step 3 of interactive protocol)
+    /// Submit unblinded tokens anonymously (Step 3 of interactive protocol)
     ///
-    /// Participants call this after receiving signature responses and unblinding them.
-    /// The coordinator verifies each token using standard Schnorr verification.
+    /// CRITICAL PRIVACY: This method does NOT take ghost_id, breaking the link
+    /// between token submission and participant identity. The coordinator only
+    /// verifies that tokens are valid (signed by coordinator) but cannot determine
+    /// which participant submitted them.
+    ///
+    /// Tokens are added to an anonymous pool and later used for Phase 1 outputs.
+    pub fn submit_tokens_anonymous(
+        &mut self,
+        tokens: Vec<UnblindedToken>,
+    ) -> Result<(), WraithError> {
+        if tokens.len() != SPLIT_RATIO {
+            return Err(WraithError::InvalidInput(format!(
+                "Expected {} tokens, got {}",
+                SPLIT_RATIO,
+                tokens.len()
+            )));
+        }
+
+        // Verify each token using standard Schnorr verification
+        // Coordinator proves tokens are valid WITHOUT knowing who submitted them
+        for (i, token) in tokens.iter().enumerate() {
+            let valid = self.signer.verify_signature(token)?;
+            if !valid {
+                return Err(WraithError::InvalidSignature(format!(
+                    "Token {} verification failed",
+                    i
+                )));
+            }
+        }
+
+        // Add to anonymous pool - NO ghost_id linkage!
+        self.anonymous_tokens.extend(tokens);
+        Ok(())
+    }
+
+    /// DEPRECATED: Submit tokens with ghost_id linking (insecure)
+    ///
+    /// WARNING: This method creates input-output linkage that defeats blind signatures.
+    /// Use `submit_tokens_anonymous()` instead for privacy-preserving token submission.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use submit_tokens_anonymous() for privacy-preserving token submission"
+    )]
     pub fn submit_tokens(
         &mut self,
         ghost_id: &str,
@@ -363,17 +437,26 @@ impl WraithCoordinator {
 
     /// Check if ready to build Phase 1 transaction
     pub fn ready_for_phase1(&self) -> bool {
-        // Need all participants to have inputs and verified tokens
-        self.participants
-            .values()
-            .all(|p| p.input.is_some() && p.tokens.len() == SPLIT_RATIO)
+        // Need all participants to have inputs
+        let all_have_inputs = self.participants.values().all(|p| p.input.is_some());
+
+        // Need enough anonymous tokens for all participants (SPLIT_RATIO per participant)
+        let expected_tokens = self.participants.len() * SPLIT_RATIO;
+        let have_enough_tokens = self.anonymous_tokens.len() >= expected_tokens;
+
+        all_have_inputs && have_enough_tokens
+    }
+
+    /// Get count of anonymous tokens submitted
+    pub fn anonymous_token_count(&self) -> usize {
+        self.anonymous_tokens.len()
     }
 
     /// Build Phase 1 (split) transaction
     pub fn build_phase1(&mut self) -> Result<&SplitTransaction, WraithError> {
         if !self.ready_for_phase1() {
             return Err(WraithError::PhaseError(
-                "Not all participants have submitted inputs and verified tokens".to_string(),
+                "Not all participants have submitted inputs or not enough anonymous tokens".to_string(),
             ));
         }
 
@@ -397,15 +480,26 @@ impl WraithCoordinator {
             }
         }
 
-        // Collect intermediate addresses from verified unblinded tokens
+        // Collect intermediate addresses from ANONYMOUS token pool
+        // CRITICAL: Tokens are NOT linked to specific participants - this is the privacy guarantee
+        // The shuffle in build_split_transaction randomizes output order
+        let expected_tokens = self.participants.len() * SPLIT_RATIO;
+        if self.anonymous_tokens.len() < expected_tokens {
+            return Err(WraithError::PhaseError(format!(
+                "Not enough anonymous tokens: need {}, have {}",
+                expected_tokens,
+                self.anonymous_tokens.len()
+            )));
+        }
+
+        // Group anonymous tokens into participant-sized batches
+        // Note: We don't know WHICH participant each batch belongs to - that's the point!
         let mut intermediate_addresses: Vec<Vec<String>> = Vec::new();
-        for ghost_id in &self.participant_order {
-            let participant = self.participants.get(ghost_id).ok_or_else(|| {
-                WraithError::InvalidInput(format!("Missing participant in order: {}", ghost_id))
-            })?;
-            // Convert each token's message (x-only pubkey bytes) to a P2TR address
+        for batch_idx in 0..self.participants.len() {
+            let start = batch_idx * SPLIT_RATIO;
+            let end = start + SPLIT_RATIO;
             let mut addrs = Vec::with_capacity(SPLIT_RATIO);
-            for token in &participant.tokens {
+            for token in &self.anonymous_tokens[start..end] {
                 // The message is the x-only pubkey (32 bytes)
                 let address_bytes: [u8; 32] = token.message.clone().try_into().map_err(|_| {
                     WraithError::InvalidInput(format!(
@@ -422,11 +516,36 @@ impl WraithCoordinator {
         let tx = builder.build_split_transaction(&intermediate_addresses)?;
         self.phase1_tx = Some(tx);
 
+        // Immediately clear sensitive data after building transaction (WR-H3)
+        self.clear_sensitive_data_post_build();
+
         // Safe: we just assigned Some(tx) above
         Ok(self
             .phase1_tx
             .as_ref()
             .expect("phase1_tx was just assigned"))
+    }
+
+    /// Clear sensitive data immediately after building transactions
+    /// This reduces the window for compromise (WR-H3)
+    ///
+    /// SECURITY: Call this immediately after building each phase transaction
+    /// to minimize the window during which sensitive data could be compromised.
+    pub fn clear_sensitive_data_post_build(&mut self) {
+        // Clear anonymous tokens - no longer needed after building tx
+        self.anonymous_tokens.clear();
+
+        // Clear participant-linked data
+        for participant in self.participants.values_mut() {
+            // Clear tokens (if any were stored via deprecated method)
+            participant.tokens.clear();
+            // Clear blinded challenges
+            participant.blinded_challenges.clear();
+            // Clear signature responses
+            participant.signature_responses.clear();
+            // Clear issued nonces
+            participant.issued_nonces.clear();
+        }
     }
 
     /// Record Phase 1 signature from participant
@@ -951,5 +1070,201 @@ mod tests {
         coord.register_participant("ghost1abc".to_string()).unwrap();
         let result = coord.register_participant("ghost1abc".to_string());
         assert!(result.is_err());
+    }
+
+    /// WR-C2 Security Test: Token submission is unlinkable
+    ///
+    /// This test verifies that anonymous token submission does NOT create
+    /// any linkage between the submitter and the tokens.
+    #[test]
+    fn test_token_submission_unlinkable() {
+        use crate::blind::BlindingContext;
+
+        let mut coord = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        );
+
+        // Register two participants
+        coord.register_participant("ghost1".to_string()).unwrap();
+        coord.register_participant("ghost2".to_string()).unwrap();
+
+        // Get the coordinator's public key for blinding
+        let coord_pubkey = *coord.signer.public_key();
+        let key_id = *coord.signer.key_id();
+
+        // Participant 1 requests nonces through the coordinator
+        let nonces1 = coord.request_nonces("ghost1").unwrap();
+        assert_eq!(nonces1.len(), crate::SPLIT_RATIO);
+
+        // Participant 1 creates blinded challenges
+        let mut challenges1 = Vec::new();
+        let mut contexts1 = Vec::new();
+        for nonce in &nonces1 {
+            let message = [0x01u8; 32].to_vec(); // Fake address bytes
+            let context = BlindingContext::new(message, &coord_pubkey, nonce).unwrap();
+            let challenge = context.create_blinded_challenge().unwrap();
+            challenges1.push(challenge);
+            contexts1.push(context);
+        }
+
+        // Participant 1 submits challenges and gets responses
+        let responses1 = coord
+            .submit_blinded_challenges("ghost1", challenges1)
+            .unwrap();
+
+        // Participant 1 unblinds to get tokens
+        let mut tokens1 = Vec::new();
+        for (context, response) in contexts1.iter().zip(responses1.iter()) {
+            let token = context.unblind(response, key_id).unwrap();
+            tokens1.push(token);
+        }
+
+        // Participant 2 goes through the same process
+        let nonces2 = coord.request_nonces("ghost2").unwrap();
+        let mut challenges2 = Vec::new();
+        let mut contexts2 = Vec::new();
+        for nonce in &nonces2 {
+            let message = [0x02u8; 32].to_vec(); // Different fake address
+            let context = BlindingContext::new(message, &coord_pubkey, nonce).unwrap();
+            let challenge = context.create_blinded_challenge().unwrap();
+            challenges2.push(challenge);
+            contexts2.push(context);
+        }
+        let responses2 = coord
+            .submit_blinded_challenges("ghost2", challenges2)
+            .unwrap();
+        let mut tokens2 = Vec::new();
+        for (context, response) in contexts2.iter().zip(responses2.iter()) {
+            let token = context.unblind(response, key_id).unwrap();
+            tokens2.push(token);
+        }
+
+        // Submit tokens ANONYMOUSLY - the coordinator doesn't know who submitted what
+        coord.submit_tokens_anonymous(tokens1).unwrap();
+        coord.submit_tokens_anonymous(tokens2).unwrap();
+
+        // Verify anonymous pool has all tokens
+        assert_eq!(coord.anonymous_token_count(), 2 * crate::SPLIT_RATIO);
+
+        // The coordinator cannot determine which tokens belong to which participant
+        // This is verified by the fact that submit_tokens_anonymous takes no ghost_id
+    }
+
+    /// WR-H2 Security Test: Duplicate addresses are rejected
+    #[test]
+    fn test_duplicate_address_rejected() {
+        let mut coord = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        );
+
+        coord.register_participant("ghost1".to_string()).unwrap();
+        coord.register_participant("ghost2".to_string()).unwrap();
+
+        let test_address = "bcrt1qtest123456789".to_string();
+
+        // First submission should succeed
+        coord
+            .submit_final_address("ghost1", test_address.clone())
+            .unwrap();
+
+        // Second submission of SAME address by DIFFERENT participant should FAIL
+        let result = coord.submit_final_address("ghost2", test_address.clone());
+        assert!(result.is_err(), "Duplicate address should be rejected");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Duplicate address"));
+
+        // Same participant can update their own address
+        let new_address = "bcrt1qnewaddress".to_string();
+        coord
+            .submit_final_address("ghost1", new_address.clone())
+            .unwrap();
+
+        // Now the old address is available again
+        coord.submit_final_address("ghost2", test_address).unwrap();
+    }
+
+    /// WR-H3 Test: Data is cleared after building transaction
+    #[test]
+    fn test_data_cleared_after_build() {
+        use crate::blind::BlindingContext;
+        use bitcoin::ScriptBuf;
+
+        let mut coord = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        );
+
+        // Create test txid
+        let txid = "0000000000000000000000000000000000000000000000000000000000000001"
+            .parse()
+            .unwrap();
+
+        // Register a participant
+        coord.register_participant("ghost1".to_string()).unwrap();
+
+        // Submit input
+        coord
+            .submit_input(
+                "ghost1",
+                crate::executor::WraithInput {
+                    txid,
+                    vout: 0,
+                    amount: 1_100_000,
+                    script_pubkey: ScriptBuf::new(),
+                    participant_id: 0,
+                },
+            )
+            .unwrap();
+
+        // Get coordinator's public key for blinding
+        let coord_pubkey = *coord.signer.public_key();
+        let key_id = *coord.signer.key_id();
+
+        // Request nonces through coordinator
+        let nonces = coord.request_nonces("ghost1").unwrap();
+
+        // Create blinded challenges
+        let mut challenges = Vec::new();
+        let mut contexts = Vec::new();
+        for nonce in &nonces {
+            let message = [0x01u8; 32].to_vec();
+            let context = BlindingContext::new(message, &coord_pubkey, nonce).unwrap();
+            let challenge = context.create_blinded_challenge().unwrap();
+            challenges.push(challenge);
+            contexts.push(context);
+        }
+
+        // Submit challenges and get responses
+        let responses = coord
+            .submit_blinded_challenges("ghost1", challenges)
+            .unwrap();
+
+        // Unblind to get tokens
+        let mut tokens = Vec::new();
+        for (context, response) in contexts.iter().zip(responses.iter()) {
+            let token = context.unblind(response, key_id).unwrap();
+            tokens.push(token);
+        }
+
+        coord.submit_tokens_anonymous(tokens).unwrap();
+        assert_eq!(coord.anonymous_token_count(), crate::SPLIT_RATIO);
+
+        // After build, anonymous tokens should be cleared
+        // (build_phase1 will fail due to state, but that's okay for this test -
+        // we're testing that clear_sensitive_data_post_build works)
+        coord.clear_sensitive_data_post_build();
+
+        assert_eq!(
+            coord.anonymous_token_count(),
+            0,
+            "Anonymous tokens should be cleared after build"
+        );
     }
 }

@@ -46,13 +46,25 @@ impl TimelockTier {
     /// Average blocks per day (assuming 10-minute blocks)
     const BLOCKS_PER_DAY: u32 = 144;
 
-    /// Get the timelock duration in blocks
+    /// Get the timelock duration in blocks (relative block count for CSV)
+    ///
+    /// This is the number of blocks that must pass after UTXO confirmation
+    /// before the recovery script can be used. Used with OP_CHECKSEQUENCEVERIFY.
     pub fn blocks(&self) -> u32 {
         match self {
             TimelockTier::Short => Self::BLOCKS_PER_DAY * 365 / 2, // ~6 months
             TimelockTier::Standard => Self::BLOCKS_PER_DAY * 365,  // ~1 year
             TimelockTier::Long => Self::BLOCKS_PER_DAY * 365 * 2,  // ~2 years
         }
+    }
+
+    /// Get the relative block count for CSV recovery
+    ///
+    /// This is an alias for `blocks()` that makes the CSV/relative nature explicit.
+    /// Use this when building recovery scripts with OP_CHECKSEQUENCEVERIFY.
+    #[inline]
+    pub fn recovery_blocks(&self) -> u32 {
+        self.blocks()
     }
 
     /// Get the approximate duration in days

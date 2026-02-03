@@ -31,6 +31,8 @@ pub struct PayoutCircuit<F: PrimeField> {
     pub node_payouts: Vec<Option<u64>>,
     /// Treasury (pool fee) amount
     pub treasury_amount: Option<u64>,
+    /// Epoch being settled (PUBLIC INPUT for replay protection)
+    pub epoch: Option<u64>,
     /// Phantom data for type parameter
     _marker: PhantomData<F>,
 }
@@ -48,6 +50,25 @@ impl<F: PrimeField> PayoutCircuit<F> {
             miner_payouts: miner_payouts.into_iter().map(Some).collect(),
             node_payouts: node_payouts.into_iter().map(Some).collect(),
             treasury_amount: Some(treasury_amount),
+            epoch: Some(0), // Default epoch for backwards compatibility
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create a new payout circuit with epoch
+    pub fn new_with_epoch(
+        total_available: u64,
+        miner_payouts: Vec<u64>,
+        node_payouts: Vec<u64>,
+        treasury_amount: u64,
+        epoch: u64,
+    ) -> Self {
+        Self {
+            total_available: Some(total_available),
+            miner_payouts: miner_payouts.into_iter().map(Some).collect(),
+            node_payouts: node_payouts.into_iter().map(Some).collect(),
+            treasury_amount: Some(treasury_amount),
+            epoch: Some(epoch),
             _marker: PhantomData,
         }
     }
@@ -59,6 +80,7 @@ impl<F: PrimeField> PayoutCircuit<F> {
             miner_payouts: vec![Some(0); num_miners],
             node_payouts: vec![Some(0); num_nodes],
             treasury_amount: Some(0),
+            epoch: Some(0),
             _marker: PhantomData,
         }
     }
@@ -70,17 +92,64 @@ impl<F: PrimeField> PayoutCircuit<F> {
     /// 2. All node payouts fit in 64 bits
     /// 3. Treasury amount fits in 64 bits
     /// 4. sum(miner_payouts) + sum(node_payouts) + treasury == total_available
+    ///
+    /// PUBLIC INPUTS (in order, verified by verifier):
+    /// 1. total_available - total amount being distributed
+    /// 2. miner_sum - sum of all miner payouts
+    /// 3. node_sum - sum of all node payouts
+    /// 4. treasury_amount - treasury allocation
+    /// 5. epoch - epoch number for replay protection
     pub fn synthesize<CS: ConstraintSystem<F>>(
         self,
         cs: &mut CS,
     ) -> Result<PayoutOutputs<F>, SynthesisError> {
-        // Allocate total available as PUBLIC INPUT for Groth16 verification
-        // This allows the verifier to check that the proof is for the claimed total
+        // Calculate sums before we move the payouts
+        let miner_sum_value = self.miner_payouts.iter().filter_map(|p| *p).sum::<u64>();
+        let node_sum_value = self.node_payouts.iter().filter_map(|p| *p).sum::<u64>();
+
+        // ========================================================================
+        // PUBLIC INPUTS - These are checked by the verifier against claimed values
+        // Order matters! Must match the order in verify_groth16_proof
+        // ========================================================================
+
+        // PUBLIC INPUT 1: total_available
         let total_available = AllocatedNum::alloc_input(cs.namespace(|| "total_available"), || {
             self.total_available
                 .map(F::from)
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
+
+        // PUBLIC INPUT 2: miner_sum
+        let miner_sum_input = AllocatedNum::alloc_input(cs.namespace(|| "miner_sum"), || {
+            Ok(F::from(miner_sum_value))
+        })?;
+
+        // PUBLIC INPUT 3: node_sum
+        let node_sum_input = AllocatedNum::alloc_input(cs.namespace(|| "node_sum"), || {
+            Ok(F::from(node_sum_value))
+        })?;
+
+        // PUBLIC INPUT 4: treasury_amount
+        let treasury_input = AllocatedNum::alloc_input(cs.namespace(|| "treasury_amount"), || {
+            self.treasury_amount
+                .map(F::from)
+                .ok_or(SynthesisError::AssignmentMissing)
+        })?;
+
+        // PUBLIC INPUT 5: epoch (for replay protection)
+        let epoch_input = AllocatedNum::alloc_input(cs.namespace(|| "epoch"), || {
+            self.epoch
+                .map(F::from)
+                .ok_or(SynthesisError::AssignmentMissing)
+        })?;
+
+        // Epoch is exposed as public input but not constrained further
+        // (it's for binding the proof to a specific epoch)
+        let _ = epoch_input;
+
+        // ========================================================================
+        // PRIVATE INPUTS - Individual payout amounts
+        // ========================================================================
 
         // Allocate and constrain miner payouts
         let mut miner_payout_vars = Vec::with_capacity(self.miner_payouts.len());
@@ -126,8 +195,12 @@ impl<F: PrimeField> PayoutCircuit<F> {
         // Constrain treasury to 64 bits
         self.enforce_fits_in_bits(cs.namespace(|| "treasury_range"), &treasury, BALANCE_BITS)?;
 
-        // Sum preservation: sum(miners) + sum(nodes) + treasury == total
-        // Build linear combination: sum of all payouts + treasury
+        // ========================================================================
+        // CONSTRAINTS
+        // ========================================================================
+
+        // Constraint 1: Sum preservation - total must equal sum of all payouts
+        // sum(miners) + sum(nodes) + treasury == total_available
         let mut sum_lc = LinearCombination::<F>::zero();
 
         for var in &miner_payout_vars {
@@ -138,25 +211,54 @@ impl<F: PrimeField> PayoutCircuit<F> {
         }
         sum_lc = sum_lc + treasury.get_variable();
 
-        // Constrain: sum == total_available
+        // Constrain: sum == total_available (public input)
         cs.enforce(
             || "sum_preservation",
-            |_| sum_lc,
+            |_| sum_lc.clone(),
             |lc| lc + CS::one(),
             |lc| lc + total_available.get_variable(),
         );
 
-        // Calculate sums for output
-        let miner_sum = self.miner_payouts.iter().filter_map(|p| *p).sum::<u64>();
-        let node_sum = self.node_payouts.iter().filter_map(|p| *p).sum::<u64>();
+        // Constraint 2: Miner sum public input must equal computed sum
+        // This ensures the verifier's miner_sum matches what's proven
+        let mut miner_sum_lc = LinearCombination::<F>::zero();
+        for var in &miner_payout_vars {
+            miner_sum_lc = miner_sum_lc + var.get_variable();
+        }
+        cs.enforce(
+            || "miner_sum_matches",
+            |_| miner_sum_lc,
+            |lc| lc + CS::one(),
+            |lc| lc + miner_sum_input.get_variable(),
+        );
+
+        // Constraint 3: Node sum public input must equal computed sum
+        let mut node_sum_lc = LinearCombination::<F>::zero();
+        for var in &node_payout_vars {
+            node_sum_lc = node_sum_lc + var.get_variable();
+        }
+        cs.enforce(
+            || "node_sum_matches",
+            |_| node_sum_lc,
+            |lc| lc + CS::one(),
+            |lc| lc + node_sum_input.get_variable(),
+        );
+
+        // Constraint 4: Treasury public input must equal private treasury
+        cs.enforce(
+            || "treasury_matches",
+            |lc| lc + treasury.get_variable(),
+            |lc| lc + CS::one(),
+            |lc| lc + treasury_input.get_variable(),
+        );
 
         Ok(PayoutOutputs {
             total_available,
             miner_payouts: miner_payout_vars,
             node_payouts: node_payout_vars,
             treasury,
-            miner_sum,
-            node_sum,
+            miner_sum: miner_sum_value,
+            node_sum: node_sum_value,
         })
     }
 
@@ -388,11 +490,19 @@ mod tests {
         let mut cs = TestConstraintSystem::new();
         circuit.synthesize(&mut cs).unwrap();
 
-        // Each payout needs 64 bit decomposition + 1 reconstruction constraint
-        // Plus 1 sum preservation constraint
+        // Constraints:
+        // - Each payout: 64 bit decomposition + 1 reconstruction = 65
+        // - 5 private values (2 miners + 2 nodes + treasury) * 65 = 325
+        // - 1 sum preservation constraint
+        // - 1 miner_sum constraint
+        // - 1 node_sum constraint
+        // - 1 treasury_matches constraint
+        // Total: ~329 constraints
         let expected_per_value = BALANCE_BITS + 1; // bits + reconstruction
         let num_values = 2 + 2 + 1; // 2 miners + 2 nodes + treasury
-        let expected_constraints = num_values * expected_per_value + 1; // + sum preservation
+        let range_constraints = num_values * expected_per_value;
+        let sum_constraints = 4; // sum_preservation + miner_sum + node_sum + treasury_matches
+        let expected_constraints = range_constraints + sum_constraints;
 
         assert!(
             cs.num_constraints() <= expected_constraints,

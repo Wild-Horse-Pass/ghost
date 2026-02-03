@@ -126,18 +126,19 @@ impl WraithTransactionBuilder {
         self.inputs.len()
     }
 
-    /// Build Phase 1 (Split) transaction with CSPRNG entropy
+    /// Build Phase 1 (Split) transaction
     ///
     /// Takes N inputs and creates 10N intermediate outputs.
     /// Each participant's input is split into 10 equal-sized intermediate Ghost Locks.
     ///
-    /// This version uses CSPRNG entropy for unpredictable output ordering,
-    /// enhancing privacy by preventing timing attacks on shuffle ordering.
-    pub fn build_split_transaction_with_entropy(
+    /// Uses CSPRNG entropy for unpredictable output ordering, preventing timing
+    /// attacks on shuffle ordering and ensuring the coordinator cannot deanonymize
+    /// participants based on output position.
+    pub fn build_split_transaction(
         &self,
         intermediate_addresses: &[Vec<String>],
     ) -> Result<SplitTransaction, WraithError> {
-        // Generate fresh CSPRNG entropy
+        // Generate fresh CSPRNG entropy - CRITICAL for privacy
         let mut entropy = [0u8; 32];
         getrandom::getrandom(&mut entropy)
             .map_err(|e| WraithError::InvalidInput(format!("Failed to generate entropy: {}", e)))?;
@@ -145,18 +146,17 @@ impl WraithTransactionBuilder {
         self.build_split_transaction_internal(intermediate_addresses, &entropy)
     }
 
-    /// Build Phase 1 (Split) transaction
+    /// Build Phase 1 (Split) transaction with explicit entropy (for testing only)
     ///
-    /// Takes N inputs and creates 10N intermediate outputs.
-    /// Each participant's input is split into 10 equal-sized intermediate Ghost Locks.
-    ///
-    /// Note: For production use, prefer `build_split_transaction_with_entropy()` which
-    /// adds CSPRNG randomness to prevent predictable output ordering.
-    pub fn build_split_transaction(
+    /// WARNING: Only use this for deterministic testing. In production, always use
+    /// `build_split_transaction()` which generates fresh CSPRNG entropy.
+    #[cfg(test)]
+    pub fn build_split_transaction_with_test_entropy(
         &self,
-        intermediate_addresses: &[Vec<String>], // [participant_id][output_index]
+        intermediate_addresses: &[Vec<String>],
+        entropy: &[u8; 32],
     ) -> Result<SplitTransaction, WraithError> {
-        self.build_split_transaction_internal(intermediate_addresses, &[0u8; 32])
+        self.build_split_transaction_internal(intermediate_addresses, entropy)
     }
 
     /// Internal implementation of split transaction building
@@ -270,18 +270,19 @@ impl WraithTransactionBuilder {
         })
     }
 
-    /// Build Phase 2 (Merge) transaction with CSPRNG entropy
+    /// Build Phase 2 (Merge) transaction
     ///
     /// Takes 10N intermediate inputs and creates N final outputs.
     /// Each participant's 10 intermediates are merged into 1 final Ghost Lock.
     ///
-    /// This version uses CSPRNG entropy for unpredictable ordering.
-    pub fn build_merge_transaction_with_entropy(
+    /// Uses CSPRNG entropy for unpredictable ordering, preventing timing attacks
+    /// and ensuring the coordinator cannot deanonymize participants.
+    pub fn build_merge_transaction(
         &self,
         intermediate_inputs: &[Vec<WraithInput>],
         final_addresses: &[String],
     ) -> Result<MergeTransaction, WraithError> {
-        // Generate fresh CSPRNG entropy
+        // Generate fresh CSPRNG entropy - CRITICAL for privacy
         let mut entropy = [0u8; 32];
         getrandom::getrandom(&mut entropy)
             .map_err(|e| WraithError::InvalidInput(format!("Failed to generate entropy: {}", e)))?;
@@ -289,19 +290,18 @@ impl WraithTransactionBuilder {
         self.build_merge_transaction_internal(intermediate_inputs, final_addresses, &entropy)
     }
 
-    /// Build Phase 2 (Merge) transaction
+    /// Build Phase 2 (Merge) transaction with explicit entropy (for testing only)
     ///
-    /// Takes 10N intermediate inputs and creates N final outputs.
-    /// Each participant's 10 intermediates are merged into 1 final Ghost Lock.
-    ///
-    /// Note: For production use, prefer `build_merge_transaction_with_entropy()` which
-    /// adds CSPRNG randomness to prevent predictable ordering.
-    pub fn build_merge_transaction(
+    /// WARNING: Only use this for deterministic testing. In production, always use
+    /// `build_merge_transaction()` which generates fresh CSPRNG entropy.
+    #[cfg(test)]
+    pub fn build_merge_transaction_with_test_entropy(
         &self,
-        intermediate_inputs: &[Vec<WraithInput>], // [participant_id][input_index]
-        final_addresses: &[String],               // [participant_id]
+        intermediate_inputs: &[Vec<WraithInput>],
+        final_addresses: &[String],
+        entropy: &[u8; 32],
     ) -> Result<MergeTransaction, WraithError> {
-        self.build_merge_transaction_internal(intermediate_inputs, final_addresses, &[0u8; 32])
+        self.build_merge_transaction_internal(intermediate_inputs, final_addresses, entropy)
     }
 
     /// Internal implementation of merge transaction building
@@ -648,5 +648,213 @@ mod tests {
         let data = builder.build_phase1_op_return();
         assert!(data.starts_with(WRAITH_PHASE1_MARKER));
         assert!(data.len() <= 80); // OP_RETURN limit
+    }
+
+    /// WR-C1 Security Test: Verify shuffle uses CSPRNG entropy
+    ///
+    /// This test verifies that:
+    /// 1. Multiple calls to build_split_transaction produce different output orderings
+    /// 2. The shuffle is not deterministic (uses real entropy)
+    #[test]
+    fn test_shuffle_uses_csprng() {
+        use bitcoin::key::Secp256k1;
+        use bitcoin::secp256k1::SecretKey;
+
+        let secp = Secp256k1::new();
+
+        // Create test addresses (P2TR)
+        let mut addresses: Vec<Vec<String>> = Vec::new();
+        for _p in 0..3 {
+            let mut participant_addrs = Vec::new();
+            for _i in 0..SPLIT_RATIO {
+                let sk = SecretKey::from_slice(&[
+                    0x01 + (_p * 10 + _i) as u8,
+                    0x02,
+                    0x03,
+                    0x04,
+                    0x05,
+                    0x06,
+                    0x07,
+                    0x08,
+                    0x09,
+                    0x0a,
+                    0x0b,
+                    0x0c,
+                    0x0d,
+                    0x0e,
+                    0x0f,
+                    0x10,
+                    0x11,
+                    0x12,
+                    0x13,
+                    0x14,
+                    0x15,
+                    0x16,
+                    0x17,
+                    0x18,
+                    0x19,
+                    0x1a,
+                    0x1b,
+                    0x1c,
+                    0x1d,
+                    0x1e,
+                    0x1f,
+                    0x20,
+                ])
+                .unwrap();
+                let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+                let xonly = pk.x_only_public_key().0;
+                let addr = Address::p2tr(&secp, xonly, None, Network::Regtest);
+                participant_addrs.push(addr.to_string());
+            }
+            addresses.push(participant_addrs);
+        }
+
+        // Build multiple transactions
+        let mut builder = WraithTransactionBuilder::new(
+            "test_session".to_string(),
+            WraithDenomination::Small,
+            Network::Regtest,
+        );
+
+        for p in 0..3 {
+            builder
+                .add_input(WraithInput {
+                    txid: test_txid(),
+                    vout: p as u32,
+                    amount: 1_100_000,
+                    script_pubkey: ScriptBuf::new(),
+                    participant_id: p as u32,
+                })
+                .unwrap();
+        }
+
+        // Build two transactions and verify outputs differ
+        // Due to CSPRNG entropy, the output ordering should be different
+        let tx1 = builder.build_split_transaction(&addresses).unwrap();
+        let tx2 = builder.build_split_transaction(&addresses).unwrap();
+
+        // Extract output script pubkeys
+        let outputs1: Vec<_> = tx1
+            .transaction
+            .output
+            .iter()
+            .map(|o| o.script_pubkey.clone())
+            .collect();
+        let outputs2: Vec<_> = tx2
+            .transaction
+            .output
+            .iter()
+            .map(|o| o.script_pubkey.clone())
+            .collect();
+
+        // With 30 outputs (3 participants * 10), probability of identical ordering
+        // with true randomness is astronomically low (1/30! ~ 3.7e-33)
+        assert_ne!(
+            outputs1, outputs2,
+            "Two transactions should have different output orderings due to CSPRNG entropy"
+        );
+    }
+
+    /// Test that deterministic entropy produces deterministic results (for testing)
+    #[test]
+    fn test_deterministic_entropy_for_testing() {
+        use bitcoin::key::Secp256k1;
+        use bitcoin::secp256k1::SecretKey;
+
+        let secp = Secp256k1::new();
+        let test_entropy = [0x42u8; 32];
+
+        // Create test addresses
+        let mut addresses: Vec<Vec<String>> = Vec::new();
+        for _p in 0..2 {
+            let mut participant_addrs = Vec::new();
+            for _i in 0..SPLIT_RATIO {
+                let sk = SecretKey::from_slice(&[
+                    0x01 + (_p * 10 + _i) as u8,
+                    0x02,
+                    0x03,
+                    0x04,
+                    0x05,
+                    0x06,
+                    0x07,
+                    0x08,
+                    0x09,
+                    0x0a,
+                    0x0b,
+                    0x0c,
+                    0x0d,
+                    0x0e,
+                    0x0f,
+                    0x10,
+                    0x11,
+                    0x12,
+                    0x13,
+                    0x14,
+                    0x15,
+                    0x16,
+                    0x17,
+                    0x18,
+                    0x19,
+                    0x1a,
+                    0x1b,
+                    0x1c,
+                    0x1d,
+                    0x1e,
+                    0x1f,
+                    0x20,
+                ])
+                .unwrap();
+                let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
+                let xonly = pk.x_only_public_key().0;
+                let addr = Address::p2tr(&secp, xonly, None, Network::Regtest);
+                participant_addrs.push(addr.to_string());
+            }
+            addresses.push(participant_addrs);
+        }
+
+        let mut builder = WraithTransactionBuilder::new(
+            "test_session".to_string(),
+            WraithDenomination::Small,
+            Network::Regtest,
+        );
+
+        for p in 0..2 {
+            builder
+                .add_input(WraithInput {
+                    txid: test_txid(),
+                    vout: p as u32,
+                    amount: 1_100_000,
+                    script_pubkey: ScriptBuf::new(),
+                    participant_id: p as u32,
+                })
+                .unwrap();
+        }
+
+        // With explicit test entropy, results should be deterministic
+        let tx1 = builder
+            .build_split_transaction_with_test_entropy(&addresses, &test_entropy)
+            .unwrap();
+        let tx2 = builder
+            .build_split_transaction_with_test_entropy(&addresses, &test_entropy)
+            .unwrap();
+
+        let outputs1: Vec<_> = tx1
+            .transaction
+            .output
+            .iter()
+            .map(|o| o.script_pubkey.clone())
+            .collect();
+        let outputs2: Vec<_> = tx2
+            .transaction
+            .output
+            .iter()
+            .map(|o| o.script_pubkey.clone())
+            .collect();
+
+        assert_eq!(
+            outputs1, outputs2,
+            "Test entropy should produce deterministic results"
+        );
     }
 }

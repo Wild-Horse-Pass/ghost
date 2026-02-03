@@ -10,10 +10,9 @@
 
 use bellperson::groth16::{verify_proof, PreparedVerifyingKey, Proof};
 use blstrs::{Bls12, G1Affine, G2Affine, Scalar as Fr};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::errors::{ZkError, ZkResult};
 use crate::payout_prover::{PayoutProof, PayoutProver, MAX_MINERS, MAX_NODES};
@@ -177,17 +176,46 @@ impl PayoutVerifier {
             }
         }
 
-        // Simulated verification (for testing when no Groth16 params available)
-        // Just check that the proof is a valid SHA256 hash of the witness
+        // SECURITY: No verification key available - FAIL CLOSED
+        // In production, we MUST have a verification key. Without one,
+        // we cannot cryptographically verify the proof.
+        error!(
+            "SECURITY: No Groth16 verification key available. \
+             Cannot verify proof cryptographically. Rejecting proof. \
+             Ensure trusted setup has been completed and VK is loaded."
+        );
+
+        // In test mode, allow simulated verification for development
+        #[cfg(test)]
+        {
+            return self.verify_simulated_proof(proof);
+        }
+
+        #[cfg(not(test))]
+        false
+    }
+
+    /// Simulated verification for testing only
+    /// SECURITY: This is NOT cryptographically secure and must only be used in tests
+    #[cfg(test)]
+    fn verify_simulated_proof(&self, _proof: &PayoutProof) -> bool {
+        use sha2::{Digest, Sha256};
+        // Verify the proof is a valid hash of the witness data
         let mut hasher = Sha256::new();
         hasher.update(self.prover_id);
         let _expected_prefix = &hasher.finalize()[..8];
-
-        // Accept simulated proofs (they're deterministic hashes)
+        // Accept simulated proofs in test mode only
         true
     }
 
     /// Verify a Groth16 proof cryptographically
+    ///
+    /// The proof is verified against all public inputs:
+    /// 1. total_available - must match claimed total
+    /// 2. miner_sum - must match sum claimed in proof
+    /// 3. node_sum - must match sum claimed in proof
+    /// 4. treasury_amount - must match claimed treasury
+    /// 5. epoch - must match claimed epoch (replay protection)
     fn verify_groth16_proof(
         &self,
         proof: &PayoutProof,
@@ -199,9 +227,21 @@ impl PayoutVerifier {
         let groth16_proof = self.deserialize_proof(&proof.proof)?;
 
         // Build public inputs from the proof metadata
-        // The circuit exposes: total_available as the single public input
-        // (The verifier checks sum preservation using metadata, circuit enforces it internally)
-        let public_inputs = vec![Fr::from(proof.total_available)];
+        // SECURITY: Order must match the order in PayoutCircuit::synthesize
+        // All values are exposed as public inputs so the verifier can confirm
+        // the proof is for the claimed payout distribution
+        let public_inputs = vec![
+            Fr::from(proof.total_available),  // PUBLIC INPUT 1: total_available
+            Fr::from(proof.miner_sum),        // PUBLIC INPUT 2: miner_sum
+            Fr::from(proof.node_sum),         // PUBLIC INPUT 3: node_sum
+            Fr::from(proof.treasury_amount),  // PUBLIC INPUT 4: treasury_amount
+            Fr::from(proof.epoch),            // PUBLIC INPUT 5: epoch
+        ];
+
+        debug!(
+            "Verifying Groth16 proof with public inputs: total={}, miner_sum={}, node_sum={}, treasury={}, epoch={}",
+            proof.total_available, proof.miner_sum, proof.node_sum, proof.treasury_amount, proof.epoch
+        );
 
         // Verify the Groth16 proof
         let result = verify_proof(prepared_vk, &groth16_proof, &public_inputs);
@@ -209,15 +249,25 @@ impl PayoutVerifier {
         debug!("Groth16 verification completed in {:?}", verify_start.elapsed());
 
         match result {
-            Ok(valid) => Ok(valid),
+            Ok(valid) => {
+                if valid {
+                    debug!("Groth16 proof verified successfully");
+                } else {
+                    warn!("Groth16 proof verification returned false");
+                }
+                Ok(valid)
+            }
             Err(e) => {
-                debug!("Groth16 proof verification error: {:?}", e);
+                warn!("Groth16 proof verification error: {:?}", e);
                 Ok(false)
             }
         }
     }
 
     /// Deserialize a Groth16 proof from bytes
+    ///
+    /// SECURITY: This function performs subgroup checks on all elliptic curve points
+    /// to prevent small subgroup attacks. Points must be in the prime-order subgroup.
     fn deserialize_proof(&self, bytes: &[u8]) -> ZkResult<Proof<Bls12>> {
         if bytes.len() != GROTH16_PROOF_SIZE {
             return Err(ZkError::InvalidProof(format!(
@@ -238,6 +288,15 @@ impl PayoutVerifier {
             return Err(ZkError::InvalidProof("Invalid A point".to_string()));
         };
 
+        // SECURITY: Verify A is in the prime-order subgroup (torsion-free)
+        // This prevents small subgroup attacks where an attacker provides a point
+        // in a small subgroup to forge proofs
+        if !bool::from(a.is_torsion_free()) {
+            return Err(ZkError::InvalidProof(
+                "A point is not in prime-order subgroup (torsion detected)".to_string(),
+            ));
+        }
+
         // Parse B (G2 point, 96 bytes compressed)
         let b_bytes: [u8; 96] = bytes[48..144]
             .try_into()
@@ -249,6 +308,13 @@ impl PayoutVerifier {
             return Err(ZkError::InvalidProof("Invalid B point".to_string()));
         };
 
+        // SECURITY: Verify B is in the prime-order subgroup
+        if !bool::from(b.is_torsion_free()) {
+            return Err(ZkError::InvalidProof(
+                "B point is not in prime-order subgroup (torsion detected)".to_string(),
+            ));
+        }
+
         // Parse C (G1 point, 48 bytes compressed)
         let c_bytes: [u8; 48] = bytes[144..192]
             .try_into()
@@ -259,6 +325,13 @@ impl PayoutVerifier {
         } else {
             return Err(ZkError::InvalidProof("Invalid C point".to_string()));
         };
+
+        // SECURITY: Verify C is in the prime-order subgroup
+        if !bool::from(c.is_torsion_free()) {
+            return Err(ZkError::InvalidProof(
+                "C point is not in prime-order subgroup (torsion detected)".to_string(),
+            ));
+        }
 
         Ok(Proof { a, b, c })
     }

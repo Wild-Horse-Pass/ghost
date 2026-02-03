@@ -3,23 +3,35 @@
 //! The BlockVerifier validates ZK proofs in ~10ms, allowing validators
 //! to quickly confirm block validity without re-executing transactions.
 //!
-//! Note: This is currently a simplified implementation that verifies
-//! proof structure and hashes. Full Groth16 verification will be
-//! integrated in a future update.
+//! # Security Model
+//!
+//! This verifier supports two modes:
+//! 1. Full Groth16 mode: Cryptographically verifies proofs using bellperson
+//! 2. Simulated mode (TEST ONLY): For development when no setup is available
+//!
+//! SECURITY WARNING: In production, ALWAYS use full Groth16 mode with
+//! a verification key generated from a proper MPC ceremony.
 
-// sha2 available for future cryptographic verification
-#[allow(unused_imports)]
-use sha2::{Digest, Sha256};
+use bellperson::groth16::{verify_proof as groth16_verify_proof, PreparedVerifyingKey, Proof};
+use blstrs::{Bls12, G1Affine, G2Affine, Scalar as Fr};
+use ff::PrimeField;
+use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, instrument};
+use tracing::{debug, error, instrument, warn};
 
 use crate::errors::{ZkError, ZkResult};
-use crate::types::{BlockProof, VerificationKey};
+use crate::types::{BlockProof, VerificationKey, GROTH16_PROOF_SIZE};
 
 /// Verifies block validity proofs
 ///
 /// The verifier is initialized once with a verification key and reused
 /// for all blocks. Verification takes ~10ms.
+///
+/// # Security
+///
+/// For production use, always initialize with `new_with_groth16_vk` to ensure
+/// cryptographic verification. The `new` constructor is provided for backwards
+/// compatibility but will FAIL CLOSED if no VK is available.
 pub struct BlockVerifier {
     /// Prover ID from verification key
     prover_id: [u8; 32],
@@ -27,10 +39,16 @@ pub struct BlockVerifier {
     max_txs: usize,
     /// Merkle tree depth
     tree_depth: usize,
+    /// Prepared Groth16 verifying key for cryptographic verification
+    prepared_vk: Option<Arc<PreparedVerifyingKey<Bls12>>>,
 }
 
 impl BlockVerifier {
-    /// Create a verifier from a verification key
+    /// Create a verifier from a verification key (simulated mode)
+    ///
+    /// SECURITY WARNING: This constructor does NOT enable Groth16 verification.
+    /// In production, use `new_with_groth16_vk` instead. This method will
+    /// FAIL CLOSED (reject all proofs) when not in test mode.
     pub fn new(vk: &VerificationKey) -> ZkResult<Self> {
         if vk.data.len() < 48 {
             return Err(ZkError::ParameterError(
@@ -49,17 +67,70 @@ impl BlockVerifier {
             ZkError::ParameterError("Invalid tree_depth in verification key".to_string())
         })?);
 
+        warn!(
+            "BlockVerifier created without Groth16 VK. \
+             Cryptographic verification will not be available. \
+             Use new_with_groth16_vk for production."
+        );
+
         Ok(Self {
             prover_id,
             max_txs,
             tree_depth,
+            prepared_vk: None,
         })
+    }
+
+    /// Create a verifier with a Groth16 prepared verifying key
+    ///
+    /// This is the recommended constructor for production use. It enables
+    /// full cryptographic verification of proofs.
+    pub fn new_with_groth16_vk(
+        vk: &VerificationKey,
+        prepared_vk: Arc<PreparedVerifyingKey<Bls12>>,
+    ) -> ZkResult<Self> {
+        if vk.data.len() < 48 {
+            return Err(ZkError::ParameterError(
+                "Verification key too short".to_string(),
+            ));
+        }
+
+        let mut prover_id = [0u8; 32];
+        prover_id.copy_from_slice(&vk.data[0..32]);
+
+        let max_txs = usize::from_le_bytes(vk.data[32..40].try_into().map_err(|_| {
+            ZkError::ParameterError("Invalid max_txs in verification key".to_string())
+        })?);
+
+        let tree_depth = usize::from_le_bytes(vk.data[40..48].try_into().map_err(|_| {
+            ZkError::ParameterError("Invalid tree_depth in verification key".to_string())
+        })?);
+
+        debug!("BlockVerifier created with Groth16 VK for {} txs, depth {}", max_txs, tree_depth);
+
+        Ok(Self {
+            prover_id,
+            max_txs,
+            tree_depth,
+            prepared_vk: Some(prepared_vk),
+        })
+    }
+
+    /// Check if Groth16 verification is available
+    pub fn has_groth16_vk(&self) -> bool {
+        self.prepared_vk.is_some()
     }
 
     /// Verify a block proof
     ///
     /// This verifies that the proof is valid for the given state transition.
     /// Verification should take ~10ms.
+    ///
+    /// # Security
+    ///
+    /// If a Groth16 VK is available, performs cryptographic verification.
+    /// Otherwise, FAILS CLOSED (rejects all proofs) in production mode.
+    /// Test mode allows simulated verification for development.
     ///
     /// # Arguments
     /// * `proof` - The block proof to verify
@@ -68,9 +139,22 @@ impl BlockVerifier {
     /// `Ok(true)` if the proof is valid, `Ok(false)` if invalid
     #[instrument(skip_all, fields(height = proof.height, tx_count = proof.tx_count))]
     pub fn verify(&self, proof: &BlockProof) -> ZkResult<bool> {
-        let start = Instant::now();
+        // Verify transaction count is within limits
+        if proof.tx_count as usize > self.max_txs {
+            debug!(
+                "Transaction count {} exceeds max {}",
+                proof.tx_count, self.max_txs
+            );
+            return Ok(false);
+        }
 
-        // Check proof structure
+        // If we have a Groth16 VK, perform cryptographic verification
+        if let Some(ref prepared_vk) = self.prepared_vk {
+            return self.verify_groth16(proof, prepared_vk);
+        }
+
+        // No Groth16 VK available - check for simulated proof format
+        // SECURITY: In production, we FAIL CLOSED
         if proof.proof.len() < 72 {
             debug!("Proof too short: {} bytes", proof.proof.len());
             return Ok(false);
@@ -83,15 +167,146 @@ impl BlockVerifier {
             return Ok(false);
         }
 
-        // Verify transaction count is within limits
-        if proof.tx_count as usize > self.max_txs {
+        // SECURITY: No Groth16 VK - FAIL CLOSED in production
+        error!(
+            "SECURITY: No Groth16 verification key available. \
+             Cannot verify block proof cryptographically. Rejecting proof. \
+             Ensure trusted setup has been completed and VK is loaded."
+        );
+
+        // In test mode, allow simulated verification
+        #[cfg(test)]
+        {
+            return self.verify_simulated(proof);
+        }
+
+        #[cfg(not(test))]
+        Ok(false)
+    }
+
+    /// Verify a Groth16 proof cryptographically
+    fn verify_groth16(
+        &self,
+        proof: &BlockProof,
+        prepared_vk: &PreparedVerifyingKey<Bls12>,
+    ) -> ZkResult<bool> {
+        let verify_start = Instant::now();
+
+        // Check proof is correct size for Groth16
+        if proof.proof.len() != GROTH16_PROOF_SIZE {
             debug!(
-                "Transaction count {} exceeds max {}",
-                proof.tx_count, self.max_txs
+                "Proof size mismatch: {} != {}",
+                proof.proof.len(),
+                GROTH16_PROOF_SIZE
             );
             return Ok(false);
         }
 
+        // Deserialize the proof with subgroup checks
+        let groth16_proof = self.deserialize_proof(&proof.proof)?;
+
+        // Build public inputs from the proof
+        // For block proofs, we expose: prev_state_root, new_state_root
+        let prev_root = bytes_to_field(&proof.prev_state_root)?;
+        let new_root = bytes_to_field(&proof.new_state_root)?;
+        let public_inputs = vec![prev_root, new_root];
+
+        debug!(
+            "Verifying Groth16 block proof: height={}, txs={}",
+            proof.height, proof.tx_count
+        );
+
+        // Verify the Groth16 proof
+        let result = groth16_verify_proof(prepared_vk, &groth16_proof, &public_inputs);
+
+        debug!("Groth16 verification completed in {:?}", verify_start.elapsed());
+
+        match result {
+            Ok(valid) => {
+                if valid {
+                    debug!("Block proof verified successfully");
+                } else {
+                    warn!("Block proof verification returned false");
+                }
+                Ok(valid)
+            }
+            Err(e) => {
+                warn!("Block proof verification error: {:?}", e);
+                Ok(false)
+            }
+        }
+    }
+
+    /// Deserialize a Groth16 proof with subgroup checks
+    fn deserialize_proof(&self, bytes: &[u8]) -> ZkResult<Proof<Bls12>> {
+        if bytes.len() != GROTH16_PROOF_SIZE {
+            return Err(ZkError::InvalidProof(format!(
+                "Invalid proof size: {} != {}",
+                bytes.len(),
+                GROTH16_PROOF_SIZE
+            )));
+        }
+
+        // Parse A (G1 point, 48 bytes compressed)
+        let a_bytes: [u8; 48] = bytes[0..48]
+            .try_into()
+            .map_err(|_| ZkError::InvalidProof("Failed to read A point".to_string()))?;
+        let a = G1Affine::from_compressed(&a_bytes);
+        let a = if a.is_some().into() {
+            a.unwrap()
+        } else {
+            return Err(ZkError::InvalidProof("Invalid A point".to_string()));
+        };
+
+        // SECURITY: Subgroup check
+        if !bool::from(a.is_torsion_free()) {
+            return Err(ZkError::InvalidProof(
+                "A point not in prime-order subgroup".to_string(),
+            ));
+        }
+
+        // Parse B (G2 point, 96 bytes compressed)
+        let b_bytes: [u8; 96] = bytes[48..144]
+            .try_into()
+            .map_err(|_| ZkError::InvalidProof("Failed to read B point".to_string()))?;
+        let b = G2Affine::from_compressed(&b_bytes);
+        let b = if b.is_some().into() {
+            b.unwrap()
+        } else {
+            return Err(ZkError::InvalidProof("Invalid B point".to_string()));
+        };
+
+        // SECURITY: Subgroup check
+        if !bool::from(b.is_torsion_free()) {
+            return Err(ZkError::InvalidProof(
+                "B point not in prime-order subgroup".to_string(),
+            ));
+        }
+
+        // Parse C (G1 point, 48 bytes compressed)
+        let c_bytes: [u8; 48] = bytes[144..192]
+            .try_into()
+            .map_err(|_| ZkError::InvalidProof("Failed to read C point".to_string()))?;
+        let c = G1Affine::from_compressed(&c_bytes);
+        let c = if c.is_some().into() {
+            c.unwrap()
+        } else {
+            return Err(ZkError::InvalidProof("Invalid C point".to_string()));
+        };
+
+        // SECURITY: Subgroup check
+        if !bool::from(c.is_torsion_free()) {
+            return Err(ZkError::InvalidProof(
+                "C point not in prime-order subgroup".to_string(),
+            ));
+        }
+
+        Ok(Proof { a, b, c })
+    }
+
+    /// Simulated verification for test mode only
+    #[cfg(test)]
+    fn verify_simulated(&self, proof: &BlockProof) -> ZkResult<bool> {
         // Extract proof components
         let _proof_hash = &proof.proof[32..64];
         let constraint_count = u64::from_le_bytes(
@@ -101,7 +316,6 @@ impl BlockVerifier {
         );
 
         // Verify constraint count is reasonable
-        // Each payment has ~BALANCE_BITS * 2 constraints minimum
         let min_expected_constraints = proof.tx_count as u64 * 64;
         if constraint_count < min_expected_constraints && proof.tx_count > 0 {
             debug!(
@@ -112,8 +326,7 @@ impl BlockVerifier {
         }
 
         debug!(
-            "Proof verified in {:?}: height={}, txs={}, constraints={}",
-            start.elapsed(),
+            "Simulated proof verified: height={}, txs={}, constraints={}",
             proof.height,
             proof.tx_count,
             constraint_count
@@ -193,6 +406,20 @@ impl std::fmt::Display for VerificationResult {
 pub fn verify_proof(vk: &VerificationKey, proof: &BlockProof) -> ZkResult<bool> {
     let verifier = BlockVerifier::new(vk)?;
     verifier.verify(proof)
+}
+
+/// Convert a 32-byte array to a field element
+fn bytes_to_field(bytes: &[u8; 32]) -> ZkResult<Fr> {
+    let mut repr = [0u8; 32];
+    repr.copy_from_slice(bytes);
+
+    // BLS12-381 scalar field is slightly less than 2^255
+    // Clear top bit to ensure it fits
+    repr[31] &= 0x7F;
+
+    Fr::from_repr_vartime(repr).ok_or_else(|| {
+        ZkError::VerificationError("Failed to convert bytes to field element".to_string())
+    })
 }
 
 #[cfg(test)]

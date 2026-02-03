@@ -154,8 +154,10 @@ pub struct SigningNonce {
     secret_nonce: SecretKey,
     /// The public nonce point R = k*G
     pub public_nonce: PublicKey,
-    /// Session identifier
+    /// Session identifier (includes ghost_id for binding)
     pub session_id: [u8; 32],
+    /// Ghost ID of the participant this nonce was issued to (for verification)
+    pub bound_ghost_id: Option<String>,
 }
 
 /// Public nonce sent to participants
@@ -266,21 +268,26 @@ impl CoordinatorSigner {
         &self.public_key
     }
 
-    /// Step 1: Create a new signing nonce
+    /// Step 1: Create a new signing nonce bound to a specific participant
     ///
     /// Returns a public nonce that should be sent to the participant.
     /// The coordinator must keep track of this nonce until signing completes.
-    pub fn create_nonce(&mut self) -> PublicNonce {
+    ///
+    /// SECURITY: The ghost_id is included in session_id generation to bind
+    /// the nonce to the requesting participant. This prevents nonce hijacking
+    /// where a malicious participant uses another's nonce.
+    pub fn create_nonce_for_participant(&mut self, ghost_id: &str) -> PublicNonce {
         let secp = Secp256k1::new();
 
         // Generate random nonce k
         let secret_nonce = random_secret_key();
         let public_nonce = PublicKey::from_secret_key(&secp, &secret_nonce);
 
-        // Create unique session ID for this nonce
+        // Create unique session ID for this nonce INCLUDING ghost_id binding
         let mut engine = sha256::Hash::engine();
-        engine.input(b"wraith/nonce-session/v1");
+        engine.input(b"wraith/nonce-session/v2"); // v2 includes ghost_id
         engine.input(&public_nonce.serialize());
+        engine.input(ghost_id.as_bytes()); // Bind to participant
         engine.input(&random_bytes_32());
         let session_id = sha256::Hash::from_engine(engine).to_byte_array();
 
@@ -288,6 +295,7 @@ impl CoordinatorSigner {
             secret_nonce,
             public_nonce,
             session_id,
+            bound_ghost_id: Some(ghost_id.to_string()),
         };
 
         let public = PublicNonce {
@@ -300,10 +308,110 @@ impl CoordinatorSigner {
         public
     }
 
-    /// Step 2: Sign a blinded challenge
+    /// Create a new signing nonce (unbound - DEPRECATED)
+    ///
+    /// WARNING: This creates an unbound nonce that can be used by any participant.
+    /// Use `create_nonce_for_participant()` for proper security.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use create_nonce_for_participant() to bind nonces to participants"
+    )]
+    pub fn create_nonce(&mut self) -> PublicNonce {
+        let secp = Secp256k1::new();
+
+        // Generate random nonce k
+        let secret_nonce = random_secret_key();
+        let public_nonce = PublicKey::from_secret_key(&secp, &secret_nonce);
+
+        // Create unique session ID for this nonce (unbound - insecure)
+        let mut engine = sha256::Hash::engine();
+        engine.input(b"wraith/nonce-session/v1");
+        engine.input(&public_nonce.serialize());
+        engine.input(&random_bytes_32());
+        let session_id = sha256::Hash::from_engine(engine).to_byte_array();
+
+        let nonce = SigningNonce {
+            secret_nonce,
+            public_nonce,
+            session_id,
+            bound_ghost_id: None, // Unbound - INSECURE
+        };
+
+        let public = PublicNonce {
+            nonce_point: public_nonce.serialize(),
+            session_id,
+        };
+
+        self.active_nonces.insert(session_id, nonce);
+
+        public
+    }
+
+    /// Step 2: Sign a blinded challenge with participant verification
     ///
     /// Computes s = k + c'*x where k is the secret nonce and x is the signing key.
     /// The nonce is consumed (removed) after signing to prevent reuse.
+    ///
+    /// SECURITY: Verifies that the requestor matches the ghost_id bound to the nonce.
+    /// This prevents nonce hijacking attacks.
+    pub fn sign_blinded_challenge_for_participant(
+        &mut self,
+        challenge: &BlindedChallenge,
+        requesting_ghost_id: &str,
+    ) -> Result<BlindSignatureResponse, WraithError> {
+        // Look up the nonce first to verify binding BEFORE removing
+        let nonce = self
+            .active_nonces
+            .get(&challenge.session_id)
+            .ok_or_else(|| WraithError::MissingData("Unknown or expired nonce session".into()))?;
+
+        // Verify requestor matches the bound ghost_id
+        if let Some(ref bound_id) = nonce.bound_ghost_id {
+            if bound_id != requesting_ghost_id {
+                return Err(WraithError::InvalidSignature(format!(
+                    "Nonce bound to '{}' but requested by '{}'",
+                    bound_id, requesting_ghost_id
+                )));
+            }
+        }
+        // Note: If nonce is unbound (from deprecated create_nonce), we allow it for backwards compat
+
+        // Now remove the nonce (single use!)
+        let nonce = self
+            .active_nonces
+            .remove(&challenge.session_id)
+            .expect("nonce exists - we just checked");
+
+        // Parse challenge as scalar
+        let c_prime = SecretKey::from_slice(&challenge.challenge)
+            .map_err(|e| WraithError::InvalidSignature(format!("Invalid challenge: {}", e)))?;
+
+        // Compute s = k + c'*x
+        let c_prime_scalar = Scalar::from(c_prime);
+        let cx = self
+            .signing_key
+            .mul_tweak(&c_prime_scalar)
+            .map_err(|e| WraithError::PhaseError(format!("Scalar multiply failed: {}", e)))?;
+
+        let s = nonce
+            .secret_nonce
+            .add_tweak(&Scalar::from(cx))
+            .map_err(|e| WraithError::PhaseError(format!("Scalar add failed: {}", e)))?;
+
+        Ok(BlindSignatureResponse {
+            signature_scalar: s.secret_bytes(),
+            session_id: challenge.session_id,
+        })
+    }
+
+    /// Sign a blinded challenge (unverified - DEPRECATED)
+    ///
+    /// WARNING: This does not verify the requestor matches the nonce binding.
+    /// Use `sign_blinded_challenge_for_participant()` for proper security.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use sign_blinded_challenge_for_participant() to verify requestor"
+    )]
     pub fn sign_blinded_challenge(
         &mut self,
         challenge: &BlindedChallenge,
@@ -819,5 +927,96 @@ mod tests {
         // Should be able to convert to standard 64-byte format
         let schnorr_bytes = token.to_schnorr_bytes().unwrap();
         assert_eq!(schnorr_bytes.len(), 64);
+    }
+
+    /// WR-H1 Security Test: Nonces are bound to participants
+    ///
+    /// This test verifies that:
+    /// 1. Nonces created for participant A cannot be used by participant B
+    /// 2. The binding is enforced during signing
+    #[test]
+    fn test_nonce_bound_to_participant() {
+        let session_id = [7u8; 32];
+        let address = generate_test_address();
+        let message = address.serialize().to_vec();
+
+        let mut signer = CoordinatorSigner::new(&session_id);
+
+        // Create a nonce bound to "ghost1"
+        let nonce = signer.create_nonce_for_participant("ghost1");
+
+        // Participant creates blinding context
+        let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
+        let challenge = context.create_blinded_challenge().unwrap();
+
+        // Attempt to sign as "ghost2" (wrong participant) should FAIL
+        let result = signer.sign_blinded_challenge_for_participant(&challenge, "ghost2");
+        assert!(
+            result.is_err(),
+            "Signing with wrong participant should fail"
+        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Nonce bound to"));
+
+        // Create a new nonce for the test since the first was not consumed
+        // (we got an error before removal)
+        let nonce2 = signer.create_nonce_for_participant("ghost1");
+        let context2 = BlindingContext::new(
+            address.serialize().to_vec(),
+            signer.public_key(),
+            &nonce2,
+        )
+        .unwrap();
+        let challenge2 = context2.create_blinded_challenge().unwrap();
+
+        // Signing as "ghost1" (correct participant) should SUCCEED
+        let result = signer.sign_blinded_challenge_for_participant(&challenge2, "ghost1");
+        assert!(result.is_ok(), "Signing with correct participant should succeed");
+    }
+
+    /// Test that nonce binding includes ghost_id in session_id generation
+    #[test]
+    fn test_nonce_session_id_includes_participant() {
+        let session_id = [8u8; 32];
+
+        let mut signer1 = CoordinatorSigner::new(&session_id);
+        let mut signer2 = CoordinatorSigner::new(&session_id);
+
+        // Create nonces for different participants on different signers
+        let nonce1 = signer1.create_nonce_for_participant("ghost1");
+        let nonce2 = signer2.create_nonce_for_participant("ghost2");
+
+        // Even with same coordinator key, different participants get different session IDs
+        // (due to random entropy AND ghost_id in hash)
+        assert_ne!(
+            nonce1.session_id, nonce2.session_id,
+            "Different participants should get different session IDs"
+        );
+    }
+
+    /// Test backwards compatibility with unbound nonces (deprecated)
+    #[test]
+    #[allow(deprecated)]
+    fn test_unbound_nonce_backwards_compat() {
+        let session_id = [9u8; 32];
+        let address = generate_test_address();
+        let message = address.serialize().to_vec();
+
+        let mut signer = CoordinatorSigner::new(&session_id);
+
+        // Create an unbound nonce (deprecated but should still work)
+        let nonce = signer.create_nonce();
+
+        let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
+        let challenge = context.create_blinded_challenge().unwrap();
+
+        // Signing with any participant should work for unbound nonces (backwards compat)
+        let result = signer.sign_blinded_challenge_for_participant(&challenge, "any_ghost_id");
+        assert!(
+            result.is_ok(),
+            "Unbound nonces should work with any participant for backwards compat"
+        );
     }
 }

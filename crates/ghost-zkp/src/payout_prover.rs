@@ -7,6 +7,23 @@
 //!
 //! This module uses Groth16 proofs on the BLS12-381 curve via bellpepper.
 //! Proof generation takes ~2 seconds, verification takes ~10ms.
+//!
+//! # SECURITY WARNING: Trusted Setup Required
+//!
+//! **Groth16 requires a trusted setup ceremony (MPC).**
+//!
+//! The security of Groth16 proofs depends entirely on the trusted setup:
+//! - If the "toxic waste" from setup is known, anyone can forge proofs
+//! - A single malicious participant in setup can compromise the system
+//!
+//! For production use:
+//! 1. **NEVER** use `generate_random_parameters` in production
+//! 2. Use parameters from a multi-party computation (MPC) ceremony
+//! 3. Verify the ceremony transcript before using parameters
+//! 4. See `docs/ZK_TRUSTED_SETUP.md` for ceremony requirements
+//!
+//! The `new_with_setup` constructor is provided for testing only.
+//! Production deployments MUST use `new_with_params` with MPC-generated parameters.
 
 use bellperson::{
     groth16::{
@@ -157,10 +174,26 @@ impl PayoutProver {
 
     /// Create a new payout prover with full Groth16 setup
     ///
-    /// This generates the proving and verifying keys. This is expensive
-    /// (~10-30 seconds) and should only be done once at startup.
+    /// **SECURITY WARNING: FOR TESTING ONLY**
+    ///
+    /// This generates the proving and verifying keys using random toxic waste.
+    /// This is convenient for testing but **INSECURE FOR PRODUCTION**:
+    /// - The toxic waste exists in memory and could be extracted
+    /// - Anyone with the toxic waste can forge proofs
+    /// - This bypasses the security of the ZK proof system
+    ///
+    /// For production, use `new_with_params()` with MPC-generated parameters.
+    /// See `docs/ZK_TRUSTED_SETUP.md` for ceremony requirements.
+    ///
+    /// # Arguments
+    /// * `max_miners` - Maximum number of miners (affects circuit size)
+    /// * `max_nodes` - Maximum number of nodes (affects circuit size)
     #[instrument(skip_all, fields(max_miners, max_nodes))]
     pub fn new_with_setup(max_miners: usize, max_nodes: usize) -> ZkResult<Self> {
+        warn!(
+            "SECURITY WARNING: Using random trusted setup. \
+             This is INSECURE for production. Use MPC-generated parameters."
+        );
         info!(
             "Creating payout prover with Groth16 setup for {} miners, {} nodes",
             max_miners, max_nodes
@@ -178,7 +211,9 @@ impl PayoutProver {
         let dummy_circuit = PayoutCircuit::<Fr>::dummy(max_miners, max_nodes);
 
         // Generate Groth16 parameters (trusted setup)
-        info!("Generating Groth16 parameters...");
+        // SECURITY: This uses random toxic waste - FOR TESTING ONLY
+        // Production MUST use MPC-generated parameters
+        info!("Generating Groth16 parameters (TESTING ONLY - NOT SECURE FOR PRODUCTION)...");
         let setup_start = Instant::now();
         let params = generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rand::thread_rng())
             .map_err(|e| ZkError::SetupError(format!("Parameter generation failed: {:?}", e)))?;
@@ -253,27 +288,30 @@ impl PayoutProver {
         };
 
         // Build circuit for constraint verification (with padding for Groth16)
-        let circuit = PayoutCircuit::<Fr>::new(
+        let circuit = PayoutCircuit::<Fr>::new_with_epoch(
             witness.total_available,
             padded_miner_payouts.clone(),
             padded_node_payouts.clone(),
             witness.treasury_amount,
+            witness.epoch,
         );
 
         debug!(
-            "Circuit built with {} miners, {} nodes (padded from {}, {})",
+            "Circuit built with {} miners, {} nodes (padded from {}, {}), epoch={}",
             padded_miner_payouts.len(),
             padded_node_payouts.len(),
             witness.miner_payouts.len(),
-            witness.node_payouts.len()
+            witness.node_payouts.len(),
+            witness.epoch
         );
 
         // First verify constraints with TestConstraintSystem
-        let test_circuit = PayoutCircuit::<Fr>::new(
+        let test_circuit = PayoutCircuit::<Fr>::new_with_epoch(
             witness.total_available,
             padded_miner_payouts.clone(),
             padded_node_payouts.clone(),
             witness.treasury_amount,
+            witness.epoch,
         );
         let mut cs = TestConstraintSystem::<Fr>::new();
         let outputs = test_circuit

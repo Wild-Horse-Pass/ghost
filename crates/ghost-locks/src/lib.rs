@@ -35,13 +35,17 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```no_run
 //! use ghost_locks::{GhostLock, Denomination, TimelockTier};
-//! use bitcoin::secp256k1::{Secp256k1, SecretKey, rand::rngs::OsRng};
+//! use bitcoin::secp256k1::{Secp256k1, SecretKey};
+//!
+//! // Generate keys (in production, use proper key derivation)
+//! let lock_bytes = [1u8; 32]; // Example only - use proper entropy!
+//! let recovery_bytes = [2u8; 32];
 //!
 //! let secp = Secp256k1::new();
-//! let lock_secret = SecretKey::new(&mut OsRng);
-//! let recovery_secret = SecretKey::new(&mut OsRng);
+//! let lock_secret = SecretKey::from_slice(&lock_bytes).unwrap();
+//! let recovery_secret = SecretKey::from_slice(&recovery_bytes).unwrap();
 //!
 //! let lock = GhostLock::new(
 //!     &secp,
@@ -68,7 +72,8 @@ pub use error::GhostLockError;
 pub use jump::JumpRiskTier;
 pub use lock::{GhostLock, GhostLockData};
 pub use script::{
-    build_lock_script, build_recovery_script, compute_output_key, ghost_lock_id, to_x_only,
+    build_lock_script, build_normal_script, build_recovery_script, compute_output_key,
+    ghost_lock_id, to_x_only, RecoveryInputParams, RECOVERY_NSEQUENCE,
 };
 pub use state::{LockState, StateTransition};
 pub use timelock::TimelockTier;
@@ -82,13 +87,21 @@ pub const MIN_LOCK_SATS: u64 = 546;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bitcoin::secp256k1::{rand::rngs::OsRng, Secp256k1, SecretKey};
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use rand::RngCore;
+
+    fn generate_secret_key() -> SecretKey {
+        let mut rng = rand::thread_rng();
+        let mut secret_bytes = [0u8; 32];
+        rng.fill_bytes(&mut secret_bytes);
+        SecretKey::from_slice(&secret_bytes).expect("32 bytes, within curve order")
+    }
 
     #[test]
     fn test_create_lock() {
         let secp = Secp256k1::new();
-        let lock_secret = SecretKey::new(&mut OsRng);
-        let recovery_secret = SecretKey::new(&mut OsRng);
+        let lock_secret = generate_secret_key();
+        let recovery_secret = generate_secret_key();
 
         let lock = GhostLock::new(
             &secp,
@@ -109,8 +122,8 @@ mod tests {
     #[test]
     fn test_lock_address() {
         let secp = Secp256k1::new();
-        let lock_secret = SecretKey::new(&mut OsRng);
-        let recovery_secret = SecretKey::new(&mut OsRng);
+        let lock_secret = generate_secret_key();
+        let recovery_secret = generate_secret_key();
 
         let lock = GhostLock::new(
             &secp,
@@ -129,8 +142,8 @@ mod tests {
     #[test]
     fn test_recovery_available() {
         let secp = Secp256k1::new();
-        let lock_secret = SecretKey::new(&mut OsRng);
-        let recovery_secret = SecretKey::new(&mut OsRng);
+        let lock_secret = generate_secret_key();
+        let recovery_secret = generate_secret_key();
 
         let lock = GhostLock::new(
             &secp,
