@@ -60,6 +60,11 @@ pub struct RateLimiter {
     refill_rate: u32,
 }
 
+/// Token bucket for rate limiting
+///
+/// Using f64 for fractional token tracking allows smooth refill at
+/// sub-second granularity. Integer-based would be more precise but
+/// adds complexity for marginal benefit in this use case.
 #[derive(Clone)]
 struct TokenBucket {
     tokens: f64,
@@ -282,6 +287,9 @@ struct PendingProposal {
     received_at: std::time::Instant,
 }
 
+/// Ban duration for equivocating nodes (10 minutes)
+const EQUIVOCATION_BAN_DURATION_SECS: u64 = 600;
+
 /// Vote handler - processes votes and manages consensus sessions
 pub struct VoteHandler {
     /// Our node identity
@@ -300,6 +308,10 @@ pub struct VoteHandler {
     rate_limiter: RateLimiter,
     /// Configuration
     config: VoteHandlerConfig,
+    /// Temporarily banned nodes (equivocation) with expiration timestamp
+    banned_nodes: RwLock<HashMap<NodeId, Instant>>,
+    /// Ban duration for equivocating nodes
+    ban_duration: std::time::Duration,
 }
 
 impl VoteHandler {
@@ -326,7 +338,28 @@ impl VoteHandler {
                 config.rate_limit_refill_rate,
             ),
             config,
+            banned_nodes: RwLock::new(HashMap::new()),
+            ban_duration: std::time::Duration::from_secs(EQUIVOCATION_BAN_DURATION_SECS),
         }
+    }
+
+    /// Ban a node for equivocation
+    fn ban_node(&self, node_id: NodeId) {
+        let expire_at = Instant::now() + self.ban_duration;
+        self.banned_nodes.write().insert(node_id, expire_at);
+        warn!(
+            node_id = %hex::encode(&node_id[..8]),
+            duration_mins = 10,
+            "Node banned for equivocation"
+        );
+    }
+
+    /// Check if a node is currently banned
+    fn is_banned(&self, node_id: &NodeId) -> bool {
+        let mut banned = self.banned_nodes.write();
+        // Clean up expired bans
+        banned.retain(|_, expire_at| *expire_at > Instant::now());
+        banned.contains_key(node_id)
     }
 
     /// Clean up rate limiter state (call periodically)
@@ -682,8 +715,9 @@ impl VoteHandler {
                         round_id = vote_msg.round_id,
                         "EQUIVOCATION DETECTED: voter signed conflicting votes"
                     );
+                    // Ban the equivocating node for 10 minutes
+                    self.ban_node(sender);
                     // TODO: Broadcast equivocation proof to network for slashing
-                    // TODO: Ban the equivocating node
                     debug!(
                         "Equivocation proof: vote1.approve={}, vote2.approve={}",
                         proof.vote1.approve, proof.vote2.approve
@@ -785,6 +819,14 @@ impl VoteHandler {
 #[async_trait]
 impl MessageHandler for VoteHandler {
     async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+        // Check if node is banned for equivocation
+        if self.is_banned(&envelope.sender) {
+            return Err(ghost_common::error::GhostError::NodeBanned(format!(
+                "Node {} temporarily banned for equivocation",
+                hex::encode(&envelope.sender[..8])
+            )));
+        }
+
         // Rate limit check - reject messages from nodes sending too fast
         if !self.rate_limiter.check_and_consume(&envelope.sender) {
             warn!(

@@ -22,10 +22,10 @@ use ff::{Field, PrimeField};
 /// Increased from 10 to 23 for improved security margin
 pub const MIMC_ROUNDS: usize = 23;
 
-/// Generate MiMC round constants deterministically from SHA256
+/// Generate MiMC round constants deterministically
 ///
-/// Constants are derived from SHA256("ghost-zkp-mimc-round-{i}") to ensure
-/// reproducibility and prevent any backdoor constants.
+/// Constants are derived deterministically from small primes.
+/// Each constant = prime[i] + (i * 1000) for diversity and reproducibility.
 pub fn mimc_round_constants<F: PrimeField>() -> [F; MIMC_ROUNDS] {
     // We derive deterministic constants from small primes + index
     // This is simpler and more portable than hash-to-field

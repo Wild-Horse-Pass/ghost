@@ -62,7 +62,7 @@ use bitcoin::Network;
 use ghost_common::constants::SATS_PER_BTC_F64;
 use ghost_common::rpc::BitcoinRpc;
 use ghost_keys::{GhostKeys, GhostKeysExport, PaymentDetector};
-use ghost_locks::{Denomination, GhostLock, LockState, TimelockTier};
+use ghost_locks::{Denomination, GhostLock, StateTransition, TimelockTier};
 use ghost_reconciliation::{BatchExecutor, ReconciliationInput, Settlement};
 use ghost_storage::{
     Database, GhostLockRecord, GhostLockState as DbLockState, WithdrawalRequest, WithdrawalStatus,
@@ -654,7 +654,9 @@ async fn initiate_jump(
     {
         let mut ghost_locks = state.ghost_locks.write();
         if let Some(ghost_lock) = ghost_locks.iter_mut().find(|l| l.lock_id_hex() == id) {
-            ghost_lock.set_state(LockState::Jumping);
+            if let Err(e) = ghost_lock.transition(StateTransition::StartJump) {
+                warn!(lock_id = %id, error = %e, "Failed to transition lock to jumping state");
+            }
         }
     }
 

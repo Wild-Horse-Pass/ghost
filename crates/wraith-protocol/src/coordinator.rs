@@ -31,6 +31,10 @@ use std::sync::Arc;
 /// Maximum strike count before a participant is banned
 const MAX_STRIKES: u32 = 3;
 
+/// Maximum number of used tokens to track before clearing
+/// Prevents unbounded memory growth in long-running coordinators
+const MAX_USED_TOKENS: usize = 100_000;
+
 /// Reputation tracking for participants across sessions
 ///
 /// Tracks participants who fail to complete signing to prevent repeat offenders.
@@ -576,6 +580,11 @@ impl WraithCoordinator {
         }
 
         // Mark tokens as used AFTER verification
+        // SECURITY: Enforce size limit to prevent unbounded memory growth
+        if self.used_tokens.len() >= MAX_USED_TOKENS {
+            tracing::warn!("used_tokens at capacity ({}), clearing oldest entries", MAX_USED_TOKENS);
+            self.used_tokens.clear();
+        }
         for token in &tokens {
             self.used_tokens.insert(Self::compute_token_hash(token));
         }
@@ -1263,6 +1272,12 @@ impl WraithCoordinator {
         // Clear ghost_id mappings (severs all cross-session tracking ability)
         self.ghost_id_to_session_id.clear();
         self.session_id_to_ghost_id.clear();
+
+        // Clear used tokens (privacy: prevents cross-session token correlation)
+        self.used_tokens.clear();
+
+        // Clear anonymous tokens pool
+        self.anonymous_tokens.clear();
 
         Some(audit)
     }

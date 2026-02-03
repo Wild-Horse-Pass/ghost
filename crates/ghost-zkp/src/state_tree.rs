@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use blstrs::Scalar as Fr;
 use ff::Field;
+use tracing::warn;
 
 use crate::circuit::mimc::{bytes_to_field, field_to_bytes, mimc_hash_native};
 use crate::errors::{ZkError, ZkResult};
@@ -188,8 +189,14 @@ impl BalanceTree {
     /// Uses MiMC to match the circuit implementation:
     /// H(left, right)
     fn hash_pair(&self, left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-        let left_field = bytes_to_field::<Fr>(left).unwrap_or(Fr::ZERO);
-        let right_field = bytes_to_field::<Fr>(right).unwrap_or(Fr::ZERO);
+        let left_field = bytes_to_field::<Fr>(left).unwrap_or_else(|| {
+            warn!("Invalid left bytes in hash_pair, using zero");
+            Fr::ZERO
+        });
+        let right_field = bytes_to_field::<Fr>(right).unwrap_or_else(|| {
+            warn!("Invalid right bytes in hash_pair, using zero");
+            Fr::ZERO
+        });
         let hash = mimc_hash_native(left_field, right_field);
         field_to_bytes(hash)
     }

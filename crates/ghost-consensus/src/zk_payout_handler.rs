@@ -64,9 +64,13 @@ pub type ZkPayoutConsensusCallback =
 pub type ZkPayoutVerifyFn = Arc<dyn Fn(&[u8], u64, u64, u64, u64) -> bool + Send + Sync>;
 
 /// Rate limit max tokens for ZK payout messages (burst capacity)
+/// 50 tokens max allows handling reorg scenarios where multiple proposals
+/// arrive quickly. Normal operation uses ~1 per 10 minute round.
 const ZK_PAYOUT_RATE_LIMIT_MAX_TOKENS: u32 = 50;
 
 /// Rate limit refill rate for ZK payout messages (tokens per second)
+/// 10/sec refill means full bucket refills in 5 seconds, allowing
+/// rapid catch-up after network partitions while still limiting spam.
 const ZK_PAYOUT_RATE_LIMIT_REFILL_RATE: u32 = 10;
 
 /// Configuration for ZK payout vote handler

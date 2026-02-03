@@ -251,12 +251,9 @@ impl BlockVerifier {
         let a_bytes: [u8; 48] = bytes[0..48]
             .try_into()
             .map_err(|_| ZkError::InvalidProof("Failed to read A point".to_string()))?;
-        let a = G1Affine::from_compressed(&a_bytes);
-        let a = if a.is_some().into() {
-            a.unwrap()
-        } else {
-            return Err(ZkError::InvalidProof("Invalid A point".to_string()));
-        };
+        let a: G1Affine = G1Affine::from_compressed(&a_bytes)
+            .into_option()
+            .ok_or_else(|| ZkError::InvalidProof("Invalid A point".to_string()))?;
 
         // SECURITY: Subgroup check
         if !bool::from(a.is_torsion_free()) {
@@ -269,12 +266,9 @@ impl BlockVerifier {
         let b_bytes: [u8; 96] = bytes[48..144]
             .try_into()
             .map_err(|_| ZkError::InvalidProof("Failed to read B point".to_string()))?;
-        let b = G2Affine::from_compressed(&b_bytes);
-        let b = if b.is_some().into() {
-            b.unwrap()
-        } else {
-            return Err(ZkError::InvalidProof("Invalid B point".to_string()));
-        };
+        let b: G2Affine = G2Affine::from_compressed(&b_bytes)
+            .into_option()
+            .ok_or_else(|| ZkError::InvalidProof("Invalid B point".to_string()))?;
 
         // SECURITY: Subgroup check
         if !bool::from(b.is_torsion_free()) {
@@ -287,12 +281,9 @@ impl BlockVerifier {
         let c_bytes: [u8; 48] = bytes[144..192]
             .try_into()
             .map_err(|_| ZkError::InvalidProof("Failed to read C point".to_string()))?;
-        let c = G1Affine::from_compressed(&c_bytes);
-        let c = if c.is_some().into() {
-            c.unwrap()
-        } else {
-            return Err(ZkError::InvalidProof("Invalid C point".to_string()));
-        };
+        let c: G1Affine = G1Affine::from_compressed(&c_bytes)
+            .into_option()
+            .ok_or_else(|| ZkError::InvalidProof("Invalid C point".to_string()))?;
 
         // SECURITY: Subgroup check
         if !bool::from(c.is_torsion_free()) {

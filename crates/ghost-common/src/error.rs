@@ -132,6 +132,9 @@ pub enum GhostError {
     #[error("Rate limited: {0}")]
     RateLimited(String),
 
+    #[error("Node banned: {0}")]
+    NodeBanned(String),
+
     // =========================================================================
     // Share Errors
     // =========================================================================

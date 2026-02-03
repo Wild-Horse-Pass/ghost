@@ -449,8 +449,11 @@ impl CoordinatorSigner {
         if let Some(ref bound_id) = nonce.bound_ghost_id {
             if bound_id != requesting_ghost_id {
                 // Nonce is already consumed, even though verification failed
+                // SECURITY: Log details for audit trail on potential hijacking attempt
                 return Err(WraithError::InvalidSignature(format!(
-                    "Nonce bound to different participant",
+                    "Nonce hijacking attempt: bound to '{}' but signed by '{}'",
+                    &bound_id[..8.min(bound_id.len())],
+                    &requesting_ghost_id[..8.min(requesting_ghost_id.len())]
                 )));
             }
         }
@@ -1042,7 +1045,7 @@ mod tests {
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("Nonce bound to"));
+            .contains("Nonce hijacking attempt"));
 
         // Create a new nonce for the test since the first was not consumed
         // (we got an error before removal)

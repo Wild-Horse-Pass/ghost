@@ -43,7 +43,7 @@ use ff::Field;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::circuit::block::BlockCircuit;
 use crate::circuit::payment::PaymentCircuit;
@@ -285,12 +285,25 @@ impl BlockProver {
             cs.num_constraints()
         );
 
-        // Generate proof bytes (real Groth16 if params available, otherwise simulated)
+        // Generate proof bytes (real Groth16 if params available)
         let proof_bytes = if let Some(ref params) = self.params {
             self.generate_groth16_proof(circuit, params)?
         } else {
-            warn!("Groth16 parameters not available, using simulated proof");
-            self.generate_proof_bytes(witness, cs.num_constraints())
+            // SECURITY: In production, fail-closed when parameters not loaded
+            #[cfg(not(test))]
+            {
+                error!("SECURITY: Groth16 parameters not loaded - cannot generate valid proof");
+                return Err(ZkError::ProvingError(
+                    "Groth16 parameters required but not available. \
+                     Use BlockProver::new_with_setup() to load parameters.".to_string()
+                ));
+            }
+            // Allow simulated proofs in test mode only
+            #[cfg(test)]
+            {
+                warn!("Using simulated proof (test mode only)");
+                self.generate_proof_bytes(witness, cs.num_constraints())
+            }
         };
 
         info!(
@@ -365,8 +378,9 @@ impl BlockProver {
         Ok(circuit)
     }
 
-    /// Generate proof bytes from witness
-    /// This is a placeholder - real implementation would use Groth16
+    /// Generate simulated proof bytes from witness (test mode only)
+    /// This is a placeholder - real implementation uses Groth16
+    #[cfg(test)]
     fn generate_proof_bytes(&self, witness: &BlockWitness, num_constraints: usize) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(b"ghost-zkp-proof-v1");
@@ -457,12 +471,25 @@ impl BlockProver {
             cs.num_constraints()
         );
 
-        // Generate proof bytes (real Groth16 if params available, otherwise simulated)
+        // Generate proof bytes (real Groth16 if params available)
         let proof_bytes = if let Some(ref params) = self.params {
             self.generate_groth16_proof(circuit, params)?
         } else {
-            warn!("Groth16 parameters not available, using simulated proof");
-            self.generate_proof_bytes_v2(witness, cs.num_constraints())
+            // SECURITY: In production, fail-closed when parameters not loaded
+            #[cfg(not(test))]
+            {
+                error!("SECURITY: Groth16 parameters not loaded - cannot generate valid proof");
+                return Err(ZkError::ProvingError(
+                    "Groth16 parameters required but not available. \
+                     Use BlockProver::new_with_setup() to load parameters.".to_string()
+                ));
+            }
+            // Allow simulated proofs in test mode only
+            #[cfg(test)]
+            {
+                warn!("Using simulated proof (test mode only)");
+                self.generate_proof_bytes_v2(witness, cs.num_constraints())
+            }
         };
 
         info!(
@@ -553,7 +580,8 @@ impl BlockProver {
         Ok(circuit)
     }
 
-    /// Generate proof bytes for V2 witness
+    /// Generate simulated proof bytes for V2 witness (test mode only)
+    #[cfg(test)]
     fn generate_proof_bytes_v2(&self, witness: &BlockWitnessV2, num_constraints: usize) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(b"ghost-zkp-proof-v2-state");
