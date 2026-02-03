@@ -106,9 +106,10 @@ impl VerificationClient {
             builder = builder.danger_accept_invalid_certs(true);
         }
 
-        let client = builder
-            .build()
-            .map_err(|e| GhostError::Internal(format!("Failed to create HTTP client: {}", e)))?;
+        let client = builder.build().map_err(|e| {
+            debug!("HTTP client creation error: {}", e);
+            GhostError::Internal("Failed to create HTTP client".to_string())
+        })?;
 
         Ok(Self { client, config })
     }
@@ -156,22 +157,27 @@ impl VerificationClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| GhostError::VerificationTimeout(e.to_string()))?;
+            .map_err(|e| {
+                debug!("Health check request failed: {}", e);
+                GhostError::VerificationTimeout("Health check request failed".to_string())
+            })?;
 
         // Health endpoint returns {"signed": bool, "response": HealthResponse}
         // We request unsigned=true for simplicity, but still need to unwrap
-        let wrapper: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+        let wrapper: serde_json::Value = response.json().await.map_err(|e| {
+            debug!("Health check response parse error: {}", e);
+            GhostError::InvalidVerificationResponse("Invalid health response format".to_string())
+        })?;
 
         // Extract the inner response object
         let inner = wrapper.get("response").ok_or_else(|| {
             GhostError::InvalidVerificationResponse("Missing 'response' field".to_string())
         })?;
 
-        let health: HealthResponse = serde_json::from_value(inner.clone())
-            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+        let health: HealthResponse = serde_json::from_value(inner.clone()).map_err(|e| {
+            debug!("Health response deserialization error: {}", e);
+            GhostError::InvalidVerificationResponse("Invalid health response data".to_string())
+        })?;
 
         Ok(health)
     }
@@ -200,20 +206,25 @@ impl VerificationClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| GhostError::VerificationTimeout(e.to_string()))?;
+            .map_err(|e| {
+                debug!("Archive verification request failed: {}", e);
+                GhostError::VerificationTimeout("Archive verification request failed".to_string())
+            })?;
 
         // Archive endpoint returns {"signed": bool, "response": ArchiveResponse}
-        let wrapper: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+        let wrapper: serde_json::Value = response.json().await.map_err(|e| {
+            debug!("Archive verification response parse error: {}", e);
+            GhostError::InvalidVerificationResponse("Invalid archive response format".to_string())
+        })?;
 
         let inner = wrapper.get("response").ok_or_else(|| {
             GhostError::InvalidVerificationResponse("Missing 'response' field".to_string())
         })?;
 
-        let result: ArchiveResponse = serde_json::from_value(inner.clone())
-            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+        let result: ArchiveResponse = serde_json::from_value(inner.clone()).map_err(|e| {
+            debug!("Archive response deserialization error: {}", e);
+            GhostError::InvalidVerificationResponse("Invalid archive response data".to_string())
+        })?;
 
         Ok(result)
     }
@@ -236,21 +247,26 @@ impl VerificationClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| GhostError::VerificationTimeout(e.to_string()))?;
+            .map_err(|e| {
+                debug!("Policy verification request failed: {}", e);
+                GhostError::VerificationTimeout("Policy verification request failed".to_string())
+            })?;
 
         // Policy endpoint returns {"signed": bool, "response": PolicyResponse}
-        let wrapper: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+        let wrapper: serde_json::Value = response.json().await.map_err(|e| {
+            debug!("Policy verification response parse error: {}", e);
+            GhostError::InvalidVerificationResponse("Invalid policy response format".to_string())
+        })?;
 
         // Extract the inner response object
         let inner = wrapper.get("response").ok_or_else(|| {
             GhostError::InvalidVerificationResponse("Missing 'response' field".to_string())
         })?;
 
-        let result: PolicyResponse = serde_json::from_value(inner.clone())
-            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+        let result: PolicyResponse = serde_json::from_value(inner.clone()).map_err(|e| {
+            debug!("Policy response deserialization error: {}", e);
+            GhostError::InvalidVerificationResponse("Invalid policy response data".to_string())
+        })?;
 
         Ok(result)
     }
@@ -278,20 +294,25 @@ impl VerificationClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| GhostError::VerificationTimeout(e.to_string()))?;
+            .map_err(|e| {
+                debug!("Stratum verification request failed: {}", e);
+                GhostError::VerificationTimeout("Stratum verification request failed".to_string())
+            })?;
 
         // Stratum endpoint returns {"signed": bool, "response": StratumResponse}
-        let wrapper: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+        let wrapper: serde_json::Value = response.json().await.map_err(|e| {
+            debug!("Stratum verification response parse error: {}", e);
+            GhostError::InvalidVerificationResponse("Invalid stratum response format".to_string())
+        })?;
 
         let inner = wrapper.get("response").ok_or_else(|| {
             GhostError::InvalidVerificationResponse("Missing 'response' field".to_string())
         })?;
 
-        let result: StratumResponse = serde_json::from_value(inner.clone())
-            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+        let result: StratumResponse = serde_json::from_value(inner.clone()).map_err(|e| {
+            debug!("Stratum response deserialization error: {}", e);
+            GhostError::InvalidVerificationResponse("Invalid stratum response data".to_string())
+        })?;
 
         Ok(result)
     }
@@ -316,20 +337,25 @@ impl VerificationClient {
             .get(&url)
             .send()
             .await
-            .map_err(|e| GhostError::VerificationTimeout(e.to_string()))?;
+            .map_err(|e| {
+                debug!("GhostPay verification request failed: {}", e);
+                GhostError::VerificationTimeout("GhostPay verification request failed".to_string())
+            })?;
 
         // GhostPay endpoint returns {"signed": bool, "response": GhostPayResponse}
-        let wrapper: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+        let wrapper: serde_json::Value = response.json().await.map_err(|e| {
+            debug!("GhostPay verification response parse error: {}", e);
+            GhostError::InvalidVerificationResponse("Invalid GhostPay response format".to_string())
+        })?;
 
         let inner = wrapper.get("response").ok_or_else(|| {
             GhostError::InvalidVerificationResponse("Missing 'response' field".to_string())
         })?;
 
-        let result: GhostPayResponse = serde_json::from_value(inner.clone())
-            .map_err(|e| GhostError::InvalidVerificationResponse(e.to_string()))?;
+        let result: GhostPayResponse = serde_json::from_value(inner.clone()).map_err(|e| {
+            debug!("GhostPay response deserialization error: {}", e);
+            GhostError::InvalidVerificationResponse("Invalid GhostPay response data".to_string())
+        })?;
 
         Ok(result)
     }

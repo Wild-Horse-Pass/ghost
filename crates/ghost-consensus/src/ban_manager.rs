@@ -34,7 +34,11 @@ use tracing::{info, warn};
 use ghost_common::types::NodeId;
 
 /// Reason for banning a node
+///
+/// P2P4-L4: Marked non_exhaustive to allow adding new ban reasons
+/// in future versions without breaking downstream code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BanReason {
     /// Node signed conflicting votes (Byzantine behavior)
     Equivocation,

@@ -89,6 +89,8 @@ pub struct ZkPayoutVoteHandlerConfig {
     pub rate_limit_max_tokens: u32,
     /// Rate limit refill rate - tokens per second (P2P-C3)
     pub rate_limit_refill_rate: u32,
+    /// P2P4-L5: Rate limit window in seconds for cleanup (default: 300 / 5 minutes)
+    pub rate_limit_window_secs: u64,
 }
 
 impl Default for ZkPayoutVoteHandlerConfig {
@@ -100,6 +102,7 @@ impl Default for ZkPayoutVoteHandlerConfig {
             bft_threshold_percent: 67, // 2/3 majority
             rate_limit_max_tokens: ZK_PAYOUT_RATE_LIMIT_MAX_TOKENS,
             rate_limit_refill_rate: ZK_PAYOUT_RATE_LIMIT_REFILL_RATE,
+            rate_limit_window_secs: 300, // P2P4-L5: 5 minutes default
         }
     }
 }
@@ -216,8 +219,10 @@ impl ZkPayoutVoteHandler {
     }
 
     /// Clean up rate limiter state (call periodically)
+    ///
+    /// P2P4-L5: Uses configurable window from config
     pub fn cleanup_rate_limiter(&self) {
-        self.rate_limiter.cleanup(300); // 5 minute TTL
+        self.rate_limiter.cleanup(self.config.rate_limit_window_secs);
     }
 
     /// Set epoch tracker for settler verification

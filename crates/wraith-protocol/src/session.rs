@@ -146,6 +146,22 @@ impl std::fmt::Display for SessionState {
     }
 }
 
+/// Session configuration for customizable timeouts (WR4-L1)
+#[derive(Debug, Clone, Default)]
+pub struct SessionConfig {
+    /// Custom timeout in seconds (defaults to DEFAULT_TIMEOUT_SECS)
+    pub timeout_secs: Option<u64>,
+}
+
+impl SessionConfig {
+    /// Create a new session config with custom timeout
+    pub fn with_timeout(timeout_secs: u64) -> Self {
+        Self {
+            timeout_secs: Some(timeout_secs),
+        }
+    }
+}
+
 /// A Wraith mixing session
 #[derive(Debug, Clone)]
 pub struct WraithSession {
@@ -173,8 +189,21 @@ pub struct WraithSession {
 }
 
 impl WraithSession {
-    /// Create a new Wraith session
+    /// Create a new Wraith session with default configuration
     pub fn new(tier: ParticipantTier, denomination: WraithDenomination) -> Self {
+        Self::with_config(tier, denomination, SessionConfig::default())
+    }
+
+    /// Create a new Wraith session with custom configuration (WR4-L1)
+    ///
+    /// Allows configurable timeout for different use cases:
+    /// - Short timeouts for testing
+    /// - Long timeouts for high-participant sessions
+    pub fn with_config(
+        tier: ParticipantTier,
+        denomination: WraithDenomination,
+        config: SessionConfig,
+    ) -> Self {
         let now_unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -187,7 +216,8 @@ impl WraithSession {
 
         // Use monotonic clock for timeout (WR-L3)
         // This prevents NTP manipulation attacks on session timeouts
-        let timeout_duration = DEFAULT_TIMEOUT_SECS;
+        // WR4-L1: Allow configurable timeout
+        let timeout_duration = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let timeout_instant = Instant::now() + std::time::Duration::from_secs(timeout_duration);
 
         Self {

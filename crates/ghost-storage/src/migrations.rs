@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 8;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -72,6 +72,10 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
 
     if current_version < 7 {
         migrate_v7(conn)?;
+    }
+
+    if current_version < 8 {
+        migrate_v8(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -660,6 +664,35 @@ fn migrate_v7(conn: &Connection) -> GhostResult<()> {
         -- Points to the old node_id if this identity was rotated from another
         -- Allows tracing the full identity chain
         ALTER TABLE nodes ADD COLUMN rotated_from TEXT;
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Migration to v8: Equivocation proof persistence (P2P4-L7)
+///
+/// Stores equivocation proofs when Byzantine behavior is detected.
+/// These proofs serve as evidence for slashing and forensic analysis.
+fn migrate_v8(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v8: Adding equivocation proofs table");
+
+    conn.execute_batch(
+        r#"
+        -- Equivocation proofs for Byzantine behavior evidence (P2P4-L7)
+        -- Stores cryptographic proof when a node signs conflicting votes
+        CREATE TABLE IF NOT EXISTS equivocation_proofs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            node_id BLOB NOT NULL,
+            proof_data BLOB NOT NULL,
+            detected_at INTEGER NOT NULL,
+            round_number INTEGER,
+            vote_type TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_equivocation_proofs_node ON equivocation_proofs(node_id);
+        CREATE INDEX IF NOT EXISTS idx_equivocation_proofs_round ON equivocation_proofs(round_number);
         "#,
     )
     .map_err(|e| GhostError::Migration(e.to_string()))?;

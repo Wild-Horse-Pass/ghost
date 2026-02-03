@@ -336,6 +336,8 @@ pub struct VoteHandler {
     banned_nodes: RwLock<HashMap<NodeId, Instant>>,
     /// Ban duration for equivocating nodes
     ban_duration: std::time::Duration,
+    /// P2P4-L7: Optional database for persisting equivocation proofs
+    db: Option<Arc<ghost_storage::Database>>,
 }
 
 impl VoteHandler {
@@ -365,7 +367,17 @@ impl VoteHandler {
             ban_manager: None,
             banned_nodes: RwLock::new(HashMap::new()),
             ban_duration: std::time::Duration::from_secs(EQUIVOCATION_BAN_DURATION_SECS),
+            db: None,
         }
+    }
+
+    /// P2P4-L7: Set the database for persisting equivocation proofs
+    ///
+    /// When set, equivocation proofs are persisted for forensic analysis
+    /// and potential slashing implementation.
+    pub fn with_database(mut self, db: Arc<ghost_storage::Database>) -> Self {
+        self.db = Some(db);
+        self
     }
 
     /// Set the shared ban manager for cross-handler enforcement (C1 security fix)
@@ -825,6 +837,31 @@ impl VoteHandler {
                     );
                     // Ban the equivocating node for 10 minutes
                     self.ban_node(sender);
+
+                    // P2P4-L7: Persist equivocation proof to database
+                    if let Some(ref db) = self.db {
+                        // Serialize the proof for storage
+                        let proof_data = serde_json::to_vec(&proof).unwrap_or_default();
+                        if let Err(e) = db.store_equivocation_proof(
+                            &sender,
+                            &proof_data,
+                            Some(vote_msg.round_id),
+                            Some("payout_vote"),
+                        ) {
+                            warn!(
+                                sender = hex::encode(&sender[..8]),
+                                error = %e,
+                                "Failed to persist equivocation proof"
+                            );
+                        } else {
+                            info!(
+                                sender = hex::encode(&sender[..8]),
+                                round_id = vote_msg.round_id,
+                                "Equivocation proof persisted to database"
+                            );
+                        }
+                    }
+
                     // TODO: Broadcast equivocation proof to network for slashing
                     debug!(
                         "Equivocation proof: vote1.approve={}, vote2.approve={}",

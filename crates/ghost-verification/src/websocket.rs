@@ -207,9 +207,19 @@ impl WsState {
     }
 
     /// Broadcast an event to all connected clients
+    ///
+    /// AUTH4-L4: Monitors broadcast failures and logs dropped events.
+    /// This provides backpressure awareness without requiring the metrics crate.
     pub fn broadcast(&self, event: WsEvent) {
-        // Ignore send errors (no subscribers)
-        let _ = self.tx.send(event);
+        match self.tx.send(event) {
+            Ok(subscriber_count) => {
+                debug!(subscribers = subscriber_count, "WebSocket event broadcast");
+            }
+            Err(_) => {
+                // This happens when there are no subscribers or buffer is full
+                warn!("WebSocket broadcast buffer overflow - event dropped");
+            }
+        }
     }
 }
 

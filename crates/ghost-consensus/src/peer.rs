@@ -24,6 +24,7 @@
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use tracing::info;
 
 use ghost_common::types::{NodeCapabilities, NodeId};
 
@@ -67,8 +68,14 @@ impl PeerManager {
     }
 
     /// Remove a peer
+    ///
+    /// P2P4-L1: Logs peer disconnection for observability
     pub fn remove_peer(&self, node_id: &NodeId) -> Option<Peer> {
-        self.peers.write().remove(node_id)
+        let removed = self.peers.write().remove(node_id);
+        if removed.is_some() {
+            info!(node_id = %hex::encode(&node_id[..8]), "Peer removed");
+        }
+        removed
     }
 
     /// Get all peers
@@ -108,9 +115,12 @@ impl PeerManager {
     }
 
     /// Mark peer as disconnected
+    ///
+    /// P2P4-L1: Logs peer disconnection for observability
     pub fn mark_disconnected(&self, node_id: &NodeId) {
         if let Some(peer) = self.peers.write().get_mut(node_id) {
             peer.state = PeerState::Disconnected;
+            info!(node_id = %hex::encode(&node_id[..8]), "Peer disconnected");
         }
     }
 

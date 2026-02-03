@@ -26,12 +26,21 @@
 //! - RpcArchiveHandler: Uses Bitcoin Core RPC
 //! - StratumVerifier: Performs protocol handshake
 
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tracing::debug;
+
+/// AUTH4-L2: Hash an address and return the first 8 characters for anonymized logging
+fn anonymize_addr(addr: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(addr.as_bytes());
+    let result = hasher.finalize();
+    hex::encode(&result[..4])
+}
 
 use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::rpc::BitcoinRpc;
@@ -304,8 +313,9 @@ impl StratumVerifier {
             None
         };
 
+        // AUTH4-L2: Anonymize address in logs to prevent leaking stratum probe targets
         debug!(
-            addr = %addr,
+            addr_hash = %anonymize_addr(&addr),
             valid = is_valid,
             latency_ms = total_latency.as_millis(),
             "SV1 verification complete"
@@ -386,8 +396,9 @@ impl StratumVerifier {
             Err(_) => true,    // Timeout could mean server is processing
         };
 
+        // AUTH4-L2: Anonymize address in logs to prevent leaking stratum probe targets
         debug!(
-            addr = %addr,
+            addr_hash = %anonymize_addr(&addr),
             valid = valid_protocol,
             latency_ms = total_latency.as_millis(),
             "SV2 verification complete"

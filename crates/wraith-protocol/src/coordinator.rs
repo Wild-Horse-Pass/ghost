@@ -35,6 +35,17 @@ const MAX_STRIKES: u32 = 3;
 /// Prevents unbounded memory growth in long-running coordinators
 const MAX_USED_TOKENS: usize = 100_000;
 
+/// WR4-L7: Maximum number of outputs in a single mix transaction
+/// This prevents transactions that exceed Bitcoin's consensus limits
+/// Bitcoin allows ~2500 outputs max, but we use a lower limit for safety
+const MAX_TX_OUTPUTS: usize = 500;
+
+/// WR4-L7: Maximum transaction size in virtual bytes
+/// Standard Bitcoin nodes reject transactions > 100KB
+/// Note: Currently used for documentation; actual size validation happens in build_split_transaction
+#[allow(dead_code)]
+const MAX_TX_SIZE_VBYTES: usize = 100_000;
+
 /// Reputation tracking for participants across sessions
 ///
 /// Tracks participants who fail to complete signing to prevent repeat offenders.
@@ -140,6 +151,122 @@ pub struct SessionAuditRecord {
     pub confirmed_at: u64,
 }
 
+/// WR4-L9: Audit event types for mix operations
+///
+/// These events are logged for security auditing without revealing
+/// participant identities or linking inputs to outputs.
+#[derive(Debug, Clone)]
+pub enum AuditEvent {
+    /// Session created
+    SessionCreated {
+        session_id: [u8; 32],
+        tier: String,
+        denomination: String,
+        timestamp: u64,
+    },
+    /// Participant registered (count only, no identity)
+    ParticipantRegistered {
+        session_id: [u8; 32],
+        participant_count: usize,
+        timestamp: u64,
+    },
+    /// Phase transition occurred
+    PhaseTransition {
+        session_id: [u8; 32],
+        from_state: String,
+        to_state: String,
+        timestamp: u64,
+    },
+    /// Transaction broadcast
+    TransactionBroadcast {
+        session_id: [u8; 32],
+        phase: u8,
+        txid: String,
+        timestamp: u64,
+    },
+    /// Session completed
+    SessionCompleted {
+        session_id: [u8; 32],
+        success: bool,
+        participant_count: usize,
+        timestamp: u64,
+    },
+    /// Error occurred (sanitized message)
+    Error {
+        session_id: [u8; 32],
+        error_type: String,
+        timestamp: u64,
+    },
+}
+
+impl AuditEvent {
+    /// Get the timestamp of the event
+    pub fn timestamp(&self) -> u64 {
+        match self {
+            AuditEvent::SessionCreated { timestamp, .. } => *timestamp,
+            AuditEvent::ParticipantRegistered { timestamp, .. } => *timestamp,
+            AuditEvent::PhaseTransition { timestamp, .. } => *timestamp,
+            AuditEvent::TransactionBroadcast { timestamp, .. } => *timestamp,
+            AuditEvent::SessionCompleted { timestamp, .. } => *timestamp,
+            AuditEvent::Error { timestamp, .. } => *timestamp,
+        }
+    }
+
+    /// Get the session ID of the event
+    pub fn session_id(&self) -> &[u8; 32] {
+        match self {
+            AuditEvent::SessionCreated { session_id, .. } => session_id,
+            AuditEvent::ParticipantRegistered { session_id, .. } => session_id,
+            AuditEvent::PhaseTransition { session_id, .. } => session_id,
+            AuditEvent::TransactionBroadcast { session_id, .. } => session_id,
+            AuditEvent::SessionCompleted { session_id, .. } => session_id,
+            AuditEvent::Error { session_id, .. } => session_id,
+        }
+    }
+}
+
+/// WR4-L9: Audit log trait for recording mix operation events
+///
+/// Implementations can store events in files, databases, or remote services.
+pub trait AuditLog: Send + Sync {
+    /// Record an audit event
+    fn record(&self, event: AuditEvent);
+}
+
+/// WR4-L9: Simple in-memory audit log for testing
+#[derive(Debug, Default)]
+pub struct InMemoryAuditLog {
+    events: parking_lot::RwLock<Vec<AuditEvent>>,
+}
+
+impl InMemoryAuditLog {
+    /// Create a new in-memory audit log
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Get all recorded events
+    pub fn events(&self) -> Vec<AuditEvent> {
+        self.events.read().clone()
+    }
+
+    /// Get event count
+    pub fn event_count(&self) -> usize {
+        self.events.read().len()
+    }
+
+    /// Clear all events
+    pub fn clear(&self) {
+        self.events.write().clear();
+    }
+}
+
+impl AuditLog for InMemoryAuditLog {
+    fn record(&self, event: AuditEvent) {
+        self.events.write().push(event);
+    }
+}
+
 /// Participant in a Wraith session
 #[derive(Debug, Clone)]
 pub struct Participant {
@@ -240,6 +367,8 @@ pub struct WraithCoordinator {
     utxo_verifier: Option<UtxoVerifier>,
     /// Reputation tracker for participants (shared across sessions)
     reputation: Option<Arc<parking_lot::RwLock<ReputationTracker>>>,
+    /// WR4-L9: Optional audit log for recording mix operations
+    audit_log: Option<Arc<dyn AuditLog>>,
 }
 
 /// UTXO verification callback type
@@ -266,7 +395,8 @@ impl WraithCoordinator {
         let session = WraithSession::new(tier, denomination);
         let signer = CoordinatorSigner::new(session.session_id());
 
-        Self {
+        let session_id = *session.session_id();
+        let coordinator = Self {
             session,
             signer,
             participants: HashMap::new(),
@@ -283,7 +413,19 @@ impl WraithCoordinator {
             submitted_addresses: HashSet::new(),
             utxo_verifier: None,
             reputation: None,
-        }
+            audit_log: None,
+        };
+
+        // WR4-L9: Log session creation (if audit log is set later, this won't be recorded)
+        // The actual logging happens when with_audit_log is called
+        tracing::info!(
+            session_id = %hex::encode(session_id),
+            tier = %tier.name(),
+            denomination = ?denomination,
+            "Wraith session created"
+        );
+
+        coordinator
     }
 
     /// Set broadcast callback function
@@ -317,6 +459,43 @@ impl WraithCoordinator {
         self
     }
 
+    /// Set audit log for recording mix operations (WR4-L9)
+    ///
+    /// The audit log records key events without revealing participant identities
+    /// or linking inputs to outputs.
+    pub fn with_audit_log(mut self, audit_log: Arc<dyn AuditLog>) -> Self {
+        // Record session creation event
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        audit_log.record(AuditEvent::SessionCreated {
+            session_id: *self.session.session_id(),
+            tier: self.session.tier().name().to_string(),
+            denomination: format!("{:?}", self.session.denomination()),
+            timestamp: now,
+        });
+
+        self.audit_log = Some(audit_log);
+        self
+    }
+
+    /// Helper to record audit events (WR4-L9)
+    fn log_audit_event(&self, event: AuditEvent) {
+        if let Some(ref audit_log) = self.audit_log {
+            audit_log.record(event);
+        }
+    }
+
+    /// Get current Unix timestamp
+    fn current_timestamp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
     /// Get session ID
     pub fn session_id(&self) -> &[u8; 32] {
         self.session.session_id()
@@ -346,11 +525,21 @@ impl WraithCoordinator {
     ///
     /// Checks reputation (if tracker is set) and rejects banned participants.
     /// Internally uses session-specific IDs to prevent cross-session tracking (WR-M4).
+    /// WR4-L5: Enforces tier participant limit to prevent oversized sessions.
     pub fn register_participant(&mut self, ghost_id: String) -> Result<u32, WraithError> {
         if !matches!(self.session.state(), SessionState::WaitingForParticipants) {
             return Err(WraithError::InvalidState {
                 expected: "WaitingForParticipants".to_string(),
                 actual: format!("{:?}", self.session.state()),
+            });
+        }
+
+        // WR4-L5: Check participant limit before registration
+        let max_participants = self.session.tier().max_participants();
+        if self.participants.len() >= max_participants {
+            return Err(WraithError::SessionFull {
+                current: self.participants.len(),
+                max: max_participants,
             });
         }
 
@@ -383,6 +572,13 @@ impl WraithCoordinator {
         self.session_id_to_ghost_id.insert(session_participant_id.clone(), ghost_id);
         self.participant_order.push(session_participant_id);
         self.session.add_participant();
+
+        // WR4-L9: Log participant registration (count only, not identity)
+        self.log_audit_event(AuditEvent::ParticipantRegistered {
+            session_id: *self.session.session_id(),
+            participant_count: self.participants.len(),
+            timestamp: Self::current_timestamp(),
+        });
 
         Ok(index)
     }
@@ -598,8 +794,8 @@ impl WraithCoordinator {
     fn compute_token_hash(token: &UnblindedToken) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(&token.nonce_point);
-        hasher.update(&token.signature_scalar);
+        hasher.update(token.nonce_point);
+        hasher.update(token.signature_scalar);
         hasher.finalize().into()
     }
 
@@ -678,11 +874,24 @@ impl WraithCoordinator {
     }
 
     /// Build Phase 1 (split) transaction
+    ///
+    /// WR4-L7: Validates transaction size before building to prevent
+    /// transactions that exceed Bitcoin's consensus limits.
     pub fn build_phase1(&mut self) -> Result<&SplitTransaction, WraithError> {
         if !self.ready_for_phase1() {
             return Err(WraithError::PhaseError(
                 "Not all participants have submitted inputs or not enough anonymous tokens".to_string(),
             ));
+        }
+
+        // WR4-L7: Check output count limit
+        // Phase 1 creates SPLIT_RATIO outputs per participant + 1 OP_RETURN
+        let expected_outputs = self.participants.len() * crate::SPLIT_RATIO + 1;
+        if expected_outputs > MAX_TX_OUTPUTS {
+            return Err(WraithError::TransactionError(format!(
+                "Transaction too large: {} outputs exceeds maximum {} outputs",
+                expected_outputs, MAX_TX_OUTPUTS
+            )));
         }
 
         // Transition session state
@@ -839,12 +1048,32 @@ impl WraithCoordinator {
             ));
         }
 
+        // WR4-L9: Log transaction broadcast
+        self.log_audit_event(AuditEvent::TransactionBroadcast {
+            session_id: *self.session.session_id(),
+            phase: 1,
+            txid: txid_str.clone(),
+            timestamp: Self::current_timestamp(),
+        });
+
         Ok(txid_str)
     }
 
     /// Confirm Phase 1 on-chain
     pub fn confirm_phase1(&mut self, block_height: u32) -> Result<(), WraithError> {
-        self.session.confirm_phase1(block_height)
+        let result = self.session.confirm_phase1(block_height);
+
+        // WR4-L9: Log phase transition
+        if result.is_ok() {
+            self.log_audit_event(AuditEvent::PhaseTransition {
+                session_id: *self.session.session_id(),
+                from_state: "ExecutingPhase1".to_string(),
+                to_state: "WaitingPhase1Confirmation".to_string(),
+                timestamp: Self::current_timestamp(),
+            });
+        }
+
+        result
     }
 
     /// Check if ready for Phase 2
@@ -960,6 +1189,14 @@ impl WraithCoordinator {
             phase2.broadcast(txid_str.clone());
         }
 
+        // WR4-L9: Log transaction broadcast
+        self.log_audit_event(AuditEvent::TransactionBroadcast {
+            session_id: *self.session.session_id(),
+            phase: 2,
+            txid: txid_str.clone(),
+            timestamp: Self::current_timestamp(),
+        });
+
         Ok(txid_str)
     }
 
@@ -979,6 +1216,14 @@ impl WraithCoordinator {
                 }
             }
         }
+
+        // WR4-L9: Log session completion
+        self.log_audit_event(AuditEvent::SessionCompleted {
+            session_id: *self.session.session_id(),
+            success: true,
+            participant_count: self.participants.len(),
+            timestamp: Self::current_timestamp(),
+        });
 
         Ok(())
     }
@@ -1063,7 +1308,7 @@ impl WraithCoordinator {
         match self.session.state() {
             SessionState::WaitingForParticipants => {
                 // Not enough participants joined in time - refund
-                self.session.refund();
+                let _ = self.session.refund();
                 Ok(TimeoutAction::Refunded {
                     reason: "Not enough participants joined before timeout".to_string(),
                     participant_count: self.participants.len(),
@@ -1077,7 +1322,7 @@ impl WraithCoordinator {
                     .filter(|(_, p)| p.input.is_none())
                     .map(|(id, _)| id.clone())
                     .collect();
-                self.session.refund();
+                let _ = self.session.refund();
                 Ok(TimeoutAction::Refunded {
                     reason: format!("{} participant(s) didn't submit inputs", missing.len()),
                     participant_count: self.participants.len(),
@@ -1103,7 +1348,7 @@ impl WraithCoordinator {
                     }
                 }
 
-                self.session.fail();
+                let _ = self.session.fail();
                 Ok(TimeoutAction::Failed {
                     phase: 1,
                     reason: format!(
@@ -1133,7 +1378,7 @@ impl WraithCoordinator {
                     }
                 }
 
-                self.session.fail();
+                let _ = self.session.fail();
                 Ok(TimeoutAction::Failed {
                     phase: 2,
                     reason: format!(
@@ -1158,6 +1403,50 @@ impl WraithCoordinator {
     /// Extend session timeout (for slow confirmation phases)
     pub fn extend_timeout(&mut self, additional_secs: u64) {
         self.session.extend_timeout(additional_secs);
+    }
+
+    /// End the session and clear all sensitive data (WR4-L2)
+    ///
+    /// This method should be called when a session ends (either successfully or due to failure).
+    /// It clears all session-specific data including:
+    /// - Used tokens (prevents unbounded memory growth)
+    /// - Anonymous tokens
+    /// - Participant data
+    /// - Transaction outputs
+    ///
+    /// SECURITY: This ensures tokens are cleaned up per-session rather than globally,
+    /// preventing token tracking across sessions.
+    pub fn end_session(&mut self) {
+        // Clear used tokens for this session
+        self.used_tokens.clear();
+
+        // Clear anonymous token pool
+        self.anonymous_tokens.clear();
+
+        // Clear submitted addresses
+        self.submitted_addresses.clear();
+
+        // Clear Phase 1 outputs
+        self.phase1_outputs.clear();
+
+        // Clear participant-linked data
+        for participant in self.participants.values_mut() {
+            participant.tokens.clear();
+            participant.blinded_challenges.clear();
+            participant.signature_responses.clear();
+            participant.issued_nonces.clear();
+            participant.input = None;
+            participant.final_address = None;
+        }
+
+        // Clear ghost_id mappings
+        self.ghost_id_to_session_id.clear();
+        self.session_id_to_ghost_id.clear();
+
+        tracing::debug!(
+            session_id = %self.session_id_hex(),
+            "Session ended and sensitive data cleared"
+        );
     }
 
     /// Get session created timestamp

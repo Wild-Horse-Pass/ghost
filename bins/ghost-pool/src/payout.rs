@@ -44,6 +44,9 @@ use ghost_consensus::vote_handler::{compute_proposal_hash, VoteHandler};
 use ghost_storage::Database;
 use ghost_verification::QualifiedCapabilityProvider;
 
+// Re-export payout history types from storage crate
+pub use ghost_storage::{PayoutHistoryQuery, RoundPayoutSummary};
+
 use crate::template::TemplateProcessor;
 use crate::treasury::{FeeDistribution, TreasuryState};
 
@@ -717,6 +720,20 @@ impl PayoutProposalCreator {
         // Return empty - caller will handle this by treating as dust
         // which gets redistributed to top node or treasury
         Ok(Vec::new())
+    }
+
+    /// Get paginated payout history
+    ///
+    /// Returns a list of round payout summaries matching the query parameters.
+    /// Results are ordered by block height descending (most recent first).
+    ///
+    /// # Arguments
+    /// * `query` - Query parameters including limit, offset, and optional height filters
+    ///
+    /// # Returns
+    /// Vec of RoundPayoutSummary containing aggregated payout info per round
+    pub fn get_payout_history(&self, query: PayoutHistoryQuery) -> GhostResult<Vec<RoundPayoutSummary>> {
+        self.db.query_payout_history(query)
     }
 }
 

@@ -854,6 +854,115 @@ pub struct RecentShare {
     pub valid: bool,
 }
 
+// =============================================================================
+// PAYOUT HISTORY MODELS
+// =============================================================================
+
+/// Query parameters for paginated payout history
+#[derive(Debug, Clone)]
+pub struct PayoutHistoryQuery {
+    /// Maximum number of results to return (default: 100)
+    pub limit: u32,
+    /// Number of results to skip (for pagination)
+    pub offset: u32,
+    /// Only include payouts at or above this block height
+    pub min_height: Option<u64>,
+    /// Only include payouts at or below this block height
+    pub max_height: Option<u64>,
+}
+
+impl Default for PayoutHistoryQuery {
+    fn default() -> Self {
+        Self {
+            limit: 100,
+            offset: 0,
+            min_height: None,
+            max_height: None,
+        }
+    }
+}
+
+impl PayoutHistoryQuery {
+    /// Create a new query with just a limit
+    pub fn with_limit(limit: u32) -> Self {
+        Self {
+            limit,
+            ..Default::default()
+        }
+    }
+
+    /// Set the offset for pagination
+    pub fn with_offset(mut self, offset: u32) -> Self {
+        self.offset = offset;
+        self
+    }
+
+    /// Filter by minimum block height
+    pub fn with_min_height(mut self, height: u64) -> Self {
+        self.min_height = Some(height);
+        self
+    }
+
+    /// Filter by maximum block height
+    pub fn with_max_height(mut self, height: u64) -> Self {
+        self.max_height = Some(height);
+        self
+    }
+}
+
+/// Summary of payouts for a single round (for history display)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoundPayoutSummary {
+    /// Round ID
+    pub round_id: u64,
+    /// Block height
+    pub block_height: u64,
+    /// Block hash (hex)
+    pub block_hash: Option<String>,
+    /// Total miners paid
+    pub miner_count: u32,
+    /// Total nodes paid
+    pub node_count: u32,
+    /// Total miner payouts (satoshis)
+    pub total_miner_sats: u64,
+    /// Total node payouts (satoshis)
+    pub total_node_sats: u64,
+    /// Treasury amount (satoshis)
+    pub treasury_sats: u64,
+    /// TX fees (satoshis)
+    pub tx_fees_sats: u64,
+    /// Payout status
+    pub status: String,
+    /// Created timestamp
+    pub created_at: i64,
+}
+
+// =============================================================================
+// EQUIVOCATION PROOF RECORDS (P2P4-L7)
+// =============================================================================
+
+/// Equivocation proof record for Byzantine behavior evidence
+///
+/// P2P4-L7: Stores cryptographic proof when a node is caught signing
+/// conflicting votes, providing evidence for slashing and audit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EquivocationProofRecord {
+    /// Auto-increment ID
+    pub id: i64,
+    /// Node ID that committed equivocation (32-byte blob)
+    pub node_id: Vec<u8>,
+    /// Serialized equivocation proof (both conflicting votes)
+    pub proof_data: Vec<u8>,
+    /// Unix timestamp when equivocation was detected
+    pub detected_at: i64,
+    /// Optional round number where equivocation occurred
+    pub round_number: Option<i64>,
+    /// Optional vote type description (e.g., "payout", "block")
+    pub vote_type: Option<String>,
+    /// Database creation timestamp
+    pub created_at: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

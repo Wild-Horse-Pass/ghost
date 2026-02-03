@@ -62,17 +62,62 @@ const MAX_TOTAL_NONCES: usize = 1000;
 /// Nonce expiry time (1 hour)
 const NONCE_EXPIRY_SECS: u64 = 3600;
 
-/// Generate random 32 bytes for key material
-fn random_bytes_32() -> [u8; 32] {
+/// Generate random 32 bytes for key material (WR4-L3)
+///
+/// Validates entropy quality after generation to detect RNG failures.
+/// Returns an error if entropy is insufficient.
+fn random_bytes_32() -> Result<[u8; 32], WraithError> {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
-    bytes
+
+    // WR4-L3: Validate entropy quality
+    // Check for pathological cases indicating RNG failure
+    if bytes.iter().all(|&b| b == 0) {
+        return Err(WraithError::MissingData(
+            "Entropy error: all zeros - RNG failure detected".to_string(),
+        ));
+    }
+    if bytes.iter().all(|&b| b == 0xff) {
+        return Err(WraithError::MissingData(
+            "Entropy error: all ones - RNG failure detected".to_string(),
+        ));
+    }
+
+    // Additional check: ensure some minimum byte diversity
+    // At least 4 unique byte values in 32 bytes is a very low bar
+    // that should always pass for working RNG but catches stuck bits
+    let mut unique_bytes = std::collections::HashSet::new();
+    for &b in &bytes {
+        unique_bytes.insert(b);
+    }
+    if unique_bytes.len() < 4 {
+        return Err(WraithError::MissingData(format!(
+            "Entropy error: insufficient diversity ({} unique bytes) - RNG failure detected",
+            unique_bytes.len()
+        )));
+    }
+
+    Ok(bytes)
+}
+
+/// Generate random 32 bytes for key material (infallible version for key generation)
+///
+/// This version loops until valid entropy is obtained. Use for critical key generation
+/// where we cannot propagate errors but must have valid keys.
+fn random_bytes_32_infallible() -> [u8; 32] {
+    loop {
+        if let Ok(bytes) = random_bytes_32() {
+            return bytes;
+        }
+        // If we get here, RNG is broken - log and retry
+        tracing::error!("RNG produced invalid entropy, retrying...");
+    }
 }
 
 /// Generate a random secret key
 fn random_secret_key() -> SecretKey {
     loop {
-        let bytes = random_bytes_32();
+        let bytes = random_bytes_32_infallible();
         if let Ok(sk) = SecretKey::from_slice(&bytes) {
             return sk;
         }
@@ -200,6 +245,24 @@ pub struct BlindSignatureResponse {
     pub session_id: [u8; 32],
 }
 
+/// WR4-L10: Key rotation grace period in seconds
+/// Old keys are kept for this duration to verify in-flight signatures
+const KEY_ROTATION_GRACE_PERIOD_SECS: u64 = 300; // 5 minutes
+
+/// WR4-L10: Previous key information for verification of in-flight signatures
+#[derive(Debug)]
+struct PreviousKey {
+    /// The old signing key
+    #[allow(dead_code)]
+    signing_key: SecretKey,
+    /// The old public key
+    public_key: PublicKey,
+    /// The old key ID
+    key_id: [u8; 32],
+    /// When this key was rotated out
+    rotated_at: Instant,
+}
+
 /// Coordinator's signing key for a Wraith session
 ///
 /// Each session has a unique signing key. The coordinator uses this to
@@ -211,10 +274,14 @@ pub struct CoordinatorSigner {
     public_key: PublicKey,
     /// Session key identifier
     key_id: [u8; 32],
+    /// Session ID (for key ID regeneration on rotation)
+    session_id: [u8; 32],
     /// Active signing nonces (indexed by session_id)
     active_nonces: std::collections::HashMap<[u8; 32], SigningNonce>,
     /// Per-participant nonce count for rate limiting
     nonces_per_participant: std::collections::HashMap<String, usize>,
+    /// WR4-L10: Previous keys kept for grace period to verify in-flight signatures
+    previous_keys: Vec<PreviousKey>,
 }
 
 impl std::fmt::Debug for CoordinatorSigner {
@@ -246,8 +313,10 @@ impl CoordinatorSigner {
             signing_key,
             public_key,
             key_id,
+            session_id: *session_id,
             active_nonces: std::collections::HashMap::new(),
             nonces_per_participant: std::collections::HashMap::new(),
+            previous_keys: Vec::new(), // WR4-L10
         }
     }
 
@@ -269,8 +338,10 @@ impl CoordinatorSigner {
             signing_key,
             public_key,
             key_id,
+            session_id: *session_id,
             active_nonces: std::collections::HashMap::new(),
             nonces_per_participant: std::collections::HashMap::new(),
+            previous_keys: Vec::new(), // WR4-L10
         })
     }
 
@@ -327,7 +398,7 @@ impl CoordinatorSigner {
         engine.input(b"wraith/nonce-session/v2"); // v2 includes ghost_id
         engine.input(&public_nonce.serialize());
         engine.input(ghost_id.as_bytes()); // Bind to participant
-        engine.input(&random_bytes_32());
+        engine.input(&random_bytes_32_infallible());
         let session_id = sha256::Hash::from_engine(engine).to_byte_array();
 
         let nonce = SigningNonce {
@@ -402,7 +473,7 @@ impl CoordinatorSigner {
         let mut engine = sha256::Hash::engine();
         engine.input(b"wraith/nonce-session/v1");
         engine.input(&public_nonce.serialize());
-        engine.input(&random_bytes_32());
+        engine.input(&random_bytes_32_infallible());
         let session_id = sha256::Hash::from_engine(engine).to_byte_array();
 
         let nonce = SigningNonce {
@@ -449,12 +520,16 @@ impl CoordinatorSigner {
         if let Some(ref bound_id) = nonce.bound_ghost_id {
             if bound_id != requesting_ghost_id {
                 // Nonce is already consumed, even though verification failed
-                // SECURITY: Log details for audit trail on potential hijacking attempt
-                return Err(WraithError::InvalidSignature(format!(
-                    "Nonce hijacking attempt: bound to '{}' but signed by '{}'",
+                // WR4-L6: Log details internally but return sanitized error to client
+                // This prevents information leakage about nonce bindings
+                tracing::warn!(
+                    "Nonce hijacking attempt detected: bound to '{}' but signed by '{}'",
                     &bound_id[..8.min(bound_id.len())],
                     &requesting_ghost_id[..8.min(requesting_ghost_id.len())]
-                )));
+                );
+                return Err(WraithError::InvalidSignature(
+                    "Signature verification failed".to_string(),
+                ));
             }
         }
         // Note: If nonce is unbound (from deprecated create_nonce), we allow it for backwards compat
@@ -624,6 +699,141 @@ impl CoordinatorSigner {
     /// Get the number of nonces per participant (for monitoring)
     pub fn nonces_per_participant(&self) -> &std::collections::HashMap<String, usize> {
         &self.nonces_per_participant
+    }
+
+    /// WR4-L10: Rotate the signing key
+    ///
+    /// Generates a new signing key while keeping the old key for a grace period
+    /// to verify in-flight signatures. This allows key rotation without disrupting
+    /// ongoing signing operations.
+    ///
+    /// # Returns
+    ///
+    /// The new public key after rotation.
+    pub fn rotate_key(&mut self) -> PublicKey {
+        let secp = Secp256k1::new();
+
+        // Store old key for grace period
+        let previous = PreviousKey {
+            signing_key: self.signing_key,
+            public_key: self.public_key,
+            key_id: self.key_id,
+            rotated_at: Instant::now(),
+        };
+        self.previous_keys.push(previous);
+
+        // Generate new key
+        let new_signing_key = random_secret_key();
+        let new_public_key = PublicKey::from_secret_key(&secp, &new_signing_key);
+
+        // Generate new key ID
+        let mut engine = sha256::Hash::engine();
+        engine.input(b"wraith/key-id/v1");
+        engine.input(&self.session_id);
+        engine.input(&new_public_key.serialize());
+        let new_key_id = sha256::Hash::from_engine(engine).to_byte_array();
+
+        // Activate new key
+        self.signing_key = new_signing_key;
+        self.public_key = new_public_key;
+        self.key_id = new_key_id;
+
+        // Clean old keys past grace period
+        self.cleanup_old_keys();
+
+        tracing::info!(
+            new_key_id = %hex::encode(&self.key_id[..8]),
+            previous_keys = self.previous_keys.len(),
+            "Signing key rotated"
+        );
+
+        self.public_key
+    }
+
+    /// WR4-L10: Clean up old keys that are past the grace period
+    fn cleanup_old_keys(&mut self) {
+        let cutoff = Instant::now() - std::time::Duration::from_secs(KEY_ROTATION_GRACE_PERIOD_SECS);
+        let before = self.previous_keys.len();
+        self.previous_keys.retain(|pk| pk.rotated_at > cutoff);
+        let removed = before - self.previous_keys.len();
+        if removed > 0 {
+            tracing::debug!(
+                removed = removed,
+                remaining = self.previous_keys.len(),
+                "Cleaned up expired previous keys"
+            );
+        }
+    }
+
+    /// WR4-L10: Verify a signature, checking both current and previous keys
+    ///
+    /// This allows verification of signatures created before a key rotation,
+    /// as long as they're within the grace period.
+    pub fn verify_signature_with_rotation(&self, token: &UnblindedToken) -> Result<bool, WraithError> {
+        // First try current key
+        if token.session_key_id == self.key_id {
+            return self.verify_signature(token);
+        }
+
+        // Check previous keys within grace period
+        for prev in &self.previous_keys {
+            if token.session_key_id == prev.key_id {
+                // Verify with the previous key
+                return self.verify_signature_with_key(token, &prev.public_key, &prev.key_id);
+            }
+        }
+
+        // Key ID not found in current or previous keys
+        Ok(false)
+    }
+
+    /// WR4-L10: Verify a signature with a specific key
+    fn verify_signature_with_key(
+        &self,
+        token: &UnblindedToken,
+        pubkey: &PublicKey,
+        expected_key_id: &[u8; 32],
+    ) -> Result<bool, WraithError> {
+        let secp = Secp256k1::new();
+
+        // Check key ID
+        if token.session_key_id != *expected_key_id {
+            return Ok(false);
+        }
+
+        // Parse signature components
+        let r_prime = PublicKey::from_slice(&token.nonce_point)
+            .map_err(|e| WraithError::InvalidSignature(format!("Invalid nonce point: {}", e)))?;
+
+        let s_prime = SecretKey::from_slice(&token.signature_scalar).map_err(|e| {
+            WraithError::InvalidSignature(format!("Invalid signature scalar: {}", e))
+        })?;
+
+        // Compute challenge c = H(X || R' || m)
+        let challenge = compute_challenge(pubkey, &r_prime, &token.message);
+
+        // Verify: s'*G == R' + c*X
+        let s_g = PublicKey::from_secret_key(&secp, &s_prime);
+
+        let c_scalar = SecretKey::from_slice(&challenge)
+            .map_err(|e| WraithError::InvalidSignature(format!("Invalid challenge: {}", e)))?;
+
+        // Compute c*X
+        let c_x = pubkey
+            .mul_tweak(&secp, &Scalar::from(c_scalar))
+            .map_err(|e| WraithError::PhaseError(format!("Point multiply failed: {}", e)))?;
+
+        // Compute R' + c*X
+        let expected = r_prime
+            .combine(&c_x)
+            .map_err(|e| WraithError::PhaseError(format!("Point add failed: {}", e)))?;
+
+        Ok(s_g == expected)
+    }
+
+    /// WR4-L10: Get the number of previous keys still in grace period
+    pub fn previous_key_count(&self) -> usize {
+        self.previous_keys.len()
     }
 }
 
@@ -1101,10 +1311,11 @@ mod tests {
             result.is_err(),
             "Signing with wrong participant should fail"
         );
+        // WR4-L6: Error message is now sanitized to prevent information leakage
         assert!(result
             .unwrap_err()
             .to_string()
-            .contains("Nonce hijacking attempt"));
+            .contains("Signature verification failed"));
 
         // Create a new nonce for the test since the first was not consumed
         // (we got an error before removal)

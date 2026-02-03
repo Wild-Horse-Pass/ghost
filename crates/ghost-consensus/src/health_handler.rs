@@ -323,12 +323,7 @@ impl HealthPingHandler {
             .as_millis() as u64;
 
         let max_drift_ms = self.config.max_timestamp_drift_secs * 1000;
-        let diff = if timestamp > now {
-            timestamp - now
-        } else {
-            now - timestamp
-        };
-        diff <= max_drift_ms
+        timestamp.abs_diff(now) <= max_drift_ms
     }
 
     /// Check if node can register as voter (C2 security fix)

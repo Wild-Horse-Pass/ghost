@@ -36,27 +36,52 @@ use ghost_storage::Database;
 const SECONDS_PER_DAY: i64 = 86_400;
 
 /// Configuration for capability qualification
+///
+/// AUTH4-L3: Per-capability pass rates allow different thresholds based on
+/// the difficulty/importance of each capability verification.
 #[derive(Debug, Clone)]
 pub struct QualificationConfig {
     /// Minimum number of challenges required per capability
     pub min_challenges: u32,
-    /// Minimum pass rate required (0.0 to 1.0)
-    pub min_pass_rate: f64,
+    /// Minimum pass rate for Archive capability (0.0 to 1.0)
+    pub archive_pass_rate: f64,
+    /// Minimum pass rate for GhostPay capability (0.0 to 1.0)
+    pub ghostpay_pass_rate: f64,
+    /// Minimum pass rate for Stratum/Public Mining capability (0.0 to 1.0)
+    pub stratum_pass_rate: f64,
+    /// Minimum pass rate for Bitcoin Pure/Policy capability (0.0 to 1.0)
+    pub policy_pass_rate: f64,
     /// Lookback period in days for uptime and challenges
     pub lookback_days: u32,
     /// Minimum uptime percentage required (gatekeeper)
     pub min_uptime: f64,
 }
 
+impl QualificationConfig {
+    /// Get the pass rate for a specific capability type
+    pub fn pass_rate_for(&self, capability: &str) -> f64 {
+        match capability {
+            "archive" => self.archive_pass_rate,
+            "ghostpay" => self.ghostpay_pass_rate,
+            "stratum" => self.stratum_pass_rate,
+            "policy" => self.policy_pass_rate,
+            _ => self.archive_pass_rate, // Default to archive rate
+        }
+    }
+}
+
 impl Default for QualificationConfig {
     fn default() -> Self {
         use ghost_common::constants::{
-            ARCHIVE_PASS_RATE, MIN_CHALLENGES_FOR_QUALIFICATION, UPTIME_GATEKEEPER_THRESHOLD,
-            UPTIME_WINDOW_DAYS,
+            ARCHIVE_PASS_RATE, GHOSTPAY_PASS_RATE, MIN_CHALLENGES_FOR_QUALIFICATION,
+            POLICY_PASS_RATE, STRATUM_PASS_RATE, UPTIME_GATEKEEPER_THRESHOLD, UPTIME_WINDOW_DAYS,
         };
         Self {
             min_challenges: MIN_CHALLENGES_FOR_QUALIFICATION as u32,
-            min_pass_rate: ARCHIVE_PASS_RATE,
+            archive_pass_rate: ARCHIVE_PASS_RATE,
+            ghostpay_pass_rate: GHOSTPAY_PASS_RATE,
+            stratum_pass_rate: STRATUM_PASS_RATE,
+            policy_pass_rate: POLICY_PASS_RATE,
             lookback_days: UPTIME_WINDOW_DAYS as u32,
             min_uptime: UPTIME_GATEKEEPER_THRESHOLD / 100.0, // 95% -> 0.95
         }
@@ -161,6 +186,7 @@ impl QualifiedCapabilityProvider {
             .get_ghostpay_pass_rate(&node_id_hex, since)
             .unwrap_or((0, 0));
 
+        // AUTH4-L3: Log per-capability pass rate requirements
         info!(
             node = %&node_id_hex[..8],
             archive = format!("{}/{}", archive_stats.0, archive_stats.1),
@@ -168,7 +194,8 @@ impl QualifiedCapabilityProvider {
             stratum = format!("{}/{}", stratum_stats.0, stratum_stats.1),
             ghostpay = format!("{}/{}", ghostpay_stats.0, ghostpay_stats.1),
             min_challenges = self.config.min_challenges,
-            min_pass_rate = format!("{:.0}%", self.config.min_pass_rate * 100.0),
+            archive_rate = format!("{:.0}%", self.config.archive_pass_rate * 100.0),
+            ghostpay_rate = format!("{:.0}%", self.config.ghostpay_pass_rate * 100.0),
             "DIAG: Node challenge stats"
         );
 
@@ -178,11 +205,14 @@ impl QualifiedCapabilityProvider {
         }
 
         // Get qualified capabilities from database
+        // AUTH4-L3: Use archive_pass_rate as the baseline (0.95), but each capability
+        // has its own threshold. The database uses a single rate for all capabilities,
+        // so we use the strictest common rate here.
         match self.db.get_qualified_capabilities(
             &node_id_hex,
             since,
             self.config.min_challenges,
-            self.config.min_pass_rate,
+            self.config.archive_pass_rate,
         ) {
             Ok(caps) => {
                 info!(
@@ -222,12 +252,13 @@ impl QualifiedCapabilityProvider {
         }
 
         // Get qualified capabilities from database
+        // AUTH4-L3: Use archive_pass_rate as the baseline
         self.db
             .get_qualified_capabilities(
                 node_id_hex,
                 since,
                 self.config.min_challenges,
-                self.config.min_pass_rate,
+                self.config.archive_pass_rate,
             )
             .unwrap_or_default()
     }
@@ -273,13 +304,14 @@ impl QualifiedCapabilityProvider {
             }
 
             // Get qualified capabilities
+            // AUTH4-L3: Use archive_pass_rate as the baseline
             let caps = self
                 .db
                 .get_qualified_capabilities(
                     node_id_hex,
                     since,
                     self.config.min_challenges,
-                    self.config.min_pass_rate,
+                    self.config.archive_pass_rate,
                 )
                 .unwrap_or_default();
 
@@ -355,12 +387,13 @@ impl QualifiedCapabilityProvider {
             ghostpay_challenges: ghostpay.1,
             ghostpay_passed: ghostpay.0,
             qualified_capabilities: if passes_uptime {
+                // AUTH4-L3: Use archive_pass_rate as the baseline
                 self.db
                     .get_qualified_capabilities(
                         &hex::encode(node_id),
                         since,
                         self.config.min_challenges,
-                        self.config.min_pass_rate,
+                        self.config.archive_pass_rate,
                     )
                     .unwrap_or_default()
             } else {
@@ -445,7 +478,11 @@ mod tests {
             config.min_challenges,
             ghost_common::constants::MIN_CHALLENGES_FOR_QUALIFICATION as u32
         );
-        assert!((config.min_pass_rate - 0.95).abs() < 0.001);
+        // AUTH4-L3: Test per-capability pass rates
+        assert!((config.archive_pass_rate - 0.95).abs() < 0.001);
+        assert!((config.ghostpay_pass_rate - 0.90).abs() < 0.001);
+        assert!((config.stratum_pass_rate - 0.95).abs() < 0.001);
+        assert!((config.policy_pass_rate - 0.95).abs() < 0.001);
         assert_eq!(config.lookback_days, 7);
         assert!((config.min_uptime - 0.95).abs() < 0.001);
     }

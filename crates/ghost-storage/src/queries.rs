@@ -2327,6 +2327,101 @@ impl Database {
         })
     }
 
+    /// Query paginated payout history
+    ///
+    /// Returns round payout summaries ordered by block height descending.
+    /// Results are grouped by round and include aggregated payout information.
+    ///
+    /// The query joins the rounds and payouts tables to provide a complete
+    /// picture of each round's payout distribution.
+    pub fn query_payout_history(
+        &self,
+        query: PayoutHistoryQuery,
+    ) -> GhostResult<Vec<RoundPayoutSummary>> {
+        self.with_connection(|conn| {
+            // Build the SQL query with optional height filters
+            // We join rounds with payouts to get complete information
+            // and aggregate payout counts and amounts by recipient type
+            let sql = "
+                SELECT
+                    r.round_id,
+                    r.block_height,
+                    r.block_hash,
+                    COALESCE(SUM(CASE WHEN p.recipient_type = 'miner' THEN 1 ELSE 0 END), 0) as miner_count,
+                    COALESCE(SUM(CASE WHEN p.recipient_type = 'node' OR p.recipient_type = 'tx_fees' THEN 1 ELSE 0 END), 0) as node_count,
+                    COALESCE(SUM(CASE WHEN p.recipient_type = 'miner' THEN p.amount_sats ELSE 0 END), 0) as total_miner_sats,
+                    COALESCE(SUM(CASE WHEN p.recipient_type = 'node' THEN p.amount_sats ELSE 0 END), 0) as total_node_sats,
+                    COALESCE(SUM(CASE WHEN p.recipient_type = 'treasury' THEN p.amount_sats ELSE 0 END), 0) as treasury_sats,
+                    COALESCE(r.tx_fees_sats, 0) as tx_fees_sats,
+                    r.payout_status,
+                    COALESCE(MIN(p.created_at), r.start_time) as created_at
+                FROM rounds r
+                LEFT JOIN payouts p ON r.round_id = p.round_id
+                WHERE r.payout_status IN ('pending', 'approved', 'broadcast', 'confirmed')
+                    AND ($1 IS NULL OR r.block_height >= $1)
+                    AND ($2 IS NULL OR r.block_height <= $2)
+                GROUP BY r.round_id
+                ORDER BY r.block_height DESC
+                LIMIT $3 OFFSET $4
+            ";
+
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let summaries = stmt
+                .query_map(
+                    params![
+                        query.min_height,
+                        query.max_height,
+                        query.limit,
+                        query.offset
+                    ],
+                    |row| {
+                        Ok(RoundPayoutSummary {
+                            round_id: row.get(0)?,
+                            block_height: row.get(1)?,
+                            block_hash: row.get(2)?,
+                            miner_count: row.get::<_, i64>(3)? as u32,
+                            node_count: row.get::<_, i64>(4)? as u32,
+                            total_miner_sats: row.get::<_, i64>(5)? as u64,
+                            total_node_sats: row.get::<_, i64>(6)? as u64,
+                            treasury_sats: row.get::<_, i64>(7)? as u64,
+                            tx_fees_sats: row.get::<_, i64>(8)? as u64,
+                            status: row.get(9)?,
+                            created_at: row.get(10)?,
+                        })
+                    },
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(summaries)
+        })
+    }
+
+    /// Get total count of rounds with payouts (for pagination metadata)
+    pub fn get_payout_round_count(
+        &self,
+        min_height: Option<u64>,
+        max_height: Option<u64>,
+    ) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT round_id) FROM rounds
+                     WHERE payout_status IN ('pending', 'approved', 'broadcast', 'confirmed')
+                       AND ($1 IS NULL OR block_height >= $1)
+                       AND ($2 IS NULL OR block_height <= $2)",
+                    params![min_height, max_height],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u64)
+        })
+    }
+
     // =========================================================================
     // KEY ROTATION WITH ELDER STATUS TRANSFER
     // =========================================================================
@@ -3101,6 +3196,97 @@ impl Database {
             elder_status: elder_qualified,
         })
     }
+
+    // =========================================================================
+    // EQUIVOCATION PROOF QUERIES (P2P4-L7)
+    // =========================================================================
+
+    /// Store an equivocation proof for a Byzantine node
+    ///
+    /// P2P4-L7: Persists cryptographic proof when a node is caught signing
+    /// conflicting votes. This evidence is used for:
+    /// - Forensic analysis
+    /// - Future slashing implementation
+    /// - Audit trail
+    ///
+    /// # Arguments
+    /// * `node_id` - The node that committed equivocation (32-byte NodeId)
+    /// * `proof_data` - Serialized equivocation proof (both conflicting votes)
+    /// * `round_number` - Optional round number where equivocation occurred
+    /// * `vote_type` - Optional description of the vote type (e.g., "payout", "block")
+    pub fn store_equivocation_proof(
+        &self,
+        node_id: &[u8; 32],
+        proof_data: &[u8],
+        round_number: Option<u64>,
+        vote_type: Option<&str>,
+    ) -> GhostResult<i64> {
+        self.with_connection(|conn| {
+            let now = chrono::Utc::now().timestamp();
+            conn.execute(
+                "INSERT INTO equivocation_proofs (node_id, proof_data, detected_at, round_number, vote_type)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    node_id.as_slice(),
+                    proof_data,
+                    now,
+                    round_number.map(|r| r as i64),
+                    vote_type,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    /// Get equivocation proofs for a node
+    ///
+    /// Returns all stored equivocation proofs for forensic analysis.
+    pub fn get_equivocation_proofs(&self, node_id: &[u8; 32]) -> GhostResult<Vec<EquivocationProofRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, node_id, proof_data, detected_at, round_number, vote_type, created_at
+                     FROM equivocation_proofs WHERE node_id = ?1 ORDER BY detected_at DESC",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let proofs = stmt
+                .query_map([node_id.as_slice()], |row| {
+                    Ok(EquivocationProofRecord {
+                        id: row.get(0)?,
+                        node_id: row.get(1)?,
+                        proof_data: row.get(2)?,
+                        detected_at: row.get(3)?,
+                        round_number: row.get(4)?,
+                        vote_type: row.get(5)?,
+                        created_at: row.get(6)?,
+                    })
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(proofs)
+        })
+    }
+
+    /// Count equivocation events for a node
+    ///
+    /// Useful for tracking repeat offenders.
+    pub fn count_equivocation_events(&self, node_id: &[u8; 32]) -> GhostResult<u32> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM equivocation_proofs WHERE node_id = ?1",
+                    [node_id.as_slice()],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u32)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -3332,5 +3518,100 @@ mod tests {
 
         let pending = db.get_pending_reconciliation_batches().unwrap();
         assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn test_payout_history_pagination() {
+        let db = Database::in_memory().unwrap();
+        let now = chrono::Utc::now().timestamp();
+
+        // Create test rounds with payouts
+        for i in 0..5 {
+            let round = RoundRecord {
+                round_id: i as u64,
+                block_height: 800000 + i as u64,
+                block_hash: Some(format!("hash{}", i)),
+                start_time: now - (5 - i) as i64 * 100,
+                end_time: Some(now - (4 - i) as i64 * 100),
+                total_shares: 100,
+                total_work: 1000.0,
+                winning_miner: Some("miner1".to_string()),
+                found_by_node: Some("node1".to_string()),
+                payout_status: PayoutStatus::Confirmed,
+                subsidy_sats: Some(312500000),
+                tx_fees_sats: Some(1000000),
+            };
+            db.create_round(&round).unwrap();
+
+            // Add some payouts for each round
+            let miner_payout = PayoutRecord {
+                id: None,
+                round_id: i as u64,
+                recipient_id: "miner1".to_string(),
+                recipient_type: RecipientType::Miner,
+                address: "bc1qminer".to_string(),
+                amount_sats: 309000000,
+                txid: None,
+                vout: None,
+                status: PayoutStatus::Confirmed,
+                created_at: now,
+                confirmed_at: Some(now),
+            };
+            db.insert_payout(&miner_payout).unwrap();
+
+            let node_payout = PayoutRecord {
+                id: None,
+                round_id: i as u64,
+                recipient_id: "node1".to_string(),
+                recipient_type: RecipientType::Node,
+                address: "bc1qnode".to_string(),
+                amount_sats: 2000000,
+                txid: None,
+                vout: None,
+                status: PayoutStatus::Confirmed,
+                created_at: now,
+                confirmed_at: Some(now),
+            };
+            db.insert_payout(&node_payout).unwrap();
+        }
+
+        // Test basic pagination
+        let query = PayoutHistoryQuery::with_limit(3);
+        let history = db.query_payout_history(query).unwrap();
+        assert_eq!(history.len(), 3);
+        // Results should be ordered by height descending
+        assert!(history[0].block_height >= history[1].block_height);
+
+        // Test offset
+        let query = PayoutHistoryQuery::with_limit(2).with_offset(2);
+        let history = db.query_payout_history(query).unwrap();
+        assert_eq!(history.len(), 2);
+
+        // Test height filters
+        let query = PayoutHistoryQuery::with_limit(10)
+            .with_min_height(800002)
+            .with_max_height(800003);
+        let history = db.query_payout_history(query).unwrap();
+        assert_eq!(history.len(), 2);
+        for summary in &history {
+            assert!(summary.block_height >= 800002);
+            assert!(summary.block_height <= 800003);
+        }
+
+        // Test aggregation
+        let query = PayoutHistoryQuery::with_limit(1);
+        let history = db.query_payout_history(query).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].miner_count, 1);
+        assert_eq!(history[0].node_count, 1);
+        assert_eq!(history[0].total_miner_sats, 309000000);
+        assert_eq!(history[0].total_node_sats, 2000000);
+
+        // Test round count
+        let count = db.get_payout_round_count(None, None).unwrap();
+        assert_eq!(count, 5);
+
+        let count = db.get_payout_round_count(Some(800002), Some(800003)).unwrap();
+        assert_eq!(count, 2);
     }
 }

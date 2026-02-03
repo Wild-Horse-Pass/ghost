@@ -32,12 +32,13 @@
 //! # Security Features
 //!
 //! - **Equivocation Detection**: Detects when a voter signs both approve AND reject
-//!   for the same proposal. This is Byzantine behavior and produces EquivocationProof.
+//!   for the same proposal. This is Byzantine behavior and produces VoteEquivocationProof.
 //!
 //! - **Replay Prevention**: Votes are signed over `H(round_id || proposal_hash || voter_id || decision)`
 //!   to prevent replaying votes from one round in another.
 
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -52,13 +53,17 @@ use ghost_common::types::{ConsensusResult, NodeId, RoundId, VoteType};
 /// This proves that a node voted both approve AND reject for the same proposal,
 /// which is Byzantine behavior. This proof can be broadcast to other nodes to
 /// justify slashing/banning the equivocating node.
-#[derive(Debug, Clone)]
-pub struct EquivocationProof {
+///
+/// P2P4-L7: Serializable for database persistence
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoteEquivocationProof {
     /// The equivocating voter's node ID
+    #[serde(with = "hash_bytes")]
     pub voter: NodeId,
     /// The round ID where equivocation occurred
     pub round_id: RoundId,
     /// The proposal hash that was voted on
+    #[serde(with = "hash_bytes")]
     pub proposal_hash: [u8; 32],
     /// The first vote (with signature)
     pub vote1: Vote,
@@ -66,7 +71,33 @@ pub struct EquivocationProof {
     pub vote2: Vote,
 }
 
-impl EquivocationProof {
+/// Serde helper for serializing/deserializing [u8; 32] as hex
+mod hash_bytes {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        hex::encode(bytes).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let hex_str = String::deserialize(deserializer)?;
+        let bytes = hex::decode(&hex_str).map_err(serde::de::Error::custom)?;
+        if bytes.len() != 32 {
+            return Err(serde::de::Error::custom("hash must be 32 bytes"));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(arr)
+    }
+}
+
+impl VoteEquivocationProof {
     /// Create an equivocation proof from two conflicting votes
     pub fn from_votes(
         round_id: RoundId,
@@ -144,7 +175,7 @@ pub struct VotingSession {
     /// Result (if decided)
     pub result: Option<ConsensusResult>,
     /// Detected equivocations
-    pub equivocations: Vec<EquivocationProof>,
+    pub equivocations: Vec<VoteEquivocationProof>,
 }
 
 impl VotingSession {
@@ -200,7 +231,7 @@ impl VotingSession {
 
             // Different decision = EQUIVOCATION (Byzantine behavior!)
             let proof =
-                EquivocationProof::from_votes(self.round_id, self.proposal_hash, existing, &vote);
+                VoteEquivocationProof::from_votes(self.round_id, self.proposal_hash, existing, &vote);
 
             warn!(
                 voter = %hex::encode(&vote.voter[..8]),
@@ -319,22 +350,53 @@ impl VotingSession {
     }
 
     /// Get detected equivocations
-    pub fn get_equivocations(&self) -> &[EquivocationProof] {
+    pub fn get_equivocations(&self) -> &[VoteEquivocationProof] {
         &self.equivocations
     }
 }
 
 /// A single vote
-#[derive(Debug, Clone)]
+///
+/// P2P4-L7: Serializable for equivocation proof persistence
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vote {
     /// Voter node ID
+    #[serde(with = "hash_bytes")]
     pub voter: NodeId,
     /// Approve or reject
     pub approve: bool,
     /// Signature over H(round_id || proposal_hash || voter_id || decision)
+    /// Note: Using Vec<u8> wrapper for serde compatibility
+    #[serde(with = "signature_bytes")]
     pub signature: [u8; 64],
     /// Timestamp
     pub timestamp: u64,
+}
+
+/// Serde helper for serializing/deserializing [u8; 64] as hex
+mod signature_bytes {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(bytes: &[u8; 64], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        hex::encode(bytes).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 64], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let hex_str = String::deserialize(deserializer)?;
+        let bytes = hex::decode(&hex_str).map_err(serde::de::Error::custom)?;
+        if bytes.len() != 64 {
+            return Err(serde::de::Error::custom("signature must be 64 bytes"));
+        }
+        let mut arr = [0u8; 64];
+        arr.copy_from_slice(&bytes);
+        Ok(arr)
+    }
 }
 
 impl Vote {
@@ -367,7 +429,7 @@ pub enum VoteResult {
     /// Invalid signature
     InvalidSignature,
     /// Equivocation detected (voter signed conflicting votes)
-    Equivocation(Box<EquivocationProof>),
+    Equivocation(Box<VoteEquivocationProof>),
 }
 
 /// Compute the message that should be signed for a vote
@@ -807,7 +869,7 @@ mod tests {
         let msg2 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, false);
         let vote2 = Vote::new(voter_id, false, identity.sign(&msg2));
 
-        let proof = EquivocationProof::from_votes(round_id, proposal_hash, &vote1, &vote2);
+        let proof = VoteEquivocationProof::from_votes(round_id, proposal_hash, &vote1, &vote2);
 
         // Valid proof should verify
         assert!(proof.verify());

@@ -178,6 +178,54 @@ pub struct MessageId {
     pub sequence: u64,
 }
 
+/// P2P4-L6: Connection state for exponential backoff
+///
+/// Tracks connection attempts per peer to implement exponential backoff
+/// for failed connections, preventing aggressive reconnection loops.
+#[derive(Debug, Clone)]
+struct PeerConnectionState {
+    /// Last connection attempt time (monotonic)
+    last_attempt: std::time::Instant,
+    /// Current backoff duration in milliseconds (doubles on failure, up to max)
+    backoff_ms: u64,
+    /// Number of consecutive connection failures
+    consecutive_failures: u32,
+}
+
+impl PeerConnectionState {
+    /// Initial backoff: 100ms
+    const INITIAL_BACKOFF_MS: u64 = 100;
+    /// Maximum backoff: 30 seconds
+    const MAX_BACKOFF_MS: u64 = 30_000;
+
+    fn new() -> Self {
+        Self {
+            last_attempt: std::time::Instant::now(),
+            backoff_ms: Self::INITIAL_BACKOFF_MS,
+            consecutive_failures: 0,
+        }
+    }
+
+    /// Check if enough time has passed to retry connection
+    fn can_retry(&self) -> bool {
+        self.last_attempt.elapsed().as_millis() as u64 >= self.backoff_ms
+    }
+
+    /// Record a failed connection attempt, increasing backoff
+    fn record_failure(&mut self) {
+        self.last_attempt = std::time::Instant::now();
+        self.consecutive_failures += 1;
+        self.backoff_ms = (self.backoff_ms * 2).min(Self::MAX_BACKOFF_MS);
+    }
+
+    /// Record a successful connection, resetting backoff
+    fn record_success(&mut self) {
+        self.last_attempt = std::time::Instant::now();
+        self.consecutive_failures = 0;
+        self.backoff_ms = Self::INITIAL_BACKOFF_MS;
+    }
+}
+
 /// Per-sender message count for H3 security fix
 const MAX_MESSAGES_PER_SENDER: usize = 10_000;
 
@@ -786,6 +834,10 @@ impl MeshNetwork {
         let mut connected_addresses: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
+        // P2P4-L6: Track connection state for exponential backoff
+        let mut connection_states: std::collections::HashMap<String, PeerConnectionState> =
+            std::collections::HashMap::new();
+
         // Track message receive stats for debugging
         let mut last_stats_log = std::time::Instant::now();
         let mut receive_attempts: u64 = 0;
@@ -810,6 +862,20 @@ impl MeshNetwork {
 
                 // Skip if we've already connected to this host
                 if connected_addresses.contains(&host) {
+                    continue;
+                }
+
+                // P2P4-L6: Check backoff state before attempting connection
+                let conn_state = connection_states
+                    .entry(host.clone())
+                    .or_insert_with(PeerConnectionState::new);
+                if !conn_state.can_retry() {
+                    debug!(
+                        host = %host,
+                        backoff_ms = conn_state.backoff_ms,
+                        failures = conn_state.consecutive_failures,
+                        "Skipping connection attempt (backoff)"
+                    );
                     continue;
                 }
 
@@ -846,9 +912,22 @@ impl MeshNetwork {
                         total_connected = connected_addresses.len() + 1,
                         "DIAG: SUB socket connected to peer on all ports (libzmq handles reconnection)"
                     );
-                    connected_addresses.insert(host);
+                    connected_addresses.insert(host.clone());
+                    // P2P4-L6: Reset backoff on success
+                    if let Some(state) = connection_states.get_mut(&host) {
+                        state.record_success();
+                    }
                 } else {
-                    warn!(host = %host, "Failed to connect SUB socket to peer");
+                    // P2P4-L6: Record failure and increase backoff
+                    if let Some(state) = connection_states.get_mut(&host) {
+                        state.record_failure();
+                        warn!(
+                            host = %host,
+                            backoff_ms = state.backoff_ms,
+                            failures = state.consecutive_failures,
+                            "Failed to connect SUB socket to peer (will retry with backoff)"
+                        );
+                    }
                 }
             }
 

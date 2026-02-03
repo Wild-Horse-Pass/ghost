@@ -140,7 +140,10 @@ impl CoordinatorStatus {
 }
 
 /// Coordinator metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Note: `last_heartbeat_instant` uses monotonic time internally but is not serializable.
+/// For serialization, `last_heartbeat` provides a Unix timestamp approximation.
+#[derive(Debug, Clone)]
 pub struct CoordinatorInfo {
     /// Unique coordinator ID
     pub id: CoordinatorId,
@@ -154,8 +157,12 @@ pub struct CoordinatorInfo {
     pub status: CoordinatorStatus,
     /// When this coordinator was added
     pub added_at: u64,
-    /// Last heartbeat timestamp
+    /// Last heartbeat timestamp (Unix time - for external reporting/serialization)
     pub last_heartbeat: u64,
+    /// Last heartbeat instant (monotonic - for timeout calculations) (WR4-L4)
+    /// This prevents clock drift/NTP manipulation from affecting heartbeat detection
+    #[allow(dead_code)]
+    last_heartbeat_instant: Option<Instant>,
     /// Number of sessions completed
     pub sessions_completed: u64,
     /// Current active sessions
@@ -168,6 +175,74 @@ pub struct CoordinatorInfo {
     pub trust_score: u8,
     /// Geographic region (for distribution)
     pub region: Option<String>,
+}
+
+// Manual Serialize implementation that excludes the Instant field
+impl Serialize for CoordinatorInfo {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("CoordinatorInfo", 12)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("endpoint", &self.endpoint)?;
+        state.serialize_field("public_key", &self.public_key)?;
+        state.serialize_field("status", &self.status)?;
+        state.serialize_field("added_at", &self.added_at)?;
+        state.serialize_field("last_heartbeat", &self.last_heartbeat)?;
+        state.serialize_field("sessions_completed", &self.sessions_completed)?;
+        state.serialize_field("active_sessions", &self.active_sessions)?;
+        state.serialize_field("failed_sessions", &self.failed_sessions)?;
+        state.serialize_field("active_since_epoch", &self.active_since_epoch)?;
+        state.serialize_field("trust_score", &self.trust_score)?;
+        state.serialize_field("region", &self.region)?;
+        state.end()
+    }
+}
+
+// Manual Deserialize implementation that initializes the Instant field
+impl<'de> Deserialize<'de> for CoordinatorInfo {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct CoordinatorInfoHelper {
+            id: CoordinatorId,
+            name: String,
+            endpoint: String,
+            public_key: Vec<u8>,
+            status: CoordinatorStatus,
+            added_at: u64,
+            last_heartbeat: u64,
+            sessions_completed: u64,
+            active_sessions: u32,
+            failed_sessions: u64,
+            active_since_epoch: Option<u64>,
+            trust_score: u8,
+            region: Option<String>,
+        }
+
+        let helper = CoordinatorInfoHelper::deserialize(deserializer)?;
+        Ok(CoordinatorInfo {
+            id: helper.id,
+            name: helper.name,
+            endpoint: helper.endpoint,
+            public_key: helper.public_key,
+            status: helper.status,
+            added_at: helper.added_at,
+            last_heartbeat: helper.last_heartbeat,
+            last_heartbeat_instant: Some(Instant::now()), // Reset to now on deserialize
+            sessions_completed: helper.sessions_completed,
+            active_sessions: helper.active_sessions,
+            failed_sessions: helper.failed_sessions,
+            active_since_epoch: helper.active_since_epoch,
+            trust_score: helper.trust_score,
+            region: helper.region,
+        })
+    }
 }
 
 impl CoordinatorInfo {
@@ -186,6 +261,7 @@ impl CoordinatorInfo {
             status: CoordinatorStatus::Pending,
             added_at: now,
             last_heartbeat: now,
+            last_heartbeat_instant: Some(Instant::now()), // WR4-L4: Use monotonic time
             sessions_completed: 0,
             active_sessions: 0,
             failed_sessions: 0,
@@ -200,12 +276,17 @@ impl CoordinatorInfo {
         hex::encode(&self.id[..8])
     }
 
-    /// Update heartbeat
+    /// Update heartbeat (WR4-L4)
+    ///
+    /// Uses monotonic time (Instant) for timeout calculations to prevent
+    /// clock drift or NTP manipulation from affecting heartbeat detection.
     pub fn record_heartbeat(&mut self) {
+        // Update both Unix timestamp (for external reporting) and Instant (for timeout)
         self.last_heartbeat = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
+        self.last_heartbeat_instant = Some(Instant::now());
 
         // Recover from failed state if heartbeat received
         if self.status == CoordinatorStatus::Failed {
@@ -234,8 +315,17 @@ impl CoordinatorInfo {
         }
     }
 
-    /// Get seconds since last heartbeat
+    /// Get seconds since last heartbeat (WR4-L4)
+    ///
+    /// Uses monotonic time (Instant) to prevent clock drift from affecting
+    /// heartbeat detection. Falls back to Unix timestamp if Instant not available.
     pub fn seconds_since_heartbeat(&self) -> u64 {
+        // Prefer monotonic time if available
+        if let Some(instant) = self.last_heartbeat_instant {
+            return instant.elapsed().as_secs();
+        }
+
+        // Fallback to Unix timestamp (for backwards compatibility)
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -382,6 +472,9 @@ pub struct CoordinatorPool {
     rotation_in_progress: RwLock<bool>,
     /// When current active became active
     active_since: RwLock<Option<Instant>>,
+    /// WR4-L8: Session lock to prevent split-brain during failover
+    /// When held, new sessions cannot be registered
+    session_lock: RwLock<()>,
 }
 
 impl CoordinatorPool {
@@ -397,6 +490,7 @@ impl CoordinatorPool {
             rotation_history: RwLock::new(Vec::new()),
             rotation_in_progress: RwLock::new(false),
             active_since: RwLock::new(None),
+            session_lock: RwLock::new(()), // WR4-L8
         })
     }
 
@@ -643,14 +737,26 @@ impl CoordinatorPool {
         Ok(*candidates[0].0)
     }
 
-    /// Trigger failover (active coordinator failed)
+    /// Trigger failover (active coordinator failed) (WR4-L8)
+    ///
+    /// Acquires session lock during failover to prevent split-brain scenarios
+    /// where sessions could be partially migrated to multiple coordinators.
     pub fn trigger_failover(&self) -> Result<RotationEvent, PoolError> {
         if !self.policy.auto_failover {
             return Err(PoolError::InvalidConfig("Auto-failover disabled".into()));
         }
 
+        // WR4-L8: Acquire session lock to prevent split-brain during failover
+        // This blocks new session registrations until failover is complete
+        let _session_lock = self.session_lock.write();
+
         // Remember the failed coordinator ID
         let failed_id = *self.active_id.read();
+
+        info!(
+            failed_coordinator = ?failed_id.map(|id| hex::encode(&id[..8])),
+            "Starting failover with session lock held"
+        );
 
         // Perform rotation
         let event = self.trigger_rotation(RotationReason::Failover)?;
@@ -666,7 +772,21 @@ impl CoordinatorPool {
             }
         }
 
+        info!(
+            new_coordinator = %hex::encode(&event.new_id[..8]),
+            "Failover complete, session lock released"
+        );
+
         Ok(event)
+        // _session_lock dropped here, releasing the lock
+    }
+
+    /// Acquire session lock for operations that need to prevent concurrent session changes
+    ///
+    /// Returns a guard that must be held during the protected operation.
+    /// Use this when registering sessions to ensure atomicity with failover.
+    pub fn acquire_session_lock(&self) -> parking_lot::RwLockReadGuard<'_, ()> {
+        self.session_lock.read()
     }
 
     /// Record heartbeat from a coordinator
