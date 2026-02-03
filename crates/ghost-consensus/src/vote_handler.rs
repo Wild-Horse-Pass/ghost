@@ -39,7 +39,7 @@ use ghost_common::types::{ConsensusResult, NodeId, PayoutProposal, RoundId, Vote
 
 use crate::mesh::MessageHandler;
 use crate::message::{MessageEnvelope, MessageType, PayoutProposalMessage, VoteMessage};
-use crate::voting::{Vote, VoteResult, VotingManager, VotingSession};
+use crate::voting::{compute_vote_signing_message, Vote, VoteResult, VotingManager, VotingSession};
 
 /// Rate limiter for P2P messages to prevent DoS attacks
 ///
@@ -588,11 +588,14 @@ impl VoteHandler {
         proposal_hash: [u8; 32],
         approve: bool,
     ) -> GhostResult<()> {
-        // Sign the proposal hash
-        let signature = self.identity.sign(&proposal_hash);
+        // Sign with round_id included to prevent replay attacks
+        // Format: H(round_id || proposal_hash || voter_id || decision)
+        let voter_id = self.identity.node_id();
+        let signing_message = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, approve);
+        let signature = self.identity.sign(&signing_message);
 
         // Create vote
-        let vote = Vote::new(self.identity.node_id(), approve, signature);
+        let vote = Vote::new(voter_id, approve, signature);
 
         // Submit to voting manager
         if let Some(result) = self
@@ -671,6 +674,20 @@ impl VoteHandler {
                 }
                 VoteResult::AlreadyDecided => {
                     debug!("Vote received after decision");
+                }
+                VoteResult::Equivocation(proof) => {
+                    // This is Byzantine behavior - voter signed conflicting votes
+                    warn!(
+                        sender = hex::encode(&sender[..8]),
+                        round_id = vote_msg.round_id,
+                        "EQUIVOCATION DETECTED: voter signed conflicting votes"
+                    );
+                    // TODO: Broadcast equivocation proof to network for slashing
+                    // TODO: Ban the equivocating node
+                    debug!(
+                        "Equivocation proof: vote1.approve={}, vote2.approve={}",
+                        proof.vote1.approve, proof.vote2.approve
+                    );
                 }
             }
         }

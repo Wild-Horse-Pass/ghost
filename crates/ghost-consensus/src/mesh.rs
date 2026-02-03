@@ -813,6 +813,8 @@ impl MeshNetwork {
             tokio::time::sleep(interval).await;
 
             // Create and broadcast health ping with actual node capabilities
+            // Include PoW proof for Sybil resistance
+            let pow_proof = self.identity.pow_proof().map(|p| (p.nonce, p.difficulty));
             let ping = ghost_common::types::HealthPing {
                 node_id: self.identity.node_id(),
                 public_address: self.config.public_address.clone(),
@@ -821,6 +823,7 @@ impl MeshNetwork {
                 capabilities: self.config.capabilities,
                 miner_count: self.peers.peer_count() as u32,
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                pow_proof,
             };
 
             match self.create_envelope(

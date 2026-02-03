@@ -57,6 +57,10 @@ pub const MAX_ZK_PAYOUT_VOTE_SIZE: usize = 1_000;
 /// Verification result is small (node IDs + capability + result + signature)
 pub const MAX_VERIFICATION_SIZE: usize = 5_000;
 
+/// Maximum allowed timestamp drift from current time (5 minutes in milliseconds)
+/// Messages with timestamps too far in the future or past are rejected
+pub const MAX_TIMESTAMP_DRIFT_MS: u64 = 5 * 60 * 1000;
+
 /// Message validation errors
 #[derive(Debug, Clone, Error)]
 pub enum MessageValidationError {
@@ -86,6 +90,12 @@ pub enum MessageValidationError {
 
     #[error("Deserialization failed: {0}")]
     DeserializationFailed(String),
+
+    #[error("Timestamp too far in the future: {0}ms ahead")]
+    TimestampInFuture(u64),
+
+    #[error("Timestamp too far in the past: {0}ms behind")]
+    TimestampInPast(u64),
 }
 
 /// Validate raw message bytes before any deserialization
@@ -176,6 +186,44 @@ pub fn validate_envelope(envelope: &MessageEnvelope) -> Result<(), MessageValida
     // Validate payload size for message type
     validate_payload_size(envelope.msg_type, envelope.payload.len())?;
 
+    // Validate timestamp is within acceptable range
+    validate_timestamp(envelope.timestamp)?;
+
+    Ok(())
+}
+
+/// Validate that a timestamp is within acceptable range
+///
+/// Rejects messages with timestamps that are:
+/// - More than MAX_TIMESTAMP_DRIFT_MS in the future (prevents replay attacks with future timestamps)
+/// - More than MAX_TIMESTAMP_DRIFT_MS in the past (prevents replay of old messages)
+pub fn validate_timestamp(timestamp_ms: u64) -> Result<(), MessageValidationError> {
+    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+
+    // Check if timestamp is too far in the future
+    if timestamp_ms > now_ms + MAX_TIMESTAMP_DRIFT_MS {
+        let drift = timestamp_ms - now_ms;
+        warn!(
+            timestamp_ms,
+            now_ms,
+            drift_ms = drift,
+            "Message timestamp too far in the future"
+        );
+        return Err(MessageValidationError::TimestampInFuture(drift));
+    }
+
+    // Check if timestamp is too far in the past
+    if now_ms > timestamp_ms + MAX_TIMESTAMP_DRIFT_MS {
+        let drift = now_ms - timestamp_ms;
+        warn!(
+            timestamp_ms,
+            now_ms,
+            drift_ms = drift,
+            "Message timestamp too far in the past"
+        );
+        return Err(MessageValidationError::TimestampInPast(drift));
+    }
+
     Ok(())
 }
 
@@ -238,6 +286,7 @@ pub struct ValidationStats {
     pub bad_version: u64,
     pub bad_type: u64,
     pub bad_signature: u64,
+    pub bad_timestamp: u64,
     pub other_errors: u64,
 }
 
@@ -251,6 +300,8 @@ impl ValidationStats {
             Err(MessageValidationError::UnsupportedVersion(_)) => self.bad_version += 1,
             Err(MessageValidationError::InvalidType(_)) => self.bad_type += 1,
             Err(MessageValidationError::InvalidSignature(_)) => self.bad_signature += 1,
+            Err(MessageValidationError::TimestampInFuture(_)) => self.bad_timestamp += 1,
+            Err(MessageValidationError::TimestampInPast(_)) => self.bad_timestamp += 1,
             Err(_) => self.other_errors += 1,
         }
     }
@@ -325,5 +376,68 @@ mod tests {
         assert_eq!(stats.too_small, 1);
         assert_eq!(stats.bad_signature, 1);
         assert_eq!(stats.rejection_rate(), 1.0);
+    }
+
+    #[test]
+    fn test_timestamp_validation_current() {
+        // Current timestamp should be valid
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        assert!(validate_timestamp(now_ms).is_ok());
+    }
+
+    #[test]
+    fn test_timestamp_validation_slight_future() {
+        // Slightly in the future (1 minute) should be valid
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let future_ms = now_ms + 60_000; // 1 minute ahead
+        assert!(validate_timestamp(future_ms).is_ok());
+    }
+
+    #[test]
+    fn test_timestamp_validation_slight_past() {
+        // Slightly in the past (1 minute) should be valid
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let past_ms = now_ms - 60_000; // 1 minute behind
+        assert!(validate_timestamp(past_ms).is_ok());
+    }
+
+    #[test]
+    fn test_timestamp_validation_too_far_future() {
+        // 10 minutes in the future should be rejected
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let future_ms = now_ms + 10 * 60_000; // 10 minutes ahead
+        assert!(matches!(
+            validate_timestamp(future_ms),
+            Err(MessageValidationError::TimestampInFuture(_))
+        ));
+    }
+
+    #[test]
+    fn test_timestamp_validation_too_far_past() {
+        // 10 minutes in the past should be rejected
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let past_ms = now_ms - 10 * 60_000; // 10 minutes behind
+        assert!(matches!(
+            validate_timestamp(past_ms),
+            Err(MessageValidationError::TimestampInPast(_))
+        ));
+    }
+
+    #[test]
+    fn test_timestamp_validation_edge_case() {
+        // Exactly at the boundary should be valid
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let boundary_future = now_ms + MAX_TIMESTAMP_DRIFT_MS;
+        let boundary_past = now_ms - MAX_TIMESTAMP_DRIFT_MS;
+
+        // Boundary should be valid (or just barely invalid due to timing)
+        // We allow a small tolerance for test timing
+        let future_result = validate_timestamp(boundary_future);
+        let past_result = validate_timestamp(boundary_past);
+
+        // At least one of these should pass (timing dependent)
+        // The test verifies the boundary logic works
+        assert!(future_result.is_ok() || matches!(future_result, Err(MessageValidationError::TimestampInFuture(d)) if d < 1000));
+        assert!(past_result.is_ok() || matches!(past_result, Err(MessageValidationError::TimestampInPast(d)) if d < 1000));
     }
 }

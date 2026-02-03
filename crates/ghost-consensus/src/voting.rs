@@ -28,15 +28,101 @@
 //!
 //! Voting sessions use monotonic time (std::time::Instant) for timeout tracking.
 //! This ensures timeouts work correctly even if the system clock is adjusted.
+//!
+//! # Security Features
+//!
+//! - **Equivocation Detection**: Detects when a voter signs both approve AND reject
+//!   for the same proposal. This is Byzantine behavior and produces EquivocationProof.
+//!
+//! - **Replay Prevention**: Votes are signed over `H(round_id || proposal_hash || voter_id || decision)`
+//!   to prevent replaying votes from one round in another.
 
 use parking_lot::RwLock;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use ghost_common::constants::BFT_THRESHOLD_PERCENT;
 use ghost_common::identity::verify_signature;
 use ghost_common::types::{ConsensusResult, NodeId, RoundId, VoteType};
+
+/// Proof of equivocation - a voter signing conflicting votes
+///
+/// This proves that a node voted both approve AND reject for the same proposal,
+/// which is Byzantine behavior. This proof can be broadcast to other nodes to
+/// justify slashing/banning the equivocating node.
+#[derive(Debug, Clone)]
+pub struct EquivocationProof {
+    /// The equivocating voter's node ID
+    pub voter: NodeId,
+    /// The round ID where equivocation occurred
+    pub round_id: RoundId,
+    /// The proposal hash that was voted on
+    pub proposal_hash: [u8; 32],
+    /// The first vote (with signature)
+    pub vote1: Vote,
+    /// The second, conflicting vote (with signature)
+    pub vote2: Vote,
+}
+
+impl EquivocationProof {
+    /// Create an equivocation proof from two conflicting votes
+    pub fn from_votes(
+        round_id: RoundId,
+        proposal_hash: [u8; 32],
+        vote1: &Vote,
+        vote2: &Vote,
+    ) -> Self {
+        debug_assert_eq!(vote1.voter, vote2.voter, "Votes must be from same voter");
+        debug_assert_ne!(
+            vote1.approve, vote2.approve,
+            "Votes must have different decisions"
+        );
+
+        Self {
+            voter: vote1.voter,
+            round_id,
+            proposal_hash,
+            vote1: vote1.clone(),
+            vote2: vote2.clone(),
+        }
+    }
+
+    /// Verify that this proof is valid
+    ///
+    /// Checks that:
+    /// 1. Both votes are from the same voter
+    /// 2. Both votes have different decisions
+    /// 3. Both signatures are valid
+    pub fn verify(&self) -> bool {
+        // Both votes must be from the same voter
+        if self.vote1.voter != self.vote2.voter {
+            return false;
+        }
+
+        // Must have different decisions
+        if self.vote1.approve == self.vote2.approve {
+            return false;
+        }
+
+        // Verify both signatures
+        let valid1 = verify_vote_signature_with_round(
+            &self.vote1,
+            self.round_id,
+            &self.proposal_hash,
+            &self.vote1.voter,
+        );
+        let valid2 = verify_vote_signature_with_round(
+            &self.vote2,
+            self.round_id,
+            &self.proposal_hash,
+            &self.vote2.voter,
+        );
+
+        valid1 && valid2
+    }
+}
 
 /// Voting session for a specific proposal
 #[derive(Debug)]
@@ -53,10 +139,12 @@ pub struct VotingSession {
     pub timeout_ms: u64,
     /// Eligible voters (node IDs)
     pub eligible_voters: HashSet<NodeId>,
-    /// Votes received
+    /// Votes received (stores full vote including signature for equivocation detection)
     pub votes: HashMap<NodeId, Vote>,
     /// Result (if decided)
     pub result: Option<ConsensusResult>,
+    /// Detected equivocations
+    pub equivocations: Vec<EquivocationProof>,
 }
 
 impl VotingSession {
@@ -77,6 +165,7 @@ impl VotingSession {
             eligible_voters,
             votes: HashMap::new(),
             result: None,
+            equivocations: Vec::new(),
         }
     }
 
@@ -92,14 +181,36 @@ impl VotingSession {
             return VoteResult::NotEligible;
         }
 
-        // Check for duplicate vote
-        if self.votes.contains_key(&vote.voter) {
-            return VoteResult::DuplicateVote;
+        // Verify signature (includes round_id to prevent replay)
+        if !verify_vote_signature_with_round(
+            &vote,
+            self.round_id,
+            &self.proposal_hash,
+            &vote.voter,
+        ) {
+            return VoteResult::InvalidSignature;
         }
 
-        // Verify signature
-        if !verify_vote_signature(&vote, &self.proposal_hash) {
-            return VoteResult::InvalidSignature;
+        // Check for existing vote - this is where we detect equivocation
+        if let Some(existing) = self.votes.get(&vote.voter) {
+            // Same decision = duplicate vote (benign)
+            if existing.approve == vote.approve {
+                return VoteResult::DuplicateVote;
+            }
+
+            // Different decision = EQUIVOCATION (Byzantine behavior!)
+            let proof =
+                EquivocationProof::from_votes(self.round_id, self.proposal_hash, existing, &vote);
+
+            warn!(
+                voter = %hex::encode(&vote.voter[..8]),
+                round_id = self.round_id,
+                "EQUIVOCATION DETECTED: voter signed both approve and reject"
+            );
+
+            self.equivocations.push(proof.clone());
+
+            return VoteResult::Equivocation(Box::new(proof));
         }
 
         // Record vote
@@ -206,6 +317,11 @@ impl VotingSession {
         // Use ceiling division to ensure proper 67% threshold
         (total * BFT_THRESHOLD_PERCENT).div_ceil(100) as u32
     }
+
+    /// Get detected equivocations
+    pub fn get_equivocations(&self) -> &[EquivocationProof] {
+        &self.equivocations
+    }
 }
 
 /// A single vote
@@ -215,7 +331,7 @@ pub struct Vote {
     pub voter: NodeId,
     /// Approve or reject
     pub approve: bool,
-    /// Signature of proposal hash
+    /// Signature over H(round_id || proposal_hash || voter_id || decision)
     pub signature: [u8; 64],
     /// Timestamp
     pub timestamp: u64,
@@ -246,14 +362,53 @@ pub enum VoteResult {
     AlreadyDecided,
     /// Voter not eligible
     NotEligible,
-    /// Duplicate vote from same voter
+    /// Duplicate vote from same voter (same decision)
     DuplicateVote,
     /// Invalid signature
     InvalidSignature,
+    /// Equivocation detected (voter signed conflicting votes)
+    Equivocation(Box<EquivocationProof>),
 }
 
-/// Verify vote signature
-fn verify_vote_signature(vote: &Vote, proposal_hash: &[u8; 32]) -> bool {
+/// Compute the message that should be signed for a vote
+///
+/// Format: SHA256(round_id || proposal_hash || voter_id || decision_byte)
+///
+/// Including round_id prevents replay attacks across rounds.
+/// Including voter_id prevents signature theft/reuse.
+pub fn compute_vote_signing_message(
+    round_id: RoundId,
+    proposal_hash: &[u8; 32],
+    voter_id: &NodeId,
+    approve: bool,
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"GhostVote/v1");
+    hasher.update(round_id.to_le_bytes());
+    hasher.update(proposal_hash);
+    hasher.update(voter_id);
+    hasher.update([if approve { 1u8 } else { 0u8 }]);
+    hasher.finalize().into()
+}
+
+/// Verify vote signature with round_id included
+///
+/// This is the secure verification that prevents replay attacks.
+fn verify_vote_signature_with_round(
+    vote: &Vote,
+    round_id: RoundId,
+    proposal_hash: &[u8; 32],
+    voter_id: &NodeId,
+) -> bool {
+    let message = compute_vote_signing_message(round_id, proposal_hash, voter_id, vote.approve);
+    verify_signature(&vote.voter, &message, &vote.signature).unwrap_or_default()
+}
+
+/// Verify vote signature (legacy - only for backward compatibility)
+///
+/// DEPRECATED: Use verify_vote_signature_with_round instead
+#[deprecated(note = "Use verify_vote_signature_with_round for replay attack prevention")]
+pub fn verify_vote_signature(vote: &Vote, proposal_hash: &[u8; 32]) -> bool {
     verify_signature(&vote.voter, proposal_hash, &vote.signature).unwrap_or_default()
 }
 
@@ -434,6 +589,7 @@ pub struct SessionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ghost_common::identity::NodeIdentity;
 
     fn create_test_session() -> VotingSession {
         let mut eligible = HashSet::new();
@@ -466,5 +622,199 @@ mod tests {
         assert_eq!(approvals, 5);
         assert_eq!(rejections, 0);
         assert_eq!(total, 10);
+    }
+
+    #[test]
+    fn test_vote_signing_message_includes_round_id() {
+        let proposal_hash = [1u8; 32];
+        let voter_id = [2u8; 32];
+
+        // Different round_ids should produce different signing messages
+        let msg1 = compute_vote_signing_message(100, &proposal_hash, &voter_id, true);
+        let msg2 = compute_vote_signing_message(200, &proposal_hash, &voter_id, true);
+
+        assert_ne!(msg1, msg2, "Different round_ids must produce different messages");
+    }
+
+    #[test]
+    fn test_vote_signing_message_includes_decision() {
+        let proposal_hash = [1u8; 32];
+        let voter_id = [2u8; 32];
+        let round_id = 100;
+
+        // Different decisions should produce different signing messages
+        let msg_approve = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
+        let msg_reject = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, false);
+
+        assert_ne!(
+            msg_approve, msg_reject,
+            "Different decisions must produce different messages"
+        );
+    }
+
+    #[test]
+    fn test_vote_signing_message_deterministic() {
+        let proposal_hash = [1u8; 32];
+        let voter_id = [2u8; 32];
+        let round_id = 100;
+
+        let msg1 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
+        let msg2 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
+
+        assert_eq!(msg1, msg2, "Same inputs must produce same message");
+    }
+
+    #[test]
+    fn test_vote_replay_rejected_different_round() {
+        // Create two sessions with different round_ids
+        // Use multiple eligible voters so threshold isn't immediately met
+        let proposal_hash = [0u8; 32];
+        let identity = NodeIdentity::generate();
+        let voter_id = identity.node_id();
+
+        let mut eligible = HashSet::new();
+        eligible.insert(voter_id);
+        // Add some dummy voters so threshold isn't 1
+        for i in 0..5 {
+            eligible.insert([i as u8 + 100; 32]);
+        }
+
+        let mut session1 = VotingSession::new(100, proposal_hash, VoteType::PayoutApproval, eligible.clone(), 5000);
+        let mut session2 = VotingSession::new(200, proposal_hash, VoteType::PayoutApproval, eligible, 5000);
+
+        // Sign vote for round 100
+        let msg = compute_vote_signing_message(100, &proposal_hash, &voter_id, true);
+        let sig = identity.sign(&msg);
+        let vote = Vote::new(voter_id, true, sig);
+
+        // Vote should be valid in session1 (round 100)
+        let result1 = session1.add_vote(vote.clone());
+        assert!(
+            matches!(result1, VoteResult::ApprovalRecorded),
+            "Expected ApprovalRecorded, got {:?}",
+            result1
+        );
+
+        // Same vote should be INVALID in session2 (round 200) - replay attack prevented
+        let result2 = session2.add_vote(vote);
+        assert!(
+            matches!(result2, VoteResult::InvalidSignature),
+            "Vote from round 100 should be rejected in round 200, got {:?}",
+            result2
+        );
+    }
+
+    #[test]
+    fn test_vote_equivocation_detected() {
+        let proposal_hash = [0u8; 32];
+        let round_id = 100;
+        let identity = NodeIdentity::generate();
+        let voter_id = identity.node_id();
+
+        // Use multiple eligible voters so threshold isn't immediately met
+        let mut eligible = HashSet::new();
+        eligible.insert(voter_id);
+        for i in 0..5 {
+            eligible.insert([i as u8 + 100; 32]);
+        }
+
+        let mut session = VotingSession::new(round_id, proposal_hash, VoteType::PayoutApproval, eligible, 5000);
+
+        // First vote: approve
+        let msg1 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
+        let sig1 = identity.sign(&msg1);
+        let vote1 = Vote::new(voter_id, true, sig1);
+
+        let result1 = session.add_vote(vote1);
+        assert!(
+            matches!(result1, VoteResult::ApprovalRecorded),
+            "Expected ApprovalRecorded, got {:?}",
+            result1
+        );
+
+        // Second vote: reject (equivocation!)
+        let msg2 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, false);
+        let sig2 = identity.sign(&msg2);
+        let vote2 = Vote::new(voter_id, false, sig2);
+
+        let result2 = session.add_vote(vote2);
+        assert!(
+            matches!(result2, VoteResult::Equivocation(_)),
+            "Should detect equivocation when voter changes decision, got {:?}",
+            result2
+        );
+
+        // Verify equivocation was recorded
+        assert_eq!(session.equivocations.len(), 1);
+        let proof = &session.equivocations[0];
+        assert_eq!(proof.voter, voter_id);
+        assert!(proof.verify(), "Equivocation proof should be valid");
+    }
+
+    #[test]
+    fn test_duplicate_same_decision_is_not_equivocation() {
+        let proposal_hash = [0u8; 32];
+        let round_id = 100;
+        let identity = NodeIdentity::generate();
+        let voter_id = identity.node_id();
+
+        // Use multiple eligible voters so threshold isn't immediately met
+        let mut eligible = HashSet::new();
+        eligible.insert(voter_id);
+        for i in 0..5 {
+            eligible.insert([i as u8 + 100; 32]);
+        }
+
+        let mut session = VotingSession::new(round_id, proposal_hash, VoteType::PayoutApproval, eligible, 5000);
+
+        // First vote: approve
+        let msg = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
+        let sig = identity.sign(&msg);
+        let vote1 = Vote::new(voter_id, true, sig);
+
+        let result1 = session.add_vote(vote1);
+        assert!(
+            matches!(result1, VoteResult::ApprovalRecorded),
+            "Expected ApprovalRecorded, got {:?}",
+            result1
+        );
+
+        // Second vote: also approve (duplicate, not equivocation)
+        let vote2 = Vote::new(voter_id, true, identity.sign(&msg));
+
+        let result2 = session.add_vote(vote2);
+        assert!(
+            matches!(result2, VoteResult::DuplicateVote),
+            "Same decision should be duplicate, not equivocation, got {:?}",
+            result2
+        );
+
+        // No equivocations recorded
+        assert!(session.equivocations.is_empty());
+    }
+
+    #[test]
+    fn test_equivocation_proof_verification() {
+        let proposal_hash = [0u8; 32];
+        let round_id = 100;
+        let identity = NodeIdentity::generate();
+        let voter_id = identity.node_id();
+
+        // Create two conflicting votes
+        let msg1 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
+        let vote1 = Vote::new(voter_id, true, identity.sign(&msg1));
+
+        let msg2 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, false);
+        let vote2 = Vote::new(voter_id, false, identity.sign(&msg2));
+
+        let proof = EquivocationProof::from_votes(round_id, proposal_hash, &vote1, &vote2);
+
+        // Valid proof should verify
+        assert!(proof.verify());
+
+        // Tampered proof (wrong signature) should not verify
+        let mut bad_proof = proof.clone();
+        bad_proof.vote1.signature = [0u8; 64];
+        assert!(!bad_proof.verify());
     }
 }

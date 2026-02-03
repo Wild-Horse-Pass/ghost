@@ -301,6 +301,10 @@ pub struct HealthPing {
     pub miner_count: u32,
     /// Timestamp
     pub timestamp: u64,
+    /// PoW proof for Sybil resistance (nonce, difficulty)
+    /// Proves computational work was done to create this identity
+    #[serde(default)]
+    pub pow_proof: Option<(u64, u32)>,
 }
 
 /// Errors for treasury address validation
