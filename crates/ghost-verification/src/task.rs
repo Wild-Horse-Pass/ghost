@@ -29,7 +29,6 @@
 //! 4. Storing results in the local database
 //! 5. Broadcasting results via P2P
 
-use rand::Rng;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -383,6 +382,9 @@ impl VerificationTask {
     }
 
     /// Get a random block hash from the blockchain for archive verification
+    ///
+    /// H-6: Uses cryptographic randomness via getrandom to ensure unpredictable
+    /// block selection, preventing attackers from pre-computing challenge responses.
     async fn get_random_block_hash(&self) -> Option<(String, u64)> {
         let rpc = self.rpc.as_ref()?;
 
@@ -399,9 +401,15 @@ impl VerificationTask {
             return None;
         }
 
-        // Select random block at least 100 deep (for stability)
+        // H-6: Use cryptographic randomness for unpredictable block selection
         let max_height = height.saturating_sub(100);
-        let challenge_height = rand::thread_rng().gen_range(0..=max_height);
+        let mut rand_bytes = [0u8; 8];
+        if getrandom::getrandom(&mut rand_bytes).is_err() {
+            warn!("Failed to get cryptographic randomness for block selection");
+            return None;
+        }
+        let rand_val = u64::from_le_bytes(rand_bytes);
+        let challenge_height = rand_val % (max_height + 1);
 
         // Get block hash at that height
         match rpc.get_block_hash(challenge_height).await {

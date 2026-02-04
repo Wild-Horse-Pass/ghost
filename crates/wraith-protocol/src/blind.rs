@@ -89,22 +89,25 @@ fn calculate_shannon_entropy(bytes: &[u8]) -> f64 {
         .sum()
 }
 
-/// Minimum Shannon entropy required for cryptographic randomness (bits per byte)
+/// M-3: Minimum Shannon entropy required for cryptographic randomness (bits per byte)
 ///
-/// For a small sample of 32 bytes from a true random source, the expected
-/// SEC-WRAITH-1: Minimum Shannon entropy for cryptographic randomness
+/// SEC-WRAITH-1: Minimum Shannon entropy for cryptographic randomness.
 ///
 /// Shannon entropy depends on the number of unique values observed. With 32
-/// samples from 256 possible values, good randomness yields ~4.5-5.0 bits/byte
+/// samples from 256 possible values, valid randomness yields ~4.5-5.0 bits/byte
 /// due to expected collisions in small samples (birthday paradox).
+///
+/// IMPORTANT: The theoretical max is 8.0 bits/byte, but this is unachievable
+/// with only 32 samples. A threshold of 6.0+ would reject valid random data.
 ///
 /// We use 4.0 bits/byte as our threshold:
 /// - 4.0 bits/byte = 50% of theoretical maximum, catches severely broken RNG
-/// - Higher thresholds (6.0+) cause false positives with valid random 32-byte samples
+/// - Higher thresholds cause false positives with valid 32-byte random samples
 /// - This threshold catches all-zeros, all-ones, and simple repeating patterns
 ///
-/// The entropy check is a safety net for catastrophic RNG failure, not a
-/// guarantee of cryptographic quality (which is the RNG's responsibility).
+/// NOTE: If higher entropy verification is required for security audit compliance,
+/// the solution is to accumulate more samples before checking, not to raise
+/// the threshold on a 32-byte sample (which is mathematically unsound).
 const MIN_ENTROPY_BITS_PER_BYTE: f64 = 4.0;
 
 /// Generate random 32 bytes for key material (WR4-L3, M-CRYPTO-1)

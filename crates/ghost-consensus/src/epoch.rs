@@ -88,19 +88,31 @@ impl EpochTracker {
         }
     }
 
+    /// M-8: Maximum epoch number to prevent overflow in calculations
+    /// This allows for ~584 billion years of epochs at 6 hours each
+    pub const MAX_EPOCH: u64 = u64::MAX / L2_EPOCH_BLOCKS - 1;
+
     /// Get epoch number for a block height
     pub fn epoch_for_height(height: u64) -> u64 {
         height / L2_EPOCH_BLOCKS
     }
 
     /// Get the first block of an epoch
+    /// M-8: Uses saturating arithmetic and validates epoch bounds
     pub fn epoch_start_block(epoch: u64) -> u64 {
-        epoch * L2_EPOCH_BLOCKS
+        if epoch > Self::MAX_EPOCH {
+            return u64::MAX;
+        }
+        epoch.saturating_mul(L2_EPOCH_BLOCKS)
     }
 
     /// Get the last block of an epoch
+    /// M-8: Uses saturating arithmetic and validates epoch bounds
     pub fn epoch_end_block(epoch: u64) -> u64 {
-        (epoch + 1) * L2_EPOCH_BLOCKS
+        if epoch > Self::MAX_EPOCH {
+            return u64::MAX;
+        }
+        epoch.saturating_add(1).saturating_mul(L2_EPOCH_BLOCKS)
     }
 
     /// Check if a height is the last block of an epoch
@@ -449,5 +461,30 @@ mod tests {
         // Old entries should be gone, recent ones should remain
         assert!(!cache.contains_key(&0), "Very old entries should be pruned");
         assert!(cache.contains_key(&19), "Recent entries should be kept");
+    }
+
+    #[test]
+    fn test_epoch_bounds_checking() {
+        // M-8: Test that epoch functions handle overflow correctly
+
+        // Normal epoch should work
+        let normal_epoch = 1000u64;
+        let start = EpochTracker::epoch_start_block(normal_epoch);
+        let end = EpochTracker::epoch_end_block(normal_epoch);
+        assert_eq!(start, normal_epoch * L2_EPOCH_BLOCKS);
+        assert_eq!(end, (normal_epoch + 1) * L2_EPOCH_BLOCKS);
+
+        // Very large epoch should return MAX instead of overflowing
+        let huge_epoch = u64::MAX;
+        let start = EpochTracker::epoch_start_block(huge_epoch);
+        let end = EpochTracker::epoch_end_block(huge_epoch);
+        assert_eq!(start, u64::MAX, "Overflow should return MAX");
+        assert_eq!(end, u64::MAX, "Overflow should return MAX");
+
+        // Epoch at MAX_EPOCH boundary
+        let boundary_epoch = EpochTracker::MAX_EPOCH;
+        let start = EpochTracker::epoch_start_block(boundary_epoch);
+        // Should not overflow
+        assert!(start < u64::MAX, "Boundary epoch should not overflow");
     }
 }

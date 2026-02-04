@@ -563,7 +563,7 @@ fn test_563_share_pagination_via_limit() {
     assert_eq!(all_shares.len(), 100);
 
     // Manual pagination
-    let page1: Vec<_> = all_shares.iter().skip(0).take(10).collect();
+    let page1: Vec<_> = all_shares.iter().take(10).collect();
     let page2: Vec<_> = all_shares.iter().skip(10).take(10).collect();
     assert_eq!(page1.len(), 10);
     assert_eq!(page2.len(), 10);

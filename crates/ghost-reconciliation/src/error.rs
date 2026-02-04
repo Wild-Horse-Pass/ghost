@@ -84,6 +84,14 @@ pub enum ReconciliationError {
 
     #[error("Invalid settlement: {0}")]
     InvalidSettlement(String),
+
+    /// H-8: UTXO not found on L1 - lock may have been spent or reorged
+    #[error("UTXO not found for lock: {lock_id}")]
+    UtxoNotFound { lock_id: String },
+
+    /// H-8: Bitcoin RPC error during UTXO verification
+    #[error("Bitcoin RPC error: {0}")]
+    BitcoinRpcError(String),
 }
 
 // Simplified BatchNotFound that takes a String directly

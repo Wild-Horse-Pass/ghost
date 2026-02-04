@@ -13,13 +13,13 @@
 //! a verification key generated from a proper MPC ceremony.
 
 use bellperson::groth16::{verify_proof as groth16_verify_proof, PreparedVerifyingKey, Proof};
-use blstrs::{Bls12, G1Affine, G2Affine, Scalar as Fr};
-use ff::PrimeField;
+use blstrs::{Bls12, G1Affine, G2Affine};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, instrument, warn};
 
 use crate::errors::{ZkError, ZkResult};
+use crate::field_utils::bytes_to_field;
 use crate::types::{BlockProof, VerificationKey, GROTH16_PROOF_SIZE};
 
 /// Verifies block validity proofs
@@ -142,6 +142,15 @@ impl BlockVerifier {
     /// `Ok(true)` if the proof is valid, `Ok(false)` if invalid
     #[instrument(skip_all, fields(height = proof.height, tx_count = proof.tx_count))]
     pub fn verify(&self, proof: &BlockProof) -> ZkResult<bool> {
+        // M-2: Runtime check to block simulated proofs in production
+        if proof.is_simulated() {
+            #[cfg(not(any(test, feature = "test-utils")))]
+            {
+                error!("SECURITY: Simulated proof rejected in production mode");
+                return Err(ZkError::SimulatedProofRejected);
+            }
+        }
+
         // Verify transaction count is within limits
         if proof.tx_count as usize > self.max_txs {
             debug!(
@@ -403,19 +412,7 @@ pub fn verify_proof(vk: &VerificationKey, proof: &BlockProof) -> ZkResult<bool> 
     verifier.verify(proof)
 }
 
-/// Convert a 32-byte array to a field element
-fn bytes_to_field(bytes: &[u8; 32]) -> ZkResult<Fr> {
-    let mut repr = [0u8; 32];
-    repr.copy_from_slice(bytes);
-
-    // BLS12-381 scalar field is slightly less than 2^255
-    // Clear top bit to ensure it fits
-    repr[31] &= 0x7F;
-
-    Fr::from_repr_vartime(repr).ok_or_else(|| {
-        ZkError::VerificationError("Failed to convert bytes to field element".to_string())
-    })
-}
+// M-1: bytes_to_field is now in field_utils.rs for unified prover/verifier use
 
 #[cfg(test)]
 mod tests {

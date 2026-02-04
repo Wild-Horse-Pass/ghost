@@ -650,6 +650,10 @@ async fn handle_prepare_payment(
 /// Handle submit signed payment
 ///
 /// Submits a signed payment transaction for broadcast.
+///
+/// H-9 Security: Verifies that the payment belongs to the authenticated wallet
+/// before allowing signature submission. This prevents payment hijacking where
+/// an attacker could submit signatures for payments they didn't create.
 async fn handle_submit_signed_payment(
     state: &Arc<GspState>,
     conn_state: &ConnectionState,
@@ -662,10 +666,24 @@ async fn handle_submit_signed_payment(
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
+    // H-9: Verify payment belongs to this wallet before allowing submission
+    // This prevents payment hijacking attacks where an attacker could submit
+    // signatures for payments created by other wallets.
+    let payment = state.pay_node.get_payment(payment_id).await?;
+    if payment.wallet_id != wallet_id.to_string() {
+        warn!(
+            wallet_id = %wallet_id,
+            payment_id = %payment_id,
+            payment_owner = %payment.wallet_id,
+            "H-9 Security: Payment ownership mismatch - rejecting signature submission"
+        );
+        return Err(GspError::PaymentOwnershipMismatch);
+    }
+
     info!(
         wallet_id = %wallet_id,
         payment_id = %payment_id,
-        "Submitting signed payment"
+        "Submitting signed payment (ownership verified)"
     );
 
     // Submit payment via pay node
@@ -1093,6 +1111,14 @@ async fn handle_unsubscribe_lock_state(
 ///
 /// This allows merchants to show "Confirmed" immediately for small payments,
 /// with actual settlement happening on the next virtual block.
+///
+/// H-11 Security: Before accepting an instant payment, we MUST verify that
+/// the sender's lock UTXO actually exists on L1 with sufficient confirmations.
+/// This prevents attacks where:
+/// - The lock was never funded
+/// - The lock funding transaction was reorged out
+/// - The lock was already spent in another transaction
+/// - The lock is only in the mempool (could be double-spent)
 async fn handle_accept_instant_payment(
     state: &Arc<GspState>,
     conn_state: &ConnectionState,
@@ -1122,10 +1148,71 @@ async fn handle_accept_instant_payment(
         wallet_id = %wallet_id,
         sender_lock_id = %sender_lock_id,
         amount_sats = amount_sats,
-        "Accepting instant payment"
+        "Processing instant payment acceptance request"
     );
 
-    // Check instant capability
+    // =========================================================================
+    // H-11: Verify L1 UTXO state before accepting instant payment
+    // =========================================================================
+    // This is CRITICAL for instant payment security. We must verify the lock
+    // actually exists on L1 (not just in our cached data) before showing
+    // "Confirmed" to the merchant.
+
+    // Minimum confirmations required for instant payment acceptance
+    // 6 confirmations provides high confidence the lock won't be reorged
+    const MIN_INSTANT_CONFIRMATIONS: u32 = 6;
+
+    let utxo_state = state.pay_node.get_utxo_state(sender_lock_id).await?;
+
+    // H-11 Check 1: Verify the lock UTXO exists on L1
+    if !utxo_state.exists {
+        warn!(
+            wallet_id = %wallet_id,
+            sender_lock_id = %sender_lock_id,
+            "H-11 Security: Lock UTXO not found on L1 - rejecting instant payment"
+        );
+        return Err(GspError::LockNotFound(sender_lock_id.to_string()));
+    }
+
+    // H-11 Check 2: Reject if the lock is only in the mempool (unconfirmed)
+    // Mempool transactions can be double-spent via RBF or simply dropped
+    if utxo_state.in_mempool {
+        warn!(
+            wallet_id = %wallet_id,
+            sender_lock_id = %sender_lock_id,
+            "H-11 Security: Lock UTXO is pending in mempool - rejecting instant payment"
+        );
+        return Err(GspError::LockPending);
+    }
+
+    // H-11 Check 3: Require minimum confirmations for instant payment
+    // This ensures the lock has deep enough confirmation to be safe from reorgs
+    if utxo_state.confirmations < MIN_INSTANT_CONFIRMATIONS {
+        warn!(
+            wallet_id = %wallet_id,
+            sender_lock_id = %sender_lock_id,
+            confirmations = utxo_state.confirmations,
+            required = MIN_INSTANT_CONFIRMATIONS,
+            "H-11 Security: Lock has insufficient confirmations - rejecting instant payment"
+        );
+        return Err(GspError::InsufficientConfirmations {
+            have: utxo_state.confirmations,
+            need: MIN_INSTANT_CONFIRMATIONS,
+        });
+    }
+
+    info!(
+        wallet_id = %wallet_id,
+        sender_lock_id = %sender_lock_id,
+        confirmations = utxo_state.confirmations,
+        "H-11: L1 UTXO verification passed, proceeding with instant capability check"
+    );
+
+    // =========================================================================
+    // End H-11 L1 verification
+    // =========================================================================
+
+    // Check instant capability using cached snapshot (now safe to use after L1 verification)
     let lock_snapshot = match state.pay_node.get_lock_snapshot(sender_lock_id).await {
         Ok(snapshot) => snapshot,
         Err(e) => {
@@ -1181,7 +1268,8 @@ async fn handle_accept_instant_payment(
         amount_sats = amount_sats,
         settlement_block = settlement_block,
         confidence = capability.confidence,
-        "Instant payment accepted - show Confirmed"
+        l1_confirmations = utxo_state.confirmations,
+        "Instant payment accepted (L1 verified) - show Confirmed"
     );
 
     Ok(Some(ServerMessage::InstantPaymentAccepted {

@@ -45,6 +45,7 @@ use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
 use ghost_common::constants::BFT_THRESHOLD_PERCENT;
+use ghost_common::error::GhostError;
 use ghost_common::identity::verify_signature;
 use ghost_common::types::{ConsensusResult, NodeId, RoundId, VoteType};
 
@@ -71,6 +72,8 @@ pub struct VoteEquivocationProof {
     pub vote1: Vote,
     /// The second, conflicting vote (with signature)
     pub vote2: Vote,
+    /// M-4: Timestamp when equivocation was detected (Unix milliseconds)
+    pub detected_at: u64,
 }
 
 /// Serde helper for serializing/deserializing [u8; 32] as hex
@@ -101,6 +104,8 @@ mod hash_bytes {
 
 impl VoteEquivocationProof {
     /// Create an equivocation proof from two conflicting votes
+    ///
+    /// M-4: Sets detected_at timestamp to current time
     pub fn from_votes(
         round_id: RoundId,
         proposal_hash: [u8; 32],
@@ -119,6 +124,7 @@ impl VoteEquivocationProof {
             proposal_hash,
             vote1: vote1.clone(),
             vote2: vote2.clone(),
+            detected_at: chrono::Utc::now().timestamp_millis() as u64,
         }
     }
 
@@ -215,22 +221,32 @@ impl VotingSession {
     /// eligible voters, ensuring all nodes agree on who can vote.
     ///
     /// SEC-VOTE-4: This is the ONLY public constructor for production use.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GhostError::InsufficientVoters` if fewer than 4 eligible voters
+    /// are available. BFT requires n >= 3f+1, so for f=1 Byzantine node, need n >= 4.
     pub fn from_elder_list(
         round_id: RoundId,
         proposal_hash: [u8; 32],
         vote_type: VoteType,
         elder_list: &CanonicalElderList,
         timeout_ms: u64,
-    ) -> Self {
+    ) -> Result<Self, GhostError> {
         let eligible_voters = elder_list.get_eligible_voters();
 
-        // SEC-VOTE-5: Warn if quorum is too small for BFT
-        if eligible_voters.len() < 3 {
-            warn!(
+        // H-1: BFT requires n >= 3f+1, so for f=1 Byzantine node, need n >= 4
+        // This is a hard requirement - without 4 voters, BFT security cannot be guaranteed
+        if eligible_voters.len() < 4 {
+            error!(
                 epoch = elder_list.epoch,
                 voters = eligible_voters.len(),
-                "Voting session created with fewer than 3 eligible voters - BFT requires n >= 3f+1"
+                "Cannot create voting session: BFT requires at least 4 eligible voters (n >= 3f+1 for f=1)"
             );
+            return Err(GhostError::InsufficientVoters {
+                required: 4,
+                available: eligible_voters.len(),
+            });
         }
 
         info!(
@@ -239,13 +255,13 @@ impl VotingSession {
             eligible_count = eligible_voters.len(),
             "Created voting session from canonical elder list"
         );
-        Self::new(
+        Ok(Self::new(
             round_id,
             proposal_hash,
             vote_type,
             eligible_voters,
             timeout_ms,
-        )
+        ))
     }
 
     /// Test-only constructor for creating voting sessions with arbitrary voters
@@ -1075,5 +1091,85 @@ mod tests {
             5000,
         );
         assert_eq!(small_session.threshold(), 3, "Threshold for 3 voters should be 3 (all must agree)");
+    }
+
+    /// H-1-TEST: Verify that from_elder_list requires minimum 4 voters for BFT security
+    #[test]
+    fn test_from_elder_list_requires_minimum_4_voters() {
+        use crate::elder_list::{CanonicalElderList, ElderEntry};
+        use ghost_common::identity::NodeIdProof;
+
+        // Create a helper to make elder entries
+        fn make_elder(i: u8) -> ElderEntry {
+            ElderEntry::new(
+                [i; 32],
+                1, // epoch
+                &NodeIdProof { nonce: 0, difficulty: 20 },
+                chrono::Utc::now().timestamp() as u64,
+                99.0,
+            )
+        }
+
+        // Create an elder list with only 3 voters
+        let small_elders: Vec<ElderEntry> = (0u8..3).map(make_elder).collect();
+        let small_elder_list = CanonicalElderList::new(1, small_elders);
+
+        let result = VotingSession::from_elder_list(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            &small_elder_list,
+            5000,
+        );
+
+        // Should fail with InsufficientVoters
+        assert!(result.is_err(), "Should reject elder list with fewer than 4 voters");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ghost_common::error::GhostError::InsufficientVoters { required: 4, available: 3 }),
+            "Expected InsufficientVoters error with required=4, available=3, got {:?}",
+            err
+        );
+
+        // Create an elder list with exactly 4 voters
+        let valid_elders: Vec<ElderEntry> = (0u8..4).map(make_elder).collect();
+        let valid_elder_list = CanonicalElderList::new(1, valid_elders);
+
+        let result = VotingSession::from_elder_list(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            &valid_elder_list,
+            5000,
+        );
+
+        // Should succeed with exactly 4 voters
+        assert!(result.is_ok(), "Should accept elder list with exactly 4 voters");
+        let session = result.unwrap();
+        assert_eq!(session.eligible_voters.len(), 4);
+    }
+
+    /// H-1-TEST: Verify edge case with 0 voters
+    #[test]
+    fn test_from_elder_list_rejects_empty() {
+        use crate::elder_list::CanonicalElderList;
+
+        let empty_elder_list = CanonicalElderList::new(1, vec![]);
+
+        let result = VotingSession::from_elder_list(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            &empty_elder_list,
+            5000,
+        );
+
+        assert!(result.is_err(), "Should reject empty elder list");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ghost_common::error::GhostError::InsufficientVoters { required: 4, available: 0 }),
+            "Expected InsufficientVoters error with available=0, got {:?}",
+            err
+        );
     }
 }

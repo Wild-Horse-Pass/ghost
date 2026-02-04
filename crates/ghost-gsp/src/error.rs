@@ -41,6 +41,9 @@ pub enum GspError {
     #[error("Invalid bind address: {0}")]
     InvalidBindAddress(String),
 
+    #[error("Insecure JWT secret: {0}")]
+    InsecureJwtSecret(String),
+
     // =========================================================================
     // Authentication Errors
     // =========================================================================
@@ -106,6 +109,28 @@ pub enum GspError {
 
     #[error("Protocol error: {0}")]
     Protocol(ghost_gsp_proto::GspProtoError),
+
+    // =========================================================================
+    // H-9: Payment Ownership Errors
+    // =========================================================================
+    /// H-9: Payment does not belong to the authenticated wallet
+    #[error("Payment does not belong to this wallet")]
+    PaymentOwnershipMismatch,
+
+    // =========================================================================
+    // H-11: Instant Payment Verification Errors
+    // =========================================================================
+    /// H-11: Lock UTXO not found on L1
+    #[error("Lock not found on L1: {0}")]
+    LockNotFound(String),
+
+    /// H-11: Lock UTXO is still pending in mempool
+    #[error("Lock is pending (unconfirmed in mempool)")]
+    LockPending,
+
+    /// H-11: Lock UTXO has insufficient confirmations
+    #[error("Insufficient confirmations: {have} < {need}")]
+    InsufficientConfirmations { have: u32, need: u32 },
 }
 
 impl From<ghost_gsp_proto::GspProtoError> for GspError {
@@ -143,6 +168,11 @@ impl IntoResponse for GspError {
             GspError::InvalidBindAddress(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INVALID_BIND_ADDRESS",
+                msg.clone(),
+            ),
+            GspError::InsecureJwtSecret(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INSECURE_JWT_SECRET",
                 msg.clone(),
             ),
             GspError::Unauthorized => (
@@ -208,6 +238,28 @@ impl IntoResponse for GspError {
                 msg.clone(),
             ),
             GspError::Protocol(e) => (StatusCode::BAD_REQUEST, "PROTOCOL_ERROR", e.to_string()),
+            // H-9: Payment ownership mismatch
+            GspError::PaymentOwnershipMismatch => (
+                StatusCode::FORBIDDEN,
+                "PAYMENT_OWNERSHIP_MISMATCH",
+                "Payment does not belong to this wallet".to_string(),
+            ),
+            // H-11: Instant payment verification errors
+            GspError::LockNotFound(lock_id) => (
+                StatusCode::NOT_FOUND,
+                "LOCK_NOT_FOUND",
+                format!("Lock not found on L1: {}", lock_id),
+            ),
+            GspError::LockPending => (
+                StatusCode::CONFLICT,
+                "LOCK_PENDING",
+                "Lock is pending (unconfirmed in mempool)".to_string(),
+            ),
+            GspError::InsufficientConfirmations { have, need } => (
+                StatusCode::CONFLICT,
+                "INSUFFICIENT_CONFIRMATIONS",
+                format!("Insufficient confirmations: {} < {}", have, need),
+            ),
         };
 
         let body = serde_json::json!({

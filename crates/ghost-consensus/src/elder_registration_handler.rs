@@ -326,7 +326,7 @@ impl ElderRegistrationHandler {
         }
 
         // 7. Store in database
-        let candidate_hex = hex::encode(&msg.candidate);
+        let candidate_hex = hex::encode(msg.candidate);
         let request_id = self.db.create_elder_registration_request(
             &candidate_hex,
             msg.pow_nonce,
@@ -358,7 +358,7 @@ impl ElderRegistrationHandler {
         approve: bool,
         rejection_reason: Option<String>,
     ) -> GhostResult<()> {
-        let candidate_hex = hex::encode(&proposal.candidate);
+        let candidate_hex = hex::encode(proposal.candidate);
         let short_candidate = hex::encode(&proposal.candidate[..8]);
 
         // Get the request from database
@@ -396,10 +396,10 @@ impl ElderRegistrationHandler {
         // Record in database
         self.db.record_elder_registration_vote(
             request.id,
-            &hex::encode(&self.identity.node_id()),
+            &hex::encode(self.identity.node_id()),
             approve,
             rejection_reason.as_deref(),
-            &hex::encode(&signature),
+            &hex::encode(signature),
         )?;
 
         // Broadcast the vote (registration votes use the same topic as proposals)
@@ -419,7 +419,7 @@ impl ElderRegistrationHandler {
         let current_list = self.elder_list_manager.read().current();
         let total_elders = current_list.elder_count();
         let threshold =
-            ((total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT + 99) / 100).max(1) as usize;
+            (total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT).div_ceil(100).max(1) as usize;
 
         if approvals as usize >= threshold {
             info!(
@@ -480,7 +480,7 @@ impl ElderRegistrationHandler {
         }
 
         // Get the request from database
-        let candidate_hex = hex::encode(&msg.candidate);
+        let candidate_hex = hex::encode(msg.candidate);
         let request = match self.db.get_elder_registration_request(&candidate_hex)? {
             Some(r) => r,
             None => {
@@ -495,10 +495,10 @@ impl ElderRegistrationHandler {
         // Record the vote
         self.db.record_elder_registration_vote(
             request.id,
-            &hex::encode(&msg.voter),
+            &hex::encode(msg.voter),
             msg.approve,
             msg.rejection_reason.as_deref(),
-            &hex::encode(&msg.signature),
+            &hex::encode(msg.signature),
         )?;
 
         debug!(
@@ -513,7 +513,7 @@ impl ElderRegistrationHandler {
         let current_list = self.elder_list_manager.read().current();
         let total_elders = current_list.elder_count();
         let threshold =
-            ((total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT + 99) / 100).max(1) as usize;
+            (total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT).div_ceil(100).max(1) as usize;
 
         if approvals as usize >= threshold && request.status == "pending" {
             info!(
@@ -685,8 +685,8 @@ impl ElderRegistrationHandler {
         // Store in database
         self.db.store_elder_approval(
             epoch,
-            &hex::encode(&self.identity.node_id()),
-            &hex::encode(&approval.signature),
+            &hex::encode(self.identity.node_id()),
+            &hex::encode(approval.signature),
             approval.timestamp,
         )?;
 
@@ -765,8 +765,8 @@ impl ElderRegistrationHandler {
         // 5. Store approval in database
         self.db.store_elder_approval(
             msg.epoch,
-            &hex::encode(&msg.approver),
-            &hex::encode(&msg.signature),
+            &hex::encode(msg.approver),
+            &hex::encode(msg.signature),
             msg.timestamp,
         )?;
 
@@ -775,7 +775,7 @@ impl ElderRegistrationHandler {
         let current_list = self.elder_list_manager.read().current();
         let total_elders = current_list.elder_count();
         let threshold =
-            ((total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT + 99) / 100).max(1) as usize;
+            (total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT).div_ceil(100).max(1) as usize;
 
         info!(
             epoch = msg.epoch,
@@ -914,7 +914,7 @@ impl ElderRegistrationHandler {
         let new_epoch = current.epoch + 1;
 
         // Get the candidate's registration info from database
-        let candidate_hex = hex::encode(&new_candidate);
+        let candidate_hex = hex::encode(new_candidate);
         let request = match self.db.get_elder_registration_request(&candidate_hex)? {
             Some(r) => r,
             None => {

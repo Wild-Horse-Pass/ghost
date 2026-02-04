@@ -845,12 +845,12 @@ impl ElderRegistrationProposalMessage {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(b"ElderRegistrationProposal/v1");
-        hasher.update(&self.candidate);
-        hasher.update(&self.pow_nonce.to_le_bytes());
-        hasher.update(&self.pow_difficulty.to_le_bytes());
-        hasher.update(&self.first_seen.to_le_bytes());
-        hasher.update(&self.uptime_percent.to_le_bytes());
-        hasher.update(&self.target_epoch.to_le_bytes());
+        hasher.update(self.candidate);
+        hasher.update(self.pow_nonce.to_le_bytes());
+        hasher.update(self.pow_difficulty.to_le_bytes());
+        hasher.update(self.first_seen.to_le_bytes());
+        hasher.update(self.uptime_percent.to_le_bytes());
+        hasher.update(self.target_epoch.to_le_bytes());
         hasher.finalize().into()
     }
 
@@ -905,9 +905,9 @@ impl ElderListProposalMessage {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(b"ElderListProposal/v1");
-        hasher.update(&self.epoch.to_le_bytes());
-        hasher.update(&self.merkle_root);
-        hasher.update(&self.elder_count.to_le_bytes());
+        hasher.update(self.epoch.to_le_bytes());
+        hasher.update(self.merkle_root);
+        hasher.update(self.elder_count.to_le_bytes());
         hasher.finalize().into()
     }
 
@@ -1029,9 +1029,9 @@ impl ElderRegistrationVoteMessage {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(b"ElderRegistrationVote/v1");
-        hasher.update(&self.candidate);
-        hasher.update(&self.target_epoch.to_le_bytes());
-        hasher.update(&[self.approve as u8]);
+        hasher.update(self.candidate);
+        hasher.update(self.target_epoch.to_le_bytes());
+        hasher.update([self.approve as u8]);
         hasher.finalize().into()
     }
 

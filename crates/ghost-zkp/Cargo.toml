@@ -5,6 +5,11 @@ edition = "2021"
 description = "Zero-knowledge proof infrastructure for Ghost Pay ZK-BFT consensus"
 license = "MIT"
 
+[features]
+default = []
+# M-2: Feature to allow simulated proofs in non-test builds (for integration testing)
+test-utils = []
+
 [dependencies]
 # ZK proving system (Groth16 via bellperson)
 # Note: bellperson 0.26 requires bellpepper-core 0.2, not 0.4

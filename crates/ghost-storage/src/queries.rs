@@ -103,18 +103,23 @@ impl Database {
         })
     }
 
+    /// Maximum rows returned by unbounded queries (H-7: OOM prevention)
+    pub const MAX_QUERY_RESULTS: u32 = 10000;
+
     /// Get shares for a round
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_shares_by_round(&self, round_id: u64) -> GhostResult<Vec<ShareRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, round_id, miner_id, difficulty, work, share_hash, timestamp, received_by, valid
-                     FROM shares WHERE round_id = ?1 ORDER BY timestamp",
+                     FROM shares WHERE round_id = ?1 ORDER BY timestamp LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let shares = stmt
-                .query_map([round_id], |row| {
+                .query_map(params![round_id, Self::MAX_QUERY_RESULTS], |row| {
                     Ok(ShareRecord {
                         id: Some(row.get(0)?),
                         round_id: row.get(1)?,
@@ -136,29 +141,34 @@ impl Database {
     }
 
     /// Get miner shares for a round
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_miner_shares(&self, round_id: u64, miner_id: &str) -> GhostResult<Vec<ShareRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, round_id, miner_id, difficulty, work, share_hash, timestamp, received_by, valid
-                     FROM shares WHERE round_id = ?1 AND miner_id = ?2 ORDER BY timestamp",
+                     FROM shares WHERE round_id = ?1 AND miner_id = ?2 ORDER BY timestamp LIMIT ?3",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let shares = stmt
-                .query_map([round_id.to_string(), miner_id.to_string()], |row| {
-                    Ok(ShareRecord {
-                        id: Some(row.get(0)?),
-                        round_id: row.get(1)?,
-                        miner_id: row.get(2)?,
-                        difficulty: row.get(3)?,
-                        work: row.get(4)?,
-                        share_hash: row.get(5)?,
-                        timestamp: row.get(6)?,
-                        received_by: row.get(7)?,
-                        valid: row.get(8)?,
-                    })
-                })
+                .query_map(
+                    params![round_id, miner_id, Self::MAX_QUERY_RESULTS],
+                    |row| {
+                        Ok(ShareRecord {
+                            id: Some(row.get(0)?),
+                            round_id: row.get(1)?,
+                            miner_id: row.get(2)?,
+                            difficulty: row.get(3)?,
+                            work: row.get(4)?,
+                            share_hash: row.get(5)?,
+                            timestamp: row.get(6)?,
+                            received_by: row.get(7)?,
+                            valid: row.get(8)?,
+                        })
+                    },
+                )
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -182,18 +192,22 @@ impl Database {
     }
 
     /// Get all miners with work in a round
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_round_miners(&self, round_id: u64) -> GhostResult<Vec<(String, f64)>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT miner_id, SUM(work) as total_work
                      FROM shares WHERE round_id = ?1 AND valid = 1
-                     GROUP BY miner_id ORDER BY total_work DESC",
+                     GROUP BY miner_id ORDER BY total_work DESC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let miners = stmt
-                .query_map([round_id], |row| Ok((row.get(0)?, row.get(1)?)))
+                .query_map(params![round_id, Self::MAX_QUERY_RESULTS], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -598,6 +612,9 @@ impl Database {
     }
 
     /// Get all elders (ordered by registration)
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
+    /// Note: Protocol limits elders to 101, but we add LIMIT for defense in depth
     pub fn get_elders(&self) -> GhostResult<Vec<NodeRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
@@ -606,12 +623,12 @@ impl Database {
                             is_elder, elder_order, capabilities, total_uptime_secs,
                             uptime_7d_percent, verification_pass_rate, total_shares_received,
                             total_blocks_found, payout_address
-                     FROM nodes WHERE is_elder = 1 ORDER BY elder_order",
+                     FROM nodes WHERE is_elder = 1 ORDER BY elder_order LIMIT ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let nodes = stmt
-                .query_map([], node_from_row)
+                .query_map([Self::MAX_QUERY_RESULTS], node_from_row)
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -624,16 +641,17 @@ impl Database {
     ///
     /// Returns node IDs from the nodes table that have a payout address configured.
     /// Used for payout calculations to include all registered nodes.
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_all_node_ids_with_payout(&self) -> GhostResult<Vec<String>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
-                    "SELECT node_id FROM nodes WHERE payout_address IS NOT NULL AND payout_address != ''",
+                    "SELECT node_id FROM nodes WHERE payout_address IS NOT NULL AND payout_address != '' LIMIT ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let node_ids = stmt
-                .query_map([], |row| row.get::<_, String>(0))
+                .query_map([Self::MAX_QUERY_RESULTS], |row| row.get::<_, String>(0))
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -958,19 +976,26 @@ impl Database {
     }
 
     /// Mark an elder bond as spent (slashed or withdrawn)
+    ///
+    /// H-13: This operation is wrapped in a transaction to ensure atomicity.
+    /// Both the elder_bonds table and nodes table must be updated together,
+    /// or neither should be updated (in case of failure).
     pub fn spend_elder_bond(&self, node_id: &str, spent_txid: &str) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
+        let node_id = node_id.to_string();
+        let spent_txid = spent_txid.to_string();
 
-        self.with_connection(|conn| {
-            conn.execute(
+        // H-13: Use transaction to ensure atomic update of both tables
+        self.transaction(|tx| {
+            tx.execute(
                 "UPDATE elder_bonds SET status = 'spent', spent_txid = ?1, updated_at = ?2
                  WHERE node_id = ?3 AND status = 'confirmed'",
                 params![spent_txid, now, node_id],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            // Update node's bond info
-            conn.execute(
+            // Update node's bond info - must be atomic with above
+            tx.execute(
                 "UPDATE nodes SET elder_bond_sats = 0, elder_bond_txid = NULL WHERE node_id = ?1",
                 params![node_id],
             )
@@ -982,6 +1007,10 @@ impl Database {
 
     /// Record a slashing event for an elder
     /// This is called when an elder is caught misbehaving (e.g., double-voting)
+    ///
+    /// H-13: This operation is wrapped in a transaction to ensure atomicity.
+    /// The slashing record and node status update must happen together,
+    /// or neither should happen (in case of failure).
     pub fn record_elder_slashing(
         &self,
         node_id: &str,
@@ -991,18 +1020,23 @@ impl Database {
         slashing_txid: Option<&str>,
     ) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
+        let node_id = node_id.to_string();
+        let reason = reason.to_string();
+        let evidence_hash = evidence_hash.to_string();
+        let slashing_txid = slashing_txid.map(|s| s.to_string());
 
-        self.with_connection(|conn| {
+        // H-13: Use transaction to ensure atomic insert and update
+        self.transaction(|tx| {
             // Record the slashing event
-            conn.execute(
+            tx.execute(
                 "INSERT INTO elder_slashing (node_id, reason, evidence_hash, slashed_amount_sats, slashing_txid, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![node_id, reason, evidence_hash, slashed_amount_sats, slashing_txid, now],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            // Mark the node as slashed and remove elder status
-            conn.execute(
+            // Mark the node as slashed and remove elder status - must be atomic with above
+            tx.execute(
                 "UPDATE nodes SET is_elder = 0, elder_order = NULL, slashed_at = ?1 WHERE node_id = ?2",
                 params![now, node_id],
             )
@@ -1010,7 +1044,7 @@ impl Database {
 
             tracing::warn!(
                 node_id = %&node_id[..8.min(node_id.len())],
-                reason,
+                reason = %reason,
                 slashed_amount_sats,
                 "Elder slashed for misbehavior"
             );
@@ -1399,18 +1433,20 @@ impl Database {
     }
 
     /// Get nodes with balance above threshold
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_nodes_with_balance(&self, min_balance: u64) -> GhostResult<Vec<NodeRewardEntry>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT node_id, balance_sats, last_credited_round, total_credits_sats,
                             total_withdrawals_sats, created_at, updated_at
-                     FROM node_rewards WHERE balance_sats >= ?1 ORDER BY balance_sats DESC",
+                     FROM node_rewards WHERE balance_sats >= ?1 ORDER BY balance_sats DESC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let entries = stmt
-                .query_map([min_balance], |row| {
+                .query_map(params![min_balance, Self::MAX_QUERY_RESULTS], |row| {
                     Ok(NodeRewardEntry {
                         node_id: row.get(0)?,
                         balance_sats: row.get(1)?,
@@ -1539,6 +1575,8 @@ impl Database {
     }
 
     /// Get all Ghost Locks for an owner
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_ghost_locks_by_owner(
         &self,
         owner_ghost_id: &str,
@@ -1551,12 +1589,12 @@ impl Database {
                             recovery_height, state, funding_txid, funding_vout,
                             spend_txid, output_script, jump_risk_tier, next_jump_height,
                             created_at, updated_at
-                     FROM ghost_locks WHERE owner_ghost_id = ?1 ORDER BY created_at DESC",
+                     FROM ghost_locks WHERE owner_ghost_id = ?1 ORDER BY created_at DESC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let locks = stmt
-                .query_map([owner_ghost_id], ghost_lock_from_row)
+                .query_map(params![owner_ghost_id, Self::MAX_QUERY_RESULTS], ghost_lock_from_row)
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -1566,6 +1604,8 @@ impl Database {
     }
 
     /// Get active Ghost Locks for an owner
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_active_ghost_locks(
         &self,
         owner_ghost_id: &str,
@@ -1580,12 +1620,12 @@ impl Database {
                             created_at, updated_at
                      FROM ghost_locks
                      WHERE owner_ghost_id = ?1 AND state = 'active'
-                     ORDER BY created_at DESC",
+                     ORDER BY created_at DESC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let locks = stmt
-                .query_map([owner_ghost_id], ghost_lock_from_row)
+                .query_map(params![owner_ghost_id, Self::MAX_QUERY_RESULTS], ghost_lock_from_row)
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -1595,6 +1635,8 @@ impl Database {
     }
 
     /// Get Ghost Locks that need to jump by a certain height
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_locks_needing_jump(&self, current_height: u32) -> GhostResult<Vec<GhostLockRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
@@ -1606,12 +1648,12 @@ impl Database {
                             created_at, updated_at
                      FROM ghost_locks
                      WHERE state = 'active' AND next_jump_height IS NOT NULL AND next_jump_height <= ?1
-                     ORDER BY next_jump_height ASC",
+                     ORDER BY next_jump_height ASC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let locks = stmt
-                .query_map([current_height], ghost_lock_from_row)
+                .query_map(params![current_height, Self::MAX_QUERY_RESULTS], ghost_lock_from_row)
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -1912,6 +1954,8 @@ impl Database {
     }
 
     /// Get active Wraith rounds
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_active_wraith_rounds(&self) -> GhostResult<Vec<WraithRoundRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
@@ -1921,12 +1965,12 @@ impl Database {
                             registration_deadline, execution_deadline, split_txid, merge_txid,
                             status, created_at, updated_at
                      FROM wraith_rounds WHERE status = 'active'
-                     ORDER BY registration_deadline ASC",
+                     ORDER BY registration_deadline ASC LIMIT ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let rounds = stmt
-                .query_map([], wraith_round_from_row)
+                .query_map([Self::MAX_QUERY_RESULTS], wraith_round_from_row)
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2046,6 +2090,8 @@ impl Database {
     }
 
     /// Get pending reconciliation batches
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_pending_reconciliation_batches(&self) -> GhostResult<Vec<ReconciliationRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
@@ -2054,12 +2100,12 @@ impl Database {
                             merkle_root, l1_txid, l1_block_height, dispute_deadline,
                             status, created_at, finalized_at
                      FROM reconciliation_state WHERE status IN ('pending', 'submitted')
-                     ORDER BY created_at ASC",
+                     ORDER BY created_at ASC LIMIT ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let batches = stmt
-                .query_map([], reconciliation_from_row)
+                .query_map([Self::MAX_QUERY_RESULTS], reconciliation_from_row)
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2237,6 +2283,8 @@ impl Database {
     }
 
     /// Get pending withdrawal requests for a ghost_id
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_pending_withdrawals(&self, ghost_id: &str) -> GhostResult<Vec<WithdrawalRequest>> {
         self.with_connection(|conn| {
             let mut stmt = conn
@@ -2245,12 +2293,12 @@ impl Database {
                             status, batch_id, l1_txid, created_at, updated_at
                      FROM withdrawal_requests
                      WHERE ghost_id = ?1 AND status = 'pending'
-                     ORDER BY created_at ASC",
+                     ORDER BY created_at ASC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let requests = stmt
-                .query_map([ghost_id], withdrawal_from_row)
+                .query_map(params![ghost_id, Self::MAX_QUERY_RESULTS], withdrawal_from_row)
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2260,6 +2308,8 @@ impl Database {
     }
 
     /// Get all pending withdrawal requests (for batch processing)
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_all_pending_withdrawals(&self) -> GhostResult<Vec<WithdrawalRequest>> {
         self.with_connection(|conn| {
             let mut stmt = conn
@@ -2268,12 +2318,12 @@ impl Database {
                             status, batch_id, l1_txid, created_at, updated_at
                      FROM withdrawal_requests
                      WHERE status = 'pending'
-                     ORDER BY created_at ASC",
+                     ORDER BY created_at ASC LIMIT ?1",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let requests = stmt
-                .query_map([], withdrawal_from_row)
+                .query_map([Self::MAX_QUERY_RESULTS], withdrawal_from_row)
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2283,6 +2333,8 @@ impl Database {
     }
 
     /// Get withdrawal requests by lock ID
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_withdrawals_by_lock(&self, lock_id: &str) -> GhostResult<Vec<WithdrawalRequest>> {
         self.with_connection(|conn| {
             let mut stmt = conn
@@ -2291,12 +2343,12 @@ impl Database {
                             status, batch_id, l1_txid, created_at, updated_at
                      FROM withdrawal_requests
                      WHERE lock_id = ?1
-                     ORDER BY created_at DESC",
+                     ORDER BY created_at DESC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let requests = stmt
-                .query_map([lock_id], withdrawal_from_row)
+                .query_map(params![lock_id, Self::MAX_QUERY_RESULTS], withdrawal_from_row)
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2407,18 +2459,19 @@ impl Database {
     }
 
     /// Get payouts for a specific round
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_payouts_by_round(&self, round_id: u64) -> GhostResult<Vec<PayoutRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, round_id, recipient_id, recipient_type, address, amount_sats,
                             txid, vout, status, created_at, confirmed_at
-                     FROM payouts WHERE round_id = ?1 ORDER BY created_at DESC",
+                     FROM payouts WHERE round_id = ?1 ORDER BY created_at DESC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let payouts = stmt
-                .query_map([round_id], payout_from_row)
+                .query_map(params![round_id, Self::MAX_QUERY_RESULTS], payout_from_row)
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2789,6 +2842,8 @@ impl Database {
     }
 
     /// Get the rotation history for a node (follows the chain of rotations)
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows per direction to prevent OOM attacks
     pub fn get_rotation_chain(&self, node_id: &str) -> GhostResult<Vec<(String, String, i64)>> {
         self.with_connection(|conn| {
             let mut chain = Vec::new();
@@ -2799,12 +2854,12 @@ impl Database {
                     "SELECT old_node_id, new_node_id, finalized_timestamp
                      FROM rotation_history
                      WHERE old_node_id = ?1 AND status = 'completed'
-                     ORDER BY finalized_timestamp DESC",
+                     ORDER BY finalized_timestamp DESC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let rotations = stmt
-                .query_map([node_id], |row| {
+                .query_map(params![node_id, Self::MAX_QUERY_RESULTS], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -2823,12 +2878,12 @@ impl Database {
                     "SELECT old_node_id, new_node_id, finalized_timestamp
                      FROM rotation_history
                      WHERE new_node_id = ?1 AND status = 'completed'
-                     ORDER BY finalized_timestamp DESC",
+                     ORDER BY finalized_timestamp DESC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let rotations = stmt
-                .query_map([node_id], |row| {
+                .query_map(params![node_id, Self::MAX_QUERY_RESULTS], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -3237,6 +3292,78 @@ impl Database {
         })
     }
 
+    // =========================================================================
+    // UNIQUE CHALLENGER COUNT QUERIES (C-2 Sybil Prevention)
+    // =========================================================================
+
+    /// Get the count of unique challengers for archive capability
+    /// C-2: Prevents Sybil attacks by requiring verification from multiple independent nodes
+    pub fn get_archive_unique_challengers(&self, node_id: &str, since: i64) -> GhostResult<u32> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT challenger_id)
+                     FROM archive_challenges
+                     WHERE node_id = ?1 AND timestamp >= ?2",
+                    params![node_id, since],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u32)
+        })
+    }
+
+    /// Get the count of unique challengers for policy capability
+    /// C-2: Prevents Sybil attacks by requiring verification from multiple independent nodes
+    pub fn get_policy_unique_challengers(&self, node_id: &str, since: i64) -> GhostResult<u32> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT challenger_id)
+                     FROM policy_challenges
+                     WHERE node_id = ?1 AND timestamp >= ?2",
+                    params![node_id, since],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u32)
+        })
+    }
+
+    /// Get the count of unique challengers for stratum capability
+    /// C-2: Prevents Sybil attacks by requiring verification from multiple independent nodes
+    pub fn get_stratum_unique_challengers(&self, node_id: &str, since: i64) -> GhostResult<u32> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT challenger_id)
+                     FROM stratum_challenges
+                     WHERE node_id = ?1 AND timestamp >= ?2",
+                    params![node_id, since],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u32)
+        })
+    }
+
+    /// Get the count of unique challengers for ghostpay capability
+    /// C-2: Prevents Sybil attacks by requiring verification from multiple independent nodes
+    pub fn get_ghostpay_unique_challengers(&self, node_id: &str, since: i64) -> GhostResult<u32> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT challenger_id)
+                     FROM ghostpay_challenges
+                     WHERE node_id = ?1 AND timestamp >= ?2",
+                    params![node_id, since],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u32)
+        })
+    }
+
     /// Record an uptime sample for a node
     pub fn record_uptime_sample(
         &self,
@@ -3310,6 +3437,9 @@ impl Database {
     /// 1. Node passes uptime gatekeeper (95% over lookback period)
     /// 2. Capability has min_challenges or more challenges
     /// 3. Pass rate is >= min_pass_rate
+    ///
+    /// H-4: This function safely handles division by zero by checking total > 0
+    /// before computing pass rate. If total is 0, the capability is not qualified.
     pub fn get_qualified_capabilities(
         &self,
         node_id: &str,
@@ -3319,25 +3449,32 @@ impl Database {
     ) -> GhostResult<ghost_common::types::NodeCapabilities> {
         use ghost_common::types::NodeCapabilities;
 
+        // H-4: Helper function to safely compute qualification without division by zero
+        // Returns true only if total >= min_challenges AND total > 0 AND pass_rate >= threshold
+        let is_qualified = |passed: u32, total: u32| -> bool {
+            // Explicit check for total > 0 to prevent any division by zero
+            total > 0 && total >= min_challenges && (passed as f64 / total as f64) >= min_pass_rate
+        };
+
         // Check each capability
         let archive_qualified = {
             let (passed, total) = self.get_archive_pass_rate(node_id, since)?;
-            total >= min_challenges && (passed as f64 / total as f64) >= min_pass_rate
+            is_qualified(passed, total)
         };
 
         let policy_qualified = {
             let (passed, total) = self.get_policy_pass_rate(node_id, since)?;
-            total >= min_challenges && (passed as f64 / total as f64) >= min_pass_rate
+            is_qualified(passed, total)
         };
 
         let stratum_qualified = {
             let (passed, total) = self.get_stratum_pass_rate(node_id, since)?;
-            total >= min_challenges && (passed as f64 / total as f64) >= min_pass_rate
+            is_qualified(passed, total)
         };
 
         let ghostpay_qualified = {
             let (passed, total) = self.get_ghostpay_pass_rate(node_id, since)?;
-            total >= min_challenges && (passed as f64 / total as f64) >= min_pass_rate
+            is_qualified(passed, total)
         };
 
         // Elder status is based on is_elder flag in the nodes table
@@ -3399,6 +3536,7 @@ impl Database {
     /// Get equivocation proofs for a node
     ///
     /// Returns all stored equivocation proofs for forensic analysis.
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_equivocation_proofs(
         &self,
         node_id: &[u8; 32],
@@ -3407,12 +3545,12 @@ impl Database {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, node_id, proof_data, detected_at, round_number, vote_type, created_at
-                     FROM equivocation_proofs WHERE node_id = ?1 ORDER BY detected_at DESC",
+                     FROM equivocation_proofs WHERE node_id = ?1 ORDER BY detected_at DESC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let proofs = stmt
-                .query_map([node_id.as_slice()], |row| {
+                .query_map(params![node_id.as_slice(), Self::MAX_QUERY_RESULTS], |row| {
                     Ok(EquivocationProofRecord {
                         id: row.get(0)?,
                         node_id: row.get(1)?,
@@ -3562,18 +3700,20 @@ impl Database {
     }
 
     /// Get all elder entries for an epoch
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_elder_entries_for_epoch(&self, epoch: u64) -> GhostResult<Vec<ElderEntryRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT epoch, node_id, registered_epoch, pow_nonce, pow_difficulty,
                             first_seen, uptime_at_registration, position
-                     FROM elder_entries WHERE epoch = ?1 ORDER BY position ASC",
+                     FROM elder_entries WHERE epoch = ?1 ORDER BY position ASC LIMIT ?2",
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let entries = stmt
-                .query_map([epoch as i64], |row| {
+                .query_map(params![epoch as i64, Self::MAX_QUERY_RESULTS], |row| {
                     Ok(ElderEntryRecord {
                         epoch: row.get::<_, i64>(0)? as u64,
                         node_id: row.get(1)?,

@@ -66,21 +66,27 @@ pub struct RateLimiter {
 
 /// Token bucket for rate limiting
 ///
-/// Using f64 for fractional token tracking allows smooth refill at
-/// sub-second granularity. Integer-based would be more precise but
-/// adds complexity for marginal benefit in this use case.
+/// H-14: Uses integer-based tokens with milli-token precision to avoid
+/// floating-point precision issues. One token = 1000 millis.
+/// This prevents subtle bugs from f64 rounding that could allow
+/// rate limit bypass or unfair throttling.
 #[derive(Clone)]
 struct TokenBucket {
-    tokens: f64,
+    /// Tokens * 1000 for sub-token precision without floating point
+    tokens_millis: u64,
     last_update: Instant,
     /// Unix timestamp for persistence (Instant can't be serialized)
     last_update_unix: u64,
 }
 
+/// One token in millis (1000 millis = 1 token)
+const MILLIS_PER_TOKEN: u64 = 1000;
+
 /// Serializable state for persistence
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistedBucket {
-    tokens: f64,
+    /// Stored as millis for consistency with runtime representation
+    tokens_millis: u64,
     last_update_unix: u64,
 }
 
@@ -108,6 +114,7 @@ impl RateLimiter {
     /// Create from persisted state (call at startup)
     ///
     /// Restores rate limit buckets from database, adjusting for time elapsed since save.
+    /// H-14: Uses integer arithmetic for precision.
     pub fn from_persisted(max_tokens: u32, refill_rate: u32, json_state: &str) -> Self {
         let limiter = Self::new(max_tokens, refill_rate);
 
@@ -125,18 +132,24 @@ impl RateLimiter {
                         let mut node_id = [0u8; 32];
                         node_id.copy_from_slice(&bytes);
 
-                        // Calculate elapsed time and refill tokens
+                        // H-14: Calculate elapsed time and refill tokens using integer math
                         let elapsed_secs = now.saturating_sub(persisted.last_update_unix);
-                        let refilled =
-                            persisted.tokens + (elapsed_secs as f64 * refill_rate as f64);
-                        let tokens = refilled.min(max_tokens as f64);
+                        // refill_millis = elapsed_secs * refill_rate * 1000 millis/token
+                        let refill_millis = elapsed_secs
+                            .saturating_mul(refill_rate as u64)
+                            .saturating_mul(MILLIS_PER_TOKEN);
+                        let max_millis = (max_tokens as u64).saturating_mul(MILLIS_PER_TOKEN);
+                        let tokens_millis = persisted
+                            .tokens_millis
+                            .saturating_add(refill_millis)
+                            .min(max_millis);
 
                         // Only restore if bucket isn't full (still useful to track)
-                        if tokens < max_tokens as f64 {
+                        if tokens_millis < max_millis {
                             buckets.insert(
                                 node_id,
                                 TokenBucket {
-                                    tokens,
+                                    tokens_millis,
                                     last_update: now_instant,
                                     last_update_unix: now,
                                 },
@@ -160,6 +173,9 @@ impl RateLimiter {
     /// Check if a node is rate limited and consume a token if not
     ///
     /// Returns true if the message should be allowed, false if rate limited
+    ///
+    /// H-14: Uses integer arithmetic with milli-token precision to avoid
+    /// floating-point precision issues.
     pub fn check_and_consume(&self, node_id: &NodeId) -> bool {
         let mut buckets = self.buckets.write();
         let now = Instant::now();
@@ -168,33 +184,38 @@ impl RateLimiter {
             .unwrap_or_default()
             .as_secs();
 
+        let max_millis = (self.max_tokens as u64).saturating_mul(MILLIS_PER_TOKEN);
+
         let bucket = buckets.entry(*node_id).or_insert_with(|| TokenBucket {
-            tokens: self.max_tokens as f64,
+            tokens_millis: max_millis,
             last_update: now,
             last_update_unix: now_unix,
         });
 
-        // H-P2P-3: Refill tokens based on time elapsed, with overflow protection
-        // Cap elapsed time to 1 hour to prevent overflow from clock jumps or Instant wraparound
-        let elapsed = now
+        // H-14: Refill tokens based on time elapsed using integer math
+        // Cap elapsed time to 1 hour (3600 seconds) to prevent overflow
+        let elapsed_ms = now
             .duration_since(bucket.last_update)
-            .as_secs_f64()
-            .min(3600.0);
+            .as_millis()
+            .min(3_600_000) as u64;
 
-        // Calculate new token count with NaN/Infinity protection
-        let new_tokens = bucket.tokens + elapsed * self.refill_rate as f64;
-        if new_tokens.is_nan() || new_tokens.is_infinite() {
-            // Reset to max on overflow (defensive)
-            bucket.tokens = self.max_tokens as f64;
-        } else {
-            bucket.tokens = new_tokens.min(self.max_tokens as f64);
-        }
+        // refill_millis = elapsed_ms * refill_rate / 1000 (converting ms to seconds)
+        // Reorder to avoid precision loss: (elapsed_ms * refill_rate * MILLIS_PER_TOKEN) / 1000
+        let refill_millis = elapsed_ms
+            .saturating_mul(self.refill_rate as u64)
+            .saturating_mul(MILLIS_PER_TOKEN)
+            / 1000;
+
+        bucket.tokens_millis = bucket
+            .tokens_millis
+            .saturating_add(refill_millis)
+            .min(max_millis);
         bucket.last_update = now;
         bucket.last_update_unix = now_unix;
 
-        // Try to consume a token
-        if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
+        // Try to consume one token (1000 millis)
+        if bucket.tokens_millis >= MILLIS_PER_TOKEN {
+            bucket.tokens_millis -= MILLIS_PER_TOKEN;
             true
         } else {
             false
@@ -212,6 +233,7 @@ impl RateLimiter {
     /// Serialize state for persistence (call periodically, e.g., every 60 seconds)
     ///
     /// Returns JSON that can be stored in kv_store with key "rate_limiter_state"
+    /// H-14: Uses integer millis for persistence consistency.
     pub fn to_persisted(&self) -> String {
         let buckets = self.buckets.read();
         let now_unix = std::time::SystemTime::now()
@@ -219,15 +241,19 @@ impl RateLimiter {
             .unwrap_or_default()
             .as_secs();
 
+        let max_millis = (self.max_tokens as u64).saturating_mul(MILLIS_PER_TOKEN);
+        // 90% threshold in millis
+        let threshold_millis = max_millis * 9 / 10;
+
         let persisted: Vec<(String, PersistedBucket)> = buckets
             .iter()
             // Only persist buckets that aren't full (they're the ones being rate limited)
-            .filter(|(_, b)| b.tokens < self.max_tokens as f64 * 0.9)
+            .filter(|(_, b)| b.tokens_millis < threshold_millis)
             .map(|(node_id, bucket)| {
                 (
                     hex::encode(node_id),
                     PersistedBucket {
-                        tokens: bucket.tokens,
+                        tokens_millis: bucket.tokens_millis,
                         last_update_unix: bucket.last_update_unix,
                     },
                 )
@@ -265,6 +291,32 @@ impl RateLimiter {
     ) -> std::io::Result<Self> {
         let json = std::fs::read_to_string(path)?;
         Ok(Self::from_persisted(max_tokens, refill_rate, &json))
+    }
+}
+
+// =============================================================================
+// H-2: Persist Rate Limiter on Shutdown
+// =============================================================================
+// The Drop implementation ensures rate limiter state is persisted when the
+// VoteHandler is dropped (e.g., during graceful shutdown). This prevents
+// attackers from bypassing rate limits by triggering node restarts.
+
+impl Drop for VoteHandler {
+    fn drop(&mut self) {
+        if let Some(ref path) = self.rate_limiter_persist_path {
+            if let Err(e) = self.rate_limiter.persist_to_file(path) {
+                tracing::error!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to persist rate limiter on shutdown"
+                );
+            } else {
+                tracing::info!(
+                    path = %path.display(),
+                    "Persisted rate limiter state on shutdown"
+                );
+            }
+        }
     }
 }
 
@@ -1190,12 +1242,26 @@ pub struct VotingStatus {
 }
 
 /// Compute hash of a payout proposal
+///
+/// C-6 Security Fix: This hash now includes ALL proposal fields that affect payouts,
+/// including treasury fields. This prevents a malicious proposer from changing
+/// treasury amounts without changing the hash that validators sign.
+///
+/// Version bumped from v1 to v2 to indicate the new hash format.
 pub fn compute_proposal_hash(proposal: &PayoutProposal) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"PayoutProposal/v1");
+    hasher.update(b"PayoutProposal/v2"); // Version bump for new format (C-6)
     hasher.update(proposal.round_id.to_le_bytes());
     hasher.update(proposal.block_hash);
     hasher.update(proposal.subsidy.to_le_bytes());
+    hasher.update(proposal.block_height.to_le_bytes());
+    hasher.update(proposal.timestamp.to_le_bytes());
+    hasher.update(proposal.proposer);
+
+    // C-6: Include treasury fields (CRITICAL - was missing in v1)
+    hasher.update(proposal.treasury_amount.to_le_bytes());
+    hasher.update(&proposal.treasury_address);
+    hasher.update(proposal.tx_fees.to_le_bytes());
 
     for payout in &proposal.miner_payouts {
         hasher.update(&payout.address);
@@ -1318,5 +1384,125 @@ mod tests {
             BanReason::ProtocolViolation.default_duration().as_secs(),
             900
         );
+    }
+
+    // C-6: Tests for treasury field inclusion in proposal hash
+    // These tests verify that changing treasury fields produces different hashes,
+    // preventing a malicious proposer from modifying treasury amounts without detection.
+
+    #[test]
+    fn test_c6_different_treasury_amount_produces_different_hash() {
+        let mut proposal1 = create_test_proposal();
+        proposal1.treasury_amount = 25_000_000;
+
+        let mut proposal2 = create_test_proposal();
+        proposal2.treasury_amount = 50_000_000; // Different treasury amount
+
+        let hash1 = compute_proposal_hash(&proposal1);
+        let hash2 = compute_proposal_hash(&proposal2);
+
+        assert_ne!(
+            hash1, hash2,
+            "C-6: Proposals with different treasury_amount must produce different hashes"
+        );
+    }
+
+    #[test]
+    fn test_c6_different_treasury_address_produces_different_hash() {
+        let mut proposal1 = create_test_proposal();
+        proposal1.treasury_address = b"bc1qtreasury_addr_1".to_vec();
+
+        let mut proposal2 = create_test_proposal();
+        proposal2.treasury_address = b"bc1qtreasury_addr_2".to_vec(); // Different treasury address
+
+        let hash1 = compute_proposal_hash(&proposal1);
+        let hash2 = compute_proposal_hash(&proposal2);
+
+        assert_ne!(
+            hash1, hash2,
+            "C-6: Proposals with different treasury_address must produce different hashes"
+        );
+    }
+
+    #[test]
+    fn test_c6_different_tx_fees_produces_different_hash() {
+        let mut proposal1 = create_test_proposal();
+        proposal1.tx_fees = 10_000_000;
+
+        let mut proposal2 = create_test_proposal();
+        proposal2.tx_fees = 20_000_000; // Different tx_fees
+
+        let hash1 = compute_proposal_hash(&proposal1);
+        let hash2 = compute_proposal_hash(&proposal2);
+
+        assert_ne!(
+            hash1, hash2,
+            "C-6: Proposals with different tx_fees must produce different hashes"
+        );
+    }
+
+    #[test]
+    fn test_c6_all_fields_included_in_hash() {
+        // Verify that all critical fields affect the hash
+        let base_proposal = create_test_proposal();
+        let base_hash = compute_proposal_hash(&base_proposal);
+
+        // Test each field that should affect the hash
+        let test_cases = [
+            ("round_id", {
+                let mut p = create_test_proposal();
+                p.round_id = 999;
+                p
+            }),
+            ("block_hash", {
+                let mut p = create_test_proposal();
+                p.block_hash = [0xFFu8; 32];
+                p
+            }),
+            ("subsidy", {
+                let mut p = create_test_proposal();
+                p.subsidy = 999_999_999;
+                p
+            }),
+            ("block_height", {
+                let mut p = create_test_proposal();
+                p.block_height = 999_999;
+                p
+            }),
+            ("timestamp", {
+                let mut p = create_test_proposal();
+                p.timestamp = 9999999999;
+                p
+            }),
+            ("proposer", {
+                let mut p = create_test_proposal();
+                p.proposer = [0xFFu8; 32];
+                p
+            }),
+            ("treasury_amount", {
+                let mut p = create_test_proposal();
+                p.treasury_amount = 999_999_999;
+                p
+            }),
+            ("treasury_address", {
+                let mut p = create_test_proposal();
+                p.treasury_address = b"bc1qdifferent".to_vec();
+                p
+            }),
+            ("tx_fees", {
+                let mut p = create_test_proposal();
+                p.tx_fees = 999_999_999;
+                p
+            }),
+        ];
+
+        for (field_name, modified_proposal) in test_cases {
+            let modified_hash = compute_proposal_hash(&modified_proposal);
+            assert_ne!(
+                base_hash, modified_hash,
+                "C-6: Changing {} must produce a different hash",
+                field_name
+            );
+        }
     }
 }

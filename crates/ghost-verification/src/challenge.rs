@@ -138,13 +138,50 @@ pub struct PolicyClassification {
     pub features: Vec<String>,
 }
 
+/// M-11: Minimum allowed stratum port (well-known ports reserved)
+pub const MIN_STRATUM_PORT: u16 = 1024;
+
+/// M-11: Maximum allowed stratum port
+pub const MAX_STRATUM_PORT: u16 = 65535;
+
 /// Stratum challenge request
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StratumChallenge {
     /// Port to check (default: 34255 for SV2, 3333 for SV1)
+    /// M-11: Must be in range MIN_STRATUM_PORT..=MAX_STRATUM_PORT
     pub port: Option<u16>,
     /// Protocol version
     pub protocol: StratumProtocol,
+}
+
+impl StratumChallenge {
+    /// M-11: Validate port number is in acceptable range
+    ///
+    /// Returns true if port is valid (None is valid - uses default)
+    /// Returns false if port is set but outside valid range
+    pub fn is_port_valid(&self) -> bool {
+        match self.port {
+            None => true, // Default port will be used
+            Some(port) => port >= MIN_STRATUM_PORT && port <= MAX_STRATUM_PORT,
+        }
+    }
+
+    /// M-11: Get validated port or default based on protocol
+    ///
+    /// Returns None if port is set but invalid, Some(port) otherwise
+    pub fn validated_port(&self) -> Option<u16> {
+        match self.port {
+            None => {
+                // Default ports for each protocol
+                Some(match self.protocol {
+                    StratumProtocol::Sv1 => 3333,
+                    StratumProtocol::Sv2 => 34255,
+                })
+            }
+            Some(port) if port >= MIN_STRATUM_PORT && port <= MAX_STRATUM_PORT => Some(port),
+            Some(_) => None, // Invalid port
+        }
+    }
 }
 
 /// Stratum protocol version
@@ -181,6 +218,13 @@ pub struct GhostPayChallenge {
     pub address: Option<String>,
 }
 
+/// M-13: Maximum reasonable virtual block number
+/// Prevents overflow in downstream calculations
+pub const MAX_VIRTUAL_BLOCK: u64 = u64::MAX / 2;
+
+/// M-13: Maximum reasonable epoch number
+pub const MAX_EPOCH: u64 = u64::MAX / 2;
+
 /// Ghost Pay challenge response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GhostPayResponse {
@@ -198,6 +242,43 @@ pub struct GhostPayResponse {
     pub wraith_enabled: bool,
     /// Error message (if failed)
     pub error: Option<String>,
+}
+
+impl GhostPayResponse {
+    /// M-13: Validate the response fields are within acceptable ranges
+    ///
+    /// Returns true if all fields are valid, false if any field has an invalid value
+    /// that could indicate a malicious or malformed response.
+    pub fn is_valid(&self) -> bool {
+        // Check virtual_block is within reasonable range
+        if let Some(vb) = self.virtual_block {
+            if vb > MAX_VIRTUAL_BLOCK {
+                return false;
+            }
+        }
+
+        // Check epoch is within reasonable range
+        if let Some(ep) = self.epoch {
+            if ep > MAX_EPOCH {
+                return false;
+            }
+        }
+
+        // If success is claimed but l2 is not enabled, that's suspicious
+        // (not strictly invalid but worth noting)
+
+        true
+    }
+
+    /// M-13: Get validated virtual block or None if invalid
+    pub fn validated_virtual_block(&self) -> Option<u64> {
+        self.virtual_block.filter(|&vb| vb <= MAX_VIRTUAL_BLOCK)
+    }
+
+    /// M-13: Get validated epoch or None if invalid
+    pub fn validated_epoch(&self) -> Option<u64> {
+        self.epoch.filter(|&ep| ep <= MAX_EPOCH)
+    }
 }
 
 /// Health check response
@@ -852,5 +933,87 @@ mod tests {
         });
 
         assert_ne!(request.nonce, request2.nonce);
+    }
+
+    #[test]
+    fn test_stratum_port_validation() {
+        // M-11: Test stratum port validation
+
+        // No port (uses default) should be valid
+        let challenge = StratumChallenge {
+            port: None,
+            protocol: StratumProtocol::Sv2,
+        };
+        assert!(challenge.is_port_valid());
+        assert_eq!(challenge.validated_port(), Some(34255)); // SV2 default
+
+        // Valid port should be valid
+        let challenge = StratumChallenge {
+            port: Some(8333),
+            protocol: StratumProtocol::Sv1,
+        };
+        assert!(challenge.is_port_valid());
+        assert_eq!(challenge.validated_port(), Some(8333));
+
+        // Port below MIN_STRATUM_PORT should be invalid
+        let challenge = StratumChallenge {
+            port: Some(80), // Well-known port
+            protocol: StratumProtocol::Sv1,
+        };
+        assert!(!challenge.is_port_valid());
+        assert_eq!(challenge.validated_port(), None);
+
+        // Port at boundary should be valid
+        let challenge = StratumChallenge {
+            port: Some(MIN_STRATUM_PORT),
+            protocol: StratumProtocol::Sv1,
+        };
+        assert!(challenge.is_port_valid());
+        assert_eq!(challenge.validated_port(), Some(MIN_STRATUM_PORT));
+    }
+
+    #[test]
+    fn test_ghostpay_response_validation() {
+        // M-13: Test GhostPay response validation
+
+        // Normal response should be valid
+        let response = GhostPayResponse {
+            success: true,
+            l2_enabled: true,
+            virtual_block: Some(1000),
+            epoch: Some(5),
+            balance_sats: Some(100_000),
+            wraith_enabled: false,
+            error: None,
+        };
+        assert!(response.is_valid());
+        assert_eq!(response.validated_virtual_block(), Some(1000));
+        assert_eq!(response.validated_epoch(), Some(5));
+
+        // Extremely large virtual_block should be invalid
+        let response = GhostPayResponse {
+            success: true,
+            l2_enabled: true,
+            virtual_block: Some(u64::MAX),
+            epoch: Some(5),
+            balance_sats: None,
+            wraith_enabled: false,
+            error: None,
+        };
+        assert!(!response.is_valid());
+        assert_eq!(response.validated_virtual_block(), None);
+
+        // Extremely large epoch should be invalid
+        let response = GhostPayResponse {
+            success: true,
+            l2_enabled: true,
+            virtual_block: Some(1000),
+            epoch: Some(u64::MAX),
+            balance_sats: None,
+            wraith_enabled: false,
+            error: None,
+        };
+        assert!(!response.is_valid());
+        assert_eq!(response.validated_epoch(), None);
     }
 }

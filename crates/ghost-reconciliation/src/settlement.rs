@@ -132,8 +132,13 @@ impl Settlement {
             .unwrap_or_default()
             .as_secs();
 
-        // Generate unique ID (includes lock_id for uniqueness)
+        // Generate unique ID with cryptographic nonce for collision resistance
+        let mut nonce = [0u8; 16];
+        getrandom::getrandom(&mut nonce).expect("System RNG failure is unrecoverable");
+
         let mut hasher = Sha256::new();
+        hasher.update(b"GhostSettlement/v2");
+        hasher.update(&nonce);
         hasher.update(&source_ghost_id);
         hasher.update(source_lock_id);
         hasher.update(&destination_address);
@@ -383,5 +388,35 @@ mod tests {
 
         settlement.cancel().unwrap();
         assert_eq!(settlement.state(), SettlementState::Cancelled);
+    }
+
+    #[test]
+    fn test_settlement_id_collision_prevention() {
+        // C-5: Verify that settlements with identical params created in the same second
+        // still have different IDs due to cryptographic nonce
+        use std::collections::HashSet;
+
+        let source_ghost_id = "ghost1abc".to_string();
+        let lock_id = test_lock_id();
+        let destination = "bc1qtest".to_string();
+        let amount = 100_000u64;
+
+        // Create multiple settlements with identical parameters rapidly
+        let mut ids = HashSet::new();
+        for _ in 0..100 {
+            let settlement = Settlement::new(
+                source_ghost_id.clone(),
+                lock_id,
+                destination.clone(),
+                amount,
+            )
+            .unwrap();
+            let id = *settlement.id();
+            assert!(
+                ids.insert(id),
+                "CRITICAL: Settlement ID collision detected - same-second settlements must have unique IDs"
+            );
+        }
+        assert_eq!(ids.len(), 100, "All 100 settlement IDs must be unique");
     }
 }

@@ -30,6 +30,10 @@ use ghost_storage::Database;
 /// Maximum number of elders (from ghost_common::constants)
 pub const ELDER_MAX_COUNT: u32 = 101;
 
+/// M-5: Maximum number of approval signatures to prevent memory exhaustion
+/// Set to 200 to allow headroom beyond ELDER_MAX_COUNT but still bounded
+pub const MAX_APPROVALS: usize = 200;
+
 /// Minimum uptime percentage required for elder registration (95%)
 pub const ELDER_MIN_UPTIME_PERCENT: f64 = 95.0;
 
@@ -93,9 +97,9 @@ impl ElderEntry {
     /// Compute the hash of this entry for merkle tree
     pub fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(&self.node_id);
-        hasher.update(&self.registered_epoch.to_le_bytes());
-        hasher.update(&self.first_seen.to_le_bytes());
+        hasher.update(self.node_id);
+        hasher.update(self.registered_epoch.to_le_bytes());
+        hasher.update(self.first_seen.to_le_bytes());
         hasher.finalize().into()
     }
 }
@@ -210,7 +214,7 @@ impl CanonicalElderList {
             for chunk in hashes.chunks(2) {
                 let mut hasher = Sha256::new();
                 hasher.update(MERKLE_DOMAIN);
-                hasher.update(&chunk[0]);
+                hasher.update(chunk[0]);
                 hasher.update(chunk.get(1).unwrap_or(&[0u8; 32]));
                 next_level.push(hasher.finalize().into());
             }
@@ -231,7 +235,20 @@ impl CanonicalElderList {
     }
 
     /// Add an approval signature
+    ///
+    /// M-5: Enforces maximum approval count to prevent memory exhaustion
     pub fn add_approval(&mut self, approval: ElderApproval) -> bool {
+        // M-5: Check bounds before adding
+        if self.approval_signatures.len() >= MAX_APPROVALS {
+            warn!(
+                epoch = self.epoch,
+                current_count = self.approval_signatures.len(),
+                max = MAX_APPROVALS,
+                "Cannot add approval: maximum approvals reached"
+            );
+            return false;
+        }
+
         // Verify the signature
         if !approval.verify(self.epoch, &self.merkle_root) {
             warn!(
@@ -274,8 +291,9 @@ impl CanonicalElderList {
             return true;
         }
 
-        // Use ceiling division: (n * 67 + 99) / 100 ensures we round up
-        let threshold = ((previous_elders.len() as u32 * ELDER_BFT_THRESHOLD_PERCENT + 99) / 100)
+        // Use ceiling division to round up
+        let threshold = (previous_elders.len() as u32 * ELDER_BFT_THRESHOLD_PERCENT)
+            .div_ceil(100)
             .max(1) as usize;
 
         let valid_approvals = self
@@ -484,8 +502,8 @@ impl ElderListManager {
             request.approvals.insert(*approver);
 
             // Check if we have enough approvals (ceiling division for BFT)
-            let threshold = ((current.elder_count() as u32 * ELDER_BFT_THRESHOLD_PERCENT + 99)
-                / 100)
+            let threshold = (current.elder_count() as u32 * ELDER_BFT_THRESHOLD_PERCENT)
+                .div_ceil(100)
                 .max(1) as usize;
 
             if request.approvals.len() >= threshold {

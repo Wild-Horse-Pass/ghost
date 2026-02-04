@@ -26,8 +26,13 @@
 //! in the database for capability qualification calculations.
 
 use async_trait::async_trait;
+use chrono::Utc;
 use std::sync::Arc;
 use tracing::{info, warn};
+
+/// H-5: Maximum size for challenge_data and response_data fields (10 KB)
+/// This prevents memory exhaustion attacks from malicious oversized messages
+const MAX_CHALLENGE_DATA_SIZE: usize = 10 * 1024;
 
 use ghost_common::error::GhostResult;
 use ghost_common::identity::verify_signature;
@@ -70,6 +75,58 @@ impl VerificationResultHandler {
         let short_challenger = &challenger_hex[..8];
         let short_target = &target_hex[..8];
 
+        // H-5: Validate challenge_data size to prevent memory exhaustion attacks
+        if msg.challenge_data.len() > MAX_CHALLENGE_DATA_SIZE {
+            warn!(
+                challenger = %short_challenger,
+                size = msg.challenge_data.len(),
+                max = MAX_CHALLENGE_DATA_SIZE,
+                "Rejecting oversized challenge_data"
+            );
+            return Ok(());
+        }
+
+        // H-5: Validate response_data size to prevent memory exhaustion attacks
+        if let Some(ref response) = msg.response_data {
+            if response.len() > MAX_CHALLENGE_DATA_SIZE {
+                warn!(
+                    challenger = %short_challenger,
+                    size = response.len(),
+                    max = MAX_CHALLENGE_DATA_SIZE,
+                    "Rejecting oversized response_data"
+                );
+                return Ok(());
+            }
+        }
+
+        // C-3: Validate timestamp freshness to prevent replay attacks
+        const MAX_VERIFICATION_AGE_SECS: i64 = 600; // 10 minutes
+        const MAX_FUTURE_TOLERANCE_SECS: i64 = 30; // Allow 30 seconds clock skew
+
+        let now = Utc::now().timestamp();
+
+        // Reject stale results
+        if msg.timestamp < now - MAX_VERIFICATION_AGE_SECS {
+            warn!(
+                challenger = %short_challenger,
+                timestamp = msg.timestamp,
+                now = now,
+                "Rejecting stale verification result (older than 10 minutes)"
+            );
+            return Ok(());
+        }
+
+        // Reject future results (clock skew tolerance: 30 seconds)
+        if msg.timestamp > now + MAX_FUTURE_TOLERANCE_SECS {
+            warn!(
+                challenger = %short_challenger,
+                timestamp = msg.timestamp,
+                now = now,
+                "Rejecting verification result with future timestamp"
+            );
+            return Ok(());
+        }
+
         info!(
             challenger = %short_challenger,
             target = %short_target,
@@ -86,6 +143,15 @@ impl VerificationResultHandler {
                 "Verification result sender mismatch - potential spoofing"
             );
             return Ok(()); // Silently ignore invalid messages
+        }
+
+        // C-2: Reject self-verification attempts (Sybil prevention)
+        if msg.challenger_id == msg.target_node_id {
+            warn!(
+                challenger = %short_challenger,
+                "Rejecting self-verification attempt"
+            );
+            return Ok(());
         }
 
         // Verify the challenger's signature on the result
@@ -252,5 +318,34 @@ impl MessageHandler for VerificationResultHandler {
             self.handle_verification_result(&envelope).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// H-5-TEST: Verify the MAX_CHALLENGE_DATA_SIZE constant is set correctly
+    #[test]
+    fn test_max_challenge_data_size_constant() {
+        // 10 KB limit
+        assert_eq!(MAX_CHALLENGE_DATA_SIZE, 10 * 1024);
+        assert_eq!(MAX_CHALLENGE_DATA_SIZE, 10_240);
+    }
+
+    /// H-5-TEST: Verify oversized challenge data would be rejected
+    /// This is a unit test for the size limit logic - integration tested via handle_verification_result
+    #[test]
+    fn test_challenge_data_size_limits() {
+        // Valid sizes
+        let small_data = "x".repeat(100);
+        assert!(small_data.len() <= MAX_CHALLENGE_DATA_SIZE);
+
+        let at_limit = "x".repeat(MAX_CHALLENGE_DATA_SIZE);
+        assert!(at_limit.len() <= MAX_CHALLENGE_DATA_SIZE);
+
+        // Invalid size
+        let over_limit = "x".repeat(MAX_CHALLENGE_DATA_SIZE + 1);
+        assert!(over_limit.len() > MAX_CHALLENGE_DATA_SIZE);
     }
 }

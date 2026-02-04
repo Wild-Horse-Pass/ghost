@@ -111,6 +111,9 @@ pub enum GhostError {
     #[error("Insufficient votes: got={got}, needed={needed}")]
     InsufficientVotes { got: u32, needed: u32 },
 
+    #[error("Insufficient voters for BFT: have={available}, need={required}")]
+    InsufficientVoters { required: usize, available: usize },
+
     #[error("Round not found: {0}")]
     RoundNotFound(u64),
 

@@ -53,3 +53,4 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 sha2 = { workspace = true }
+getrandom = { workspace = true }

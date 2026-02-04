@@ -51,6 +51,7 @@
 
 pub mod circuit;
 pub mod errors;
+pub mod field_utils;
 pub mod payout_prover;
 pub mod payout_verifier;
 pub mod prover;

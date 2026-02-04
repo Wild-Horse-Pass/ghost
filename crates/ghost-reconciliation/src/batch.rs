@@ -453,6 +453,12 @@ pub fn compute_merkle_proof(leaves: &[[u8; 32]], index: usize) -> Vec<[u8; 32]> 
     proof
 }
 
+/// M-17: Maximum merkle proof length to prevent DoS via oversized proofs
+/// For a tree with N leaves, the maximum proof length is log2(N)
+/// With MAX_BATCH_SIZE of 100, max proof length is ceil(log2(100)) = 7
+/// We use 64 as a generous upper bound (supports up to 2^64 leaves)
+const MAX_MERKLE_PROOF_LENGTH: usize = 64;
+
 /// Verify a merkle proof
 ///
 /// The proof must be verified against the original leaf count to prevent
@@ -465,6 +471,22 @@ pub fn verify_merkle_proof(
     leaf_count: usize,
 ) -> bool {
     if leaf_count == 0 || index >= leaf_count {
+        return false;
+    }
+
+    // M-17: Validate proof length to prevent DoS via oversized proofs
+    if proof.len() > MAX_MERKLE_PROOF_LENGTH {
+        return false;
+    }
+
+    // M-17: Validate proof length is consistent with leaf count
+    // For N leaves, proof length should be at most ceil(log2(N))
+    let expected_max_depth = if leaf_count <= 1 {
+        0
+    } else {
+        (leaf_count as f64).log2().ceil() as usize
+    };
+    if proof.len() > expected_max_depth {
         return false;
     }
 
@@ -514,12 +536,10 @@ pub fn verify_merkle_proof(
     &computed_root == root
 }
 
-fn rand_bytes() -> [u8; 8] {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    (now as u64).to_le_bytes()
+fn rand_bytes() -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).expect("System RNG failure is unrecoverable");
+    bytes
 }
 
 #[cfg(test)]
@@ -606,5 +626,47 @@ mod tests {
         // Wrong count fails
         assert!(!verify_merkle_proof(&leaves[0], &proof, &root, 0, 5));
         assert!(!verify_merkle_proof(&leaves[0], &proof, &root, 0, 3));
+    }
+
+    #[test]
+    fn test_batch_id_uniqueness() {
+        // C-4: Verify that batch IDs are unique even when created rapidly
+        // This tests the cryptographic randomness fix
+        use std::collections::HashSet;
+
+        let mut ids = HashSet::new();
+        for _ in 0..1000 {
+            let batch = Batch::new();
+            let id = *batch.id();
+            assert!(
+                ids.insert(id),
+                "CRITICAL: Batch ID collision detected - cryptographic randomness may be broken"
+            );
+        }
+        assert_eq!(ids.len(), 1000, "All 1000 batch IDs must be unique");
+    }
+
+    #[test]
+    fn test_merkle_proof_length_validation() {
+        // M-17: Test that oversized merkle proofs are rejected
+        let leaf = [1u8; 32];
+        let root = [2u8; 32];
+
+        // Proof longer than MAX_MERKLE_PROOF_LENGTH should fail
+        let oversized_proof: Vec<[u8; 32]> = (0..65).map(|i| [i as u8; 32]).collect();
+        assert!(
+            !verify_merkle_proof(&leaf, &oversized_proof, &root, 0, 4),
+            "Oversized proof should be rejected"
+        );
+
+        // Proof longer than log2(leaf_count) should fail
+        let leaves: Vec<[u8; 32]> = (0..4).map(|i| [i; 32]).collect();
+        let root = compute_merkle_root(&leaves);
+        // For 4 leaves, proof should be at most 2 elements (log2(4) = 2)
+        let oversized_for_tree: Vec<[u8; 32]> = (0..5).map(|i| [i as u8; 32]).collect();
+        assert!(
+            !verify_merkle_proof(&leaves[0], &oversized_for_tree, &root, 0, 4),
+            "Proof longer than tree depth should be rejected"
+        );
     }
 }

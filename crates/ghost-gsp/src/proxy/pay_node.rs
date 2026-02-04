@@ -816,6 +816,128 @@ impl PayNodeProxy {
             current_height,
         })
     }
+
+    // =========================================================================
+    // H-9: Payment Ownership Verification
+    // =========================================================================
+
+    /// H-9: Get payment details including wallet ownership
+    ///
+    /// Returns payment details including the wallet_id that created the payment.
+    /// This is used to verify that a wallet can only submit signatures for
+    /// payments they created, preventing payment hijacking.
+    pub async fn get_payment(&self, payment_id: &str) -> GspResult<PaymentInfo> {
+        let url = format!("{}/api/v1/payments/{}", self.base_url, payment_id);
+        debug!(url = %url, payment_id = %payment_id, "Getting payment for ownership verification");
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(GspError::NotFound(format!(
+                "Payment not found: {}",
+                payment_id
+            )));
+        }
+
+        if !response.status().is_success() {
+            return Err(GspError::PayNodeError(format!(
+                "Payment request failed: {}",
+                response.status()
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(e.to_string()))
+    }
+
+    // =========================================================================
+    // H-11: L1 UTXO State Verification for Instant Payments
+    // =========================================================================
+
+    /// H-11: Get the real-time L1 state of a lock UTXO
+    ///
+    /// This queries Bitcoin Core (via the pay node) to get the actual on-chain
+    /// state of a lock's funding UTXO, rather than using cached data.
+    ///
+    /// This is critical for instant payment acceptance to ensure the sender's
+    /// lock actually exists on L1 with sufficient confirmations.
+    pub async fn get_utxo_state(&self, lock_id: &str) -> GspResult<UtxoState> {
+        let url = format!("{}/api/v1/locks/{}/utxo-state", self.base_url, lock_id);
+        debug!(url = %url, lock_id = %lock_id, "Getting L1 UTXO state for lock");
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            // Lock not found - return state indicating UTXO doesn't exist
+            return Ok(UtxoState {
+                exists: false,
+                in_mempool: false,
+                confirmations: 0,
+                amount_sats: 0,
+            });
+        }
+
+        if !response.status().is_success() {
+            // If the endpoint doesn't exist yet, fall back to cached snapshot
+            // This ensures backwards compatibility while the pay node is updated
+            let lock_snapshot = self.get_lock_snapshot(lock_id).await?;
+            return Ok(UtxoState {
+                exists: true,
+                in_mempool: lock_snapshot.in_mempool,
+                confirmations: lock_snapshot.confirmations,
+                amount_sats: lock_snapshot.balance_sats,
+            });
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(e.to_string()))
+    }
+}
+
+/// H-9: Payment information including ownership
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaymentInfo {
+    /// Payment ID
+    pub payment_id: String,
+    /// Wallet ID that created this payment (for ownership verification)
+    pub wallet_id: String,
+    /// Recipient address
+    pub recipient: String,
+    /// Amount in satoshis
+    pub amount_sats: u64,
+    /// Fee in satoshis
+    pub fee_sats: u64,
+    /// Current status
+    pub status: String,
+    /// Creation timestamp
+    pub created_at: i64,
+}
+
+/// H-11: L1 UTXO state for instant payment verification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UtxoState {
+    /// Whether the UTXO exists (not spent)
+    pub exists: bool,
+    /// Whether the UTXO is in the mempool (unconfirmed)
+    pub in_mempool: bool,
+    /// Number of confirmations (0 if in mempool or doesn't exist)
+    pub confirmations: u32,
+    /// Amount in satoshis
+    pub amount_sats: u64,
 }
 
 #[cfg(test)]

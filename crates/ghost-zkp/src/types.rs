@@ -58,6 +58,17 @@ impl BlockProof {
         self.proof.len()
     }
 
+    /// M-2: Check if this is a simulated (non-cryptographic) proof
+    ///
+    /// Simulated proofs are generated during testing when Groth16 parameters
+    /// are not available. They are 72-73 bytes (prover_id + hash + constraints + mode).
+    /// Real Groth16 proofs are exactly 192 bytes.
+    ///
+    /// Simulated proofs MUST NOT be accepted in production.
+    pub fn is_simulated(&self) -> bool {
+        self.proof.len() != GROTH16_PROOF_SIZE
+    }
+
     /// Create a new block proof
     pub fn new(
         height: u64,

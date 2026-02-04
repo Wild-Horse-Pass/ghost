@@ -29,6 +29,7 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use ghost_common::error::GhostResult;
@@ -38,6 +39,76 @@ use crate::ban_manager::BanManager;
 use crate::mesh::MessageHandler;
 use crate::message::{DiscoveryMessage, MessageEnvelope, MessageType, PeerInfo};
 use crate::peer::PeerManager;
+
+/// M-16: Token bucket rate limiter for discovery messages
+///
+/// Prevents flooding attacks by limiting the rate of discovery messages
+/// processed per sender.
+struct RateLimiter {
+    /// Tokens per sender (node_id -> (tokens, last_refill))
+    buckets: RwLock<HashMap<NodeId, (f64, Instant)>>,
+    /// Maximum tokens per bucket
+    max_tokens: f64,
+    /// Token refill rate per second
+    refill_rate: f64,
+    /// Maximum number of buckets to track (prevents memory exhaustion)
+    max_buckets: usize,
+}
+
+impl RateLimiter {
+    fn new(max_tokens: f64, refill_rate: f64, max_buckets: usize) -> Self {
+        Self {
+            buckets: RwLock::new(HashMap::new()),
+            max_tokens,
+            refill_rate,
+            max_buckets,
+        }
+    }
+
+    /// Try to consume a token for the given sender
+    /// Returns true if allowed, false if rate limited
+    fn try_consume(&self, sender: &NodeId) -> bool {
+        let now = Instant::now();
+        let mut buckets = self.buckets.write();
+
+        // Evict oldest bucket if at capacity
+        if !buckets.contains_key(sender) && buckets.len() >= self.max_buckets {
+            // Find and remove the bucket with the oldest last_refill time
+            if let Some(oldest_key) = buckets
+                .iter()
+                .min_by_key(|(_, (_, last_refill))| *last_refill)
+                .map(|(k, _)| *k)
+            {
+                buckets.remove(&oldest_key);
+            }
+        }
+
+        let (tokens, last_refill) = buckets
+            .entry(*sender)
+            .or_insert((self.max_tokens, now));
+
+        // Refill tokens based on elapsed time
+        let elapsed = now.duration_since(*last_refill).as_secs_f64();
+        *tokens = (*tokens + elapsed * self.refill_rate).min(self.max_tokens);
+        *last_refill = now;
+
+        // Try to consume a token
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Cleanup old entries (call periodically to prevent memory growth)
+    #[allow(dead_code)]
+    fn cleanup(&self, max_age: Duration) {
+        let cutoff = Instant::now() - max_age;
+        let mut buckets = self.buckets.write();
+        buckets.retain(|_, (_, last_refill)| *last_refill > cutoff);
+    }
+}
 
 /// Maximum peers to include in a discovery broadcast
 const MAX_PEERS_PER_BROADCAST: usize = 20;
@@ -92,7 +163,7 @@ fn validate_peer_address(address: &str) -> bool {
     }
 
     // Reject unreasonable ports (below 1024 or above 65000)
-    if port < 1024 || port > 65000 {
+    if !(1024..=65000).contains(&port) {
         warn!(address = %address, port = port, "Rejecting address with unusual port");
         return false;
     }
@@ -102,6 +173,13 @@ fn validate_peer_address(address: &str) -> bool {
 
 /// Callback for connecting to newly discovered peers
 pub type ConnectCallback = Arc<dyn Fn(String) + Send + Sync>;
+
+/// M-16: Default discovery message rate limit (messages per second)
+const DISCOVERY_RATE_LIMIT: f64 = 2.0;
+/// M-16: Maximum tokens (burst capacity)
+const DISCOVERY_MAX_TOKENS: f64 = 10.0;
+/// M-16: Maximum rate limiter buckets
+const DISCOVERY_MAX_BUCKETS: usize = 1000;
 
 /// Handler for peer discovery messages
 pub struct DiscoveryHandler {
@@ -118,6 +196,8 @@ pub struct DiscoveryHandler {
     connect_callback: Option<ConnectCallback>,
     /// M-P2P-3: Shared ban manager for cross-handler enforcement
     ban_manager: Option<Arc<BanManager>>,
+    /// M-16: Rate limiter for discovery messages
+    rate_limiter: RateLimiter,
 }
 
 impl DiscoveryHandler {
@@ -130,6 +210,11 @@ impl DiscoveryHandler {
             known_addresses: RwLock::new(HashMap::new()),
             connect_callback: None,
             ban_manager: None,
+            rate_limiter: RateLimiter::new(
+                DISCOVERY_MAX_TOKENS,
+                DISCOVERY_RATE_LIMIT,
+                DISCOVERY_MAX_BUCKETS,
+            ),
         }
     }
 
@@ -195,10 +280,30 @@ impl DiscoveryHandler {
             return Ok(()); // Silently ignore banned nodes
         }
 
+        // M-16: Apply rate limiting to prevent discovery flooding
+        if !self.rate_limiter.try_consume(&envelope.sender) {
+            debug!(
+                sender = %hex::encode(&envelope.sender[..8]),
+                "Discovery message rate limited"
+            );
+            return Ok(()); // Silently drop rate-limited messages
+        }
+
         let discovery_msg: DiscoveryMessage = serde_json::from_slice(&envelope.payload)
             .map_err(|e| ghost_common::error::GhostError::P2PMessage(e.to_string()))?;
 
         let sender_id_hex = hex::encode(&envelope.sender[..8]);
+
+        // H-3: Validate that discovery message node_id matches envelope sender
+        // This prevents spoofing attacks where an attacker claims to be another node
+        if discovery_msg.node_id != envelope.sender {
+            warn!(
+                msg_node_id = %hex::encode(&discovery_msg.node_id[..8]),
+                envelope_sender = %sender_id_hex,
+                "Discovery message node_id doesn't match envelope sender - rejecting"
+            );
+            return Ok(()); // Reject spoofed messages
+        }
 
         // Add the sender as a known peer
         // SEC-P2P-3: Validate address before accepting
@@ -397,5 +502,121 @@ mod tests {
 
         // Bind-all address
         assert!(!validate_peer_address("0.0.0.0:8559"), "0.0.0.0 should be rejected");
+    }
+
+    /// H-3-TEST: Verify that discovery messages with mismatched node_id are rejected
+    #[test]
+    fn test_discovery_rejects_mismatched_node_id() {
+        use crate::message::{DiscoveryMessage, MessageEnvelope, MessageType};
+        use ghost_common::types::NodeCapabilities;
+
+        let peers = Arc::new(PeerManager::new([1u8; 32], 100));
+        let handler = DiscoveryHandler::new([1u8; 32], "tcp://8.8.8.8:8559".to_string(), peers);
+
+        // Create a discovery message claiming to be node [3u8; 32]
+        let discovery_msg = DiscoveryMessage {
+            node_id: [3u8; 32], // Claims to be node 3
+            public_address: "tcp://8.8.8.9:8559".to_string(),
+            capabilities: NodeCapabilities::default(),
+            known_peers: vec![],
+        };
+
+        // But the envelope says it's from node [2u8; 32] - MISMATCH!
+        let envelope = MessageEnvelope {
+            sender: [2u8; 32], // Actually from node 2
+            msg_type: MessageType::Discovery,
+            payload: serde_json::to_vec(&discovery_msg).unwrap(),
+            signature: [0u8; 64],
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            sequence: 1,
+        };
+
+        // The handler should reject this message (returns Ok but doesn't add the peer)
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Before: no known peers except potentially self
+            let before_count = handler.known_peer_count();
+
+            // Process the spoofed message
+            let result = handler.handle_message(envelope).await;
+            assert!(result.is_ok(), "Should not error on spoofed message (just silently reject)");
+
+            // After: should still have same count (message was rejected)
+            let after_count = handler.known_peer_count();
+            assert_eq!(before_count, after_count, "Spoofed discovery message should not add any peers");
+        });
+    }
+
+    /// H-3-TEST: Verify that discovery messages with matching node_id are accepted
+    #[test]
+    fn test_discovery_accepts_matching_node_id() {
+        use crate::message::{DiscoveryMessage, MessageEnvelope, MessageType};
+        use ghost_common::types::NodeCapabilities;
+
+        let peers = Arc::new(PeerManager::new([1u8; 32], 100));
+        let handler = DiscoveryHandler::new([1u8; 32], "tcp://8.8.8.8:8559".to_string(), peers);
+
+        // Create a discovery message from node [2u8; 32]
+        let discovery_msg = DiscoveryMessage {
+            node_id: [2u8; 32],
+            public_address: "tcp://8.8.8.9:8559".to_string(), // Valid public address
+            capabilities: NodeCapabilities::default(),
+            known_peers: vec![],
+        };
+
+        // Envelope sender matches the message node_id
+        let envelope = MessageEnvelope {
+            sender: [2u8; 32], // Matches msg.node_id
+            msg_type: MessageType::Discovery,
+            payload: serde_json::to_vec(&discovery_msg).unwrap(),
+            signature: [0u8; 64],
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            sequence: 1,
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let before_count = handler.known_peer_count();
+
+            let result = handler.handle_message(envelope).await;
+            assert!(result.is_ok());
+
+            // The peer should be added since node_id matches envelope sender
+            let after_count = handler.known_peer_count();
+            assert_eq!(after_count, before_count + 1, "Valid discovery message should add the peer");
+        });
+    }
+
+    /// M-16-TEST: Verify that rate limiter works correctly
+    #[test]
+    fn test_rate_limiter_basic() {
+        let limiter = RateLimiter::new(5.0, 1.0, 100);
+        let node = [1u8; 32];
+
+        // First 5 requests should succeed (burst)
+        for _ in 0..5 {
+            assert!(limiter.try_consume(&node), "Should allow burst");
+        }
+
+        // 6th request should be rate limited
+        assert!(!limiter.try_consume(&node), "Should rate limit after burst");
+    }
+
+    /// M-16-TEST: Verify rate limiter enforces per-sender limits
+    #[test]
+    fn test_rate_limiter_per_sender() {
+        let limiter = RateLimiter::new(2.0, 1.0, 100);
+        let node1 = [1u8; 32];
+        let node2 = [2u8; 32];
+
+        // Node 1 uses its tokens
+        assert!(limiter.try_consume(&node1));
+        assert!(limiter.try_consume(&node1));
+        assert!(!limiter.try_consume(&node1), "Node 1 should be limited");
+
+        // Node 2 should still have its tokens
+        assert!(limiter.try_consume(&node2), "Node 2 should not be affected by node 1");
+        assert!(limiter.try_consume(&node2));
+        assert!(!limiter.try_consume(&node2), "Node 2 should be limited now");
     }
 }

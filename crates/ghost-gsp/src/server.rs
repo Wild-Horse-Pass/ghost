@@ -32,6 +32,7 @@ use axum::{
 };
 use bitcoin::Network;
 use parking_lot::RwLock;
+use rand::RngCore;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
@@ -74,16 +75,50 @@ pub struct GspConfig {
 
 impl Default for GspConfig {
     fn default() -> Self {
+        // Generate a random JWT secret by default using cryptographically secure RNG
+        let mut jwt_secret = vec![0u8; 32];
+        rand::thread_rng().fill_bytes(&mut jwt_secret);
+
         Self {
             listen_addr: "0.0.0.0:8900".parse().unwrap(),
             network: Network::Regtest,
             data_dir: PathBuf::from("./gsp-data"),
             pay_node_url: "http://127.0.0.1:8800".to_string(),
-            jwt_secret: vec![0u8; 32], // Should be randomized in production
+            jwt_secret,
             session_expiry_secs: 86400, // 24 hours
             rate_limit_rpm: 60,
             max_ws_connections: 1000,
         }
+    }
+}
+
+impl GspConfig {
+    /// H-10: Validate configuration to ensure security requirements are met.
+    ///
+    /// This MUST be called before starting the server to prevent insecure configurations.
+    ///
+    /// # Errors
+    /// - Returns `InsecureJwtSecret` if JWT secret is all zeros (default/unset)
+    /// - Returns `InsecureJwtSecret` if JWT secret is less than 32 bytes
+    pub fn validate(&self) -> crate::error::GspResult<()> {
+        // H-10: Fail if JWT secret is all zeros (indicates it was never properly configured)
+        if self.jwt_secret.iter().all(|&b| b == 0) {
+            return Err(crate::error::GspError::InsecureJwtSecret(
+                "JWT secret must be configured - cannot use default zeros".to_string(),
+            ));
+        }
+
+        // H-10: Fail if JWT secret is too short (less than 256 bits / 32 bytes)
+        if self.jwt_secret.len() < 32 {
+            return Err(crate::error::GspError::InsecureJwtSecret(
+                format!(
+                    "JWT secret must be at least 32 bytes, got {} bytes",
+                    self.jwt_secret.len()
+                ),
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -227,7 +262,16 @@ pub struct GspServer {
 
 impl GspServer {
     /// Create a new GSP server
+    ///
+    /// # Security (H-10)
+    /// This validates the configuration before creating the server.
+    /// The server will fail to start if:
+    /// - JWT secret is all zeros (default/unset)
+    /// - JWT secret is less than 32 bytes
     pub async fn new(config: GspConfig) -> GspResult<Self> {
+        // H-10: Validate configuration BEFORE starting - fail on insecure defaults
+        config.validate()?;
+
         let state = Arc::new(GspState::new(config)?);
 
         let router = Self::build_router(Arc::clone(&state));
@@ -283,17 +327,58 @@ impl GspServer {
 mod tests {
     use super::*;
 
+    /// Helper to create a valid test config with non-zero JWT secret
+    fn create_test_config() -> GspConfig {
+        let mut config = GspConfig::default();
+        // Ensure we have a non-zero JWT secret for tests
+        config.jwt_secret = vec![1u8; 32];
+        config
+    }
+
     #[test]
     fn test_default_config() {
         let config = GspConfig::default();
         assert_eq!(config.listen_addr.port(), 8900);
         assert_eq!(config.network, Network::Regtest);
         assert_eq!(config.session_expiry_secs, 86400);
+        // Default should now generate a random secret, not zeros
+        assert_eq!(config.jwt_secret.len(), 32);
+    }
+
+    #[test]
+    fn test_h10_config_validation_rejects_zero_secret() {
+        let mut config = GspConfig::default();
+        config.jwt_secret = vec![0u8; 32]; // All zeros - insecure!
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, crate::error::GspError::InsecureJwtSecret(_)));
+    }
+
+    #[test]
+    fn test_h10_config_validation_rejects_short_secret() {
+        let mut config = GspConfig::default();
+        config.jwt_secret = vec![1u8; 16]; // Only 16 bytes - too short!
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, crate::error::GspError::InsecureJwtSecret(_)));
+    }
+
+    #[test]
+    fn test_h10_config_validation_accepts_valid_secret() {
+        let mut config = GspConfig::default();
+        config.jwt_secret = vec![1u8; 32]; // 32 bytes, non-zero - valid!
+
+        let result = config.validate();
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
     async fn test_state_connection_tracking() {
-        let config = GspConfig::default();
+        let config = create_test_config();
         let state = GspState::new(config).unwrap();
 
         assert!(state.can_accept_connection());

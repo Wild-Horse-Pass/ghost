@@ -64,6 +64,10 @@ pub enum ZkError {
     /// IO error
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    /// M-2: Simulated proof rejected in production mode
+    #[error("Simulated proof rejected: simulated proofs are not allowed in production")]
+    SimulatedProofRejected,
 }
 
 /// Result type for ZK operations

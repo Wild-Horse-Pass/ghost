@@ -39,7 +39,6 @@ use bellperson::{
     Circuit,
 };
 use blstrs::{Bls12, Scalar as Fr};
-use ff::Field;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
@@ -49,6 +48,7 @@ use crate::circuit::block::BlockCircuit;
 use crate::circuit::payment::PaymentCircuit;
 use crate::circuit::state_transition::PaymentStateTransitionCircuit;
 use crate::errors::{ZkError, ZkResult};
+use crate::field_utils::bytes_to_field;
 use crate::types::{
     BlockProof, BlockWitness, BlockWitnessV2, ProvingParams, VerificationKey, GROTH16_PROOF_SIZE,
 };
@@ -623,37 +623,7 @@ impl BlockProver {
     }
 }
 
-/// Convert a 32-byte array to a field element
-///
-/// SEC-ZKP-1: Uses hash-based reduction to ensure the value fits in the field
-/// without lossy bit masking. This preserves the full entropy of the input.
-fn bytes_to_field(bytes: &[u8; 32]) -> ZkResult<Fr> {
-    use ff::PrimeField;
-
-    let mut repr = [0u8; 32];
-    repr.copy_from_slice(bytes);
-
-    // Try direct conversion first (works if value < field modulus)
-    if let Some(fr) = Fr::from_repr_vartime(repr) {
-        return Ok(fr);
-    }
-
-    // Value exceeds field modulus - use hash-based reduction
-    // This is cryptographically sound: H(x) is uniformly distributed in field
-    let mut hasher = Sha256::new();
-    hasher.update(b"GhostZKP/hash-to-field/v1");
-    hasher.update(bytes);
-    let hash = hasher.finalize();
-
-    let mut reduced = [0u8; 32];
-    reduced.copy_from_slice(&hash);
-    // Clear top 4 bits to ensure well under BLS12-381 modulus (~2^255)
-    reduced[31] &= 0x0F;
-
-    Fr::from_repr_vartime(reduced).ok_or_else(|| {
-        ZkError::ProvingError("Failed to reduce bytes to field element".to_string())
-    })
-}
+// M-1: bytes_to_field is now in field_utils.rs for unified prover/verifier use
 
 /// Compute intermediate state root after applying a transaction
 ///

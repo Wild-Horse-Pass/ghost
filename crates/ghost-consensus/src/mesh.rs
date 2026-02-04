@@ -516,9 +516,33 @@ impl MeshNetwork {
         self.peers.remove_peer(node_id);
     }
 
+    /// M-14: Maximum sequence number before wrapping
+    /// We use a high threshold to detect approaching overflow
+    const MAX_SEQUENCE: u64 = u64::MAX - 1_000_000;
+
     /// Get next sequence number
+    /// M-14: Uses saturating arithmetic to prevent overflow
     fn next_sequence(&self) -> u64 {
-        self.sequence.fetch_add(1, Ordering::SeqCst) + 1
+        loop {
+            let current = self.sequence.load(Ordering::SeqCst);
+            // M-14: Prevent overflow by wrapping around if we approach MAX
+            // This is safe because sequence validation also checks monotonicity per-sender
+            let next = if current >= Self::MAX_SEQUENCE {
+                warn!("Sequence number approaching overflow, wrapping to 1");
+                1 // Reset to 1 (not 0, as 0 could be a special value)
+            } else {
+                current.saturating_add(1)
+            };
+
+            if self
+                .sequence
+                .compare_exchange(current, next, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return next;
+            }
+            // Another thread modified sequence, retry
+        }
     }
 
     /// Check if message is duplicate or has invalid sequence (H-P2P-4)

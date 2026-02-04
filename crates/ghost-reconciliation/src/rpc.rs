@@ -212,6 +212,101 @@ impl ReconciliationRpcBuilder {
         // Extract confirmations from the response
         Ok(tx_info.get("confirmations").and_then(|c| c.as_i64()))
     }
+
+    // =========================================================================
+    // H-8: UTXO Verification for Settlement Security
+    // =========================================================================
+
+    /// H-8: Verify that a UTXO still exists on L1 before executing settlement
+    ///
+    /// This prevents double-spend attacks where the source lock UTXO may have been:
+    /// - Already spent in another transaction
+    /// - Removed due to a blockchain reorg
+    /// - Never confirmed in the first place
+    ///
+    /// Returns Ok(true) if the UTXO exists, Ok(false) if it doesn't exist,
+    /// or an error if the RPC call fails.
+    pub async fn verify_utxo_exists(
+        &self,
+        txid: &str,
+        vout: u32,
+    ) -> Result<bool, ReconciliationError> {
+        // Query Bitcoin Core for the UTXO
+        // include_mempool=true to also check mempool for unconfirmed UTXOs
+        match self.rpc.get_tx_out(txid, vout, true).await {
+            Ok(Some(_tx_out)) => {
+                // UTXO exists and is unspent
+                Ok(true)
+            }
+            Ok(None) => {
+                // UTXO does not exist (either spent or never existed)
+                Ok(false)
+            }
+            Err(e) => Err(ReconciliationError::BitcoinRpcError(e.to_string())),
+        }
+    }
+
+    /// H-8: Verify that a lock UTXO exists before settlement batch execution
+    ///
+    /// This takes a lock_id and looks up the corresponding UTXO from the provided
+    /// input data. Use this when building batches to ensure all source UTXOs are valid.
+    ///
+    /// Returns Ok(()) if the UTXO exists, or an error if it doesn't.
+    pub async fn verify_lock_utxo(
+        &self,
+        input: &ReconciliationInputData,
+    ) -> Result<(), ReconciliationError> {
+        let exists = self.verify_utxo_exists(&input.txid, input.vout).await?;
+
+        if !exists {
+            tracing::error!(
+                txid = %input.txid,
+                vout = input.vout,
+                lock_id = %hex::encode(input.lock_id),
+                "H-8 Security: Lock UTXO not found on L1 - potential double-spend or reorg"
+            );
+            return Err(ReconciliationError::UtxoNotFound {
+                lock_id: hex::encode(input.lock_id),
+            });
+        }
+
+        tracing::debug!(
+            txid = %input.txid,
+            vout = input.vout,
+            lock_id = %hex::encode(input.lock_id),
+            "H-8: Lock UTXO verified on L1"
+        );
+
+        Ok(())
+    }
+
+    /// H-8: Verify all lock UTXOs in a batch before execution
+    ///
+    /// This should be called before building and broadcasting a settlement batch
+    /// to ensure all source lock UTXOs still exist on L1. If any UTXO is missing,
+    /// the batch should be rejected to prevent double-spend losses.
+    ///
+    /// Returns Ok(()) if all UTXOs exist, or the first error encountered.
+    pub async fn verify_batch_utxos(
+        &self,
+        inputs: &[ReconciliationInputData],
+    ) -> Result<(), ReconciliationError> {
+        tracing::info!(
+            input_count = inputs.len(),
+            "H-8: Verifying all batch input UTXOs exist on L1"
+        );
+
+        for input in inputs {
+            self.verify_lock_utxo(input).await?;
+        }
+
+        tracing::info!(
+            input_count = inputs.len(),
+            "H-8: All batch input UTXOs verified successfully"
+        );
+
+        Ok(())
+    }
 }
 
 /// Input data for reconciliation RPC
