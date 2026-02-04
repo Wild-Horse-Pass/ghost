@@ -23,7 +23,7 @@
 //! Share accounting for mining rewards
 
 use std::collections::HashMap;
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 use ghost_common::types::{NodeCapabilities, NodeId, RoundId};
 
@@ -90,7 +90,29 @@ impl RoundShares {
     ///
     /// Internally stores as scaled u128 to prevent floating-point accumulation errors.
     /// The f64 view is updated for compatibility with existing code.
-    pub fn add_miner_work(&mut self, miner_id: &str, work: f64) {
+    ///
+    /// Returns false if the work value is invalid (negative, NaN, or Inf).
+    pub fn add_miner_work(&mut self, miner_id: &str, work: f64) -> bool {
+        // SEC-SHARE-1: Validate work is non-negative
+        if work < 0.0 {
+            error!(
+                miner = %miner_id,
+                work = work,
+                "Rejected negative work value - potential attack or bug"
+            );
+            return false;
+        }
+
+        // SEC-SHARE-2: Validate work is finite (not NaN or Inf)
+        if !work.is_finite() {
+            error!(
+                miner = %miner_id,
+                work = work,
+                "Rejected non-finite work value (NaN/Inf) - potential attack or bug"
+            );
+            return false;
+        }
+
         trace!(miner = %miner_id, work = work, "Adding miner work");
 
         // Convert to scaled integer (H7 security fix)
@@ -110,6 +132,8 @@ impl RoundShares {
             miner_total_scaled as f64 / WORK_SCALE as f64,
         );
         self.total_miner_work = self.total_miner_work_scaled as f64 / WORK_SCALE as f64;
+
+        true
     }
 
     /// Get miner work as scaled integer (for precise calculations)

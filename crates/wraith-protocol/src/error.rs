@@ -94,4 +94,8 @@ pub enum WraithError {
     /// Broadcast error
     #[error("Broadcast error: {0}")]
     BroadcastError(String),
+
+    /// SEC-WRAITH-4: Security violation - operation disabled for security reasons
+    #[error("Security error: {0}")]
+    SecurityError(String),
 }

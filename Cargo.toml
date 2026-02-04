@@ -194,7 +194,7 @@ publish = false
 ghost-common = { workspace = true }
 ghost-buds = { workspace = true }
 ghost-policy = { workspace = true }
-ghost-consensus = { workspace = true }
+ghost-consensus = { workspace = true, features = ["test-utils"] }
 ghost-template = { workspace = true }
 ghost-keys = { workspace = true }
 ghost-locks = { workspace = true }

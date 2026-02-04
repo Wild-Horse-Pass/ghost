@@ -104,7 +104,8 @@ mod tests {
             ghost_id.derive_payment_address_full(0, 0).unwrap();
 
         // Receiver can detect and spend
-        let detected = receiver_keys.detect_payment(&ephemeral_pubkey, &address, 0);
+        // SEC-KEY-1: detect_payment now returns Result<Option<SecretKey>>
+        let detected = receiver_keys.detect_payment(&ephemeral_pubkey, &address, 0).unwrap();
         assert!(detected.is_some());
 
         let spend_key = detected.unwrap();

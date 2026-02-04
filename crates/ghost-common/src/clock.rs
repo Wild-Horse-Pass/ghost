@@ -39,8 +39,9 @@
 //! 3. Warn if local clock differs significantly from peers
 
 use std::collections::VecDeque;
-use std::sync::RwLock;
 use std::time::Instant;
+
+use parking_lot::RwLock;
 use tracing::warn;
 
 /// Maximum acceptable clock skew before warning (2 minutes)
@@ -96,7 +97,7 @@ impl ClockMonitor {
             return false;
         }
 
-        let mut samples = self.peer_samples.write().expect("lock poisoned");
+        let mut samples = self.peer_samples.write();
         samples.push_back((peer_timestamp_secs, now_mono));
 
         // Keep only recent samples
@@ -119,11 +120,11 @@ impl ClockMonitor {
             offsets.sort();
             let median_offset = offsets[offsets.len() / 2];
 
-            *self.estimated_offset.write().expect("lock poisoned") = median_offset;
+            *self.estimated_offset.write() = median_offset;
 
             // Warn if significant skew detected
             if median_offset.abs() > MAX_ACCEPTABLE_SKEW_SECS {
-                let mut warned = self.skew_warned.write().expect("lock poisoned");
+                let mut warned = self.skew_warned.write();
                 if !*warned {
                     warn!(
                         offset_secs = median_offset,
@@ -135,7 +136,7 @@ impl ClockMonitor {
                     *warned = true;
                 }
             } else {
-                *self.skew_warned.write().expect("lock poisoned") = false;
+                *self.skew_warned.write() = false;
             }
         }
 
@@ -147,7 +148,7 @@ impl ClockMonitor {
     /// Positive means our clock is ahead of the network.
     /// Negative means our clock is behind the network.
     pub fn estimated_offset_secs(&self) -> i64 {
-        *self.estimated_offset.read().expect("lock poisoned")
+        *self.estimated_offset.read()
     }
 
     /// Get a network-adjusted timestamp
@@ -156,7 +157,7 @@ impl ClockMonitor {
     /// This is safer for cross-node timestamp comparisons.
     pub fn adjusted_timestamp(&self) -> i64 {
         let now = chrono::Utc::now().timestamp();
-        let offset = *self.estimated_offset.read().expect("lock poisoned");
+        let offset = *self.estimated_offset.read();
         now - offset
     }
 
@@ -184,7 +185,7 @@ impl ClockMonitor {
 
     /// Get number of peer samples collected
     pub fn sample_count(&self) -> usize {
-        self.peer_samples.read().expect("lock poisoned").len()
+        self.peer_samples.read().len()
     }
 }
 

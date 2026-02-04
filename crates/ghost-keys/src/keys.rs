@@ -145,13 +145,20 @@ impl GhostKeys {
     /// * `index` - The output index
     ///
     /// # Returns
-    /// The spend key for this output if it belongs to us, None otherwise
+    /// - `Ok(Some(spend_key))` if the payment belongs to us
+    /// - `Ok(None)` if the payment does not belong to us (normal case)
+    /// - `Err(GhostKeyError)` if a cryptographic operation failed during detection
+    ///
+    /// # SEC-KEY-1
+    /// This function now returns errors for cryptographic failures instead of
+    /// silently returning None. This prevents funds from being marked as
+    /// "not ours" when they actually are (but derivation failed).
     pub fn detect_payment(
         &self,
         ephemeral_pubkey: &PublicKey,
         output_pubkey: &PublicKey,
         index: u32,
-    ) -> Option<SecretKey> {
+    ) -> Result<Option<SecretKey>, GhostKeyError> {
         let secp = Secp256k1::new();
 
         // Compute shared secret
@@ -172,15 +179,24 @@ impl GhostKeys {
                         .into()
                     {
                         // Found it! Derive spend key
-                        if let Ok(spend_key) = derive_spend_key(&self.spend_secret, &tweak) {
-                            return Some(spend_key);
+                        // SEC-KEY-1: Return error instead of silently failing
+                        match derive_spend_key(&self.spend_secret, &tweak) {
+                            Ok(spend_key) => return Ok(Some(spend_key)),
+                            Err(e) => {
+                                // Payment detected but derivation failed - this is critical
+                                return Err(GhostKeyError::DerivationError(format!(
+                                    "Payment detected at index {} nonce {} but spend key derivation failed: {}",
+                                    index, nonce, e
+                                )));
+                            }
                         }
                     }
                 }
             }
         }
 
-        None
+        // Not our payment (normal case)
+        Ok(None)
     }
 
     /// Export secret keys as bytes

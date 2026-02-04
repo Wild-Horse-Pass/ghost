@@ -39,6 +39,43 @@ type NodeRotationData = (
 );
 
 // =============================================================================
+// SAFE TYPE CONVERSIONS
+// =============================================================================
+
+/// SEC-DATA-1: Safely convert i64 from SQLite to u64, rejecting negative values
+///
+/// SQLite stores integers as signed, but satoshi values should never be negative.
+/// This helper validates the conversion to catch database corruption.
+fn i64_to_u64_sats(value: i64, field_name: &str) -> Result<u64, rusqlite::Error> {
+    if value < 0 {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid negative {} value: {}", field_name, value),
+            )),
+        ));
+    }
+    Ok(value as u64)
+}
+
+/// SEC-DATA-2: Safely convert i64 to u32 for counts, rejecting negative/overflow
+fn i64_to_u32_count(value: i64, field_name: &str) -> Result<u32, rusqlite::Error> {
+    if value < 0 || value > u32::MAX as i64 {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid {} value: {} (expected 0-{})", field_name, value, u32::MAX),
+            )),
+        ));
+    }
+    Ok(value as u32)
+}
+
+// =============================================================================
 // SHARE QUERIES
 // =============================================================================
 
@@ -2497,16 +2534,17 @@ impl Database {
                         query.offset
                     ],
                     |row| {
+                        // SEC-DATA-3: Use safe conversions to catch database corruption
                         Ok(RoundPayoutSummary {
                             round_id: row.get(0)?,
                             block_height: row.get(1)?,
                             block_hash: row.get(2)?,
-                            miner_count: row.get::<_, i64>(3)? as u32,
-                            node_count: row.get::<_, i64>(4)? as u32,
-                            total_miner_sats: row.get::<_, i64>(5)? as u64,
-                            total_node_sats: row.get::<_, i64>(6)? as u64,
-                            treasury_sats: row.get::<_, i64>(7)? as u64,
-                            tx_fees_sats: row.get::<_, i64>(8)? as u64,
+                            miner_count: i64_to_u32_count(row.get::<_, i64>(3)?, "miner_count")?,
+                            node_count: i64_to_u32_count(row.get::<_, i64>(4)?, "node_count")?,
+                            total_miner_sats: i64_to_u64_sats(row.get::<_, i64>(5)?, "total_miner_sats")?,
+                            total_node_sats: i64_to_u64_sats(row.get::<_, i64>(6)?, "total_node_sats")?,
+                            treasury_sats: i64_to_u64_sats(row.get::<_, i64>(7)?, "treasury_sats")?,
+                            tx_fees_sats: i64_to_u64_sats(row.get::<_, i64>(8)?, "tx_fees_sats")?,
                             status: row.get(9)?,
                             created_at: row.get(10)?,
                         })

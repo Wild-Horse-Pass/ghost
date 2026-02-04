@@ -29,7 +29,7 @@
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use ghost_common::types::NodeId;
 
@@ -195,19 +195,36 @@ impl BanManager {
 
     /// Check if a node is currently banned
     ///
-    /// This also cleans up the checked entry if expired.
-    /// For bulk cleanup, use `cleanup_expired()`.
+    /// SEC-BAN-1: Eagerly removes expired entries to prevent stale state from
+    /// causing issues in rapid succession checks.
     pub fn is_banned(&self, node_id: &NodeId) -> bool {
-        let banned = self.banned_nodes.read();
-        match banned.get(node_id) {
-            Some(entry) if !entry.is_expired() => true,
-            Some(_) => {
-                // Entry expired - will be cleaned up on next cleanup cycle
-                // We don't modify during read to avoid writer starvation
-                false
+        // First check with read lock (fast path for common cases)
+        {
+            let banned = self.banned_nodes.read();
+            match banned.get(node_id) {
+                Some(entry) if !entry.is_expired() => return true,
+                Some(_) => {
+                    // Entry expired - need to clean up below
+                }
+                None => return false,
             }
-            None => false,
         }
+
+        // Expired entry found - eagerly remove to prevent stale state race
+        {
+            let mut banned = self.banned_nodes.write();
+            if let Some(entry) = banned.get(node_id) {
+                if entry.is_expired() {
+                    banned.remove(node_id);
+                    debug!(
+                        node_id = %hex::encode(&node_id[..8]),
+                        "Removed expired ban entry on check"
+                    );
+                }
+            }
+        }
+
+        false
     }
 
     /// Check if banned and return the reason if so

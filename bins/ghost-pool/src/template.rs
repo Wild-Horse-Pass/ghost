@@ -1332,7 +1332,12 @@ impl TemplateProcessor {
         }
 
         // 3. Validate block version (bytes 0-4, little-endian)
-        let version = u32::from_le_bytes(header[0..4].try_into().unwrap());
+        // SEC-BLOCK-1: Safe extraction without panic on malformed header
+        let version_bytes: [u8; 4] = header
+            .get(0..4)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| anyhow::anyhow!("Invalid header: insufficient bytes for version field"))?;
+        let version = u32::from_le_bytes(version_bytes);
         // Version 0 is invalid, and versions above 0x3FFFFFFF are reserved for BIP9
         if version == 0 || version > 0x3FFFFFFF {
             error!(version = version, "Invalid block version");
@@ -1376,7 +1381,13 @@ impl TemplateProcessor {
         // 5. Validate block weight (max 4M weight units per BIP141)
         // Coinbase weight: non-witness bytes * 4 + witness bytes * 1
         let coinbase_non_witness_len = coinbase_non_witness.len();
-        let coinbase_witness_extra = coinbase_witness.len() - coinbase_non_witness_len;
+        // SEC-BLOCK-2: Prevent integer underflow in weight calculation
+        let coinbase_witness_extra = coinbase_witness.len().checked_sub(coinbase_non_witness_len)
+            .ok_or_else(|| anyhow::anyhow!(
+                "Invalid coinbase: witness serialization ({} bytes) shorter than non-witness ({} bytes)",
+                coinbase_witness.len(),
+                coinbase_non_witness_len
+            ))?;
         let coinbase_weight = (coinbase_non_witness_len * 4 + coinbase_witness_extra) as u64;
 
         // Total weight = coinbase weight + transaction weights from template
@@ -1483,7 +1494,12 @@ impl TemplateProcessor {
         }
 
         // 3. Validate block version
-        let version = u32::from_le_bytes(header[0..4].try_into().unwrap());
+        // SEC-BLOCK-1: Safe extraction without panic on malformed header
+        let version_bytes: [u8; 4] = header
+            .get(0..4)
+            .and_then(|s| s.try_into().ok())
+            .ok_or_else(|| anyhow::anyhow!("Invalid header: insufficient bytes for version field"))?;
+        let version = u32::from_le_bytes(version_bytes);
         if version == 0 || version > 0x3FFFFFFF {
             error!(version = version, "Invalid block version");
             return Err(anyhow::anyhow!("Invalid block version: {}", version));
@@ -1519,7 +1535,13 @@ impl TemplateProcessor {
 
         // 5. Validate block weight
         let coinbase_non_witness_len = coinbase_non_witness.len();
-        let coinbase_witness_extra = coinbase_witness.len() - coinbase_non_witness_len;
+        // SEC-BLOCK-2: Prevent integer underflow in weight calculation
+        let coinbase_witness_extra = coinbase_witness.len().checked_sub(coinbase_non_witness_len)
+            .ok_or_else(|| anyhow::anyhow!(
+                "Invalid coinbase: witness serialization ({} bytes) shorter than non-witness ({} bytes)",
+                coinbase_witness.len(),
+                coinbase_non_witness_len
+            ))?;
         let coinbase_weight = (coinbase_non_witness_len * 4 + coinbase_witness_extra) as u64;
         let total_weight = coinbase_weight + work.total_weight;
 

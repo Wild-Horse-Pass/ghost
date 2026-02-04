@@ -223,7 +223,7 @@ fn test_voting_session_with_real_signatures() {
     let round_id = 1;
     let proposal_hash = test_proposal_hash(round_id, 850_000);
 
-    let mut session = VotingSession::new(
+    let mut session = VotingSession::new_for_testing(
         round_id,
         proposal_hash,
         VoteType::PayoutApproval,
@@ -266,7 +266,7 @@ fn test_voting_rejection_threshold() {
     let round_id = 1;
     let proposal_hash = test_proposal_hash(round_id, 850_000);
 
-    let mut session = VotingSession::new(
+    let mut session = VotingSession::new_for_testing(
         round_id,
         proposal_hash,
         VoteType::PayoutApproval,
@@ -296,7 +296,7 @@ fn test_duplicate_vote_prevention() {
     let round_id = 1;
     let proposal_hash = test_proposal_hash(round_id, 850_000);
 
-    let mut session = VotingSession::new(
+    let mut session = VotingSession::new_for_testing(
         round_id,
         proposal_hash,
         VoteType::PayoutApproval,
@@ -326,7 +326,7 @@ fn test_ineligible_voter_rejected() {
     let round_id = 1;
     let proposal_hash = test_proposal_hash(round_id, 850_000);
 
-    let mut session = VotingSession::new(
+    let mut session = VotingSession::new_for_testing(
         round_id,
         proposal_hash,
         VoteType::PayoutApproval,
@@ -347,7 +347,7 @@ fn test_invalid_signature_rejected() {
 
     let proposal_hash = test_proposal_hash(1, 850_000);
 
-    let mut session = VotingSession::new(
+    let mut session = VotingSession::new_for_testing(
         1,
         proposal_hash,
         VoteType::PayoutApproval,
@@ -463,7 +463,7 @@ fn test_complete_share_to_consensus_flow() {
     let proposal_hash = test_proposal_hash(round_id, block_height);
 
     // === Phase 6: Consensus Voting ===
-    let mut session = VotingSession::new(
+    let mut session = VotingSession::new_for_testing(
         round_id,
         proposal_hash,
         VoteType::PayoutApproval,
@@ -504,7 +504,7 @@ fn test_consensus_with_minimum_voters() {
     let round_id = 1;
     let proposal_hash = test_proposal_hash(round_id, 850_000);
 
-    let mut session = VotingSession::new(
+    let mut session = VotingSession::new_for_testing(
         round_id,
         proposal_hash,
         VoteType::PayoutApproval,
@@ -541,7 +541,7 @@ fn test_consensus_with_split_votes() {
     let round_id = 1;
     let proposal_hash = test_proposal_hash(round_id, 850_000);
 
-    let mut session = VotingSession::new(
+    let mut session = VotingSession::new_for_testing(
         round_id,
         proposal_hash,
         VoteType::PayoutApproval,
@@ -601,7 +601,7 @@ fn test_large_voter_set() {
     let round_id = 1;
     let proposal_hash = test_proposal_hash(round_id, 850_000);
 
-    let mut session = VotingSession::new(
+    let mut session = VotingSession::new_for_testing(
         round_id,
         proposal_hash,
         VoteType::PayoutApproval,

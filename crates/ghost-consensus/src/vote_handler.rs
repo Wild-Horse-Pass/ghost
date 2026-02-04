@@ -40,7 +40,9 @@ use ghost_common::types::{ConsensusResult, NodeId, PayoutProposal, RoundId, Vote
 
 use crate::ban_manager::{BanManager, BanReason};
 use crate::mesh::MessageHandler;
-use crate::message::{MessageEnvelope, MessageType, PayoutProposalMessage, VoteMessage};
+use crate::message::{
+    EquivocationProofMessage, MessageEnvelope, MessageType, PayoutProposalMessage, VoteMessage,
+};
 use crate::voting::{compute_vote_signing_message, Vote, VoteResult, VotingManager, VotingSession};
 
 /// Rate limiter for P2P messages to prevent DoS attacks
@@ -957,7 +959,52 @@ impl VoteHandler {
                         }
                     }
 
-                    // TODO: Broadcast equivocation proof to network for slashing
+                    // SEC-EQUIV-1: Broadcast equivocation proof to network for slashing
+                    if let Some(ref broadcast) = self.broadcast_fn {
+                        // Serialize the individual votes for the proof message
+                        let vote1_data = serde_json::to_vec(&proof.vote1).unwrap_or_default();
+                        let vote2_data = serde_json::to_vec(&proof.vote2).unwrap_or_default();
+
+                        let mut proof_msg = EquivocationProofMessage::new(
+                            sender,
+                            vote_msg.round_id,
+                            "payout_vote".to_string(),
+                            vote1_data,
+                            vote2_data,
+                            self.identity.node_id(),
+                        );
+
+                        // Sign the proof
+                        let signing_msg = proof_msg.signing_message();
+                        proof_msg.reporter_signature = self.identity.sign(&signing_msg);
+
+                        // Broadcast to network
+                        match serde_json::to_vec(&proof_msg) {
+                            Ok(payload) => {
+                                if let Err(e) =
+                                    broadcast(MessageType::EquivocationProof, payload)
+                                {
+                                    warn!(
+                                        error = %e,
+                                        "Failed to broadcast equivocation proof"
+                                    );
+                                } else {
+                                    info!(
+                                        equivocator = %hex::encode(&sender[..8]),
+                                        round_id = vote_msg.round_id,
+                                        "Broadcast equivocation proof to network"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    "Failed to serialize equivocation proof for broadcast"
+                                );
+                            }
+                        }
+                    }
+
                     debug!(
                         "Equivocation proof: vote1.approve={}, vote2.approve={}",
                         proof.vote1.approve, proof.vote2.approve

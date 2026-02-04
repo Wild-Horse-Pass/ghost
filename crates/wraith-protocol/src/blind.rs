@@ -92,17 +92,18 @@ fn calculate_shannon_entropy(bytes: &[u8]) -> f64 {
 /// Minimum Shannon entropy required for cryptographic randomness (bits per byte)
 ///
 /// For a small sample of 32 bytes from a true random source, the expected
-/// Shannon entropy depends on the number of unique values observed. With only
-/// 32 samples from 256 possible values, we expect roughly 23-26 unique bytes
-/// on average, giving entropy around 4.5-4.8 bits/byte.
+/// SEC-WRAITH-1: Minimum Shannon entropy for cryptographic randomness
 ///
-/// We use 4.0 bits/byte as a conservative threshold that will catch:
-/// - All constant data (0 bits/byte)
-/// - Very low diversity (< 16 unique values)
-/// - Stuck bit patterns
+/// Shannon entropy depends on the number of unique values observed. With 32
+/// samples from 256 possible values, good randomness yields ~4.5-4.8 bits/byte.
 ///
-/// While still allowing valid random data with statistical variation.
-const MIN_ENTROPY_BITS_PER_BYTE: f64 = 4.0;
+/// We use 6.0 bits/byte as our threshold for cryptographic operations:
+/// - 6.0 bits/byte = ~75% of theoretical maximum (8.0 bits/byte)
+/// - This catches severely degraded RNG while allowing natural variance
+/// - Lower values (4.0) may not catch subtle RNG weaknesses
+///
+/// For production security, we want to fail fast on any hint of RNG problems.
+const MIN_ENTROPY_BITS_PER_BYTE: f64 = 6.0;
 
 /// Generate random 32 bytes for key material (WR4-L3, M-CRYPTO-1)
 ///
@@ -503,47 +504,26 @@ impl CoordinatorSigner {
         }
     }
 
-    /// Create a new signing nonce (unbound - DEPRECATED)
+    /// Create a new signing nonce (unbound - DISABLED FOR SECURITY)
     ///
-    /// WARNING: This creates an unbound nonce that can be used by any participant.
-    /// Use `create_nonce_for_participant()` for proper security.
+    /// SEC-WRAITH-2: This function has been disabled because unbound nonces are
+    /// a security vulnerability. Use `create_nonce_for_participant()` instead.
+    ///
+    /// # Panics
+    ///
+    /// Always panics. This is intentional to prevent use of insecure unbound nonces.
     #[deprecated(
         since = "0.2.0",
-        note = "Use create_nonce_for_participant() to bind nonces to participants"
+        note = "DISABLED: Use create_nonce_for_participant() to bind nonces to participants"
     )]
+    #[allow(unused_variables)]
     pub fn create_nonce(&mut self) -> PublicNonce {
-        // Expire old nonces first
-        self.expire_old_nonces();
-
-        let secp = Secp256k1::new();
-
-        // Generate random nonce k
-        let secret_nonce = random_secret_key();
-        let public_nonce = PublicKey::from_secret_key(&secp, &secret_nonce);
-
-        // Create unique session ID for this nonce (unbound - insecure)
-        let mut engine = sha256::Hash::engine();
-        engine.input(b"wraith/nonce-session/v1");
-        engine.input(&public_nonce.serialize());
-        engine.input(&random_bytes_32_infallible());
-        let session_id = sha256::Hash::from_engine(engine).to_byte_array();
-
-        let nonce = SigningNonce {
-            secret_nonce,
-            public_nonce,
-            session_id,
-            bound_ghost_id: None, // Unbound - INSECURE
-            created_at: Instant::now(),
-        };
-
-        let public = PublicNonce {
-            nonce_point: public_nonce.serialize(),
-            session_id,
-        };
-
-        self.active_nonces.insert(session_id, nonce);
-
-        public
+        // SEC-WRAITH-2: Deliberately disabled - unbound nonces are insecure
+        panic!(
+            "create_nonce() is disabled for security. \
+             Use create_nonce_for_participant() to bind nonces to participants. \
+             Unbound nonces allow nonce hijacking attacks."
+        );
     }
 
     /// Step 2: Sign a blinded challenge with participant verification
@@ -631,44 +611,31 @@ impl CoordinatorSigner {
         })
     }
 
-    /// Sign a blinded challenge (unverified - DEPRECATED)
+    /// Sign a blinded challenge (unverified - DISABLED FOR SECURITY)
     ///
-    /// WARNING: This does not verify the requestor matches the nonce binding.
-    /// Use `sign_blinded_challenge_for_participant()` for proper security.
+    /// SEC-WRAITH-3: This function has been disabled because it does not verify
+    /// that the requestor matches the nonce binding. Use
+    /// `sign_blinded_challenge_for_participant()` instead.
+    ///
+    /// # Returns
+    ///
+    /// Always returns an error. This is intentional to prevent use of unverified signing.
     #[deprecated(
         since = "0.2.0",
-        note = "Use sign_blinded_challenge_for_participant() to verify requestor"
+        note = "DISABLED: Use sign_blinded_challenge_for_participant() to verify requestor"
     )]
+    #[allow(unused_variables)]
     pub fn sign_blinded_challenge(
         &mut self,
         challenge: &BlindedChallenge,
     ) -> Result<BlindSignatureResponse, WraithError> {
-        // Look up and remove the nonce (single use!)
-        let nonce = self
-            .active_nonces
-            .remove(&challenge.session_id)
-            .ok_or_else(|| WraithError::MissingData("Unknown or expired nonce session".into()))?;
-
-        // Parse challenge as scalar
-        let c_prime = SecretKey::from_slice(&challenge.challenge)
-            .map_err(|e| WraithError::InvalidSignature(format!("Invalid challenge: {}", e)))?;
-
-        // Compute s = k + c'*x
-        let c_prime_scalar = Scalar::from(c_prime);
-        let cx = self
-            .signing_key
-            .mul_tweak(&c_prime_scalar)
-            .map_err(|e| WraithError::PhaseError(format!("Scalar multiply failed: {}", e)))?;
-
-        let s = nonce
-            .secret_nonce
-            .add_tweak(&Scalar::from(cx))
-            .map_err(|e| WraithError::PhaseError(format!("Scalar add failed: {}", e)))?;
-
-        Ok(BlindSignatureResponse {
-            signature_scalar: s.secret_bytes(),
-            session_id: challenge.session_id,
-        })
+        // SEC-WRAITH-3: Deliberately disabled - unverified signing is insecure
+        Err(WraithError::SecurityError(
+            "sign_blinded_challenge() is disabled for security. \
+             Use sign_blinded_challenge_for_participant() to verify the requestor \
+             matches the nonce binding. Unverified signing allows nonce hijacking."
+                .to_string(),
+        ))
     }
 
     /// Verify a final unblinded signature

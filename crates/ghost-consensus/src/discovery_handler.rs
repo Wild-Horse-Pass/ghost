@@ -29,7 +29,7 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use ghost_common::error::GhostResult;
 use ghost_common::types::NodeId;
@@ -41,6 +41,64 @@ use crate::peer::PeerManager;
 
 /// Maximum peers to include in a discovery broadcast
 const MAX_PEERS_PER_BROADCAST: usize = 20;
+
+/// SEC-P2P-2: Validate a peer address for basic sanity
+///
+/// Rejects obviously invalid addresses that could indicate:
+/// - Attempts to discover local/private network addresses
+/// - Malformed addresses that could cause issues
+/// - Addresses with invalid ports
+fn validate_peer_address(address: &str) -> bool {
+    // Must not be empty
+    if address.is_empty() {
+        return false;
+    }
+
+    // Must contain host:port format
+    // Use rsplit to handle IPv6 addresses like [::1]:8555
+    let parts: Vec<&str> = address.rsplitn(2, ':').collect();
+    if parts.len() != 2 {
+        return false;
+    }
+
+    let port_str = parts[0];
+    let host = parts[1];
+
+    // Port must be valid
+    let port: u16 = match port_str.parse() {
+        Ok(p) if p > 0 => p,
+        _ => return false,
+    };
+
+    // Reject obviously invalid addresses
+    if host.is_empty()
+        || host == "0.0.0.0"
+        || host == "127.0.0.1"
+        || host == "localhost"
+        || host == "::1"
+        || host == "[::1]"
+        || host.starts_with("192.168.")
+        || host.starts_with("10.")
+        || host.starts_with("172.16.")
+        || host.starts_with("172.17.")
+        || host.starts_with("172.18.")
+        || host.starts_with("172.19.")
+        || host.starts_with("172.2")
+        || host.starts_with("172.30.")
+        || host.starts_with("172.31.")
+        || host.starts_with("169.254.")  // Link-local
+    {
+        return false;
+    }
+
+    // Reject unreasonable ports (below 1024 or above 65000)
+    if port < 1024 || port > 65000 {
+        warn!(address = %address, port = port, "Rejecting address with unusual port");
+        return false;
+    }
+
+    true
+}
 
 /// Callback for connecting to newly discovered peers
 pub type ConnectCallback = Arc<dyn Fn(String) + Send + Sync>;
@@ -143,24 +201,33 @@ impl DiscoveryHandler {
         let sender_id_hex = hex::encode(&envelope.sender[..8]);
 
         // Add the sender as a known peer
+        // SEC-P2P-3: Validate address before accepting
         if !discovery_msg.public_address.is_empty() {
-            let is_new = {
-                let mut addresses = self.known_addresses.write();
-                let is_new = !addresses.contains_key(&envelope.sender);
-                addresses.insert(envelope.sender, discovery_msg.public_address.clone());
-                is_new
-            };
-
-            if is_new {
-                info!(
-                    node_id = %sender_id_hex,
+            if !validate_peer_address(&discovery_msg.public_address) {
+                warn!(
+                    sender = %sender_id_hex,
                     address = %discovery_msg.public_address,
-                    "Discovered new peer from gossip"
+                    "Rejecting invalid peer address from discovery"
                 );
+            } else {
+                let is_new = {
+                    let mut addresses = self.known_addresses.write();
+                    let is_new = !addresses.contains_key(&envelope.sender);
+                    addresses.insert(envelope.sender, discovery_msg.public_address.clone());
+                    is_new
+                };
 
-                // Try to connect to the new peer
-                if let Some(ref callback) = self.connect_callback {
-                    callback(discovery_msg.public_address.clone());
+                if is_new {
+                    info!(
+                        node_id = %sender_id_hex,
+                        address = %discovery_msg.public_address,
+                        "Discovered new peer from gossip"
+                    );
+
+                    // Try to connect to the new peer
+                    if let Some(ref callback) = self.connect_callback {
+                        callback(discovery_msg.public_address.clone());
+                    }
                 }
             }
         }
@@ -180,6 +247,16 @@ impl DiscoveryHandler {
 
             // Skip if address is empty
             if peer_info.public_address.is_empty() {
+                continue;
+            }
+
+            // SEC-P2P-4: Validate addresses from peer list
+            if !validate_peer_address(&peer_info.public_address) {
+                warn!(
+                    sender = %sender_id_hex,
+                    peer_address = %peer_info.public_address,
+                    "Rejecting invalid address from peer list"
+                );
                 continue;
             }
 

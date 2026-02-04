@@ -49,3 +49,7 @@ snow = { workspace = true }
 aes-gcm = { workspace = true }
 getrandom = { workspace = true }
 bytes = { workspace = true }
+
+[features]
+# Expose test-only constructors for integration testing
+test-utils = []

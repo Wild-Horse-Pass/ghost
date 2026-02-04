@@ -612,6 +612,39 @@ impl ElderRegistrationHandler {
             return Err(GhostError::Config("Elder count mismatch".to_string()));
         }
 
+        // SEC-ELDER-1: Verify all existing elders are preserved (no removals without revocation)
+        let current_list = self.elder_list_manager.read().current().clone();
+        for existing_elder in &current_list.elders {
+            let preserved = elders.iter().any(|e| e.node_id == existing_elder.node_id);
+            if !preserved {
+                warn!(
+                    proposer = %short_sender,
+                    missing_elder = %hex::encode(&existing_elder.node_id[..8]),
+                    "Elder list proposal removes existing elder without revocation"
+                );
+                return Err(GhostError::Config(
+                    "Elder removal not allowed in registration proposal".to_string(),
+                ));
+            }
+        }
+
+        // SEC-ELDER-2: Verify only ONE new elder is added (registration proposals add single elder)
+        let new_elders: Vec<_> = elders
+            .iter()
+            .filter(|e| !current_list.elders.iter().any(|x| x.node_id == e.node_id))
+            .collect();
+        if new_elders.len() != 1 {
+            warn!(
+                proposer = %short_sender,
+                new_count = new_elders.len(),
+                "Elder list proposal must add exactly one new elder (got {})",
+                new_elders.len()
+            );
+            return Err(GhostError::Config(
+                "Registration proposal must add exactly one elder".to_string(),
+            ));
+        }
+
         // 7. Store pending proposal
         {
             let mut pending = self.pending_proposals.write();

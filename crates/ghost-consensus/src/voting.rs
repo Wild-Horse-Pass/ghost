@@ -42,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use ghost_common::constants::BFT_THRESHOLD_PERCENT;
 use ghost_common::identity::verify_signature;
@@ -182,7 +182,14 @@ pub struct VotingSession {
 
 impl VotingSession {
     /// Create a new voting session
-    pub fn new(
+    ///
+    /// SEC-VOTE-3: This constructor is crate-private. External code should use
+    /// from_elder_list() to ensure all nodes agree on eligible voters through
+    /// the canonical elder list for BFT security.
+    ///
+    /// Within the crate, this can be used during the transition period while
+    /// vote_handler.rs is being migrated to use CanonicalElderList.
+    pub(crate) fn new(
         round_id: RoundId,
         proposal_hash: [u8; 32],
         vote_type: VoteType,
@@ -206,6 +213,8 @@ impl VotingSession {
     ///
     /// P2P-C1/C2/C3: This constructor uses the canonical elder list to determine
     /// eligible voters, ensuring all nodes agree on who can vote.
+    ///
+    /// SEC-VOTE-4: This is the ONLY public constructor for production use.
     pub fn from_elder_list(
         round_id: RoundId,
         proposal_hash: [u8; 32],
@@ -214,6 +223,16 @@ impl VotingSession {
         timeout_ms: u64,
     ) -> Self {
         let eligible_voters = elder_list.get_eligible_voters();
+
+        // SEC-VOTE-5: Warn if quorum is too small for BFT
+        if eligible_voters.len() < 3 {
+            warn!(
+                epoch = elder_list.epoch,
+                voters = eligible_voters.len(),
+                "Voting session created with fewer than 3 eligible voters - BFT requires n >= 3f+1"
+            );
+        }
+
         info!(
             round_id,
             epoch = elder_list.epoch,
@@ -227,6 +246,21 @@ impl VotingSession {
             eligible_voters,
             timeout_ms,
         )
+    }
+
+    /// Test-only constructor for creating voting sessions with arbitrary voters
+    ///
+    /// SEC-VOTE-6: This is intentionally only available in test builds.
+    /// Production code MUST use from_elder_list() to ensure BFT security.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_for_testing(
+        round_id: RoundId,
+        proposal_hash: [u8; 32],
+        vote_type: VoteType,
+        eligible_voters: HashSet<NodeId>,
+        timeout_ms: u64,
+    ) -> Self {
+        Self::new(round_id, proposal_hash, vote_type, eligible_voters, timeout_ms)
     }
 
     /// Add a vote to the session
@@ -299,10 +333,25 @@ impl VotingSession {
 
     /// Check if a decision has been reached
     fn check_decision(&self) -> Option<ConsensusResult> {
-        let total = self.eligible_voters.len() as u32;
+        // SEC-VOTE-7: Protect against overflow for extremely large voter sets
+        let voter_count = self.eligible_voters.len();
+        let total = if voter_count > u32::MAX as usize {
+            error!(
+                voter_count = voter_count,
+                "Voter count exceeds u32::MAX - capping"
+            );
+            u32::MAX
+        } else {
+            voter_count as u32
+        };
+
         // Use ceiling division: (total * 67 + 99) / 100 to round up
         // For 4 nodes: (4 * 67 + 99) / 100 = 367 / 100 = 3
-        let threshold = (total as u64 * BFT_THRESHOLD_PERCENT).div_ceil(100) as u32;
+        // SEC-VOTE-8: Use checked_mul to detect overflow
+        let threshold = (total as u64)
+            .checked_mul(BFT_THRESHOLD_PERCENT)
+            .map(|v| v.div_ceil(100) as u32)
+            .unwrap_or(total); // Fallback: require all voters if overflow
 
         let approvals = self.votes.values().filter(|v| v.approve).count() as u32;
         let rejections = self.votes.values().filter(|v| !v.approve).count() as u32;
@@ -492,7 +541,19 @@ fn verify_vote_signature_with_round(
     voter_id: &NodeId,
 ) -> bool {
     let message = compute_vote_signing_message(round_id, proposal_hash, voter_id, vote.approve);
-    verify_signature(&vote.voter, &message, &vote.signature).unwrap_or_default()
+    // SEC-VOTE-1: Log signature verification errors instead of silently failing
+    match verify_signature(&vote.voter, &message, &vote.signature) {
+        Ok(valid) => valid,
+        Err(e) => {
+            error!(
+                voter = %hex::encode(&vote.voter[..8]),
+                round_id = round_id,
+                error = %e,
+                "Signature verification failed with error (not just invalid)"
+            );
+            false
+        }
+    }
 }
 
 /// Verify vote signature (legacy - only for backward compatibility)
@@ -500,7 +561,18 @@ fn verify_vote_signature_with_round(
 /// DEPRECATED: Use verify_vote_signature_with_round instead
 #[deprecated(note = "Use verify_vote_signature_with_round for replay attack prevention")]
 pub fn verify_vote_signature(vote: &Vote, proposal_hash: &[u8; 32]) -> bool {
-    verify_signature(&vote.voter, proposal_hash, &vote.signature).unwrap_or_default()
+    // SEC-VOTE-2: Log signature verification errors instead of silently failing
+    match verify_signature(&vote.voter, proposal_hash, &vote.signature) {
+        Ok(valid) => valid,
+        Err(e) => {
+            warn!(
+                voter = %hex::encode(&vote.voter[..8]),
+                error = %e,
+                "Legacy signature verification failed with error"
+            );
+            false
+        }
+    }
 }
 
 /// Voting manager for multiple sessions

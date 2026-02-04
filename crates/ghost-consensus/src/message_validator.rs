@@ -65,10 +65,15 @@ pub const MAX_ELDER_LIST_PROPOSAL_SIZE: usize = 100_000;
 /// P2P-C3: Elder list approval (signature + epoch + merkle root)
 pub const MAX_ELDER_LIST_APPROVAL_SIZE: usize = 500;
 
-/// Maximum allowed timestamp drift from current time (2 minutes in milliseconds)
-/// P2P-H8: Reduced from 5 minutes to 2 minutes to narrow the window for replay attacks.
-/// Messages with timestamps too far in the future or past are rejected.
-pub const MAX_TIMESTAMP_DRIFT_MS: u64 = 2 * 60 * 1000;
+/// SEC-TIME-1: Maximum allowed timestamp drift from current time (30 seconds in milliseconds)
+///
+/// Reduced to 30 seconds to provide tighter replay attack protection while still
+/// allowing for reasonable clock synchronization variance. This balances:
+/// - Security: Smaller window limits the time window for replay attacks
+/// - Usability: 30 seconds allows for minor clock drift between nodes
+///
+/// Nodes should run NTP to maintain clock synchronization within this window.
+pub const MAX_TIMESTAMP_DRIFT_MS: u64 = 30 * 1000;
 
 /// Message validation errors
 #[derive(Debug, Clone, Error)]
@@ -393,9 +398,19 @@ pub fn verify_envelope_signature(envelope: &MessageEnvelope) -> Result<(), Messa
     let mut signed_data = envelope.payload.clone();
     signed_data.extend_from_slice(&envelope.sequence.to_le_bytes());
 
-    // Verify using sender's public key (which IS their node ID)
-    let is_valid =
-        verify_signature(&envelope.sender, &signed_data, &envelope.signature).unwrap_or(false);
+    // SEC-MSG-1: Log verification errors instead of silently treating as invalid
+    let is_valid = match verify_signature(&envelope.sender, &signed_data, &envelope.signature) {
+        Ok(valid) => valid,
+        Err(e) => {
+            warn!(
+                sender = %hex::encode(&envelope.sender[..8]),
+                msg_type = ?envelope.msg_type,
+                error = %e,
+                "Envelope signature verification error"
+            );
+            false
+        }
+    };
 
     if !is_valid {
         let sender_hex = hex::encode(&envelope.sender[..8]);
@@ -545,17 +560,19 @@ mod tests {
 
     #[test]
     fn test_timestamp_validation_slight_future() {
-        // Slightly in the future (1 minute) should be valid
+        // Slightly in the future (20 seconds) should be valid
+        // SEC-TIME-1: Using 20s to stay within 30s drift limit
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-        let future_ms = now_ms + 60_000; // 1 minute ahead
+        let future_ms = now_ms + 20_000; // 20 seconds ahead
         assert!(validate_timestamp(future_ms).is_ok());
     }
 
     #[test]
     fn test_timestamp_validation_slight_past() {
-        // Slightly in the past (1 minute) should be valid
+        // Slightly in the past (20 seconds) should be valid
+        // SEC-TIME-1: Using 20s to stay within 30s drift limit
         let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-        let past_ms = now_ms - 60_000; // 1 minute behind
+        let past_ms = now_ms - 20_000; // 20 seconds behind
         assert!(validate_timestamp(past_ms).is_ok());
     }
 

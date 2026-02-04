@@ -93,12 +93,19 @@ pub struct MeshConfig {
     pub capabilities: ghost_common::types::NodeCapabilities,
     /// H-P2P-1: Enable Noise Protocol for transport encryption
     ///
-    /// TODO: Integrate Noise Protocol for transport encryption.
-    /// The noise.rs module exists but is not yet integrated with ZMQ sockets.
-    /// For production, set noise_enabled = true and wrap sockets with Noise.
+    /// **SEC-P2P-8: WARNING - NOISE PROTOCOL IS NOT YET IMPLEMENTED**
     ///
-    /// When false, P2P messages are sent in plaintext (current behavior).
-    /// When true, all P2P communication will be encrypted using Noise_XX pattern.
+    /// This flag is reserved for future use. The noise.rs module exists
+    /// but is NOT integrated with ZMQ sockets. Currently:
+    /// - All P2P communication is in PLAINTEXT regardless of this setting
+    /// - Messages are signed for authenticity but NOT encrypted
+    ///
+    /// For production deployment until Noise is integrated:
+    /// - Deploy nodes in private networks or VPNs
+    /// - Use firewall rules to restrict P2P ports
+    /// - Do not assume message confidentiality
+    ///
+    /// TODO(SEC-P2P-NOISE): Integrate Noise_XX pattern with ZMQ sockets
     pub noise_enabled: bool,
 }
 
@@ -112,7 +119,9 @@ impl Default for MeshConfig {
             health_ping_interval_secs: 10,
             max_seen_messages: 100_000, // Cap at 100k messages (~3.2MB with 32-byte IDs)
             capabilities: ghost_common::types::NodeCapabilities::default(),
-            noise_enabled: true, // P2P-H6: Enabled by default for encrypted P2P communication
+            // SEC-P2P-8: Set to false by default since Noise is not implemented
+            // This makes the configuration honest about the actual security state
+            noise_enabled: false,
         }
     }
 }
@@ -242,6 +251,11 @@ impl PeerConnectionState {
 /// Per-sender message count for H3 security fix
 const MAX_MESSAGES_PER_SENDER: usize = 10_000;
 
+/// SEC-P2P-5: Maximum unique senders to track (prevents memory exhaustion)
+/// An attacker could create many identities to exhaust memory.
+/// With 5000 senders * ~1KB per sender = ~5MB worst case.
+const MAX_UNIQUE_SENDERS: usize = 5_000;
+
 /// Bounded LRU-like cache for seen message deduplication (P2P-L1)
 ///
 /// Uses a HashMap for O(1) lookups combined with a VecDeque for O(1) FIFO eviction.
@@ -314,6 +328,41 @@ impl SeenMessageCache {
         self.map.contains_key(id)
     }
 
+    /// SEC-P2P-6: Evict the oldest sender to make room for new ones
+    ///
+    /// Finds the sender whose most recent message is oldest and removes them entirely.
+    fn evict_oldest_sender(&mut self) {
+        // Find sender with oldest last message timestamp
+        let oldest_sender = self
+            .sender_queues
+            .iter()
+            .filter_map(|(id, queue)| queue.back().map(|(_, ts)| (*id, *ts)))
+            .min_by_key(|(_, ts)| *ts)
+            .map(|(id, _)| id);
+
+        if let Some(sender) = oldest_sender {
+            // Remove all messages from this sender
+            if let Some(queue) = self.sender_queues.remove(&sender) {
+                for (seq, _) in queue {
+                    let id = MessageId {
+                        sender,
+                        sequence: seq,
+                    };
+                    self.map.remove(&id);
+                }
+            }
+            self.sender_counts.remove(&sender);
+            self.highest_seq.remove(&sender);
+
+            // Note: We don't clean the global queue here for efficiency
+            // It will be cleaned up naturally during normal eviction
+            debug!(
+                sender = %hex::encode(&sender[..8]),
+                "Evicted oldest sender from seen message cache"
+            );
+        }
+    }
+
     /// Insert a message, evicting oldest if at capacity
     ///
     /// H3 security fix: Uses per-sender tracking to prevent cache flushing attacks.
@@ -323,6 +372,13 @@ impl SeenMessageCache {
         // If already present, don't add again (duplicate)
         if self.map.contains_key(&id) {
             return;
+        }
+
+        // SEC-P2P-7: Limit unique senders to prevent memory exhaustion
+        if !self.sender_counts.contains_key(&id.sender)
+            && self.sender_counts.len() >= MAX_UNIQUE_SENDERS
+        {
+            self.evict_oldest_sender();
         }
 
         // H3: Check per-sender limit first
