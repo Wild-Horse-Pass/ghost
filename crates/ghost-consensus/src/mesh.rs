@@ -112,7 +112,7 @@ impl Default for MeshConfig {
             health_ping_interval_secs: 10,
             max_seen_messages: 100_000, // Cap at 100k messages (~3.2MB with 32-byte IDs)
             capabilities: ghost_common::types::NodeCapabilities::default(),
-            noise_enabled: false, // H-P2P-1: Disabled by default until Noise integration complete
+            noise_enabled: true, // P2P-H6: Enabled by default for encrypted P2P communication
         }
     }
 }

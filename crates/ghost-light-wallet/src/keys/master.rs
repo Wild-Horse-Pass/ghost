@@ -75,6 +75,16 @@ impl MasterKey {
         let secp = Secp256k1::new();
 
         // Derive seed from mnemonic (no passphrase)
+        // CR-H2: Design Decision - BIP-39 Passphrase Not Supported
+        //
+        // Ghost wallets intentionally do not support BIP-39 passphrases for the following reasons:
+        // 1. Simplified UX: Passphrases add complexity and risk of permanent fund loss if forgotten
+        // 2. Recovery consistency: Without passphrase, mnemonic alone is sufficient for recovery
+        // 3. Silent payments: BIP-352 derivation paths don't benefit from additional passphrase entropy
+        // 4. Attack surface: Passphrase entry creates additional side-channel risks
+        //
+        // The mnemonic's 256 bits of entropy (24 words) provides sufficient security.
+        // Users requiring additional protection should use encrypted storage instead.
         let seed = mnemonic.to_seed("");
 
         // Create master extended private key

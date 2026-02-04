@@ -82,4 +82,10 @@ pub const MIN_SETTLEMENT_SATS: u64 = 10_000;
 pub const DISPUTE_WINDOW_BLOCKS: u32 = 144;
 
 /// Settlement fee percentage (0.1%)
+/// PAY-M1: Use integer arithmetic to avoid floating-point rounding errors
+/// Fee = amount / 1000 (equivalent to 0.1%)
 pub const SETTLEMENT_FEE_PERCENT: f64 = 0.001;
+
+/// Settlement fee divisor for integer arithmetic (1000 = 0.1%)
+/// PAY-M1: Prefer this over SETTLEMENT_FEE_PERCENT for fee calculations
+pub const SETTLEMENT_FEE_DIVISOR: u64 = 1000;

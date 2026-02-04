@@ -183,6 +183,15 @@ pub struct HealthHandlerConfig {
     /// When false, peer info is still updated but node is not registered as voter.
     /// Default: true (strict mode for production)
     pub reject_invalid_pow_peers: bool,
+    /// P2P-H4: Require capability verification for payout calculations
+    ///
+    /// When true, if no capability_verifier is configured, nodes are registered
+    /// with empty capabilities (no shares) instead of trusting claimed capabilities.
+    /// This prevents nodes from claiming capabilities they haven't verified.
+    ///
+    /// When false (dev only), claimed capabilities are trusted if no verifier is set.
+    /// Default: true (production mode - require verification)
+    pub require_capability_verification: bool,
 }
 
 impl Default for HealthHandlerConfig {
@@ -196,6 +205,7 @@ impl Default for HealthHandlerConfig {
             registration_cooldown_secs: DEFAULT_REGISTRATION_COOLDOWN_SECS,
             max_timestamp_drift_secs: MAX_TIMESTAMP_DRIFT_SECS,
             reject_invalid_pow_peers: true, // AUTH4-3: Strict mode by default
+            require_capability_verification: true, // P2P-H4: Require verification by default
         }
     }
 }
@@ -501,9 +511,9 @@ impl HealthPingHandler {
 
             // Register node capabilities for payout calculations (only with valid PoW)
             if let Some(ref callback) = self.node_capabilities_callback {
-                // P2P4-M2: If capability verifier is set, use VERIFIED capabilities
-                // instead of just trusting CLAIMED capabilities from the health ping
+                // P2P4-M2 + P2P-H4: Determine capabilities based on verification
                 let capabilities = if let Some(ref verifier) = self.capability_verifier {
+                    // Verifier is configured - use VERIFIED capabilities
                     let verified_caps = verifier(&envelope.sender);
                     debug!(
                         node_id = %short_id,
@@ -520,8 +530,20 @@ impl HealthPingHandler {
                         "Using verified capabilities instead of claimed"
                     );
                     verified_caps
+                } else if self.config.require_capability_verification {
+                    // P2P-H4: No verifier AND verification required = empty capabilities
+                    // This prevents nodes from getting shares without verification
+                    warn!(
+                        node_id = %short_id,
+                        "No capability verifier configured but verification required - using empty capabilities"
+                    );
+                    ghost_common::types::NodeCapabilities::default()
                 } else {
-                    // Legacy behavior: trust claimed capabilities
+                    // Dev mode: trust claimed capabilities (NOT for production)
+                    debug!(
+                        node_id = %short_id,
+                        "INSECURE: Using claimed capabilities without verification (dev mode)"
+                    );
                     ping.capabilities
                 };
 

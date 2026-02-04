@@ -5,6 +5,10 @@ use thiserror::Error;
 /// Errors that can occur during ZK operations
 #[derive(Debug, Error)]
 pub enum ZkError {
+    /// Field element conversion failed - bytes represent value outside field
+    #[error("Field conversion error: {0}")]
+    FieldConversionError(String),
+
     /// Proof generation failed
     #[error("Proof generation failed: {0}")]
     ProvingError(String),

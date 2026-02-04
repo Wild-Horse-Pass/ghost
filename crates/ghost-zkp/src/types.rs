@@ -284,24 +284,42 @@ impl MerkleProof {
     }
 
     /// Verify this proof against a root
+    ///
+    /// Returns false if the proof is invalid or if field element conversion fails.
     pub fn verify(&self, leaf_hash: [u8; 32], root: [u8; 32]) -> bool {
-        let computed_root = self.compute_root(leaf_hash);
-        computed_root == root
+        match self.compute_root(leaf_hash) {
+            Ok(computed_root) => computed_root == root,
+            Err(_) => false,
+        }
     }
 
     /// Compute the root from a leaf hash
     ///
     /// Uses MiMC hash to match the circuit implementation.
-    pub fn compute_root(&self, leaf_hash: [u8; 32]) -> [u8; 32] {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the leaf hash or any sibling cannot be converted
+    /// to a valid field element (i.e., exceeds the field modulus).
+    pub fn compute_root(&self, leaf_hash: [u8; 32]) -> Result<[u8; 32], MerkleProofError> {
         use crate::circuit::mimc::{bytes_to_field, field_to_bytes, mimc_hash_native};
         use blstrs::Scalar as Fr;
-        use ff::Field;
 
-        let mut current = bytes_to_field::<Fr>(&leaf_hash).unwrap_or(Fr::ZERO);
+        let mut current = bytes_to_field::<Fr>(&leaf_hash).map_err(|e| {
+            MerkleProofError::InvalidFieldElement {
+                context: "leaf hash".to_string(),
+                source: e.to_string(),
+            }
+        })?;
         let mut index = self.leaf_index;
 
-        for sibling in &self.siblings {
-            let sibling_field = bytes_to_field::<Fr>(sibling).unwrap_or(Fr::ZERO);
+        for (i, sibling) in self.siblings.iter().enumerate() {
+            let sibling_field = bytes_to_field::<Fr>(sibling).map_err(|e| {
+                MerkleProofError::InvalidFieldElement {
+                    context: format!("sibling at level {}", i),
+                    source: e.to_string(),
+                }
+            })?;
 
             let (left, right) = if index % 2 == 0 {
                 // Current is left child
@@ -315,9 +333,31 @@ impl MerkleProof {
             index /= 2;
         }
 
-        field_to_bytes(current)
+        Ok(field_to_bytes(current))
     }
 }
+
+/// Errors that can occur during merkle proof operations
+#[derive(Debug, Clone)]
+pub enum MerkleProofError {
+    /// A byte array could not be converted to a valid field element
+    InvalidFieldElement {
+        context: String,
+        source: String,
+    },
+}
+
+impl std::fmt::Display for MerkleProofError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MerkleProofError::InvalidFieldElement { context, source } => {
+                write!(f, "Invalid field element in {}: {}", context, source)
+            }
+        }
+    }
+}
+
+impl std::error::Error for MerkleProofError {}
 
 /// Verification key for block proofs
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -571,7 +611,7 @@ mod tests {
 
         let proof = MerkleProof::new(0, vec![sibling]);
 
-        let root = proof.compute_root(leaf);
+        let root = proof.compute_root(leaf).expect("compute_root should succeed");
         assert!(proof.verify(leaf, root));
 
         // Wrong root should fail

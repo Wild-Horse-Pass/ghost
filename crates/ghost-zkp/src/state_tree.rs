@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 
 use blstrs::Scalar as Fr;
-use ff::Field;
 use tracing::warn;
 
 use crate::circuit::mimc::{bytes_to_field, field_to_bytes, mimc_hash_native};
@@ -188,17 +187,37 @@ impl BalanceTree {
     ///
     /// Uses MiMC to match the circuit implementation:
     /// H(left, right)
+    ///
+    /// SECURITY: Invalid field elements now cause an error to be logged and
+    /// the computation returns a deterministic fallback. In production, merkle
+    /// trees should only contain valid field elements from hash outputs.
     fn hash_pair(&self, left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-        let left_field = bytes_to_field::<Fr>(left).unwrap_or_else(|| {
-            warn!("Invalid left bytes in hash_pair, using zero");
-            Fr::ZERO
-        });
-        let right_field = bytes_to_field::<Fr>(right).unwrap_or_else(|| {
-            warn!("Invalid right bytes in hash_pair, using zero");
-            Fr::ZERO
-        });
+        let left_field = match bytes_to_field::<Fr>(left) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("Invalid left bytes in hash_pair: {}. This indicates corrupted merkle tree data.", e);
+                // Return a deterministic error hash to prevent silent failures
+                return self.error_hash(b"invalid_left");
+            }
+        };
+        let right_field = match bytes_to_field::<Fr>(right) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("Invalid right bytes in hash_pair: {}. This indicates corrupted merkle tree data.", e);
+                return self.error_hash(b"invalid_right");
+            }
+        };
         let hash = mimc_hash_native(left_field, right_field);
         field_to_bytes(hash)
+    }
+
+    /// Generate a deterministic error hash for corrupted data detection
+    fn error_hash(&self, context: &[u8]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"ghost-zkp-error-hash-v1");
+        hasher.update(context);
+        hasher.finalize().into()
     }
 
     /// Get the number of non-zero accounts
@@ -347,7 +366,7 @@ mod tests {
 
         // Verify the proof
         let leaf_hash = tree.hash_leaf(1000);
-        let computed_root = proof.compute_root(leaf_hash);
+        let computed_root = proof.compute_root(leaf_hash).expect("compute_root should succeed");
         assert_eq!(computed_root, tree.root());
     }
 
@@ -451,7 +470,9 @@ mod tests {
             let proof = tree.get_proof(index);
             let balance = tree.get_balance(index);
             let leaf_hash = tree.hash_leaf(balance);
-            let computed_root = proof.compute_root(leaf_hash);
+            let computed_root = proof
+                .compute_root(leaf_hash)
+                .expect("compute_root should succeed");
 
             assert_eq!(
                 computed_root,

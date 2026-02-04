@@ -138,8 +138,20 @@ impl PayoutCalculator {
         }
 
         // 7. Calculate node payouts (top 100) from augmented pool
-        result.node_payouts =
+        // PAY-M4: Unallocated node dust is returned to be added to treasury
+        let (node_payouts, node_dust_unallocated) =
             self.calculate_node_payouts(shares, augmented_node_pool, node_addresses);
+        result.node_payouts = node_payouts;
+
+        // Add any unallocated node dust to treasury (PAY-M4)
+        if node_dust_unallocated > 0 {
+            result.treasury_amount = result.treasury_amount.saturating_add(node_dust_unallocated);
+            info!(
+                node_dust_unallocated,
+                new_treasury_amount = result.treasury_amount,
+                "Unallocated node dust added to treasury"
+            );
+        }
 
         // 8. Add treasury payout entry
         if result.treasury_amount >= self.dust_threshold {
@@ -285,6 +297,8 @@ impl PayoutCalculator {
 
     /// Calculate node payouts based on capability shares
     /// Dust from nodes below threshold is redistributed to the top node
+    /// PAY-M4: Returns (payouts, unallocated_dust) where unallocated_dust is non-zero
+    /// only when no nodes qualify for payouts, so it can be redirected to treasury.
     ///
     /// SECURITY: Uses integer arithmetic with basis points to avoid floating point
     /// rounding errors. Calculates share_bps = (node_shares * 10000) / total_shares,
@@ -294,7 +308,7 @@ impl PayoutCalculator {
         shares: &RoundShares,
         pool_amount: u64,
         node_addresses: &[([u8; 32], Vec<u8>)],
-    ) -> Vec<PayoutEntry> {
+    ) -> (Vec<PayoutEntry>, u64) {
         let mut payouts = Vec::new();
         let mut dust_total: u64 = 0;
 
@@ -307,7 +321,7 @@ impl PayoutCalculator {
         // Calculate total shares for basis point calculation
         let total_shares: i32 = nodes_to_pay.iter().map(|n| n.shares).sum();
         if total_shares <= 0 {
-            return payouts;
+            return (payouts, 0);
         }
 
         for node_info in &nodes_to_pay {
@@ -352,14 +366,17 @@ impl PayoutCalculator {
                 top_node = hex::encode(&payouts[0].recipient_id[..8]),
                 "Node dust redistributed to top node"
             );
+            (payouts, 0)
         } else if dust_total > 0 {
-            warn!(
+            // PAY-M4: No eligible nodes to receive dust - return it to be added to treasury
+            info!(
                 dust_total,
-                "Node dust lost - no eligible nodes to receive it"
+                "No eligible nodes for dust - will be redirected to treasury"
             );
+            (payouts, dust_total)
+        } else {
+            (payouts, 0)
         }
-
-        payouts
     }
 
     /// Calculate credits for nodes outside top 100 (for ledger)

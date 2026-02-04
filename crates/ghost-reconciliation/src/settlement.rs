@@ -124,7 +124,8 @@ impl Settlement {
         }
 
         // Calculate fee (0.1%)
-        let fee_sats = ((amount_sats as f64) * crate::SETTLEMENT_FEE_PERCENT) as u64;
+        // PAY-M1: Use integer arithmetic to avoid floating-point precision errors
+        let fee_sats = amount_sats / crate::SETTLEMENT_FEE_DIVISOR;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

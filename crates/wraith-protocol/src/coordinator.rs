@@ -36,9 +36,12 @@ const MAX_STRIKES: u32 = 3;
 /// Prevents unbounded memory growth in long-running coordinators
 const MAX_USED_TOKENS: usize = 100_000;
 
-/// Maximum age for tokens in the cache (24 hours)
-/// Tokens older than this are eligible for eviction
-const TOKEN_MAX_AGE_SECS: u64 = 24 * 60 * 60;
+/// Maximum age for tokens in the cache (8 days)
+/// WR-C3: Extended from 24 hours to 8 days to exceed maximum session duration (7 days).
+/// This prevents token replay attacks where a token from an old session could be
+/// reused after cache eviction but before the session it was issued for expires.
+/// Tokens older than this are eligible for eviction.
+const TOKEN_MAX_AGE_SECS: u64 = 8 * 24 * 60 * 60;
 
 /// WR4-L7: Maximum number of outputs in a single mix transaction
 /// This prevents transactions that exceed Bitcoin's consensus limits
@@ -966,8 +969,9 @@ impl WraithCoordinator {
 
         // SECURITY: Check for replay BEFORE verification to prevent timing attacks
         // M-WRAITH-1: Use time-based LRU cache to prevent clearing all tokens at once
+        // WR-C4: Token hash is now session-bound to prevent cross-session replay
         for token in &tokens {
-            let hash = Self::compute_token_hash(token);
+            let hash = self.compute_token_hash(token);
             if self.used_tokens.contains(&hash) {
                 return Err(WraithError::InvalidInput("Token replay detected".into()));
             }
@@ -989,7 +993,7 @@ impl WraithCoordinator {
         // M-WRAITH-1: TokenCache handles size limits with time-based LRU eviction
         // This prevents the vulnerability of clearing ALL tokens at once
         for token in &tokens {
-            let hash = Self::compute_token_hash(token);
+            let hash = self.compute_token_hash(token);
             // check_and_mark returns true if already seen (replay), but we already checked above
             // so we just call it to mark the token as used
             let _ = self.used_tokens.check_and_mark(hash);
@@ -1000,12 +1004,19 @@ impl WraithCoordinator {
         Ok(())
     }
 
-    /// Compute a hash of a token for replay prevention
-    fn compute_token_hash(token: &UnblindedToken) -> [u8; 32] {
+    /// Compute a session-bound hash of a token for replay prevention
+    ///
+    /// WR-C4: Token hash is now bound to the session_id to prevent cross-session replay.
+    /// Even if a token is valid (signed by coordinator), it can only be used in the
+    /// session it was issued for.
+    fn compute_token_hash(&self, token: &UnblindedToken) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(token.nonce_point);
-        hasher.update(token.signature_scalar);
+        hasher.update(b"wraith/token-hash/v2");
+        hasher.update(self.session.session_id());
+        hasher.update(&token.session_key_id);
+        hasher.update(&token.nonce_point);
+        hasher.update(&token.signature_scalar);
         hasher.finalize().into()
     }
 
@@ -1137,6 +1148,11 @@ impl WraithCoordinator {
             )));
         }
 
+        // WR-C1: CRYPTOGRAPHIC SHUFFLE of anonymous tokens BEFORE batching
+        // This prevents an attacker from correlating token submission order with participants.
+        // The shuffle uses session_id + fresh entropy for unpredictability.
+        self.shuffle_anonymous_tokens()?;
+
         // Group anonymous tokens into participant-sized batches
         // Note: We don't know WHICH participant each batch belongs to - that's the point!
         let mut intermediate_addresses: Vec<Vec<String>> = Vec::new();
@@ -1169,6 +1185,35 @@ impl WraithCoordinator {
             .phase1_tx
             .as_ref()
             .expect("phase1_tx was just assigned"))
+    }
+
+    /// WR-C1: Cryptographically shuffle anonymous tokens to break submission order correlation
+    ///
+    /// This shuffle uses ChaCha20Rng seeded from session_id + fresh entropy.
+    /// Called before batching tokens to prevent an attacker from correlating
+    /// the order of token submissions with participant identities.
+    fn shuffle_anonymous_tokens(&mut self) -> Result<(), WraithError> {
+        use rand::seq::SliceRandom;
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+        use sha2::{Digest, Sha256};
+
+        // Generate fresh entropy from CSPRNG
+        let mut entropy = [0u8; 32];
+        getrandom::getrandom(&mut entropy)
+            .map_err(|e| WraithError::InvalidInput(format!("Failed to generate entropy: {}", e)))?;
+
+        // Derive seed from session_id + entropy for unpredictability
+        // This ensures even if session_id is known, the shuffle is unpredictable
+        let mut hasher = Sha256::new();
+        hasher.update(b"wraith/token-shuffle/v1");
+        hasher.update(self.session.session_id());
+        hasher.update(&entropy);
+        let seed: [u8; 32] = hasher.finalize().into();
+
+        let mut rng = ChaCha20Rng::from_seed(seed);
+        self.anonymous_tokens.shuffle(&mut rng);
+        Ok(())
     }
 
     /// Clear sensitive data immediately after building transactions
@@ -1344,17 +1389,33 @@ impl WraithCoordinator {
             intermediate_inputs.push(participant_inputs);
         }
 
-        // Collect final addresses
-        let final_addresses: Vec<String> = self
-            .participant_order
-            .iter()
-            .map(|session_id| {
-                self.participants
-                    .get(session_id)
-                    .and_then(|p| p.final_address.clone())
-                    .unwrap_or_default()
-            })
-            .collect();
+        // WR-C2: Validate ALL participants have final addresses before building Phase 2
+        // Previously this used unwrap_or_default() which would silently create empty addresses
+        let mut final_addresses: Vec<String> = Vec::with_capacity(self.participant_order.len());
+        for session_id in &self.participant_order {
+            let participant = self.participants.get(session_id).ok_or_else(|| {
+                WraithError::PhaseError(format!(
+                    "Missing participant in order: {}",
+                    session_id
+                ))
+            })?;
+
+            let address = participant.final_address.as_ref().ok_or_else(|| {
+                WraithError::PhaseError(format!(
+                    "Participant {} has not submitted a final address",
+                    session_id
+                ))
+            })?;
+
+            if address.is_empty() {
+                return Err(WraithError::PhaseError(format!(
+                    "Participant {} has empty final address",
+                    session_id
+                )));
+            }
+
+            final_addresses.push(address.clone());
+        }
 
         let tx = builder.build_merge_transaction(&intermediate_inputs, &final_addresses)?;
         self.phase2_tx = Some(tx);
@@ -2378,5 +2439,68 @@ mod tests {
         let result = coord.register_participant_with_utxo("ghost1".to_string(), utxo_proof);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No UTXO verifier"));
+    }
+
+    // ==========================================================================
+    // Security Tests (WR-C1, WR-C2, WR-C3, WR-C4)
+    // ==========================================================================
+
+    /// WR-C3 Test: Token cache TTL is extended to 8 days
+    #[test]
+    fn test_token_cache_ttl_extended() {
+        // Verify the constant is set to 8 days
+        assert_eq!(
+            TOKEN_MAX_AGE_SECS,
+            8 * 24 * 60 * 60,
+            "Token cache TTL should be 8 days"
+        );
+
+        // Default cache should use the extended TTL
+        let cache = TokenCache::default();
+        assert_eq!(
+            cache.max_age,
+            std::time::Duration::from_secs(8 * 24 * 60 * 60),
+            "Default cache should use 8-day TTL"
+        );
+    }
+
+    /// WR-C4 Test: Token hash is session-bound
+    #[test]
+    fn test_token_hash_session_bound() {
+        // Create two coordinators with different sessions
+        let mut coord1 = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        );
+        let mut coord2 = WraithCoordinator::new(
+            ParticipantTier::Express,
+            WraithDenomination::Small,
+            Network::Regtest,
+        );
+
+        // Create a fake token (we're just testing the hash function)
+        let token = crate::blind::UnblindedToken {
+            message: vec![0u8; 32],
+            nonce_point: [0u8; 33],
+            signature_scalar: [0u8; 32],
+            session_key_id: [0u8; 32],
+        };
+
+        // The same token should produce different hashes in different sessions
+        let hash1 = coord1.compute_token_hash(&token);
+        let hash2 = coord2.compute_token_hash(&token);
+
+        assert_ne!(
+            hash1, hash2,
+            "Same token in different sessions should have different hashes"
+        );
+
+        // Same token in same session should have same hash
+        let hash1_again = coord1.compute_token_hash(&token);
+        assert_eq!(
+            hash1, hash1_again,
+            "Same token in same session should have same hash"
+        );
     }
 }

@@ -270,8 +270,8 @@ impl PayoutProposalCreator {
         }
 
         // TX fees go 100% to the node that found the block
-        // Track unallocated TX fees for transparency (PO-H4)
-        let mut tx_fees_unallocated: u64 = 0;
+        // PAY-M3: TX fees are always allocated (to block finder or treasury), never unallocated
+        let tx_fees_unallocated: u64 = 0;
 
         if fee_dist.tx_fees_to_block_finder >= self.config.dust_threshold_sats {
             let block_finder_address = self.get_node_address(&data.winning_node_id)?;
@@ -304,12 +304,13 @@ impl PayoutProposalCreator {
                     "TX fees allocated to block finder"
                 );
             } else {
-                // PO-H4: Track unallocated TX fees for transparency
-                tx_fees_unallocated = fee_dist.tx_fees_to_block_finder;
-                warn!(
+                // PAY-M3: Block finder has no address - redirect TX fees to treasury
+                // instead of leaving them unallocated (no satoshis should be lost)
+                final_treasury = final_treasury.saturating_add(fee_dist.tx_fees_to_block_finder);
+                info!(
                     node_id = %hex::encode(&data.winning_node_id[..8]),
-                    tx_fees_unallocated,
-                    "Block finder node has no payout address - TX fees cannot be allocated"
+                    tx_fees = fee_dist.tx_fees_to_block_finder,
+                    "Block finder node has no payout address - TX fees redirected to treasury"
                 );
             }
         }

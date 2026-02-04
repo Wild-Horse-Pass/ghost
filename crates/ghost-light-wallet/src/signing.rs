@@ -161,9 +161,10 @@ fn sign_schnorr(master_key: &MasterKey, message_hash: &[u8; 32]) -> WalletResult
     // Create the message from the hash
     let message = Message::from_digest(*message_hash);
 
-    // Sign with BIP-340 Schnorr using a secure RNG
-    let mut rng = rand::thread_rng();
-    let signature = secp.sign_schnorr_with_rng(&message, &keypair, &mut rng);
+    // Sign with BIP-340 Schnorr using a cryptographically secure RNG
+    // CR-H1: Use OsRng instead of thread_rng() for cryptographic operations
+    use rand::rngs::OsRng;
+    let signature = secp.sign_schnorr_with_rng(&message, &keypair, &mut OsRng);
 
     Ok(signature.serialize())
 }

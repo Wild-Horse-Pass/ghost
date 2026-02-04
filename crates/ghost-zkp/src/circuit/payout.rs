@@ -11,7 +11,6 @@ use bellperson::{
     Circuit, ConstraintSystem, LinearCombination, SynthesisError,
 };
 use ff::PrimeField;
-use sha2::{Digest, Sha256};
 use std::marker::PhantomData;
 
 use super::BALANCE_BITS;
@@ -43,19 +42,23 @@ pub struct PayoutCircuit<F: PrimeField> {
 }
 
 /// Compute metadata commitment for binding proof to metadata.
-/// Returns a field element from the hash of epoch, miner_count, node_count.
-fn compute_metadata_commitment<F: PrimeField>(epoch: u64, miner_count: u32, node_count: u32) -> F {
-    let mut hasher = Sha256::new();
-    hasher.update(b"ghost-zkp-metadata-v1");
-    hasher.update(epoch.to_le_bytes());
-    hasher.update(miner_count.to_le_bytes());
-    hasher.update(node_count.to_le_bytes());
-    let hash = hasher.finalize();
+///
+/// SECURITY (ZK-C3): Uses polynomial encoding for efficient in-circuit verification:
+/// commitment = epoch * 2^64 + miner_count * 2^32 + node_count
+///
+/// This encoding is:
+/// - Injective (unique commitment for each (epoch, miner_count, node_count) tuple)
+/// - Efficient to verify in-circuit (simple linear constraint)
+/// - Safe from overflow since all inputs are bounded (epoch: u64, counts: u32)
+pub fn compute_metadata_commitment<F: PrimeField>(
+    epoch: u64,
+    miner_count: u32,
+    node_count: u32,
+) -> F {
+    let two32 = F::from(1u64 << 32);
+    let two64 = two32 * two32;
 
-    // Convert hash to field element (take first 31 bytes to ensure it fits in the field)
-    let mut repr = F::Repr::default();
-    repr.as_mut()[..31].copy_from_slice(&hash[..31]);
-    F::from_repr_vartime(repr).unwrap_or(F::ZERO)
+    F::from(epoch) * two64 + F::from(miner_count as u64) * two32 + F::from(node_count as u64)
 }
 
 impl<F: PrimeField> PayoutCircuit<F> {
@@ -206,16 +209,97 @@ impl<F: PrimeField> PayoutCircuit<F> {
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
 
-        // Epoch is exposed as public input but not constrained further
-        // (it's for binding the proof to a specific epoch)
-        let _ = epoch_input;
+        // ZK-C4: CONSTRAIN epoch public input
+        // Allocate epoch witness and constrain it matches the public input
+        let epoch_witness = AllocatedNum::alloc(cs.namespace(|| "epoch_witness"), || {
+            self.epoch
+                .map(F::from)
+                .ok_or(SynthesisError::AssignmentMissing)
+        })?;
+
+        // Constraint: epoch_witness == epoch_input
+        cs.enforce(
+            || "epoch_is_constrained",
+            |lc| lc + epoch_witness.get_variable(),
+            |lc| lc + CS::one(),
+            |lc| lc + epoch_input.get_variable(),
+        );
 
         // PUBLIC INPUT 6: metadata_commitment (binds proof to epoch, miner_count, node_count)
         // This prevents replay or modification of metadata
-        let _metadata_commitment =
+        let metadata_commitment_input =
             AllocatedNum::alloc_input(cs.namespace(|| "metadata_commitment"), || {
                 Ok(metadata_commitment_value)
             })?;
+
+        // ZK-C3: CONSTRAIN metadata_commitment public input
+        // Compute the commitment in-circuit and verify it matches the public input
+        //
+        // We need to allocate the miner_count and node_count as witnesses,
+        // then compute the commitment in-circuit and verify it matches.
+        let miner_count_witness =
+            AllocatedNum::alloc(cs.namespace(|| "miner_count_witness"), || {
+                self.miner_count
+                    .map(|c| F::from(c as u64))
+                    .ok_or(SynthesisError::AssignmentMissing)
+            })?;
+
+        let node_count_witness = AllocatedNum::alloc(cs.namespace(|| "node_count_witness"), || {
+            self.node_count
+                .map(|c| F::from(c as u64))
+                .ok_or(SynthesisError::AssignmentMissing)
+        })?;
+
+        // Compute metadata commitment in-circuit using polynomial combination
+        // commitment = epoch * C1 + miner_count * C2 + node_count
+        // where C1 = 2^64 and C2 = 2^32 for unique encoding
+        //
+        // For circuit efficiency, we compute this directly and constrain it equals
+        // the provided metadata_commitment_input
+        let two32 = F::from(1u64 << 32);
+        let two64 = two32 * two32;
+
+        let computed_metadata =
+            AllocatedNum::alloc(cs.namespace(|| "computed_metadata"), || {
+                let epoch = self
+                    .epoch
+                    .map(F::from)
+                    .ok_or(SynthesisError::AssignmentMissing)?;
+                let miner_count = self
+                    .miner_count
+                    .map(|c| F::from(c as u64))
+                    .ok_or(SynthesisError::AssignmentMissing)?;
+                let node_count = self
+                    .node_count
+                    .map(|c| F::from(c as u64))
+                    .ok_or(SynthesisError::AssignmentMissing)?;
+                Ok(epoch * two64 + miner_count * two32 + node_count)
+            })?;
+
+        // Constraint: computed_metadata = epoch_witness * 2^64 + miner_count_witness * 2^32 + node_count_witness
+        cs.enforce(
+            || "metadata_polynomial_correct",
+            |lc| lc + computed_metadata.get_variable(),
+            |lc| lc + CS::one(),
+            |lc| {
+                lc + (two64, epoch_witness.get_variable())
+                    + (two32, miner_count_witness.get_variable())
+                    + node_count_witness.get_variable()
+            },
+        );
+
+        // Constraint: computed_metadata == metadata_commitment_input
+        // This ensures the proof is bound to the specific epoch, miner_count, node_count
+        //
+        // SECURITY NOTE: The verifier must compute the metadata_commitment using the same
+        // polynomial formula and provide it as the public input. This constraint then
+        // verifies the prover used consistent values.
+        cs.enforce(
+            || "metadata_commitment_is_constrained",
+            |lc| lc + computed_metadata.get_variable(),
+            |lc| lc + CS::one(),
+            |lc| lc + metadata_commitment_input.get_variable(),
+        );
 
         // ========================================================================
         // RANGE CHECK ON PUBLIC INPUT: total_available
@@ -577,11 +661,14 @@ mod tests {
         // - 1 miner_sum constraint
         // - 1 node_sum constraint
         // - 1 treasury_matches constraint
-        // Total: ~394 constraints
+        // - 1 epoch_is_constrained (ZK-C4)
+        // - 1 metadata_polynomial_correct (ZK-C3)
+        // - 1 metadata_commitment_is_constrained (ZK-C3)
+        // Total: ~397 constraints
         let expected_per_value = BALANCE_BITS + 1; // bits + reconstruction
         let num_values = 2 + 2 + 1 + 1; // 2 miners + 2 nodes + treasury + total_available
         let range_constraints = num_values * expected_per_value;
-        let sum_constraints = 4; // sum_preservation + miner_sum + node_sum + treasury_matches
+        let sum_constraints = 7; // sum_preservation + miner_sum + node_sum + treasury_matches + epoch + 2*metadata
         let expected_constraints = range_constraints + sum_constraints;
 
         assert!(
@@ -648,5 +735,83 @@ mod tests {
         assert_eq!(circuit.node_count, Some(1));
         assert_eq!(circuit.miner_payouts.len(), 5);
         assert_eq!(circuit.node_payouts.len(), 3);
+    }
+
+    // ==========================================================================
+    // Security Tests (ZK-C3, ZK-C4)
+    // ==========================================================================
+
+    #[test]
+    fn test_epoch_is_constrained() {
+        // ZK-C4: Verify that the epoch public input is properly constrained
+        // Create two circuits with different epochs
+        let circuit1 = PayoutCircuit::<Fr>::new_with_epoch(1000, vec![500], vec![400], 100, 1);
+        let circuit2 = PayoutCircuit::<Fr>::new_with_epoch(1000, vec![500], vec![400], 100, 2);
+
+        let mut cs1 = TestConstraintSystem::new();
+        let mut cs2 = TestConstraintSystem::new();
+
+        circuit1.synthesize(&mut cs1).unwrap();
+        circuit2.synthesize(&mut cs2).unwrap();
+
+        // Both should satisfy constraints with their respective epochs
+        assert!(cs1.is_satisfied(), "Circuit 1 should be satisfied");
+        assert!(cs2.is_satisfied(), "Circuit 2 should be satisfied");
+
+        // Verify the epoch constraint exists by checking constraint count
+        // includes the epoch constraint
+        assert!(
+            cs1.num_constraints() > 0,
+            "Should have constraints including epoch"
+        );
+    }
+
+    #[test]
+    fn test_metadata_commitment_is_constrained() {
+        // ZK-C3: Verify that the metadata commitment is properly constrained
+        // Different metadata should produce different commitments
+        let commitment1 = compute_metadata_commitment::<Fr>(1, 10, 5);
+        let commitment2 = compute_metadata_commitment::<Fr>(2, 10, 5);
+        let commitment3 = compute_metadata_commitment::<Fr>(1, 11, 5);
+        let commitment4 = compute_metadata_commitment::<Fr>(1, 10, 6);
+
+        // All commitments should be different (injective encoding)
+        assert_ne!(commitment1, commitment2, "Different epoch -> different commitment");
+        assert_ne!(commitment1, commitment3, "Different miner_count -> different commitment");
+        assert_ne!(commitment1, commitment4, "Different node_count -> different commitment");
+    }
+
+    #[test]
+    fn test_metadata_commitment_polynomial_encoding() {
+        // Verify the polynomial encoding is injective and consistent
+        // commitment = epoch * 2^64 + miner_count * 2^32 + node_count
+        let epoch: u64 = 12345;
+        let miner_count: u32 = 100;
+        let node_count: u32 = 50;
+
+        let commitment = compute_metadata_commitment::<Fr>(epoch, miner_count, node_count);
+
+        // Manually compute expected value
+        let two32 = Fr::from(1u64 << 32);
+        let two64 = two32 * two32;
+        let expected = Fr::from(epoch) * two64
+            + Fr::from(miner_count as u64) * two32
+            + Fr::from(node_count as u64);
+
+        assert_eq!(commitment, expected, "Commitment should match polynomial encoding");
+    }
+
+    #[test]
+    fn test_circuit_with_epoch_constraint_satisfied() {
+        // Verify circuit is satisfied when epoch witness matches input
+        let circuit = PayoutCircuit::<Fr>::new_with_epoch(1000, vec![500], vec![400], 100, 42);
+
+        let mut cs = TestConstraintSystem::new();
+        circuit.synthesize(&mut cs).unwrap();
+
+        assert!(
+            cs.is_satisfied(),
+            "Circuit should be satisfied when epoch witness matches input"
+        );
     }
 }

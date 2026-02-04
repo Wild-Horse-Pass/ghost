@@ -46,6 +46,16 @@ fn is_safe_proc_path(path: &str, allowed: &[String]) -> bool {
     allowed.iter().any(|a| a == path)
 }
 
+/// VF-H1: Validate hex hash format (block hash or txid)
+/// Must be exactly 64 hex characters (32 bytes)
+fn is_valid_hex_hash(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// VF-H2: Maximum transaction hex size for policy verification (100KB)
+/// Standard Bitcoin nodes reject transactions > 100KB
+const MAX_TX_HEX_SIZE: usize = 200_000; // 100KB in hex = 200k chars
+
 /// M-STOR-3: Safely read a /proc file if it's in the allowed list
 fn safe_read_proc_file(path: &str, allowed: &[String]) -> Option<String> {
     if is_safe_proc_path(path, allowed) {
@@ -653,6 +663,41 @@ async fn archive_handler(
         "Archive verification request"
     );
 
+    // VF-H1: Validate input format before processing
+    // Block hashes and txids must be exactly 64 hex characters
+    if let Some(ref block) = query.block {
+        if !is_valid_hex_hash(block) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": ArchiveResponse {
+                        success: false,
+                        block_data: None,
+                        tx_data: None,
+                        error: Some("Invalid block hash: must be exactly 64 hex characters".to_string()),
+                    }
+                })),
+            );
+        }
+    }
+    if let Some(ref tx) = query.tx {
+        if !is_valid_hex_hash(tx) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": ArchiveResponse {
+                        success: false,
+                        block_data: None,
+                        tx_data: None,
+                        error: Some("Invalid txid: must be exactly 64 hex characters".to_string()),
+                    }
+                })),
+            );
+        }
+    }
+
     let challenge = ArchiveChallenge {
         challenge_type: if query.block.is_some() {
             ChallengeType::ArchiveBlock
@@ -729,6 +774,33 @@ async fn policy_handler(
     Query(query): Query<PolicyQuery>,
 ) -> impl IntoResponse {
     debug!(tx_len = query.tx.len(), unsigned = ?query.unsigned, "Policy verification request");
+
+    // VF-H2: Validate transaction hex size before processing
+    if query.tx.len() > MAX_TX_HEX_SIZE {
+        warn!(
+            tx_len = query.tx.len(),
+            max = MAX_TX_HEX_SIZE,
+            "Transaction hex too large"
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "signed": false,
+                "response": PolicyResponse {
+                    success: false,
+                    profile: "N/A".to_string(),
+                    classification: None,
+                    accepted: false,
+                    rejection_reason: Some("Input too large".to_string()),
+                    error: Some(format!(
+                        "Transaction hex too large: {} bytes (max {})",
+                        query.tx.len(),
+                        MAX_TX_HEX_SIZE
+                    )),
+                }
+            })),
+        );
+    }
 
     let challenge = PolicyChallenge {
         tx_hex: query.tx,

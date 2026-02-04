@@ -57,9 +57,10 @@ pub const MAX_ZK_PAYOUT_VOTE_SIZE: usize = 1_000;
 /// Verification result is small (node IDs + capability + result + signature)
 pub const MAX_VERIFICATION_SIZE: usize = 5_000;
 
-/// Maximum allowed timestamp drift from current time (5 minutes in milliseconds)
-/// Messages with timestamps too far in the future or past are rejected
-pub const MAX_TIMESTAMP_DRIFT_MS: u64 = 5 * 60 * 1000;
+/// Maximum allowed timestamp drift from current time (2 minutes in milliseconds)
+/// P2P-H8: Reduced from 5 minutes to 2 minutes to narrow the window for replay attacks.
+/// Messages with timestamps too far in the future or past are rejected.
+pub const MAX_TIMESTAMP_DRIFT_MS: u64 = 2 * 60 * 1000;
 
 /// Message validation errors
 #[derive(Debug, Clone, Error)]

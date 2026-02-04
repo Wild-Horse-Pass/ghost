@@ -23,7 +23,7 @@ use bellperson::{
 };
 use ff::PrimeField;
 
-use super::mimc::{mimc_hash, mimc_hash_native};
+use super::mimc::mimc_hash;
 use super::payment::{PaymentCircuit, PaymentCircuitError};
 
 /// Circuit proving a single payment's state transition is valid
@@ -441,10 +441,9 @@ pub fn enforce_fits_in_bits<F: PrimeField, CS: ConstraintSystem<F>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::circuit::mimc::mimc_hash_native;
     use bellperson::util_cs::test_cs::TestConstraintSystem;
     use blstrs::Scalar as Fr;
-
-    // mimc_hash_native is imported from super::mimc via super::*
 
     /// Helper to compute merkle root using MiMC hash
     fn compute_test_root(leaf: Fr, index: u64, siblings: &[Fr]) -> Fr {

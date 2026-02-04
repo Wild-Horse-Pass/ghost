@@ -270,9 +270,10 @@ mod tests {
         let keys = GhostKeys::generate();
         let ghost_id = keys.ghost_id();
 
-        // Create ephemeral key for this transaction
+        // Create ephemeral key for this transaction using random entropy
+        // CR-C2: Never use hardcoded keys, even in tests
         let secp = Secp256k1::new();
-        let ephemeral_secret = SecretKey::from_slice(&[42u8; 32]).unwrap();
+        let (ephemeral_secret, _) = secp.generate_keypair(&mut OsRng);
 
         // Create outputs at their actual positions in the outputs vec
         let (out0, ephemeral, _) = ghost_id

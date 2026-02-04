@@ -73,8 +73,9 @@ pub fn validate_settlement(
 }
 
 /// Calculate settlement fee
+/// PAY-M1: Use integer arithmetic to avoid floating-point precision errors
 pub fn calculate_fee(amount_sats: u64) -> u64 {
-    (amount_sats as f64 * crate::SETTLEMENT_FEE_PERCENT) as u64
+    amount_sats / crate::SETTLEMENT_FEE_DIVISOR
 }
 
 /// Calculate net amount after fee
