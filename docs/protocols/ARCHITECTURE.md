@@ -188,6 +188,7 @@ For Stratum V2 support, ghost-pool can run in TDP mode, serving block templates 
 | 8560 | ZMQ | PUB/SUB | Elder management |
 | 8561 | ZMQ | PUB/SUB | Payout proposals |
 | 8562 | ZMQ | PUB/SUB | Payout transactions |
+| 8563 | TCP/Noise | Point-to-point | Encrypted P2P channel |
 
 ## Data Flow
 
@@ -316,6 +317,34 @@ Additional requirements:
 2. **67% BFT**: Tolerates 33% malicious nodes
 3. **Pre-computed payouts**: No post-block consensus delay
 4. **L2 self-custody**: Ghost Locks have recovery paths
+5. **P2P Encryption**: Noise Protocol for sensitive message encryption
+
+### P2P Encryption (Noise Protocol)
+
+Sensitive P2P traffic is encrypted using the Noise Protocol Framework:
+
+**Protocol**: `Noise_XX_25519_ChaChaPoly_BLAKE2s`
+
+| Feature | Implementation |
+|---------|----------------|
+| Key Exchange | X25519 ECDH |
+| Cipher | ChaCha20-Poly1305 AEAD |
+| Hash | BLAKE2s |
+| Handshake | Noise_XX (mutual authentication) |
+| Port | 8563 |
+
+**Message Routing**:
+- **ZMQ (unencrypted)**: Discovery, Health pings (broadcast messages)
+- **Noise TCP (encrypted)**: Shares, Blocks, Votes, Payouts, Verification
+
+**Configuration**:
+```toml
+[consensus_config]
+noise_enabled = true          # Enable Noise encryption
+noise_port = 8563             # Noise TCP port
+noise_keypair_path = "..."    # X25519 keypair location
+noise_required = false        # Reject plaintext peers
+```
 
 ## Scalability
 

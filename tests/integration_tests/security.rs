@@ -583,3 +583,269 @@ impl ValidatedShareParams {
         validate_share_params(job_id, extranonce2, ntime, nonce)
     }
 }
+
+// =============================================================================
+// C-1: NOISE PROTOCOL ENCRYPTION TESTS (Tests 651-660)
+// =============================================================================
+
+#[test]
+fn test_651_noise_keypair_generation() {
+    use ghost_consensus::noise::NoiseKeypair;
+
+    // Generate two keypairs
+    let kp1 = NoiseKeypair::generate();
+    let kp2 = NoiseKeypair::generate();
+
+    // Keys should be 32 bytes
+    assert_eq!(kp1.public_key().len(), 32);
+    assert_eq!(kp1.private_key().len(), 32);
+
+    // Different keypairs should have different public keys
+    assert_ne!(kp1.public_key(), kp2.public_key());
+
+    // Public key hex should be 64 characters
+    assert_eq!(kp1.public_key_hex().len(), 64);
+    assert!(kp1
+        .public_key_hex()
+        .chars()
+        .all(|c| c.is_ascii_hexdigit()));
+}
+
+#[test]
+fn test_652_noise_config_defaults() {
+    use ghost_consensus::noise::NoiseConfig;
+
+    let config = NoiseConfig::default();
+
+    // Default should be enabled but not required (gradual rollout)
+    assert!(config.enabled);
+    assert!(!config.required);
+    assert!(config.allow_unknown_peers);
+    assert!(config.trusted_peers.is_empty());
+}
+
+#[tokio::test]
+async fn test_653_noise_handshake_mutual_authentication() {
+    use ghost_consensus::noise::{NoiseKeypair, NoiseSession};
+    use tokio::io::duplex;
+
+    let initiator_keys = NoiseKeypair::generate();
+    let responder_keys = NoiseKeypair::generate();
+
+    // Save expected keys before moving
+    let expected_responder_key = *responder_keys.public_key();
+    let expected_initiator_key = *initiator_keys.public_key();
+
+    // Create duplex streams (simulates TCP connection)
+    let (client_stream, server_stream) = duplex(65536);
+
+    // Spawn responder
+    let responder_handle = tokio::spawn(async move {
+        let session = NoiseSession::responder(&responder_keys).unwrap();
+        session.handshake(server_stream).await
+    });
+
+    // Run initiator
+    let session = NoiseSession::initiator(&initiator_keys).unwrap();
+    let (client_transport, peer_key) = session.handshake(client_stream).await.unwrap();
+
+    // Wait for responder
+    let (server_transport, client_key) = responder_handle.await.unwrap().unwrap();
+
+    // Verify mutual authentication
+    assert_eq!(peer_key, expected_responder_key, "Initiator should see responder's key");
+    assert_eq!(client_key, expected_initiator_key, "Responder should see initiator's key");
+
+    // Verify transport state matches
+    assert_eq!(client_transport.peer_public_key(), &expected_responder_key);
+    assert_eq!(server_transport.peer_public_key(), &expected_initiator_key);
+}
+
+#[tokio::test]
+async fn test_654_noise_encrypted_message_roundtrip() {
+    use ghost_consensus::noise::{NoiseKeypair, NoiseSession};
+    use tokio::io::duplex;
+
+    let initiator_keys = NoiseKeypair::generate();
+    let responder_keys = NoiseKeypair::generate();
+
+    let (client_stream, server_stream) = duplex(65536);
+
+    // Spawn responder
+    let responder_handle = tokio::spawn(async move {
+        let session = NoiseSession::responder(&responder_keys).unwrap();
+        session.handshake(server_stream).await
+    });
+
+    // Initiator handshake
+    let session = NoiseSession::initiator(&initiator_keys).unwrap();
+    let (mut client_transport, _) = session.handshake(client_stream).await.unwrap();
+    let (mut server_transport, _) = responder_handle.await.unwrap().unwrap();
+
+    // Test encrypted message exchange
+    let test_messages = vec![
+        b"Hello, encrypted world!".to_vec(),
+        b"Sensitive share data".to_vec(),
+        vec![0u8; 1000], // Binary data
+        (0..255).collect::<Vec<u8>>(), // All byte values
+    ];
+
+    for msg in &test_messages {
+        // Client -> Server
+        client_transport.send(msg).await.unwrap();
+        let received = server_transport.recv().await.unwrap();
+        assert_eq!(&received, msg, "Message should be decrypted correctly");
+
+        // Server -> Client
+        server_transport.send(msg).await.unwrap();
+        let received = client_transport.recv().await.unwrap();
+        assert_eq!(&received, msg, "Reply should be decrypted correctly");
+    }
+}
+
+#[test]
+fn test_655_noise_trusted_peer_verification() {
+    use ghost_consensus::noise::{NoiseConfig, NoiseKeypair, NoiseManager};
+
+    let trusted_key = NoiseKeypair::generate();
+    let untrusted_key = NoiseKeypair::generate();
+
+    // Config with specific trusted peer
+    let config = NoiseConfig {
+        enabled: true,
+        required: false,
+        keypair_file: None,
+        trusted_peers: vec![trusted_key.public_key_hex()],
+        allow_unknown_peers: false,
+    };
+
+    let manager = NoiseManager::new(config).unwrap();
+
+    // Trusted peer should be allowed
+    assert!(
+        manager.is_peer_trusted(trusted_key.public_key()),
+        "Trusted peer should be verified"
+    );
+
+    // Untrusted peer should be rejected
+    assert!(
+        !manager.is_peer_trusted(untrusted_key.public_key()),
+        "Untrusted peer should be rejected"
+    );
+}
+
+#[test]
+fn test_656_noise_message_size_limits() {
+    use ghost_consensus::noise::{MAX_MESSAGE_SIZE, MAX_PAYLOAD_SIZE, NOISE_OVERHEAD};
+
+    // Verify size constants are correct
+    assert!(MAX_PAYLOAD_SIZE < MAX_MESSAGE_SIZE);
+    assert_eq!(MAX_PAYLOAD_SIZE + NOISE_OVERHEAD, MAX_MESSAGE_SIZE);
+
+    // Verify encryption overhead is reasonable (16 bytes for AEAD tag)
+    assert_eq!(NOISE_OVERHEAD, 16);
+}
+
+#[tokio::test]
+async fn test_657_noise_connection_pool_basic() {
+    use ghost_consensus::noise::NoiseKeypair;
+    use ghost_consensus::noise_pool::{NoiseConnectionPool, NoisePoolConfig};
+
+    let keypair = NoiseKeypair::generate();
+    let config = NoisePoolConfig::default();
+
+    let pool = NoiseConnectionPool::new(keypair, config).unwrap();
+
+    // Pool should have a valid 32-byte public key (from internal NoiseManager)
+    assert_eq!(pool.public_key().len(), 32);
+    assert_eq!(pool.connection_count(), 0);
+    assert!(pool.is_enabled());
+}
+
+#[tokio::test]
+async fn test_658_noise_connection_pool_establishment() {
+    use ghost_consensus::noise::NoiseKeypair;
+    use ghost_consensus::noise_pool::{NoiseConnectionPool, NoisePoolConfig};
+    use tokio::net::TcpListener;
+
+    // Create two pools (simulating two peers)
+    let keypair1 = NoiseKeypair::generate();
+    let keypair2 = NoiseKeypair::generate();
+
+    let pool1 = std::sync::Arc::new(
+        NoiseConnectionPool::new(keypair1.clone(), NoisePoolConfig::default()).unwrap(),
+    );
+    let pool2 = std::sync::Arc::new(
+        NoiseConnectionPool::new(keypair2.clone(), NoisePoolConfig::default()).unwrap(),
+    );
+
+    // Start listener for pool2
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Spawn acceptor
+    let pool2_clone = std::sync::Arc::clone(&pool2);
+    let accept_handle = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        pool2_clone.accept_connection(stream).await
+    });
+
+    // Pool1 connects to pool2
+    let conn1 = pool1.get_connection(addr).await.unwrap();
+
+    // Wait for acceptance
+    let conn2 = accept_handle.await.unwrap().unwrap();
+
+    // Verify connections
+    assert_eq!(pool1.connection_count(), 1);
+    assert_eq!(pool2.connection_count(), 1);
+
+    // Verify peer keys match
+    assert_eq!(conn1.peer_key, *pool2.public_key());
+    assert_eq!(conn2.peer_key, *pool1.public_key());
+
+    // Test message exchange
+    conn1.send(b"test message").await.unwrap();
+    let received = conn2.recv().await.unwrap();
+    assert_eq!(received, b"test message");
+}
+
+#[test]
+fn test_659_noise_receiver_stats() {
+    use ghost_consensus::noise_receiver::NoiseReceiverStats;
+    use std::sync::atomic::Ordering;
+
+    let stats = NoiseReceiverStats::default();
+
+    // Initial values should be zero
+    let snapshot = stats.snapshot();
+    assert_eq!(snapshot.messages_received, 0);
+    assert_eq!(snapshot.messages_rejected, 0);
+    assert_eq!(snapshot.identity_mismatch, 0);
+    assert_eq!(snapshot.receive_errors, 0);
+
+    // Increment counters
+    stats.messages_received.fetch_add(10, Ordering::Relaxed);
+    stats.messages_rejected.fetch_add(2, Ordering::Relaxed);
+    stats.identity_mismatch.fetch_add(1, Ordering::Relaxed);
+    stats.receive_errors.fetch_add(3, Ordering::Relaxed);
+
+    // Verify snapshot reflects updates
+    let snapshot = stats.snapshot();
+    assert_eq!(snapshot.messages_received, 10);
+    assert_eq!(snapshot.messages_rejected, 2);
+    assert_eq!(snapshot.identity_mismatch, 1);
+    assert_eq!(snapshot.receive_errors, 3);
+}
+
+#[test]
+fn test_660_noise_mesh_config_defaults() {
+    use ghost_consensus::mesh::{MeshConfig, DEFAULT_NOISE_PORT};
+
+    let config = MeshConfig::default();
+
+    // C-1: Noise should be enabled by default for secure-by-default
+    assert!(config.noise_enabled, "Noise should be enabled by default");
+    assert_eq!(config.noise_port, DEFAULT_NOISE_PORT);
+    assert!(!config.noise_required, "Noise should not be required by default (gradual rollout)");
+}

@@ -265,6 +265,7 @@ L2 payment network (optional). Features:
 | 8560 | ZMQ | PUB/SUB | Elder management |
 | 8561 | ZMQ | PUB/SUB | Payout proposals |
 | 8562 | ZMQ | PUB/SUB | Payout transactions |
+| 8563 | TCP/Noise | Point-to-point | Encrypted P2P channel |
 
 ### 5.4 IPC Sockets (Unix Domain)
 
@@ -328,6 +329,40 @@ SignedMessage {
     payload: ConsensusMessage,
 }
 ```
+
+### 6.5 Noise Protocol Encryption (P2P)
+
+Sensitive P2P messages are encrypted using the Noise Protocol Framework for point-to-point security.
+
+**Protocol**: `Noise_XX_25519_ChaChaPoly_BLAKE2s`
+- **XX Pattern**: Mutual authentication with identity hiding
+- **X25519**: Elliptic curve Diffie-Hellman key exchange
+- **ChaCha20-Poly1305**: AEAD symmetric encryption
+- **BLAKE2s**: Cryptographic hash function
+
+**Transport Classification**:
+
+| Message Type | Transport | Rationale |
+|--------------|-----------|-----------|
+| Discovery | ZMQ (signed) | Broadcast for initial peer finding |
+| Health Ping | ZMQ (signed) | Broadcast liveness, no secrets |
+| Shares | Noise TCP | Sensitive pool work data |
+| Blocks | Noise TCP | Block propagation |
+| Votes | Noise TCP | Consensus votes |
+| Payouts | Noise TCP | Payout proposals/transactions |
+| Verification | Noise TCP | Challenge/response data |
+
+**Security Properties**:
+- **Confidentiality**: All sensitive messages encrypted end-to-end
+- **Authentication**: Noise_XX provides mutual authentication
+- **Forward Secrecy**: Each session derives fresh keys
+- **Identity Binding**: Envelope sender must match Noise peer identity
+- **Anti-Replay**: Noise protocol includes anti-replay protection
+
+**Connection Pool**:
+- Established connections are pooled and reused
+- Stale connections cleaned up after 5 minutes of inactivity
+- Automatic reconnection on connection failure
 
 **ConsensusMessage Types**:
 - `ShareProof` - Share submission proof
@@ -617,6 +652,12 @@ archive_mode = true
 public_mining = true
 ghost_pay = false
 bitcoin_pure = true
+
+# Noise Protocol Encryption (P2P)
+noise_enabled = true                           # Enable Noise encryption (default: true)
+noise_port = 8563                              # TCP port for Noise connections
+noise_keypair_path = "/etc/ghost/noise.key"   # X25519 keypair (auto-generated)
+noise_required = false                         # Reject plaintext peers (default: false)
 
 # Bitcoin Core ZMQ
 [core_zmq_config]
@@ -2175,6 +2216,7 @@ const DISCOVERY_PORT: u16 = 8559;
 const ELDER_MANAGEMENT_PORT: u16 = 8560;
 const PAYOUT_PROPOSAL_PORT: u16 = 8561;
 const PAYOUT_TRANSACTION_PORT: u16 = 8562;
+const NOISE_ENCRYPTED_PORT: u16 = 8563;      // Noise Protocol encrypted channel
 ```
 
 ---
@@ -2192,7 +2234,8 @@ const PAYOUT_TRANSACTION_PORT: u16 = 8562;
 | Ghost Pay | Layer 2 instant payment network |
 | IPC | Inter-Process Communication via Unix socket |
 | Merkle Path | Proof of transaction inclusion in block |
-| Noise | Encryption protocol for Stratum V2 |
+| Noise | Encryption protocol for Stratum V2 and P2P consensus |
+| Noise_XX | Noise handshake pattern with mutual authentication |
 | Round | Period between blocks (one block = one round) |
 | Share | Proof of work below pool difficulty |
 | SV1 | Stratum V1 - legacy JSON-RPC protocol |

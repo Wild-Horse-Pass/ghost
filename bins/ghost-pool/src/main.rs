@@ -672,6 +672,8 @@ async fn main() -> Result<()> {
     // SRI translator handles SV1 miners on port 3333
 
     // Initialize P2P mesh with actual node capabilities for health pings
+    // C-1: Enable Noise Protocol encryption for sensitive P2P traffic
+    let noise_keypair_path = data_dir.join("noise.key");
     let mesh_config = MeshConfig {
         public_address: config
             .network
@@ -680,6 +682,11 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| "127.0.0.1".to_string()),
         ports: config.network.p2p.clone(),
         capabilities,
+        // C-1: Noise Protocol configuration for encrypted P2P
+        noise_enabled: true, // Enable encryption by default
+        noise_port: ghost_consensus::mesh::DEFAULT_NOISE_PORT,
+        noise_keypair_path: Some(noise_keypair_path),
+        noise_required: false, // Allow fallback during migration
         ..Default::default()
     };
     let mesh = Arc::new(MeshNetwork::new(Arc::clone(&identity), mesh_config));
@@ -1543,6 +1550,90 @@ async fn main() -> Result<()> {
         }
     });
     info!("P2P mesh network started");
+
+    // C-1: Start Noise Protocol listener for encrypted P2P connections
+    // This listens for incoming encrypted TCP connections from peers
+    if let Some(noise_pool) = mesh.noise_pool() {
+        let noise_pool_clone = Arc::clone(noise_pool);
+        let mesh_for_noise = Arc::clone(&mesh);
+        let noise_port = ghost_consensus::mesh::DEFAULT_NOISE_PORT;
+
+        tokio::spawn(async move {
+            use tokio::net::TcpListener;
+
+            let bind_addr = format!("0.0.0.0:{}", noise_port);
+            let listener = match TcpListener::bind(&bind_addr).await {
+                Ok(l) => {
+                    info!(port = noise_port, "Noise Protocol listener started (encrypted P2P)");
+                    l
+                }
+                Err(e) => {
+                    error!(error = %e, port = noise_port, "Failed to start Noise listener");
+                    return;
+                }
+            };
+
+            loop {
+                match listener.accept().await {
+                    Ok((stream, addr)) => {
+                        let pool = Arc::clone(&noise_pool_clone);
+                        let mesh = Arc::clone(&mesh_for_noise);
+
+                        tokio::spawn(async move {
+                            match pool.accept_connection(stream).await {
+                                Ok(conn) => {
+                                    tracing::debug!(
+                                        peer = %addr,
+                                        peer_key = %hex::encode(&conn.peer_key[..8]),
+                                        "Accepted Noise connection"
+                                    );
+
+                                    // Handle incoming messages from this connection
+                                    // Messages are received, validated, and dispatched to handlers
+                                    loop {
+                                        match conn.recv().await {
+                                            Ok(payload) => {
+                                                // Process received encrypted message through the mesh handler
+                                                if let Err(e) = mesh.handle_received(&payload).await {
+                                                    tracing::debug!(
+                                                        peer = %addr,
+                                                        error = %e,
+                                                        "Error handling Noise message"
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::debug!(
+                                                    peer = %addr,
+                                                    error = %e,
+                                                    "Noise connection error"
+                                                );
+                                                // Remove broken connection
+                                                pool.remove_connection(&conn.peer_key);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        peer = %addr,
+                                        error = %e,
+                                        "Noise handshake failed"
+                                    );
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Noise accept error");
+                    }
+                }
+            }
+        });
+    } else {
+        warn!("Noise Protocol DISABLED - P2P traffic is unencrypted");
+    }
 
     // Bootstrap peer connections from seed nodes
     if !config.network.seed_nodes.is_empty() {

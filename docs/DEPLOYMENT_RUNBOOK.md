@@ -227,6 +227,13 @@ elder_management = 8560
 payout_proposal = 8561
 payout_transaction = 8562
 
+# Noise Protocol Encryption (P2P)
+# Encrypts sensitive messages (shares, blocks, votes, payouts)
+noise_enabled = true                           # Enable Noise encryption (default: true)
+noise_port = 8563                              # TCP port for encrypted connections
+noise_keypair_path = "/etc/ghost/noise.key"   # X25519 keypair (auto-generated if missing)
+noise_required = false                         # Reject plaintext peers (set true after all nodes upgraded)
+
 [policy]
 profile = "permissive"             # bitcoin_pure, permissive, full_open
 
@@ -444,7 +451,8 @@ curl http://localhost:8080/api/v1/miners
 | 3333 | TCP | SV1 miners (SRI translator, TDP mode) |
 | 8080 | TCP | HTTP API |
 | 8442 | TCP | TDP server (Noise encrypted, TDP mode) |
-| 8555-8562 | TCP | P2P consensus mesh |
+| 8555-8562 | TCP | P2P consensus mesh (ZMQ) |
+| 8563 | TCP | P2P encrypted channel (Noise Protocol) |
 
 ### Internal Only (Localhost)
 
@@ -513,8 +521,11 @@ sudo ufw allow 3333/tcp comment "Ghost SV1"
 # Allow HTTP API (consider restricting to management IPs)
 sudo ufw allow 8080/tcp comment "Ghost API"
 
-# Allow P2P mesh
-sudo ufw allow 8555:8562/tcp comment "Ghost P2P"
+# Allow P2P mesh (ZMQ)
+sudo ufw allow 8555:8562/tcp comment "Ghost P2P ZMQ"
+
+# Allow P2P encrypted channel (Noise Protocol)
+sudo ufw allow 8563/tcp comment "Ghost P2P Noise"
 
 # Reload
 sudo ufw reload

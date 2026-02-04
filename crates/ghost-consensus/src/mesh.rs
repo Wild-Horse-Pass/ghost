@@ -69,6 +69,7 @@ use ghost_common::types::NodeId;
 
 use crate::message::{MessageEnvelope, MessageType};
 use crate::message_validator::{validate_and_verify, ValidationStats};
+use crate::noise_pool::{NoiseConnectionPool, NoisePoolConfig};
 use crate::peer::{Peer, PeerManager};
 
 /// Type alias for optional outbound message receiver storage
@@ -91,23 +92,50 @@ pub struct MeshConfig {
     pub max_seen_messages: usize,
     /// Node capabilities to advertise in health pings
     pub capabilities: ghost_common::types::NodeCapabilities,
-    /// H-P2P-1: Enable Noise Protocol for transport encryption
+    /// C-1: Enable Noise Protocol for transport encryption
     ///
-    /// **SEC-P2P-8: WARNING - NOISE PROTOCOL IS NOT YET IMPLEMENTED**
+    /// When enabled, sensitive P2P messages (shares, blocks, votes, payouts)
+    /// are sent over encrypted Noise TCP channels instead of plaintext ZMQ.
     ///
-    /// This flag is reserved for future use. The noise.rs module exists
-    /// but is NOT integrated with ZMQ sockets. Currently:
-    /// - All P2P communication is in PLAINTEXT regardless of this setting
-    /// - Messages are signed for authenticity but NOT encrypted
+    /// ZMQ is still used for:
+    /// - Discovery messages (need broadcast for initial peer finding)
+    /// - Health pings (broadcast liveness, no secrets)
     ///
-    /// For production deployment until Noise is integrated:
-    /// - Deploy nodes in private networks or VPNs
-    /// - Use firewall rules to restrict P2P ports
-    /// - Do not assume message confidentiality
+    /// Noise TCP is used for:
+    /// - Share propagation
+    /// - Block announcements
+    /// - Consensus votes
+    /// - Payout proposals/transactions
+    /// - Verification results
     ///
-    /// TODO(SEC-P2P-NOISE): Integrate Noise_XX pattern with ZMQ sockets
+    /// Default: true for secure-by-default operation
     pub noise_enabled: bool,
+    /// Port for Noise Protocol TCP connections (default: 8563)
+    ///
+    /// This port is used for encrypted point-to-point communication.
+    /// Separate from ZMQ ports which handle discovery and health.
+    pub noise_port: u16,
+    /// Path to Noise keypair file
+    ///
+    /// If the file doesn't exist, a new keypair will be generated and saved.
+    /// The keypair is used for X25519 Diffie-Hellman in Noise_XX handshakes.
+    pub noise_keypair_path: Option<std::path::PathBuf>,
+    /// Require Noise encryption for sensitive messages
+    ///
+    /// When true:
+    /// - Peers without Noise support are rejected
+    /// - Messages from unknown Noise identities are dropped
+    ///
+    /// When false:
+    /// - Falls back to plaintext ZMQ if Noise connection fails
+    /// - Useful during migration period
+    ///
+    /// Default: false (gradual rollout mode)
+    pub noise_required: bool,
 }
+
+/// Default Noise port for encrypted TCP connections
+pub const DEFAULT_NOISE_PORT: u16 = 8563;
 
 impl Default for MeshConfig {
     fn default() -> Self {
@@ -119,9 +147,11 @@ impl Default for MeshConfig {
             health_ping_interval_secs: 10,
             max_seen_messages: 100_000, // Cap at 100k messages (~3.2MB with 32-byte IDs)
             capabilities: ghost_common::types::NodeCapabilities::default(),
-            // SEC-P2P-8: Set to false by default since Noise is not implemented
-            // This makes the configuration honest about the actual security state
-            noise_enabled: false,
+            // C-1: Enable Noise by default for secure-by-default operation
+            noise_enabled: true,
+            noise_port: DEFAULT_NOISE_PORT,
+            noise_keypair_path: None, // Will generate ephemeral keypair
+            noise_required: false, // Allow fallback during migration
         }
     }
 }
@@ -188,6 +218,8 @@ pub struct MeshNetwork {
     messages_received: AtomicU64,
     /// Validation statistics for monitoring
     validation_stats: RwLock<ValidationStats>,
+    /// C-1: Noise Protocol connection pool for encrypted P2P communication
+    noise_pool: Option<Arc<NoiseConnectionPool>>,
 }
 
 /// Message identifier for deduplication
@@ -478,6 +510,29 @@ impl MeshNetwork {
         let (outbound_tx, outbound_rx) = mpsc::channel(1000);
         let (inbound_tx, inbound_rx) = mpsc::channel(1000);
 
+        // C-1: Initialize Noise connection pool if enabled
+        let noise_pool = if config.noise_enabled {
+            match Self::init_noise_pool(&config) {
+                Ok(pool) => {
+                    info!(
+                        public_key = %pool.public_key_hex(),
+                        "Noise Protocol enabled for encrypted P2P"
+                    );
+                    Some(Arc::new(pool))
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to initialize Noise pool");
+                    if config.noise_required {
+                        panic!("Noise is required but failed to initialize: {}", e);
+                    }
+                    warn!("Falling back to plaintext P2P (Noise disabled)");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Self {
             identity,
             config: config.clone(),
@@ -493,7 +548,51 @@ impl MeshNetwork {
             messages_sent: AtomicU64::new(0),
             messages_received: AtomicU64::new(0),
             validation_stats: RwLock::new(ValidationStats::default()),
+            noise_pool,
         }
+    }
+
+    /// Initialize the Noise connection pool
+    fn init_noise_pool(config: &MeshConfig) -> Result<NoiseConnectionPool, crate::noise::NoiseError> {
+        use crate::noise::{NoiseConfig, NoiseKeypair};
+
+        // Load or generate keypair
+        let keypair = if let Some(ref path) = config.noise_keypair_path {
+            if path.exists() {
+                // Load existing keypair
+                let hex = std::fs::read_to_string(path)
+                    .map_err(crate::noise::NoiseError::Io)?;
+                NoiseKeypair::from_hex(hex.trim())?
+            } else {
+                // Generate and save new keypair
+                let kp = NoiseKeypair::generate();
+                if let Err(e) = std::fs::write(path, hex::encode(kp.private_key())) {
+                    warn!(path = ?path, error = %e, "Failed to save Noise keypair");
+                } else {
+                    info!(path = ?path, "Generated and saved new Noise keypair");
+                }
+                kp
+            }
+        } else {
+            // Ephemeral keypair
+            debug!("Using ephemeral Noise keypair (not persisted)");
+            NoiseKeypair::generate()
+        };
+
+        let noise_config = NoiseConfig {
+            enabled: config.noise_enabled,
+            required: config.noise_required,
+            keypair_file: config.noise_keypair_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            trusted_peers: Vec::new(), // Accept all peers initially
+            allow_unknown_peers: true,
+        };
+
+        let pool_config = NoisePoolConfig {
+            noise: noise_config,
+            ..Default::default()
+        };
+
+        NoiseConnectionPool::new(keypair, pool_config)
     }
 
     /// Register a message handler
@@ -638,6 +737,175 @@ impl MeshNetwork {
     ) -> GhostResult<usize> {
         let envelope = self.create_envelope(msg_type, payload)?;
         self.broadcast(envelope).await
+    }
+
+    /// C-1: Check if a message type should use encrypted Noise channels
+    ///
+    /// Sensitive messages go over Noise TCP, broadcast messages stay on ZMQ.
+    fn should_use_noise(&self, msg_type: MessageType) -> bool {
+        if self.noise_pool.is_none() {
+            return false;
+        }
+
+        match msg_type {
+            // Broadcast messages stay on ZMQ (need broadcast for discovery)
+            MessageType::Discovery | MessageType::HealthPing => false,
+
+            // Sensitive messages use Noise encryption
+            MessageType::ShareProof
+            | MessageType::ShareConvergence
+            | MessageType::BlockFound
+            | MessageType::Vote
+            | MessageType::PayoutProposal
+            | MessageType::ElderUpdate
+            | MessageType::ZkBlockProposal
+            | MessageType::ZkVote
+            | MessageType::ZkPayoutProposal
+            | MessageType::ZkPayoutVote
+            | MessageType::VerificationResult
+            | MessageType::EquivocationProof
+            | MessageType::ElderRegistrationProposal
+            | MessageType::ElderListProposal
+            | MessageType::ElderListApproval => true,
+        }
+    }
+
+    /// C-1: Send message via Noise-encrypted channel to a specific peer
+    ///
+    /// Establishes or reuses an encrypted connection to the peer.
+    pub async fn send_encrypted(
+        &self,
+        peer: &Peer,
+        envelope: &MessageEnvelope,
+    ) -> GhostResult<()> {
+        let pool = self.noise_pool.as_ref().ok_or_else(|| {
+            GhostError::P2PMessage("Noise not enabled".into())
+        })?;
+
+        // Serialize the envelope
+        let data = envelope
+            .serialize()
+            .map_err(|e| GhostError::Serialization(e.to_string()))?;
+
+        // Parse peer address for Noise port
+        let host = peer.public_address.split(':').next().unwrap_or(&peer.public_address);
+        let noise_addr: std::net::SocketAddr = format!("{}:{}", host, self.config.noise_port)
+            .parse()
+            .map_err(|e| GhostError::P2PMessage(format!("Invalid peer address: {}", e)))?;
+
+        // Get or establish Noise connection
+        let conn = pool.get_connection(noise_addr).await.map_err(|e| {
+            GhostError::P2PMessage(format!("Noise connection failed: {}", e))
+        })?;
+
+        // Send encrypted
+        conn.send(&data).await.map_err(|e| {
+            GhostError::P2PMessage(format!("Noise send failed: {}", e))
+        })?;
+
+        debug!(
+            peer = %peer.node_id_short(),
+            msg_type = ?envelope.msg_type,
+            bytes = data.len(),
+            "Sent encrypted message via Noise"
+        );
+
+        self.messages_sent.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// C-1: Broadcast message via encrypted Noise channels to all peers
+    ///
+    /// For sensitive messages, this uses point-to-point encryption to each peer.
+    pub async fn broadcast_encrypted(&self, envelope: &MessageEnvelope) -> GhostResult<BroadcastResult> {
+        let pool = self.noise_pool.as_ref().ok_or_else(|| {
+            GhostError::P2PMessage("Noise not enabled".into())
+        })?;
+
+        let peers = self.peers.get_connected_peers(60);
+        let mut result = BroadcastResult::default();
+
+        // Serialize once for all peers
+        let data = envelope
+            .serialize()
+            .map_err(|e| GhostError::Serialization(e.to_string()))?;
+
+        for peer in peers {
+            if peer.node_id == self.identity.node_id() {
+                continue; // Don't send to ourselves
+            }
+
+            // Parse peer address
+            let host = peer.public_address.split(':').next().unwrap_or(&peer.public_address);
+            let noise_addr: std::net::SocketAddr = match format!("{}:{}", host, self.config.noise_port).parse() {
+                Ok(addr) => addr,
+                Err(e) => {
+                    warn!(peer = %peer.node_id_short(), error = %e, "Invalid peer address for Noise");
+                    result.failed += 1;
+                    continue;
+                }
+            };
+
+            // Get or establish Noise connection
+            match pool.get_connection(noise_addr).await {
+                Ok(conn) => {
+                    match conn.send(&data).await {
+                        Ok(_) => {
+                            result.success += 1;
+                            self.messages_sent.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            warn!(peer = %peer.node_id_short(), error = %e, "Noise send failed");
+                            result.failed += 1;
+                            // Remove broken connection
+                            pool.remove_connection(&conn.peer_key);
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(peer = %peer.node_id_short(), error = %e, "Noise connection failed");
+                    result.failed += 1;
+                }
+            }
+        }
+
+        debug!(
+            msg_type = ?envelope.msg_type,
+            success = result.success,
+            failed = result.failed,
+            "Encrypted broadcast complete"
+        );
+
+        Ok(result)
+    }
+
+    /// C-1: Smart broadcast - uses Noise for sensitive messages, ZMQ for broadcast
+    ///
+    /// This is the recommended method for broadcasting messages. It automatically
+    /// chooses the appropriate transport:
+    /// - Discovery/Health pings: ZMQ broadcast (need to reach unknown peers)
+    /// - Sensitive data: Noise encrypted point-to-point
+    pub async fn smart_broadcast(&self, envelope: MessageEnvelope) -> GhostResult<usize> {
+        if self.should_use_noise(envelope.msg_type) {
+            // Use Noise for sensitive messages
+            match self.broadcast_encrypted(&envelope).await {
+                Ok(result) => Ok(result.success),
+                Err(e) if !self.config.noise_required => {
+                    // Fall back to ZMQ if Noise fails and not required
+                    warn!(error = %e, "Noise broadcast failed, falling back to ZMQ");
+                    self.broadcast(envelope).await
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            // Use ZMQ for broadcast messages
+            self.broadcast(envelope).await
+        }
+    }
+
+    /// Get the Noise connection pool (if enabled)
+    pub fn noise_pool(&self) -> Option<&Arc<NoiseConnectionPool>> {
+        self.noise_pool.as_ref()
     }
 
     /// Send a message to a specific peer
@@ -791,11 +1059,17 @@ impl MeshNetwork {
             "Starting mesh network"
         );
 
-        // H-P2P-1: Warn if Noise Protocol is disabled (plaintext P2P)
-        if !self.config.noise_enabled {
+        // C-1: Log Noise Protocol status
+        if self.config.noise_enabled {
+            info!(
+                noise_port = self.config.noise_port,
+                noise_required = self.config.noise_required,
+                "Noise Protocol encryption ENABLED for sensitive P2P traffic"
+            );
+        } else {
             warn!(
                 "P2P transport encryption (Noise Protocol) is DISABLED. \
-                 Messages are sent in plaintext. Set noise_enabled=true for production."
+                 Sensitive messages are sent in plaintext. Set noise_enabled=true for production."
             );
         }
 
@@ -1453,6 +1727,15 @@ pub struct MeshStats {
     pub messages_sent: u64,
     pub messages_received: u64,
     pub seen_message_count: usize,
+}
+
+/// C-1: Result of an encrypted broadcast operation
+#[derive(Debug, Clone, Default)]
+pub struct BroadcastResult {
+    /// Number of peers successfully sent to
+    pub success: usize,
+    /// Number of peers that failed
+    pub failed: usize,
 }
 
 /// Builder for constructing ZMQ endpoints
