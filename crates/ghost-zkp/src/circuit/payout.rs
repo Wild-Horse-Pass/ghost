@@ -244,11 +244,12 @@ impl<F: PrimeField> PayoutCircuit<F> {
                     .ok_or(SynthesisError::AssignmentMissing)
             })?;
 
-        let node_count_witness = AllocatedNum::alloc(cs.namespace(|| "node_count_witness"), || {
-            self.node_count
-                .map(|c| F::from(c as u64))
-                .ok_or(SynthesisError::AssignmentMissing)
-        })?;
+        let node_count_witness =
+            AllocatedNum::alloc(cs.namespace(|| "node_count_witness"), || {
+                self.node_count
+                    .map(|c| F::from(c as u64))
+                    .ok_or(SynthesisError::AssignmentMissing)
+            })?;
 
         // Compute metadata commitment in-circuit using polynomial combination
         // commitment = epoch * C1 + miner_count * C2 + node_count
@@ -259,22 +260,21 @@ impl<F: PrimeField> PayoutCircuit<F> {
         let two32 = F::from(1u64 << 32);
         let two64 = two32 * two32;
 
-        let computed_metadata =
-            AllocatedNum::alloc(cs.namespace(|| "computed_metadata"), || {
-                let epoch = self
-                    .epoch
-                    .map(F::from)
-                    .ok_or(SynthesisError::AssignmentMissing)?;
-                let miner_count = self
-                    .miner_count
-                    .map(|c| F::from(c as u64))
-                    .ok_or(SynthesisError::AssignmentMissing)?;
-                let node_count = self
-                    .node_count
-                    .map(|c| F::from(c as u64))
-                    .ok_or(SynthesisError::AssignmentMissing)?;
-                Ok(epoch * two64 + miner_count * two32 + node_count)
-            })?;
+        let computed_metadata = AllocatedNum::alloc(cs.namespace(|| "computed_metadata"), || {
+            let epoch = self
+                .epoch
+                .map(F::from)
+                .ok_or(SynthesisError::AssignmentMissing)?;
+            let miner_count = self
+                .miner_count
+                .map(|c| F::from(c as u64))
+                .ok_or(SynthesisError::AssignmentMissing)?;
+            let node_count = self
+                .node_count
+                .map(|c| F::from(c as u64))
+                .ok_or(SynthesisError::AssignmentMissing)?;
+            Ok(epoch * two64 + miner_count * two32 + node_count)
+        })?;
 
         // Constraint: computed_metadata = epoch_witness * 2^64 + miner_count_witness * 2^32 + node_count_witness
         cs.enforce(
@@ -776,9 +776,18 @@ mod tests {
         let commitment4 = compute_metadata_commitment::<Fr>(1, 10, 6);
 
         // All commitments should be different (injective encoding)
-        assert_ne!(commitment1, commitment2, "Different epoch -> different commitment");
-        assert_ne!(commitment1, commitment3, "Different miner_count -> different commitment");
-        assert_ne!(commitment1, commitment4, "Different node_count -> different commitment");
+        assert_ne!(
+            commitment1, commitment2,
+            "Different epoch -> different commitment"
+        );
+        assert_ne!(
+            commitment1, commitment3,
+            "Different miner_count -> different commitment"
+        );
+        assert_ne!(
+            commitment1, commitment4,
+            "Different node_count -> different commitment"
+        );
     }
 
     #[test]
@@ -798,7 +807,10 @@ mod tests {
             + Fr::from(miner_count as u64) * two32
             + Fr::from(node_count as u64);
 
-        assert_eq!(commitment, expected, "Commitment should match polynomial encoding");
+        assert_eq!(
+            commitment, expected,
+            "Commitment should match polynomial encoding"
+        );
     }
 
     #[test]

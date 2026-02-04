@@ -800,7 +800,8 @@ use ghost_common::identity::NodeIdentity;
 use std::sync::Arc;
 
 /// Callback for broadcasting equivocation proofs to the network
-pub type EquivocationBroadcastFn = Arc<dyn Fn(MessageType, Vec<u8>) -> GhostResult<()> + Send + Sync>;
+pub type EquivocationBroadcastFn =
+    Arc<dyn Fn(MessageType, Vec<u8>) -> GhostResult<()> + Send + Sync>;
 
 /// Callback for getting BFT vote counts for a chain at a specific height
 /// Returns (our_vote_count, their_vote_count) for fork resolution
@@ -988,7 +989,9 @@ impl ReorgCoordinator {
                 };
 
                 // Detect fork result for resolution
-                let fork_result = self.fork_detector.detect_fork(fork_height, their_state_root);
+                let fork_result = self
+                    .fork_detector
+                    .detect_fork(fork_height, their_state_root);
 
                 // Determine and apply resolution
                 let result = self.resolve_fork(&fork_result, our_votes, their_votes)?;
@@ -1104,9 +1107,9 @@ impl ReorgCoordinator {
         }
 
         // Determine the action
-        let action = self
-            .fork_detector
-            .determine_resolution(fork_result, our_vote_count, their_vote_count);
+        let action =
+            self.fork_detector
+                .determine_resolution(fork_result, our_vote_count, their_vote_count);
 
         // Apply if auto_resolve is enabled
         if !self.config.auto_resolve {
@@ -1177,7 +1180,8 @@ impl ReorgCoordinator {
 
                 // Rollback to the fork point
                 let rollback_root = snapshot_root.unwrap_or(new_tip.state_root);
-                self.zk_vote_handler.handle_reorg(from_height, rollback_root)?;
+                self.zk_vote_handler
+                    .handle_reorg(from_height, rollback_root)?;
 
                 // Apply the new blocks by setting state to the new tip
                 // In a full implementation, we would replay each block
@@ -1873,9 +1877,7 @@ mod tests {
         let result = coordinator.apply_reorg_action(action).unwrap();
 
         match result {
-            ReorgResult::RolledBack {
-                new_state_root, ..
-            } => {
+            ReorgResult::RolledBack { new_state_root, .. } => {
                 // Should use snapshot root instead of new_tip_hash
                 assert_eq!(new_state_root, [99u8; 32]);
             }

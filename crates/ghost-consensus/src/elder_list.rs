@@ -25,6 +25,7 @@ use tracing::{debug, info, warn};
 use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::identity::{verify_signature, NodeIdProof, NODE_ID_POW_DIFFICULTY};
 use ghost_common::types::NodeId;
+use ghost_storage::Database;
 
 /// Maximum number of elders (from ghost_common::constants)
 pub const ELDER_MAX_COUNT: u32 = 101;
@@ -177,7 +178,7 @@ impl CanonicalElderList {
     }
 
     /// Compute the merkle root for a list of elders
-    fn compute_merkle_root_static(elders: &[ElderEntry]) -> [u8; 32] {
+    pub fn compute_merkle_root_static(elders: &[ElderEntry]) -> [u8; 32] {
         if elders.is_empty() {
             return [0u8; 32];
         }
@@ -261,9 +262,8 @@ impl CanonicalElderList {
         }
 
         // Use ceiling division: (n * 67 + 99) / 100 ensures we round up
-        let threshold =
-            ((previous_elders.len() as u32 * ELDER_BFT_THRESHOLD_PERCENT + 99) / 100).max(1)
-                as usize;
+        let threshold = ((previous_elders.len() as u32 * ELDER_BFT_THRESHOLD_PERCENT + 99) / 100)
+            .max(1) as usize;
 
         let valid_approvals = self
             .approval_signatures
@@ -317,6 +317,7 @@ pub struct ElderListManager {
     /// Current canonical elder list
     current_list: RwLock<Arc<CanonicalElderList>>,
     /// Pending list being voted on (if any)
+    #[allow(dead_code)]
     pending_list: RwLock<Option<CanonicalElderList>>,
     /// Pending registration requests
     pending_registrations: RwLock<HashMap<NodeId, ElderRegistrationRequest>>,
@@ -441,7 +442,9 @@ impl ElderListManager {
             rejections: HashSet::new(),
         };
 
-        self.pending_registrations.write().insert(candidate, request);
+        self.pending_registrations
+            .write()
+            .insert(candidate, request);
 
         info!(
             candidate = hex::encode(&candidate[..8]),
@@ -591,11 +594,7 @@ impl ElderListManager {
 
     /// Get all pending registration candidates
     pub fn pending_candidates(&self) -> Vec<NodeId> {
-        self.pending_registrations
-            .read()
-            .keys()
-            .copied()
-            .collect()
+        self.pending_registrations.read().keys().copied().collect()
     }
 
     /// Clean up expired registration requests (older than 1 hour)
@@ -605,6 +604,170 @@ impl ElderListManager {
 
         let mut pending = self.pending_registrations.write();
         pending.retain(|_, req| now - req.requested_at < max_age_ms);
+    }
+
+    // =========================================================================
+    // DATABASE PERSISTENCE (P2P-C1/C2/C3)
+    // =========================================================================
+
+    /// Load elder list manager state from database on startup
+    ///
+    /// Reconstructs the in-memory state from persisted data:
+    /// 1. Loads the current canonical elder list record
+    /// 2. Loads all elder entries for that epoch
+    /// 3. Loads all approval signatures for that epoch
+    /// 4. Reconstructs the CanonicalElderList struct
+    ///
+    /// Returns an empty genesis manager if no data exists in the database.
+    pub fn load_from_database(db: &Database) -> GhostResult<Self> {
+        match db.get_current_canonical_elder_list()? {
+            Some(record) => {
+                // Load elder entries for this epoch
+                let entry_records = db.get_elder_entries_for_epoch(record.epoch)?;
+
+                // Convert records to ElderEntry structs
+                let elders: Vec<ElderEntry> = entry_records
+                    .into_iter()
+                    .filter_map(|r| {
+                        // Parse node_id from hex string
+                        let node_id_bytes = hex::decode(&r.node_id).ok()?;
+                        if node_id_bytes.len() != 32 {
+                            return None;
+                        }
+                        let mut node_id = [0u8; 32];
+                        node_id.copy_from_slice(&node_id_bytes);
+
+                        Some(ElderEntry {
+                            node_id,
+                            registered_epoch: r.registered_epoch,
+                            pow_nonce: r.pow_nonce,
+                            pow_difficulty: r.pow_difficulty,
+                            first_seen: r.first_seen,
+                            uptime_at_registration: r.uptime_at_registration,
+                        })
+                    })
+                    .collect();
+
+                // Load approval signatures
+                let approval_records = db.get_elder_approvals_for_epoch(record.epoch)?;
+
+                // Convert approval records to ElderApproval structs
+                let approval_signatures: Vec<ElderApproval> = approval_records
+                    .into_iter()
+                    .filter_map(|r| {
+                        // Parse approver node_id from hex string
+                        let approver_bytes = hex::decode(&r.approver_node_id).ok()?;
+                        if approver_bytes.len() != 32 {
+                            return None;
+                        }
+                        let mut approver = [0u8; 32];
+                        approver.copy_from_slice(&approver_bytes);
+
+                        // Parse signature from hex string
+                        let sig_bytes = hex::decode(&r.signature).ok()?;
+                        if sig_bytes.len() != 64 {
+                            return None;
+                        }
+                        let mut signature = [0u8; 64];
+                        signature.copy_from_slice(&sig_bytes);
+
+                        Some(ElderApproval {
+                            approver,
+                            signature,
+                            timestamp: r.approved_at,
+                        })
+                    })
+                    .collect();
+
+                // Parse merkle root from hex string
+                let merkle_root = if let Ok(bytes) = hex::decode(&record.merkle_root) {
+                    if bytes.len() == 32 {
+                        let mut root = [0u8; 32];
+                        root.copy_from_slice(&bytes);
+                        root
+                    } else {
+                        // Recompute from elders if stored root is invalid
+                        CanonicalElderList::compute_merkle_root_static(&elders)
+                    }
+                } else {
+                    CanonicalElderList::compute_merkle_root_static(&elders)
+                };
+
+                // Build the canonical elder list
+                let list = CanonicalElderList {
+                    epoch: record.epoch,
+                    elders,
+                    merkle_root,
+                    approval_signatures,
+                    activated_at: record.activated_at,
+                };
+
+                info!(
+                    epoch = list.epoch,
+                    elder_count = list.elders.len(),
+                    approvals = list.approval_signatures.len(),
+                    "Loaded canonical elder list from database"
+                );
+
+                Ok(Self::with_list(list))
+            }
+            None => {
+                // No elder list in database, create empty genesis
+                info!("No canonical elder list in database, creating empty genesis (epoch 0)");
+                Ok(Self::new(vec![]))
+            }
+        }
+    }
+
+    /// Save the current canonical elder list to database
+    ///
+    /// Persists all components of the current list:
+    /// 1. The canonical_elder_lists record (epoch, merkle_root, etc.)
+    /// 2. All elder_entries for this epoch
+    /// 3. All elder_approvals for this epoch
+    pub fn save_current_to_database(&self, db: &Database) -> GhostResult<()> {
+        let list = self.current();
+
+        // Store the canonical elder list record
+        db.store_canonical_elder_list(
+            list.epoch,
+            &hex::encode(list.merkle_root),
+            list.elders.len() as u32,
+            list.activated_at,
+        )?;
+
+        // Store each elder entry
+        for (position, elder) in list.elders.iter().enumerate() {
+            db.store_elder_entry(
+                list.epoch,
+                &hex::encode(elder.node_id),
+                elder.registered_epoch,
+                elder.pow_nonce,
+                elder.pow_difficulty,
+                elder.first_seen,
+                elder.uptime_at_registration,
+                position as u32,
+            )?;
+        }
+
+        // Store each approval signature
+        for approval in &list.approval_signatures {
+            db.store_elder_approval(
+                list.epoch,
+                &hex::encode(approval.approver),
+                &hex::encode(approval.signature),
+                approval.timestamp,
+            )?;
+        }
+
+        info!(
+            epoch = list.epoch,
+            elder_count = list.elders.len(),
+            approvals = list.approval_signatures.len(),
+            "Saved canonical elder list to database"
+        );
+
+        Ok(())
     }
 }
 
@@ -616,7 +779,9 @@ mod tests {
     fn create_test_elder_entry(node_id: NodeId, epoch: u64) -> ElderEntry {
         // Generate a real identity with valid PoW
         let identity = NodeIdentity::generate();
-        let pow_proof = identity.pow_proof().expect("NodeIdentity should have PoW proof");
+        let pow_proof = identity
+            .pow_proof()
+            .expect("NodeIdentity should have PoW proof");
         ElderEntry::new(node_id, epoch, pow_proof, 1000000, 99.5)
     }
 
@@ -814,5 +979,86 @@ mod tests {
         // Should not be zero for non-empty list
         assert_ne!(list.merkle_root, [0u8; 32]);
         assert!(list.verify_merkle_root());
+    }
+
+    #[test]
+    fn test_load_from_empty_database() {
+        let db = Database::in_memory().unwrap();
+        let manager = ElderListManager::load_from_database(&db).unwrap();
+
+        // Should create empty genesis list
+        assert_eq!(manager.current_epoch(), 0);
+        assert_eq!(manager.current().elder_count(), 0);
+    }
+
+    #[test]
+    fn test_save_and_reload_round_trip() {
+        let db = Database::in_memory().unwrap();
+
+        // Create a manager with some elders
+        let elders = vec![
+            create_test_elder_entry([1u8; 32], 0),
+            create_test_elder_entry([2u8; 32], 0),
+        ];
+        let manager = ElderListManager::new(elders);
+
+        // Save to database
+        manager.save_current_to_database(&db).unwrap();
+
+        // Reload from database
+        let loaded_manager = ElderListManager::load_from_database(&db).unwrap();
+
+        // Verify the loaded state matches
+        assert_eq!(loaded_manager.current_epoch(), manager.current_epoch());
+        assert_eq!(
+            loaded_manager.current().elder_count(),
+            manager.current().elder_count()
+        );
+        assert_eq!(
+            loaded_manager.current().merkle_root,
+            manager.current().merkle_root
+        );
+
+        // Verify elder membership
+        assert!(loaded_manager.is_elder(&[1u8; 32]));
+        assert!(loaded_manager.is_elder(&[2u8; 32]));
+        assert!(!loaded_manager.is_elder(&[3u8; 32]));
+    }
+
+    #[test]
+    fn test_persistence_with_approvals() {
+        let db = Database::in_memory().unwrap();
+
+        // Create identities for approval signatures
+        let identity = NodeIdentity::generate();
+
+        // Create a manager
+        let elders = vec![create_test_elder_entry([1u8; 32], 0)];
+        let manager = ElderListManager::new(elders);
+
+        // Add an approval to the current list
+        let merkle_root = manager.current().merkle_root;
+        let message = ElderApproval::signing_message(0, &merkle_root);
+        let approval = ElderApproval {
+            approver: identity.node_id(),
+            signature: identity.sign(&message),
+            timestamp: 1000,
+        };
+
+        // Need to create a new list with the approval since current() returns Arc
+        let mut list = (*manager.current()).clone();
+        list.add_approval(approval);
+        let manager_with_approval = ElderListManager::with_list(list);
+
+        // Save to database
+        manager_with_approval.save_current_to_database(&db).unwrap();
+
+        // Reload and verify approvals
+        let loaded = ElderListManager::load_from_database(&db).unwrap();
+        assert_eq!(loaded.current().approval_signatures.len(), 1);
+        assert_eq!(
+            loaded.current().approval_signatures[0].approver,
+            identity.node_id()
+        );
     }
 }

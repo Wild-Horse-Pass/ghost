@@ -162,7 +162,9 @@ pub fn validate_envelope_header(data: &[u8]) -> Result<(), MessageValidationErro
 /// * `Ok(Some(MessageType))` - Successfully extracted message type
 /// * `Ok(None)` - Could not extract type (invalid format)
 /// * `Err(MessageValidationError)` - Message too small/large
-pub fn extract_message_type_fast(data: &[u8]) -> Result<Option<MessageType>, MessageValidationError> {
+pub fn extract_message_type_fast(
+    data: &[u8],
+) -> Result<Option<MessageType>, MessageValidationError> {
     // Size bounds
     if data.len() < MIN_ENVELOPE_SIZE {
         return Err(MessageValidationError::TooSmall(data.len()));
@@ -712,7 +714,10 @@ mod tests {
 
         // Should fail when expected type doesn't match
         let result = validate_topic_before_deser(&padded, MessageType::HealthPing);
-        assert!(matches!(result, Err(MessageValidationError::InvalidType(255))));
+        assert!(matches!(
+            result,
+            Err(MessageValidationError::InvalidType(255))
+        ));
     }
 
     #[test]

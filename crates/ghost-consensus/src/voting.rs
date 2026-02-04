@@ -220,7 +220,13 @@ impl VotingSession {
             eligible_count = eligible_voters.len(),
             "Created voting session from canonical elder list"
         );
-        Self::new(round_id, proposal_hash, vote_type, eligible_voters, timeout_ms)
+        Self::new(
+            round_id,
+            proposal_hash,
+            vote_type,
+            eligible_voters,
+            timeout_ms,
+        )
     }
 
     /// Add a vote to the session

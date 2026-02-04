@@ -144,22 +144,19 @@ pub fn bytes_to_field<F: PrimeField>(bytes: &[u8; 32]) -> Result<F, FieldConvers
     repr.as_mut().copy_from_slice(bytes);
 
     // from_repr returns None if the value exceeds the field modulus
-    F::from_repr(repr).into_option().ok_or_else(|| {
-        FieldConversionError::ValueExceedsFieldModulus {
+    F::from_repr(repr)
+        .into_option()
+        .ok_or_else(|| FieldConversionError::ValueExceedsFieldModulus {
             bytes: *bytes,
             message: "Value exceeds BLS12-381 scalar field modulus".to_string(),
-        }
-    })
+        })
 }
 
 /// Errors that can occur during field element conversion
 #[derive(Debug, Clone)]
 pub enum FieldConversionError {
     /// The byte value exceeds the field modulus
-    ValueExceedsFieldModulus {
-        bytes: [u8; 32],
-        message: String,
-    },
+    ValueExceedsFieldModulus { bytes: [u8; 32], message: String },
 }
 
 impl std::fmt::Display for FieldConversionError {

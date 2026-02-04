@@ -1394,10 +1394,7 @@ impl WraithCoordinator {
         let mut final_addresses: Vec<String> = Vec::with_capacity(self.participant_order.len());
         for session_id in &self.participant_order {
             let participant = self.participants.get(session_id).ok_or_else(|| {
-                WraithError::PhaseError(format!(
-                    "Missing participant in order: {}",
-                    session_id
-                ))
+                WraithError::PhaseError(format!("Missing participant in order: {}", session_id))
             })?;
 
             let address = participant.final_address.as_ref().ok_or_else(|| {

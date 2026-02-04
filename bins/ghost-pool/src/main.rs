@@ -866,6 +866,78 @@ async fn main() -> Result<()> {
     mesh.register_handler(Arc::clone(&discovery_handler)
         as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
 
+    // === CANONICAL ELDER LIST INITIALIZATION (P2P-C1/C2/C3) ===
+    // Load or create the canonical elder list manager from database
+    let elder_list_manager = match ghost_consensus::ElderListManager::load_from_database(&db) {
+        Ok(manager) if manager.current_epoch() > 0 => {
+            info!(
+                epoch = manager.current_epoch(),
+                elder_count = manager.current().elder_count(),
+                "Loaded canonical elder list from database"
+            );
+            Arc::new(parking_lot::RwLock::new(manager))
+        }
+        Ok(_) | Err(_) => {
+            // Genesis bootstrap - create epoch 0 with empty list
+            // First nodes to register become elders via the normal node registration process
+            let genesis = ghost_consensus::CanonicalElderList::genesis(vec![]);
+            let manager = ghost_consensus::ElderListManager::with_list(genesis);
+            if let Err(e) = manager.save_current_to_database(&db) {
+                warn!(error = %e, "Failed to save genesis elder list to database");
+            }
+            info!("Created genesis elder list (epoch 0, empty)");
+            Arc::new(parking_lot::RwLock::new(manager))
+        }
+    };
+
+    // Create broadcast callback for elder registration handler
+    let mesh_for_elder_broadcast = Arc::clone(&mesh);
+    let elder_broadcast_fn: ghost_consensus::elder_registration_handler::ElderBroadcastFn =
+        Arc::new(
+            move |msg_type: ghost_consensus::MessageType, payload: Vec<u8>| {
+                mesh_for_elder_broadcast.broadcast_sync(msg_type, payload)
+            },
+        );
+
+    // Create the elder registration handler
+    let elder_registration_handler = Arc::new(
+        ghost_consensus::ElderRegistrationHandler::new(
+            Arc::clone(&identity),
+            Arc::clone(&elder_list_manager),
+            Arc::clone(&db),
+        )
+        .with_broadcaster(elder_broadcast_fn)
+        .with_ban_manager(Arc::clone(&ban_manager)),
+    );
+
+    // Register elder registration handler with mesh
+    mesh.register_handler(Arc::clone(&elder_registration_handler)
+        as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
+
+    // Set up transition callback to update VoteHandler's eligible voters on epoch change
+    // Note: Currently not used as the handler is Arc wrapped. Keep for future integration
+    // when runtime callback configuration is supported.
+    let vh_for_elder_transition = Arc::clone(&vote_handler);
+    let _transition_callback: ghost_consensus::elder_registration_handler::TransitionCallback =
+        Arc::new(move |new_list: &ghost_consensus::CanonicalElderList| {
+            // Update eligible voters in VoteHandler from the new canonical list
+            let voters = new_list.get_eligible_voters();
+            for voter in voters {
+                vh_for_elder_transition.add_elder(voter);
+            }
+            info!(
+                epoch = new_list.epoch,
+                elder_count = new_list.elder_count(),
+                "Updated VoteHandler with new elder list"
+            );
+        });
+
+    info!(
+        "Elder registration handler initialized (epoch {}, {} elders)",
+        elder_list_manager.read().current_epoch(),
+        elder_list_manager.read().current().elder_count()
+    );
+
     // Create shutdown channel
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 

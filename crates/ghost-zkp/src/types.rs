@@ -341,10 +341,7 @@ impl MerkleProof {
 #[derive(Debug, Clone)]
 pub enum MerkleProofError {
     /// A byte array could not be converted to a valid field element
-    InvalidFieldElement {
-        context: String,
-        source: String,
-    },
+    InvalidFieldElement { context: String, source: String },
 }
 
 impl std::fmt::Display for MerkleProofError {
@@ -611,7 +608,9 @@ mod tests {
 
         let proof = MerkleProof::new(0, vec![sibling]);
 
-        let root = proof.compute_root(leaf).expect("compute_root should succeed");
+        let root = proof
+            .compute_root(leaf)
+            .expect("compute_root should succeed");
         assert!(proof.verify(leaf, root));
 
         // Wrong root should fail

@@ -3433,23 +3433,25 @@ impl Database {
     }
 
     /// Get a canonical elder list by epoch
-    pub fn get_canonical_elder_list(&self, epoch: u64) -> GhostResult<Option<CanonicalElderListRecord>> {
+    pub fn get_canonical_elder_list(
+        &self,
+        epoch: u64,
+    ) -> GhostResult<Option<CanonicalElderListRecord>> {
         self.with_connection(|conn| {
-            let result = conn
-                .query_row(
-                    "SELECT epoch, merkle_root, elder_count, activated_at, created_at
+            let result = conn.query_row(
+                "SELECT epoch, merkle_root, elder_count, activated_at, created_at
                      FROM canonical_elder_lists WHERE epoch = ?1",
-                    [epoch as i64],
-                    |row| {
-                        Ok(CanonicalElderListRecord {
-                            epoch: row.get::<_, i64>(0)? as u64,
-                            merkle_root: row.get(1)?,
-                            elder_count: row.get::<_, i64>(2)? as u32,
-                            activated_at: row.get::<_, i64>(3)? as u64,
-                            created_at: row.get::<_, i64>(4)? as u64,
-                        })
-                    },
-                );
+                [epoch as i64],
+                |row| {
+                    Ok(CanonicalElderListRecord {
+                        epoch: row.get::<_, i64>(0)? as u64,
+                        merkle_root: row.get(1)?,
+                        elder_count: row.get::<_, i64>(2)? as u32,
+                        activated_at: row.get::<_, i64>(3)? as u64,
+                        created_at: row.get::<_, i64>(4)? as u64,
+                    })
+                },
+            );
 
             match result {
                 Ok(record) => Ok(Some(record)),
@@ -3460,23 +3462,24 @@ impl Database {
     }
 
     /// Get the current (latest) canonical elder list
-    pub fn get_current_canonical_elder_list(&self) -> GhostResult<Option<CanonicalElderListRecord>> {
+    pub fn get_current_canonical_elder_list(
+        &self,
+    ) -> GhostResult<Option<CanonicalElderListRecord>> {
         self.with_connection(|conn| {
-            let result = conn
-                .query_row(
-                    "SELECT epoch, merkle_root, elder_count, activated_at, created_at
+            let result = conn.query_row(
+                "SELECT epoch, merkle_root, elder_count, activated_at, created_at
                      FROM canonical_elder_lists ORDER BY epoch DESC LIMIT 1",
-                    [],
-                    |row| {
-                        Ok(CanonicalElderListRecord {
-                            epoch: row.get::<_, i64>(0)? as u64,
-                            merkle_root: row.get(1)?,
-                            elder_count: row.get::<_, i64>(2)? as u32,
-                            activated_at: row.get::<_, i64>(3)? as u64,
-                            created_at: row.get::<_, i64>(4)? as u64,
-                        })
-                    },
-                );
+                [],
+                |row| {
+                    Ok(CanonicalElderListRecord {
+                        epoch: row.get::<_, i64>(0)? as u64,
+                        merkle_root: row.get(1)?,
+                        elder_count: row.get::<_, i64>(2)? as u32,
+                        activated_at: row.get::<_, i64>(3)? as u64,
+                        created_at: row.get::<_, i64>(4)? as u64,
+                    })
+                },
+            );
 
             match result {
                 Ok(record) => Ok(Some(record)),
@@ -3487,6 +3490,7 @@ impl Database {
     }
 
     /// Store an elder entry for an epoch
+    #[allow(clippy::too_many_arguments)]
     pub fn store_elder_entry(
         &self,
         epoch: u64,
@@ -3571,7 +3575,10 @@ impl Database {
     }
 
     /// Get all approvals for an epoch
-    pub fn get_elder_approvals_for_epoch(&self, epoch: u64) -> GhostResult<Vec<ElderApprovalRecord>> {
+    pub fn get_elder_approvals_for_epoch(
+        &self,
+        epoch: u64,
+    ) -> GhostResult<Vec<ElderApprovalRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -3648,27 +3655,26 @@ impl Database {
         candidate_node_id: &str,
     ) -> GhostResult<Option<ElderRegistrationRequestRecord>> {
         self.with_connection(|conn| {
-            let result = conn
-                .query_row(
-                    "SELECT id, candidate_node_id, pow_nonce, pow_difficulty, first_seen,
+            let result = conn.query_row(
+                "SELECT id, candidate_node_id, pow_nonce, pow_difficulty, first_seen,
                             uptime_percent, target_epoch, requested_at, status
                      FROM elder_registration_requests
                      WHERE candidate_node_id = ?1 AND status = 'pending'",
-                    [candidate_node_id],
-                    |row| {
-                        Ok(ElderRegistrationRequestRecord {
-                            id: row.get(0)?,
-                            candidate_node_id: row.get(1)?,
-                            pow_nonce: row.get::<_, i64>(2)? as u64,
-                            pow_difficulty: row.get::<_, i64>(3)? as u32,
-                            first_seen: row.get::<_, i64>(4)? as u64,
-                            uptime_percent: row.get(5)?,
-                            target_epoch: row.get::<_, i64>(6)? as u64,
-                            requested_at: row.get::<_, i64>(7)? as u64,
-                            status: row.get(8)?,
-                        })
-                    },
-                );
+                [candidate_node_id],
+                |row| {
+                    Ok(ElderRegistrationRequestRecord {
+                        id: row.get(0)?,
+                        candidate_node_id: row.get(1)?,
+                        pow_nonce: row.get::<_, i64>(2)? as u64,
+                        pow_difficulty: row.get::<_, i64>(3)? as u32,
+                        first_seen: row.get::<_, i64>(4)? as u64,
+                        uptime_percent: row.get(5)?,
+                        target_epoch: row.get::<_, i64>(6)? as u64,
+                        requested_at: row.get::<_, i64>(7)? as u64,
+                        status: row.get(8)?,
+                    })
+                },
+            );
 
             match result {
                 Ok(record) => Ok(Some(record)),
@@ -3731,7 +3737,11 @@ impl Database {
     }
 
     /// Update elder registration request status
-    pub fn update_elder_registration_status(&self, request_id: i64, status: &str) -> GhostResult<()> {
+    pub fn update_elder_registration_status(
+        &self,
+        request_id: i64,
+        status: &str,
+    ) -> GhostResult<()> {
         self.with_connection(|conn| {
             conn.execute(
                 "UPDATE elder_registration_requests SET status = ?1 WHERE id = ?2",

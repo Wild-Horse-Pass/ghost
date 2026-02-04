@@ -366,7 +366,9 @@ mod tests {
 
         // Verify the proof
         let leaf_hash = tree.hash_leaf(1000);
-        let computed_root = proof.compute_root(leaf_hash).expect("compute_root should succeed");
+        let computed_root = proof
+            .compute_root(leaf_hash)
+            .expect("compute_root should succeed");
         assert_eq!(computed_root, tree.root());
     }
 
