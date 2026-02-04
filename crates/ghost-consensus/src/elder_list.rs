@@ -124,9 +124,22 @@ impl ElderApproval {
     }
 
     /// Verify this approval signature
+    ///
+    /// SEC-SIG-1: Logs errors instead of silently returning false
     pub fn verify(&self, epoch: u64, merkle_root: &[u8; 32]) -> bool {
         let message = Self::signing_message(epoch, merkle_root);
-        verify_signature(&self.approver, &message, &self.signature).unwrap_or(false)
+        match verify_signature(&self.approver, &message, &self.signature) {
+            Ok(valid) => valid,
+            Err(e) => {
+                tracing::warn!(
+                    approver = %hex::encode(&self.approver[..8]),
+                    epoch = epoch,
+                    error = %e,
+                    "Elder approval signature verification error"
+                );
+                false
+            }
+        }
     }
 }
 

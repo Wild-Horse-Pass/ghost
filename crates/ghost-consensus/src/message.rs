@@ -788,10 +788,21 @@ impl EquivocationProofMessage {
     }
 
     /// Verify the reporter's signature
+    ///
+    /// SEC-SIG-3: Logs errors instead of silently returning false
     pub fn verify_reporter_signature(&self) -> bool {
         let message = self.signing_message();
-        ghost_common::identity::verify_signature(&self.reporter, &message, &self.reporter_signature)
-            .unwrap_or(false)
+        match ghost_common::identity::verify_signature(&self.reporter, &message, &self.reporter_signature) {
+            Ok(valid) => valid,
+            Err(e) => {
+                tracing::warn!(
+                    reporter = %hex::encode(&self.reporter[..8]),
+                    error = %e,
+                    "Equivocation proof signature verification error"
+                );
+                false
+            }
+        }
     }
 }
 
@@ -844,10 +855,22 @@ impl ElderRegistrationProposalMessage {
     }
 
     /// Verify the proposer's signature
+    ///
+    /// SEC-SIG-4: Logs errors instead of silently returning false
     pub fn verify_signature(&self) -> bool {
         let message = self.signing_message();
-        ghost_common::identity::verify_signature(&self.proposer, &message, &self.proposer_signature)
-            .unwrap_or(false)
+        match ghost_common::identity::verify_signature(&self.proposer, &message, &self.proposer_signature) {
+            Ok(valid) => valid,
+            Err(e) => {
+                tracing::warn!(
+                    proposer = %hex::encode(&self.proposer[..8]),
+                    candidate = %hex::encode(&self.candidate[..8]),
+                    error = %e,
+                    "Elder registration proposal signature verification error"
+                );
+                false
+            }
+        }
     }
 }
 
@@ -889,10 +912,22 @@ impl ElderListProposalMessage {
     }
 
     /// Verify the proposer's signature
+    ///
+    /// SEC-SIG-5: Logs errors instead of silently returning false
     pub fn verify_signature(&self) -> bool {
         let message = self.signing_message();
-        ghost_common::identity::verify_signature(&self.proposer, &message, &self.proposer_signature)
-            .unwrap_or(false)
+        match ghost_common::identity::verify_signature(&self.proposer, &message, &self.proposer_signature) {
+            Ok(valid) => valid,
+            Err(e) => {
+                tracing::warn!(
+                    proposer = %hex::encode(&self.proposer[..8]),
+                    epoch = self.epoch,
+                    error = %e,
+                    "Elder list proposal signature verification error"
+                );
+                false
+            }
+        }
     }
 }
 
@@ -945,10 +980,22 @@ impl ElderListApprovalMessage {
     }
 
     /// Verify the approver's signature
+    ///
+    /// SEC-SIG-6: Logs errors instead of silently returning false
     pub fn verify_signature(&self) -> bool {
         let message = Self::signing_message(self.epoch, &self.merkle_root);
-        ghost_common::identity::verify_signature(&self.approver, &message, &self.signature)
-            .unwrap_or(false)
+        match ghost_common::identity::verify_signature(&self.approver, &message, &self.signature) {
+            Ok(valid) => valid,
+            Err(e) => {
+                tracing::warn!(
+                    approver = %hex::encode(&self.approver[..8]),
+                    epoch = self.epoch,
+                    error = %e,
+                    "Elder list approval signature verification error"
+                );
+                false
+            }
+        }
     }
 }
 
@@ -989,10 +1036,22 @@ impl ElderRegistrationVoteMessage {
     }
 
     /// Verify the voter's signature
+    ///
+    /// SEC-SIG-7: Logs errors instead of silently returning false
     pub fn verify_signature(&self) -> bool {
         let message = self.signing_message();
-        ghost_common::identity::verify_signature(&self.voter, &message, &self.signature)
-            .unwrap_or(false)
+        match ghost_common::identity::verify_signature(&self.voter, &message, &self.signature) {
+            Ok(valid) => valid,
+            Err(e) => {
+                tracing::warn!(
+                    voter = %hex::encode(&self.voter[..8]),
+                    candidate = %hex::encode(&self.candidate[..8]),
+                    error = %e,
+                    "Elder registration vote signature verification error"
+                );
+                false
+            }
+        }
     }
 }
 

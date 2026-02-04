@@ -2105,7 +2105,22 @@ async fn api_backup_history_handler(
         let config = state.dashboard_config.read();
         config.backup_dir.clone()
     };
+
+    // SEC-PATH-1: Validate backup path to prevent traversal attacks
     let backup_dir = std::path::Path::new(&backup_dir_path);
+    if !backup_dir.is_absolute() || backup_dir_path.contains("..") {
+        tracing::warn!(
+            path = %backup_dir_path,
+            "Rejecting invalid backup_dir path (must be absolute, no traversal)"
+        );
+        return Json(serde_json::json!({
+            "backups": [],
+            "total": 0,
+            "backup_dir": backup_dir_path,
+            "error": "Invalid backup directory path"
+        }));
+    }
+
     let backups = if backup_dir.exists() {
         match std::fs::read_dir(backup_dir) {
             Ok(entries) => entries

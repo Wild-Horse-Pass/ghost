@@ -1372,9 +1372,17 @@ impl TemplateProcessor {
         block_data.extend_from_slice(&coinbase_witness);
 
         // 4. Other transactions from template
+        // SEC-TEMPLATE-1: Log hex decode failures (should never happen with valid templates)
         for tx in &work.template.transactions {
-            if let Ok(tx_bytes) = hex::decode(&tx.data) {
-                block_data.extend_from_slice(&tx_bytes);
+            match hex::decode(&tx.data) {
+                Ok(tx_bytes) => block_data.extend_from_slice(&tx_bytes),
+                Err(e) => {
+                    error!(
+                        tx_hash = %tx.hash,
+                        error = %e,
+                        "Failed to decode transaction hex from template - skipping (block may be rejected)"
+                    );
+                }
             }
         }
 
@@ -1527,9 +1535,17 @@ impl TemplateProcessor {
         block_data.extend_from_slice(coinbase_witness);
 
         // 4. Other transactions from template
+        // SEC-TEMPLATE-1: Log hex decode failures (should never happen with valid templates)
         for tx in &work.template.transactions {
-            if let Ok(tx_bytes) = hex::decode(&tx.data) {
-                block_data.extend_from_slice(&tx_bytes);
+            match hex::decode(&tx.data) {
+                Ok(tx_bytes) => block_data.extend_from_slice(&tx_bytes),
+                Err(e) => {
+                    error!(
+                        tx_hash = %tx.hash,
+                        error = %e,
+                        "Failed to decode transaction hex from template - skipping (block may be rejected)"
+                    );
+                }
             }
         }
 

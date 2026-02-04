@@ -89,9 +89,19 @@ impl VerificationResultHandler {
         }
 
         // Verify the challenger's signature on the result
+        // SEC-SIG-2: Log verification errors instead of silently treating as invalid
         let signing_data = msg.signing_data();
-        let sig_valid =
-            verify_signature(&msg.challenger_id, &signing_data, &msg.signature).unwrap_or(false);
+        let sig_valid = match verify_signature(&msg.challenger_id, &signing_data, &msg.signature) {
+            Ok(valid) => valid,
+            Err(e) => {
+                tracing::warn!(
+                    challenger = %short_challenger,
+                    error = %e,
+                    "Verification result signature verification error"
+                );
+                false
+            }
+        };
         if !sig_valid {
             warn!(
                 challenger = %short_challenger,
