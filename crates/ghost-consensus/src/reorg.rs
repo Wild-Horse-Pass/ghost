@@ -34,14 +34,18 @@
 //!    - Restores state from the last known-good snapshot
 //!    - Emits L2Event::ForkDetected for subscribers
 //!
-//! Note: Full automatic resolution requires integration between:
-//! - `L2ForkDetector` (this module): Detects forks and equivocation
-//! - `ZkVoteHandler`: Tracks BFT vote counts and can rollback state
-//! - `VotingManager`: Provides vote counts for each chain
+//! ## Integration via ReorgCoordinator (P2P-H7)
 //!
-//! The current implementation provides detection and manual resolution via
-//! the `L2ReorgAction` enum. Callers should handle these actions to complete
-//! the fork resolution process.
+//! The `ReorgCoordinator` integrates all components for automatic resolution:
+//! - `L2ForkDetector`: Detects forks and equivocation
+//! - `ZkVoteHandler`: Tracks BFT vote counts and can rollback state
+//! - P2P broadcast: Sends equivocation proofs to the network
+//!
+//! When auto_resolve is enabled, the coordinator automatically:
+//! 1. Listens for fork/equivocation events
+//! 2. Determines the resolution action based on BFT vote counts
+//! 3. Applies rollback/chain-switch via ZkVoteHandler
+//! 4. Broadcasts equivocation proofs for slashing
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -785,6 +789,479 @@ impl L1ChainMonitor {
     }
 }
 
+// =============================================================================
+// Reorg Coordinator - Integrates Fork Detection with ZK Vote Handler (P2P-H7)
+// =============================================================================
+
+use crate::message::{EquivocationProofMessage, MessageType};
+use crate::zk_vote_handler::ZkVoteHandler;
+use ghost_common::error::GhostResult;
+use ghost_common::identity::NodeIdentity;
+use std::sync::Arc;
+
+/// Callback for broadcasting equivocation proofs to the network
+pub type EquivocationBroadcastFn = Arc<dyn Fn(MessageType, Vec<u8>) -> GhostResult<()> + Send + Sync>;
+
+/// Callback for getting BFT vote counts for a chain at a specific height
+/// Returns (our_vote_count, their_vote_count) for fork resolution
+pub type VoteCountFn = Arc<dyn Fn(u64, [u8; 32], [u8; 32]) -> (u32, u32) + Send + Sync>;
+
+/// Callback for loading snapshot state root from storage
+/// Returns the state root at the target height, or None if not found
+pub type SnapshotLoaderFn = Arc<dyn Fn(u64) -> Option<[u8; 32]> + Send + Sync>;
+
+/// Configuration for the reorg coordinator
+#[derive(Debug, Clone)]
+pub struct ReorgCoordinatorConfig {
+    /// Minimum votes required to consider fork resolution (prevents resolution on sparse data)
+    pub min_votes_for_resolution: u32,
+    /// Whether to automatically apply resolution actions
+    pub auto_resolve: bool,
+    /// Default snapshot interval (blocks between snapshots)
+    pub snapshot_interval: u64,
+}
+
+impl Default for ReorgCoordinatorConfig {
+    fn default() -> Self {
+        Self {
+            min_votes_for_resolution: 2,
+            auto_resolve: true,
+            snapshot_interval: 100,
+        }
+    }
+}
+
+/// Result of a reorg coordination action
+#[derive(Debug, Clone)]
+pub enum ReorgResult {
+    /// No action needed
+    NoAction,
+    /// Successfully rolled back to target height
+    RolledBack {
+        from_height: u64,
+        to_height: u64,
+        new_state_root: [u8; 32],
+    },
+    /// Switched to a different chain
+    ChainSwitched {
+        from_height: u64,
+        new_tip_height: u64,
+        new_state_root: [u8; 32],
+    },
+    /// Equivocation proof broadcast
+    EquivocationBroadcast { proposer: NodeId, height: u64 },
+    /// Resolution deferred (insufficient data or auto_resolve disabled)
+    Deferred { reason: String },
+    /// Error during resolution
+    Error { reason: String },
+}
+
+/// Coordinates reorg detection, resolution, and state rollback (P2P-H7)
+///
+/// This is the integration point between:
+/// - `L2ForkDetector`: Detects forks and equivocation
+/// - `ZkVoteHandler`: Manages L2 state and can rollback
+/// - P2P network: Broadcasts equivocation proofs
+///
+/// # Usage
+///
+/// ```ignore
+/// let coordinator = ReorgCoordinator::new(
+///     identity,
+///     fork_detector,
+///     zk_vote_handler,
+///     ReorgCoordinatorConfig::default(),
+/// );
+///
+/// // Set callbacks
+/// coordinator.set_vote_count_fn(vote_fn);
+/// coordinator.set_snapshot_loader(loader_fn);
+/// coordinator.set_broadcast_fn(broadcast_fn);
+///
+/// // Start the event listener
+/// coordinator.start().await;
+/// ```
+pub struct ReorgCoordinator {
+    /// Our node identity (for signing equivocation proofs)
+    identity: Arc<NodeIdentity>,
+    /// Fork detector for tracking chain state
+    fork_detector: Arc<L2ForkDetector>,
+    /// ZK vote handler for state management and rollback
+    zk_vote_handler: Arc<ZkVoteHandler>,
+    /// Configuration
+    config: ReorgCoordinatorConfig,
+    /// Broadcast function for equivocation proofs
+    broadcast_fn: parking_lot::RwLock<Option<EquivocationBroadcastFn>>,
+    /// Function to get vote counts for fork resolution
+    vote_count_fn: parking_lot::RwLock<Option<VoteCountFn>>,
+    /// Function to load snapshot state root
+    snapshot_loader: parking_lot::RwLock<Option<SnapshotLoaderFn>>,
+}
+
+impl ReorgCoordinator {
+    /// Create a new reorg coordinator
+    pub fn new(
+        identity: Arc<NodeIdentity>,
+        fork_detector: Arc<L2ForkDetector>,
+        zk_vote_handler: Arc<ZkVoteHandler>,
+        config: ReorgCoordinatorConfig,
+    ) -> Self {
+        Self {
+            identity,
+            fork_detector,
+            zk_vote_handler,
+            config,
+            broadcast_fn: parking_lot::RwLock::new(None),
+            vote_count_fn: parking_lot::RwLock::new(None),
+            snapshot_loader: parking_lot::RwLock::new(None),
+        }
+    }
+
+    /// Set the broadcast function for equivocation proofs
+    pub fn set_broadcast_fn(&self, f: EquivocationBroadcastFn) {
+        *self.broadcast_fn.write() = Some(f);
+    }
+
+    /// Set the vote count function for fork resolution
+    pub fn set_vote_count_fn(&self, f: VoteCountFn) {
+        *self.vote_count_fn.write() = Some(f);
+    }
+
+    /// Set the snapshot loader function
+    pub fn set_snapshot_loader(&self, f: SnapshotLoaderFn) {
+        *self.snapshot_loader.write() = Some(f);
+    }
+
+    /// Start the coordinator event listener
+    ///
+    /// This spawns a background task that listens for L2 events and
+    /// automatically handles fork resolution when configured.
+    pub fn start(self: Arc<Self>) {
+        let coordinator = Arc::clone(&self);
+        let mut rx = self.fork_detector.subscribe();
+
+        tokio::spawn(async move {
+            tracing::info!("ReorgCoordinator: Started event listener");
+
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if let Err(e) = coordinator.handle_l2_event(event).await {
+                            tracing::error!(error = %e, "ReorgCoordinator: Error handling event");
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, "ReorgCoordinator: Events lagged");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        tracing::info!("ReorgCoordinator: Event channel closed");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    /// Handle an L2 chain event
+    async fn handle_l2_event(&self, event: L2Event) -> GhostResult<()> {
+        match event {
+            L2Event::ForkDetected {
+                fork_height,
+                our_state_root,
+                their_state_root,
+                common_ancestor,
+            } => {
+                tracing::warn!(
+                    fork_height,
+                    common_ancestor = ?common_ancestor,
+                    "ReorgCoordinator: Fork detected, determining resolution"
+                );
+
+                // Get vote counts if we have the function
+                let (our_votes, their_votes) = if let Some(ref vote_fn) = *self.vote_count_fn.read()
+                {
+                    vote_fn(fork_height, our_state_root, their_state_root)
+                } else {
+                    // No vote count function - defer resolution
+                    tracing::debug!("ReorgCoordinator: No vote count function, deferring");
+                    return Ok(());
+                };
+
+                // Detect fork result for resolution
+                let fork_result = self.fork_detector.detect_fork(fork_height, their_state_root);
+
+                // Determine and apply resolution
+                let result = self.resolve_fork(&fork_result, our_votes, their_votes)?;
+
+                tracing::info!(
+                    fork_height,
+                    result = ?result,
+                    "ReorgCoordinator: Fork resolution complete"
+                );
+            }
+
+            L2Event::EquivocationDetected {
+                proposer,
+                height,
+                block_hash_a,
+                block_hash_b,
+            } => {
+                tracing::error!(
+                    height,
+                    proposer = hex::encode(&proposer[..8]),
+                    "ReorgCoordinator: Equivocation detected, creating proof"
+                );
+
+                // Get the signatures for the proof from the fork detector
+                // The proof should have been created when the peer block was recorded
+                // Here we just broadcast it if we have the broadcast function
+                if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                    let proof_msg = EquivocationProofMessage {
+                        equivocator: proposer,
+                        round_id: height,
+                        vote_type: "block_proposal".to_string(),
+                        vote1_data: block_hash_a.to_vec(),
+                        vote2_data: block_hash_b.to_vec(),
+                        reporter: self.identity.node_id(),
+                        reporter_signature: self.identity.sign(&self.create_proof_signing_message(
+                            &proposer,
+                            height,
+                            &block_hash_a,
+                            &block_hash_b,
+                        )),
+                        timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                    };
+
+                    let payload = serde_json::to_vec(&proof_msg).map_err(|e| {
+                        ghost_common::error::GhostError::Serialization(e.to_string())
+                    })?;
+
+                    broadcast(MessageType::EquivocationProof, payload)?;
+
+                    tracing::info!(
+                        proposer = hex::encode(&proposer[..8]),
+                        height,
+                        "ReorgCoordinator: Equivocation proof broadcast"
+                    );
+                }
+
+                // Remove the equivocator from validators
+                self.zk_vote_handler.remove_validator(&proposer);
+            }
+
+            L2Event::NewBlock { height, .. } => {
+                // Track if we should create a snapshot
+                if self
+                    .zk_vote_handler
+                    .should_create_snapshot(height, self.config.snapshot_interval)
+                {
+                    tracing::debug!(height, "ReorgCoordinator: Snapshot point reached");
+                    // Note: Actual snapshot creation is done by the caller
+                    // We just provide the trigger point
+                }
+            }
+
+            L2Event::ChainStabilized { height, .. } => {
+                tracing::info!(height, "ReorgCoordinator: Chain stabilized");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Create the message to sign for an equivocation proof report
+    fn create_proof_signing_message(
+        &self,
+        equivocator: &NodeId,
+        height: u64,
+        block_hash_a: &[u8; 32],
+        block_hash_b: &[u8; 32],
+    ) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(32 + 8 + 32 + 32);
+        msg.extend_from_slice(equivocator);
+        msg.extend_from_slice(&height.to_le_bytes());
+        msg.extend_from_slice(block_hash_a);
+        msg.extend_from_slice(block_hash_b);
+        msg
+    }
+
+    /// Resolve a detected fork by determining and applying the appropriate action
+    pub fn resolve_fork(
+        &self,
+        fork_result: &ForkDetectionResult,
+        our_vote_count: u32,
+        their_vote_count: u32,
+    ) -> GhostResult<ReorgResult> {
+        // Check minimum votes
+        if our_vote_count + their_vote_count < self.config.min_votes_for_resolution {
+            return Ok(ReorgResult::Deferred {
+                reason: format!(
+                    "Insufficient votes: {} < {}",
+                    our_vote_count + their_vote_count,
+                    self.config.min_votes_for_resolution
+                ),
+            });
+        }
+
+        // Determine the action
+        let action = self
+            .fork_detector
+            .determine_resolution(fork_result, our_vote_count, their_vote_count);
+
+        // Apply if auto_resolve is enabled
+        if !self.config.auto_resolve {
+            return Ok(ReorgResult::Deferred {
+                reason: "Auto-resolve disabled".to_string(),
+            });
+        }
+
+        self.apply_reorg_action(action)
+    }
+
+    /// Apply a reorg action to the ZK vote handler
+    pub fn apply_reorg_action(&self, action: L2ReorgAction) -> GhostResult<ReorgResult> {
+        match action {
+            L2ReorgAction::None => Ok(ReorgResult::NoAction),
+
+            L2ReorgAction::Rollback {
+                to_height,
+                new_tip_hash,
+            } => {
+                // Load the snapshot state root for the target height
+                let snapshot_root = if let Some(ref loader) = *self.snapshot_loader.read() {
+                    loader(to_height)
+                } else {
+                    None
+                };
+
+                let state_root = snapshot_root.unwrap_or(new_tip_hash);
+
+                let (current_height, _) = self.zk_vote_handler.get_state();
+
+                // Apply the rollback
+                self.zk_vote_handler.handle_reorg(to_height, state_root)?;
+
+                tracing::info!(
+                    from_height = current_height,
+                    to_height,
+                    state_root = hex::encode(state_root),
+                    "ReorgCoordinator: Applied rollback"
+                );
+
+                Ok(ReorgResult::RolledBack {
+                    from_height: current_height,
+                    to_height,
+                    new_state_root: state_root,
+                })
+            }
+
+            L2ReorgAction::SwitchChain {
+                from_height,
+                new_blocks,
+            } => {
+                if new_blocks.is_empty() {
+                    return Ok(ReorgResult::Error {
+                        reason: "No blocks to switch to".to_string(),
+                    });
+                }
+
+                // Get the new tip
+                let new_tip = new_blocks.last().expect("checked non-empty");
+
+                // Load snapshot for the fork point
+                let snapshot_root = if let Some(ref loader) = *self.snapshot_loader.read() {
+                    loader(from_height)
+                } else {
+                    None
+                };
+
+                // Rollback to the fork point
+                let rollback_root = snapshot_root.unwrap_or(new_tip.state_root);
+                self.zk_vote_handler.handle_reorg(from_height, rollback_root)?;
+
+                // Apply the new blocks by setting state to the new tip
+                // In a full implementation, we would replay each block
+                self.zk_vote_handler
+                    .set_state(new_tip.height, new_tip.state_root);
+
+                // Record the new blocks in the fork detector
+                for block in &new_blocks {
+                    self.fork_detector.record_our_block(block.clone());
+                }
+
+                tracing::info!(
+                    from_height,
+                    new_tip_height = new_tip.height,
+                    state_root = hex::encode(new_tip.state_root),
+                    "ReorgCoordinator: Switched chain"
+                );
+
+                Ok(ReorgResult::ChainSwitched {
+                    from_height,
+                    new_tip_height: new_tip.height,
+                    new_state_root: new_tip.state_root,
+                })
+            }
+
+            L2ReorgAction::SlashProposer { proof } => {
+                // Broadcast the equivocation proof
+                if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                    let proof_msg = EquivocationProofMessage {
+                        equivocator: proof.proposer,
+                        round_id: proof.height,
+                        vote_type: "block_proposal".to_string(),
+                        vote1_data: proof.block_hash_a.to_vec(),
+                        vote2_data: proof.block_hash_b.to_vec(),
+                        reporter: self.identity.node_id(),
+                        reporter_signature: self.identity.sign(&self.create_proof_signing_message(
+                            &proof.proposer,
+                            proof.height,
+                            &proof.block_hash_a,
+                            &proof.block_hash_b,
+                        )),
+                        timestamp: chrono::Utc::now().timestamp_millis() as u64,
+                    };
+
+                    let payload = serde_json::to_vec(&proof_msg).map_err(|e| {
+                        ghost_common::error::GhostError::Serialization(e.to_string())
+                    })?;
+
+                    broadcast(MessageType::EquivocationProof, payload)?;
+                }
+
+                // Remove the proposer from validators
+                self.zk_vote_handler.remove_validator(&proof.proposer);
+
+                tracing::warn!(
+                    proposer = hex::encode(&proof.proposer[..8]),
+                    height = proof.height,
+                    "ReorgCoordinator: Slashed proposer for equivocation"
+                );
+
+                Ok(ReorgResult::EquivocationBroadcast {
+                    proposer: proof.proposer,
+                    height: proof.height,
+                })
+            }
+        }
+    }
+
+    /// Get the current L2 state from the ZK vote handler
+    pub fn get_state(&self) -> (u64, [u8; 32]) {
+        self.zk_vote_handler.get_state()
+    }
+
+    /// Get the fork detector for direct access
+    pub fn fork_detector(&self) -> &Arc<L2ForkDetector> {
+        &self.fork_detector
+    }
+
+    /// Get the ZK vote handler for direct access
+    pub fn zk_vote_handler(&self) -> &Arc<ZkVoteHandler> {
+        &self.zk_vote_handler
+    }
+}
+
 /// User balance with pending amounts
 #[derive(Debug, Clone, Default)]
 pub struct UserBalance {
@@ -1056,5 +1533,389 @@ mod tests {
         // Equivocation always results in slash, regardless of votes
         let action = detector.determine_resolution(&fork_result, 5, 3);
         assert!(matches!(action, L2ReorgAction::SlashProposer { .. }));
+    }
+
+    // ==========================================================================
+    // ReorgCoordinator Tests (P2P-H7)
+    // ==========================================================================
+
+    #[test]
+    fn test_reorg_coordinator_creation() {
+        use crate::zk_vote_handler::ZkVoteHandler;
+        use ghost_common::identity::NodeIdentity;
+
+        let identity = Arc::new(NodeIdentity::generate());
+        let detector = Arc::new(L2ForkDetector::new(100));
+        let zk_handler = Arc::new(ZkVoteHandler::new(Arc::clone(&identity)));
+
+        let coordinator = ReorgCoordinator::new(
+            identity,
+            detector,
+            zk_handler,
+            ReorgCoordinatorConfig::default(),
+        );
+
+        assert_eq!(coordinator.get_state(), (0, [0u8; 32]));
+    }
+
+    #[test]
+    fn test_reorg_coordinator_rollback() {
+        use crate::zk_vote_handler::ZkVoteHandler;
+        use ghost_common::identity::NodeIdentity;
+
+        let identity = Arc::new(NodeIdentity::generate());
+        let detector = Arc::new(L2ForkDetector::new(100));
+        let zk_handler = Arc::new(ZkVoteHandler::new(Arc::clone(&identity)));
+
+        // Set initial state at height 100
+        zk_handler.set_state(100, [1u8; 32]);
+
+        let coordinator = ReorgCoordinator::new(
+            identity,
+            detector,
+            Arc::clone(&zk_handler),
+            ReorgCoordinatorConfig::default(),
+        );
+
+        // Apply rollback action
+        let action = L2ReorgAction::Rollback {
+            to_height: 90,
+            new_tip_hash: [2u8; 32],
+        };
+
+        let result = coordinator.apply_reorg_action(action).unwrap();
+
+        match result {
+            ReorgResult::RolledBack {
+                from_height,
+                to_height,
+                new_state_root,
+            } => {
+                assert_eq!(from_height, 100);
+                assert_eq!(to_height, 90);
+                assert_eq!(new_state_root, [2u8; 32]);
+            }
+            _ => panic!("Expected RolledBack result"),
+        }
+
+        // Verify state was updated
+        assert_eq!(zk_handler.get_state(), (90, [2u8; 32]));
+    }
+
+    #[test]
+    fn test_reorg_coordinator_chain_switch() {
+        use crate::zk_vote_handler::ZkVoteHandler;
+        use ghost_common::identity::NodeIdentity;
+
+        let identity = Arc::new(NodeIdentity::generate());
+        let detector = Arc::new(L2ForkDetector::new(100));
+        let zk_handler = Arc::new(ZkVoteHandler::new(Arc::clone(&identity)));
+
+        // Set initial state
+        zk_handler.set_state(100, [1u8; 32]);
+
+        let coordinator = ReorgCoordinator::new(
+            identity,
+            Arc::clone(&detector),
+            Arc::clone(&zk_handler),
+            ReorgCoordinatorConfig::default(),
+        );
+
+        // Create new blocks for the chain switch
+        let new_blocks = vec![
+            L2BlockRef {
+                height: 95,
+                state_root: [10u8; 32],
+                block_hash: [11u8; 32],
+                proposer: [12u8; 32],
+                signature: [0u8; 64],
+                timestamp: 1000,
+            },
+            L2BlockRef {
+                height: 96,
+                state_root: [20u8; 32],
+                block_hash: [21u8; 32],
+                proposer: [22u8; 32],
+                signature: [0u8; 64],
+                timestamp: 1001,
+            },
+        ];
+
+        let action = L2ReorgAction::SwitchChain {
+            from_height: 94,
+            new_blocks,
+        };
+
+        let result = coordinator.apply_reorg_action(action).unwrap();
+
+        match result {
+            ReorgResult::ChainSwitched {
+                from_height,
+                new_tip_height,
+                new_state_root,
+            } => {
+                assert_eq!(from_height, 94);
+                assert_eq!(new_tip_height, 96);
+                assert_eq!(new_state_root, [20u8; 32]);
+            }
+            _ => panic!("Expected ChainSwitched result"),
+        }
+
+        // Verify state was updated to new chain tip
+        assert_eq!(zk_handler.get_state(), (96, [20u8; 32]));
+    }
+
+    #[test]
+    fn test_reorg_coordinator_no_action() {
+        use crate::zk_vote_handler::ZkVoteHandler;
+        use ghost_common::identity::NodeIdentity;
+
+        let identity = Arc::new(NodeIdentity::generate());
+        let detector = Arc::new(L2ForkDetector::new(100));
+        let zk_handler = Arc::new(ZkVoteHandler::new(Arc::clone(&identity)));
+
+        zk_handler.set_state(100, [1u8; 32]);
+
+        let coordinator = ReorgCoordinator::new(
+            identity,
+            detector,
+            Arc::clone(&zk_handler),
+            ReorgCoordinatorConfig::default(),
+        );
+
+        let result = coordinator.apply_reorg_action(L2ReorgAction::None).unwrap();
+        assert!(matches!(result, ReorgResult::NoAction));
+
+        // State should be unchanged
+        assert_eq!(zk_handler.get_state(), (100, [1u8; 32]));
+    }
+
+    #[test]
+    fn test_reorg_coordinator_resolve_fork_deferred_insufficient_votes() {
+        use crate::zk_vote_handler::ZkVoteHandler;
+        use ghost_common::identity::NodeIdentity;
+
+        let identity = Arc::new(NodeIdentity::generate());
+        let detector = Arc::new(L2ForkDetector::new(100));
+        let zk_handler = Arc::new(ZkVoteHandler::new(Arc::clone(&identity)));
+
+        // Record our chain
+        detector.record_our_block(L2BlockRef {
+            height: 10,
+            state_root: [1u8; 32],
+            block_hash: [2u8; 32],
+            proposer: [3u8; 32],
+            signature: [0u8; 64],
+            timestamp: 1000,
+        });
+
+        let coordinator = ReorgCoordinator::new(
+            identity,
+            Arc::clone(&detector),
+            zk_handler,
+            ReorgCoordinatorConfig {
+                min_votes_for_resolution: 5,
+                ..Default::default()
+            },
+        );
+
+        // Detect fork
+        let fork_result = detector.detect_fork(10, [9u8; 32]);
+
+        // Insufficient votes (1 + 1 = 2 < 5)
+        let result = coordinator.resolve_fork(&fork_result, 1, 1).unwrap();
+
+        match result {
+            ReorgResult::Deferred { reason } => {
+                assert!(reason.contains("Insufficient votes"));
+            }
+            _ => panic!("Expected Deferred result"),
+        }
+    }
+
+    #[test]
+    fn test_reorg_coordinator_resolve_fork_deferred_auto_resolve_disabled() {
+        use crate::zk_vote_handler::ZkVoteHandler;
+        use ghost_common::identity::NodeIdentity;
+
+        let identity = Arc::new(NodeIdentity::generate());
+        let detector = Arc::new(L2ForkDetector::new(100));
+        let zk_handler = Arc::new(ZkVoteHandler::new(Arc::clone(&identity)));
+
+        // Record our chain
+        detector.record_our_block(L2BlockRef {
+            height: 10,
+            state_root: [1u8; 32],
+            block_hash: [2u8; 32],
+            proposer: [3u8; 32],
+            signature: [0u8; 64],
+            timestamp: 1000,
+        });
+
+        let coordinator = ReorgCoordinator::new(
+            identity,
+            Arc::clone(&detector),
+            zk_handler,
+            ReorgCoordinatorConfig {
+                auto_resolve: false,
+                ..Default::default()
+            },
+        );
+
+        // Detect fork
+        let fork_result = detector.detect_fork(10, [9u8; 32]);
+
+        // Should defer because auto_resolve is disabled
+        let result = coordinator.resolve_fork(&fork_result, 5, 3).unwrap();
+
+        match result {
+            ReorgResult::Deferred { reason } => {
+                assert!(reason.contains("Auto-resolve disabled"));
+            }
+            _ => panic!("Expected Deferred result"),
+        }
+    }
+
+    #[test]
+    fn test_reorg_coordinator_slash_proposer() {
+        use crate::zk_vote_handler::ZkVoteHandler;
+        use ghost_common::identity::NodeIdentity;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let identity = Arc::new(NodeIdentity::generate());
+        let equivocator = NodeIdentity::generate();
+        let detector = Arc::new(L2ForkDetector::new(100));
+        let zk_handler = Arc::new(ZkVoteHandler::new(Arc::clone(&identity)));
+
+        // Add equivocator as a validator
+        zk_handler.add_validator(equivocator.node_id());
+        assert_eq!(zk_handler.validator_count(), 1);
+
+        let coordinator = ReorgCoordinator::new(
+            identity,
+            detector,
+            Arc::clone(&zk_handler),
+            ReorgCoordinatorConfig::default(),
+        );
+
+        // Track if broadcast was called
+        let broadcast_called = Arc::new(AtomicBool::new(false));
+        let broadcast_called_clone = Arc::clone(&broadcast_called);
+
+        coordinator.set_broadcast_fn(Arc::new(move |_msg_type, _payload| {
+            broadcast_called_clone.store(true, Ordering::SeqCst);
+            Ok(())
+        }));
+
+        // Create equivocation proof
+        let proof = EquivocationProof {
+            proposer: equivocator.node_id(),
+            height: 10,
+            block_hash_a: [1u8; 32],
+            block_hash_b: [2u8; 32],
+            signature_a: equivocator.sign(&[1u8; 32]),
+            signature_b: equivocator.sign(&[2u8; 32]),
+            detected_at: 1000,
+        };
+
+        let action = L2ReorgAction::SlashProposer { proof };
+
+        let result = coordinator.apply_reorg_action(action).unwrap();
+
+        match result {
+            ReorgResult::EquivocationBroadcast { proposer, height } => {
+                assert_eq!(proposer, equivocator.node_id());
+                assert_eq!(height, 10);
+            }
+            _ => panic!("Expected EquivocationBroadcast result"),
+        }
+
+        // Verify broadcast was called
+        assert!(broadcast_called.load(Ordering::SeqCst));
+
+        // Verify equivocator was removed from validators
+        assert_eq!(zk_handler.validator_count(), 0);
+    }
+
+    #[test]
+    fn test_reorg_coordinator_with_snapshot_loader() {
+        use crate::zk_vote_handler::ZkVoteHandler;
+        use ghost_common::identity::NodeIdentity;
+
+        let identity = Arc::new(NodeIdentity::generate());
+        let detector = Arc::new(L2ForkDetector::new(100));
+        let zk_handler = Arc::new(ZkVoteHandler::new(Arc::clone(&identity)));
+
+        zk_handler.set_state(100, [1u8; 32]);
+
+        let coordinator = ReorgCoordinator::new(
+            identity,
+            detector,
+            Arc::clone(&zk_handler),
+            ReorgCoordinatorConfig::default(),
+        );
+
+        // Set snapshot loader that returns a specific root for height 90
+        coordinator.set_snapshot_loader(Arc::new(|height| {
+            if height == 90 {
+                Some([99u8; 32]) // Snapshot state root
+            } else {
+                None
+            }
+        }));
+
+        // Apply rollback action
+        let action = L2ReorgAction::Rollback {
+            to_height: 90,
+            new_tip_hash: [2u8; 32], // This should be overridden by snapshot
+        };
+
+        let result = coordinator.apply_reorg_action(action).unwrap();
+
+        match result {
+            ReorgResult::RolledBack {
+                new_state_root, ..
+            } => {
+                // Should use snapshot root instead of new_tip_hash
+                assert_eq!(new_state_root, [99u8; 32]);
+            }
+            _ => panic!("Expected RolledBack result"),
+        }
+
+        assert_eq!(zk_handler.get_state(), (90, [99u8; 32]));
+    }
+
+    #[test]
+    fn test_reorg_coordinator_config_default() {
+        let config = ReorgCoordinatorConfig::default();
+        assert_eq!(config.min_votes_for_resolution, 2);
+        assert!(config.auto_resolve);
+        assert_eq!(config.snapshot_interval, 100);
+    }
+
+    #[test]
+    fn test_reorg_result_variants() {
+        // Test all ReorgResult variants can be created
+        let _no_action = ReorgResult::NoAction;
+        let _rolled_back = ReorgResult::RolledBack {
+            from_height: 100,
+            to_height: 90,
+            new_state_root: [1u8; 32],
+        };
+        let _chain_switched = ReorgResult::ChainSwitched {
+            from_height: 90,
+            new_tip_height: 100,
+            new_state_root: [2u8; 32],
+        };
+        let _equivocation = ReorgResult::EquivocationBroadcast {
+            proposer: [3u8; 32],
+            height: 10,
+        };
+        let _deferred = ReorgResult::Deferred {
+            reason: "test".to_string(),
+        };
+        let _error = ReorgResult::Error {
+            reason: "test error".to_string(),
+        };
     }
 }

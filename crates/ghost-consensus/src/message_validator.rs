@@ -56,6 +56,14 @@ pub const MAX_ZK_PAYOUT_PROPOSAL_SIZE: usize = 1_000_000;
 pub const MAX_ZK_PAYOUT_VOTE_SIZE: usize = 1_000;
 /// Verification result is small (node IDs + capability + result + signature)
 pub const MAX_VERIFICATION_SIZE: usize = 5_000;
+/// P2P-H3: Equivocation proof (two votes + metadata)
+pub const MAX_EQUIVOCATION_PROOF_SIZE: usize = 10_000;
+/// P2P-C1: Elder registration proposal (candidate + PoW + signatures)
+pub const MAX_ELDER_REGISTRATION_PROPOSAL_SIZE: usize = 1_000;
+/// P2P-C2: Elder list proposal (full list of up to 101 elders + metadata)
+pub const MAX_ELDER_LIST_PROPOSAL_SIZE: usize = 100_000;
+/// P2P-C3: Elder list approval (signature + epoch + merkle root)
+pub const MAX_ELDER_LIST_APPROVAL_SIZE: usize = 500;
 
 /// Maximum allowed timestamp drift from current time (2 minutes in milliseconds)
 /// P2P-H8: Reduced from 5 minutes to 2 minutes to narrow the window for replay attacks.
@@ -133,12 +141,145 @@ pub fn validate_envelope_header(data: &[u8]) -> Result<(), MessageValidationErro
 
     // Message type check (second byte)
     let msg_type_byte = data[1];
-    if msg_type_byte > 12 {
-        // We have 13 message types (0-12) including ZK payout types and verification result
+    if msg_type_byte > 13 {
+        // We have 14 message types (0-13) including ZK payout types, verification, and equivocation
         return Err(MessageValidationError::InvalidType(msg_type_byte));
     }
 
     Ok(())
+}
+
+/// P2P-H1: Extract message type from raw JSON data without full deserialization
+///
+/// This enables topic validation BEFORE expensive full deserialization.
+/// Messages received on a specific topic/socket must have the matching message type.
+/// This prevents attackers from sending messages on the wrong topic to confuse handlers.
+///
+/// # Arguments
+/// * `data` - Raw message bytes (expected to be JSON)
+///
+/// # Returns
+/// * `Ok(Some(MessageType))` - Successfully extracted message type
+/// * `Ok(None)` - Could not extract type (invalid format)
+/// * `Err(MessageValidationError)` - Message too small/large
+pub fn extract_message_type_fast(data: &[u8]) -> Result<Option<MessageType>, MessageValidationError> {
+    // Size bounds
+    if data.len() < MIN_ENVELOPE_SIZE {
+        return Err(MessageValidationError::TooSmall(data.len()));
+    }
+
+    if data.len() > MAX_ENVELOPE_SIZE {
+        return Err(MessageValidationError::TooLarge(data.len()));
+    }
+
+    // Only handle JSON format (starts with '{')
+    if data[0] != b'{' {
+        // Binary format - extract type from second byte
+        let msg_type_byte = data[1];
+        let msg_type = match msg_type_byte {
+            0 => Some(MessageType::ShareProof),
+            1 => Some(MessageType::BlockFound),
+            2 => Some(MessageType::PayoutProposal),
+            3 => Some(MessageType::Vote),
+            4 => Some(MessageType::HealthPing),
+            5 => Some(MessageType::Discovery),
+            6 => Some(MessageType::ElderUpdate),
+            7 => Some(MessageType::ShareConvergence),
+            8 => Some(MessageType::ZkBlockProposal),
+            9 => Some(MessageType::ZkVote),
+            10 => Some(MessageType::ZkPayoutProposal),
+            11 => Some(MessageType::ZkPayoutVote),
+            12 => Some(MessageType::VerificationResult),
+            13 => Some(MessageType::EquivocationProof),
+            _ => None,
+        };
+        return Ok(msg_type);
+    }
+
+    // JSON format - look for "msg_type" field without full parsing
+    // The JSON format uses: {"msg_type":"ShareProof", ...}
+    // We search for the pattern and extract just the type string
+
+    // Convert to string for simple pattern matching
+    // This is safe because JSON is UTF-8 and we're looking for ASCII patterns
+    let data_str = match std::str::from_utf8(data) {
+        Ok(s) => s,
+        Err(_) => return Ok(None), // Invalid UTF-8, can't extract
+    };
+
+    // Look for "msg_type":"<TYPE>" pattern
+    // We use a simple search rather than full JSON parsing
+    let type_marker = r#""msg_type":"#;
+    let type_pos = match data_str.find(type_marker) {
+        Some(pos) => pos + type_marker.len(),
+        None => return Ok(None), // No msg_type field found
+    };
+
+    // Extract the type value (should be a quoted string)
+    if type_pos >= data_str.len() || data_str.as_bytes()[type_pos] != b'"' {
+        return Ok(None);
+    }
+
+    let type_start = type_pos + 1;
+    let type_end = match data_str[type_start..].find('"') {
+        Some(pos) => type_start + pos,
+        None => return Ok(None),
+    };
+
+    let type_str = &data_str[type_start..type_end];
+
+    // Map string to MessageType
+    let msg_type = match type_str {
+        "ShareProof" => MessageType::ShareProof,
+        "ShareConvergence" => MessageType::ShareConvergence,
+        "BlockFound" => MessageType::BlockFound,
+        "Vote" => MessageType::Vote,
+        "HealthPing" => MessageType::HealthPing,
+        "Discovery" => MessageType::Discovery,
+        "PayoutProposal" => MessageType::PayoutProposal,
+        "ElderUpdate" => MessageType::ElderUpdate,
+        "ZkBlockProposal" => MessageType::ZkBlockProposal,
+        "ZkVote" => MessageType::ZkVote,
+        "ZkPayoutProposal" => MessageType::ZkPayoutProposal,
+        "ZkPayoutVote" => MessageType::ZkPayoutVote,
+        "VerificationResult" => MessageType::VerificationResult,
+        "EquivocationProof" => MessageType::EquivocationProof,
+        _ => return Ok(None), // Unknown type
+    };
+
+    Ok(Some(msg_type))
+}
+
+/// P2P-H1: Validate that a message's type matches the expected topic
+///
+/// Call this BEFORE full deserialization to reject messages sent on the wrong topic.
+/// This prevents type confusion attacks where an attacker sends a message on one
+/// socket but with a different message type.
+///
+/// # Arguments
+/// * `data` - Raw message bytes
+/// * `expected_type` - The message type expected for this topic/socket
+///
+/// # Returns
+/// * `Ok(())` - Type matches or could not be extracted (will be validated after deser)
+/// * `Err(InvalidType)` - Extracted type does not match expected type
+pub fn validate_topic_before_deser(
+    data: &[u8],
+    expected_type: MessageType,
+) -> Result<(), MessageValidationError> {
+    match extract_message_type_fast(data)? {
+        Some(msg_type) if msg_type != expected_type => {
+            warn!(
+                expected = ?expected_type,
+                actual = ?msg_type,
+                "Message type mismatch - wrong topic"
+            );
+            // We return InvalidType but with a specific byte value to indicate topic mismatch
+            // The actual type byte doesn't matter here since it's JSON
+            Err(MessageValidationError::InvalidType(255))
+        }
+        _ => Ok(()), // Either matches or couldn't extract (validate after deser)
+    }
 }
 
 /// Get the maximum allowed payload size for a message type
@@ -157,6 +298,10 @@ pub fn max_payload_size(msg_type: MessageType) -> usize {
         MessageType::ZkPayoutProposal => MAX_ZK_PAYOUT_PROPOSAL_SIZE,
         MessageType::ZkPayoutVote => MAX_ZK_PAYOUT_VOTE_SIZE,
         MessageType::VerificationResult => MAX_VERIFICATION_SIZE,
+        MessageType::EquivocationProof => MAX_EQUIVOCATION_PROOF_SIZE,
+        MessageType::ElderRegistrationProposal => MAX_ELDER_REGISTRATION_PROPOSAL_SIZE,
+        MessageType::ElderListProposal => MAX_ELDER_LIST_PROPOSAL_SIZE,
+        MessageType::ElderListApproval => MAX_ELDER_LIST_APPROVAL_SIZE,
     }
 }
 
@@ -489,5 +634,117 @@ mod tests {
         // Should pass validate_envelope (signature validity check is separate)
         let result = validate_envelope(&envelope);
         assert!(result.is_ok());
+    }
+
+    // P2P-H1: Tests for extract_message_type_fast and validate_topic_before_deser
+
+    #[test]
+    fn test_extract_message_type_from_json() {
+        // Valid JSON with msg_type field
+        let json = r#"{"msg_type":"HealthPing","sender":"abc123","timestamp":1234567890}"#;
+        let data = json.as_bytes();
+
+        // Need enough bytes to pass size check
+        let mut padded = data.to_vec();
+        padded.resize(MIN_ENVELOPE_SIZE + 100, b' ');
+
+        let result = extract_message_type_fast(&padded);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some(MessageType::HealthPing));
+    }
+
+    #[test]
+    fn test_extract_message_type_vote() {
+        let json = r#"{"msg_type":"Vote","sender":"abc123"}"#;
+        let mut padded = json.as_bytes().to_vec();
+        padded.resize(MIN_ENVELOPE_SIZE + 100, b' ');
+
+        let result = extract_message_type_fast(&padded);
+        assert_eq!(result.unwrap(), Some(MessageType::Vote));
+    }
+
+    #[test]
+    fn test_extract_message_type_share_proof() {
+        let json = r#"{"msg_type":"ShareProof","data":"..."}"#;
+        let mut padded = json.as_bytes().to_vec();
+        padded.resize(MIN_ENVELOPE_SIZE + 100, b' ');
+
+        let result = extract_message_type_fast(&padded);
+        assert_eq!(result.unwrap(), Some(MessageType::ShareProof));
+    }
+
+    #[test]
+    fn test_extract_message_type_unknown() {
+        let json = r#"{"msg_type":"UnknownType","data":"..."}"#;
+        let mut padded = json.as_bytes().to_vec();
+        padded.resize(MIN_ENVELOPE_SIZE + 100, b' ');
+
+        let result = extract_message_type_fast(&padded);
+        assert_eq!(result.unwrap(), None); // Unknown type returns None
+    }
+
+    #[test]
+    fn test_extract_message_type_no_type_field() {
+        let json = r#"{"sender":"abc123","timestamp":1234567890}"#;
+        let mut padded = json.as_bytes().to_vec();
+        padded.resize(MIN_ENVELOPE_SIZE + 100, b' ');
+
+        let result = extract_message_type_fast(&padded);
+        assert_eq!(result.unwrap(), None); // No msg_type field returns None
+    }
+
+    #[test]
+    fn test_validate_topic_correct_type() {
+        let json = r#"{"msg_type":"HealthPing","sender":"abc123"}"#;
+        let mut padded = json.as_bytes().to_vec();
+        padded.resize(MIN_ENVELOPE_SIZE + 100, b' ');
+
+        // Should pass when expected type matches
+        let result = validate_topic_before_deser(&padded, MessageType::HealthPing);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_topic_wrong_type() {
+        let json = r#"{"msg_type":"Vote","sender":"abc123"}"#;
+        let mut padded = json.as_bytes().to_vec();
+        padded.resize(MIN_ENVELOPE_SIZE + 100, b' ');
+
+        // Should fail when expected type doesn't match
+        let result = validate_topic_before_deser(&padded, MessageType::HealthPing);
+        assert!(matches!(result, Err(MessageValidationError::InvalidType(255))));
+    }
+
+    #[test]
+    fn test_validate_topic_missing_type_passes() {
+        // When type can't be extracted, we pass validation
+        // (will be validated after full deserialization)
+        let json = r#"{"sender":"abc123","timestamp":1234567890}"#;
+        let mut padded = json.as_bytes().to_vec();
+        padded.resize(MIN_ENVELOPE_SIZE + 100, b' ');
+
+        let result = validate_topic_before_deser(&padded, MessageType::HealthPing);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_extract_binary_format() {
+        // Binary format: version(1) + type(1) + rest
+        let mut data = vec![0u8; MIN_ENVELOPE_SIZE + 10];
+        data[0] = 1; // Version 1
+        data[1] = 4; // MessageType::HealthPing
+
+        let result = extract_message_type_fast(&data);
+        assert_eq!(result.unwrap(), Some(MessageType::HealthPing));
+    }
+
+    #[test]
+    fn test_extract_binary_format_invalid_type() {
+        let mut data = vec![0u8; MIN_ENVELOPE_SIZE + 10];
+        data[0] = 1; // Version 1
+        data[1] = 99; // Invalid type
+
+        let result = extract_message_type_fast(&data);
+        assert_eq!(result.unwrap(), None);
     }
 }

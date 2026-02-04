@@ -40,6 +40,12 @@
 //! - `node_id`: Your node's public key (hex-encoded)
 //! - `timestamp`: Unix timestamp of request
 //! - `signature`: HMAC-SHA256 signature of `node_id|timestamp` with shared secret
+//!
+//! ## VF-C1: HMAC Verification
+//!
+//! WebSocket authentication uses HMAC-SHA256 with constant-time comparison
+//! to prevent timing attacks. The signature is computed as:
+//! `HMAC-SHA256(secret, node_id_bytes || timestamp_le_bytes)`
 
 use axum::{
     extract::{
@@ -49,10 +55,18 @@ use axum::{
     response::IntoResponse,
 };
 use futures::{SinkExt, StreamExt};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
+
+/// HMAC-SHA256 type alias for WebSocket auth
+type HmacSha256 = Hmac<Sha256>;
+
+/// Maximum timestamp drift allowed for WebSocket auth (5 minutes)
+const WS_MAX_TIMESTAMP_DRIFT_SECS: u64 = 300;
 
 /// WebSocket event types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -150,16 +164,70 @@ impl WsAuthQuery {
         self.node_id.is_some() && self.timestamp.is_some() && self.signature.is_some()
     }
 
-    /// Validate the authentication parameters
+    /// VF-C1: Validate the authentication parameters with HMAC verification
     ///
-    /// For now, we do basic validation:
-    /// - Node ID is 64 hex chars
-    /// - Timestamp is within 5 minutes of current time
-    /// - Signature is present (actual signature verification would need the shared secret)
+    /// When a secret is provided, performs full HMAC-SHA256 verification:
+    /// - Node ID must be 64 hex chars (32 bytes)
+    /// - Timestamp must be within 5 minutes of server time (replay prevention)
+    /// - Signature must be valid HMAC-SHA256(secret, node_id_bytes || timestamp_le_bytes)
     ///
-    /// In production, the signature should be verified against the node's public key
-    /// or a shared secret configured in the pool.
-    pub fn validate(&self) -> bool {
+    /// Uses constant-time comparison to prevent timing attacks.
+    pub fn validate_with_secret(&self, secret: &[u8; 32]) -> bool {
+        // Check node_id format (64 hex chars = 32 bytes)
+        let node_id = match &self.node_id {
+            Some(id) if id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit()) => id,
+            _ => return false,
+        };
+
+        // Decode node_id to bytes
+        let node_id_bytes = match hex::decode(node_id) {
+            Ok(bytes) => bytes,
+            Err(_) => return false,
+        };
+
+        // Check timestamp is recent (within 5 minutes)
+        let timestamp = match self.timestamp {
+            Some(ts) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let diff = if ts > now { ts - now } else { now - ts };
+                if diff >= WS_MAX_TIMESTAMP_DRIFT_SECS {
+                    return false;
+                }
+                ts
+            }
+            None => return false,
+        };
+
+        // Check signature format and decode
+        let signature_bytes = match &self.signature {
+            Some(sig) if sig.len() == 64 => match hex::decode(sig) {
+                Ok(bytes) => bytes,
+                Err(_) => return false,
+            },
+            _ => return false,
+        };
+
+        // Compute expected HMAC: HMAC-SHA256(secret, node_id_bytes || timestamp_le_bytes)
+        let mut mac = match HmacSha256::new_from_slice(secret) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        mac.update(&node_id_bytes);
+        mac.update(&timestamp.to_le_bytes());
+        let expected = mac.finalize().into_bytes();
+
+        // Constant-time comparison to prevent timing attacks
+        constant_time_eq(&expected, &signature_bytes)
+    }
+
+    /// Basic format validation (for when no secret is configured)
+    ///
+    /// Only checks format, not cryptographic validity. Use validate_with_secret()
+    /// for production authentication.
+    pub fn validate_format_only(&self) -> bool {
         // Check node_id format (64 hex chars)
         let valid_node_id = self
             .node_id
@@ -176,32 +244,77 @@ impl WsAuthQuery {
                     .unwrap_or_default()
                     .as_secs();
                 let diff = if ts > now { ts - now } else { now - ts };
-                diff < 300 // 5 minutes
+                diff < WS_MAX_TIMESTAMP_DRIFT_SECS
             })
             .unwrap_or(false);
 
-        // Check signature is present and non-empty
+        // Check signature is present and correct length (64 hex chars = 32 bytes)
         let valid_signature = self
             .signature
             .as_ref()
-            .map(|sig| !sig.is_empty() && sig.len() >= 64)
+            .map(|sig| sig.len() == 64 && sig.chars().all(|c| c.is_ascii_hexdigit()))
             .unwrap_or(false);
 
         valid_node_id && valid_timestamp && valid_signature
     }
 }
 
+/// Constant-time byte comparison to prevent timing attacks (VF-C1)
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut result = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        result |= x ^ y;
+    }
+    result == 0
+}
+
 /// WebSocket state for managing connections
 pub struct WsState {
     /// Broadcast channel for events
     pub tx: broadcast::Sender<WsEvent>,
+    /// VF-C1: Optional auth secret for HMAC verification
+    /// When Some, WebSocket authentication uses HMAC-SHA256 verification
+    auth_secret: Option<[u8; 32]>,
+    /// VF-C1: Whether to require authentication (reject unauthenticated connections)
+    require_auth: bool,
 }
 
 impl WsState {
-    /// Create new WebSocket state
+    /// Create new WebSocket state without authentication
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(1000);
-        Self { tx }
+        Self {
+            tx,
+            auth_secret: None,
+            require_auth: false,
+        }
+    }
+
+    /// Create new WebSocket state with HMAC authentication (VF-C1)
+    ///
+    /// When auth_secret is provided, WebSocket authentication verifies
+    /// HMAC-SHA256 signatures. If require_auth is true, unauthenticated
+    /// connections are rejected entirely.
+    pub fn with_auth(secret: [u8; 32], require_auth: bool) -> Self {
+        let (tx, _) = broadcast::channel(1000);
+        Self {
+            tx,
+            auth_secret: Some(secret),
+            require_auth,
+        }
+    }
+
+    /// Get the auth secret if configured
+    pub fn auth_secret(&self) -> Option<&[u8; 32]> {
+        self.auth_secret.as_ref()
+    }
+
+    /// Check if authentication is required
+    pub fn requires_auth(&self) -> bool {
+        self.require_auth
     }
 
     /// Get a receiver for events
@@ -232,23 +345,52 @@ impl Default for WsState {
     }
 }
 
-/// AUTH4-M3: WebSocket upgrade handler with authentication support
+/// AUTH4-M3 / VF-C1: WebSocket upgrade handler with HMAC authentication support
 ///
 /// Query parameters:
-/// - `node_id`: Optional node identifier for authenticated access
-/// - `timestamp`: Unix timestamp of request
-/// - `signature`: Signature for authentication
+/// - `node_id`: Optional node identifier for authenticated access (64 hex chars)
+/// - `timestamp`: Unix timestamp of request (must be within 5 minutes)
+/// - `signature`: HMAC-SHA256 signature for authentication (64 hex chars)
 ///
-/// Unauthenticated connections only receive public events.
-/// Authenticated connections receive all events.
+/// Authentication behavior:
+/// - If WsState has auth_secret: validates HMAC-SHA256 signature cryptographically
+/// - If WsState requires auth but client doesn't authenticate: connection rejected
+/// - Unauthenticated connections only receive public events
+/// - Authenticated connections receive all events
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     Query(auth): Query<WsAuthQuery>,
     State(ws_state): State<Arc<WsState>>,
 ) -> impl IntoResponse {
+    // VF-C1: Check if authentication is required but not provided
+    if ws_state.requires_auth() && !auth.has_auth() {
+        warn!("WebSocket connection rejected: authentication required");
+        return ws.on_upgrade(|socket| async move {
+            // Immediately close the socket with an error
+            let (mut sender, _) = socket.split();
+            let error = WsEvent::Error {
+                message: "Authentication required".to_string(),
+            };
+            if let Ok(json) = serde_json::to_string(&error) {
+                let _ = sender.send(Message::Text(json)).await;
+            }
+            let _ = sender.send(Message::Close(None)).await;
+        });
+    }
+
     // Validate authentication if provided
     let authenticated = if auth.has_auth() {
-        if auth.validate() {
+        // VF-C1: Use HMAC verification when secret is configured
+        let valid = if let Some(secret) = ws_state.auth_secret() {
+            auth.validate_with_secret(secret)
+        } else {
+            // No secret configured - fall back to format-only validation
+            // SECURITY: This is insecure! In production, always configure ws_auth_secret
+            warn!("WebSocket auth secret not configured - using insecure format-only validation");
+            auth.validate_format_only()
+        };
+
+        if valid {
             info!(
                 node_id = ?auth.node_id.as_ref().map(|id| &id[..16]),
                 "WebSocket client authenticated"
@@ -257,8 +399,22 @@ pub async fn ws_handler(
         } else {
             warn!(
                 node_id = ?auth.node_id.as_ref().map(|id| &id[..16]),
-                "WebSocket authentication failed - falling back to public mode"
+                "WebSocket authentication failed"
             );
+            // VF-C1: If auth is required and validation fails, reject entirely
+            if ws_state.requires_auth() {
+                return ws.on_upgrade(|socket| async move {
+                    let (mut sender, _) = socket.split();
+                    let error = WsEvent::Error {
+                        message: "Authentication failed".to_string(),
+                    };
+                    if let Ok(json) = serde_json::to_string(&error) {
+                        let _ = sender.send(Message::Text(json)).await;
+                    }
+                    let _ = sender.send(Message::Close(None)).await;
+                });
+            }
+            // Auth not required - fall back to public mode
             false
         }
     } else {
@@ -393,5 +549,318 @@ mod tests {
             WsEvent::BlockFound { height, .. } => assert_eq!(height, 12345),
             _ => panic!("Wrong event type"),
         }
+    }
+
+    // VF-C1: HMAC verification tests
+
+    fn create_test_secret() -> [u8; 32] {
+        [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
+        ]
+    }
+
+    fn create_valid_auth(secret: &[u8; 32]) -> WsAuthQuery {
+        let node_id_bytes = [0xab; 32];
+        let node_id = hex::encode(node_id_bytes);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Compute valid HMAC
+        let mut mac = HmacSha256::new_from_slice(secret).unwrap();
+        mac.update(&node_id_bytes);
+        mac.update(&timestamp.to_le_bytes());
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        WsAuthQuery {
+            node_id: Some(node_id),
+            timestamp: Some(timestamp),
+            signature: Some(signature),
+        }
+    }
+
+    #[test]
+    fn test_hmac_verification_valid() {
+        let secret = create_test_secret();
+        let auth = create_valid_auth(&secret);
+
+        assert!(auth.has_auth());
+        assert!(auth.validate_with_secret(&secret));
+    }
+
+    #[test]
+    fn test_hmac_verification_invalid_signature() {
+        let secret = create_test_secret();
+        let mut auth = create_valid_auth(&secret);
+
+        // Corrupt the signature
+        auth.signature = Some("00".repeat(32)); // Wrong signature
+
+        assert!(auth.has_auth());
+        assert!(!auth.validate_with_secret(&secret));
+    }
+
+    #[test]
+    fn test_hmac_verification_wrong_secret() {
+        let secret = create_test_secret();
+        let auth = create_valid_auth(&secret);
+
+        // Use different secret
+        let wrong_secret = [0xff; 32];
+        assert!(!auth.validate_with_secret(&wrong_secret));
+    }
+
+    #[test]
+    fn test_hmac_verification_expired_timestamp() {
+        let secret = create_test_secret();
+        let node_id_bytes = [0xab; 32];
+        let node_id = hex::encode(node_id_bytes);
+
+        // Timestamp 10 minutes ago (exceeds 5 minute drift)
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 600;
+
+        let mut mac = HmacSha256::new_from_slice(&secret).unwrap();
+        mac.update(&node_id_bytes);
+        mac.update(&timestamp.to_le_bytes());
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        let auth = WsAuthQuery {
+            node_id: Some(node_id),
+            timestamp: Some(timestamp),
+            signature: Some(signature),
+        };
+
+        assert!(!auth.validate_with_secret(&secret));
+    }
+
+    #[test]
+    fn test_hmac_verification_future_timestamp() {
+        let secret = create_test_secret();
+        let node_id_bytes = [0xab; 32];
+        let node_id = hex::encode(node_id_bytes);
+
+        // Timestamp 10 minutes in future (exceeds 5 minute drift)
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 600;
+
+        let mut mac = HmacSha256::new_from_slice(&secret).unwrap();
+        mac.update(&node_id_bytes);
+        mac.update(&timestamp.to_le_bytes());
+        let signature = hex::encode(mac.finalize().into_bytes());
+
+        let auth = WsAuthQuery {
+            node_id: Some(node_id),
+            timestamp: Some(timestamp),
+            signature: Some(signature),
+        };
+
+        assert!(!auth.validate_with_secret(&secret));
+    }
+
+    #[test]
+    fn test_hmac_verification_invalid_node_id_format() {
+        let secret = create_test_secret();
+
+        // Too short
+        let auth = WsAuthQuery {
+            node_id: Some("abc".to_string()),
+            timestamp: Some(12345),
+            signature: Some("00".repeat(32)),
+        };
+        assert!(!auth.validate_with_secret(&secret));
+
+        // Non-hex characters
+        let auth = WsAuthQuery {
+            node_id: Some("zz".repeat(32)),
+            timestamp: Some(12345),
+            signature: Some("00".repeat(32)),
+        };
+        assert!(!auth.validate_with_secret(&secret));
+    }
+
+    #[test]
+    fn test_hmac_verification_invalid_signature_format() {
+        let secret = create_test_secret();
+        let node_id = "ab".repeat(32);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Too short signature
+        let auth = WsAuthQuery {
+            node_id: Some(node_id.clone()),
+            timestamp: Some(timestamp),
+            signature: Some("abc".to_string()),
+        };
+        assert!(!auth.validate_with_secret(&secret));
+
+        // Non-hex signature
+        let auth = WsAuthQuery {
+            node_id: Some(node_id),
+            timestamp: Some(timestamp),
+            signature: Some("zz".repeat(32)),
+        };
+        assert!(!auth.validate_with_secret(&secret));
+    }
+
+    #[test]
+    fn test_hmac_verification_missing_fields() {
+        let secret = create_test_secret();
+
+        // Missing node_id
+        let auth = WsAuthQuery {
+            node_id: None,
+            timestamp: Some(12345),
+            signature: Some("00".repeat(32)),
+        };
+        assert!(!auth.has_auth());
+        assert!(!auth.validate_with_secret(&secret));
+
+        // Missing timestamp
+        let auth = WsAuthQuery {
+            node_id: Some("ab".repeat(32)),
+            timestamp: None,
+            signature: Some("00".repeat(32)),
+        };
+        assert!(!auth.has_auth());
+        assert!(!auth.validate_with_secret(&secret));
+
+        // Missing signature
+        let auth = WsAuthQuery {
+            node_id: Some("ab".repeat(32)),
+            timestamp: Some(12345),
+            signature: None,
+        };
+        assert!(!auth.has_auth());
+        assert!(!auth.validate_with_secret(&secret));
+    }
+
+    #[test]
+    fn test_format_only_validation() {
+        let node_id = "ab".repeat(32);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let auth = WsAuthQuery {
+            node_id: Some(node_id),
+            timestamp: Some(timestamp),
+            signature: Some("00".repeat(32)), // Any valid format
+        };
+
+        assert!(auth.validate_format_only());
+    }
+
+    #[test]
+    fn test_format_only_rejects_bad_format() {
+        // Invalid node_id format
+        let auth = WsAuthQuery {
+            node_id: Some("short".to_string()),
+            timestamp: Some(12345),
+            signature: Some("00".repeat(32)),
+        };
+        assert!(!auth.validate_format_only());
+
+        // Expired timestamp
+        let auth = WsAuthQuery {
+            node_id: Some("ab".repeat(32)),
+            timestamp: Some(1), // Way in the past
+            signature: Some("00".repeat(32)),
+        };
+        assert!(!auth.validate_format_only());
+    }
+
+    #[test]
+    fn test_constant_time_eq() {
+        let a = [1u8, 2, 3, 4];
+        let b = [1u8, 2, 3, 4];
+        let c = [1u8, 2, 3, 5];
+        let d = [1u8, 2, 3];
+
+        assert!(constant_time_eq(&a, &b));
+        assert!(!constant_time_eq(&a, &c));
+        assert!(!constant_time_eq(&a, &d)); // Different lengths
+    }
+
+    #[test]
+    fn test_ws_state_with_auth() {
+        let secret = create_test_secret();
+        let state = WsState::with_auth(secret, true);
+
+        assert!(state.requires_auth());
+        assert_eq!(state.auth_secret(), Some(&secret));
+    }
+
+    #[test]
+    fn test_ws_state_without_auth() {
+        let state = WsState::new();
+
+        assert!(!state.requires_auth());
+        assert!(state.auth_secret().is_none());
+    }
+
+    #[test]
+    fn test_event_is_public() {
+        // Public events
+        assert!(WsEvent::HealthUpdate {
+            block_height: 1,
+            round_id: 1,
+            miner_count: 1,
+            peer_count: 1,
+            uptime_secs: 1,
+        }
+        .is_public());
+        assert!(WsEvent::BlockFound {
+            height: 1,
+            hash: "".to_string(),
+            miner_id: "".to_string(),
+        }
+        .is_public());
+        assert!(WsEvent::RoundStarted {
+            round_id: 1,
+            height: 1
+        }
+        .is_public());
+        assert!(WsEvent::Error {
+            message: "".to_string()
+        }
+        .is_public());
+
+        // Private events
+        assert!(!WsEvent::MinerConnected {
+            miner_id: "".to_string(),
+            address: "".to_string(),
+        }
+        .is_public());
+        assert!(!WsEvent::ShareSubmitted {
+            miner_id: "".to_string(),
+            difficulty: 1.0,
+            valid: true,
+        }
+        .is_public());
+        assert!(!WsEvent::ConsensusVote {
+            proposal_id: "".to_string(),
+            voter_id: "".to_string(),
+            approved: true,
+        }
+        .is_public());
+        assert!(!WsEvent::WraithSessionUpdate {
+            session_id: "".to_string(),
+            phase: "".to_string(),
+            participants: 0,
+        }
+        .is_public());
     }
 }

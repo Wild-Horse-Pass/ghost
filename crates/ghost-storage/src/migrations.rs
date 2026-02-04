@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 9;
+const SCHEMA_VERSION: u32 = 11;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -82,6 +82,14 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         migrate_v9(conn)?;
     }
 
+    if current_version < 10 {
+        migrate_v10(conn)?;
+    }
+
+    if current_version < 11 {
+        migrate_v11(conn)?;
+    }
+
     set_schema_version(conn, SCHEMA_VERSION)?;
 
     info!("Database migrations complete");
@@ -97,7 +105,14 @@ fn get_schema_version(conn: &Connection) -> GhostResult<u32> {
 }
 
 /// Set schema version
+///
+/// DB-C1 SECURITY NOTE: This uses format! because SQLite PRAGMA statements do not
+/// support parameterized queries. This is safe because:
+/// 1. `version` is a u32, which can only contain decimal digits
+/// 2. The Rust type system guarantees version cannot contain SQL injection payloads
+/// 3. The function is only called internally with the SCHEMA_VERSION constant
 fn set_schema_version(conn: &Connection, version: u32) -> GhostResult<()> {
+    // PRAGMA does not support ? parameters, but u32 guarantees numeric-only content
     conn.execute(&format!("PRAGMA user_version = {};", version), [])
         .map_err(|e| GhostError::Database(e.to_string()))?;
     Ok(())
@@ -723,6 +738,281 @@ fn migrate_v9(conn: &Connection) -> GhostResult<()> {
     )
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
+    Ok(())
+}
+
+/// Migration to v10: Add ON DELETE CASCADE to foreign keys (DB-C4)
+///
+/// This ensures that when parent records are deleted, orphaned child records
+/// are automatically cleaned up. Without CASCADE, deleting a parent could leave
+/// orphaned child records that could cause constraint violations or data inconsistency.
+///
+/// Tables modified:
+/// - payouts: cascade from rounds
+/// - verifications: cascade from nodes
+/// - peer_reputation: cascade from peers
+/// - wraith_participants: cascade from wraith_rounds
+/// - reconciliation_entries: cascade from reconciliation_state
+/// - withdrawal_requests: cascade from ghost_locks
+/// - elder_bonds: cascade from nodes
+/// - elder_slashing: cascade from nodes
+fn migrate_v10(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v10: Adding ON DELETE CASCADE to foreign keys (DB-C4)");
+
+    // SQLite doesn't support ALTER TABLE to modify foreign key constraints,
+    // so we need to recreate each table with the CASCADE option.
+    // We use a safe pattern: create new table, copy data, drop old, rename new.
+
+    conn.execute_batch(
+        r#"
+        -- Enable foreign keys for this session
+        PRAGMA foreign_keys = OFF;
+
+        -- 1. payouts table: cascade from rounds
+        CREATE TABLE IF NOT EXISTS payouts_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            round_id INTEGER NOT NULL,
+            recipient_id TEXT NOT NULL,
+            recipient_type TEXT NOT NULL,
+            address TEXT NOT NULL,
+            amount_sats INTEGER NOT NULL,
+            txid TEXT,
+            vout INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at INTEGER NOT NULL,
+            confirmed_at INTEGER,
+            FOREIGN KEY (round_id) REFERENCES rounds(round_id) ON DELETE CASCADE
+        );
+        INSERT INTO payouts_new SELECT * FROM payouts;
+        DROP TABLE payouts;
+        ALTER TABLE payouts_new RENAME TO payouts;
+        CREATE INDEX IF NOT EXISTS idx_payouts_round ON payouts(round_id);
+        CREATE INDEX IF NOT EXISTS idx_payouts_recipient ON payouts(recipient_id);
+        CREATE INDEX IF NOT EXISTS idx_payouts_status ON payouts(status);
+
+        -- 2. verifications table: cascade from nodes
+        CREATE TABLE IF NOT EXISTS verifications_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            node_id TEXT NOT NULL,
+            challenger_id TEXT NOT NULL,
+            capability TEXT NOT NULL,
+            challenge_type TEXT NOT NULL,
+            challenge_data TEXT NOT NULL,
+            response_data TEXT,
+            result TEXT NOT NULL DEFAULT 'pending',
+            started_at INTEGER NOT NULL,
+            completed_at INTEGER,
+            FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+        );
+        INSERT INTO verifications_new SELECT * FROM verifications;
+        DROP TABLE verifications;
+        ALTER TABLE verifications_new RENAME TO verifications;
+        CREATE INDEX IF NOT EXISTS idx_verifications_node ON verifications(node_id);
+        CREATE INDEX IF NOT EXISTS idx_verifications_result ON verifications(result);
+
+        -- 3. peer_reputation table: cascade from peers
+        CREATE TABLE IF NOT EXISTS peer_reputation_new (
+            peer_id TEXT PRIMARY KEY,
+            reputation_score REAL NOT NULL DEFAULT 100.0,
+            shares_relayed INTEGER NOT NULL DEFAULT 0,
+            shares_invalid INTEGER NOT NULL DEFAULT 0,
+            blocks_relayed INTEGER NOT NULL DEFAULT 0,
+            latency_avg_ms REAL NOT NULL DEFAULT 0,
+            uptime_percent REAL NOT NULL DEFAULT 0,
+            last_calculated INTEGER NOT NULL,
+            FOREIGN KEY (peer_id) REFERENCES peers(peer_id) ON DELETE CASCADE
+        );
+        INSERT INTO peer_reputation_new SELECT * FROM peer_reputation;
+        DROP TABLE peer_reputation;
+        ALTER TABLE peer_reputation_new RENAME TO peer_reputation;
+
+        -- 4. wraith_participants table: cascade from wraith_rounds
+        CREATE TABLE IF NOT EXISTS wraith_participants_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            round_id TEXT NOT NULL,
+            ghost_id TEXT NOT NULL,
+            blinded_output TEXT NOT NULL,
+            unblinded_output TEXT,
+            input_txid TEXT,
+            input_vout INTEGER,
+            status TEXT NOT NULL DEFAULT 'registered',
+            joined_at INTEGER NOT NULL,
+            FOREIGN KEY (round_id) REFERENCES wraith_rounds(round_id) ON DELETE CASCADE,
+            UNIQUE(round_id, ghost_id)
+        );
+        INSERT INTO wraith_participants_new SELECT * FROM wraith_participants;
+        DROP TABLE wraith_participants;
+        ALTER TABLE wraith_participants_new RENAME TO wraith_participants;
+        CREATE INDEX IF NOT EXISTS idx_wraith_participants_round ON wraith_participants(round_id);
+
+        -- 5. reconciliation_entries table: cascade from reconciliation_state
+        CREATE TABLE IF NOT EXISTS reconciliation_entries_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL,
+            ghost_id TEXT NOT NULL,
+            amount_sats INTEGER NOT NULL,
+            direction TEXT NOT NULL,
+            merkle_proof TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            FOREIGN KEY (batch_id) REFERENCES reconciliation_state(batch_id) ON DELETE CASCADE
+        );
+        INSERT INTO reconciliation_entries_new SELECT * FROM reconciliation_entries;
+        DROP TABLE reconciliation_entries;
+        ALTER TABLE reconciliation_entries_new RENAME TO reconciliation_entries;
+        CREATE INDEX IF NOT EXISTS idx_reconciliation_entries_batch ON reconciliation_entries(batch_id);
+        CREATE INDEX IF NOT EXISTS idx_reconciliation_entries_ghost ON reconciliation_entries(ghost_id);
+
+        -- 6. withdrawal_requests table: cascade from ghost_locks
+        -- Note: Also recreate the partial unique index for double-spend prevention
+        CREATE TABLE IF NOT EXISTS withdrawal_requests_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ghost_id TEXT NOT NULL,
+            lock_id TEXT NOT NULL,
+            destination_address TEXT NOT NULL,
+            amount_sats INTEGER NOT NULL,
+            fee_sats INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            batch_id TEXT,
+            l1_txid TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (lock_id) REFERENCES ghost_locks(lock_id) ON DELETE CASCADE
+        );
+        INSERT INTO withdrawal_requests_new SELECT * FROM withdrawal_requests;
+        DROP TABLE withdrawal_requests;
+        ALTER TABLE withdrawal_requests_new RENAME TO withdrawal_requests;
+        CREATE INDEX IF NOT EXISTS idx_withdrawal_ghost ON withdrawal_requests(ghost_id);
+        CREATE INDEX IF NOT EXISTS idx_withdrawal_lock ON withdrawal_requests(lock_id);
+        CREATE INDEX IF NOT EXISTS idx_withdrawal_status ON withdrawal_requests(status);
+        CREATE INDEX IF NOT EXISTS idx_withdrawal_batch ON withdrawal_requests(batch_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_withdrawals_pending_lock
+        ON withdrawal_requests(lock_id)
+        WHERE status IN ('pending', 'batched');
+
+        -- 7. elder_bonds table: cascade from nodes
+        CREATE TABLE IF NOT EXISTS elder_bonds_new (
+            node_id TEXT PRIMARY KEY,
+            txid TEXT NOT NULL,
+            vout INTEGER NOT NULL,
+            amount_sats INTEGER NOT NULL,
+            script_pubkey TEXT NOT NULL,
+            confirmation_height INTEGER,
+            spent_txid TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+        );
+        INSERT INTO elder_bonds_new SELECT * FROM elder_bonds;
+        DROP TABLE elder_bonds;
+        ALTER TABLE elder_bonds_new RENAME TO elder_bonds;
+        CREATE INDEX IF NOT EXISTS idx_elder_bonds_status ON elder_bonds(status);
+        CREATE INDEX IF NOT EXISTS idx_elder_bonds_txid ON elder_bonds(txid);
+
+        -- 8. elder_slashing table: cascade from nodes
+        CREATE TABLE IF NOT EXISTS elder_slashing_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            node_id TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            evidence_hash TEXT NOT NULL,
+            slashed_amount_sats INTEGER NOT NULL,
+            slashing_txid TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+        );
+        INSERT INTO elder_slashing_new SELECT * FROM elder_slashing;
+        DROP TABLE elder_slashing;
+        ALTER TABLE elder_slashing_new RENAME TO elder_slashing;
+        CREATE INDEX IF NOT EXISTS idx_elder_slashing_node ON elder_slashing(node_id);
+
+        -- Re-enable foreign keys
+        PRAGMA foreign_keys = ON;
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("DB-C4: Added ON DELETE CASCADE to all foreign keys");
+    Ok(())
+}
+
+/// Migration to v11: Canonical elder list tables (P2P-C1/C2/C3)
+fn migrate_v11(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v11: Adding canonical elder list tables (P2P-C1/C2/C3)");
+
+    conn.execute_batch(
+        r#"
+        -- Canonical elder lists by epoch
+        -- Stores the agreed-upon elder list for each epoch
+        CREATE TABLE IF NOT EXISTS canonical_elder_lists (
+            epoch INTEGER PRIMARY KEY,
+            merkle_root TEXT NOT NULL,
+            elder_count INTEGER NOT NULL,
+            activated_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_elder_lists_activated ON canonical_elder_lists(activated_at);
+
+        -- Elder entries (members of each epoch's canonical list)
+        CREATE TABLE IF NOT EXISTS elder_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            epoch INTEGER NOT NULL,
+            node_id TEXT NOT NULL,
+            registered_epoch INTEGER NOT NULL,
+            pow_nonce INTEGER NOT NULL,
+            pow_difficulty INTEGER NOT NULL,
+            first_seen INTEGER NOT NULL,
+            uptime_at_registration REAL NOT NULL,
+            position INTEGER NOT NULL,
+            FOREIGN KEY (epoch) REFERENCES canonical_elder_lists(epoch) ON DELETE CASCADE,
+            UNIQUE(epoch, node_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_elder_entries_epoch ON elder_entries(epoch);
+        CREATE INDEX IF NOT EXISTS idx_elder_entries_node ON elder_entries(node_id);
+
+        -- Elder approvals (BFT signatures for elder list transitions)
+        CREATE TABLE IF NOT EXISTS elder_approvals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            epoch INTEGER NOT NULL,
+            approver_node_id TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            approved_at INTEGER NOT NULL,
+            FOREIGN KEY (epoch) REFERENCES canonical_elder_lists(epoch) ON DELETE CASCADE,
+            UNIQUE(epoch, approver_node_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_elder_approvals_epoch ON elder_approvals(epoch);
+
+        -- Pending elder registration requests
+        CREATE TABLE IF NOT EXISTS elder_registration_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidate_node_id TEXT NOT NULL UNIQUE,
+            pow_nonce INTEGER NOT NULL,
+            pow_difficulty INTEGER NOT NULL,
+            first_seen INTEGER NOT NULL,
+            uptime_percent REAL NOT NULL,
+            target_epoch INTEGER NOT NULL,
+            requested_at INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+        );
+        CREATE INDEX IF NOT EXISTS idx_elder_reg_status ON elder_registration_requests(status);
+
+        -- Elder registration votes (BFT votes on registration requests)
+        CREATE TABLE IF NOT EXISTS elder_registration_votes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id INTEGER NOT NULL,
+            voter_node_id TEXT NOT NULL,
+            approve INTEGER NOT NULL,
+            rejection_reason TEXT,
+            signature TEXT NOT NULL,
+            voted_at INTEGER NOT NULL,
+            FOREIGN KEY (request_id) REFERENCES elder_registration_requests(id) ON DELETE CASCADE,
+            UNIQUE(request_id, voter_node_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_elder_reg_votes_request ON elder_registration_votes(request_id);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("P2P-C1/C2/C3: Added canonical elder list tables");
     Ok(())
 }
 

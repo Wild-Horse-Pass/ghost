@@ -54,6 +54,8 @@ pub mod topics {
     pub const ZK_PAYOUT_VOTE: &[u8] = b"zkpvote";
     /// Verification result topic
     pub const VERIFICATION: &[u8] = b"verify";
+    /// P2P-H3: Equivocation proof topic for Byzantine behavior evidence
+    pub const EQUIVOCATION: &[u8] = b"equivoc";
 }
 
 /// Consensus message envelope
@@ -139,6 +141,14 @@ pub enum MessageType {
     ZkPayoutVote,
     /// Capability verification result
     VerificationResult,
+    /// P2P-H3: Equivocation proof broadcast for Byzantine behavior evidence
+    EquivocationProof,
+    /// P2P-C1: Elder registration proposal (new elder candidate)
+    ElderRegistrationProposal,
+    /// P2P-C2: Elder list proposal (proposed canonical list for new epoch)
+    ElderListProposal,
+    /// P2P-C3: Elder list approval (vote for proposed list)
+    ElderListApproval,
 }
 
 impl MessageType {
@@ -158,6 +168,10 @@ impl MessageType {
             Self::ZkPayoutProposal => topics::ZK_PAYOUT_PROPOSAL,
             Self::ZkPayoutVote => topics::ZK_PAYOUT_VOTE,
             Self::VerificationResult => topics::VERIFICATION,
+            Self::EquivocationProof => topics::EQUIVOCATION,
+            Self::ElderRegistrationProposal => topics::ELDER,
+            Self::ElderListProposal => topics::ELDER,
+            Self::ElderListApproval => topics::ELDER,
         }
     }
 
@@ -179,6 +193,10 @@ impl MessageType {
             Self::ZkPayoutProposal => "zkpayout",
             Self::ZkPayoutVote => "zkpvote",
             Self::VerificationResult => "verify",
+            Self::EquivocationProof => "equivoc",
+            Self::ElderRegistrationProposal => "elder",
+            Self::ElderListProposal => "elder",
+            Self::ElderListApproval => "elder",
         }
     }
 }
@@ -695,6 +713,287 @@ pub enum ZkPayoutConsensusResult {
         rejections: u32,
         total_validators: u32,
     },
+}
+
+/// P2P-H3: Equivocation proof message for Byzantine behavior evidence
+///
+/// Broadcast when a node is detected voting for conflicting proposals in the same round.
+/// Receiving nodes should:
+/// 1. Verify the proof (both signatures must be valid for the claimed node)
+/// 2. Ban the equivocating node
+/// 3. Persist the proof for forensic analysis
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EquivocationProofMessage {
+    /// Node ID of the equivocating node
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub equivocator: [u8; 32],
+    /// Round in which equivocation occurred
+    pub round_id: u64,
+    /// Type of vote (e.g., "payout_vote", "zk_vote")
+    pub vote_type: String,
+    /// First vote (serialized VoteMessage or similar)
+    pub vote1_data: Vec<u8>,
+    /// Second conflicting vote
+    pub vote2_data: Vec<u8>,
+    /// Node that detected the equivocation
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub reporter: [u8; 32],
+    /// Reporter's signature over the proof
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub reporter_signature: [u8; 64],
+    /// Timestamp when equivocation was detected
+    pub timestamp: u64,
+}
+
+impl EquivocationProofMessage {
+    /// Create a new equivocation proof message
+    pub fn new(
+        equivocator: [u8; 32],
+        round_id: u64,
+        vote_type: String,
+        vote1_data: Vec<u8>,
+        vote2_data: Vec<u8>,
+        reporter: [u8; 32],
+    ) -> Self {
+        Self {
+            equivocator,
+            round_id,
+            vote_type,
+            vote1_data,
+            vote2_data,
+            reporter,
+            reporter_signature: [0u8; 64], // Must be set via sign()
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        }
+    }
+
+    /// Get the message to be signed by the reporter
+    pub fn signing_message(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"EquivocationProof/v1");
+        hasher.update(self.equivocator);
+        hasher.update(self.round_id.to_le_bytes());
+        hasher.update(self.vote_type.as_bytes());
+        hasher.update(&self.vote1_data);
+        hasher.update(&self.vote2_data);
+        hasher.update(self.reporter);
+        hasher.finalize().into()
+    }
+
+    /// Sign the proof with the reporter's identity
+    pub fn sign(&mut self, sign_fn: impl FnOnce(&[u8]) -> [u8; 64]) {
+        let message = self.signing_message();
+        self.reporter_signature = sign_fn(&message);
+    }
+
+    /// Verify the reporter's signature
+    pub fn verify_reporter_signature(&self) -> bool {
+        let message = self.signing_message();
+        ghost_common::identity::verify_signature(&self.reporter, &message, &self.reporter_signature)
+            .unwrap_or(false)
+    }
+}
+
+// =============================================================================
+// P2P-C1/C2/C3: CANONICAL ELDER LIST Messages
+// =============================================================================
+
+/// P2P-C1: Elder registration proposal message
+///
+/// Sent when a node wants to register as an elder. Requires PoW proof
+/// and 7-day uptime at 95%+. Current elders vote on the proposal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElderRegistrationProposalMessage {
+    /// Candidate's node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub candidate: NodeId,
+    /// PoW nonce that was mined
+    pub pow_nonce: u64,
+    /// PoW difficulty achieved
+    pub pow_difficulty: u32,
+    /// Candidate's first seen timestamp (Unix seconds)
+    pub first_seen: u64,
+    /// Current uptime percentage (must be >= 95%)
+    pub uptime_percent: f64,
+    /// Proposer's node ID (the candidate or an elder nominating them)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub proposer: NodeId,
+    /// Proposer's signature over the proposal data
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub proposer_signature: [u8; 64],
+    /// Target epoch (current epoch + 1)
+    pub target_epoch: u64,
+    /// Timestamp of proposal (Unix milliseconds)
+    pub timestamp: u64,
+}
+
+impl ElderRegistrationProposalMessage {
+    /// Get the message to be signed
+    pub fn signing_message(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"ElderRegistrationProposal/v1");
+        hasher.update(&self.candidate);
+        hasher.update(&self.pow_nonce.to_le_bytes());
+        hasher.update(&self.pow_difficulty.to_le_bytes());
+        hasher.update(&self.first_seen.to_le_bytes());
+        hasher.update(&self.uptime_percent.to_le_bytes());
+        hasher.update(&self.target_epoch.to_le_bytes());
+        hasher.finalize().into()
+    }
+
+    /// Verify the proposer's signature
+    pub fn verify_signature(&self) -> bool {
+        let message = self.signing_message();
+        ghost_common::identity::verify_signature(&self.proposer, &message, &self.proposer_signature)
+            .unwrap_or(false)
+    }
+}
+
+/// P2P-C2: Elder list proposal message
+///
+/// Proposes a new canonical elder list for a new epoch. Contains all
+/// elders and the merkle root. Requires >67% approval from current elders.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElderListProposalMessage {
+    /// Proposed epoch number
+    pub epoch: u64,
+    /// Merkle root of the elder list
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub merkle_root: [u8; 32],
+    /// Number of elders in the list
+    pub elder_count: u32,
+    /// Serialized elder entries (for nodes that need the full list)
+    pub elders_data: Vec<u8>,
+    /// Proposer's node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub proposer: NodeId,
+    /// Proposer's signature
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub proposer_signature: [u8; 64],
+    /// Timestamp (Unix milliseconds)
+    pub timestamp: u64,
+}
+
+impl ElderListProposalMessage {
+    /// Get the message to be signed
+    pub fn signing_message(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"ElderListProposal/v1");
+        hasher.update(&self.epoch.to_le_bytes());
+        hasher.update(&self.merkle_root);
+        hasher.update(&self.elder_count.to_le_bytes());
+        hasher.finalize().into()
+    }
+
+    /// Verify the proposer's signature
+    pub fn verify_signature(&self) -> bool {
+        let message = self.signing_message();
+        ghost_common::identity::verify_signature(&self.proposer, &message, &self.proposer_signature)
+            .unwrap_or(false)
+    }
+}
+
+/// P2P-C3: Elder list approval message
+///
+/// An approval vote from an elder for a proposed elder list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElderListApprovalMessage {
+    /// Epoch being approved
+    pub epoch: u64,
+    /// Merkle root being approved
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub merkle_root: [u8; 32],
+    /// Approver's node ID (must be an elder in current epoch)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub approver: NodeId,
+    /// Approver's signature over (epoch || merkle_root)
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub signature: [u8; 64],
+    /// Timestamp (Unix milliseconds)
+    pub timestamp: u64,
+}
+
+impl ElderListApprovalMessage {
+    /// Get the message to be signed
+    pub fn signing_message(epoch: u64, merkle_root: &[u8; 32]) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(48); // 8 + 8 + 32
+        msg.extend_from_slice(b"ElderListApproval/v1");
+        msg.extend_from_slice(&epoch.to_le_bytes());
+        msg.extend_from_slice(merkle_root);
+        msg
+    }
+
+    /// Create a new approval message
+    pub fn new(
+        epoch: u64,
+        merkle_root: [u8; 32],
+        approver: NodeId,
+        sign_fn: impl FnOnce(&[u8]) -> [u8; 64],
+    ) -> Self {
+        let message = Self::signing_message(epoch, &merkle_root);
+        let signature = sign_fn(&message);
+        Self {
+            epoch,
+            merkle_root,
+            approver,
+            signature,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        }
+    }
+
+    /// Verify the approver's signature
+    pub fn verify_signature(&self) -> bool {
+        let message = Self::signing_message(self.epoch, &self.merkle_root);
+        ghost_common::identity::verify_signature(&self.approver, &message, &self.signature)
+            .unwrap_or(false)
+    }
+}
+
+/// Elder registration vote message
+///
+/// An elder's vote on whether to approve a new elder registration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ElderRegistrationVoteMessage {
+    /// Candidate being voted on
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub candidate: NodeId,
+    /// Target epoch
+    pub target_epoch: u64,
+    /// Voter's node ID (must be current elder)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub voter: NodeId,
+    /// Approve (true) or reject (false)
+    pub approve: bool,
+    /// Rejection reason if not approved
+    pub rejection_reason: Option<String>,
+    /// Voter's signature
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub signature: [u8; 64],
+    /// Timestamp (Unix milliseconds)
+    pub timestamp: u64,
+}
+
+impl ElderRegistrationVoteMessage {
+    /// Get the message to be signed
+    pub fn signing_message(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"ElderRegistrationVote/v1");
+        hasher.update(&self.candidate);
+        hasher.update(&self.target_epoch.to_le_bytes());
+        hasher.update(&[self.approve as u8]);
+        hasher.finalize().into()
+    }
+
+    /// Verify the voter's signature
+    pub fn verify_signature(&self) -> bool {
+        let message = self.signing_message();
+        ghost_common::identity::verify_signature(&self.voter, &message, &self.signature)
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]

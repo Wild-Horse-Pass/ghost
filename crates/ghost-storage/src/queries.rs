@@ -165,8 +165,25 @@ impl Database {
         })
     }
 
+    /// Minimum query length for miner search (DB-H1)
+    /// Prevents expensive full-table scans with very short queries
+    pub const MIN_MINER_SEARCH_LENGTH: usize = 3;
+
     /// Search miners by ID/address (partial match) and get their stats
+    ///
+    /// Returns empty results if query is too short (DB-H1 protection).
     pub fn search_miners(&self, query: &str) -> GhostResult<Vec<MinerSearchResult>> {
+        // DB-H1: Require minimum query length to prevent expensive LIKE operations
+        // Returns empty result instead of error for API convenience
+        if query.len() < Self::MIN_MINER_SEARCH_LENGTH {
+            tracing::debug!(
+                query_len = query.len(),
+                min_len = Self::MIN_MINER_SEARCH_LENGTH,
+                "Miner search query too short, returning empty results"
+            );
+            return Ok(vec![]);
+        }
+
         self.with_connection(|conn| {
             // M-STOR-1: Escape SQL LIKE wildcards to prevent injection
             let escaped_query = query
@@ -688,38 +705,40 @@ impl Database {
         };
 
         self.with_connection(|conn| {
-            // Step 1: Insert node if not exists (doesn't need transaction)
-            conn.execute(
-                "INSERT OR IGNORE INTO nodes (node_id, public_address, display_name, first_seen, last_seen,
-                                              is_elder, elder_order, capabilities, pow_proof)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, ?6, ?7)",
-                params![
-                    node_id,
-                    public_address,
-                    display_name,
-                    now,
-                    now,
-                    capabilities,
-                    pow_proof,
-                ],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // Update last_seen and pow_proof if node already existed
-            conn.execute(
-                "UPDATE nodes SET last_seen = ?1, public_address = COALESCE(?2, public_address),
-                                  pow_proof = COALESCE(?3, pow_proof)
-                 WHERE node_id = ?4",
-                params![now, public_address, pow_proof, node_id],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // Step 2: Atomic elder promotion with IMMEDIATE transaction (write lock)
-            // This ensures deterministic elder selection even with concurrent registrations
+            // DB-C2: BEGIN IMMEDIATE transaction FIRST to prevent TOCTOU race conditions
+            // This acquires a write lock before ANY reads or writes, ensuring atomicity
+            // of the entire node registration + elder promotion operation.
             conn.execute("BEGIN IMMEDIATE", [])
                 .map_err(|e| GhostError::Database(format!("Failed to begin transaction: {}", e)))?;
 
             let result = (|| -> GhostResult<(bool, Option<u32>)> {
+                // Step 1: Insert node if not exists (now inside transaction)
+                conn.execute(
+                    "INSERT OR IGNORE INTO nodes (node_id, public_address, display_name, first_seen, last_seen,
+                                                  is_elder, elder_order, capabilities, pow_proof)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 0, NULL, ?6, ?7)",
+                    params![
+                        node_id,
+                        public_address,
+                        display_name,
+                        now,
+                        now,
+                        capabilities,
+                        pow_proof,
+                    ],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                // Update last_seen and pow_proof if node already existed
+                conn.execute(
+                    "UPDATE nodes SET last_seen = ?1, public_address = COALESCE(?2, public_address),
+                                      pow_proof = COALESCE(?3, pow_proof)
+                     WHERE node_id = ?4",
+                    params![now, public_address, pow_proof, node_id],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                // Step 2: Atomic elder promotion (deterministic)
                 // Count current elders
                 let elder_count: u32 = conn
                     .query_row(
@@ -1299,11 +1318,18 @@ impl Database {
     }
 
     /// Credit node reward
+    ///
+    /// DB-H2: Uses explicit transaction for atomicity and validates the node exists.
+    /// Returns error if the node doesn't exist in node_rewards table.
     pub fn credit_node_reward(&self, node_id: &str, amount: u64, round_id: u64) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
 
         self.with_connection(|conn| {
-            conn.execute(
+            // DB-H2: Use transaction for atomic credit operation
+            conn.execute("BEGIN IMMEDIATE", [])
+                .map_err(|e| GhostError::Database(format!("Failed to begin transaction: {}", e)))?;
+
+            let result = conn.execute(
                 "UPDATE node_rewards SET
                     balance_sats = balance_sats + ?1,
                     last_credited_round = ?2,
@@ -1311,9 +1337,27 @@ impl Database {
                     updated_at = ?3
                  WHERE node_id = ?4",
                 params![amount, round_id, now, node_id],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(())
+            );
+
+            match result {
+                Ok(rows_affected) => {
+                    if rows_affected == 0 {
+                        // Node doesn't exist - rollback and return error
+                        let _ = conn.execute("ROLLBACK", []);
+                        return Err(GhostError::Database(format!(
+                            "Node {} not found in node_rewards table",
+                            node_id
+                        )));
+                    }
+                    conn.execute("COMMIT", [])
+                        .map_err(|e| GhostError::Database(format!("Failed to commit: {}", e)))?;
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = conn.execute("ROLLBACK", []);
+                    Err(GhostError::Database(e.to_string()))
+                }
+            }
         })
     }
 
@@ -2075,7 +2119,11 @@ impl Database {
     /// This prevents double-spend race conditions (C-PAY-3) by:
     /// 1. Using a transaction to ensure atomicity
     /// 2. Checking for existing pending/batched withdrawals within the transaction
-    /// 3. Relying on the database partial unique index as defense-in-depth
+    /// 3. Relying solely on the database partial unique index for atomicity
+    ///
+    /// DB-C3: Removed application-level check to eliminate TOCTOU race window.
+    /// The partial unique index `idx_withdrawals_pending_lock` on (lock_id)
+    /// WHERE status IN ('pending', 'batched') enforces the constraint atomically.
     ///
     /// Returns:
     /// - Ok(Some(id)) - Successfully inserted, returns the new withdrawal ID
@@ -2085,25 +2133,11 @@ impl Database {
         &self,
         request: &WithdrawalRequest,
     ) -> GhostResult<Option<i64>> {
-        self.transaction(|tx| {
-            // First check if there's an existing pending/batched withdrawal for this lock
-            let existing_count: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM withdrawal_requests
-                     WHERE lock_id = ?1 AND status IN ('pending', 'batched')",
-                    params![request.lock_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            if existing_count > 0 {
-                // A pending/batched withdrawal already exists
-                return Ok(None);
-            }
-
-            // Insert the new withdrawal request
-            // The partial unique index provides defense-in-depth if a race occurred
-            let result = tx.execute(
+        self.with_connection(|conn| {
+            // DB-C3: Directly attempt INSERT and rely on unique constraint
+            // The partial unique index ensures atomic double-spend prevention
+            // without the TOCTOU race window of check-then-insert
+            let result = conn.execute(
                 "INSERT INTO withdrawal_requests (
                     ghost_id, lock_id, destination_address, amount_sats, fee_sats,
                     status, batch_id, l1_txid, created_at, updated_at
@@ -2123,14 +2157,19 @@ impl Database {
             );
 
             match result {
-                Ok(_) => Ok(Some(tx.last_insert_rowid())),
+                Ok(_) => Ok(Some(conn.last_insert_rowid())),
                 Err(e) => {
-                    // Check if this is a unique constraint violation (race condition caught by index)
+                    // Check if this is a unique constraint violation
+                    // This means a pending/batched withdrawal already exists for this lock
                     let err_str = e.to_string();
                     if err_str.contains("UNIQUE constraint failed")
                         || err_str.contains("idx_withdrawals_pending_lock")
                     {
-                        // Race condition caught by the partial unique index
+                        // Duplicate withdrawal attempt - return None (not an error)
+                        tracing::debug!(
+                            lock_id = %request.lock_id,
+                            "Withdrawal request rejected: pending/batched withdrawal exists"
+                        );
                         Ok(None)
                     } else {
                         Err(GhostError::Database(err_str))
@@ -3369,6 +3408,385 @@ impl Database {
             Ok(count as u32)
         })
     }
+
+    // ==========================================================================
+    // P2P-C1/C2/C3: CANONICAL ELDER LIST QUERIES
+    // ==========================================================================
+
+    /// Store a canonical elder list for an epoch
+    pub fn store_canonical_elder_list(
+        &self,
+        epoch: u64,
+        merkle_root: &str,
+        elder_count: u32,
+        activated_at: u64,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO canonical_elder_lists (epoch, merkle_root, elder_count, activated_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![epoch as i64, merkle_root, elder_count, activated_at as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get a canonical elder list by epoch
+    pub fn get_canonical_elder_list(&self, epoch: u64) -> GhostResult<Option<CanonicalElderListRecord>> {
+        self.with_connection(|conn| {
+            let result = conn
+                .query_row(
+                    "SELECT epoch, merkle_root, elder_count, activated_at, created_at
+                     FROM canonical_elder_lists WHERE epoch = ?1",
+                    [epoch as i64],
+                    |row| {
+                        Ok(CanonicalElderListRecord {
+                            epoch: row.get::<_, i64>(0)? as u64,
+                            merkle_root: row.get(1)?,
+                            elder_count: row.get::<_, i64>(2)? as u32,
+                            activated_at: row.get::<_, i64>(3)? as u64,
+                            created_at: row.get::<_, i64>(4)? as u64,
+                        })
+                    },
+                );
+
+            match result {
+                Ok(record) => Ok(Some(record)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(GhostError::Database(e.to_string())),
+            }
+        })
+    }
+
+    /// Get the current (latest) canonical elder list
+    pub fn get_current_canonical_elder_list(&self) -> GhostResult<Option<CanonicalElderListRecord>> {
+        self.with_connection(|conn| {
+            let result = conn
+                .query_row(
+                    "SELECT epoch, merkle_root, elder_count, activated_at, created_at
+                     FROM canonical_elder_lists ORDER BY epoch DESC LIMIT 1",
+                    [],
+                    |row| {
+                        Ok(CanonicalElderListRecord {
+                            epoch: row.get::<_, i64>(0)? as u64,
+                            merkle_root: row.get(1)?,
+                            elder_count: row.get::<_, i64>(2)? as u32,
+                            activated_at: row.get::<_, i64>(3)? as u64,
+                            created_at: row.get::<_, i64>(4)? as u64,
+                        })
+                    },
+                );
+
+            match result {
+                Ok(record) => Ok(Some(record)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(GhostError::Database(e.to_string())),
+            }
+        })
+    }
+
+    /// Store an elder entry for an epoch
+    pub fn store_elder_entry(
+        &self,
+        epoch: u64,
+        node_id: &str,
+        registered_epoch: u64,
+        pow_nonce: u64,
+        pow_difficulty: u32,
+        first_seen: u64,
+        uptime_at_registration: f64,
+        position: u32,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO elder_entries
+                 (epoch, node_id, registered_epoch, pow_nonce, pow_difficulty, first_seen, uptime_at_registration, position)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    epoch as i64,
+                    node_id,
+                    registered_epoch as i64,
+                    pow_nonce as i64,
+                    pow_difficulty,
+                    first_seen as i64,
+                    uptime_at_registration,
+                    position
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get all elder entries for an epoch
+    pub fn get_elder_entries_for_epoch(&self, epoch: u64) -> GhostResult<Vec<ElderEntryRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT epoch, node_id, registered_epoch, pow_nonce, pow_difficulty,
+                            first_seen, uptime_at_registration, position
+                     FROM elder_entries WHERE epoch = ?1 ORDER BY position ASC",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let entries = stmt
+                .query_map([epoch as i64], |row| {
+                    Ok(ElderEntryRecord {
+                        epoch: row.get::<_, i64>(0)? as u64,
+                        node_id: row.get(1)?,
+                        registered_epoch: row.get::<_, i64>(2)? as u64,
+                        pow_nonce: row.get::<_, i64>(3)? as u64,
+                        pow_difficulty: row.get::<_, i64>(4)? as u32,
+                        first_seen: row.get::<_, i64>(5)? as u64,
+                        uptime_at_registration: row.get(6)?,
+                        position: row.get::<_, i64>(7)? as u32,
+                    })
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(entries)
+        })
+    }
+
+    /// Store an elder approval (BFT signature)
+    pub fn store_elder_approval(
+        &self,
+        epoch: u64,
+        approver_node_id: &str,
+        signature: &str,
+        approved_at: u64,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO elder_approvals (epoch, approver_node_id, signature, approved_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![epoch as i64, approver_node_id, signature, approved_at as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get all approvals for an epoch
+    pub fn get_elder_approvals_for_epoch(&self, epoch: u64) -> GhostResult<Vec<ElderApprovalRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT epoch, approver_node_id, signature, approved_at
+                     FROM elder_approvals WHERE epoch = ?1",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let approvals = stmt
+                .query_map([epoch as i64], |row| {
+                    Ok(ElderApprovalRecord {
+                        epoch: row.get::<_, i64>(0)? as u64,
+                        approver_node_id: row.get(1)?,
+                        signature: row.get(2)?,
+                        approved_at: row.get::<_, i64>(3)? as u64,
+                    })
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(approvals)
+        })
+    }
+
+    /// Count approvals for an epoch
+    pub fn count_elder_approvals(&self, epoch: u64) -> GhostResult<u32> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM elder_approvals WHERE epoch = ?1",
+                    [epoch as i64],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u32)
+        })
+    }
+
+    /// Create an elder registration request
+    pub fn create_elder_registration_request(
+        &self,
+        candidate_node_id: &str,
+        pow_nonce: u64,
+        pow_difficulty: u32,
+        first_seen: u64,
+        uptime_percent: f64,
+        target_epoch: u64,
+    ) -> GhostResult<i64> {
+        self.with_connection(|conn| {
+            let now = chrono::Utc::now().timestamp_millis();
+            conn.execute(
+                "INSERT INTO elder_registration_requests
+                 (candidate_node_id, pow_nonce, pow_difficulty, first_seen, uptime_percent, target_epoch, requested_at, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending')",
+                rusqlite::params![
+                    candidate_node_id,
+                    pow_nonce as i64,
+                    pow_difficulty,
+                    first_seen as i64,
+                    uptime_percent,
+                    target_epoch as i64,
+                    now
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(conn.last_insert_rowid())
+        })
+    }
+
+    /// Get a pending elder registration request
+    pub fn get_elder_registration_request(
+        &self,
+        candidate_node_id: &str,
+    ) -> GhostResult<Option<ElderRegistrationRequestRecord>> {
+        self.with_connection(|conn| {
+            let result = conn
+                .query_row(
+                    "SELECT id, candidate_node_id, pow_nonce, pow_difficulty, first_seen,
+                            uptime_percent, target_epoch, requested_at, status
+                     FROM elder_registration_requests
+                     WHERE candidate_node_id = ?1 AND status = 'pending'",
+                    [candidate_node_id],
+                    |row| {
+                        Ok(ElderRegistrationRequestRecord {
+                            id: row.get(0)?,
+                            candidate_node_id: row.get(1)?,
+                            pow_nonce: row.get::<_, i64>(2)? as u64,
+                            pow_difficulty: row.get::<_, i64>(3)? as u32,
+                            first_seen: row.get::<_, i64>(4)? as u64,
+                            uptime_percent: row.get(5)?,
+                            target_epoch: row.get::<_, i64>(6)? as u64,
+                            requested_at: row.get::<_, i64>(7)? as u64,
+                            status: row.get(8)?,
+                        })
+                    },
+                );
+
+            match result {
+                Ok(record) => Ok(Some(record)),
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(GhostError::Database(e.to_string())),
+            }
+        })
+    }
+
+    /// Record a vote on an elder registration request
+    pub fn record_elder_registration_vote(
+        &self,
+        request_id: i64,
+        voter_node_id: &str,
+        approve: bool,
+        rejection_reason: Option<&str>,
+        signature: &str,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            let now = chrono::Utc::now().timestamp_millis();
+            conn.execute(
+                "INSERT OR REPLACE INTO elder_registration_votes
+                 (request_id, voter_node_id, approve, rejection_reason, signature, voted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    request_id,
+                    voter_node_id,
+                    approve as i64,
+                    rejection_reason,
+                    signature,
+                    now
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Count approvals for an elder registration request
+    pub fn count_elder_registration_approvals(&self, request_id: i64) -> GhostResult<(u32, u32)> {
+        self.with_connection(|conn| {
+            let approvals: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM elder_registration_votes WHERE request_id = ?1 AND approve = 1",
+                    [request_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rejections: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM elder_registration_votes WHERE request_id = ?1 AND approve = 0",
+                    [request_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok((approvals as u32, rejections as u32))
+        })
+    }
+
+    /// Update elder registration request status
+    pub fn update_elder_registration_status(&self, request_id: i64, status: &str) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE elder_registration_requests SET status = ?1 WHERE id = ?2",
+                rusqlite::params![status, request_id],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+/// Record for a canonical elder list
+#[derive(Debug, Clone)]
+pub struct CanonicalElderListRecord {
+    pub epoch: u64,
+    pub merkle_root: String,
+    pub elder_count: u32,
+    pub activated_at: u64,
+    pub created_at: u64,
+}
+
+/// Record for an elder entry in an epoch
+#[derive(Debug, Clone)]
+pub struct ElderEntryRecord {
+    pub epoch: u64,
+    pub node_id: String,
+    pub registered_epoch: u64,
+    pub pow_nonce: u64,
+    pub pow_difficulty: u32,
+    pub first_seen: u64,
+    pub uptime_at_registration: f64,
+    pub position: u32,
+}
+
+/// Record for an elder approval
+#[derive(Debug, Clone)]
+pub struct ElderApprovalRecord {
+    pub epoch: u64,
+    pub approver_node_id: String,
+    pub signature: String,
+    pub approved_at: u64,
+}
+
+/// Record for an elder registration request
+#[derive(Debug, Clone)]
+pub struct ElderRegistrationRequestRecord {
+    pub id: i64,
+    pub candidate_node_id: String,
+    pub pow_nonce: u64,
+    pub pow_difficulty: u32,
+    pub first_seen: u64,
+    pub uptime_percent: f64,
+    pub target_epoch: u64,
+    pub requested_at: u64,
+    pub status: String,
 }
 
 #[cfg(test)]

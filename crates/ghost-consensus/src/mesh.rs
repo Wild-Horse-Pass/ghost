@@ -606,6 +606,10 @@ impl MeshNetwork {
             MessageType::HealthPing => self.config.ports.health_monitoring,
             MessageType::Discovery => self.config.ports.discovery,
             MessageType::ElderUpdate => self.config.ports.elder_management,
+            // P2P-C1/C2/C3: Elder registration messages use elder management port
+            MessageType::ElderRegistrationProposal
+            | MessageType::ElderListProposal
+            | MessageType::ElderListApproval => self.config.ports.elder_management,
             MessageType::PayoutProposal => self.config.ports.payout_proposal,
             // ZK-BFT messages use consensus voting port
             MessageType::ZkBlockProposal
@@ -614,6 +618,8 @@ impl MeshNetwork {
             | MessageType::ZkPayoutVote => self.config.ports.consensus_voting,
             // Verification results use health monitoring port
             MessageType::VerificationResult => self.config.ports.health_monitoring,
+            // P2P-H3: Equivocation proofs use consensus voting port
+            MessageType::EquivocationProof => self.config.ports.consensus_voting,
         };
         format!("tcp://{}:{}", host_only, base_port)
     }

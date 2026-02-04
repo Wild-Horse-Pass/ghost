@@ -48,6 +48,8 @@ use ghost_common::constants::BFT_THRESHOLD_PERCENT;
 use ghost_common::identity::verify_signature;
 use ghost_common::types::{ConsensusResult, NodeId, RoundId, VoteType};
 
+use crate::elder_list::CanonicalElderList;
+
 /// Proof of equivocation - a voter signing conflicting votes
 ///
 /// This proves that a node voted both approve AND reject for the same proposal,
@@ -198,6 +200,27 @@ impl VotingSession {
             result: None,
             equivocations: Vec::new(),
         }
+    }
+
+    /// Create a new voting session using a canonical elder list
+    ///
+    /// P2P-C1/C2/C3: This constructor uses the canonical elder list to determine
+    /// eligible voters, ensuring all nodes agree on who can vote.
+    pub fn from_elder_list(
+        round_id: RoundId,
+        proposal_hash: [u8; 32],
+        vote_type: VoteType,
+        elder_list: &CanonicalElderList,
+        timeout_ms: u64,
+    ) -> Self {
+        let eligible_voters = elder_list.get_eligible_voters();
+        info!(
+            round_id,
+            epoch = elder_list.epoch,
+            eligible_count = eligible_voters.len(),
+            "Created voting session from canonical elder list"
+        );
+        Self::new(round_id, proposal_hash, vote_type, eligible_voters, timeout_ms)
     }
 
     /// Add a vote to the session

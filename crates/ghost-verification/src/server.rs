@@ -332,6 +332,10 @@ pub struct VerificationState {
     /// Internal API authentication (H10/H11 security fix)
     /// When Some, internal endpoints require HMAC-SHA256 authentication
     pub internal_auth: Option<Arc<crate::auth::InternalAuth>>,
+    /// VF-C2: Whether to require internal API authentication at startup
+    /// When true (default), server will fail to start if internal_auth is not configured
+    /// When false, allows insecure mode for development/testing ONLY
+    pub require_internal_auth: bool,
 }
 
 /// Archive handler trait
@@ -414,6 +418,8 @@ impl VerificationState {
             record_share_fn: None,
             block_found_fn: None,
             internal_auth: None,
+            // VF-C2: Default to requiring internal auth for security
+            require_internal_auth: true,
         }
     }
 
@@ -423,6 +429,24 @@ impl VerificationState {
     /// HMAC-SHA256 authentication via X-Ghost-Signature and X-Ghost-Timestamp headers.
     pub fn with_internal_auth(mut self, auth: crate::auth::InternalAuth) -> Self {
         self.internal_auth = Some(Arc::new(auth));
+        self
+    }
+
+    /// VF-C2: Allow insecure internal API mode (for development/testing ONLY)
+    ///
+    /// **SECURITY WARNING**: This bypasses mandatory authentication for internal endpoints.
+    /// Only use this in development/test environments, NEVER in production.
+    ///
+    /// When `allow_insecure` is true:
+    /// - Server will start even without `internal_auth` configured
+    /// - Internal endpoints will be unprotected
+    /// - A warning will be logged at startup
+    ///
+    /// When `allow_insecure` is false (default):
+    /// - Server will fail to start if `internal_auth` is not configured
+    /// - This ensures production deployments are always protected
+    pub fn allow_insecure_internal_api(mut self, allow_insecure: bool) -> Self {
+        self.require_internal_auth = !allow_insecure;
         self
     }
 
@@ -993,7 +1017,35 @@ impl VerificationState {
 }
 
 /// Start verification server
+///
+/// # VF-C2: Mandatory Internal API Authentication
+///
+/// By default, the server requires internal API authentication to be configured.
+/// If `internal_auth` is None and `require_internal_auth` is true, startup fails.
+/// Use `allow_insecure_internal_api(true)` to bypass this check in dev environments.
 pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResult<()> {
+    // VF-C2: Validate internal API auth requirement
+    if state.require_internal_auth && state.internal_auth.is_none() {
+        return Err(GhostError::Config(
+            "VF-C2 SECURITY: Internal API authentication is required but not configured. \
+             Configure 'internal_api_secret' in pool.toml or use \
+             'allow_insecure_internal_api: true' in config (development ONLY)."
+                .to_string(),
+        ));
+    }
+
+    // VF-C2: Log security status
+    if state.internal_auth.is_some() {
+        info!("VF-C2: Internal API authentication ENABLED");
+    } else {
+        tracing::warn!(
+            "VF-C2 SECURITY WARNING: Internal API authentication DISABLED! \
+             /api/internal/* and /admin/* endpoints are UNPROTECTED. \
+             This is acceptable ONLY for development/testing environments. \
+             For production, configure 'internal_api_secret' in pool.toml."
+        );
+    }
+
     // CORS configuration - permissive for node dashboard access
     // The dashboard runs on port 3000 on the same machine and needs to access the API on 8080.
     // Since nodes may have various IP addresses, we allow any origin for API access.
@@ -1057,4 +1109,137 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
     .map_err(|e| GhostError::Internal(format!("Server error: {}", e)))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ghost_common::types::NodeCapabilities;
+    use ghost_policy::PolicyProfile;
+
+    fn test_secret() -> [u8; 32] {
+        let mut secret = [0u8; 32];
+        for (i, b) in secret.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_add(0x42);
+        }
+        secret
+    }
+
+    #[test]
+    fn test_verification_state_default_requires_auth() {
+        let state = VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        );
+
+        // Default should require internal auth
+        assert!(state.require_internal_auth);
+        assert!(state.internal_auth.is_none());
+    }
+
+    #[test]
+    fn test_verification_state_with_internal_auth() {
+        let secret = test_secret();
+        let auth = crate::auth::InternalAuth::new(&secret).unwrap();
+
+        let state = VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        )
+        .with_internal_auth(auth);
+
+        assert!(state.internal_auth.is_some());
+    }
+
+    #[test]
+    fn test_verification_state_allow_insecure_api() {
+        let state = VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        )
+        .allow_insecure_internal_api(true);
+
+        // Should allow insecure mode
+        assert!(!state.require_internal_auth);
+        assert!(state.internal_auth.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_start_server_fails_without_auth() {
+        let state = Arc::new(VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        ));
+
+        // Should fail because require_internal_auth is true but internal_auth is None
+        let result = start_server(state, 0).await;
+        assert!(result.is_err());
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("VF-C2"));
+        assert!(err_msg.contains("Internal API authentication is required"));
+    }
+
+    #[test]
+    fn test_auth_validation_insecure_mode() {
+        // When allow_insecure_internal_api(true) is set, the validation
+        // should pass even without auth configured
+        let state = VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        )
+        .allow_insecure_internal_api(true);
+
+        // The validation logic: require_internal_auth && internal_auth.is_none()
+        // With allow_insecure = true: require_internal_auth = false
+        // So: false && true = false -> no error
+        let should_fail = state.require_internal_auth && state.internal_auth.is_none();
+        assert!(!should_fail, "Insecure mode should bypass auth requirement");
+    }
+
+    #[test]
+    fn test_auth_validation_with_auth_configured() {
+        let secret = test_secret();
+        let auth = crate::auth::InternalAuth::new(&secret).unwrap();
+
+        let state = VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        )
+        .with_internal_auth(auth);
+
+        // The validation logic: require_internal_auth && internal_auth.is_none()
+        // With auth configured: internal_auth.is_none() = false
+        // So: true && false = false -> no error
+        let should_fail = state.require_internal_auth && state.internal_auth.is_none();
+        assert!(!should_fail, "Auth configured should pass validation");
+    }
+
+    #[test]
+    fn test_auth_validation_requires_auth_when_missing() {
+        let state = VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        );
+
+        // The validation logic: require_internal_auth && internal_auth.is_none()
+        // Default state: require_internal_auth = true, internal_auth = None
+        // So: true && true = true -> error
+        let should_fail = state.require_internal_auth && state.internal_auth.is_none();
+        assert!(should_fail, "Should require auth by default");
+    }
 }
