@@ -133,7 +133,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 
 # Utilities
-bytes = "1"
+bytes = "1.11.1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.7", features = ["v4"] }
 parking_lot = "0.12"
