@@ -176,7 +176,7 @@ async fn run_app(
                     Constraint::Min(10),   // Content
                     Constraint::Length(3), // Footer
                 ])
-                .split(f.size());
+                .split(f.area());
 
             widgets::render_header(f, chunks[0], app);
             pages::render_page(f, chunks[1], app);
@@ -184,7 +184,7 @@ async fn run_app(
 
             // Render help overlay if active
             if matches!(app.input_mode, InputMode::Help) {
-                widgets::render_help_overlay(f, f.size());
+                widgets::render_help_overlay(f, f.area());
             }
         })?;
 

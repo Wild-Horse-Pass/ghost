@@ -164,7 +164,10 @@ fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     _config: WalletConfig,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     loop {
         terminal.draw(|f| ui(f, app))?;
 
@@ -229,7 +232,7 @@ fn ui(f: &mut Frame, app: &App) {
             Constraint::Min(10),   // Content
             Constraint::Length(3), // Status bar
         ])
-        .split(f.size());
+        .split(f.area());
 
     // Header
     let header = Paragraph::new(Text::from(vec![Line::from(vec![
