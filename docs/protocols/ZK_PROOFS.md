@@ -262,12 +262,13 @@ Anyone can verify the setup was performed correctly:
 
 ## Privacy Guarantees
 
-### What is Hidden
+### What is Hidden (from validators and public)
 
-- Exact balances
-- Transfer amounts
+- Exact balances (hidden in commitments)
+- Transfer amounts (proven valid without revealing)
 - Sender/recipient mapping in batches
 - Individual transaction details
+- Historical transaction records (deleted after consensus)
 
 ### What is Revealed
 
@@ -275,6 +276,43 @@ Anyone can verify the setup was performed correctly:
 - Fees collected (aggregate)
 - Batch size (number of transactions)
 - Timing (when proofs submitted)
+
+### Proposer Visibility (ephemeral + unlinkable)
+
+The block proposer temporarily sees transaction details during block construction (~2-3 seconds):
+- Sender and recipient addresses
+- Transaction amounts
+- Signatures
+
+**However, Ghost Keys make this harmless:**
+
+Ghost Keys (Silent Payment-style, BIP-352) derive a **unique one-time address** for every payment. The proposer sees:
+
+```
+Transaction: Send 0.5 BTC to 7a3f9c8b...
+```
+
+But the proposer **cannot determine**:
+- Who owns that one-time address
+- How to link it to any Ghost ID
+- How to connect multiple payments to the same recipient
+- The recipient's real identity
+
+Only the recipient (with their scan key) can detect that a payment is theirs.
+
+**Result: Full privacy even from the proposer**
+
+| What Proposer Sees | Can They Link It? |
+|--------------------|-------------------|
+| One-time recipient address | No - unlinkable |
+| Payment amount | Yes - but to unknown recipient |
+| Sender address | One-time address (also unlinkable) |
+
+**Additional mitigations**:
+- Data discarded immediately after 67% consensus
+- Proposers rotate each block (no single observer)
+- Cannot build persistent records
+- Wraith mixing breaks deposit→L2 link
 
 ## Integration with Ghost Pay
 
@@ -334,6 +372,101 @@ Proofs reveal nothing beyond the statement being proven.
 
 If ALL setup participants collude, fake proofs are possible.
 Mitigation: Many independent participants from diverse backgrounds.
+
+## Ephemeral Proof Architecture
+
+Ghost Pay uses an **ephemeral proof model** - proofs and transaction details are discarded immediately after consensus, not stored persistently.
+
+### Design Principles
+
+```
+1. Proofs are ephemeral (verified once, then discarded)
+2. State is truth (no proof history needed)
+3. Math guarantees validity (no re-execution needed)
+```
+
+### Why No Proof History?
+
+Traditional ZK rollups (Citrea, zkSync) store transaction data for:
+- Data availability (reconstruct state from L1)
+- Historical queries
+- Proof aggregation/folding
+
+Ghost Pay doesn't need this because:
+- **Balance settlement, not tx history**: We settle NET balance changes to L1, not individual transactions
+- **No data availability requirement**: L2 state lives on validators, not reconstructed from L1
+- **Privacy by deletion**: What doesn't exist can't be leaked
+
+### Block Finalization Flow
+
+```
+1. Proposer receives transactions from users
+2. Proposer creates block + generates ZK proof (~2 sec)
+3. Broadcasts ZkBlockProposal to validators
+4. Validators verify ZK proof (~10ms each)
+5. Once 67% approve → block finalized
+6. IMMEDIATELY DISCARDED:
+   ├── ZK proof data
+   ├── Individual transaction details
+   ├── Sender/recipient/amount data
+   └── All witness data
+7. PERMANENTLY STORED:
+   ├── Block height
+   ├── State root (merkle root of balances)
+   ├── Block hash
+   └── Proposer signature
+```
+
+### What This Means for Security
+
+A malicious proposer **cannot**:
+
+| Attack | Why It Fails |
+|--------|--------------|
+| Forge invalid transaction | ZK proof verification fails |
+| Create money from nothing | Balance arithmetic proven in ZK |
+| Double spend | State root tracking prevents |
+| Steal funds | Can't produce valid signature |
+| Keep transaction records | Data discarded after consensus |
+
+A malicious proposer **can only**:
+
+| Action | Impact | Mitigation |
+|--------|--------|------------|
+| Reorder transactions | Minimal (payments, not DeFi) | Low MEV value |
+| Temporarily censor | Next block, different proposer | Proposer rotation |
+| See tx details briefly | ~seconds during block creation | Ephemeral, no persistence |
+
+### Privacy Model
+
+| Observer | What They See | Privacy Level |
+|----------|---------------|---------------|
+| **Validators** | Only ZK proofs, state roots | Full privacy |
+| **L1/Public** | Only balance settlements | Full privacy |
+| **Proposer** | Unlinkable one-time addresses | Full privacy |
+| **Historical queries** | Nothing (data deleted) | Full privacy |
+
+**Key insight**: Ghost Keys (Silent Payment-style) make even proposer exposure harmless:
+
+1. **Unlinkable addresses**: Each payment uses a one-time derived address
+2. **No identity link**: Proposer cannot map addresses to Ghost IDs
+3. **No persistence**: Data discarded after 67% consensus
+4. **Proposer rotation**: Different node proposes each block
+
+### Why Not Proof Folding (SuperNova/Nova)?
+
+Proof folding (IVC) is useful when you need to:
+- Aggregate proofs of many transactions over time
+- Post compressed proof history to L1
+- Enable L1 to reconstruct full transaction history
+
+Ghost Pay doesn't need this because:
+- We settle **balances**, not **transaction histories**
+- L1 only needs to know "Alice's balance changed from X to Y"
+- No need to prove "here are the 1000 txs that caused that change"
+- Single Groth16 proofs per block are sufficient
+
+This is a deliberate design choice for privacy - the less history that exists, the less can be leaked.
 
 ## Future Improvements
 
