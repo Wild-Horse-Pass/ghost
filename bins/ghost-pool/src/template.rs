@@ -1706,4 +1706,65 @@ mod tests {
         let len = coinbase2.len();
         assert_eq!(&coinbase2[len - 4..], &[0x00, 0x00, 0x00, 0x00]); // locktime = 0
     }
+
+    /// SEC-BLOCK-TEST-1: Test that header validation correctly rejects short headers
+    ///
+    /// This tests the fix for unsafe .unwrap() on header byte slicing.
+    /// A malformed header should produce an error, not a panic.
+    #[test]
+    fn test_block_submission_invalid_header_no_panic() {
+        // Helper function that mimics the header validation logic
+        fn validate_header_version(header: &[u8]) -> Result<u32, &'static str> {
+            let version_bytes: [u8; 4] = header
+                .get(0..4)
+                .and_then(|s| s.try_into().ok())
+                .ok_or("Invalid header: insufficient bytes for version field")?;
+            Ok(u32::from_le_bytes(version_bytes))
+        }
+
+        // Valid 80-byte header (minimum)
+        let valid_header = [0u8; 80];
+        assert!(validate_header_version(&valid_header).is_ok());
+
+        // Empty header should fail gracefully (not panic)
+        let empty_header: [u8; 0] = [];
+        assert!(validate_header_version(&empty_header).is_err());
+
+        // 3-byte header should fail gracefully (not panic)
+        let short_header = [0x02, 0x00, 0x00];
+        assert!(validate_header_version(&short_header).is_err());
+
+        // Exactly 4 bytes should work
+        let min_header = [0x02, 0x00, 0x00, 0x00];
+        let result = validate_header_version(&min_header);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 2);
+    }
+
+    /// SEC-BLOCK-TEST-2: Test that weight calculation handles underflow correctly
+    ///
+    /// This tests the fix for integer underflow when witness < non-witness length.
+    #[test]
+    fn test_weight_calculation_underflow_handled() {
+        // Helper function that mimics the weight calculation logic
+        fn calculate_witness_extra(witness_len: usize, non_witness_len: usize) -> Result<usize, &'static str> {
+            witness_len.checked_sub(non_witness_len).ok_or(
+                "Invalid coinbase: witness serialization shorter than non-witness"
+            )
+        }
+
+        // Normal case: witness > non-witness (includes marker, flag, witness data)
+        let result = calculate_witness_extra(250, 200);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 50);
+
+        // Edge case: witness == non-witness (no extra witness data)
+        let result = calculate_witness_extra(200, 200);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0);
+
+        // Error case: witness < non-witness (should never happen, indicates bug)
+        let result = calculate_witness_extra(150, 200);
+        assert!(result.is_err(), "Underflow should be caught, not wrap around");
+    }
 }

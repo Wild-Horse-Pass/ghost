@@ -1216,10 +1216,11 @@ mod tests {
         let session_id = [1u8; 32];
         let address = generate_test_address();
         let message = address.serialize().to_vec();
+        let participant = "test_participant";
 
-        // Step 1: Coordinator creates signer and nonce
+        // Step 1: Coordinator creates signer and nonce bound to participant
         let mut signer = CoordinatorSigner::new(&session_id);
-        let nonce = signer.create_nonce();
+        let nonce = signer.create_nonce_for_participant(participant).unwrap();
 
         // Step 2: Participant creates blinding context
         let context = BlindingContext::new(message.clone(), signer.public_key(), &nonce).unwrap();
@@ -1227,8 +1228,8 @@ mod tests {
         // Step 3: Participant creates blinded challenge
         let blinded_challenge = context.create_blinded_challenge().unwrap();
 
-        // Step 4: Coordinator signs blinded challenge
-        let response = signer.sign_blinded_challenge(&blinded_challenge).unwrap();
+        // Step 4: Coordinator signs blinded challenge for participant
+        let response = signer.sign_blinded_challenge_for_participant(&blinded_challenge, participant).unwrap();
 
         // Step 5: Participant unblinds to get final signature
         let token = context.unblind(&response, *signer.key_id()).unwrap();
@@ -1249,12 +1250,13 @@ mod tests {
         let session_id = [2u8; 32];
         let address = generate_test_address();
         let message = address.serialize().to_vec();
+        let participant = "unlinkability_test";
 
         let mut signer = CoordinatorSigner::new(&session_id);
 
         // Get two blind signatures on the same message
-        let nonce1 = signer.create_nonce();
-        let nonce2 = signer.create_nonce();
+        let nonce1 = signer.create_nonce_for_participant(participant).unwrap();
+        let nonce2 = signer.create_nonce_for_participant(participant).unwrap();
 
         let context1 = BlindingContext::new(message.clone(), signer.public_key(), &nonce1).unwrap();
         let context2 = BlindingContext::new(message.clone(), signer.public_key(), &nonce2).unwrap();
@@ -1265,8 +1267,8 @@ mod tests {
         // Challenges should be different (due to random blinding)
         assert_ne!(challenge1.challenge, challenge2.challenge);
 
-        let response1 = signer.sign_blinded_challenge(&challenge1).unwrap();
-        let response2 = signer.sign_blinded_challenge(&challenge2).unwrap();
+        let response1 = signer.sign_blinded_challenge_for_participant(&challenge1, participant).unwrap();
+        let response2 = signer.sign_blinded_challenge_for_participant(&challenge2, participant).unwrap();
 
         let token1 = context1.unblind(&response1, *signer.key_id()).unwrap();
         let token2 = context2.unblind(&response2, *signer.key_id()).unwrap();
@@ -1288,18 +1290,19 @@ mod tests {
         let session_id = [3u8; 32];
         let address = generate_test_address();
         let message = address.serialize().to_vec();
+        let participant = "single_use_test";
 
         let mut signer = CoordinatorSigner::new(&session_id);
-        let nonce = signer.create_nonce();
+        let nonce = signer.create_nonce_for_participant(participant).unwrap();
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
         let challenge = context.create_blinded_challenge().unwrap();
 
         // First signing should succeed
-        let _ = signer.sign_blinded_challenge(&challenge).unwrap();
+        let _ = signer.sign_blinded_challenge_for_participant(&challenge, participant).unwrap();
 
         // Second attempt with same session should fail (nonce consumed)
-        let result = signer.sign_blinded_challenge(&challenge);
+        let result = signer.sign_blinded_challenge_for_participant(&challenge, participant);
         assert!(result.is_err());
     }
 
@@ -1319,13 +1322,14 @@ mod tests {
         let session_id = [4u8; 32];
         let address = generate_test_address();
         let message = address.serialize().to_vec();
+        let participant = "wrong_key_test";
 
         let mut signer = CoordinatorSigner::new(&session_id);
-        let nonce = signer.create_nonce();
+        let nonce = signer.create_nonce_for_participant(participant).unwrap();
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
         let challenge = context.create_blinded_challenge().unwrap();
-        let response = signer.sign_blinded_challenge(&challenge).unwrap();
+        let response = signer.sign_blinded_challenge_for_participant(&challenge, participant).unwrap();
         let mut token = context.unblind(&response, *signer.key_id()).unwrap();
 
         // Tamper with session key ID
@@ -1340,13 +1344,14 @@ mod tests {
         let session_id = [5u8; 32];
         let address = generate_test_address();
         let message = address.serialize().to_vec();
+        let participant = "tampered_msg_test";
 
         let mut signer = CoordinatorSigner::new(&session_id);
-        let nonce = signer.create_nonce();
+        let nonce = signer.create_nonce_for_participant(participant).unwrap();
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
         let challenge = context.create_blinded_challenge().unwrap();
-        let response = signer.sign_blinded_challenge(&challenge).unwrap();
+        let response = signer.sign_blinded_challenge_for_participant(&challenge, participant).unwrap();
         let mut token = context.unblind(&response, *signer.key_id()).unwrap();
 
         // Tamper with message
@@ -1361,13 +1366,14 @@ mod tests {
         let session_id = [6u8; 32];
         let address = generate_test_address();
         let message = address.serialize().to_vec();
+        let participant = "schnorr_test";
 
         let mut signer = CoordinatorSigner::new(&session_id);
-        let nonce = signer.create_nonce();
+        let nonce = signer.create_nonce_for_participant(participant).unwrap();
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
         let challenge = context.create_blinded_challenge().unwrap();
-        let response = signer.sign_blinded_challenge(&challenge).unwrap();
+        let response = signer.sign_blinded_challenge_for_participant(&challenge, participant).unwrap();
         let token = context.unblind(&response, *signer.key_id()).unwrap();
 
         // Should be able to convert to standard 64-byte format
@@ -1488,27 +1494,69 @@ mod tests {
         );
     }
 
-    /// Test backwards compatibility with unbound nonces (deprecated)
+    /// SEC-WRAITH-TEST-1: Verify deprecated create_nonce() panics
+    ///
+    /// The unbound nonce function is disabled for security - it allows nonce
+    /// hijacking attacks. This test verifies it properly panics.
     #[test]
     #[allow(deprecated)]
-    fn test_unbound_nonce_backwards_compat() {
+    fn test_deprecated_nonce_panics() {
+        use std::panic;
+
+        let result = panic::catch_unwind(|| {
+            let session_id = [9u8; 32];
+            let mut signer = CoordinatorSigner::new(&session_id);
+            // This should panic - deprecated and disabled for security
+            let _ = signer.create_nonce();
+        });
+
+        assert!(result.is_err(), "create_nonce() should panic");
+
+        // Verify the panic message is correct
+        if let Err(panic_info) = result {
+            let msg = panic_info
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic_info.downcast_ref::<String>().cloned())
+                .unwrap_or_default();
+            assert!(
+                msg.contains("disabled for security"),
+                "Panic message should mention security: {}",
+                msg
+            );
+        }
+    }
+
+    /// SEC-WRAITH-TEST-2: Verify deprecated sign_blinded_challenge() returns error
+    ///
+    /// The unverified signing function is disabled for security - it doesn't
+    /// verify the requestor matches the nonce binding. This test verifies it
+    /// properly returns a SecurityError.
+    #[test]
+    #[allow(deprecated)]
+    fn test_deprecated_sign_returns_error() {
         let session_id = [9u8; 32];
         let address = generate_test_address();
         let message = address.serialize().to_vec();
+        let participant = "test_participant";
 
         let mut signer = CoordinatorSigner::new(&session_id);
 
-        // Create an unbound nonce (deprecated but should still work)
-        let nonce = signer.create_nonce();
+        // Create a proper bound nonce
+        let nonce = signer.create_nonce_for_participant(participant).unwrap();
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
         let challenge = context.create_blinded_challenge().unwrap();
 
-        // Signing with any participant should work for unbound nonces (backwards compat)
-        let result = signer.sign_blinded_challenge_for_participant(&challenge, "any_ghost_id");
+        // Using the deprecated sign_blinded_challenge should return SecurityError
+        let result = signer.sign_blinded_challenge(&challenge);
+        assert!(result.is_err(), "Deprecated sign_blinded_challenge should return error");
+
+        let err = result.unwrap_err();
         assert!(
-            result.is_ok(),
-            "Unbound nonces should work with any participant for backwards compat"
+            err.to_string().contains("disabled"),
+            "Error should mention function is disabled: {}",
+            err
         );
     }
 

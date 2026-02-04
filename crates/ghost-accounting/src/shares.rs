@@ -418,4 +418,47 @@ mod tests {
         assert!(!calc.is_valid_block(500_000.0));
         assert!(calc.is_valid_block(1_500_000.0));
     }
+
+    /// SEC-SHARE-TEST-1: Verify that negative work values are rejected
+    #[test]
+    fn test_negative_work_rejected() {
+        let mut shares = RoundShares::new(1, 100);
+
+        // Negative work should be rejected
+        let result = shares.add_miner_work("miner1", -100.0);
+        assert!(!result, "Negative work should return false");
+
+        // Verify no work was actually added
+        assert_eq!(shares.total_miner_work, 0.0);
+        assert_eq!(shares.miner_count(), 0);
+
+        // Valid work should still be accepted
+        let result = shares.add_miner_work("miner1", 100.0);
+        assert!(result, "Positive work should return true");
+        assert_eq!(shares.total_miner_work, 100.0);
+    }
+
+    /// SEC-SHARE-TEST-2: Verify that NaN and Infinity work values are rejected
+    #[test]
+    fn test_nan_inf_work_rejected() {
+        let mut shares = RoundShares::new(1, 100);
+
+        // NaN should be rejected
+        let result = shares.add_miner_work("miner1", f64::NAN);
+        assert!(!result, "NaN work should return false");
+        assert_eq!(shares.miner_count(), 0);
+
+        // Positive infinity should be rejected
+        let result = shares.add_miner_work("miner2", f64::INFINITY);
+        assert!(!result, "Positive infinity work should return false");
+        assert_eq!(shares.miner_count(), 0);
+
+        // Negative infinity should be rejected
+        let result = shares.add_miner_work("miner3", f64::NEG_INFINITY);
+        assert!(!result, "Negative infinity work should return false");
+        assert_eq!(shares.miner_count(), 0);
+
+        // Verify no work was added
+        assert_eq!(shares.total_miner_work, 0.0);
+    }
 }

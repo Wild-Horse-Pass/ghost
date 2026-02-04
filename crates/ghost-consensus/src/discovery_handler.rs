@@ -357,4 +357,45 @@ mod tests {
         // Without ban manager, should never be considered banned
         assert!(!handler.is_banned(&[2u8; 32]));
     }
+
+    /// SEC-DISC-TEST-1: Verify that invalid/malformed addresses are rejected
+    #[test]
+    fn test_invalid_address_rejected() {
+        // Empty address
+        assert!(!validate_peer_address(""), "Empty address should be rejected");
+
+        // No port
+        assert!(!validate_peer_address("1.2.3.4"), "Address without port should be rejected");
+
+        // Invalid port (not a number)
+        assert!(!validate_peer_address("1.2.3.4:abc"), "Non-numeric port should be rejected");
+
+        // Port zero
+        assert!(!validate_peer_address("1.2.3.4:0"), "Port zero should be rejected");
+
+        // Port too low (privileged)
+        assert!(!validate_peer_address("1.2.3.4:80"), "Privileged port should be rejected");
+
+        // Port too high
+        assert!(!validate_peer_address("1.2.3.4:65535"), "Port > 65000 should be rejected");
+
+        // Valid public address should be accepted
+        assert!(validate_peer_address("8.8.8.8:8559"), "Valid public address should be accepted");
+    }
+
+    /// SEC-DISC-TEST-2: Verify that loopback and private addresses are rejected
+    #[test]
+    fn test_loopback_address_rejected() {
+        // Loopback addresses
+        assert!(!validate_peer_address("127.0.0.1:8559"), "127.0.0.1 should be rejected");
+        assert!(!validate_peer_address("localhost:8559"), "localhost should be rejected");
+
+        // Private network addresses (RFC 1918)
+        assert!(!validate_peer_address("192.168.1.1:8559"), "192.168.x.x should be rejected");
+        assert!(!validate_peer_address("10.0.0.1:8559"), "10.x.x.x should be rejected");
+        assert!(!validate_peer_address("172.16.0.1:8559"), "172.16.x.x should be rejected");
+
+        // Bind-all address
+        assert!(!validate_peer_address("0.0.0.0:8559"), "0.0.0.0 should be rejected");
+    }
 }

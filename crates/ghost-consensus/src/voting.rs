@@ -1002,4 +1002,78 @@ mod tests {
         bad_proof.vote1.signature = [0u8; 64];
         assert!(!bad_proof.verify());
     }
+
+    /// SEC-VOTE-TEST-1: Verify that invalid signatures return InvalidSignature,
+    /// not a panic or silent acceptance
+    #[test]
+    fn test_signature_error_returns_invalid_not_panic() {
+        let proposal_hash = [0u8; 32];
+        let round_id = 100;
+
+        let mut eligible = HashSet::new();
+        let voter_id = [1u8; 32];
+        eligible.insert(voter_id);
+        for i in 0..5 {
+            eligible.insert([i as u8 + 100; 32]);
+        }
+
+        let mut session = VotingSession::new(
+            round_id,
+            proposal_hash,
+            VoteType::PayoutApproval,
+            eligible,
+            5000,
+        );
+
+        // Create a vote with garbage signature (not a valid ed25519 signature)
+        let bad_vote = Vote::new(voter_id, true, [0xDE; 64]);
+
+        // Should return InvalidSignature, not panic
+        let result = session.add_vote(bad_vote);
+        assert!(
+            matches!(result, VoteResult::InvalidSignature),
+            "Garbage signature should return InvalidSignature, got {:?}",
+            result
+        );
+    }
+
+    /// SEC-VOTE-TEST-2: Verify that BFT threshold calculation handles
+    /// extreme voter counts without overflow
+    #[test]
+    fn test_threshold_overflow_protection() {
+        // Test with a very large number of voters
+        let mut eligible = HashSet::new();
+        for i in 0u32..10_000 {
+            let mut id = [0u8; 32];
+            id[0..4].copy_from_slice(&i.to_le_bytes());
+            eligible.insert(id);
+        }
+
+        let session = VotingSession::new(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            eligible,
+            5000,
+        );
+
+        // 67% of 10,000 = 6,700
+        let threshold = session.threshold();
+        assert_eq!(threshold, 6700, "Threshold for 10,000 voters should be 6,700");
+
+        // Also test exact boundary: 3 voters
+        // 67% of 3 = 2.01, ceiling = 3 (need >2/3 for BFT, so all 3 must agree)
+        let mut small_eligible = HashSet::new();
+        for i in 0..3 {
+            small_eligible.insert([i as u8; 32]);
+        }
+        let small_session = VotingSession::new(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            small_eligible,
+            5000,
+        );
+        assert_eq!(small_session.threshold(), 3, "Threshold for 3 voters should be 3 (all must agree)");
+    }
 }

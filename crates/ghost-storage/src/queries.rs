@@ -4379,4 +4379,31 @@ mod tests {
             "Second withdrawal should be rejected when first is batched"
         );
     }
+
+    /// SEC-DATA-TEST-1: Verify that negative satoshi values are properly rejected
+    #[test]
+    fn test_negative_satoshi_rejected() {
+        // Positive values should succeed
+        let result = i64_to_u64_sats(100, "test_field");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 100u64);
+
+        // Zero should succeed
+        let result = i64_to_u64_sats(0, "test_field");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0u64);
+
+        // Large positive value should succeed
+        let result = i64_to_u64_sats(i64::MAX, "test_field");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), i64::MAX as u64);
+
+        // Negative value should fail
+        let result = i64_to_u64_sats(-1, "test_field");
+        assert!(result.is_err(), "Negative satoshi value should be rejected");
+
+        // Large negative value should fail
+        let result = i64_to_u64_sats(-1_000_000, "total_miner_sats");
+        assert!(result.is_err(), "Large negative satoshi value should be rejected");
+    }
 }
