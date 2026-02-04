@@ -822,10 +822,20 @@ async fn main() -> Result<()> {
             rm_for_callback.register_node(node_id, capabilities);
         });
 
+    // P2P4-M2: Create capability verifier to replace claimed capabilities with VERIFIED ones
+    // This ensures health pings register nodes with their actual verified capabilities,
+    // not just what they claim. The QualifiedCapabilityProvider checks challenge results.
+    let qualification_provider_for_health =
+        Arc::new(QualifiedCapabilityProvider::new(Arc::clone(&db)));
+    let qp_for_verifier = Arc::clone(&qualification_provider_for_health);
+    let capability_verifier: ghost_consensus::health_handler::CapabilityVerifierCallback =
+        Arc::new(move |node_id| qp_for_verifier.get_qualified(node_id));
+
     let health_handler = Arc::new(
         HealthPingHandler::new(Arc::clone(mesh.peers()), Some(Arc::clone(&db)))
             .with_elder_callback(voter_callback)
             .with_node_capabilities_callback(node_caps_callback)
+            .with_capability_verifier(capability_verifier)
             .with_ban_manager(Arc::clone(&ban_manager)),
     );
     mesh.register_handler(
@@ -988,18 +998,15 @@ async fn main() -> Result<()> {
         treasury_address: Some(treasury_script),
     };
 
-    // H-MINE-1: Create qualified capability provider - REQUIRED for PayoutHandler
-    // This ensures node rewards are only distributed based on VERIFIED capabilities
-    let qualification_provider = Arc::new(QualifiedCapabilityProvider::new(Arc::clone(&db)));
-
-    // H-MINE-1: PayoutHandler now requires qualification_provider in constructor
+    // H-MINE-1: PayoutHandler uses the same QualifiedCapabilityProvider as health_handler
+    // This ensures consistent verified capability lookups across the system
     let payout_handler = Arc::new(PayoutHandler::new(
         Arc::clone(&identity),
         payout_config,
         Arc::clone(&db),
         Arc::clone(&vote_handler),
         Arc::clone(&template_processor),
-        Arc::clone(&qualification_provider), // H-MINE-1: Required parameter
+        Arc::clone(&qualification_provider_for_health), // Reuse provider from health_handler
     )?);
 
     // Start verification HTTP server
