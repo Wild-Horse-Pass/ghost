@@ -131,7 +131,71 @@ impl NodeConfig {
             self.validate_ghost_pay(gp, &mut result);
         }
 
+        // CRITICAL: Validate mainnet security requirements (no overrides allowed)
+        self.validate_mainnet_security(&mut result);
+
         result
+    }
+
+    /// Validate mainnet security requirements
+    ///
+    /// On mainnet, certain security features are MANDATORY with no override option.
+    /// This prevents operators from accidentally running insecure nodes on mainnet.
+    ///
+    /// # Requirements (Mainnet Only)
+    ///
+    /// 1. **Noise Protocol Encryption** (`noise_enabled = true`)
+    ///    - P2P traffic must be encrypted to prevent eavesdropping and MITM attacks
+    ///
+    /// 2. **Internal API Authentication** (`internal_api_secret` configured)
+    ///    - Admin endpoints must be protected to prevent unauthorized access
+    ///
+    /// These checks only apply when `bitcoin.network = "mainnet"`. Testnets allow
+    /// relaxed security for development and testing purposes.
+    fn validate_mainnet_security(&self, result: &mut ConfigValidationResult) {
+        // Only enforce on mainnet
+        if self.bitcoin.network != BitcoinNetwork::Mainnet {
+            return;
+        }
+
+        // MAINNET REQUIREMENT 1: Noise Protocol encryption
+        if !self.network.noise_enabled {
+            result.add_error(
+                "network.noise_enabled",
+                "MAINNET SECURITY: Noise Protocol encryption is REQUIRED for mainnet. \
+                 Set noise_enabled = true in [network] section. \
+                 P2P traffic without encryption is vulnerable to eavesdropping and MITM attacks.",
+            );
+        }
+
+        // MAINNET REQUIREMENT 2: Internal API authentication
+        match &self.network.internal_api_secret {
+            None => {
+                result.add_error(
+                    "network.internal_api_secret",
+                    "MAINNET SECURITY: Internal API authentication is REQUIRED for mainnet. \
+                     Set internal_api_secret in [network] section. \
+                     Generate with: openssl rand -hex 32",
+                );
+            }
+            Some(secret) => {
+                // Validate secret format (64 hex chars = 32 bytes)
+                if secret.len() != 64 {
+                    result.add_error(
+                        "network.internal_api_secret",
+                        &format!(
+                            "MAINNET SECURITY: internal_api_secret must be exactly 64 hex characters (32 bytes), got {}",
+                            secret.len()
+                        ),
+                    );
+                } else if !secret.chars().all(|c| c.is_ascii_hexdigit()) {
+                    result.add_error(
+                        "network.internal_api_secret",
+                        "MAINNET SECURITY: internal_api_secret must contain only hexadecimal characters (0-9, a-f, A-F)",
+                    );
+                }
+            }
+        }
     }
 
     fn validate_pool(&self, result: &mut ConfigValidationResult) {
@@ -682,7 +746,7 @@ pub struct NetworkConfig {
     /// Must be a valid bech32 address for the configured network.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solo_payout_address: Option<String>,
-    /// Internal API authentication secret (REQUIRED for production deployments)
+    /// Internal API authentication secret (REQUIRED for mainnet)
     ///
     /// Protects `/api/internal/*` and `/admin/*` endpoints with HMAC-SHA256 authentication.
     /// Must be 64 hex characters (32 bytes). Generate with: openssl rand -hex 32
@@ -693,8 +757,31 @@ pub struct NetworkConfig {
     /// - Inject fake shares to manipulate payout calculations
     /// - Trigger admin operations (test-consensus)
     /// - Submit fraudulent block notifications
+    ///
+    /// **MAINNET REQUIREMENT**: This MUST be configured for mainnet. The node will
+    /// refuse to start on mainnet without this setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub internal_api_secret: Option<String>,
+    /// Enable Noise Protocol encryption for P2P communication (REQUIRED for mainnet)
+    ///
+    /// When enabled, sensitive P2P messages (shares, blocks, votes, payouts)
+    /// are sent over encrypted Noise TCP channels instead of plaintext ZMQ.
+    ///
+    /// # Security (C-1)
+    ///
+    /// Without this, P2P traffic is unencrypted and vulnerable to:
+    /// - Eavesdropping on share submissions
+    /// - Man-in-the-middle attacks on consensus messages
+    /// - Traffic analysis of payout information
+    ///
+    /// **MAINNET REQUIREMENT**: This MUST be true for mainnet. The node will
+    /// refuse to start on mainnet with noise_enabled = false.
+    #[serde(default = "default_noise_enabled")]
+    pub noise_enabled: bool,
+}
+
+fn default_noise_enabled() -> bool {
+    true
 }
 
 impl Default for NetworkConfig {
@@ -713,6 +800,7 @@ impl Default for NetworkConfig {
             private_mining_password: None,
             solo_payout_address: None,
             internal_api_secret: None,
+            noise_enabled: true,
         }
     }
 }

@@ -683,7 +683,8 @@ async fn main() -> Result<()> {
         ports: config.network.p2p.clone(),
         capabilities,
         // C-1: Noise Protocol configuration for encrypted P2P
-        noise_enabled: true, // Enable encryption by default
+        // Read from config (mainnet validation ensures this is true on mainnet)
+        noise_enabled: config.network.noise_enabled,
         noise_port: ghost_consensus::mesh::DEFAULT_NOISE_PORT,
         noise_keypair_path: Some(noise_keypair_path),
         noise_required: false, // Allow fallback during migration
@@ -966,6 +967,16 @@ async fn main() -> Result<()> {
             ghost_zkp::load_trusted_params()?;
             info!("ZK consensus using PRODUCTION parameters from MPC ceremony");
         } else {
+            // MAINNET SECURITY: ZK consensus on mainnet REQUIRES trusted setup
+            if config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet {
+                return Err(anyhow::anyhow!(
+                    "MAINNET SECURITY: ZK consensus on mainnet requires trusted setup parameters. \
+                     Either:\n  \
+                     1. Complete MPC ceremony and build with --features zk-production\n  \
+                     2. Disable ZK consensus by building without --features zk-consensus\n\n\
+                     Running ZK consensus with test parameters on mainnet would allow proof forgery."
+                ));
+            }
             warn!("ZK consensus using TEST parameters - NOT SECURE FOR MAINNET");
         }
 
