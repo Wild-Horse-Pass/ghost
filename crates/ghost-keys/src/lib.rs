@@ -51,6 +51,8 @@ mod derivation;
 mod error;
 mod ghost_id;
 mod keys;
+pub mod labels;
+pub mod metadata;
 mod scanning;
 
 pub use derivation::{
@@ -60,6 +62,11 @@ pub use error::GhostKeyError;
 pub use ghost_id::GhostId;
 pub use keys::{GhostKeys, GhostKeysExport};
 pub use scanning::{BatchScanner, PaymentDetector, ScannedPayment};
+pub use labels::{LabelBackup, LabelDictionary};
+pub use metadata::{
+    decrypt_metadata, encrypt_metadata, PaymentMetadata,
+    DEFAULT_LABEL, MAX_MEMO_LENGTH, METADATA_CIPHERTEXT_SIZE, METADATA_PLAINTEXT_SIZE,
+};
 
 /// Human-readable part for Ghost ID bech32 encoding
 pub const GHOST_ID_HRP: &str = "ghost";

@@ -32,7 +32,7 @@ use crate::keys::{decrypt_key, encrypt_key, MasterKey};
 use crate::wallet::WalletBalance;
 
 /// Current cache schema version
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// Local wallet cache using SQLite
 pub struct WalletCache {
@@ -67,10 +67,42 @@ impl WalletCache {
                 target = SCHEMA_VERSION,
                 "Upgrading schema"
             );
-            self.create_tables()?;
+
+            // Apply migrations incrementally
+            if user_version < 1 {
+                self.create_tables()?;
+            }
+            if user_version < 2 {
+                self.migrate_v2()?;
+            }
+
             self.conn
                 .execute(&format!("PRAGMA user_version = {}", SCHEMA_VERSION), [])?;
         }
+
+        Ok(())
+    }
+
+    /// Migration to v2: Add label dictionary and label columns to transactions
+    fn migrate_v2(&self) -> WalletResult<()> {
+        debug!("Running migration v2: Label dictionary support");
+
+        self.conn.execute_batch(
+            "
+            -- Label dictionary storage (JSON serialized)
+            CREATE TABLE IF NOT EXISTS label_dictionary (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                data TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            );
+
+            -- Add label columns to transactions table
+            -- label_index references the user's local LabelDictionary
+            -- decrypted_memo is the memo from encrypted metadata (if decrypted)
+            ALTER TABLE transactions ADD COLUMN label_index INTEGER DEFAULT 0;
+            ALTER TABLE transactions ADD COLUMN decrypted_memo TEXT;
+            ",
+        )?;
 
         Ok(())
     }
@@ -252,7 +284,8 @@ impl WalletCache {
     /// Get recent transactions
     pub fn get_recent_transactions(&self, limit: u32) -> WalletResult<Vec<CachedTransaction>> {
         let mut stmt = self.conn.prepare(
-            "SELECT txid, amount_sats, is_incoming, status, counterparty, memo, created_at, confirmed_at
+            "SELECT txid, amount_sats, is_incoming, status, counterparty, memo, created_at, confirmed_at,
+                    COALESCE(label_index, 0), decrypted_memo
              FROM transactions
              ORDER BY created_at DESC
              LIMIT ?1",
@@ -268,6 +301,8 @@ impl WalletCache {
                 memo: row.get(5)?,
                 created_at: row.get(6)?,
                 confirmed_at: row.get(7)?,
+                label_index: row.get(8)?,
+                decrypted_memo: row.get(9)?,
             })
         })?;
 
@@ -303,7 +338,7 @@ impl WalletCache {
         }
     }
 
-    /// Clear all cached data (but keep master key)
+    /// Clear all cached data (but keep master key and label dictionary)
     pub fn clear_cache(&self) -> WalletResult<()> {
         self.conn.execute_batch(
             "
@@ -316,6 +351,102 @@ impl WalletCache {
 
         info!("Cleared wallet cache");
         Ok(())
+    }
+
+    // =========================================================================
+    // Label Dictionary Methods
+    // =========================================================================
+
+    /// Save the label dictionary
+    pub fn save_label_dictionary(&self, dict: &ghost_keys::LabelDictionary) -> WalletResult<()> {
+        let json = dict.to_json().map_err(|e| {
+            LightWalletError::Storage(format!("Failed to serialize label dictionary: {}", e))
+        })?;
+        let now = chrono::Utc::now().timestamp();
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO label_dictionary (id, data, updated_at) VALUES (1, ?1, ?2)",
+            params![json, now],
+        )?;
+
+        debug!("Saved label dictionary");
+        Ok(())
+    }
+
+    /// Load the label dictionary
+    pub fn load_label_dictionary(&self) -> WalletResult<Option<ghost_keys::LabelDictionary>> {
+        let result: Result<String, _> = self.conn.query_row(
+            "SELECT data FROM label_dictionary WHERE id = 1",
+            [],
+            |row| row.get(0),
+        );
+
+        match result {
+            Ok(json) => {
+                let dict = ghost_keys::LabelDictionary::from_json(&json).map_err(|e| {
+                    LightWalletError::Storage(format!(
+                        "Failed to deserialize label dictionary: {}",
+                        e
+                    ))
+                })?;
+                Ok(Some(dict))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Update transaction label information
+    pub fn update_transaction_label(
+        &self,
+        txid: &str,
+        label_index: u32,
+        decrypted_memo: Option<&str>,
+    ) -> WalletResult<()> {
+        self.conn.execute(
+            "UPDATE transactions SET label_index = ?1, decrypted_memo = ?2 WHERE txid = ?3",
+            params![label_index, decrypted_memo, txid],
+        )?;
+
+        debug!(
+            txid = %txid,
+            label_index = label_index,
+            "Updated transaction label"
+        );
+        Ok(())
+    }
+
+    /// Get transactions by label index
+    pub fn get_transactions_by_label(&self, label_index: u32) -> WalletResult<Vec<CachedTransaction>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT txid, amount_sats, is_incoming, status, counterparty, memo, created_at, confirmed_at,
+                    COALESCE(label_index, 0), decrypted_memo
+             FROM transactions
+             WHERE label_index = ?1
+             ORDER BY created_at DESC",
+        )?;
+
+        let rows = stmt.query_map(params![label_index], |row| {
+            Ok(CachedTransaction {
+                txid: row.get(0)?,
+                amount_sats: row.get(1)?,
+                is_incoming: row.get(2)?,
+                status: row.get(3)?,
+                counterparty: row.get(4)?,
+                memo: row.get(5)?,
+                created_at: row.get(6)?,
+                confirmed_at: row.get(7)?,
+                label_index: row.get(8)?,
+                decrypted_memo: row.get(9)?,
+            })
+        })?;
+
+        let mut transactions = Vec::new();
+        for row in rows {
+            transactions.push(row?);
+        }
+
+        Ok(transactions)
     }
 }
 
@@ -330,6 +461,10 @@ pub struct CachedTransaction {
     pub memo: Option<String>,
     pub created_at: i64,
     pub confirmed_at: Option<i64>,
+    /// Label index from encrypted metadata (references LabelDictionary)
+    pub label_index: u32,
+    /// Decrypted memo from encrypted metadata
+    pub decrypted_memo: Option<String>,
 }
 
 #[cfg(test)]

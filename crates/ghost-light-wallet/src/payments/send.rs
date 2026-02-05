@@ -45,6 +45,9 @@ pub struct PaymentRequest {
 
     /// Optional memo
     pub memo: Option<String>,
+
+    /// Encrypted label metadata (80 bytes, base64 encoded)
+    pub encrypted_metadata: Option<String>,
 }
 
 impl PaymentRequest {
@@ -55,6 +58,7 @@ impl PaymentRequest {
             amount_sats,
             mode: PaymentMode::GhostPay,
             memo: None,
+            encrypted_metadata: None,
         }
     }
 
@@ -65,12 +69,19 @@ impl PaymentRequest {
             amount_sats,
             mode: PaymentMode::Wraith,
             memo: None,
+            encrypted_metadata: None,
         }
     }
 
     /// Add a memo
     pub fn with_memo(mut self, memo: &str) -> Self {
         self.memo = Some(memo.to_string());
+        self
+    }
+
+    /// Add encrypted label metadata
+    pub fn with_encrypted_metadata(mut self, metadata: &str) -> Self {
+        self.encrypted_metadata = Some(metadata.to_string());
         self
     }
 }
@@ -121,6 +132,8 @@ pub async fn prepare_payment(
         amount_sats: request.amount_sats,
         mode: request.mode,
         proof,
+        memo: request.memo.clone(),
+        encrypted_metadata: request.encrypted_metadata.clone(),
     };
 
     // In a real implementation, we'd send this and wait for response
@@ -144,6 +157,8 @@ pub async fn prepare_payment(
         inputs: vec![],
         outputs: vec![],
         memo: request.memo.clone(),
+        encrypted_metadata: request.encrypted_metadata.clone(),
+        ephemeral_pubkey: None, // Would come from GSP response
     })
 }
 

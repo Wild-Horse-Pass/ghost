@@ -152,6 +152,8 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             amount_sats,
             mode,
             proof,
+            memo: _,
+            encrypted_metadata: _,
         } => {
             // Validate recipient
             if recipient.is_empty() {
@@ -400,7 +402,6 @@ fn is_valid_bitcoin_address(address: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::WalletProof;
 
     #[test]
     fn test_validation_result_ok() {

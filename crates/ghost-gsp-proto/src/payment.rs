@@ -129,6 +129,11 @@ pub struct PreparePaymentRequest {
 
     /// Optional memo/note
     pub memo: Option<String>,
+
+    /// Encrypted label metadata (80 bytes, base64 encoded)
+    /// Contains sender's label index and optional memo, encrypted with ECDH shared secret
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_metadata: Option<String>,
 }
 
 /// Response for payment preparation
@@ -188,6 +193,16 @@ pub struct PreparedPayment {
 
     /// Optional memo
     pub memo: Option<String>,
+
+    /// Encrypted label metadata (80 bytes, base64 encoded)
+    /// Pass-through from request - server never decrypts
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_metadata: Option<String>,
+
+    /// Ephemeral public key for metadata decryption (33 bytes hex)
+    /// Recipient needs this + their scan key to derive shared secret
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ephemeral_pubkey: Option<String>,
 }
 
 impl PreparedPayment {
@@ -354,6 +369,8 @@ mod tests {
             inputs: vec![],
             outputs: vec![],
             memo: None,
+            encrypted_metadata: None,
+            ephemeral_pubkey: None,
         };
 
         assert!(!payment.is_expired());

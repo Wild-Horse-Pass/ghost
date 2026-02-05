@@ -37,6 +37,7 @@ bech32 = "0.11"
 
 # Serialization
 serde = { workspace = true }
+serde_json = { workspace = true }
 hex = { workspace = true }
 
 # Parallel scanning
@@ -50,6 +51,12 @@ thiserror = { workspace = true }
 
 # Constant-time operations for side-channel resistance
 subtle = "2"
+
+# Encryption for payment metadata
+chacha20poly1305 = { workspace = true }
+hkdf = { workspace = true }
+zeroize = { workspace = true }
+getrandom = "0.2"
 
 [dev-dependencies]
 rand = "0.8"

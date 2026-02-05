@@ -50,6 +50,10 @@ pub enum GhostKeyError {
     /// Key derivation failed
     #[error("Key derivation failed: {0}")]
     DerivationError(String),
+
+    /// Invalid payment metadata
+    #[error("Invalid metadata: {0}")]
+    InvalidMetadata(String),
 }
 
 impl From<secp256k1::Error> for GhostKeyError {

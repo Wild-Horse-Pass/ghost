@@ -88,6 +88,12 @@ pub enum ClientMessage {
         mode: PaymentMode,
         /// Authentication proof
         proof: WalletProof,
+        /// Optional memo/note
+        #[serde(skip_serializing_if = "Option::is_none")]
+        memo: Option<String>,
+        /// Encrypted label metadata (80 bytes, base64 encoded)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encrypted_metadata: Option<String>,
     },
 
     /// Submit a signed payment
@@ -322,6 +328,12 @@ pub enum ServerMessage {
         sender: Option<String>,
         /// Transaction ID
         txid: String,
+        /// Encrypted label metadata (80 bytes, base64 encoded)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        encrypted_metadata: Option<String>,
+        /// Ephemeral public key for metadata decryption (33 bytes hex)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ephemeral_pubkey: Option<String>,
     },
 
     /// Payment confirmed notification (push)

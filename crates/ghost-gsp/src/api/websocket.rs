@@ -224,8 +224,20 @@ async fn handle_message(
             amount_sats,
             mode,
             proof,
+            memo,
+            encrypted_metadata,
         } => {
-            handle_prepare_payment(state, conn_state, &recipient, amount_sats, &mode, &proof).await
+            handle_prepare_payment(
+                state,
+                conn_state,
+                &recipient,
+                amount_sats,
+                &mode,
+                &proof,
+                memo.as_deref(),
+                encrypted_metadata.as_deref(),
+            )
+            .await
         }
 
         ClientMessage::SubmitSignedPayment {
@@ -545,6 +557,7 @@ async fn handle_request_jump(
 /// Handle prepare payment request
 ///
 /// Prepares a payment transaction for signing by the wallet.
+#[allow(clippy::too_many_arguments)]
 async fn handle_prepare_payment(
     state: &Arc<GspState>,
     conn_state: &ConnectionState,
@@ -552,6 +565,8 @@ async fn handle_prepare_payment(
     amount_sats: u64,
     mode: &PaymentMode,
     proof: &WalletProof,
+    memo: Option<&str>,
+    encrypted_metadata: Option<&str>,
 ) -> Result<Option<ServerMessage>, GspError> {
     let wallet_id = conn_state
         .wallet_id
@@ -608,6 +623,12 @@ async fn handle_prepare_payment(
                 .unwrap_or(recipient)
                 .to_string();
 
+            // Get ephemeral pubkey from the response if present
+            let ephemeral_pubkey = result
+                .get("ephemeral_pubkey")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
             let payment = PreparedPayment {
                 payment_id,
                 mode: *mode,
@@ -622,7 +643,9 @@ async fn handle_prepare_payment(
                 status: PaymentStatus::PendingSignature,
                 inputs: vec![],
                 outputs: vec![],
-                memo: None,
+                memo: memo.map(|s| s.to_string()),
+                encrypted_metadata: encrypted_metadata.map(|s| s.to_string()),
+                ephemeral_pubkey,
             };
 
             Ok(Some(ServerMessage::PaymentPrepared {

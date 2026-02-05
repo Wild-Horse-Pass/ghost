@@ -397,6 +397,123 @@ impl LightWallet {
             .await?;
         self.submit_payment(&prepared).await
     }
+
+    // =========================================================================
+    // Label Management
+    // =========================================================================
+
+    /// Create a new label and return its index
+    pub fn create_label(&self, name: &str) -> WalletResult<u32> {
+        let mut dict = self
+            .cache
+            .load_label_dictionary()?
+            .unwrap_or_else(ghost_keys::LabelDictionary::new);
+
+        let index = dict.create(name);
+        self.cache.save_label_dictionary(&dict)?;
+
+        info!(name = %name, index = index, "Created label");
+        Ok(index)
+    }
+
+    /// Rename an existing label
+    pub fn rename_label(&self, index: u32, new_name: &str) -> WalletResult<bool> {
+        let mut dict = self
+            .cache
+            .load_label_dictionary()?
+            .unwrap_or_else(ghost_keys::LabelDictionary::new);
+
+        let success = dict.rename(index, new_name);
+        if success {
+            self.cache.save_label_dictionary(&dict)?;
+            info!(index = index, new_name = %new_name, "Renamed label");
+        }
+
+        Ok(success)
+    }
+
+    /// Delete a label
+    pub fn delete_label(&self, index: u32) -> WalletResult<bool> {
+        let mut dict = self
+            .cache
+            .load_label_dictionary()?
+            .unwrap_or_else(ghost_keys::LabelDictionary::new);
+
+        let success = dict.delete(index);
+        if success {
+            self.cache.save_label_dictionary(&dict)?;
+            info!(index = index, "Deleted label");
+        }
+
+        Ok(success)
+    }
+
+    /// List all labels
+    pub fn list_labels(&self) -> WalletResult<Vec<(u32, String)>> {
+        let dict = self
+            .cache
+            .load_label_dictionary()?
+            .unwrap_or_else(ghost_keys::LabelDictionary::new);
+
+        Ok(dict.list().into_iter().map(|(k, v)| (k, v.to_string())).collect())
+    }
+
+    /// Look up a label name by index
+    pub fn lookup_label(&self, index: u32) -> WalletResult<Option<String>> {
+        let dict = self
+            .cache
+            .load_label_dictionary()?
+            .unwrap_or_else(ghost_keys::LabelDictionary::new);
+
+        Ok(dict.lookup(index).map(|s| s.to_string()))
+    }
+
+    /// Check if a label index is orphaned (was deleted but may still be referenced)
+    pub fn is_label_orphaned(&self, index: u32) -> WalletResult<bool> {
+        let dict = self
+            .cache
+            .load_label_dictionary()?
+            .unwrap_or_else(ghost_keys::LabelDictionary::new);
+
+        Ok(dict.is_orphaned(index))
+    }
+
+    /// Export label dictionary for backup
+    pub fn export_label_backup(&self) -> WalletResult<ghost_keys::LabelBackup> {
+        let dict = self
+            .cache
+            .load_label_dictionary()?
+            .unwrap_or_else(ghost_keys::LabelDictionary::new);
+
+        Ok(dict.to_backup())
+    }
+
+    /// Import label dictionary from backup
+    pub fn import_label_backup(&self, backup: ghost_keys::LabelBackup) -> WalletResult<()> {
+        let dict = ghost_keys::LabelDictionary::from_backup(backup);
+        self.cache.save_label_dictionary(&dict)?;
+        info!("Imported label dictionary from backup");
+        Ok(())
+    }
+
+    /// Get transactions by label
+    pub fn get_transactions_by_label(
+        &self,
+        label_index: u32,
+    ) -> WalletResult<Vec<crate::state::CachedTransaction>> {
+        self.cache.get_transactions_by_label(label_index)
+    }
+
+    /// Update transaction label information
+    pub fn update_transaction_label(
+        &self,
+        txid: &str,
+        label_index: u32,
+        decrypted_memo: Option<&str>,
+    ) -> WalletResult<()> {
+        self.cache
+            .update_transaction_label(txid, label_index, decrypted_memo)
+    }
 }
 
 #[cfg(test)]
