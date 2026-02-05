@@ -216,6 +216,10 @@ pub struct GhostPayChallenge {
     pub challenge_type: ChallengeType,
     /// Address to query (for balance)
     pub address: Option<String>,
+    /// H-5: Random epoch to verify L2 state for
+    /// When set, requires the node to prove it has state for this epoch
+    #[serde(default)]
+    pub challenge_epoch: Option<u64>,
 }
 
 /// M-13: Maximum reasonable virtual block number
@@ -240,6 +244,13 @@ pub struct GhostPayResponse {
     pub balance_sats: Option<u64>,
     /// Wraith enabled
     pub wraith_enabled: bool,
+    /// H-5: Epoch state proof (hash of L2 state at challenged epoch)
+    /// This proves the node actually has L2 state data, not just self-reporting
+    #[serde(default)]
+    pub epoch_state_hash: Option<String>,
+    /// H-5: Transaction count at challenged epoch (for verification)
+    #[serde(default)]
+    pub epoch_tx_count: Option<u64>,
     /// Error message (if failed)
     pub error: Option<String>,
 }
@@ -984,6 +995,8 @@ mod tests {
             epoch: Some(5),
             balance_sats: Some(100_000),
             wraith_enabled: false,
+            epoch_state_hash: None,
+            epoch_tx_count: None,
             error: None,
         };
         assert!(response.is_valid());
@@ -998,6 +1011,8 @@ mod tests {
             epoch: Some(5),
             balance_sats: None,
             wraith_enabled: false,
+            epoch_state_hash: None,
+            epoch_tx_count: None,
             error: None,
         };
         assert!(!response.is_valid());
@@ -1011,6 +1026,8 @@ mod tests {
             epoch: Some(u64::MAX),
             balance_sats: None,
             wraith_enabled: false,
+            epoch_state_hash: None,
+            epoch_tx_count: None,
             error: None,
         };
         assert!(!response.is_valid());

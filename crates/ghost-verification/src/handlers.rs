@@ -46,7 +46,7 @@ use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::rpc::BitcoinRpc;
 
 use crate::challenge::{BlockData, TxData};
-use crate::server::{ArchiveHandler, GhostPayHandler};
+use crate::server::{ArchiveHandler, EpochProof, GhostPayHandler};
 
 /// Archive handler backed by Bitcoin Core RPC
 pub struct RpcArchiveHandler {
@@ -441,6 +441,9 @@ pub struct StratumVerifyResult {
 /// Balance lookup function type
 type BalanceFn = Box<dyn Fn(&str) -> GhostResult<u64> + Send + Sync>;
 
+/// H-5: Epoch proof lookup function type
+type EpochProofFn = Box<dyn Fn(u64) -> Option<EpochProof> + Send + Sync>;
+
 /// Ghost Pay handler backed by L2 state
 pub struct GhostPayL2Handler {
     /// Whether L2 is enabled
@@ -453,6 +456,8 @@ pub struct GhostPayL2Handler {
     balance_fn: BalanceFn,
     /// Whether Wraith protocol is enabled
     wraith_enabled: bool,
+    /// H-5: Epoch proof lookup function for cryptographic verification
+    epoch_proof_fn: Option<EpochProofFn>,
 }
 
 impl GhostPayL2Handler {
@@ -475,7 +480,21 @@ impl GhostPayL2Handler {
             epoch_fn: Box::new(epoch),
             balance_fn: Box::new(balance),
             wraith_enabled,
+            epoch_proof_fn: None,
         }
+    }
+
+    /// H-5: Set epoch proof lookup function for cryptographic verification
+    ///
+    /// When configured, the handler can provide cryptographic proofs that
+    /// the node has L2 state for specific epochs, preventing nodes from
+    /// claiming GhostPay capability without actually maintaining state.
+    pub fn with_epoch_proof<F>(mut self, epoch_proof: F) -> Self
+    where
+        F: Fn(u64) -> Option<EpochProof> + Send + Sync + 'static,
+    {
+        self.epoch_proof_fn = Some(Box::new(epoch_proof));
+        self
     }
 }
 
@@ -498,6 +517,14 @@ impl GhostPayHandler for GhostPayL2Handler {
 
     fn is_wraith_enabled(&self) -> bool {
         self.wraith_enabled
+    }
+
+    /// H-5: Get proof of L2 state at a specific epoch
+    fn get_epoch_proof(&self, epoch: u64) -> Option<EpochProof> {
+        match &self.epoch_proof_fn {
+            Some(f) => f(epoch),
+            None => None,
+        }
     }
 }
 

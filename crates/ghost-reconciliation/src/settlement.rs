@@ -28,6 +28,189 @@ use sha2::{Digest, Sha256};
 use crate::error::{ReconciliationError, ReconciliationResult};
 use crate::MIN_SETTLEMENT_SATS;
 
+// ============================================================================
+// C-1: Settlement Ownership Verification
+// ============================================================================
+//
+// This module implements cryptographic verification that settlement requesters
+// own the locks they are attempting to spend. Without this verification, an
+// attacker could request settlements from locks they don't own, potentially
+// stealing funds.
+//
+// The ownership proof consists of:
+// 1. A signature over the settlement details (settlement_id || destination || amount)
+// 2. The public key corresponding to the lock's private key
+//
+// Verification ensures the requester controls the lock's private key.
+// ============================================================================
+
+/// Domain separator for settlement ownership signatures
+/// This prevents signature reuse across different protocols
+const SETTLEMENT_OWNERSHIP_DOMAIN: &[u8] = b"GhostSettlement/Ownership/v1";
+
+/// Ownership proof for a settlement request (C-1)
+///
+/// Proves that the requester owns the lock being spent by providing a
+/// Schnorr signature over the settlement details.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OwnershipProof {
+    /// The signature over: DOMAIN || settlement_id || destination_address || amount_sats
+    /// Stored as hex string because serde doesn't support [u8; 64] natively
+    signature_hex: String,
+    /// The x-only public key (32 bytes) corresponding to the lock's private key
+    source_pubkey: [u8; 32],
+}
+
+impl OwnershipProof {
+    /// Create a new ownership proof from raw components
+    pub fn new(signature: [u8; 64], source_pubkey: [u8; 32]) -> Self {
+        Self {
+            signature_hex: hex::encode(signature),
+            source_pubkey,
+        }
+    }
+
+    /// Get the signature bytes
+    pub fn signature(&self) -> Result<[u8; 64], ReconciliationError> {
+        let bytes = hex::decode(&self.signature_hex).map_err(|e| {
+            ReconciliationError::InvalidSettlement(format!(
+                "Invalid signature hex: {}",
+                e
+            ))
+        })?;
+        if bytes.len() != 64 {
+            return Err(ReconciliationError::InvalidSettlement(format!(
+                "Invalid signature length: expected 64, got {}",
+                bytes.len()
+            )));
+        }
+        let mut arr = [0u8; 64];
+        arr.copy_from_slice(&bytes);
+        Ok(arr)
+    }
+
+    /// Get the source public key
+    pub fn source_pubkey(&self) -> &[u8; 32] {
+        &self.source_pubkey
+    }
+
+    /// Build the message that should be signed for ownership verification
+    ///
+    /// Format: DOMAIN || settlement_id || destination_address || amount_sats (LE)
+    pub fn build_message(settlement_id: &[u8; 32], destination: &str, amount_sats: u64) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(SETTLEMENT_OWNERSHIP_DOMAIN);
+        hasher.update(settlement_id);
+        hasher.update(destination.as_bytes());
+        hasher.update(amount_sats.to_le_bytes());
+        hasher.finalize().into()
+    }
+
+    /// Verify that this proof is valid for the given settlement details
+    ///
+    /// Returns Ok(()) if verification succeeds, or an error describing why it failed.
+    pub fn verify(
+        &self,
+        settlement_id: &[u8; 32],
+        destination: &str,
+        amount_sats: u64,
+        expected_lock_pubkey: &[u8; 32],
+    ) -> ReconciliationResult<()> {
+        use secp256k1::{schnorr::Signature, Message, Secp256k1, XOnlyPublicKey};
+
+        // C-1: First verify the pubkey matches the expected lock pubkey
+        if self.source_pubkey != *expected_lock_pubkey {
+            return Err(ReconciliationError::InvalidSettlement(format!(
+                "C-1 SECURITY: Ownership proof pubkey {} does not match lock pubkey {}",
+                hex::encode(self.source_pubkey),
+                hex::encode(expected_lock_pubkey)
+            )));
+        }
+
+        let secp = Secp256k1::verification_only();
+
+        // Parse the x-only public key
+        let pubkey = XOnlyPublicKey::from_slice(&self.source_pubkey).map_err(|e| {
+            ReconciliationError::InvalidSettlement(format!(
+                "C-1: Invalid source pubkey in ownership proof: {}",
+                e
+            ))
+        })?;
+
+        // Parse the signature
+        let sig_bytes = self.signature()?;
+        let sig = Signature::from_slice(&sig_bytes).map_err(|e| {
+            ReconciliationError::InvalidSettlement(format!(
+                "C-1: Invalid signature in ownership proof: {}",
+                e
+            ))
+        })?;
+
+        // Build the message
+        let message_hash = Self::build_message(settlement_id, destination, amount_sats);
+        let message = Message::from_digest(message_hash);
+
+        // Verify the signature
+        secp.verify_schnorr(&sig, &message, &pubkey).map_err(|e| {
+            ReconciliationError::InvalidSettlement(format!(
+                "C-1 SECURITY: Settlement ownership verification failed - signature invalid: {}. \
+                 Requester does NOT own the lock they are trying to spend!",
+                e
+            ))
+        })?;
+
+        Ok(())
+    }
+}
+
+/// A settlement request with ownership proof (C-1)
+///
+/// Wraps a Settlement with cryptographic proof that the requester owns
+/// the source lock. This MUST be verified before the settlement is
+/// included in a batch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettlementRequest {
+    /// The settlement to execute
+    pub settlement: Settlement,
+    /// Cryptographic proof of lock ownership
+    pub ownership_proof: OwnershipProof,
+}
+
+impl SettlementRequest {
+    /// Create a new settlement request with ownership proof
+    pub fn new(settlement: Settlement, ownership_proof: OwnershipProof) -> Self {
+        Self {
+            settlement,
+            ownership_proof,
+        }
+    }
+
+    /// Verify the ownership proof is valid for this settlement
+    ///
+    /// This MUST be called before including the settlement in a batch.
+    /// Returns Ok(()) if the proof is valid.
+    pub fn verify_ownership(&self) -> ReconciliationResult<()> {
+        // The expected lock pubkey is derived from the lock_id
+        // In Ghost Locks, the lock_id IS the x-only pubkey of the lock output
+        self.ownership_proof.verify(
+            self.settlement.id(),
+            self.settlement.destination_address(),
+            self.settlement.amount_sats(),
+            self.settlement.source_lock_id(),
+        )
+    }
+
+    /// Get the inner settlement (only after ownership is verified)
+    pub fn into_settlement(self) -> Settlement {
+        self.settlement
+    }
+
+    /// Get a reference to the settlement
+    pub fn settlement(&self) -> &Settlement {
+        &self.settlement
+    }
+}
+
 /// Settlement state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SettlementState {
@@ -125,7 +308,8 @@ impl Settlement {
 
         // Calculate fee (0.1%)
         // PAY-M1: Use integer arithmetic to avoid floating-point precision errors
-        let fee_sats = amount_sats / crate::SETTLEMENT_FEE_DIVISOR;
+        // H-9: Use ceiling division and minimum 1 sat via calculate_fee()
+        let fee_sats = crate::rules::calculate_fee(amount_sats);
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -418,5 +602,117 @@ mod tests {
             );
         }
         assert_eq!(ids.len(), 100, "All 100 settlement IDs must be unique");
+    }
+
+    // ========================================================================
+    // C-1: Ownership Proof Tests
+    // ========================================================================
+
+    #[test]
+    fn test_c1_ownership_proof_creation() {
+        let sig = [1u8; 64];
+        let pubkey = [2u8; 32];
+
+        let proof = OwnershipProof::new(sig, pubkey);
+
+        assert_eq!(proof.signature().unwrap(), sig);
+        assert_eq!(proof.source_pubkey(), &pubkey);
+    }
+
+    #[test]
+    fn test_c1_ownership_proof_message_deterministic() {
+        let settlement_id = [1u8; 32];
+        let destination = "bc1qtest";
+        let amount = 50_000u64;
+
+        let msg1 = OwnershipProof::build_message(&settlement_id, destination, amount);
+        let msg2 = OwnershipProof::build_message(&settlement_id, destination, amount);
+
+        assert_eq!(msg1, msg2, "Same inputs must produce same message hash");
+    }
+
+    #[test]
+    fn test_c1_ownership_proof_message_varies_with_inputs() {
+        let settlement_id = [1u8; 32];
+        let destination = "bc1qtest";
+        let amount = 50_000u64;
+
+        let msg1 = OwnershipProof::build_message(&settlement_id, destination, amount);
+
+        // Different settlement ID
+        let different_id = [2u8; 32];
+        let msg2 = OwnershipProof::build_message(&different_id, destination, amount);
+        assert_ne!(msg1, msg2, "Different settlement_id must produce different hash");
+
+        // Different destination
+        let msg3 = OwnershipProof::build_message(&settlement_id, "bc1qother", amount);
+        assert_ne!(msg1, msg3, "Different destination must produce different hash");
+
+        // Different amount
+        let msg4 = OwnershipProof::build_message(&settlement_id, destination, amount + 1);
+        assert_ne!(msg1, msg4, "Different amount must produce different hash");
+    }
+
+    #[test]
+    fn test_c1_ownership_verification_fails_with_wrong_pubkey() {
+        let settlement_id = [1u8; 32];
+        let destination = "bc1qtest";
+        let amount = 50_000u64;
+        let expected_lock_pubkey = [3u8; 32]; // Expected pubkey
+
+        // Create proof with DIFFERENT pubkey
+        let fake_sig = [0u8; 64];
+        let wrong_pubkey = [4u8; 32]; // Doesn't match expected
+        let proof = OwnershipProof::new(fake_sig, wrong_pubkey);
+
+        let result = proof.verify(&settlement_id, destination, amount, &expected_lock_pubkey);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("does not match lock pubkey"),
+            "Error should mention pubkey mismatch, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_c1_settlement_request_creation() {
+        let settlement = Settlement::new(
+            "ghost1abc".to_string(),
+            test_lock_id(),
+            "bc1qtest".to_string(),
+            100_000,
+        )
+        .unwrap();
+
+        let proof = OwnershipProof::new([0u8; 64], test_lock_id());
+        let request = SettlementRequest::new(settlement.clone(), proof);
+
+        assert_eq!(request.settlement().id(), settlement.id());
+        assert_eq!(
+            request.settlement().amount_sats(),
+            settlement.amount_sats()
+        );
+    }
+
+    #[test]
+    fn test_c1_settlement_request_verify_ownership_fails_invalid_sig() {
+        let settlement = Settlement::new(
+            "ghost1abc".to_string(),
+            test_lock_id(),
+            "bc1qtest".to_string(),
+            100_000,
+        )
+        .unwrap();
+
+        // Create proof with matching pubkey but invalid signature
+        let invalid_sig = [0u8; 64]; // All zeros is not a valid signature
+        let proof = OwnershipProof::new(invalid_sig, test_lock_id());
+        let request = SettlementRequest::new(settlement, proof);
+
+        // Verification should fail due to invalid signature
+        let result = request.verify_ownership();
+        assert!(result.is_err(), "Should fail with invalid signature");
     }
 }

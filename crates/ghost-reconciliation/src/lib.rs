@@ -35,6 +35,19 @@
 //! 5. **Dispute Window**: Allow challenges during dispute period
 //! 6. **Finalization**: Mark settlements as complete
 //!
+//! # Security Features
+//!
+//! ## C-1: Settlement Ownership Verification
+//!
+//! All settlement requests must include cryptographic proof that the requester
+//! owns the lock being spent. Use [`SettlementRequest`] with an [`OwnershipProof`]
+//! to submit settlements via [`BatchExecutor::add_settlement_request()`].
+//!
+//! ## C-2: Double-Spend Prevention
+//!
+//! The batch executor tracks consumed inputs within a batch to prevent the same
+//! UTXO from being spent multiple times in the same transaction.
+//!
 //! # Settlement Rules
 //!
 //! - Minimum batch size: 10 settlements

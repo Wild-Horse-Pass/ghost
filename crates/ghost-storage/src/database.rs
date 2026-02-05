@@ -531,32 +531,36 @@ impl Database {
     /// challenge tables: archive_challenges, policy_challenges, stratum_challenges,
     /// and ghostpay_challenges.
     /// STOR-2/3/4/5: Each table grows ~864/day without cleanup.
+    ///
+    /// M-11: Wraps all DELETEs in a single transaction for atomicity.
+    /// If any DELETE fails, all changes are rolled back to prevent inconsistent state.
     pub fn prune_old_challenges(&self, keep_days: u32) -> GhostResult<ChallengesPruneResult> {
-        self.with_connection(|conn| {
+        // M-11: Use transaction() for atomic multi-table pruning
+        self.transaction(|tx| {
             let cutoff = chrono::Utc::now().timestamp() - (keep_days as i64 * 86400);
 
-            let archive = conn
+            let archive = tx
                 .execute(
                     "DELETE FROM archive_challenges WHERE timestamp < ?1",
                     [cutoff],
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            let policy = conn
+            let policy = tx
                 .execute(
                     "DELETE FROM policy_challenges WHERE timestamp < ?1",
                     [cutoff],
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            let stratum = conn
+            let stratum = tx
                 .execute(
                     "DELETE FROM stratum_challenges WHERE timestamp < ?1",
                     [cutoff],
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            let ghostpay = conn
+            let ghostpay = tx
                 .execute(
                     "DELETE FROM ghostpay_challenges WHERE timestamp < ?1",
                     [cutoff],

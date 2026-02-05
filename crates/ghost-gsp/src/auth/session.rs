@@ -29,6 +29,12 @@ use ghost_gsp_proto::{SessionToken, WalletId};
 
 use crate::error::{GspError, GspResult};
 
+/// M-14: JWT issuer for token validation
+const JWT_ISSUER: &str = "ghost-gsp";
+
+/// M-14: JWT audience for token validation
+const JWT_AUDIENCE: &str = "ghost-wallet";
+
 /// JWT claims
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {
@@ -40,6 +46,12 @@ struct Claims {
 
     /// Expiration (Unix timestamp)
     exp: i64,
+
+    /// M-14: Issuer
+    iss: String,
+
+    /// M-14: Audience
+    aud: String,
 }
 
 /// JWT session manager
@@ -68,6 +80,8 @@ impl JwtManager {
             sub: wallet_id.to_string(),
             iat: now,
             exp,
+            iss: JWT_ISSUER.to_string(),
+            aud: JWT_AUDIENCE.to_string(),
         };
 
         let token = encode(&Header::default(), &claims, &self.encoding_key)?;
@@ -81,12 +95,24 @@ impl JwtManager {
     }
 
     /// Validate a token and return the wallet ID
+    ///
+    /// M-14: Validates issuer and audience claims to prevent token misuse
     pub fn validate_token(&self, token: &str) -> GspResult<WalletId> {
-        let validation = Validation::default();
+        let mut validation = Validation::default();
+        // M-14: Require correct issuer
+        validation.set_issuer(&[JWT_ISSUER]);
+        // M-14: Require correct audience
+        validation.set_audience(&[JWT_AUDIENCE]);
 
         let token_data = decode::<Claims>(token, &self.decoding_key, &validation).map_err(|e| {
             match e.kind() {
                 jsonwebtoken::errors::ErrorKind::ExpiredSignature => GspError::SessionExpired,
+                jsonwebtoken::errors::ErrorKind::InvalidIssuer => {
+                    GspError::InvalidToken("Invalid token issuer".to_string())
+                }
+                jsonwebtoken::errors::ErrorKind::InvalidAudience => {
+                    GspError::InvalidToken("Invalid token audience".to_string())
+                }
                 _ => GspError::InvalidToken(e.to_string()),
             }
         })?;

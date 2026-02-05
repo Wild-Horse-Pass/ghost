@@ -115,8 +115,17 @@ pub fn verification_broadcast_channel(
     mpsc::channel(buffer)
 }
 
-/// Build a valid T0 test transaction for policy verification
-/// Uses bitcoin library to ensure correct serialization
+/// Build a randomized T0 test transaction for policy verification (H-3)
+///
+/// # Security (H-3: Randomized Policy Challenge Transactions)
+///
+/// This function generates a cryptographically random test transaction each time
+/// to prevent nodes from pre-computing policy classification responses. The
+/// randomization includes:
+/// - Random txid derived from cryptographic RNG
+/// - Random output amounts within valid ranges
+/// - Random script types (P2WPKH, P2TR, multisig)
+/// - Random number of outputs (1-3)
 fn build_test_transaction() -> String {
     use bitcoin::consensus::encode::serialize_hex;
     use bitcoin::hashes::{sha256d, Hash};
@@ -126,29 +135,114 @@ fn build_test_transaction() -> String {
     use bitcoin::transaction::{Transaction, Version};
     use bitcoin::{Amount, OutPoint, Sequence, TxIn, TxOut, Txid, Witness};
 
-    // Create a non-null txid (hash of some bytes)
-    let txid = Txid::from_raw_hash(sha256d::Hash::hash(&[1u8; 32]));
+    // H-3: Use cryptographic randomness for unpredictable challenge transactions
+    let mut rng_bytes = [0u8; 64];
+    if getrandom::getrandom(&mut rng_bytes).is_err() {
+        warn!("H-3: Failed to get cryptographic randomness, using fallback");
+        // Fallback: use timestamp-based randomness (less secure but functional)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        rng_bytes[..8].copy_from_slice(&now.to_le_bytes());
+    }
 
-    // Create P2WPKH output script: OP_0 <20-byte-hash>
-    let p2wpkh_script = Builder::new()
-        .push_int(0)
-        .push_slice([0u8; 20])
-        .into_script();
+    // H-3: Generate random txid from cryptographic randomness
+    let txid = Txid::from_raw_hash(sha256d::Hash::hash(&rng_bytes[..32]));
+
+    // H-3: Randomize output amount (10,000 - 100,000 sats)
+    let rand_amount = u64::from_le_bytes(rng_bytes[8..16].try_into().unwrap_or([0u8; 8]));
+    let amount = 10_000 + (rand_amount % 90_000);
+
+    // H-3: Randomly select script type to test different classification scenarios
+    let script_type = rng_bytes[16] % 4;
+    let output_script = match script_type {
+        0 => {
+            // P2WPKH: OP_0 <20-byte-hash>
+            let mut pubkey_hash = [0u8; 20];
+            pubkey_hash.copy_from_slice(&rng_bytes[17..37]);
+            Builder::new()
+                .push_int(0)
+                .push_slice(pubkey_hash)
+                .into_script()
+        }
+        1 => {
+            // P2TR (Taproot): OP_1 <32-byte-x-only-pubkey>
+            let mut x_only_pubkey = [0u8; 32];
+            x_only_pubkey.copy_from_slice(&rng_bytes[17..49]);
+            Builder::new()
+                .push_int(1)
+                .push_slice(x_only_pubkey)
+                .into_script()
+        }
+        2 => {
+            // OP_RETURN with random 40-byte data
+            let mut op_return_data = [0u8; 40];
+            op_return_data.copy_from_slice(&rng_bytes[18..58]);
+            Builder::new()
+                .push_opcode(bitcoin::opcodes::all::OP_RETURN)
+                .push_slice(op_return_data)
+                .into_script()
+        }
+        _ => {
+            // P2WSH (2-of-2 multisig witness hash)
+            let mut script_hash = [0u8; 32];
+            script_hash.copy_from_slice(&rng_bytes[17..49]);
+            Builder::new()
+                .push_int(0)
+                .push_slice(script_hash)
+                .into_script()
+        }
+    };
+
+    // H-3: Randomly vary the number of outputs (1-3)
+    let output_count = 1 + (rng_bytes[49] % 3) as usize;
+    let mut outputs = Vec::with_capacity(output_count);
+
+    // First output uses the selected script type
+    outputs.push(TxOut {
+        value: Amount::from_sat(amount),
+        script_pubkey: output_script,
+    });
+
+    // Additional outputs use P2WPKH for simplicity
+    for i in 1..output_count {
+        let mut pubkey_hash = [0u8; 20];
+        let offset = 50 + (i - 1) * 20;
+        if offset + 20 <= rng_bytes.len() {
+            pubkey_hash.copy_from_slice(&rng_bytes[offset..offset + 20]);
+        }
+        let additional_amount = 5_000 + (u64::from(rng_bytes[50]) * 100);
+        outputs.push(TxOut {
+            value: Amount::from_sat(additional_amount),
+            script_pubkey: Builder::new()
+                .push_int(0)
+                .push_slice(pubkey_hash)
+                .into_script(),
+        });
+    }
+
+    // H-3: Randomize vout index
+    let vout = (rng_bytes[51] % 4) as u32;
 
     let tx = Transaction {
         version: Version::TWO,
         lock_time: LockTime::ZERO,
         input: vec![TxIn {
-            previous_output: OutPoint { txid, vout: 0 },
+            previous_output: OutPoint { txid, vout },
             script_sig: ScriptBuf::new(),
             sequence: Sequence::MAX,
             witness: Witness::new(),
         }],
-        output: vec![TxOut {
-            value: Amount::from_sat(50000),
-            script_pubkey: p2wpkh_script,
-        }],
+        output: outputs,
     };
+
+    debug!(
+        script_type = script_type,
+        output_count = output_count,
+        amount = amount,
+        "H-3: Built randomized policy challenge transaction"
+    );
 
     serialize_hex(&tx)
 }
@@ -310,16 +404,19 @@ impl VerificationTask {
         our_id_hex: &str,
         timestamp: i64,
     ) {
-        // Get a real block hash from the blockchain via RPC
+        // L-11: Get a real block hash from the blockchain via RPC
+        // Fail closed: if RPC is unavailable, skip the challenge rather than using
+        // a predictable genesis block that could be pre-computed
         let (block_hash, block_height) = match self.get_random_block_hash().await {
             Some((hash, height)) => (hash, height),
             None => {
-                // Fallback: use signet genesis block if RPC unavailable
-                debug!("RPC unavailable, using signet genesis block for archive verification");
-                (
-                    "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6".to_string(),
-                    0u64,
-                )
+                // L-11: Fail closed - do not use predictable fallback
+                warn!(
+                    peer = %peer_id_hex[..8],
+                    "RPC unavailable, skipping archive verification (fail closed)"
+                );
+                // Record as inconclusive - don't pass or fail, just skip
+                return;
             }
         };
 

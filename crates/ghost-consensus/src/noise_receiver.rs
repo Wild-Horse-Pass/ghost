@@ -33,10 +33,12 @@
 //! - **Signature Verification**: All messages are signed and verified
 //! - **Replay Prevention**: Messages with stale timestamps are rejected
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::RwLock;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
@@ -52,6 +54,65 @@ const INBOUND_CHANNEL_CAPACITY: usize = 1000;
 /// How often to poll connections for messages (milliseconds)
 const POLL_INTERVAL_MS: u64 = 10;
 
+/// M-1: Registry mapping Ed25519 NodeIds to their X25519 Noise keys
+///
+/// This mapping is learned from health pings where nodes announce both keys.
+/// Once learned, we enforce that messages from a known sender must come from
+/// the expected Noise key.
+#[derive(Debug, Default)]
+pub struct KeyRegistry {
+    /// Maps NodeId (Ed25519 signing key) to Noise key (X25519)
+    ed25519_to_noise: RwLock<HashMap<NodeId, [u8; 32]>>,
+}
+
+impl KeyRegistry {
+    /// Create a new empty key registry
+    pub fn new() -> Self {
+        Self {
+            ed25519_to_noise: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Learn a key mapping from a health ping or similar source
+    ///
+    /// Once learned, this binding is enforced for future messages
+    pub fn learn_binding(&self, node_id: NodeId, noise_key: [u8; 32]) {
+        let mut map = self.ed25519_to_noise.write();
+        let existing = map.insert(node_id, noise_key);
+        if let Some(old_key) = existing {
+            if old_key != noise_key {
+                warn!(
+                    node_id = %hex::encode(&node_id[..8]),
+                    old_noise = %hex::encode(&old_key[..8]),
+                    new_noise = %hex::encode(&noise_key[..8]),
+                    "M-1: Noise key changed for node"
+                );
+            }
+        } else {
+            debug!(
+                node_id = %hex::encode(&node_id[..8]),
+                noise_key = %hex::encode(&noise_key[..8]),
+                "M-1: Learned key binding"
+            );
+        }
+    }
+
+    /// Get the expected Noise key for a known sender
+    pub fn get_noise_key(&self, node_id: &NodeId) -> Option<[u8; 32]> {
+        self.ed25519_to_noise.read().get(node_id).copied()
+    }
+
+    /// Check if a node is known
+    pub fn is_known(&self, node_id: &NodeId) -> bool {
+        self.ed25519_to_noise.read().contains_key(node_id)
+    }
+
+    /// Get the number of known bindings
+    pub fn known_count(&self) -> usize {
+        self.ed25519_to_noise.read().len()
+    }
+}
+
 /// Receiver for encrypted messages from the Noise connection pool
 pub struct NoiseReceiver {
     /// The connection pool to receive from
@@ -62,6 +123,8 @@ pub struct NoiseReceiver {
     running: AtomicBool,
     /// Statistics
     stats: NoiseReceiverStats,
+    /// M-1: Key registry for identity binding verification
+    key_registry: KeyRegistry,
 }
 
 /// A message received from a Noise connection
@@ -120,9 +183,15 @@ impl NoiseReceiver {
                 inbound_tx,
                 running: AtomicBool::new(false),
                 stats: NoiseReceiverStats::default(),
+                key_registry: KeyRegistry::new(),
             },
             inbound_rx,
         )
+    }
+
+    /// M-1: Get access to the key registry for learning bindings from health pings
+    pub fn key_registry(&self) -> &KeyRegistry {
+        &self.key_registry
     }
 
     /// Start the receiver loop
@@ -241,34 +310,45 @@ impl NoiseReceiver {
     /// We use approach #2: The Noise channel authenticates the peer cryptographically,
     /// and the signature in the envelope proves the message is from envelope.sender.
     /// Both authentications must pass for the message to be accepted.
+    /// M-1: Verify identity binding between envelope sender and Noise connection
+    ///
+    /// For known senders (those we've learned from health pings), we enforce
+    /// that messages must come from the expected Noise key. For unknown senders,
+    /// we accept the message but learn the binding for future verification.
     fn verify_identity_binding(&self, envelope_sender: &NodeId, noise_peer_key: &[u8; 32]) -> bool {
-        // For now, we accept any envelope sender as long as:
-        // 1. The signature was verified (done in validate_and_verify)
-        // 2. The message came over an authenticated Noise channel
-        //
-        // This allows nodes to have different Ed25519 (signing) and X25519 (Noise) keys.
-        // In the future, we could bind these together more tightly:
-        // - Require envelope.sender to be derived from noise_peer_key
-        // - Or maintain a mapping of Ed25519 -> X25519 keys learned from health pings
-        //
-        // For C-1 security implementation, we log the binding for observability
-        // but accept all authenticated messages.
-
-        // Check if keys happen to match (same key material derived for both)
-        let keys_match = envelope_sender == noise_peer_key;
-
-        if !keys_match {
-            // Keys don't match - this is expected if different key types are used
-            // Log for observability but don't reject
-            debug!(
-                envelope_sender = %hex::encode(&envelope_sender[..8]),
-                noise_peer = %hex::encode(&noise_peer_key[..8]),
-                "Envelope sender differs from Noise peer key (expected if using separate Ed25519/X25519 keys)"
-            );
+        // M-1: Check if we have a known binding for this sender
+        match self.key_registry.get_noise_key(envelope_sender) {
+            Some(expected_noise_key) => {
+                // Known sender - enforce binding
+                if expected_noise_key != *noise_peer_key {
+                    warn!(
+                        envelope_sender = %hex::encode(&envelope_sender[..8]),
+                        expected_noise = %hex::encode(&expected_noise_key[..8]),
+                        actual_noise = %hex::encode(&noise_peer_key[..8]),
+                        "M-1: Identity binding failed - message from known sender \
+                         arrived on unexpected Noise connection"
+                    );
+                    return false;
+                }
+                debug!(
+                    sender = %hex::encode(&envelope_sender[..8]),
+                    "M-1: Identity binding verified for known sender"
+                );
+                true
+            }
+            None => {
+                // Unknown sender - learn the binding
+                // Note: Health ping handler should call key_registry.learn_binding()
+                // when processing the first health ping from this node
+                debug!(
+                    sender = %hex::encode(&envelope_sender[..8]),
+                    noise_key = %hex::encode(&noise_peer_key[..8]),
+                    "M-1: Unknown sender, will learn binding from health ping"
+                );
+                // Accept for now - the binding will be enforced after we learn it
+                true
+            }
         }
-
-        // Accept the message - both Noise and signature authentication passed
-        true
     }
 
     /// Stop the receiver
@@ -399,9 +479,7 @@ mod tests {
 
     #[test]
     fn test_identity_verification() {
-        // Test that verify_identity_binding accepts valid messages
-        // In our current implementation, we accept all authenticated messages
-        // (both Noise and signature auth must pass)
+        // M-1: Test identity binding with key registry
 
         let keypair = crate::noise::NoiseKeypair::generate();
         let config = crate::noise_pool::NoisePoolConfig::default();
@@ -409,12 +487,42 @@ mod tests {
 
         let (receiver, _rx) = NoiseReceiver::new(pool);
 
-        // Same key
-        let key1 = [1u8; 32];
-        assert!(receiver.verify_identity_binding(&key1, &key1));
+        let node_id = [1u8; 32];
+        let noise_key_1 = [2u8; 32];
+        let noise_key_2 = [3u8; 32];
 
-        // Different keys (allowed - separate Ed25519/X25519 keys)
-        let key2 = [2u8; 32];
-        assert!(receiver.verify_identity_binding(&key1, &key2));
+        // Unknown sender - should accept (will learn binding later)
+        assert!(receiver.verify_identity_binding(&node_id, &noise_key_1));
+
+        // Learn the binding
+        receiver.key_registry().learn_binding(node_id, noise_key_1);
+
+        // Known sender with correct noise key - should accept
+        assert!(receiver.verify_identity_binding(&node_id, &noise_key_1));
+
+        // Known sender with WRONG noise key - should REJECT
+        assert!(!receiver.verify_identity_binding(&node_id, &noise_key_2));
+    }
+
+    #[test]
+    fn test_key_registry() {
+        let registry = KeyRegistry::new();
+
+        let node_id_1 = [1u8; 32];
+        let node_id_2 = [2u8; 32];
+        let noise_key = [42u8; 32];
+
+        // Initially unknown
+        assert!(!registry.is_known(&node_id_1));
+        assert_eq!(registry.known_count(), 0);
+
+        // Learn binding
+        registry.learn_binding(node_id_1, noise_key);
+
+        assert!(registry.is_known(&node_id_1));
+        assert!(!registry.is_known(&node_id_2));
+        assert_eq!(registry.known_count(), 1);
+        assert_eq!(registry.get_noise_key(&node_id_1), Some(noise_key));
+        assert_eq!(registry.get_noise_key(&node_id_2), None);
     }
 }

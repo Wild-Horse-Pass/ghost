@@ -73,9 +73,20 @@ pub fn validate_settlement(
 }
 
 /// Calculate settlement fee
-/// PAY-M1: Use integer arithmetic to avoid floating-point precision errors
+///
+/// # PAY-M1: Use integer arithmetic to avoid floating-point precision errors
+/// # H-9: Use ceiling division to ensure fee is always rounded UP
+///
+/// This ensures small amounts don't result in 0 fees. The formula:
+/// `(amount + divisor - 1) / divisor` computes the ceiling of integer division.
+///
+/// Additionally, we enforce a minimum fee of 1 satoshi.
 pub fn calculate_fee(amount_sats: u64) -> u64 {
-    amount_sats / crate::SETTLEMENT_FEE_DIVISOR
+    // H-9: Ceiling division: (a + b - 1) / b
+    let divisor = crate::SETTLEMENT_FEE_DIVISOR;
+    let fee = (amount_sats + divisor - 1) / divisor;
+    // H-9: Ensure minimum fee of 1 sat
+    fee.max(1)
 }
 
 /// Calculate net amount after fee
@@ -194,8 +205,20 @@ mod tests {
 
     #[test]
     fn test_calculate_fee() {
+        // Standard amounts
         assert_eq!(calculate_fee(100_000), 100); // 0.1%
         assert_eq!(calculate_fee(10_000_000), 10_000);
+
+        // H-9: Test ceiling division (rounds UP)
+        // 999 / 1000 = 0.999, ceiling is 1
+        assert_eq!(calculate_fee(999), 1);
+        // 1001 / 1000 = 1.001, ceiling is 2
+        assert_eq!(calculate_fee(1001), 2);
+
+        // H-9: Test minimum fee of 1 sat
+        assert_eq!(calculate_fee(0), 1);
+        assert_eq!(calculate_fee(1), 1);
+        assert_eq!(calculate_fee(500), 1);
     }
 
     #[test]

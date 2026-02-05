@@ -54,3 +54,6 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 sha2 = { workspace = true }
 getrandom = { workspace = true }
+
+# Cryptography (C-1: Settlement ownership verification)
+secp256k1 = { version = "0.29", features = ["rand", "global-context"] }

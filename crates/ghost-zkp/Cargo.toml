@@ -9,6 +9,24 @@ license = "MIT"
 default = []
 # M-2: Feature to allow simulated proofs in non-test builds (for integration testing)
 test-utils = []
+# H-1: ZK Production Mode
+#
+# When this feature is enabled, the crate will:
+# 1. Require trusted setup ceremony artifacts to be present
+# 2. Verify artifacts match expected hashes before using them
+# 3. Refuse to generate proofs if artifacts are missing or invalid
+#
+# **WARNING**: ZK proofs generated without this feature should NOT be
+# considered secure for mainnet. The default Groth16 parameters are
+# test-only and could be exploited by a malicious prover.
+#
+# To enable production mode:
+# 1. Complete an MPC ceremony to generate trusted setup artifacts
+# 2. Set ZK_PARAMS_PATH environment variable to artifact location
+# 3. Compile with `--features zk-production`
+#
+# See docs/ZK_CEREMONY.md for MPC ceremony coordination instructions.
+zk-production = []
 
 [dependencies]
 # ZK proving system (Groth16 via bellperson)

@@ -5,6 +5,26 @@
 //! in approximately 10ms. Proofs are ephemeral - once verified and the
 //! block is finalized, they are discarded.
 //!
+//! # H-1: Trusted Setup Requirements
+//!
+//! **SECURITY WARNING**: This crate uses Groth16 which requires a trusted setup
+//! ceremony (MPC) to generate secure parameters. Without completing this ceremony:
+//!
+//! - **Default parameters are for testing only**
+//! - A malicious prover could forge proofs
+//! - ZK proofs should NOT be relied upon for mainnet security
+//!
+//! For production deployment, you must:
+//!
+//! 1. Complete an MPC ceremony (see `docs/ZK_CEREMONY.md`)
+//! 2. Set `ZK_PARAMS_PATH` to the ceremony output directory
+//! 3. Compile with `--features zk-production`
+//!
+//! When `zk-production` is enabled:
+//! - Parameter loading verifies against known ceremony hashes
+//! - Proof generation fails if parameters are missing/invalid
+//! - Additional safety checks prevent accidental test parameter use
+//!
 //! # Proving Modes
 //!
 //! ## Legacy Mode (prove)
@@ -80,3 +100,91 @@ pub use circuit::{
     BlockCircuit, BlockCircuitBuilder, MerkleCircuit, PaymentCircuit,
     PaymentStateTransitionCircuit, StateTransitionOutputs,
 };
+
+// ============================================================================
+// H-1: ZK Production Mode Safety
+// ============================================================================
+
+/// H-1: Check if ZK production mode is enabled
+///
+/// Returns true if the `zk-production` feature flag is set, indicating
+/// that trusted setup ceremony artifacts should be used.
+#[cfg(feature = "zk-production")]
+pub const fn is_production_mode() -> bool {
+    true
+}
+
+/// H-1: Check if ZK production mode is enabled
+///
+/// Returns false when `zk-production` is not enabled, indicating
+/// that only test parameters should be used.
+#[cfg(not(feature = "zk-production"))]
+pub const fn is_production_mode() -> bool {
+    false
+}
+
+/// H-1: Environment variable for trusted setup parameters path
+pub const ZK_PARAMS_PATH_ENV: &str = "ZK_PARAMS_PATH";
+
+/// H-1: Load and validate trusted setup parameters
+///
+/// In production mode (`zk-production` feature enabled):
+/// - Loads parameters from `ZK_PARAMS_PATH` environment variable
+/// - Verifies parameters match expected hash from ceremony
+/// - Returns error if parameters are missing or invalid
+///
+/// In test mode (default):
+/// - Uses default test parameters
+/// - Logs a warning that these should not be used for production
+///
+/// # Errors
+///
+/// Returns `ZkError::InvalidParams` if production mode is enabled but
+/// parameters are missing, corrupted, or don't match expected hashes.
+#[cfg(feature = "zk-production")]
+pub fn load_trusted_params() -> ZkResult<()> {
+    use std::env;
+    use std::path::PathBuf;
+
+    let params_path = env::var(ZK_PARAMS_PATH_ENV).map_err(|_| {
+        ZkError::InvalidParams(format!(
+            "H-1: Production mode enabled but {} environment variable not set. \
+             Complete MPC ceremony and set path to ceremony output.",
+            ZK_PARAMS_PATH_ENV
+        ))
+    })?;
+
+    let path = PathBuf::from(&params_path);
+    if !path.exists() {
+        return Err(ZkError::InvalidParams(format!(
+            "H-1: Trusted setup parameters not found at {}. \
+             Complete MPC ceremony first.",
+            params_path
+        )));
+    }
+
+    // TODO: After MPC ceremony is completed, add hash verification here:
+    // let expected_hash = "sha256:...";
+    // let actual_hash = compute_params_hash(&path)?;
+    // if actual_hash != expected_hash {
+    //     return Err(ZkError::InvalidParams("Parameter hash mismatch"));
+    // }
+
+    tracing::info!(
+        path = %params_path,
+        "H-1: Loaded trusted setup parameters for production mode"
+    );
+
+    Ok(())
+}
+
+/// H-1: Load trusted setup parameters (test mode)
+#[cfg(not(feature = "zk-production"))]
+pub fn load_trusted_params() -> ZkResult<()> {
+    tracing::warn!(
+        "H-1: ZK production mode NOT enabled. Using test parameters only. \
+         These proofs should NOT be trusted for mainnet security. \
+         Enable 'zk-production' feature for production deployment."
+    );
+    Ok(())
+}

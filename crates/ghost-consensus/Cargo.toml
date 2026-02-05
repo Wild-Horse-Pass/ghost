@@ -51,5 +51,6 @@ getrandom = { workspace = true }
 bytes = { workspace = true }
 
 [features]
+default = []
 # Expose test-only constructors for integration testing
 test-utils = []

@@ -345,6 +345,17 @@ pub trait ArchiveHandler {
     fn has_block_at_height(&self, height: u64) -> bool;
 }
 
+/// H-5: Epoch proof for cryptographic GhostPay verification
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct EpochProof {
+    /// Epoch number this proof is for
+    pub epoch: u64,
+    /// Hash of L2 state at this epoch (SHA256 of serialized state)
+    pub state_hash: String,
+    /// Number of transactions in this epoch
+    pub tx_count: u64,
+}
+
 /// GhostPay handler trait
 pub trait GhostPayHandler {
     fn is_enabled(&self) -> bool;
@@ -352,6 +363,17 @@ pub trait GhostPayHandler {
     fn get_epoch(&self) -> u64;
     fn get_balance(&self, address: &str) -> GhostResult<u64>;
     fn is_wraith_enabled(&self) -> bool;
+
+    /// H-5: Get proof of L2 state at a specific epoch
+    ///
+    /// This method is used for cryptographic verification that a node
+    /// actually has L2 state data, not just self-reporting capability.
+    /// Returns None if the node doesn't have state for the requested epoch.
+    fn get_epoch_proof(&self, epoch: u64) -> Option<EpochProof> {
+        // Default implementation returns None (node doesn't support proofs)
+        let _ = epoch;
+        None
+    }
 }
 
 /// GSP (Ghost Service Protocol) handler trait for light wallet support
@@ -919,10 +941,15 @@ impl VerificationState {
     }
 
     /// Verify stratum challenge
+    ///
+    /// H-4: Performs actual Stratum protocol verification, not just TCP connection.
+    /// Uses StratumVerifier to perform proper mining.subscribe (SV1) or Noise handshake (SV2).
     pub async fn verify_stratum(
         &self,
         challenge: StratumChallenge,
     ) -> GhostResult<StratumResponse> {
+        use crate::handlers::StratumVerifier;
+
         if !self.capabilities.public_mining {
             return Ok(StratumResponse {
                 success: false,
@@ -939,20 +966,32 @@ impl VerificationState {
             StratumProtocol::Sv1 => challenge.port.unwrap_or(self.stratum_sv1_port),
         };
 
-        // Try to connect to the port
-        let start = Instant::now();
-        let addr = format!("127.0.0.1:{}", port);
+        // H-4: Use StratumVerifier to perform actual protocol handshake
+        // This prevents nodes from passing verification with just a TCP listener
+        let verifier = StratumVerifier::new().with_timeout(Duration::from_secs(5));
 
-        match tokio::net::TcpStream::connect(&addr).await {
-            Ok(_) => {
-                let latency = start.elapsed().as_millis() as u32;
+        let result = match challenge.protocol {
+            StratumProtocol::Sv1 => verifier.verify_sv1("127.0.0.1", port).await,
+            StratumProtocol::Sv2 => verifier.verify_sv2("127.0.0.1", port).await,
+        };
+
+        match result {
+            Ok(verify_result) => {
+                // H-4: Require valid_protocol, not just connection
+                let success = verify_result.connected && verify_result.valid_protocol;
                 Ok(StratumResponse {
-                    success: true,
+                    success,
                     port,
                     protocol: challenge.protocol,
-                    connected: true,
-                    latency_ms: Some(latency),
-                    error: None,
+                    connected: verify_result.connected,
+                    latency_ms: Some(verify_result.total_latency.as_millis() as u32),
+                    error: if success {
+                        None
+                    } else {
+                        Some(verify_result.error.unwrap_or_else(|| {
+                            "Protocol handshake failed".to_string()
+                        }))
+                    },
                 })
             }
             Err(e) => Ok(StratumResponse {
@@ -961,12 +1000,16 @@ impl VerificationState {
                 protocol: challenge.protocol,
                 connected: false,
                 latency_ms: None,
-                error: Some(format!("Connection failed: {}", e)),
+                error: Some(format!("Verification failed: {}", e)),
             }),
         }
     }
 
     /// Verify GhostPay challenge
+    ///
+    /// H-5: When a challenge_epoch is provided, the node must prove it has
+    /// L2 state data for that epoch. This prevents nodes from claiming
+    /// GhostPay capability without actually maintaining L2 state.
     pub async fn verify_ghostpay(
         &self,
         challenge: GhostPayChallenge,
@@ -979,6 +1022,8 @@ impl VerificationState {
                 epoch: None,
                 balance_sats: None,
                 wraith_enabled: false,
+                epoch_state_hash: None,
+                epoch_tx_count: None,
                 error: Some("Ghost Pay not enabled".to_string()),
             });
         }
@@ -993,6 +1038,8 @@ impl VerificationState {
                     epoch: None,
                     balance_sats: None,
                     wraith_enabled: false,
+                    epoch_state_hash: None,
+                    epoch_tx_count: None,
                     error: Some("Ghost Pay handler not configured".to_string()),
                 });
             }
@@ -1004,13 +1051,47 @@ impl VerificationState {
             None
         };
 
+        // H-5: If a challenge epoch is specified, require epoch proof
+        let (epoch_state_hash, epoch_tx_count, epoch_proof_success) =
+            if let Some(challenge_epoch) = challenge.challenge_epoch {
+                match handler.get_epoch_proof(challenge_epoch) {
+                    Some(proof) => (
+                        Some(proof.state_hash),
+                        Some(proof.tx_count),
+                        true,
+                    ),
+                    None => {
+                        // Node claims GhostPay but can't prove epoch state
+                        return Ok(GhostPayResponse {
+                            success: false,
+                            l2_enabled: handler.is_enabled(),
+                            virtual_block: Some(handler.get_virtual_block()),
+                            epoch: Some(handler.get_epoch()),
+                            balance_sats: balance,
+                            wraith_enabled: handler.is_wraith_enabled(),
+                            epoch_state_hash: None,
+                            epoch_tx_count: None,
+                            error: Some(format!(
+                                "Cannot prove L2 state for epoch {}",
+                                challenge_epoch
+                            )),
+                        });
+                    }
+                }
+            } else {
+                // No challenge epoch - basic verification only
+                (None, None, true)
+            };
+
         Ok(GhostPayResponse {
-            success: true,
+            success: epoch_proof_success,
             l2_enabled: handler.is_enabled(),
             virtual_block: Some(handler.get_virtual_block()),
             epoch: Some(handler.get_epoch()),
             balance_sats: balance,
             wraith_enabled: handler.is_wraith_enabled(),
+            epoch_state_hash,
+            epoch_tx_count,
             error: None,
         })
     }

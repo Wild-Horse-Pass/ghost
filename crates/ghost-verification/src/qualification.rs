@@ -35,9 +35,10 @@ use ghost_storage::Database;
 /// Seconds in a day
 const SECONDS_PER_DAY: i64 = 86_400;
 
-/// C-2: Minimum unique challengers required for capability qualification
-/// This prevents Sybil attacks where colluding nodes verify each other
-const MIN_UNIQUE_CHALLENGERS: u32 = 5;
+/// M-15: Minimum unique challengers required for capability qualification
+/// This prevents Sybil attacks where colluding nodes verify each other.
+/// Increased from 5 to 10 to require more diverse verification sources.
+const MIN_UNIQUE_CHALLENGERS: u32 = 10;
 
 /// Configuration for capability qualification
 ///

@@ -92,6 +92,14 @@ pub enum ReconciliationError {
     /// H-8: Bitcoin RPC error during UTXO verification
     #[error("Bitcoin RPC error: {0}")]
     BitcoinRpcError(String),
+
+    /// C-1: Settlement ownership verification failed
+    #[error("Settlement ownership verification failed: {0}")]
+    OwnershipVerificationFailed(String),
+
+    /// C-2: Double-spend attempt within same batch
+    #[error("Double-spend in batch: input {outpoint} already consumed")]
+    DoubleSpendInBatch { outpoint: String },
 }
 
 // Simplified BatchNotFound that takes a String directly

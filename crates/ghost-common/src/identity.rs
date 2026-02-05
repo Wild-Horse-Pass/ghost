@@ -43,10 +43,19 @@ use crate::error::{GhostError, GhostResult};
 use crate::signer::{LocalSigner, Signer, SignerConfig};
 use crate::types::NodeId;
 
-/// Required leading zero bits for node_id proof-of-work.
-/// 20 bits = ~1 million hashes on average (a few seconds on modern hardware)
-/// This is enough to make mass Sybil attacks expensive while not burdening legitimate nodes.
-pub const NODE_ID_POW_DIFFICULTY: u32 = 20;
+/// M-6: Required leading zero bits for node_id proof-of-work.
+/// 24 bits = ~16 million hashes on average (tens of seconds on modern hardware).
+/// This increased difficulty (from 20 bits) makes mass Sybil attacks significantly
+/// more expensive for mainnet while remaining feasible for legitimate nodes.
+///
+/// Debug builds use a lower difficulty (16 bits) to avoid slow test execution.
+/// Release builds use the full 24-bit difficulty.
+#[cfg(debug_assertions)]
+pub const NODE_ID_POW_DIFFICULTY: u32 = 16;
+
+/// Production difficulty for mainnet (release builds only)
+#[cfg(not(debug_assertions))]
+pub const NODE_ID_POW_DIFFICULTY: u32 = 24;
 
 /// Maximum nonce value to try (prevents infinite loops)
 const MAX_POW_ATTEMPTS: u64 = 100_000_000;

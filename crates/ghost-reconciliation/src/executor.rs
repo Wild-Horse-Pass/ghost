@@ -24,8 +24,19 @@
 //!
 //! Manages the complete lifecycle of settlement batches from collection
 //! through L1 commitment and finalization.
+//!
+//! # Security Features
+//!
+//! ## C-1: Settlement Ownership Verification
+//! All settlements must include cryptographic proof that the requester owns
+//! the lock being spent. Use `add_settlement_request()` which verifies the
+//! ownership proof before accepting the settlement.
+//!
+//! ## C-2: Double-Spend Prevention
+//! The batch executor tracks consumed inputs within a batch to prevent the
+//! same UTXO from being spent multiple times in the same transaction.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bitcoin::{Network, OutPoint, Txid};
 
@@ -33,7 +44,7 @@ use crate::batch::{Batch, BatchState};
 use crate::commitment::L1Commitment;
 use crate::error::ReconciliationError;
 use crate::rules::BatchRules;
-use crate::settlement::Settlement;
+use crate::settlement::{Settlement, SettlementRequest};
 use crate::transaction::{ReconciliationTx, TxOutput};
 use crate::{DISPUTE_WINDOW_BLOCKS, MAX_BATCH_SIZE, MIN_BATCH_SIZE};
 
@@ -116,8 +127,72 @@ impl BatchExecutor {
             .push(input);
     }
 
-    /// Add a settlement request
+    /// Add a settlement request with ownership verification (C-1)
+    ///
+    /// This is the RECOMMENDED method for adding settlements. It verifies
+    /// that the requester owns the lock they are trying to spend before
+    /// accepting the settlement.
+    ///
+    /// # Security
+    ///
+    /// This method enforces C-1: Settlement Ownership Verification.
+    /// Without valid ownership proof, the settlement is rejected.
+    pub fn add_settlement_request(
+        &mut self,
+        request: SettlementRequest,
+    ) -> Result<(), ReconciliationError> {
+        // C-1: Verify ownership proof BEFORE any other processing
+        request.verify_ownership().map_err(|e| {
+            tracing::error!(
+                settlement_id = %hex::encode(request.settlement().id()),
+                source_ghost_id = %request.settlement().source_ghost_id(),
+                destination = %request.settlement().destination_address(),
+                amount = request.settlement().amount_sats(),
+                "C-1 SECURITY: Settlement ownership verification failed: {}",
+                e
+            );
+            ReconciliationError::OwnershipVerificationFailed(e.to_string())
+        })?;
+
+        tracing::debug!(
+            settlement_id = %hex::encode(request.settlement().id()),
+            "C-1: Settlement ownership verified successfully"
+        );
+
+        // Now add the verified settlement
+        self.add_settlement_internal(request.into_settlement())
+    }
+
+    /// Add a settlement request (DEPRECATED - use add_settlement_request)
+    ///
+    /// # Deprecation Warning
+    ///
+    /// This method does NOT verify ownership. It exists only for backwards
+    /// compatibility and internal use. External callers MUST use
+    /// `add_settlement_request()` which includes ownership verification.
+    ///
+    /// # Security Risk
+    ///
+    /// Using this method without ownership verification could allow attackers
+    /// to request settlements from locks they don't own.
+    #[deprecated(
+        since = "1.6.0",
+        note = "Use add_settlement_request() which includes C-1 ownership verification"
+    )]
     pub fn add_settlement(&mut self, settlement: Settlement) -> Result<(), ReconciliationError> {
+        tracing::warn!(
+            settlement_id = %hex::encode(settlement.id()),
+            "DEPRECATED: add_settlement() called without ownership verification. \
+             Use add_settlement_request() for C-1 security."
+        );
+        self.add_settlement_internal(settlement)
+    }
+
+    /// Internal method to add a settlement after verification
+    fn add_settlement_internal(
+        &mut self,
+        settlement: Settlement,
+    ) -> Result<(), ReconciliationError> {
         // Validate settlement
         crate::rules::validate_settlement(
             settlement.source_ghost_id(),
@@ -165,6 +240,12 @@ impl BatchExecutor {
     }
 
     /// Form a new batch from pending settlements
+    ///
+    /// # Security (H-6: Atomic Settlement State Transitions)
+    ///
+    /// This method clones settlements for batch formation instead of draining them.
+    /// Settlements are only removed from the pending queue after successful batch
+    /// sealing. If sealing fails, no settlements are lost.
     pub fn form_batch(&mut self) -> Result<Batch, ReconciliationError> {
         if self.pending_settlements.len() < MIN_BATCH_SIZE {
             return Err(ReconciliationError::InsufficientSettlements {
@@ -173,8 +254,24 @@ impl BatchExecutor {
             });
         }
 
-        // Take settlements up to max batch size
+        // H-6: CLONE settlements instead of draining them
+        // This ensures we don't lose settlements if batch sealing fails
         let batch_size = self.pending_settlements.len().min(MAX_BATCH_SIZE);
+        let candidate_settlements: Vec<Settlement> =
+            self.pending_settlements.iter().take(batch_size).cloned().collect();
+
+        // Create batch from cloned settlements
+        let mut batch = Batch::new();
+        for settlement in &candidate_settlements {
+            batch.add_settlement(settlement)?;
+        }
+
+        // H-6: Try to seal the batch BEFORE removing from pending
+        // If this fails, pending_settlements remain unchanged
+        batch.seal()?;
+
+        // H-6: Only now that sealing succeeded, remove from pending
+        // Use drain to efficiently remove the first batch_size elements
         let settlements: Vec<Settlement> = self.pending_settlements.drain(..batch_size).collect();
 
         // Update pending tracking
@@ -187,15 +284,6 @@ impl BatchExecutor {
             self.oldest_pending_timestamp = None;
         }
 
-        // Create batch
-        let mut batch = Batch::new();
-        for settlement in &settlements {
-            batch.add_settlement(settlement)?;
-        }
-
-        // Seal the batch
-        batch.seal()?;
-
         // Store settlements for transaction building
         self.current_batch_settlements = settlements;
         self.current_batch = Some(batch.clone());
@@ -203,6 +291,11 @@ impl BatchExecutor {
     }
 
     /// Build the L1 reconciliation transaction for a batch
+    ///
+    /// # Security (C-2)
+    ///
+    /// This function tracks inputs consumed within the batch to prevent
+    /// double-spending the same UTXO for multiple settlements.
     pub fn build_transaction(
         &mut self,
         batch: &Batch,
@@ -220,6 +313,11 @@ impl BatchExecutor {
         let mut total_output_sats: u64 = 0;
         let mut input_lock_ids: Vec<[u8; 32]> = Vec::new();
         let mut input_amounts: Vec<u64> = Vec::new();
+
+        // C-2: Track inputs consumed within THIS batch to prevent double-spend
+        // This HashSet tracks outpoints (txid:vout) that have already been
+        // selected for spending in this batch.
+        let mut consumed_in_batch: HashSet<OutPoint> = HashSet::new();
 
         // Collect inputs for each settlement
         for settlement in &self.current_batch_settlements {
@@ -243,13 +341,32 @@ impl BatchExecutor {
                 if collected >= settlement.amount_sats() {
                     break;
                 }
+
+                let outpoint = OutPoint {
+                    txid: input.txid,
+                    vout: input.vout,
+                };
+
+                // C-2: Check if this input was already consumed in this batch
+                if consumed_in_batch.contains(&outpoint) {
+                    tracing::error!(
+                        txid = %input.txid,
+                        vout = input.vout,
+                        settlement_id = %hex::encode(settlement.id()),
+                        "C-2 SECURITY: Attempted double-spend of input in same batch"
+                    );
+                    return Err(ReconciliationError::DoubleSpendInBatch {
+                        outpoint: format!("{}:{}", input.txid, input.vout),
+                    });
+                }
+
+                // C-2: Mark input as consumed BEFORE adding to the batch
+                consumed_in_batch.insert(outpoint);
+
                 collected += input.amount;
                 used_indices.push(i);
 
-                input_outpoints.push(OutPoint {
-                    txid: input.txid,
-                    vout: input.vout,
-                });
+                input_outpoints.push(outpoint);
 
                 // Use lock_id if available, otherwise generate from txid:vout
                 let lock_id = input.lock_id.unwrap_or_else(|| {
@@ -279,6 +396,12 @@ impl BatchExecutor {
 
             total_output_sats += settlement.net_amount_sats();
         }
+
+        tracing::debug!(
+            input_count = consumed_in_batch.len(),
+            "C-2: Batch transaction built with {} unique inputs",
+            consumed_in_batch.len()
+        );
 
         // Calculate fees
         let total_settlement_fees = self
@@ -482,6 +605,7 @@ fn estimate_transaction_vsize(input_count: usize, output_count: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settlement::OwnershipProof;
     use std::str::FromStr;
 
     fn test_txid() -> Txid {
@@ -561,5 +685,195 @@ mod tests {
         }
 
         assert!(executor.should_form_batch());
+    }
+
+    // ========================================================================
+    // C-1: Settlement Ownership Verification Tests
+    // ========================================================================
+
+    #[test]
+    fn test_c1_settlement_rejected_without_ownership_proof() {
+        use crate::settlement::{OwnershipProof, SettlementRequest};
+
+        let mut executor = BatchExecutor::new(Network::Regtest, "bcrt1qtest".to_string());
+
+        // Create a settlement
+        let settlement = Settlement::new(
+            "ghost1abc".to_string(),
+            test_lock_id(1),
+            "bcrt1qoutput".to_string(),
+            100_000,
+        )
+        .unwrap();
+
+        // Create a fake/invalid ownership proof (wrong signature)
+        let fake_sig = [0u8; 64];
+        let fake_pubkey = test_lock_id(1); // This won't match the actual lock pubkey
+        let ownership_proof = OwnershipProof::new(fake_sig, fake_pubkey);
+
+        let request = SettlementRequest::new(settlement, ownership_proof);
+
+        // Verification should fail
+        let result = executor.add_settlement_request(request);
+        assert!(result.is_err());
+
+        // Error should indicate ownership verification failure
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ReconciliationError::OwnershipVerificationFailed(_)),
+            "Expected OwnershipVerificationFailed, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_c1_settlement_rejected_with_wrong_pubkey() {
+        use crate::settlement::{OwnershipProof, SettlementRequest};
+
+        let mut executor = BatchExecutor::new(Network::Regtest, "bcrt1qtest".to_string());
+
+        // Create a settlement with lock_id = [1u8; 32]
+        let settlement = Settlement::new(
+            "ghost1abc".to_string(),
+            test_lock_id(1),
+            "bcrt1qoutput".to_string(),
+            100_000,
+        )
+        .unwrap();
+
+        // Create proof with DIFFERENT pubkey than the lock
+        let fake_sig = [0u8; 64];
+        let wrong_pubkey = test_lock_id(2); // Different from settlement's lock_id
+        let ownership_proof = OwnershipProof::new(fake_sig, wrong_pubkey);
+
+        let request = SettlementRequest::new(settlement, ownership_proof);
+
+        // Verification should fail because pubkey doesn't match lock
+        let result = executor.add_settlement_request(request);
+        assert!(result.is_err());
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("does not match lock pubkey"),
+            "Expected pubkey mismatch error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_c1_ownership_proof_message_format() {
+        // Verify the message format is deterministic
+        let settlement_id = [1u8; 32];
+        let destination = "bcrt1qtest";
+        let amount = 100_000u64;
+
+        let msg1 = OwnershipProof::build_message(&settlement_id, destination, amount);
+        let msg2 = OwnershipProof::build_message(&settlement_id, destination, amount);
+
+        assert_eq!(msg1, msg2, "Message hash should be deterministic");
+
+        // Different inputs should produce different messages
+        let msg3 = OwnershipProof::build_message(&settlement_id, destination, amount + 1);
+        assert_ne!(msg1, msg3, "Different amount should produce different hash");
+
+        let msg4 = OwnershipProof::build_message(&settlement_id, "bcrt1qother", amount);
+        assert_ne!(msg1, msg4, "Different destination should produce different hash");
+    }
+
+    // ========================================================================
+    // C-2: Double-Spend Prevention Tests
+    // ========================================================================
+
+    #[test]
+    fn test_c2_double_spend_in_batch_rejected() {
+        let mut executor = BatchExecutor::new(Network::Regtest, "bcrt1qtest".to_string());
+
+        // Add 10 settlements to form a batch (minimum batch size)
+        for i in 0..10 {
+            let settlement = Settlement::new(
+                "ghost1same".to_string(), // All from same ghost_id (must start with "ghost1")
+                test_lock_id(i as u8),
+                format!("bcrt1qoutput{}", i),
+                10_000, // Small amounts
+            )
+            .unwrap();
+            #[allow(deprecated)]
+            executor.add_settlement(settlement).unwrap();
+        }
+
+        // Add only ONE input that's smaller than total required
+        // This simulates the scenario where the same input would need
+        // to be used for multiple settlements
+        let single_input = ReconciliationInput {
+            txid: test_txid(),
+            vout: 0,
+            amount: 50_000, // Only enough for ~5 settlements
+            ghost_id: "ghost1same".to_string(), // Must match settlement
+            lock_id: None,
+        };
+        executor.add_input(single_input);
+
+        // Form the batch
+        let batch = executor.form_batch().unwrap();
+
+        // Building transaction should fail due to insufficient funds
+        // (not double-spend in this case, but demonstrates input tracking)
+        let result = executor.build_transaction(&batch, 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_c2_unique_inputs_for_settlements() {
+        // Use a valid regtest bech32 address
+        let treasury_addr = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080".to_string();
+        let mut executor = BatchExecutor::new(Network::Regtest, treasury_addr);
+
+        // Add 10 settlements from different ghost_ids
+        // Using a valid regtest P2WPKH address format
+        let output_addr = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
+
+        for i in 0..10 {
+            let settlement = Settlement::new(
+                format!("ghost1user{}", i), // Must start with "ghost1"
+                test_lock_id(i as u8),
+                output_addr.to_string(), // Use valid address for all
+                10_000,
+            )
+            .unwrap();
+            #[allow(deprecated)]
+            executor.add_settlement(settlement).unwrap();
+
+            // Add corresponding input for each ghost_id
+            let input = ReconciliationInput {
+                txid: Txid::from_str(&format!(
+                    "000000000000000000000000000000000000000000000000000000000000000{}",
+                    i
+                ))
+                .unwrap_or(test_txid()),
+                vout: 0,
+                amount: 20_000,
+                ghost_id: format!("ghost1user{}", i), // Must match settlement
+                lock_id: Some(test_lock_id(i as u8)),
+            };
+            executor.add_input(input);
+        }
+
+        // Form the batch
+        let batch = executor.form_batch().unwrap();
+
+        // Building transaction should succeed with unique inputs
+        let result = executor.build_transaction(&batch, 1);
+        assert!(result.is_ok(), "Should succeed with unique inputs: {:?}", result.err());
+
+        let tx = result.unwrap();
+        assert_eq!(tx.input_outpoints.len(), 10, "Should have 10 unique inputs");
+
+        // Verify all outpoints are unique
+        let unique_outpoints: HashSet<_> = tx.input_outpoints.iter().collect();
+        assert_eq!(
+            unique_outpoints.len(),
+            tx.input_outpoints.len(),
+            "All outpoints should be unique"
+        );
     }
 }

@@ -178,6 +178,8 @@ impl AuditLog {
     }
 
     /// Get the hash of the last entry (for chaining)
+    /// Note: Used by verify_chain() for chain integrity checks
+    #[allow(dead_code)]
     fn get_last_hash(&self) -> GhostResult<String> {
         self.db.with_connection(|conn| {
             let result: Result<String, _> = conn.query_row(
@@ -224,6 +226,10 @@ impl AuditLog {
     /// Append a new entry to the audit log
     ///
     /// This is append-only - entries cannot be modified or deleted.
+    ///
+    /// M-12: Uses a transaction to ensure atomicity between get_last_hash and INSERT.
+    /// This prevents concurrent appends from creating broken chains where multiple
+    /// entries claim the same prev_hash.
     pub fn append(
         &self,
         event_type: AuditEventType,
@@ -232,28 +238,42 @@ impl AuditLog {
         details: serde_json::Value,
     ) -> GhostResult<i64> {
         let timestamp = chrono::Utc::now().timestamp();
-        let prev_hash = self.get_last_hash()?;
         let event_type_str = event_type.to_string();
         let target_owned = target.map(|s| s.to_string());
         let details_str = details.to_string();
+        let actor_owned = actor.to_string();
 
-        let entry_hash = Self::compute_hash(
-            timestamp,
-            &event_type_str,
-            actor,
-            &target_owned,
-            &details_str,
-            &prev_hash,
-        );
+        // M-12: Use transaction to atomically get_last_hash + INSERT
+        // This prevents race conditions where concurrent appends get the same prev_hash
+        let id = self.db.transaction(|tx| {
+            // Get prev_hash inside the transaction
+            let prev_hash: String = tx
+                .query_row(
+                    "SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap_or_else(|_| {
+                    // Genesis hash for empty log
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_string()
+                });
 
-        let id = self.db.with_connection(|conn| {
-            conn.execute(
+            let entry_hash = Self::compute_hash(
+                timestamp,
+                &event_type_str,
+                &actor_owned,
+                &target_owned,
+                &details_str,
+                &prev_hash,
+            );
+
+            tx.execute(
                 "INSERT INTO audit_log (timestamp, event_type, actor, target, details, prev_hash, entry_hash)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     timestamp,
                     event_type_str,
-                    actor,
+                    actor_owned,
                     target_owned,
                     details_str,
                     prev_hash,
@@ -262,7 +282,7 @@ impl AuditLog {
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            Ok(conn.last_insert_rowid())
+            Ok(tx.last_insert_rowid())
         })?;
 
         debug!(

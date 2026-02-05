@@ -37,8 +37,13 @@ use crate::GhostKeys;
 /// where outputs are (output_pubkey, optional_amount)
 pub type TransactionOutputs = (PublicKey, Vec<(PublicKey, Option<u64>)>);
 
-/// Maximum nonce to try when scanning (100 possibilities should be plenty)
-pub const MAX_SCAN_NONCE: u16 = 100;
+/// L-4: Default maximum nonce to try when scanning
+/// This can be overridden via PaymentDetector::with_max_nonce()
+pub const DEFAULT_MAX_SCAN_NONCE: u16 = 100;
+
+/// L-4: Backwards compatibility alias (for external consumers)
+#[allow(dead_code)]
+pub const MAX_SCAN_NONCE: u16 = DEFAULT_MAX_SCAN_NONCE;
 
 // Custom serde for [u8; 33] using hex encoding
 mod pubkey_hex {
@@ -85,14 +90,29 @@ pub struct ScannedPayment {
 pub struct PaymentDetector<'a> {
     keys: &'a GhostKeys,
     secp: Secp256k1<secp256k1::All>,
+    /// L-4: Configurable maximum nonce to scan
+    max_nonce: u16,
 }
 
 impl<'a> PaymentDetector<'a> {
-    /// Create a new payment detector
+    /// Create a new payment detector with default max nonce
     pub fn new(keys: &'a GhostKeys) -> Self {
         Self {
             keys,
             secp: Secp256k1::new(),
+            max_nonce: DEFAULT_MAX_SCAN_NONCE,
+        }
+    }
+
+    /// L-4: Create a payment detector with custom max nonce
+    ///
+    /// Use this when you need to scan more nonces (e.g., for recovery)
+    /// or fewer nonces (e.g., for fast initial sync)
+    pub fn with_max_nonce(keys: &'a GhostKeys, max_nonce: u16) -> Self {
+        Self {
+            keys,
+            secp: Secp256k1::new(),
+            max_nonce,
         }
     }
 
@@ -134,8 +154,8 @@ impl<'a> PaymentDetector<'a> {
         index: u32,
         amount: Option<u64>,
     ) -> Option<ScannedPayment> {
-        // Try all possible nonces
-        for nonce in 0..=MAX_SCAN_NONCE {
+        // L-4: Try all possible nonces up to configurable max
+        for nonce in 0..=self.max_nonce {
             let tweak = compute_tweak(shared_secret, index, nonce);
 
             // Expected pubkey = spend_pubkey + tweak*G

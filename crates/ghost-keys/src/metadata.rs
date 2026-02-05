@@ -57,9 +57,11 @@ pub const METADATA_PLAINTEXT_SIZE: usize = 64;
 pub const METADATA_CIPHERTEXT_SIZE: usize = 80;
 
 /// HKDF info string for metadata key derivation
+/// M-4: Domain separation ensures keys are unique to this specific use case
 const HKDF_KEY_INFO: &[u8] = b"ghost/metadata/key/v1";
 
 /// HKDF info string for metadata nonce derivation
+/// M-4: Separate info string ensures nonce is derived independently from key
 const HKDF_NONCE_INFO: &[u8] = b"ghost/metadata/nonce/v1";
 
 /// Payment metadata containing label and optional memo
@@ -211,7 +213,15 @@ impl PaymentMetadata {
 
 /// Derive encryption key from shared secret using HKDF-SHA256
 ///
-/// Uses domain separation to ensure keys are unique to metadata encryption
+/// M-4: Uses the ephemeral_pubkey as salt to ensure uniqueness per transaction.
+/// Each Silent Payment uses a fresh ephemeral keypair, so the salt (and thus
+/// the derived key) is unique for every payment. The info string provides
+/// domain separation to ensure this key is only used for metadata encryption.
+///
+/// Security properties:
+/// - Unique ephemeral key per payment = unique salt = unique derived key
+/// - Domain-separated info string prevents key reuse across different protocols
+/// - HKDF-SHA256 provides strong key derivation from ECDH shared secret
 fn derive_metadata_key(shared_secret: &[u8], ephemeral_pubkey: &[u8]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(ephemeral_pubkey), shared_secret);
     let mut key = [0u8; 32];
@@ -222,8 +232,14 @@ fn derive_metadata_key(shared_secret: &[u8], ephemeral_pubkey: &[u8]) -> [u8; 32
 
 /// Derive nonce from shared secret using HKDF-SHA256
 ///
-/// Deterministic nonce derived from the same inputs ensures decryption works
-/// without transmitting the nonce separately
+/// M-4: Deterministic nonce derived with unique ephemeral_pubkey salt ensures
+/// each payment uses a unique (key, nonce) pair. The separate info string
+/// ensures the nonce is derived independently from the key.
+///
+/// Security properties:
+/// - Unique ephemeral key per payment = unique nonce per (key, nonce) pair
+/// - Never reuse same (key, nonce) pair since ephemeral key is single-use
+/// - Separate info string provides independence from key derivation
 fn derive_metadata_nonce(shared_secret: &[u8], ephemeral_pubkey: &[u8]) -> [u8; 12] {
     let hk = Hkdf::<Sha256>::new(Some(ephemeral_pubkey), shared_secret);
     let mut nonce = [0u8; 12];

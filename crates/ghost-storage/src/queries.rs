@@ -3042,24 +3042,57 @@ impl Database {
 
     /// Add funds to treasury and check if threshold was crossed
     /// Returns true if threshold was just crossed
+    ///
+    /// # M-10: Atomic Treasury Balance Update
+    ///
+    /// This method uses a transaction to ensure atomic read-modify-write.
+    /// Without this, concurrent calls could result in lost updates.
     pub fn add_treasury_funds(&self, amount: u64, threshold: u64) -> GhostResult<bool> {
-        let current = self.get_treasury_balance()?;
-        let new_balance = current.saturating_add(amount);
-        self.set_treasury_balance(new_balance)?;
+        let now = chrono::Utc::now().timestamp();
 
-        // Check if we just crossed threshold
-        if current < threshold && new_balance >= threshold {
-            let now = chrono::Utc::now().timestamp();
-            self.set_treasury_threshold_reached(now)?;
-            tracing::info!(
-                balance = new_balance,
-                threshold,
-                "Treasury threshold reached - decay begins"
-            );
-            return Ok(true);
-        }
+        // M-10: Use transaction for atomic balance update
+        self.transaction(|tx| {
+            // Read current balance within transaction
+            let current: u64 = tx
+                .query_row(
+                    "SELECT value FROM kv_store WHERE key = ?1",
+                    [TREASURY_BALANCE_KEY],
+                    |row| {
+                        let s: String = row.get(0)?;
+                        Ok(s.parse::<u64>().unwrap_or(0))
+                    },
+                )
+                .unwrap_or(0);
 
-        Ok(false)
+            let new_balance = current.saturating_add(amount);
+
+            // Update balance within same transaction
+            tx.execute(
+                "INSERT INTO kv_store (key, value, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+                params![TREASURY_BALANCE_KEY, new_balance.to_string(), now],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            // Check if we just crossed threshold
+            if current < threshold && new_balance >= threshold {
+                tx.execute(
+                    "INSERT INTO kv_store (key, value, updated_at) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+                    params![TREASURY_THRESHOLD_REACHED_KEY, now.to_string(), now],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                tracing::info!(
+                    balance = new_balance,
+                    threshold,
+                    "Treasury threshold reached - decay begins"
+                );
+                return Ok(true);
+            }
+
+            Ok(false)
+        })
     }
 }
 

@@ -288,6 +288,20 @@ const MAX_MESSAGES_PER_SENDER: usize = 10_000;
 /// With 5000 senders * ~1KB per sender = ~5MB worst case.
 const MAX_UNIQUE_SENDERS: usize = 5_000;
 
+/// M-2: Threshold for detecting sequence wrap-around
+/// When a new sequence is much smaller than the highest seen, it indicates wrap-around
+const WRAP_DETECTION_THRESHOLD: u64 = u64::MAX / 2;
+
+/// M-2: Sequence state tracking with wrap-around epoch
+/// Handles the case where sequence numbers wrap from MAX back to 1
+#[derive(Debug, Clone, Default)]
+struct SequenceState {
+    /// Highest sequence number seen in the current epoch
+    highest_seq: u64,
+    /// Wrap-around epoch (increments each time sequences wrap)
+    epoch: u32,
+}
+
 /// Bounded LRU-like cache for seen message deduplication (P2P-L1)
 ///
 /// Uses a HashMap for O(1) lookups combined with a VecDeque for O(1) FIFO eviction.
@@ -312,9 +326,9 @@ struct SeenMessageCache {
     sender_counts: HashMap<NodeId, usize>,
     /// Per-sender queues for targeted eviction (H3 security fix)
     sender_queues: HashMap<NodeId, VecDeque<(u64, u64)>>, // sender -> (sequence, timestamp)
-    /// H-P2P-4: Highest sequence number seen from each sender
-    /// Used to reject replayed messages with old/duplicate sequences
-    highest_seq: HashMap<NodeId, u64>,
+    /// M-2: Sequence state per sender with wrap-around epoch tracking
+    /// Used to reject replayed messages while handling sequence wrap-around
+    sequence_state: HashMap<NodeId, SequenceState>,
     /// Maximum global capacity
     capacity: usize,
     /// Maximum messages per sender (H3 security fix)
@@ -328,31 +342,63 @@ impl SeenMessageCache {
             queue: VecDeque::with_capacity(capacity),
             sender_counts: HashMap::new(),
             sender_queues: HashMap::new(),
-            highest_seq: HashMap::new(),
+            sequence_state: HashMap::new(),
             capacity,
             max_per_sender: MAX_MESSAGES_PER_SENDER,
         }
     }
 
-    /// H-P2P-4: Check if a sequence number is valid (monotonically increasing)
+    /// M-2: Check if a sequence number is valid with wrap-around handling
     ///
-    /// Returns true if this sequence is greater than the highest seen from this sender.
-    /// Returns false if this is a replay (sequence <= highest seen).
+    /// Returns true if this sequence is valid (not a replay).
+    /// Handles wrap-around by detecting when a small sequence follows a very large one.
     fn is_sequence_valid(&self, sender: &NodeId, sequence: u64) -> bool {
-        match self.highest_seq.get(sender) {
-            Some(&highest) if sequence <= highest => false, // Reject old/duplicate sequences
-            _ => true,
+        match self.sequence_state.get(sender) {
+            Some(state) => {
+                // M-2: Check for wrap-around detection
+                // If current highest is very large and new sequence is very small,
+                // this is likely a wrap-around, not a replay
+                if state.highest_seq > WRAP_DETECTION_THRESHOLD && sequence < WRAP_DETECTION_THRESHOLD {
+                    // Appears to be a wrap-around - accept if sequence > 0
+                    // The update_highest_seq will handle epoch increment
+                    sequence > 0
+                } else {
+                    // Normal case: sequence must be strictly greater
+                    sequence > state.highest_seq
+                }
+            }
+            None => true, // No state for this sender yet, accept any sequence > 0
         }
     }
 
-    /// H-P2P-4: Update the highest sequence seen from a sender
+    /// M-2: Update the highest sequence seen from a sender with wrap-around handling
     ///
     /// Should be called after accepting a valid message.
+    /// Detects wrap-around and increments epoch accordingly.
     fn update_highest_seq(&mut self, sender: &NodeId, sequence: u64) {
-        self.highest_seq
+        self.sequence_state
             .entry(*sender)
-            .and_modify(|h| *h = (*h).max(sequence))
-            .or_insert(sequence);
+            .and_modify(|state| {
+                // M-2: Detect wrap-around
+                if state.highest_seq > WRAP_DETECTION_THRESHOLD
+                    && sequence < WRAP_DETECTION_THRESHOLD
+                {
+                    // Sequence wrapped around - increment epoch and reset
+                    state.epoch = state.epoch.saturating_add(1);
+                    debug!(
+                        sender = %hex::encode(&sender[..8]),
+                        old_seq = state.highest_seq,
+                        new_seq = sequence,
+                        epoch = state.epoch,
+                        "Sequence wrap-around detected"
+                    );
+                }
+                state.highest_seq = state.highest_seq.max(sequence);
+            })
+            .or_insert(SequenceState {
+                highest_seq: sequence,
+                epoch: 0,
+            });
     }
 
     /// Check if a message has been seen
@@ -384,7 +430,7 @@ impl SeenMessageCache {
                 }
             }
             self.sender_counts.remove(&sender);
-            self.highest_seq.remove(&sender);
+            self.sequence_state.remove(&sender);
 
             // Note: We don't clean the global queue here for efficiency
             // It will be cleaned up naturally during normal eviction
@@ -493,6 +539,13 @@ impl SeenMessageCache {
         // Remove empty sender entries to prevent unbounded growth of sender tracking
         self.sender_counts.retain(|_, &mut count| count > 0);
         self.sender_queues.retain(|_, queue| !queue.is_empty());
+
+        // L-2: Also clean sequence_state for senders with no remaining messages
+        // This prevents unbounded growth of the sequence_state HashMap
+        let active_senders: std::collections::HashSet<_> =
+            self.sender_queues.keys().copied().collect();
+        self.sequence_state
+            .retain(|sender, _| active_senders.contains(sender));
     }
 
     fn len(&self) -> usize {

@@ -939,6 +939,8 @@ pub struct GhostPayQuery {
     pub nonce: Option<String>,
     /// Explicitly disable signing (default: signed when possible)
     pub unsigned: Option<bool>,
+    /// H-5: Challenge epoch to verify L2 state for (cryptographic verification)
+    pub challenge_epoch: Option<u64>,
 }
 
 /// Ghost Pay verification handler
@@ -960,6 +962,7 @@ async fn ghostpay_handler(
             ChallengeType::GhostPayTransfer
         },
         address: query.address,
+        challenge_epoch: query.challenge_epoch,
     };
 
     // Sign by default unless explicitly disabled
@@ -999,6 +1002,8 @@ async fn ghostpay_handler(
                         epoch: None,
                         balance_sats: None,
                         wraith_enabled: false,
+                        epoch_state_hash: None,
+                        epoch_tx_count: None,
                         error: Some(e.to_string()),
                     }
                 })),

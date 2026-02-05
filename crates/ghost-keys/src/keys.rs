@@ -28,6 +28,7 @@ use rand::rngs::OsRng;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
+use zeroize::Zeroize;
 
 use crate::derivation::{compute_tweak, derive_shared_secret, derive_spend_key};
 use crate::error::GhostKeyError;
@@ -36,22 +37,59 @@ use crate::ghost_id::GhostId;
 /// Maximum nonce to try when detecting payments
 pub const MAX_DETECTION_NONCE: u16 = 100;
 
+/// H-2: Wrapper for secret key bytes that gets zeroed on drop
+///
+/// This wrapper ensures the raw secret key bytes are properly zeroed when dropped.
+/// While `secp256k1::SecretKey` has `non_secure_erase()`, using the `zeroize` crate
+/// provides more reliable memory clearing with compiler barriers to prevent
+/// optimization from removing the zeroing operation.
+#[derive(Clone)]
+struct ZeroizingSecretBytes([u8; 32]);
+
+impl ZeroizingSecretBytes {
+    fn from_secret_key(sk: &SecretKey) -> Self {
+        Self(sk.secret_bytes())
+    }
+}
+
+impl Zeroize for ZeroizingSecretBytes {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl Drop for ZeroizingSecretBytes {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
 /// Ghost Keys - Private keys for Ghost Pay
 ///
 /// Consists of:
 /// - Scan key: Used to detect incoming payments via ECDH
 /// - Spend key: Used to spend received funds
 ///
-/// # Security (L-CRYPTO-1)
+/// # Security (H-2: Secure Secret Key Erasure)
 ///
-/// This struct implements `Drop` to attempt erasure of secret keys from memory
-/// when the struct is dropped. Note that due to Rust compiler optimizations,
-/// complete memory zeroing cannot be guaranteed - the compiler may copy or move
-/// secret data elsewhere in memory. This is a defense-in-depth measure, not a
-/// guarantee. See the [`zeroize`](https://docs.rs/zeroize) crate documentation
-/// for a detailed discussion of the challenges involved.
+/// This struct uses the `zeroize` crate to securely erase secret key bytes
+/// from memory when dropped. The `ZeroizingSecretBytes` wrapper ensures:
+/// - Memory barriers prevent compiler from optimizing away the zeroing
+/// - Both scan and spend secret bytes are cleared on drop
+///
+/// Note: While `zeroize` provides best-effort secure erasure, complete memory
+/// zeroing cannot be absolutely guaranteed due to potential compiler-generated
+/// copies. This is a defense-in-depth measure. See the [`zeroize`](https://docs.rs/zeroize)
+/// crate documentation for detailed discussion.
 #[derive(Clone)]
 pub struct GhostKeys {
+    /// H-2: Wrapped in ZeroizingSecretBytes for secure erasure on drop
+    /// These fields exist solely to be zeroed when the struct is dropped
+    #[allow(dead_code)]
+    scan_secret_bytes: ZeroizingSecretBytes,
+    #[allow(dead_code)]
+    spend_secret_bytes: ZeroizingSecretBytes,
+    /// Cached SecretKey for crypto operations
     scan_secret: SecretKey,
     spend_secret: SecretKey,
     scan_pubkey: PublicKey,
@@ -78,6 +116,8 @@ impl GhostKeys {
         let (spend_secret, spend_pubkey) = secp.generate_keypair(&mut OsRng);
 
         Self {
+            scan_secret_bytes: ZeroizingSecretBytes::from_secret_key(&scan_secret),
+            spend_secret_bytes: ZeroizingSecretBytes::from_secret_key(&spend_secret),
             scan_secret,
             spend_secret,
             scan_pubkey,
@@ -92,6 +132,8 @@ impl GhostKeys {
         let spend_pubkey = PublicKey::from_secret_key(&secp, &spend_secret);
 
         Self {
+            scan_secret_bytes: ZeroizingSecretBytes::from_secret_key(&scan_secret),
+            spend_secret_bytes: ZeroizingSecretBytes::from_secret_key(&spend_secret),
             scan_secret,
             spend_secret,
             scan_pubkey,
@@ -318,18 +360,18 @@ impl GhostKeys {
     }
 }
 
-/// L-CRYPTO-1: Implement Drop to attempt erasure of secret keys from memory.
+/// H-2: Implement Drop to securely erase secret keys from memory.
 ///
-/// Note: Due to compiler optimizations, this is not guaranteed to completely
-/// erase all copies of the secret key material. This is a defense-in-depth
-/// measure. See secp256k1's `non_secure_erase` documentation.
+/// Uses the `zeroize` crate for reliable memory clearing with compiler barriers.
+/// The ZeroizingSecretBytes wrapper handles the raw bytes, and we also call
+/// secp256k1's non_secure_erase as an additional layer of defense-in-depth.
 impl Drop for GhostKeys {
     fn drop(&mut self) {
-        // Call non_secure_erase on both secret keys
-        // This attempts to overwrite the secret key bytes, though the compiler
-        // may have made copies elsewhere in memory.
+        // H-2: The ZeroizingSecretBytes fields are automatically zeroed via their Drop impl.
+        // We also call non_secure_erase on the SecretKeys for belt-and-suspenders.
         self.scan_secret.non_secure_erase();
         self.spend_secret.non_secure_erase();
+        // Note: scan_secret_bytes and spend_secret_bytes are zeroed by their own Drop
     }
 }
 
