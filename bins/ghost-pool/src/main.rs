@@ -70,6 +70,10 @@ use ghost_pool::template::{TemplateConfig, TemplateEvent, TemplateProcessor};
 use ghost_pool::template_provider::{TdpConfig, TemplateDistributionServer};
 use ghost_pool::treasury::TreasuryState;
 
+/// Exit code that signals systemd to restart the service
+/// Used when config is updated via API and requires restart to apply
+const EXIT_CODE_RESTART: i32 = 100;
+
 /// Adapter to provide peers for verification from PeerManager
 struct PeerProviderAdapter {
     peers: Arc<ghost_consensus::peer::PeerManager>,
@@ -1254,6 +1258,11 @@ async fn main() -> Result<()> {
     verification_state = verification_state.with_database((*db).clone());
     verification_state = verification_state.with_rpc(Arc::clone(&rpc));
 
+    // Wire full node config for config update API
+    // This allows the dashboard to modify settings via POST /api/internal/config/update
+    verification_state =
+        verification_state.with_full_node_config(config.clone(), args.config.clone());
+
     // Configure internal API authentication (AUTH4-1 security fix)
     if let Some(ref secret_hex) = config.network.internal_api_secret {
         match ghost_verification::InternalAuth::from_hex(secret_hex) {
@@ -1509,6 +1518,26 @@ async fn main() -> Result<()> {
     });
 
     let verification_state = Arc::new(verification_state);
+
+    // Get restart signal for monitoring (config update API)
+    let restart_signal = verification_state.restart_signal();
+
+    // Start restart signal monitor task
+    // When config is updated via API, this triggers graceful shutdown
+    let restart_signal_for_monitor = Arc::clone(&restart_signal);
+    let shutdown_tx_for_restart = shutdown_tx.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            interval.tick().await;
+            if restart_signal_for_monitor.load(std::sync::atomic::Ordering::SeqCst) {
+                info!("Restart signal received (config update). Initiating graceful shutdown...");
+                let _ = shutdown_tx_for_restart.send(());
+                break;
+            }
+        }
+    });
+    info!("Restart signal monitor started (for config update API)");
 
     // Start WebSocket health broadcast task
     let ws_state = Arc::clone(&verification_state.ws_state);
@@ -2316,10 +2345,23 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Wait for shutdown signal
-    tokio::signal::ctrl_c().await?;
+    // Wait for shutdown signal (ctrl+c or restart signal from config update)
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("Received Ctrl+C, shutting down Ghost Pool...");
+        }
+        _ = shutdown_rx.recv() => {
+            // Shutdown triggered by restart signal monitor
+            if restart_signal.load(std::sync::atomic::Ordering::SeqCst) {
+                info!("Shutting down for restart (config update)...");
+            } else {
+                info!("Shutting down Ghost Pool...");
+            }
+        }
+    }
 
-    info!("Shutting down Ghost Pool...");
+    // Send shutdown signal to all tasks
     let _ = shutdown_tx.send(());
 
     // Deregister from load balancer (if registered)
@@ -2333,6 +2375,12 @@ async fn main() -> Result<()> {
     // Cleanup
     template_processor.stop();
     mesh.stop().await?;
+
+    // Check if this was a restart request
+    if restart_signal.load(std::sync::atomic::Ordering::SeqCst) {
+        info!("Ghost Pool shutdown complete. Exiting with code {} for systemd restart.", EXIT_CODE_RESTART);
+        std::process::exit(EXIT_CODE_RESTART);
+    }
 
     info!("Ghost Pool shutdown complete");
     Ok(())

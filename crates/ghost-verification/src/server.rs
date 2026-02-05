@@ -32,10 +32,14 @@ use ghost_common::types::NodeCapabilities;
 use ghost_policy::{PolicyEngine, PolicyProfile};
 use ghost_storage::Database;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::config::NodeConfig;
+/// Full node configuration from ghost_common (pool.toml)
+/// Used by the config update API to modify settings like mining_mode, policy_profile, etc.
+pub use ghost_common::config::NodeConfig as FullNodeConfig;
 use tokio::net::TcpListener;
 use tower_governor::{
     errors::GovernorError, governor::GovernorConfigBuilder, key_extractor::KeyExtractor,
@@ -317,10 +321,15 @@ pub struct VerificationState {
     pub rpc: Option<Arc<BitcoinRpc>>,
     /// Dashboard config (mutable settings)
     pub dashboard_config: parking_lot::RwLock<DashboardConfig>,
-    /// Node config with disk persistence (ghost_mode, etc.)
+    /// Node config with disk persistence (ghost_mode, etc.) - minimal JSON config
     pub node_config: parking_lot::RwLock<NodeConfig>,
-    /// Path to node config file
+    /// Path to node config file (JSON, for ghost_mode)
     pub node_config_path: Option<PathBuf>,
+    /// Full node configuration (pool.toml) for config update API
+    /// Contains all settings like mining_mode, policy_profile, ghost_pay, etc.
+    pub full_node_config: Option<parking_lot::RwLock<FullNodeConfig>>,
+    /// Path to full node config file (pool.toml)
+    pub full_node_config_path: Option<PathBuf>,
     /// WebSocket state for real-time updates
     pub ws_state: Arc<WsState>,
     /// Test proposal callback (for admin testing)
@@ -336,6 +345,9 @@ pub struct VerificationState {
     /// When true (default), server will fail to start if internal_auth is not configured
     /// When false, allows insecure mode for development/testing ONLY
     pub require_internal_auth: bool,
+    /// Signal to trigger graceful restart (set by config update API)
+    /// When true, main.rs will initiate shutdown and exit with code 100
+    pub restart_signal: Arc<AtomicBool>,
 }
 
 /// Archive handler trait
@@ -435,6 +447,8 @@ impl VerificationState {
             dashboard_config: parking_lot::RwLock::new(dashboard_config),
             node_config: parking_lot::RwLock::new(NodeConfig::default()),
             node_config_path: None,
+            full_node_config: None,
+            full_node_config_path: None,
             ws_state: Arc::new(WsState::new()),
             test_proposal_fn: None,
             record_share_fn: None,
@@ -442,7 +456,23 @@ impl VerificationState {
             internal_auth: None,
             // VF-C2: Default to requiring internal auth for security
             require_internal_auth: true,
+            restart_signal: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Signal that a restart is needed (config update API)
+    pub fn request_restart(&self) {
+        self.restart_signal.store(true, Ordering::SeqCst);
+    }
+
+    /// Check if a restart has been requested
+    pub fn restart_requested(&self) -> bool {
+        self.restart_signal.load(Ordering::SeqCst)
+    }
+
+    /// Get the restart signal for external monitoring (main.rs)
+    pub fn restart_signal(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.restart_signal)
     }
 
     /// Set internal API authentication (H10/H11 security fix)
@@ -618,6 +648,20 @@ impl VerificationState {
         }
         self.node_config = parking_lot::RwLock::new(config);
         self.node_config_path = Some(path);
+        self
+    }
+
+    /// Set the full node configuration (pool.toml) for config update API
+    ///
+    /// This allows the config update API to modify settings like mining_mode,
+    /// policy_profile, ghost_pay_enabled, etc. and persist them to disk.
+    ///
+    /// # Arguments
+    /// * `config` - The full NodeConfig loaded from pool.toml
+    /// * `path` - Path to the pool.toml file for atomic save
+    pub fn with_full_node_config(mut self, config: FullNodeConfig, path: PathBuf) -> Self {
+        self.full_node_config = Some(parking_lot::RwLock::new(config));
+        self.full_node_config_path = Some(path);
         self
     }
 

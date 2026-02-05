@@ -574,6 +574,47 @@ impl NodeConfig {
             result.add_error("ghost_pay.wraith_fee_percent", "Must be between 0 and 10");
         }
     }
+
+    /// Save configuration to file atomically using temp file + rename pattern
+    ///
+    /// This ensures crash safety: the config file is never left in a partial state.
+    /// If the process crashes mid-write, the original file remains intact.
+    ///
+    /// # Arguments
+    /// * `path` - Path to save the configuration file
+    ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err` if serialization, writing, or renaming fails
+    pub fn save_atomic(&self, path: &std::path::Path) -> std::io::Result<()> {
+        use std::io::Write;
+
+        // Serialize to TOML
+        let toml_str = toml::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        // Create temp file in same directory (ensures same filesystem for atomic rename)
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let temp_path = parent.join(format!(
+            ".{}.tmp.{}",
+            path.file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "config".to_string()),
+            std::process::id()
+        ));
+
+        // Write to temp file
+        {
+            let mut file = std::fs::File::create(&temp_path)?;
+            file.write_all(toml_str.as_bytes())?;
+            file.sync_all()?; // Ensure data is on disk before rename
+        }
+
+        // Atomic rename (on POSIX systems, rename is atomic if same filesystem)
+        std::fs::rename(&temp_path, path)?;
+
+        Ok(())
+    }
 }
 
 /// Identity configuration

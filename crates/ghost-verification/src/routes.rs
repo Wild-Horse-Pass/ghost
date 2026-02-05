@@ -30,7 +30,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{debug, error, warn};
 
@@ -330,7 +330,12 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // Internal API for SRI Pool share notifications
         .route("/api/internal/share", post(share_notification_handler))
         // Internal API for SRI Pool batch share notifications (native webhook)
-        .route("/api/internal/shares", post(share_batch_handler));
+        .route("/api/internal/shares", post(share_batch_handler))
+        // Internal API for dashboard config updates (triggers graceful restart)
+        .route(
+            "/api/internal/config/update",
+            post(api_config_update_handler),
+        );
 
     // Apply authentication middleware if internal_auth is configured
     let internal_router = if let Some(ref auth) = state.internal_auth {
@@ -3285,6 +3290,340 @@ async fn admin_test_consensus_handler(
             })),
         ),
     }
+}
+
+// =============================================================================
+// CONFIG UPDATE API
+// =============================================================================
+
+/// Request to update mutable configuration settings
+///
+/// All fields are optional - only specified fields will be updated.
+/// Immutable settings (treasury_address, internal_api_secret, etc.) are rejected.
+#[derive(Debug, Deserialize)]
+pub struct ConfigUpdateRequest {
+    /// Mining mode: "public_pool", "private_pool", or "private_solo"
+    pub mining_mode: Option<String>,
+    /// Password for private mining modes (required when switching to private modes)
+    pub private_mining_password: Option<String>,
+    /// Payout address for PrivateSolo mode (required when mining_mode = private_solo)
+    pub solo_payout_address: Option<String>,
+    /// Policy profile: "bitcoin_pure", "permissive", "full_open", or "custom"
+    pub policy_profile: Option<String>,
+    /// Enable/disable Ghost Pay L2
+    pub ghost_pay_enabled: Option<bool>,
+}
+
+/// Response from config update API
+#[derive(Debug, Serialize)]
+pub struct ConfigUpdateResponse {
+    /// Whether the update was successful
+    pub success: bool,
+    /// Human-readable message
+    pub message: String,
+    /// List of fields that were updated
+    pub updated_fields: Vec<String>,
+    /// Warnings (non-fatal issues)
+    pub warnings: Vec<String>,
+    /// Whether a restart is pending (config saved, restart needed to apply)
+    pub restart_pending: bool,
+}
+
+/// Error response for config update API
+#[derive(Debug, Serialize)]
+pub struct ConfigUpdateError {
+    /// Whether the update was successful (always false for errors)
+    pub success: bool,
+    /// Error message
+    pub error: String,
+    /// Error code for programmatic handling
+    pub code: String,
+}
+
+/// Validate a mining mode string
+fn validate_mining_mode(mode: &str) -> Result<ghost_common::config::MiningMode, String> {
+    match mode.to_lowercase().as_str() {
+        "public_pool" | "publicpool" => Ok(ghost_common::config::MiningMode::PublicPool),
+        "private_pool" | "privatepool" => Ok(ghost_common::config::MiningMode::PrivatePool),
+        "private_solo" | "privatesolo" => Ok(ghost_common::config::MiningMode::PrivateSolo),
+        _ => Err(format!(
+            "Invalid mining_mode '{}'. Valid values: public_pool, private_pool, private_solo",
+            mode
+        )),
+    }
+}
+
+/// Validate a policy profile string
+fn validate_policy_profile(profile: &str) -> Result<ghost_common::config::PolicyProfile, String> {
+    match profile.to_lowercase().as_str() {
+        "bitcoin_pure" | "bitcoinpure" => Ok(ghost_common::config::PolicyProfile::BitcoinPure),
+        "permissive" => Ok(ghost_common::config::PolicyProfile::Permissive),
+        "full_open" | "fullopen" => Ok(ghost_common::config::PolicyProfile::FullOpen),
+        "custom" => Ok(ghost_common::config::PolicyProfile::Custom),
+        _ => Err(format!(
+            "Invalid policy_profile '{}'. Valid values: bitcoin_pure, permissive, full_open, custom",
+            profile
+        )),
+    }
+}
+
+/// Validate bech32 address prefix for a network
+fn validate_address_prefix(address: &str, network: ghost_common::config::BitcoinNetwork) -> bool {
+    match network {
+        ghost_common::config::BitcoinNetwork::Mainnet => address.starts_with("bc1"),
+        ghost_common::config::BitcoinNetwork::Signet
+        | ghost_common::config::BitcoinNetwork::Testnet => address.starts_with("tb1"),
+        ghost_common::config::BitcoinNetwork::Regtest => address.starts_with("bcrt1"),
+    }
+}
+
+/// Config update handler - updates mutable configuration settings
+///
+/// POST /api/internal/config/update
+///
+/// # Security
+/// This endpoint is protected by HMAC authentication (internal API).
+/// Only mutable settings can be changed - immutable settings are rejected.
+///
+/// # Restart Behavior
+/// After a successful update, the config is saved to disk and a restart
+/// is signaled. The node will exit with code 100, and systemd will restart it.
+///
+/// # Mutable Settings
+/// - mining_mode: PublicPool/PrivatePool/PrivateSolo
+/// - private_mining_password: required for private modes
+/// - solo_payout_address: required for PrivateSolo
+/// - policy_profile: bitcoin_pure/permissive/full_open/custom
+/// - ghost_pay_enabled: toggle L2 on/off
+async fn api_config_update_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(request): Json<ConfigUpdateRequest>,
+) -> impl IntoResponse {
+    let mut updated_fields = Vec::new();
+    let mut warnings = Vec::new();
+
+    // Check if full config is available
+    let Some(ref full_config_lock) = state.full_node_config else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ConfigUpdateError {
+                success: false,
+                error: "Config update API not available: full node config not loaded".to_string(),
+                code: "CONFIG_NOT_LOADED".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    // Get current config for validation
+    let mut config = full_config_lock.write();
+    let network = config.bitcoin.network;
+
+    // Validate and apply mining_mode
+    if let Some(ref mode_str) = request.mining_mode {
+        match validate_mining_mode(mode_str) {
+            Ok(new_mode) => {
+                // Check if switching to private mode without password
+                if matches!(
+                    new_mode,
+                    ghost_common::config::MiningMode::PrivatePool
+                        | ghost_common::config::MiningMode::PrivateSolo
+                ) {
+                    // Need password either in request or already configured
+                    let has_password = request.private_mining_password.is_some()
+                        || config.network.private_mining_password.is_some();
+                    if !has_password {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ConfigUpdateError {
+                                success: false,
+                                error: format!(
+                                    "private_mining_password required when switching to {}",
+                                    mode_str
+                                ),
+                                code: "MISSING_PASSWORD".to_string(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+
+                // Check if switching to PrivateSolo without solo_payout_address
+                if matches!(new_mode, ghost_common::config::MiningMode::PrivateSolo) {
+                    let has_address = request.solo_payout_address.is_some()
+                        || config.network.solo_payout_address.is_some();
+                    if !has_address {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(ConfigUpdateError {
+                                success: false,
+                                error: "solo_payout_address required for private_solo mode"
+                                    .to_string(),
+                                code: "MISSING_SOLO_ADDRESS".to_string(),
+                            }),
+                        )
+                            .into_response();
+                    }
+                }
+
+                config.network.mining_mode = new_mode;
+                // Sync public_mining flag for backward compatibility
+                config.network.public_mining =
+                    matches!(new_mode, ghost_common::config::MiningMode::PublicPool);
+                updated_fields.push("mining_mode".to_string());
+            }
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ConfigUpdateError {
+                        success: false,
+                        error: e,
+                        code: "INVALID_MINING_MODE".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Validate and apply private_mining_password
+    if let Some(ref password) = request.private_mining_password {
+        if password.len() < 8 {
+            warnings.push(format!(
+                "Password is only {} characters. Minimum 8 recommended for security.",
+                password.len()
+            ));
+        }
+        config.network.private_mining_password = Some(password.clone());
+        updated_fields.push("private_mining_password".to_string());
+    }
+
+    // Validate and apply solo_payout_address
+    if let Some(ref address) = request.solo_payout_address {
+        if address.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ConfigUpdateError {
+                    success: false,
+                    error: "solo_payout_address cannot be empty".to_string(),
+                    code: "EMPTY_SOLO_ADDRESS".to_string(),
+                }),
+            )
+                .into_response();
+        }
+
+        if !validate_address_prefix(address, network) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ConfigUpdateError {
+                    success: false,
+                    error: format!(
+                        "Invalid address prefix for {:?} network. Address: {}",
+                        network, address
+                    ),
+                    code: "INVALID_ADDRESS_PREFIX".to_string(),
+                }),
+            )
+                .into_response();
+        }
+
+        config.network.solo_payout_address = Some(address.clone());
+        updated_fields.push("solo_payout_address".to_string());
+    }
+
+    // Validate and apply policy_profile
+    if let Some(ref profile_str) = request.policy_profile {
+        match validate_policy_profile(profile_str) {
+            Ok(new_profile) => {
+                config.policy.profile = new_profile;
+                updated_fields.push("policy_profile".to_string());
+            }
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ConfigUpdateError {
+                        success: false,
+                        error: e,
+                        code: "INVALID_POLICY_PROFILE".to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // Apply ghost_pay_enabled
+    if let Some(enabled) = request.ghost_pay_enabled {
+        if let Some(ref mut gp) = config.ghost_pay {
+            gp.enabled = enabled;
+            updated_fields.push("ghost_pay_enabled".to_string());
+        } else if enabled {
+            // Can't enable ghost_pay if not configured at all
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ConfigUpdateError {
+                    success: false,
+                    error: "Cannot enable ghost_pay: [ghost_pay] section not configured in config"
+                        .to_string(),
+                    code: "GHOST_PAY_NOT_CONFIGURED".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    // If nothing was updated, return early
+    if updated_fields.is_empty() {
+        return (
+            StatusCode::OK,
+            Json(ConfigUpdateResponse {
+                success: true,
+                message: "No changes requested".to_string(),
+                updated_fields,
+                warnings,
+                restart_pending: false,
+            }),
+        )
+            .into_response();
+    }
+
+    // Save config to disk atomically
+    if let Some(ref config_path) = state.full_node_config_path {
+        if let Err(e) = config.save_atomic(config_path) {
+            error!(error = %e, "Failed to save config to disk");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ConfigUpdateError {
+                    success: false,
+                    error: format!("Failed to save config: {}", e),
+                    code: "SAVE_FAILED".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        tracing::info!(
+            fields = ?updated_fields,
+            path = %config_path.display(),
+            "Config saved to disk, signaling restart"
+        );
+    } else {
+        warnings.push("Config path not set - changes will be lost on restart".to_string());
+    }
+
+    // Signal restart
+    state.request_restart();
+
+    (
+        StatusCode::OK,
+        Json(ConfigUpdateResponse {
+            success: true,
+            message: "Configuration updated. Restart pending.".to_string(),
+            updated_fields,
+            warnings,
+            restart_pending: true,
+        }),
+    )
+        .into_response()
 }
 
 /// Share notification handler - receives share data from SRI Pool
