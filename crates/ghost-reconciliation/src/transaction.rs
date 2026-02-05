@@ -24,7 +24,7 @@
 //!
 //! Key rotation happens automatically via Silent Payments:
 //! - Each participant has a GhostId (scan_pubkey + spend_pubkey)
-//! - New lock addresses are derived using derive_payment_address()
+//! - New lock addresses are derived using derive_payment_address_v2()
 //! - Ephemeral pubkeys are included in OP_RETURN for scanning
 
 use bitcoin::absolute::LockTime;

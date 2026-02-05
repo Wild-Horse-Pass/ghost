@@ -6,7 +6,7 @@
 //! - Recovery scanning
 //! - Multi-output transactions
 
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::secp256k1::Secp256k1;
 use ghost_keys::{
     compute_tweak_v2, derive_payment_address_v2, GhostKeys, PaymentDetector, ScanConfig,
     DEFAULT_MAX_K, DOMAIN_SEPARATOR_V2, MAX_MAX_K,

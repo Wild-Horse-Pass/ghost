@@ -39,48 +39,7 @@ pub fn derive_shared_secret(secret_key: &SecretKey, public_key: &PublicKey) -> [
     hasher.finalize().into()
 }
 
-/// Derive payment address from Ghost ID components (v1 - DEPRECATED)
-///
-/// Given receiver's keys and sender's ephemeral key, derive the output pubkey.
-///
-/// # Deprecation Notice
-///
-/// This function uses output index in the tweak, which causes fund loss
-/// if outputs are reordered. Use [`derive_payment_address_v2`] instead.
-///
-/// # Arguments
-/// * `spend_pubkey` - Receiver's spend public key
-/// * `shared_secret` - ECDH shared secret
-/// * `index` - Output index in transaction
-/// * `nonce` - Random nonce for additional unlinkability
-///
-/// # Returns
-/// (output_pubkey, tweak) where output_pubkey = spend_pubkey + tweak*G
-#[deprecated(
-    since = "0.2.0",
-    note = "Use derive_payment_address_v2 which is position-independent"
-)]
-#[allow(deprecated)]
-pub fn derive_payment_address(
-    spend_pubkey: &PublicKey,
-    shared_secret: &[u8; 32],
-    index: u32,
-    nonce: u16,
-) -> Result<(PublicKey, [u8; 32]), GhostKeyError> {
-    let secp = Secp256k1::new();
-
-    // Compute tweak: SHA256(shared_secret || index || nonce)
-    let tweak = compute_tweak(shared_secret, index, nonce);
-
-    // Compute output pubkey: spend_pubkey + tweak*G
-    let tweak_secret = SecretKey::from_slice(&tweak)?;
-    let tweak_pubkey = PublicKey::from_secret_key(&secp, &tweak_secret);
-    let output_pubkey = spend_pubkey.combine(&tweak_pubkey)?;
-
-    Ok((output_pubkey, tweak))
-}
-
-/// Derive payment address from Ghost ID components (v2 - position-independent)
+/// Derive payment address from Ghost ID components
 ///
 /// Uses counter-based k instead of output position, safe for output shuffling.
 ///
@@ -109,27 +68,7 @@ pub fn derive_payment_address_v2(
     Ok((output_pubkey, tweak))
 }
 
-/// Compute the tweak for address derivation (v1 - DEPRECATED)
-///
-/// tweak = SHA256(shared_secret || index || nonce)
-///
-/// # Deprecation Notice
-///
-/// This function uses output index in the tweak, which causes fund loss
-/// if outputs are reordered. Use [`compute_tweak_v2`] instead.
-#[deprecated(
-    since = "0.2.0",
-    note = "Use compute_tweak_v2 which is position-independent"
-)]
-pub fn compute_tweak(shared_secret: &[u8; 32], index: u32, nonce: u16) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(shared_secret);
-    hasher.update(index.to_le_bytes());
-    hasher.update(nonce.to_le_bytes());
-    hasher.finalize().into()
-}
-
-/// Compute the tweak for address derivation (v2 - position-independent)
+/// Compute the tweak for address derivation
 ///
 /// tweak = SHA256(domain_separator || shared_secret || k)
 ///
@@ -199,38 +138,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_tweak_deterministic() {
-        let shared_secret = [42u8; 32];
-
-        let tweak1 = compute_tweak(&shared_secret, 0, 0);
-        let tweak2 = compute_tweak(&shared_secret, 0, 0);
-        let tweak3 = compute_tweak(&shared_secret, 0, 1);
-        let tweak4 = compute_tweak(&shared_secret, 1, 0);
-
-        assert_eq!(tweak1, tweak2);
-        assert_ne!(tweak1, tweak3);
-        assert_ne!(tweak1, tweak4);
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn test_payment_derivation() {
-        let secp = Secp256k1::new();
-        let (spend_secret, spend_pubkey) = secp.generate_keypair(&mut OsRng);
-        let shared_secret = [1u8; 32];
-
-        let (output_pubkey, tweak) =
-            derive_payment_address(&spend_pubkey, &shared_secret, 0, 0).unwrap();
-
-        // Verify we can derive the spend key
-        let derived_spend = derive_spend_key(&spend_secret, &tweak).unwrap();
-        let derived_pubkey = PublicKey::from_secret_key(&secp, &derived_spend);
-
-        assert_eq!(output_pubkey, derived_pubkey);
-    }
-
-    #[test]
     fn test_tagged_hash() {
         let hash1 = tagged_hash("GhostPay/test", b"data");
         let hash2 = tagged_hash("GhostPay/test", b"data");
@@ -240,12 +147,8 @@ mod tests {
         assert_ne!(hash1, hash3);
     }
 
-    // ========================================================================
-    // v2 (Counter-based k) Tests
-    // ========================================================================
-
     #[test]
-    fn test_tweak_v2_deterministic() {
+    fn test_tweak_deterministic() {
         let shared_secret = [42u8; 32];
 
         let tweak1 = compute_tweak_v2(&shared_secret, 0);
@@ -255,7 +158,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tweak_v2_unique_k() {
+    fn test_tweak_unique_k() {
         let shared_secret = [42u8; 32];
 
         let tweak0 = compute_tweak_v2(&shared_secret, 0);
@@ -269,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tweak_v2_domain_separator() {
+    fn test_tweak_domain_separator() {
         use crate::DOMAIN_SEPARATOR_V2;
 
         let shared_secret = [42u8; 32];
@@ -299,7 +202,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tweak_v2_endianness() {
+    fn test_tweak_endianness() {
         let shared_secret = [42u8; 32];
 
         // k=256 in little-endian: [0x00, 0x01, 0x00, 0x00]
@@ -315,24 +218,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
-    fn test_tweak_v1_v2_no_collision() {
-        let shared_secret = [42u8; 32];
-
-        // v1 with index=0, nonce=0
-        let tweak_v1 = compute_tweak(&shared_secret, 0, 0);
-
-        // v2 with k=0
-        let tweak_v2 = compute_tweak_v2(&shared_secret, 0);
-
-        assert_ne!(
-            tweak_v1, tweak_v2,
-            "v1 and v2 tweaks must not collide due to domain separator"
-        );
-    }
-
-    #[test]
-    fn test_payment_derivation_v2() {
+    fn test_payment_derivation() {
         let secp = Secp256k1::new();
         let (spend_secret, spend_pubkey) = secp.generate_keypair(&mut OsRng);
         let shared_secret = [1u8; 32];
@@ -348,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn test_payment_derivation_v2_multiple_k() {
+    fn test_payment_derivation_multiple_k() {
         let secp = Secp256k1::new();
         let (_, spend_pubkey) = secp.generate_keypair(&mut OsRng);
         let shared_secret = [1u8; 32];

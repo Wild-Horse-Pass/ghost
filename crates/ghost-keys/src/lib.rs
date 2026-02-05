@@ -43,8 +43,8 @@
 //! // Get Ghost ID to share with senders
 //! let ghost_id = keys.ghost_id();
 //!
-//! // Sender derives payment address (returns Result due to potential crypto errors)
-//! let (address, ephemeral_pubkey) = ghost_id.derive_payment_address(0).unwrap();
+//! // Sender derives payment address (k=0 for first output to this recipient)
+//! let (address, ephemeral_pubkey) = ghost_id.derive_payment_address_v2(0).unwrap();
 //! ```
 
 mod config;
@@ -57,10 +57,9 @@ pub mod metadata;
 mod scanning;
 
 pub use config::ScanConfig;
-#[allow(deprecated)]
 pub use derivation::{
-    compute_tweak, compute_tweak_v2, derive_payment_address, derive_payment_address_v2,
-    derive_shared_secret, derive_spend_key, tagged_hash,
+    compute_tweak_v2, derive_payment_address_v2, derive_shared_secret, derive_spend_key,
+    tagged_hash,
 };
 pub use error::GhostKeyError;
 pub use ghost_id::GhostId;

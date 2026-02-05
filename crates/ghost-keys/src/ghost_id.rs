@@ -180,79 +180,6 @@ impl GhostId {
         Ok((output_pubkey, ephemeral_pubkey, tweak))
     }
 
-    // ========================================================================
-    // Deprecated v1 methods (position-based) - for backward compatibility
-    // ========================================================================
-
-    /// Derive a payment address (v1 - DEPRECATED)
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use derive_payment_address_v2 which is position-independent"
-    )]
-    pub fn derive_payment_address(
-        &self,
-        index: u32,
-    ) -> Result<(PublicKey, PublicKey), GhostKeyError> {
-        #[allow(deprecated)]
-        let (output, ephemeral, _tweak) = self.derive_payment_address_full(index, 0)?;
-        Ok((output, ephemeral))
-    }
-
-    /// Derive payment address with full details (v1 - DEPRECATED)
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use derive_payment_address_v2_full which is position-independent"
-    )]
-    #[allow(deprecated)]
-    pub fn derive_payment_address_full(
-        &self,
-        index: u32,
-        nonce: u16,
-    ) -> Result<(PublicKey, PublicKey, [u8; 32]), GhostKeyError> {
-        use crate::derivation::derive_payment_address;
-
-        let secp = Secp256k1::new();
-
-        // Generate ephemeral keypair
-        let ephemeral_secret = SecretKey::new(&mut OsRng);
-        let ephemeral_pubkey = PublicKey::from_secret_key(&secp, &ephemeral_secret);
-
-        // Compute shared secret
-        let shared_secret = derive_shared_secret(&ephemeral_secret, &self.scan_pubkey);
-
-        // Derive output pubkey using v1 (deprecated)
-        #[allow(deprecated)]
-        let (output_pubkey, tweak) =
-            derive_payment_address(&self.spend_pubkey, &shared_secret, index, nonce)?;
-
-        Ok((output_pubkey, ephemeral_pubkey, tweak))
-    }
-
-    /// Derive payment address with ephemeral (v1 - DEPRECATED)
-    #[deprecated(since = "0.2.0", note = "Use derive_payment_address_v2_with_ephemeral")]
-    #[allow(deprecated)]
-    pub fn derive_payment_address_with_ephemeral(
-        &self,
-        ephemeral_secret: &SecretKey,
-        index: u32,
-        nonce: u16,
-    ) -> Result<(PublicKey, PublicKey, [u8; 32]), GhostKeyError> {
-        use crate::derivation::derive_payment_address;
-
-        let secp = Secp256k1::new();
-        let ephemeral_pubkey = PublicKey::from_secret_key(&secp, ephemeral_secret);
-
-        // Compute shared secret
-        let shared_secret = derive_shared_secret(ephemeral_secret, &self.scan_pubkey);
-
-        // Derive output pubkey using v1 (deprecated)
-        #[allow(deprecated)]
-        let (output_pubkey, tweak) =
-            derive_payment_address(&self.spend_pubkey, &shared_secret, index, nonce)?;
-
-        Ok((output_pubkey, ephemeral_pubkey, tweak))
-    }
-
     /// Export as raw bytes (66 bytes: scan || spend)
     pub fn to_bytes(&self) -> [u8; 66] {
         let mut bytes = [0u8; 66];
@@ -386,18 +313,4 @@ mod tests {
         assert_eq!(id, id2);
     }
 
-    #[test]
-    #[allow(deprecated)]
-    fn test_deprecated_v1_still_works() {
-        let secp = Secp256k1::new();
-        let (_, scan_pubkey) = secp.generate_keypair(&mut OsRng);
-        let (_, spend_pubkey) = secp.generate_keypair(&mut OsRng);
-
-        let id = GhostId::new(scan_pubkey, spend_pubkey);
-
-        // v1 methods should still work (for backward compatibility)
-        let (output, ephemeral) = id.derive_payment_address(0).unwrap();
-        assert_ne!(output, spend_pubkey);
-        assert!(ephemeral.serialize().len() == 33);
-    }
 }
