@@ -469,7 +469,10 @@ async fn cmd_balance(config: WalletConfig, refresh: bool, max_k: u32) -> Result<
         let pb = ProgressBar::new_spinner();
         pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
         if max_k > 10 {
-            pb.set_message(format!("Connecting to GSP (scanning with max_k={})...", max_k));
+            pb.set_message(format!(
+                "Connecting to GSP (scanning with max_k={})...",
+                max_k
+            ));
         } else {
             pb.set_message("Connecting to GSP...");
         }
@@ -524,7 +527,9 @@ async fn cmd_send(
 
     // Look up label name if provided
     let label_name = if let Some(idx) = label {
-        wallet.lookup_label(idx)?.unwrap_or_else(|| format!("Label #{}", idx))
+        wallet
+            .lookup_label(idx)?
+            .unwrap_or_else(|| format!("Label #{}", idx))
     } else {
         "Uncategorized".to_string()
     };
@@ -794,11 +799,7 @@ async fn cmd_label(config: WalletConfig, action: LabelCommands) -> Result<()> {
                     style("Cannot rename the default 'Uncategorized' label").red()
                 );
             } else if wallet.rename_label(index, &name)? {
-                println!(
-                    "Renamed label {} to '{}'",
-                    index,
-                    style(&name).green()
-                );
+                println!("Renamed label {} to '{}'", index, style(&name).green());
             } else {
                 println!("{}", style("Label not found").red());
             }
@@ -819,19 +820,13 @@ async fn cmd_label(config: WalletConfig, action: LabelCommands) -> Result<()> {
             let backup = wallet.export_label_backup()?;
             let json = backup.to_json()?;
             std::fs::write(&output, json)?;
-            println!(
-                "Exported labels to {}",
-                style(output.display()).green()
-            );
+            println!("Exported labels to {}", style(output.display()).green());
         }
         LabelCommands::Import { input } => {
             let json = std::fs::read_to_string(&input)?;
             let backup = LabelBackup::from_json(&json)?;
             wallet.import_label_backup(backup)?;
-            println!(
-                "Imported labels from {}",
-                style(input.display()).green()
-            );
+            println!("Imported labels from {}", style(input.display()).green());
         }
     }
 

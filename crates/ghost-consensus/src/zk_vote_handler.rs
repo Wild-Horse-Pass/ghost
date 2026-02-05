@@ -58,9 +58,7 @@ pub type ZkVerifyFn = Arc<dyn Fn(&[u8], &[u8; 32], &[u8; 32]) -> bool + Send + S
 /// # Returns
 /// A ZkVerifyFn that can be used with ZkVoteHandler::with_verifier()
 #[cfg(feature = "zk-consensus")]
-pub fn create_block_verifier(
-    verifier: std::sync::Arc<ghost_zkp::BlockVerifier>,
-) -> ZkVerifyFn {
+pub fn create_block_verifier(verifier: std::sync::Arc<ghost_zkp::BlockVerifier>) -> ZkVerifyFn {
     Arc::new(move |proof_bytes, prev_root, new_root| {
         // Construct a minimal BlockProof for verification
         // The verifier will check the proof bytes against the state roots

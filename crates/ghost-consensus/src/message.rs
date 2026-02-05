@@ -810,7 +810,11 @@ impl EquivocationProofMessage {
     /// SEC-SIG-3: Logs errors instead of silently returning false
     pub fn verify_reporter_signature(&self) -> bool {
         let message = self.signing_message();
-        match ghost_common::identity::verify_signature(&self.reporter, &message, &self.reporter_signature) {
+        match ghost_common::identity::verify_signature(
+            &self.reporter,
+            &message,
+            &self.reporter_signature,
+        ) {
             Ok(valid) => valid,
             Err(e) => {
                 tracing::warn!(
@@ -877,7 +881,11 @@ impl ElderRegistrationProposalMessage {
     /// SEC-SIG-4: Logs errors instead of silently returning false
     pub fn verify_signature(&self) -> bool {
         let message = self.signing_message();
-        match ghost_common::identity::verify_signature(&self.proposer, &message, &self.proposer_signature) {
+        match ghost_common::identity::verify_signature(
+            &self.proposer,
+            &message,
+            &self.proposer_signature,
+        ) {
             Ok(valid) => valid,
             Err(e) => {
                 tracing::warn!(
@@ -934,7 +942,11 @@ impl ElderListProposalMessage {
     /// SEC-SIG-5: Logs errors instead of silently returning false
     pub fn verify_signature(&self) -> bool {
         let message = self.signing_message();
-        match ghost_common::identity::verify_signature(&self.proposer, &message, &self.proposer_signature) {
+        match ghost_common::identity::verify_signature(
+            &self.proposer,
+            &message,
+            &self.proposer_signature,
+        ) {
             Ok(valid) => valid,
             Err(e) => {
                 tracing::warn!(

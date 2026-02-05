@@ -314,7 +314,11 @@ impl MpcHandler {
             contribution_hash: msg.contribution_hash(),
             voter: self.identity.node_id(),
             approve: valid,
-            rejection_reason: if valid { None } else { Some("Invalid proof".to_string()) },
+            rejection_reason: if valid {
+                None
+            } else {
+                Some("Invalid proof".to_string())
+            },
             signature,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -349,7 +353,11 @@ impl MpcHandler {
     }
 
     /// Handle an incoming verification vote
-    fn handle_verification_vote(&self, msg: MpcVerificationVoteMessage, sender: NodeId) -> GhostResult<()> {
+    fn handle_verification_vote(
+        &self,
+        msg: MpcVerificationVoteMessage,
+        sender: NodeId,
+    ) -> GhostResult<()> {
         // Rate limit
         if !self.rate_limiter.check_and_consume(&sender) {
             return Ok(());
@@ -404,7 +412,11 @@ impl MpcHandler {
         };
 
         // Save vote to database
-        if let Some(pending) = self.pending_contributions.read().get(&msg.contribution_hash) {
+        if let Some(pending) = self
+            .pending_contributions
+            .read()
+            .get(&msg.contribution_hash)
+        {
             let db_vote = DbMpcVote {
                 contribution_position: pending.message.elder_position,
                 voter_node_id: hex::encode(&msg.voter),
@@ -470,7 +482,11 @@ impl MpcHandler {
     }
 
     /// Handle parameter request
-    fn handle_params_request(&self, msg: MpcParametersRequestMessage, sender: NodeId) -> GhostResult<()> {
+    fn handle_params_request(
+        &self,
+        msg: MpcParametersRequestMessage,
+        sender: NodeId,
+    ) -> GhostResult<()> {
         // Rate limit
         if !self.rate_limiter.check_and_consume(&sender) {
             return Ok(());
@@ -490,7 +506,11 @@ impl MpcHandler {
     }
 
     /// Handle parameter response
-    fn handle_params_response(&self, msg: MpcParametersResponseMessage, sender: NodeId) -> GhostResult<()> {
+    fn handle_params_response(
+        &self,
+        msg: MpcParametersResponseMessage,
+        sender: NodeId,
+    ) -> GhostResult<()> {
         debug!(
             sender = %hex::encode(&sender[..8]),
             params_hash = %hex::encode(&msg.params_hash[..8]),
@@ -525,8 +545,9 @@ impl MessageHandler for MpcHandler {
                 self.handle_params_request(msg, envelope.sender)?;
             }
             MessageType::MpcParametersResponse => {
-                let msg: MpcParametersResponseMessage = serde_json::from_slice(&envelope.payload)
-                    .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                let msg: MpcParametersResponseMessage =
+                    serde_json::from_slice(&envelope.payload)
+                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
                 self.handle_params_response(msg, envelope.sender)?;
             }
             _ => {

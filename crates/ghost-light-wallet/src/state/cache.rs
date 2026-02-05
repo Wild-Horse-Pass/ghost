@@ -417,7 +417,10 @@ impl WalletCache {
     }
 
     /// Get transactions by label index
-    pub fn get_transactions_by_label(&self, label_index: u32) -> WalletResult<Vec<CachedTransaction>> {
+    pub fn get_transactions_by_label(
+        &self,
+        label_index: u32,
+    ) -> WalletResult<Vec<CachedTransaction>> {
         let mut stmt = self.conn.prepare(
             "SELECT txid, amount_sats, is_incoming, status, counterparty, memo, created_at, confirmed_at,
                     COALESCE(label_index, 0), decrypted_memo

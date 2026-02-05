@@ -294,8 +294,8 @@ mod tests {
     #[test]
     fn test_bft_threshold() {
         // 67% means we need 2/3 majority
-        assert!(BFT_THRESHOLD_PERCENT > 50);
-        assert!(BFT_THRESHOLD_PERCENT < 100);
+        const { assert!(BFT_THRESHOLD_PERCENT > 50) };
+        const { assert!(BFT_THRESHOLD_PERCENT < 100) };
     }
 
     #[test]

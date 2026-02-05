@@ -48,9 +48,8 @@ pub fn bytes_to_field(bytes: &[u8; 32]) -> ZkResult<Fr> {
     // Clear top 4 bits to ensure well under BLS12-381 modulus (~2^255)
     reduced[31] &= 0x0F;
 
-    Fr::from_repr_vartime(reduced).ok_or_else(|| {
-        ZkError::ProvingError("Failed to reduce bytes to field element".to_string())
-    })
+    Fr::from_repr_vartime(reduced)
+        .ok_or_else(|| ZkError::ProvingError("Failed to reduce bytes to field element".to_string()))
 }
 
 #[cfg(test)]
@@ -85,7 +84,10 @@ mod tests {
         let bytes2 = [2u8; 32];
         let field1 = bytes_to_field(&bytes1).unwrap();
         let field2 = bytes_to_field(&bytes2).unwrap();
-        assert_ne!(field1, field2, "Different inputs should produce different outputs");
+        assert_ne!(
+            field1, field2,
+            "Different inputs should produce different outputs"
+        );
     }
 
     #[test]
@@ -93,6 +95,9 @@ mod tests {
         // Test with value that exceeds field modulus (all 0xFF)
         let high_bytes = [0xFF; 32];
         let field = bytes_to_field(&high_bytes);
-        assert!(field.is_ok(), "Should handle values exceeding field modulus");
+        assert!(
+            field.is_ok(),
+            "Should handle values exceeding field modulus"
+        );
     }
 }

@@ -332,7 +332,7 @@ impl MerkleProof {
                 }
             })?;
 
-            let (left, right) = if index % 2 == 0 {
+            let (left, right) = if index.is_multiple_of(2) {
                 // Current is left child
                 (current, sibling_field)
             } else {

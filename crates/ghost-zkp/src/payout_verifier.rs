@@ -216,7 +216,7 @@ impl PayoutVerifier {
         // In test mode, allow simulated verification for development
         #[cfg(test)]
         {
-            return self.verify_simulated_proof(proof);
+            self.verify_simulated_proof(proof)
         }
 
         #[cfg(not(test))]

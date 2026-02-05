@@ -257,8 +257,12 @@ impl BatchExecutor {
         // H-6: CLONE settlements instead of draining them
         // This ensures we don't lose settlements if batch sealing fails
         let batch_size = self.pending_settlements.len().min(MAX_BATCH_SIZE);
-        let candidate_settlements: Vec<Settlement> =
-            self.pending_settlements.iter().take(batch_size).cloned().collect();
+        let candidate_settlements: Vec<Settlement> = self
+            .pending_settlements
+            .iter()
+            .take(batch_size)
+            .cloned()
+            .collect();
 
         // Create batch from cloned settlements
         let mut batch = Batch::new();
@@ -777,7 +781,10 @@ mod tests {
         assert_ne!(msg1, msg3, "Different amount should produce different hash");
 
         let msg4 = OwnershipProof::build_message(&settlement_id, "bcrt1qother", amount);
-        assert_ne!(msg1, msg4, "Different destination should produce different hash");
+        assert_ne!(
+            msg1, msg4,
+            "Different destination should produce different hash"
+        );
     }
 
     // ========================================================================
@@ -807,7 +814,7 @@ mod tests {
         let single_input = ReconciliationInput {
             txid: test_txid(),
             vout: 0,
-            amount: 50_000, // Only enough for ~5 settlements
+            amount: 50_000,                     // Only enough for ~5 settlements
             ghost_id: "ghost1same".to_string(), // Must match settlement
             lock_id: None,
         };
@@ -863,7 +870,11 @@ mod tests {
 
         // Building transaction should succeed with unique inputs
         let result = executor.build_transaction(&batch, 1);
-        assert!(result.is_ok(), "Should succeed with unique inputs: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Should succeed with unique inputs: {:?}",
+            result.err()
+        );
 
         let tx = result.unwrap();
         assert_eq!(tx.input_outpoints.len(), 10, "Should have 10 unique inputs");

@@ -1113,8 +1113,8 @@ mod tests {
         let share = 1.0f64;
         // This is the safe conversion pattern we use
         let amount = (total_sats as f64 * share).min(u64::MAX as f64) as u64;
-        // Should not panic or produce weird values
-        assert!(amount <= u64::MAX);
+        // Should not panic or produce weird values - verify it's a valid value
+        let _ = amount; // Just verify computation didn't panic
     }
 
     #[test]

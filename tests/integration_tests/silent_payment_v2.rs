@@ -109,7 +109,11 @@ fn test_sp2_011_ghost_id_derive_multiple_k() {
     // All should be unique
     for i in 0..addrs.len() {
         for j in (i + 1)..addrs.len() {
-            assert_ne!(addrs[i], addrs[j], "k={} and k={} produced same address", i, j);
+            assert_ne!(
+                addrs[i], addrs[j],
+                "k={} and k={} produced same address",
+                i, j
+            );
         }
     }
 }
@@ -350,7 +354,9 @@ fn test_sp2_032_recovery_scan_finds_missed() {
 
     // Default scan misses it
     let detector_default = PaymentDetector::new(&keys);
-    assert!(detector_default.scan_transaction(&ephemeral, &outputs).is_empty());
+    assert!(detector_default
+        .scan_transaction(&ephemeral, &outputs)
+        .is_empty());
 
     // Recovery scan finds it
     let detector_recovery = PaymentDetector::with_config(&keys, ScanConfig::recovery());
@@ -376,7 +382,9 @@ fn test_sp2_033_deep_recovery_scan() {
 
     // Regular recovery (max_k=1000) misses it
     let detector_recovery = PaymentDetector::with_config(&keys, ScanConfig::recovery());
-    assert!(detector_recovery.scan_transaction(&ephemeral, &outputs).is_empty());
+    assert!(detector_recovery
+        .scan_transaction(&ephemeral, &outputs)
+        .is_empty());
 
     // Deep recovery (max_k=10000) finds it
     let detector_deep = PaymentDetector::with_config(&keys, ScanConfig::deep_recovery());
@@ -438,10 +446,7 @@ fn test_sp2_050_multi_recipient_single_tx() {
         .derive_payment_address_v2_with_ephemeral(&ephemeral_secret, 0)
         .unwrap();
 
-    let outputs = vec![
-        (alice_addr, Some(100_000)),
-        (bob_addr, Some(200_000)),
-    ];
+    let outputs = vec![(alice_addr, Some(100_000)), (bob_addr, Some(200_000))];
 
     // Alice should find her payment
     let detector_alice = PaymentDetector::new(&keys_alice);
@@ -488,7 +493,9 @@ fn test_sp2_051_miner_and_node_reward_same_recipient() {
 
     // Should find both
     assert_eq!(found.len(), 2);
-    assert!(found.iter().any(|p| p.k == 0 && p.amount == Some(312_500_000)));
+    assert!(found
+        .iter()
+        .any(|p| p.k == 0 && p.amount == Some(312_500_000)));
     assert!(found.iter().any(|p| p.k == 1 && p.amount == Some(100_000)));
 }
 
@@ -533,7 +540,10 @@ fn test_sp2_062_quick_check_rejects_others() {
     let keys = GhostKeys::generate();
     let other_keys = GhostKeys::generate();
 
-    let (addr, ephemeral, _) = other_keys.ghost_id().derive_payment_address_v2_full(0).unwrap();
+    let (addr, ephemeral, _) = other_keys
+        .ghost_id()
+        .derive_payment_address_v2_full(0)
+        .unwrap();
 
     let detector = PaymentDetector::new(&keys);
     assert!(!detector.quick_check(&ephemeral, &addr));
@@ -564,10 +574,7 @@ fn test_sp2_071_all_random_outputs() {
     let (_, random1) = secp.generate_keypair(&mut OsRng);
     let (_, random2) = secp.generate_keypair(&mut OsRng);
 
-    let outputs = vec![
-        (random1, Some(100_000)),
-        (random2, Some(200_000)),
-    ];
+    let outputs = vec![(random1, Some(100_000)), (random2, Some(200_000))];
 
     let detector = PaymentDetector::new(&keys);
     let found = detector.scan_transaction(&ephemeral, &outputs);

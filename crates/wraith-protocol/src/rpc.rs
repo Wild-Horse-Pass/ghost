@@ -222,8 +222,6 @@ pub struct WraithTxMetadata {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     // RPC tests require a running ghost-core instance
     // These are integration tests, not unit tests
 }

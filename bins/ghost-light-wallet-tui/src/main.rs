@@ -50,6 +50,7 @@ enum Tab {
     Receive,
     History,
     Locks,
+    Labels,
     Settings,
 }
 
@@ -60,6 +61,11 @@ struct App {
     status_message: String,
     password_input: String,
     input_mode: InputMode,
+    // Labels tab state
+    labels: Vec<(u32, String)>,
+    selected_label: usize,
+    label_input: String,
+    label_input_mode: LabelInputMode,
 }
 
 #[derive(PartialEq)]
@@ -71,6 +77,13 @@ enum InputMode {
     Address,
 }
 
+#[derive(PartialEq)]
+enum LabelInputMode {
+    None,
+    Creating,
+    Renaming(u32),
+}
+
 impl App {
     fn new() -> Self {
         Self {
@@ -80,6 +93,21 @@ impl App {
             status_message: "Press 'u' to unlock wallet, 'q' to quit".to_string(),
             password_input: String::new(),
             input_mode: InputMode::Normal,
+            labels: vec![(0, "Uncategorized".to_string())],
+            selected_label: 0,
+            label_input: String::new(),
+            label_input_mode: LabelInputMode::None,
+        }
+    }
+
+    fn refresh_labels(&mut self) {
+        if let Some(ref wallet) = self.wallet {
+            if let Ok(labels) = wallet.list_labels() {
+                self.labels = labels;
+                if self.selected_label >= self.labels.len() {
+                    self.selected_label = self.labels.len().saturating_sub(1);
+                }
+            }
         }
     }
 
@@ -89,7 +117,8 @@ impl App {
             Tab::Send => Tab::Receive,
             Tab::Receive => Tab::History,
             Tab::History => Tab::Locks,
-            Tab::Locks => Tab::Settings,
+            Tab::Locks => Tab::Labels,
+            Tab::Labels => Tab::Settings,
             Tab::Settings => Tab::Dashboard,
         };
     }
@@ -101,7 +130,8 @@ impl App {
             Tab::Receive => Tab::Send,
             Tab::History => Tab::Receive,
             Tab::Locks => Tab::History,
-            Tab::Settings => Tab::Locks,
+            Tab::Labels => Tab::Locks,
+            Tab::Settings => Tab::Labels,
         };
     }
 }
@@ -174,25 +204,165 @@ where
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 match app.input_mode {
-                    InputMode::Normal => match key.code {
-                        KeyCode::Char('q') => app.should_quit = true,
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            app.should_quit = true
+                    InputMode::Normal => {
+                        // Handle Labels tab specific keys
+                        if app.current_tab == Tab::Labels
+                            && app.label_input_mode == LabelInputMode::None
+                        {
+                            match key.code {
+                                KeyCode::Char('c')
+                                    if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
+                                    if app.wallet.is_some() {
+                                        app.label_input_mode = LabelInputMode::Creating;
+                                        app.label_input.clear();
+                                        app.status_message = "Enter new label name:".to_string();
+                                    }
+                                    continue;
+                                }
+                                KeyCode::Char('r') => {
+                                    if app.wallet.is_some() && !app.labels.is_empty() {
+                                        let (index, _) = app.labels[app.selected_label];
+                                        if index != 0 {
+                                            app.label_input_mode = LabelInputMode::Renaming(index);
+                                            app.label_input.clear();
+                                            app.status_message = "Enter new name:".to_string();
+                                        } else {
+                                            app.status_message =
+                                                "Cannot rename default label".to_string();
+                                        }
+                                    }
+                                    continue;
+                                }
+                                KeyCode::Char('d') => {
+                                    if let Some(ref wallet) = app.wallet {
+                                        if !app.labels.is_empty() {
+                                            let (index, _) = app.labels[app.selected_label];
+                                            if index != 0 {
+                                                match wallet.delete_label(index) {
+                                                    Ok(true) => {
+                                                        app.status_message =
+                                                            format!("Deleted label {}", index);
+                                                        app.refresh_labels();
+                                                    }
+                                                    Ok(false) => {
+                                                        app.status_message =
+                                                            "Label not found".to_string();
+                                                    }
+                                                    Err(e) => {
+                                                        app.status_message =
+                                                            format!("Error: {}", e);
+                                                    }
+                                                }
+                                            } else {
+                                                app.status_message =
+                                                    "Cannot delete default label".to_string();
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
+                                KeyCode::Up => {
+                                    if app.selected_label > 0 {
+                                        app.selected_label -= 1;
+                                    }
+                                    continue;
+                                }
+                                KeyCode::Down => {
+                                    if app.selected_label < app.labels.len().saturating_sub(1) {
+                                        app.selected_label += 1;
+                                    }
+                                    continue;
+                                }
+                                _ => {}
+                            }
                         }
-                        KeyCode::Tab => app.next_tab(),
-                        KeyCode::BackTab => app.prev_tab(),
-                        KeyCode::Char('1') => app.current_tab = Tab::Dashboard,
-                        KeyCode::Char('2') => app.current_tab = Tab::Send,
-                        KeyCode::Char('3') => app.current_tab = Tab::Receive,
-                        KeyCode::Char('4') => app.current_tab = Tab::History,
-                        KeyCode::Char('5') => app.current_tab = Tab::Locks,
-                        KeyCode::Char('6') => app.current_tab = Tab::Settings,
-                        KeyCode::Char('u') => {
-                            app.input_mode = InputMode::Password;
-                            app.status_message = "Enter password:".to_string();
+
+                        // Handle label input mode
+                        if app.label_input_mode != LabelInputMode::None {
+                            match key.code {
+                                KeyCode::Enter => {
+                                    if let Some(ref wallet) = app.wallet {
+                                        let name = app.label_input.trim();
+                                        if !name.is_empty() {
+                                            match &app.label_input_mode {
+                                                LabelInputMode::Creating => {
+                                                    match wallet.create_label(name) {
+                                                        Ok(index) => {
+                                                            app.status_message = format!(
+                                                                "Created label '{}' ({})",
+                                                                name, index
+                                                            );
+                                                            app.refresh_labels();
+                                                        }
+                                                        Err(e) => {
+                                                            app.status_message =
+                                                                format!("Error: {}", e);
+                                                        }
+                                                    }
+                                                }
+                                                LabelInputMode::Renaming(index) => {
+                                                    match wallet.rename_label(*index, name) {
+                                                        Ok(true) => {
+                                                            app.status_message =
+                                                                format!("Renamed to '{}'", name);
+                                                            app.refresh_labels();
+                                                        }
+                                                        Ok(false) => {
+                                                            app.status_message =
+                                                                "Label not found".to_string();
+                                                        }
+                                                        Err(e) => {
+                                                            app.status_message =
+                                                                format!("Error: {}", e);
+                                                        }
+                                                    }
+                                                }
+                                                LabelInputMode::None => {}
+                                            }
+                                        }
+                                    }
+                                    app.label_input_mode = LabelInputMode::None;
+                                    app.label_input.clear();
+                                }
+                                KeyCode::Esc => {
+                                    app.label_input_mode = LabelInputMode::None;
+                                    app.label_input.clear();
+                                    app.status_message = "Cancelled".to_string();
+                                }
+                                KeyCode::Char(c) => {
+                                    app.label_input.push(c);
+                                }
+                                KeyCode::Backspace => {
+                                    app.label_input.pop();
+                                }
+                                _ => {}
+                            }
+                            continue;
                         }
-                        _ => {}
-                    },
+
+                        // Normal mode key handling
+                        match key.code {
+                            KeyCode::Char('q') => app.should_quit = true,
+                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                app.should_quit = true
+                            }
+                            KeyCode::Tab => app.next_tab(),
+                            KeyCode::BackTab => app.prev_tab(),
+                            KeyCode::Char('1') => app.current_tab = Tab::Dashboard,
+                            KeyCode::Char('2') => app.current_tab = Tab::Send,
+                            KeyCode::Char('3') => app.current_tab = Tab::Receive,
+                            KeyCode::Char('4') => app.current_tab = Tab::History,
+                            KeyCode::Char('5') => app.current_tab = Tab::Locks,
+                            KeyCode::Char('6') => app.current_tab = Tab::Labels,
+                            KeyCode::Char('7') => app.current_tab = Tab::Settings,
+                            KeyCode::Char('u') => {
+                                app.input_mode = InputMode::Password;
+                                app.status_message = "Enter password:".to_string();
+                            }
+                            _ => {}
+                        }
+                    }
                     InputMode::Password => match key.code {
                         KeyCode::Enter => {
                             app.status_message = "Unlocking wallet...".to_string();
@@ -269,7 +439,8 @@ fn ui(f: &mut Frame, app: &App) {
         "[3]Receive",
         "[4]History",
         "[5]Locks",
-        "[6]Settings",
+        "[6]Labels",
+        "[7]Settings",
     ];
     let tabs = Tabs::new(titles)
         .select(match app.current_tab {
@@ -278,7 +449,8 @@ fn ui(f: &mut Frame, app: &App) {
             Tab::Receive => 2,
             Tab::History => 3,
             Tab::Locks => 4,
-            Tab::Settings => 5,
+            Tab::Labels => 5,
+            Tab::Settings => 6,
         })
         .style(Style::default().fg(Color::White))
         .highlight_style(
@@ -296,24 +468,25 @@ fn ui(f: &mut Frame, app: &App) {
         Tab::Receive => render_receive(app),
         Tab::History => render_history(app),
         Tab::Locks => render_locks(app),
+        Tab::Labels => render_labels(app),
         Tab::Settings => render_settings(app),
     };
     f.render_widget(content, chunks[2]);
 
     // Status bar
     let password_mask = "*".repeat(app.password_input.len());
+    let input_display = if app.input_mode == InputMode::Password {
+        password_mask.clone()
+    } else if app.label_input_mode != LabelInputMode::None {
+        app.label_input.clone()
+    } else {
+        String::new()
+    };
     let status = Paragraph::new(Line::from(vec![
         Span::styled(" ", Style::default()),
         Span::raw(&app.status_message),
         Span::raw(" │ "),
-        Span::styled(
-            if app.input_mode == InputMode::Password {
-                password_mask.as_str()
-            } else {
-                ""
-            },
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled(&input_display, Style::default().fg(Color::Yellow)),
     ]))
     .block(Block::default().borders(Borders::ALL).title(" Status "));
     f.render_widget(status, chunks[3]);
@@ -402,6 +575,56 @@ fn render_locks(_app: &App) -> Paragraph<'static> {
         Line::from("  [No locks yet]"),
     ])
     .block(Block::default().borders(Borders::ALL).title(" Locks "))
+}
+
+fn render_labels(app: &App) -> Paragraph<'static> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Payment Labels",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(""),
+        Line::from("  [c] Create  [r] Rename  [d] Delete  [↑↓] Navigate"),
+        Line::from(""),
+        Line::from("  ─────────────────────────────────────────────"),
+    ];
+
+    if app.wallet.is_none() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("  [Unlock wallet first]"));
+    } else if app.labels.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("  No labels yet. Press 'c' to create one."));
+    } else {
+        for (i, (index, name)) in app.labels.iter().enumerate() {
+            let style = if i == app.selected_label {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+
+            let prefix = if i == app.selected_label {
+                "► "
+            } else {
+                "  "
+            };
+            let marker = if *index == 0 { " (default)" } else { "" };
+            lines.push(Line::from(vec![Span::styled(
+                format!("{}[{:3}] {}{}", prefix, index, name, marker),
+                style,
+            )]));
+        }
+    }
+
+    Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Labels ")
+            .title_style(Style::default().fg(Color::Cyan)),
+    )
 }
 
 fn render_settings(_app: &App) -> Paragraph<'static> {

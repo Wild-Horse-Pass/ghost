@@ -55,7 +55,8 @@ impl ParameterSync {
     ) -> oneshot::Receiver<MpcResult<PathBuf>> {
         let (tx, rx) = oneshot::channel();
 
-        let total_chunks = ((total_size + PARAM_CHUNK_SIZE as u64 - 1) / PARAM_CHUNK_SIZE as u64) as u32;
+        let total_chunks =
+            ((total_size + PARAM_CHUNK_SIZE as u64 - 1) / PARAM_CHUNK_SIZE as u64) as u32;
 
         let state = DownloadState {
             _expected_hash: params_hash,
@@ -180,10 +181,10 @@ impl ParameterSync {
         let _params = load_parameters(&temp_path)?;
 
         // Move to final location
-        let final_path = self.files.dir.join(format!(
-            "params_{}.bin",
-            hex::encode(&params_hash[..8])
-        ));
+        let final_path = self
+            .files
+            .dir
+            .join(format!("params_{}.bin", hex::encode(&params_hash[..8])));
         fs::rename(&temp_path, &final_path)?;
 
         info!(
@@ -222,19 +223,18 @@ impl ParameterSync {
 
     /// Check if we have parameters with the given hash
     pub fn has_params(&self, params_hash: [u8; 32]) -> bool {
-        let path = self.files.dir.join(format!(
-            "params_{}.bin",
-            hex::encode(&params_hash[..8])
-        ));
+        let path = self
+            .files
+            .dir
+            .join(format!("params_{}.bin", hex::encode(&params_hash[..8])));
         path.exists()
     }
 
     /// Get the path to parameters with the given hash
     pub fn params_path(&self, params_hash: [u8; 32]) -> PathBuf {
-        self.files.dir.join(format!(
-            "params_{}.bin",
-            hex::encode(&params_hash[..8])
-        ))
+        self.files
+            .dir
+            .join(format!("params_{}.bin", hex::encode(&params_hash[..8])))
     }
 
     /// Read chunks from a parameters file for serving to peers

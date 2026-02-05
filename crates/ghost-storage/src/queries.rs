@@ -68,7 +68,12 @@ fn i64_to_u32_count(value: i64, field_name: &str) -> Result<u32, rusqlite::Error
             rusqlite::types::Type::Integer,
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Invalid {} value: {} (expected 0-{})", field_name, value, u32::MAX),
+                format!(
+                    "Invalid {} value: {} (expected 0-{})",
+                    field_name,
+                    value,
+                    u32::MAX
+                ),
             )),
         ));
     }
@@ -1594,7 +1599,10 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let locks = stmt
-                .query_map(params![owner_ghost_id, Self::MAX_QUERY_RESULTS], ghost_lock_from_row)
+                .query_map(
+                    params![owner_ghost_id, Self::MAX_QUERY_RESULTS],
+                    ghost_lock_from_row,
+                )
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -1625,7 +1633,10 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let locks = stmt
-                .query_map(params![owner_ghost_id, Self::MAX_QUERY_RESULTS], ghost_lock_from_row)
+                .query_map(
+                    params![owner_ghost_id, Self::MAX_QUERY_RESULTS],
+                    ghost_lock_from_row,
+                )
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2298,7 +2309,10 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let requests = stmt
-                .query_map(params![ghost_id, Self::MAX_QUERY_RESULTS], withdrawal_from_row)
+                .query_map(
+                    params![ghost_id, Self::MAX_QUERY_RESULTS],
+                    withdrawal_from_row,
+                )
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -2348,7 +2362,10 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let requests = stmt
-                .query_map(params![lock_id, Self::MAX_QUERY_RESULTS], withdrawal_from_row)
+                .query_map(
+                    params![lock_id, Self::MAX_QUERY_RESULTS],
+                    withdrawal_from_row,
+                )
                 .map_err(|e| GhostError::Database(e.to_string()))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -4072,7 +4089,10 @@ impl Database {
     }
 
     /// Get L2 snapshot at or before a given height (for reorg recovery)
-    pub fn get_l2_snapshot_at_or_before(&self, height: u64) -> GhostResult<Option<(u64, [u8; 32])>> {
+    pub fn get_l2_snapshot_at_or_before(
+        &self,
+        height: u64,
+    ) -> GhostResult<Option<(u64, [u8; 32])>> {
         self.with_connection(|conn| {
             let result: Option<(i64, Vec<u8>)> = conn
                 .query_row(
@@ -4178,13 +4198,31 @@ impl Database {
     /// Returns None if the ceremony hasn't been initialized yet.
     pub fn get_mpc_ceremony_state(&self) -> GhostResult<Option<MpcCeremonyState>> {
         self.with_connection(|conn| {
-            let result: Option<(i64, Vec<u8>, i64, Option<i64>, Option<Vec<u8>>, Option<Vec<u8>>, i64)> = conn
+            let result: Option<(
+                i64,
+                Vec<u8>,
+                i64,
+                Option<i64>,
+                Option<Vec<u8>>,
+                Option<Vec<u8>>,
+                i64,
+            )> = conn
                 .query_row(
                     "SELECT contribution_count, current_params_hash, is_ossified, ossified_at,
                             block_vk_hash, payout_vk_hash, updated_at
                      FROM mpc_ceremony WHERE id = 1",
                     [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -4284,7 +4322,10 @@ impl Database {
     }
 
     /// Get an MPC contribution by position
-    pub fn get_mpc_contribution(&self, position: u32) -> GhostResult<Option<MpcContributionRecord>> {
+    pub fn get_mpc_contribution(
+        &self,
+        position: u32,
+    ) -> GhostResult<Option<MpcContributionRecord>> {
         self.with_connection(|conn| {
             let result: Option<(String, Vec<u8>, Vec<u8>, Vec<u8>, i64, i64)> = conn
                 .query_row(
@@ -4292,7 +4333,16 @@ impl Database {
                             contribution_proof, epoch, created_at
                      FROM mpc_contributions WHERE elder_position = ?1",
                     params![position as i64],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -4370,7 +4420,10 @@ impl Database {
     }
 
     /// Get all votes for a contribution
-    pub fn get_mpc_votes(&self, contribution_position: u32) -> GhostResult<Vec<MpcVerificationVote>> {
+    pub fn get_mpc_votes(
+        &self,
+        contribution_position: u32,
+    ) -> GhostResult<Vec<MpcVerificationVote>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -4441,7 +4494,10 @@ impl Database {
     }
 
     /// Get MPC parameter file by hash
-    pub fn get_mpc_params_file(&self, params_hash: &[u8; 32]) -> GhostResult<Option<MpcParamsFile>> {
+    pub fn get_mpc_params_file(
+        &self,
+        params_hash: &[u8; 32],
+    ) -> GhostResult<Option<MpcParamsFile>> {
         self.with_connection(|conn| {
             let result: Option<(String, i64, i64, i64)> = conn
                 .query_row(
@@ -4474,7 +4530,15 @@ impl Database {
                     "SELECT params_hash, file_path, size_bytes, contribution_count, created_at
                      FROM mpc_params_files ORDER BY contribution_count DESC LIMIT 1",
                     [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -5066,6 +5130,9 @@ mod tests {
 
         // Large negative value should fail
         let result = i64_to_u64_sats(-1_000_000, "total_miner_sats");
-        assert!(result.is_err(), "Large negative satoshi value should be rejected");
+        assert!(
+            result.is_err(),
+            "Large negative satoshi value should be rejected"
+        );
     }
 }

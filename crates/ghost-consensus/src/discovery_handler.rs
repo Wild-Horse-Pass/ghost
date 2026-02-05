@@ -83,9 +83,7 @@ impl RateLimiter {
             }
         }
 
-        let (tokens, last_refill) = buckets
-            .entry(*sender)
-            .or_insert((self.max_tokens, now));
+        let (tokens, last_refill) = buckets.entry(*sender).or_insert((self.max_tokens, now));
 
         // Refill tokens based on elapsed time
         let elapsed = now.duration_since(*last_refill).as_secs_f64();
@@ -157,7 +155,8 @@ fn validate_peer_address(address: &str) -> bool {
         || host.starts_with("172.2")
         || host.starts_with("172.30.")
         || host.starts_with("172.31.")
-        || host.starts_with("169.254.")  // Link-local
+        || host.starts_with("169.254.")
+    // Link-local
     {
         return false;
     }
@@ -467,41 +466,80 @@ mod tests {
     #[test]
     fn test_invalid_address_rejected() {
         // Empty address
-        assert!(!validate_peer_address(""), "Empty address should be rejected");
+        assert!(
+            !validate_peer_address(""),
+            "Empty address should be rejected"
+        );
 
         // No port
-        assert!(!validate_peer_address("1.2.3.4"), "Address without port should be rejected");
+        assert!(
+            !validate_peer_address("1.2.3.4"),
+            "Address without port should be rejected"
+        );
 
         // Invalid port (not a number)
-        assert!(!validate_peer_address("1.2.3.4:abc"), "Non-numeric port should be rejected");
+        assert!(
+            !validate_peer_address("1.2.3.4:abc"),
+            "Non-numeric port should be rejected"
+        );
 
         // Port zero
-        assert!(!validate_peer_address("1.2.3.4:0"), "Port zero should be rejected");
+        assert!(
+            !validate_peer_address("1.2.3.4:0"),
+            "Port zero should be rejected"
+        );
 
         // Port too low (privileged)
-        assert!(!validate_peer_address("1.2.3.4:80"), "Privileged port should be rejected");
+        assert!(
+            !validate_peer_address("1.2.3.4:80"),
+            "Privileged port should be rejected"
+        );
 
         // Port too high
-        assert!(!validate_peer_address("1.2.3.4:65535"), "Port > 65000 should be rejected");
+        assert!(
+            !validate_peer_address("1.2.3.4:65535"),
+            "Port > 65000 should be rejected"
+        );
 
         // Valid public address should be accepted
-        assert!(validate_peer_address("8.8.8.8:8559"), "Valid public address should be accepted");
+        assert!(
+            validate_peer_address("8.8.8.8:8559"),
+            "Valid public address should be accepted"
+        );
     }
 
     /// SEC-DISC-TEST-2: Verify that loopback and private addresses are rejected
     #[test]
     fn test_loopback_address_rejected() {
         // Loopback addresses
-        assert!(!validate_peer_address("127.0.0.1:8559"), "127.0.0.1 should be rejected");
-        assert!(!validate_peer_address("localhost:8559"), "localhost should be rejected");
+        assert!(
+            !validate_peer_address("127.0.0.1:8559"),
+            "127.0.0.1 should be rejected"
+        );
+        assert!(
+            !validate_peer_address("localhost:8559"),
+            "localhost should be rejected"
+        );
 
         // Private network addresses (RFC 1918)
-        assert!(!validate_peer_address("192.168.1.1:8559"), "192.168.x.x should be rejected");
-        assert!(!validate_peer_address("10.0.0.1:8559"), "10.x.x.x should be rejected");
-        assert!(!validate_peer_address("172.16.0.1:8559"), "172.16.x.x should be rejected");
+        assert!(
+            !validate_peer_address("192.168.1.1:8559"),
+            "192.168.x.x should be rejected"
+        );
+        assert!(
+            !validate_peer_address("10.0.0.1:8559"),
+            "10.x.x.x should be rejected"
+        );
+        assert!(
+            !validate_peer_address("172.16.0.1:8559"),
+            "172.16.x.x should be rejected"
+        );
 
         // Bind-all address
-        assert!(!validate_peer_address("0.0.0.0:8559"), "0.0.0.0 should be rejected");
+        assert!(
+            !validate_peer_address("0.0.0.0:8559"),
+            "0.0.0.0 should be rejected"
+        );
     }
 
     /// H-3-TEST: Verify that discovery messages with mismatched node_id are rejected
@@ -539,11 +577,17 @@ mod tests {
 
             // Process the spoofed message
             let result = handler.handle_message(envelope).await;
-            assert!(result.is_ok(), "Should not error on spoofed message (just silently reject)");
+            assert!(
+                result.is_ok(),
+                "Should not error on spoofed message (just silently reject)"
+            );
 
             // After: should still have same count (message was rejected)
             let after_count = handler.known_peer_count();
-            assert_eq!(before_count, after_count, "Spoofed discovery message should not add any peers");
+            assert_eq!(
+                before_count, after_count,
+                "Spoofed discovery message should not add any peers"
+            );
         });
     }
 
@@ -583,7 +627,11 @@ mod tests {
 
             // The peer should be added since node_id matches envelope sender
             let after_count = handler.known_peer_count();
-            assert_eq!(after_count, before_count + 1, "Valid discovery message should add the peer");
+            assert_eq!(
+                after_count,
+                before_count + 1,
+                "Valid discovery message should add the peer"
+            );
         });
     }
 
@@ -615,7 +663,10 @@ mod tests {
         assert!(!limiter.try_consume(&node1), "Node 1 should be limited");
 
         // Node 2 should still have its tokens
-        assert!(limiter.try_consume(&node2), "Node 2 should not be affected by node 1");
+        assert!(
+            limiter.try_consume(&node2),
+            "Node 2 should not be affected by node 1"
+        );
         assert!(limiter.try_consume(&node2));
         assert!(!limiter.try_consume(&node2), "Node 2 should be limited now");
     }

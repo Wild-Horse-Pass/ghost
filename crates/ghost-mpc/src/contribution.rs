@@ -285,7 +285,9 @@ pub fn verify_contribution(
 
     // Verify Schnorr proofs
     if !schnorr_verify(g1_generator, &tau_g1, &contribution.proof.tau_pok)? {
-        return Err(MpcError::InvalidProof("tau proof verification failed".into()));
+        return Err(MpcError::InvalidProof(
+            "tau proof verification failed".into(),
+        ));
     }
     if !schnorr_verify(g1_generator, &alpha_g1, &contribution.proof.alpha_pok)? {
         return Err(MpcError::InvalidProof(
@@ -293,7 +295,9 @@ pub fn verify_contribution(
         ));
     }
     if !schnorr_verify(g1_generator, &beta_g1, &contribution.proof.beta_pok)? {
-        return Err(MpcError::InvalidProof("beta proof verification failed".into()));
+        return Err(MpcError::InvalidProof(
+            "beta proof verification failed".into(),
+        ));
     }
 
     // Verify the transformation was applied correctly by checking

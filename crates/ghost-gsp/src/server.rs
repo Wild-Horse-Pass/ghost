@@ -110,12 +110,10 @@ impl GspConfig {
 
         // H-10: Fail if JWT secret is too short (less than 256 bits / 32 bytes)
         if self.jwt_secret.len() < 32 {
-            return Err(crate::error::GspError::InsecureJwtSecret(
-                format!(
-                    "JWT secret must be at least 32 bytes, got {} bytes",
-                    self.jwt_secret.len()
-                ),
-            ));
+            return Err(crate::error::GspError::InsecureJwtSecret(format!(
+                "JWT secret must be at least 32 bytes, got {} bytes",
+                self.jwt_secret.len()
+            )));
         }
 
         Ok(())

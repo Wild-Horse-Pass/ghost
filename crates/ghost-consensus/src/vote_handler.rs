@@ -1033,9 +1033,7 @@ impl VoteHandler {
                         // Broadcast to network
                         match serde_json::to_vec(&proof_msg) {
                             Ok(payload) => {
-                                if let Err(e) =
-                                    broadcast(MessageType::EquivocationProof, payload)
-                                {
+                                if let Err(e) = broadcast(MessageType::EquivocationProof, payload) {
                                     warn!(
                                         error = %e,
                                         "Failed to broadcast equivocation proof"

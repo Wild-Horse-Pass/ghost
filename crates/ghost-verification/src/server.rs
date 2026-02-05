@@ -1032,9 +1032,11 @@ impl VerificationState {
                     error: if success {
                         None
                     } else {
-                        Some(verify_result.error.unwrap_or_else(|| {
-                            "Protocol handshake failed".to_string()
-                        }))
+                        Some(
+                            verify_result
+                                .error
+                                .unwrap_or_else(|| "Protocol handshake failed".to_string()),
+                        )
                     },
                 })
             }
@@ -1099,11 +1101,7 @@ impl VerificationState {
         let (epoch_state_hash, epoch_tx_count, epoch_proof_success) =
             if let Some(challenge_epoch) = challenge.challenge_epoch {
                 match handler.get_epoch_proof(challenge_epoch) {
-                    Some(proof) => (
-                        Some(proof.state_hash),
-                        Some(proof.tx_count),
-                        true,
-                    ),
+                    Some(proof) => (Some(proof.state_hash), Some(proof.tx_count), true),
                     None => {
                         // Node claims GhostPay but can't prove epoch state
                         return Ok(GhostPayResponse {

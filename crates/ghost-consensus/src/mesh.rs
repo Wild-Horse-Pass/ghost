@@ -151,7 +151,7 @@ impl Default for MeshConfig {
             noise_enabled: true,
             noise_port: DEFAULT_NOISE_PORT,
             noise_keypair_path: None, // Will generate ephemeral keypair
-            noise_required: false, // Allow fallback during migration
+            noise_required: false,    // Allow fallback during migration
         }
     }
 }
@@ -358,7 +358,9 @@ impl SeenMessageCache {
                 // M-2: Check for wrap-around detection
                 // If current highest is very large and new sequence is very small,
                 // this is likely a wrap-around, not a replay
-                if state.highest_seq > WRAP_DETECTION_THRESHOLD && sequence < WRAP_DETECTION_THRESHOLD {
+                if state.highest_seq > WRAP_DETECTION_THRESHOLD
+                    && sequence < WRAP_DETECTION_THRESHOLD
+                {
                     // Appears to be a wrap-around - accept if sequence > 0
                     // The update_highest_seq will handle epoch increment
                     sequence > 0
@@ -606,15 +608,16 @@ impl MeshNetwork {
     }
 
     /// Initialize the Noise connection pool
-    fn init_noise_pool(config: &MeshConfig) -> Result<NoiseConnectionPool, crate::noise::NoiseError> {
+    fn init_noise_pool(
+        config: &MeshConfig,
+    ) -> Result<NoiseConnectionPool, crate::noise::NoiseError> {
         use crate::noise::{NoiseConfig, NoiseKeypair};
 
         // Load or generate keypair
         let keypair = if let Some(ref path) = config.noise_keypair_path {
             if path.exists() {
                 // Load existing keypair
-                let hex = std::fs::read_to_string(path)
-                    .map_err(crate::noise::NoiseError::Io)?;
+                let hex = std::fs::read_to_string(path).map_err(crate::noise::NoiseError::Io)?;
                 NoiseKeypair::from_hex(hex.trim())?
             } else {
                 // Generate and save new keypair
@@ -635,7 +638,10 @@ impl MeshNetwork {
         let noise_config = NoiseConfig {
             enabled: config.noise_enabled,
             required: config.noise_required,
-            keypair_file: config.noise_keypair_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            keypair_file: config
+                .noise_keypair_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string()),
             trusted_peers: Vec::new(), // Accept all peers initially
             allow_unknown_peers: true,
         };
@@ -830,14 +836,11 @@ impl MeshNetwork {
     /// C-1: Send message via Noise-encrypted channel to a specific peer
     ///
     /// Establishes or reuses an encrypted connection to the peer.
-    pub async fn send_encrypted(
-        &self,
-        peer: &Peer,
-        envelope: &MessageEnvelope,
-    ) -> GhostResult<()> {
-        let pool = self.noise_pool.as_ref().ok_or_else(|| {
-            GhostError::P2PMessage("Noise not enabled".into())
-        })?;
+    pub async fn send_encrypted(&self, peer: &Peer, envelope: &MessageEnvelope) -> GhostResult<()> {
+        let pool = self
+            .noise_pool
+            .as_ref()
+            .ok_or_else(|| GhostError::P2PMessage("Noise not enabled".into()))?;
 
         // Serialize the envelope
         let data = envelope
@@ -845,20 +848,25 @@ impl MeshNetwork {
             .map_err(|e| GhostError::Serialization(e.to_string()))?;
 
         // Parse peer address for Noise port
-        let host = peer.public_address.split(':').next().unwrap_or(&peer.public_address);
+        let host = peer
+            .public_address
+            .split(':')
+            .next()
+            .unwrap_or(&peer.public_address);
         let noise_addr: std::net::SocketAddr = format!("{}:{}", host, self.config.noise_port)
             .parse()
             .map_err(|e| GhostError::P2PMessage(format!("Invalid peer address: {}", e)))?;
 
         // Get or establish Noise connection
-        let conn = pool.get_connection(noise_addr).await.map_err(|e| {
-            GhostError::P2PMessage(format!("Noise connection failed: {}", e))
-        })?;
+        let conn = pool
+            .get_connection(noise_addr)
+            .await
+            .map_err(|e| GhostError::P2PMessage(format!("Noise connection failed: {}", e)))?;
 
         // Send encrypted
-        conn.send(&data).await.map_err(|e| {
-            GhostError::P2PMessage(format!("Noise send failed: {}", e))
-        })?;
+        conn.send(&data)
+            .await
+            .map_err(|e| GhostError::P2PMessage(format!("Noise send failed: {}", e)))?;
 
         debug!(
             peer = %peer.node_id_short(),
@@ -874,10 +882,14 @@ impl MeshNetwork {
     /// C-1: Broadcast message via encrypted Noise channels to all peers
     ///
     /// For sensitive messages, this uses point-to-point encryption to each peer.
-    pub async fn broadcast_encrypted(&self, envelope: &MessageEnvelope) -> GhostResult<BroadcastResult> {
-        let pool = self.noise_pool.as_ref().ok_or_else(|| {
-            GhostError::P2PMessage("Noise not enabled".into())
-        })?;
+    pub async fn broadcast_encrypted(
+        &self,
+        envelope: &MessageEnvelope,
+    ) -> GhostResult<BroadcastResult> {
+        let pool = self
+            .noise_pool
+            .as_ref()
+            .ok_or_else(|| GhostError::P2PMessage("Noise not enabled".into()))?;
 
         let peers = self.peers.get_connected_peers(60);
         let mut result = BroadcastResult::default();
@@ -893,8 +905,17 @@ impl MeshNetwork {
             }
 
             // Parse peer address
-            let host = peer.public_address.split(':').next().unwrap_or(&peer.public_address);
-            let noise_addr: std::net::SocketAddr = match format!("{}:{}", host, self.config.noise_port).parse() {
+            let host = peer
+                .public_address
+                .split(':')
+                .next()
+                .unwrap_or(&peer.public_address);
+            let noise_addr: std::net::SocketAddr = match format!(
+                "{}:{}",
+                host, self.config.noise_port
+            )
+            .parse()
+            {
                 Ok(addr) => addr,
                 Err(e) => {
                     warn!(peer = %peer.node_id_short(), error = %e, "Invalid peer address for Noise");

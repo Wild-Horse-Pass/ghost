@@ -94,10 +94,7 @@ impl CeremonyManager {
     ///
     /// Returns the manager with state loaded from the database.
     /// If no state exists, initializes with default (pre-genesis) state.
-    pub fn load_or_init(
-        params_dir: PathBuf,
-        db_state: Option<CeremonyState>,
-    ) -> MpcResult<Self> {
+    pub fn load_or_init(params_dir: PathBuf, db_state: Option<CeremonyState>) -> MpcResult<Self> {
         let manager = Self::new(params_dir);
 
         if let Some(state) = db_state {

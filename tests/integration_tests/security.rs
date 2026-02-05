@@ -606,10 +606,7 @@ fn test_651_noise_keypair_generation() {
 
     // Public key hex should be 64 characters
     assert_eq!(kp1.public_key_hex().len(), 64);
-    assert!(kp1
-        .public_key_hex()
-        .chars()
-        .all(|c| c.is_ascii_hexdigit()));
+    assert!(kp1.public_key_hex().chars().all(|c| c.is_ascii_hexdigit()));
 }
 
 #[test]
@@ -654,8 +651,14 @@ async fn test_653_noise_handshake_mutual_authentication() {
     let (server_transport, client_key) = responder_handle.await.unwrap().unwrap();
 
     // Verify mutual authentication
-    assert_eq!(peer_key, expected_responder_key, "Initiator should see responder's key");
-    assert_eq!(client_key, expected_initiator_key, "Responder should see initiator's key");
+    assert_eq!(
+        peer_key, expected_responder_key,
+        "Initiator should see responder's key"
+    );
+    assert_eq!(
+        client_key, expected_initiator_key,
+        "Responder should see initiator's key"
+    );
 
     // Verify transport state matches
     assert_eq!(client_transport.peer_public_key(), &expected_responder_key);
@@ -687,7 +690,7 @@ async fn test_654_noise_encrypted_message_roundtrip() {
     let test_messages = vec![
         b"Hello, encrypted world!".to_vec(),
         b"Sensitive share data".to_vec(),
-        vec![0u8; 1000], // Binary data
+        vec![0u8; 1000],               // Binary data
         (0..255).collect::<Vec<u8>>(), // All byte values
     ];
 
@@ -848,5 +851,8 @@ fn test_660_noise_mesh_config_defaults() {
     // C-1: Noise should be enabled by default for secure-by-default
     assert!(config.noise_enabled, "Noise should be enabled by default");
     assert_eq!(config.noise_port, DEFAULT_NOISE_PORT);
-    assert!(!config.noise_required, "Noise should not be required by default (gradual rollout)");
+    assert!(
+        !config.noise_required,
+        "Noise should not be required by default (gradual rollout)"
+    );
 }

@@ -17,7 +17,9 @@ pub enum MpcError {
     InvalidPosition(u32, u32),
 
     /// Contribution doesn't chain correctly to previous parameters
-    #[error("Contribution does not chain to previous parameters: expected {expected}, got {actual}")]
+    #[error(
+        "Contribution does not chain to previous parameters: expected {expected}, got {actual}"
+    )]
     InvalidChain { expected: String, actual: String },
 
     /// Contribution proof verification failed

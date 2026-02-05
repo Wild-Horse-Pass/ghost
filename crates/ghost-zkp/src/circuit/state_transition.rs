@@ -451,7 +451,7 @@ mod tests {
         let mut idx = index;
 
         for sibling in siblings {
-            let (left, right) = if idx % 2 == 0 {
+            let (left, right) = if idx.is_multiple_of(2) {
                 (current, *sibling)
             } else {
                 (*sibling, current)

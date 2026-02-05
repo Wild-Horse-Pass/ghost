@@ -653,6 +653,7 @@ mod tests {
     fn test_uptime() {
         let metrics = Metrics::default_metrics();
         std::thread::sleep(std::time::Duration::from_millis(10));
-        assert!(metrics.uptime_secs() >= 0);
+        // uptime_secs returns u64, verify the function works (will be 0 since 10ms < 1s)
+        let _ = metrics.uptime_secs();
     }
 }

@@ -605,10 +605,7 @@ mod tests {
         // Miner pool = 312,500,000 - 3,125,000 = 309,375,000
         // But we may have some dust collected
         assert!(total_miner_payout > 0, "Miner payouts should not be empty");
-        assert!(
-            total_node_payout >= 0,
-            "Node payouts should not be negative"
-        );
+        // total_node_payout is u64, can't be negative
 
         // Total should not exceed available funds
         let pool_fee = 312_500_000 / 100; // 1%

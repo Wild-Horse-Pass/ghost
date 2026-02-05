@@ -963,7 +963,7 @@ async fn main() -> Result<()> {
     // ZK consensus handlers (optional feature)
     #[cfg(feature = "zk-consensus")]
     {
-        use ghost_consensus::{ZkVoteHandler, ZkPayoutVoteHandler};
+        use ghost_consensus::{ZkPayoutVoteHandler, ZkVoteHandler};
         use ghost_zkp::{BlockProver, BlockVerifier, PayoutProver, PayoutVerifier};
 
         // Check production mode and load trusted params
@@ -988,53 +988,48 @@ async fn main() -> Result<()> {
         // Using 100 max txs and depth 20 for the state tree
         let block_prover = Arc::new(
             BlockProver::new_with_setup_and_state_transitions(100, 20)
-                .expect("Failed to initialize block prover")
+                .expect("Failed to initialize block prover"),
         );
-        let block_verifier = Arc::new(
-            if let Some(vk) = block_prover.prepared_verifying_key() {
-                BlockVerifier::new_with_groth16_vk(&block_prover.verification_key(), vk)
-                    .expect("Failed to create block verifier with VK")
-            } else {
-                BlockVerifier::new(&block_prover.verification_key())
-                    .expect("Failed to create block verifier")
-            }
-        );
+        let block_verifier = Arc::new(if let Some(vk) = block_prover.prepared_verifying_key() {
+            BlockVerifier::new_with_groth16_vk(&block_prover.verification_key(), vk)
+                .expect("Failed to create block verifier with VK")
+        } else {
+            BlockVerifier::new(&block_prover.verification_key())
+                .expect("Failed to create block verifier")
+        });
 
         // Initialize payout prover/verifier with Groth16 setup
         let payout_prover = Arc::new(
-            PayoutProver::default_params_with_setup()
-                .expect("Failed to initialize payout prover")
+            PayoutProver::default_params_with_setup().expect("Failed to initialize payout prover"),
         );
         let payout_verifier = Arc::new(PayoutVerifier::for_prover(&payout_prover));
 
         // Create broadcast callbacks for ZK handlers
         let mesh_for_zk_block = Arc::clone(&mesh);
-        let zk_block_broadcast: ghost_consensus::zk_vote_handler::ZkBroadcastFn = Arc::new(
-            move |msg_type, payload| mesh_for_zk_block.broadcast_sync(msg_type, payload)
-        );
+        let zk_block_broadcast: ghost_consensus::zk_vote_handler::ZkBroadcastFn =
+            Arc::new(move |msg_type, payload| mesh_for_zk_block.broadcast_sync(msg_type, payload));
 
         let mesh_for_zk_payout = Arc::clone(&mesh);
-        let zk_payout_broadcast: ghost_consensus::zk_payout_handler::ZkPayoutBroadcastFn = Arc::new(
-            move |msg_type, payload| mesh_for_zk_payout.broadcast_sync(msg_type, payload)
-        );
+        let zk_payout_broadcast: ghost_consensus::zk_payout_handler::ZkPayoutBroadcastFn =
+            Arc::new(move |msg_type, payload| mesh_for_zk_payout.broadcast_sync(msg_type, payload));
 
         // Create ZK vote handler for L2 block consensus
         let zk_vote_handler = Arc::new(
             ZkVoteHandler::new(Arc::clone(&identity))
                 .with_verifier(ghost_consensus::zk_vote_handler::create_block_verifier(
-                    Arc::clone(&block_verifier)
+                    Arc::clone(&block_verifier),
                 ))
-                .with_broadcaster(zk_block_broadcast)
+                .with_broadcaster(zk_block_broadcast),
         );
 
         // Create ZK payout vote handler
         let zk_payout_handler = Arc::new(
             ZkPayoutVoteHandler::new(Arc::clone(&identity))
                 .with_verifier(ghost_consensus::zk_payout_handler::create_payout_verifier(
-                    Arc::clone(&payout_verifier)
+                    Arc::clone(&payout_verifier),
                 ))
                 .with_broadcaster(zk_payout_broadcast)
-                .with_ban_manager(Arc::clone(&ban_manager))
+                .with_ban_manager(Arc::clone(&ban_manager)),
         );
 
         // Initialize validators from elder list
@@ -1063,21 +1058,25 @@ async fn main() -> Result<()> {
     // MPC ceremony integration (optional feature)
     #[cfg(feature = "mpc-ceremony")]
     {
-        use ghost_mpc::CeremonyManager;
         use ghost_consensus::MpcHandler;
+        use ghost_mpc::CeremonyManager;
 
         // Load MPC ceremony state from database
         let mpc_state = db.get_mpc_ceremony_state()?;
 
         // Determine params directory (from config or default)
-        let mpc_params_dir = std::path::PathBuf::from(
-            std::env::var("MPC_PARAMS_PATH")
-                .unwrap_or_else(|_| format!("{}/.ghost/mpc_params", std::env::var("HOME").unwrap_or_default()))
-        );
+        let mpc_params_dir =
+            std::path::PathBuf::from(std::env::var("MPC_PARAMS_PATH").unwrap_or_else(|_| {
+                format!(
+                    "{}/.ghost/mpc_params",
+                    std::env::var("HOME").unwrap_or_default()
+                )
+            }));
 
         // Initialize ceremony manager
-        let ceremony_manager = match CeremonyManager::load_or_init(mpc_params_dir.clone(), mpc_state.map(|s| {
-            ghost_mpc::CeremonyState {
+        let ceremony_manager = match CeremonyManager::load_or_init(
+            mpc_params_dir.clone(),
+            mpc_state.map(|s| ghost_mpc::CeremonyState {
                 contribution_count: s.contribution_count,
                 current_params_hash: s.current_params_hash,
                 is_ossified: s.is_ossified,
@@ -1085,8 +1084,8 @@ async fn main() -> Result<()> {
                 block_vk_hash: s.block_vk_hash,
                 payout_vk_hash: s.payout_vk_hash,
                 updated_at: s.updated_at,
-            }
-        })) {
+            }),
+        ) {
             Ok(manager) => Arc::new(manager),
             Err(e) => {
                 warn!(error = %e, "Failed to initialize MPC ceremony manager, continuing without MPC");
@@ -1097,9 +1096,8 @@ async fn main() -> Result<()> {
 
         // Create broadcast callback for MPC handler
         let mesh_for_mpc = Arc::clone(&mesh);
-        let mpc_broadcast: ghost_consensus::mpc_handler::MpcBroadcastFn = Arc::new(
-            move |msg_type, payload| mesh_for_mpc.broadcast_sync(msg_type, payload)
-        );
+        let mpc_broadcast: ghost_consensus::mpc_handler::MpcBroadcastFn =
+            Arc::new(move |msg_type, payload| mesh_for_mpc.broadcast_sync(msg_type, payload));
 
         // Create MPC handler
         let mpc_handler = Arc::new(
@@ -1109,7 +1107,10 @@ async fn main() -> Result<()> {
                 Arc::clone(&db),
             )
             .with_broadcaster(mpc_broadcast)
-            .with_state(ceremony_manager.contribution_count(), ceremony_manager.is_ossified())
+            .with_state(
+                ceremony_manager.contribution_count(),
+                ceremony_manager.is_ossified(),
+            ),
         );
 
         // Register MPC handler with mesh
@@ -1757,7 +1758,10 @@ async fn main() -> Result<()> {
             let bind_addr = format!("0.0.0.0:{}", noise_port);
             let listener = match TcpListener::bind(&bind_addr).await {
                 Ok(l) => {
-                    info!(port = noise_port, "Noise Protocol listener started (encrypted P2P)");
+                    info!(
+                        port = noise_port,
+                        "Noise Protocol listener started (encrypted P2P)"
+                    );
                     l
                 }
                 Err(e) => {
@@ -1787,7 +1791,8 @@ async fn main() -> Result<()> {
                                         match conn.recv().await {
                                             Ok(payload) => {
                                                 // Process received encrypted message through the mesh handler
-                                                if let Err(e) = mesh.handle_received(&payload).await {
+                                                if let Err(e) = mesh.handle_received(&payload).await
+                                                {
                                                     tracing::debug!(
                                                         peer = %addr,
                                                         error = %e,
@@ -2378,7 +2383,10 @@ async fn main() -> Result<()> {
 
     // Check if this was a restart request
     if restart_signal.load(std::sync::atomic::Ordering::SeqCst) {
-        info!("Ghost Pool shutdown complete. Exiting with code {} for systemd restart.", EXIT_CODE_RESTART);
+        info!(
+            "Ghost Pool shutdown complete. Exiting with code {} for systemd restart.",
+            EXIT_CODE_RESTART
+        );
         std::process::exit(EXIT_CODE_RESTART);
     }
 

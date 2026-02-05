@@ -243,7 +243,9 @@ impl NoiseConnectionPool {
         debug!(peer = %peer_addr, "Establishing Noise connection (initiator)");
 
         // Connect TCP
-        let stream = TcpStream::connect(peer_addr).await.map_err(NoiseError::Io)?;
+        let stream = TcpStream::connect(peer_addr)
+            .await
+            .map_err(NoiseError::Io)?;
 
         // Perform Noise handshake as initiator
         let (transport, peer_key) = self.manager.wrap_initiator(stream).await?;
@@ -351,7 +353,11 @@ impl NoiseConnectionPool {
 
         let removed = before - conns.len();
         if removed > 0 {
-            info!(removed = removed, remaining = conns.len(), "Cleaned up stale Noise connections");
+            info!(
+                removed = removed,
+                remaining = conns.len(),
+                "Cleaned up stale Noise connections"
+            );
         }
     }
 
@@ -468,8 +474,10 @@ mod tests {
         let keypair1 = NoiseKeypair::generate();
         let keypair2 = NoiseKeypair::generate();
 
-        let pool1 = Arc::new(NoiseConnectionPool::new(keypair1, NoisePoolConfig::default()).unwrap());
-        let pool2 = Arc::new(NoiseConnectionPool::new(keypair2, NoisePoolConfig::default()).unwrap());
+        let pool1 =
+            Arc::new(NoiseConnectionPool::new(keypair1, NoisePoolConfig::default()).unwrap());
+        let pool2 =
+            Arc::new(NoiseConnectionPool::new(keypair2, NoisePoolConfig::default()).unwrap());
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

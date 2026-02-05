@@ -51,12 +51,14 @@ impl ParameterFiles {
 
     /// Path to block parameters file
     pub fn block_params_path(&self, contribution_count: u32) -> PathBuf {
-        self.dir.join(format!("block_params_v{}.bin", contribution_count))
+        self.dir
+            .join(format!("block_params_v{}.bin", contribution_count))
     }
 
     /// Path to payout parameters file
     pub fn payout_params_path(&self, contribution_count: u32) -> PathBuf {
-        self.dir.join(format!("payout_params_v{}.bin", contribution_count))
+        self.dir
+            .join(format!("payout_params_v{}.bin", contribution_count))
     }
 
     /// Path to the current (latest) block parameters
@@ -183,8 +185,7 @@ pub fn load_verifying_key(path: &Path) -> MpcResult<VerifyingKey<Bls12>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
 
-    let vk = VerifyingKey::read(reader)
-        .map_err(|e| MpcError::InvalidParams(e.to_string()))?;
+    let vk = VerifyingKey::read(reader).map_err(|e| MpcError::InvalidParams(e.to_string()))?;
 
     debug!(path = %path.display(), "Loaded verifying key");
 

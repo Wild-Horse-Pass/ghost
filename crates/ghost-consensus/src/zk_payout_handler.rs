@@ -78,21 +78,23 @@ pub type ZkPayoutVerifyFn = Arc<dyn Fn(&[u8], u64, u64, u64, u64) -> bool + Send
 pub fn create_payout_verifier(
     verifier: std::sync::Arc<ghost_zkp::PayoutVerifier>,
 ) -> ZkPayoutVerifyFn {
-    Arc::new(move |proof_bytes, total_available, miner_sum, node_sum, treasury_amount| {
-        // Construct a PayoutProof for verification
-        let proof = ghost_zkp::PayoutProof {
-            epoch: 0, // Epoch is verified separately via proposal validation
-            total_available,
-            miner_count: 0, // Not part of cryptographic sum verification
-            node_count: 0,
-            miner_sum,
-            node_sum,
-            treasury_amount,
-            proof: proof_bytes.to_vec(),
-            prover_id: verifier.prover_id(), // Must match verifier's expected prover
-        };
-        verifier.verify(&proof).unwrap_or(false)
-    })
+    Arc::new(
+        move |proof_bytes, total_available, miner_sum, node_sum, treasury_amount| {
+            // Construct a PayoutProof for verification
+            let proof = ghost_zkp::PayoutProof {
+                epoch: 0, // Epoch is verified separately via proposal validation
+                total_available,
+                miner_count: 0, // Not part of cryptographic sum verification
+                node_count: 0,
+                miner_sum,
+                node_sum,
+                treasury_amount,
+                proof: proof_bytes.to_vec(),
+                prover_id: verifier.prover_id(), // Must match verifier's expected prover
+            };
+            verifier.verify(&proof).unwrap_or(false)
+        },
+    )
 }
 
 /// Rate limit max tokens for ZK payout messages (burst capacity)

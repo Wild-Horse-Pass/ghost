@@ -455,7 +455,11 @@ impl LightWallet {
             .load_label_dictionary()?
             .unwrap_or_else(ghost_keys::LabelDictionary::new);
 
-        Ok(dict.list().into_iter().map(|(k, v)| (k, v.to_string())).collect())
+        Ok(dict
+            .list()
+            .into_iter()
+            .map(|(k, v)| (k, v.to_string()))
+            .collect())
     }
 
     /// Look up a label name by index

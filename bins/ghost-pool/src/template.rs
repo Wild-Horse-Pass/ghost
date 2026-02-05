@@ -1336,7 +1336,9 @@ impl TemplateProcessor {
         let version_bytes: [u8; 4] = header
             .get(0..4)
             .and_then(|s| s.try_into().ok())
-            .ok_or_else(|| anyhow::anyhow!("Invalid header: insufficient bytes for version field"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Invalid header: insufficient bytes for version field")
+            })?;
         let version = u32::from_le_bytes(version_bytes);
         // Version 0 is invalid, and versions above 0x3FFFFFFF are reserved for BIP9
         if version == 0 || version > 0x3FFFFFFF {
@@ -1506,7 +1508,9 @@ impl TemplateProcessor {
         let version_bytes: [u8; 4] = header
             .get(0..4)
             .and_then(|s| s.try_into().ok())
-            .ok_or_else(|| anyhow::anyhow!("Invalid header: insufficient bytes for version field"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Invalid header: insufficient bytes for version field")
+            })?;
         let version = u32::from_le_bytes(version_bytes);
         if version == 0 || version > 0x3FFFFFFF {
             error!(version = version, "Invalid block version");
@@ -1763,10 +1767,13 @@ mod tests {
     #[test]
     fn test_weight_calculation_underflow_handled() {
         // Helper function that mimics the weight calculation logic
-        fn calculate_witness_extra(witness_len: usize, non_witness_len: usize) -> Result<usize, &'static str> {
-            witness_len.checked_sub(non_witness_len).ok_or(
-                "Invalid coinbase: witness serialization shorter than non-witness"
-            )
+        fn calculate_witness_extra(
+            witness_len: usize,
+            non_witness_len: usize,
+        ) -> Result<usize, &'static str> {
+            witness_len
+                .checked_sub(non_witness_len)
+                .ok_or("Invalid coinbase: witness serialization shorter than non-witness")
         }
 
         // Normal case: witness > non-witness (includes marker, flag, witness data)
@@ -1781,6 +1788,9 @@ mod tests {
 
         // Error case: witness < non-witness (should never happen, indicates bug)
         let result = calculate_witness_extra(150, 200);
-        assert!(result.is_err(), "Underflow should be caught, not wrap around");
+        assert!(
+            result.is_err(),
+            "Underflow should be caught, not wrap around"
+        );
     }
 }

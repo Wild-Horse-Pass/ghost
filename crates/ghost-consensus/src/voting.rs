@@ -276,7 +276,13 @@ impl VotingSession {
         eligible_voters: HashSet<NodeId>,
         timeout_ms: u64,
     ) -> Self {
-        Self::new(round_id, proposal_hash, vote_type, eligible_voters, timeout_ms)
+        Self::new(
+            round_id,
+            proposal_hash,
+            vote_type,
+            eligible_voters,
+            timeout_ms,
+        )
     }
 
     /// Add a vote to the session
@@ -1065,17 +1071,14 @@ mod tests {
             eligible.insert(id);
         }
 
-        let session = VotingSession::new(
-            1,
-            [0u8; 32],
-            VoteType::PayoutApproval,
-            eligible,
-            5000,
-        );
+        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000);
 
         // 67% of 10,000 = 6,700
         let threshold = session.threshold();
-        assert_eq!(threshold, 6700, "Threshold for 10,000 voters should be 6,700");
+        assert_eq!(
+            threshold, 6700,
+            "Threshold for 10,000 voters should be 6,700"
+        );
 
         // Also test exact boundary: 3 voters
         // 67% of 3 = 2.01, ceiling = 3 (need >2/3 for BFT, so all 3 must agree)
@@ -1083,14 +1086,13 @@ mod tests {
         for i in 0..3 {
             small_eligible.insert([i as u8; 32]);
         }
-        let small_session = VotingSession::new(
-            1,
-            [0u8; 32],
-            VoteType::PayoutApproval,
-            small_eligible,
-            5000,
+        let small_session =
+            VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, small_eligible, 5000);
+        assert_eq!(
+            small_session.threshold(),
+            3,
+            "Threshold for 3 voters should be 3 (all must agree)"
         );
-        assert_eq!(small_session.threshold(), 3, "Threshold for 3 voters should be 3 (all must agree)");
     }
 
     /// H-1-TEST: Verify that from_elder_list requires minimum 4 voters for BFT security
@@ -1104,7 +1106,10 @@ mod tests {
             ElderEntry::new(
                 [i; 32],
                 1, // epoch
-                &NodeIdProof { nonce: 0, difficulty: 20 },
+                &NodeIdProof {
+                    nonce: 0,
+                    difficulty: 20,
+                },
                 chrono::Utc::now().timestamp() as u64,
                 99.0,
             )
@@ -1123,10 +1128,19 @@ mod tests {
         );
 
         // Should fail with InsufficientVoters
-        assert!(result.is_err(), "Should reject elder list with fewer than 4 voters");
+        assert!(
+            result.is_err(),
+            "Should reject elder list with fewer than 4 voters"
+        );
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ghost_common::error::GhostError::InsufficientVoters { required: 4, available: 3 }),
+            matches!(
+                err,
+                ghost_common::error::GhostError::InsufficientVoters {
+                    required: 4,
+                    available: 3
+                }
+            ),
             "Expected InsufficientVoters error with required=4, available=3, got {:?}",
             err
         );
@@ -1144,7 +1158,10 @@ mod tests {
         );
 
         // Should succeed with exactly 4 voters
-        assert!(result.is_ok(), "Should accept elder list with exactly 4 voters");
+        assert!(
+            result.is_ok(),
+            "Should accept elder list with exactly 4 voters"
+        );
         let session = result.unwrap();
         assert_eq!(session.eligible_voters.len(), 4);
     }
@@ -1167,7 +1184,13 @@ mod tests {
         assert!(result.is_err(), "Should reject empty elder list");
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ghost_common::error::GhostError::InsufficientVoters { required: 4, available: 0 }),
+            matches!(
+                err,
+                ghost_common::error::GhostError::InsufficientVoters {
+                    required: 4,
+                    available: 0
+                }
+            ),
             "Expected InsufficientVoters error with available=0, got {:?}",
             err
         );

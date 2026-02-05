@@ -312,5 +312,4 @@ mod tests {
         let id2 = GhostId::from_bytes(&scan_bytes, &spend_bytes).unwrap();
         assert_eq!(id, id2);
     }
-
 }

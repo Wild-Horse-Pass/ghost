@@ -1234,7 +1234,9 @@ mod tests {
         let blinded_challenge = context.create_blinded_challenge().unwrap();
 
         // Step 4: Coordinator signs blinded challenge for participant
-        let response = signer.sign_blinded_challenge_for_participant(&blinded_challenge, participant).unwrap();
+        let response = signer
+            .sign_blinded_challenge_for_participant(&blinded_challenge, participant)
+            .unwrap();
 
         // Step 5: Participant unblinds to get final signature
         let token = context.unblind(&response, *signer.key_id()).unwrap();
@@ -1272,8 +1274,12 @@ mod tests {
         // Challenges should be different (due to random blinding)
         assert_ne!(challenge1.challenge, challenge2.challenge);
 
-        let response1 = signer.sign_blinded_challenge_for_participant(&challenge1, participant).unwrap();
-        let response2 = signer.sign_blinded_challenge_for_participant(&challenge2, participant).unwrap();
+        let response1 = signer
+            .sign_blinded_challenge_for_participant(&challenge1, participant)
+            .unwrap();
+        let response2 = signer
+            .sign_blinded_challenge_for_participant(&challenge2, participant)
+            .unwrap();
 
         let token1 = context1.unblind(&response1, *signer.key_id()).unwrap();
         let token2 = context2.unblind(&response2, *signer.key_id()).unwrap();
@@ -1304,7 +1310,9 @@ mod tests {
         let challenge = context.create_blinded_challenge().unwrap();
 
         // First signing should succeed
-        let _ = signer.sign_blinded_challenge_for_participant(&challenge, participant).unwrap();
+        let _ = signer
+            .sign_blinded_challenge_for_participant(&challenge, participant)
+            .unwrap();
 
         // Second attempt with same session should fail (nonce consumed)
         let result = signer.sign_blinded_challenge_for_participant(&challenge, participant);
@@ -1334,7 +1342,9 @@ mod tests {
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
         let challenge = context.create_blinded_challenge().unwrap();
-        let response = signer.sign_blinded_challenge_for_participant(&challenge, participant).unwrap();
+        let response = signer
+            .sign_blinded_challenge_for_participant(&challenge, participant)
+            .unwrap();
         let mut token = context.unblind(&response, *signer.key_id()).unwrap();
 
         // Tamper with session key ID
@@ -1356,7 +1366,9 @@ mod tests {
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
         let challenge = context.create_blinded_challenge().unwrap();
-        let response = signer.sign_blinded_challenge_for_participant(&challenge, participant).unwrap();
+        let response = signer
+            .sign_blinded_challenge_for_participant(&challenge, participant)
+            .unwrap();
         let mut token = context.unblind(&response, *signer.key_id()).unwrap();
 
         // Tamper with message
@@ -1378,7 +1390,9 @@ mod tests {
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
         let challenge = context.create_blinded_challenge().unwrap();
-        let response = signer.sign_blinded_challenge_for_participant(&challenge, participant).unwrap();
+        let response = signer
+            .sign_blinded_challenge_for_participant(&challenge, participant)
+            .unwrap();
         let token = context.unblind(&response, *signer.key_id()).unwrap();
 
         // Should be able to convert to standard 64-byte format
@@ -1555,7 +1569,10 @@ mod tests {
 
         // Using the deprecated sign_blinded_challenge should return SecurityError
         let result = signer.sign_blinded_challenge(&challenge);
-        assert!(result.is_err(), "Deprecated sign_blinded_challenge should return error");
+        assert!(
+            result.is_err(),
+            "Deprecated sign_blinded_challenge should return error"
+        );
 
         let err = result.unwrap_err();
         assert!(

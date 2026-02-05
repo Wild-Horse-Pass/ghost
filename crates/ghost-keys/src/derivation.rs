@@ -182,7 +182,7 @@ mod tests {
 
         // Manual computation without domain separator (shouldn't match)
         let mut hasher = Sha256::new();
-        hasher.update(&shared_secret);
+        hasher.update(shared_secret);
         hasher.update(0u32.to_le_bytes());
         let tweak_no_domain: [u8; 32] = hasher.finalize().into();
 
@@ -194,7 +194,7 @@ mod tests {
         // Verify domain separator is actually used
         let mut hasher = Sha256::new();
         hasher.update(DOMAIN_SEPARATOR_V2);
-        hasher.update(&shared_secret);
+        hasher.update(shared_secret);
         hasher.update(0u32.to_le_bytes());
         let tweak_with_domain: [u8; 32] = hasher.finalize().into();
 

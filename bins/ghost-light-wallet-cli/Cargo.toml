@@ -37,6 +37,7 @@ path = "src/main.rs"
 # Workspace crates
 ghost-light-wallet = { path = "../../crates/ghost-light-wallet" }
 ghost-gsp-proto = { path = "../../crates/ghost-gsp-proto" }
+ghost-keys = { path = "../../crates/ghost-keys" }
 
 # Bitcoin
 bitcoin = "0.32"

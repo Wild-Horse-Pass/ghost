@@ -431,8 +431,9 @@ impl ElderRegistrationHandler {
             self.db.count_elder_registration_approvals(request.id)?;
         let current_list = self.elder_list_manager.read().current();
         let total_elders = current_list.elder_count();
-        let threshold =
-            (total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT).div_ceil(100).max(1) as usize;
+        let threshold = (total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT)
+            .div_ceil(100)
+            .max(1) as usize;
 
         if approvals as usize >= threshold {
             info!(
@@ -525,8 +526,9 @@ impl ElderRegistrationHandler {
         let (approvals, _rejections) = self.db.count_elder_registration_approvals(request.id)?;
         let current_list = self.elder_list_manager.read().current();
         let total_elders = current_list.elder_count();
-        let threshold =
-            (total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT).div_ceil(100).max(1) as usize;
+        let threshold = (total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT)
+            .div_ceil(100)
+            .max(1) as usize;
 
         if approvals as usize >= threshold && request.status == "pending" {
             info!(
@@ -796,8 +798,9 @@ impl ElderRegistrationHandler {
         let approval_count = self.db.count_elder_approvals(msg.epoch)?;
         let current_list = self.elder_list_manager.read().current();
         let total_elders = current_list.elder_count();
-        let threshold =
-            (total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT).div_ceil(100).max(1) as usize;
+        let threshold = (total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT)
+            .div_ceil(100)
+            .max(1) as usize;
 
         info!(
             epoch = msg.epoch,

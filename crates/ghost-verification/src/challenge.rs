@@ -161,8 +161,8 @@ impl StratumChallenge {
     /// Returns false if port is set but outside valid range
     pub fn is_port_valid(&self) -> bool {
         match self.port {
-            None => true, // Default port will be used
-            Some(port) => port >= MIN_STRATUM_PORT && port <= MAX_STRATUM_PORT,
+            None => true,                           // Default port will be used
+            Some(port) => port >= MIN_STRATUM_PORT, // MAX_STRATUM_PORT is u16::MAX, no need to check upper bound
         }
     }
 
@@ -178,8 +178,8 @@ impl StratumChallenge {
                     StratumProtocol::Sv2 => 34255,
                 })
             }
-            Some(port) if port >= MIN_STRATUM_PORT && port <= MAX_STRATUM_PORT => Some(port),
-            Some(_) => None, // Invalid port
+            Some(port) if port >= MIN_STRATUM_PORT => Some(port), // MAX is u16::MAX
+            Some(_) => None, // Invalid port (below MIN_STRATUM_PORT)
         }
     }
 }

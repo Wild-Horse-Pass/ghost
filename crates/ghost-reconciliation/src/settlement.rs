@@ -73,10 +73,7 @@ impl OwnershipProof {
     /// Get the signature bytes
     pub fn signature(&self) -> Result<[u8; 64], ReconciliationError> {
         let bytes = hex::decode(&self.signature_hex).map_err(|e| {
-            ReconciliationError::InvalidSettlement(format!(
-                "Invalid signature hex: {}",
-                e
-            ))
+            ReconciliationError::InvalidSettlement(format!("Invalid signature hex: {}", e))
         })?;
         if bytes.len() != 64 {
             return Err(ReconciliationError::InvalidSettlement(format!(
@@ -97,7 +94,11 @@ impl OwnershipProof {
     /// Build the message that should be signed for ownership verification
     ///
     /// Format: DOMAIN || settlement_id || destination_address || amount_sats (LE)
-    pub fn build_message(settlement_id: &[u8; 32], destination: &str, amount_sats: u64) -> [u8; 32] {
+    pub fn build_message(
+        settlement_id: &[u8; 32],
+        destination: &str,
+        amount_sats: u64,
+    ) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(SETTLEMENT_OWNERSHIP_DOMAIN);
         hasher.update(settlement_id);
@@ -642,11 +643,17 @@ mod tests {
         // Different settlement ID
         let different_id = [2u8; 32];
         let msg2 = OwnershipProof::build_message(&different_id, destination, amount);
-        assert_ne!(msg1, msg2, "Different settlement_id must produce different hash");
+        assert_ne!(
+            msg1, msg2,
+            "Different settlement_id must produce different hash"
+        );
 
         // Different destination
         let msg3 = OwnershipProof::build_message(&settlement_id, "bc1qother", amount);
-        assert_ne!(msg1, msg3, "Different destination must produce different hash");
+        assert_ne!(
+            msg1, msg3,
+            "Different destination must produce different hash"
+        );
 
         // Different amount
         let msg4 = OwnershipProof::build_message(&settlement_id, destination, amount + 1);
@@ -690,10 +697,7 @@ mod tests {
         let request = SettlementRequest::new(settlement.clone(), proof);
 
         assert_eq!(request.settlement().id(), settlement.id());
-        assert_eq!(
-            request.settlement().amount_sats(),
-            settlement.amount_sats()
-        );
+        assert_eq!(request.settlement().amount_sats(), settlement.amount_sats());
     }
 
     #[test]

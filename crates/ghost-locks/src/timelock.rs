@@ -215,6 +215,6 @@ mod tests {
         assert_eq!(MAX_CREATION_HEIGHT, 100_000_000);
 
         // Should be well above current Bitcoin block height (~850k)
-        assert!(MAX_CREATION_HEIGHT > 1_000_000);
+        const { assert!(MAX_CREATION_HEIGHT > 1_000_000) };
     }
 }

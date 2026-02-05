@@ -189,7 +189,7 @@ impl BlockVerifier {
         // In test mode, allow simulated verification
         #[cfg(test)]
         {
-            return self.verify_simulated(proof);
+            self.verify_simulated(proof)
         }
 
         #[cfg(not(test))]
