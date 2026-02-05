@@ -219,6 +219,8 @@ if(ENABLE_WALLET)
       l2walletmodel.h
       ghostlockspage.cpp
       ghostlockspage.h
+      ghostlabelspage.cpp
+      ghostlabelspage.h
       depositwizard.cpp
       depositwizard.h
       withdrawwizard.cpp

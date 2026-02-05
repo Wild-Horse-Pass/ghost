@@ -442,6 +442,11 @@ private:
     //! Set of both spent and unspent transaction outputs owned by this wallet
     std::unordered_map<COutPoint, WalletTXO, SaltedOutpointHasher> m_txos GUARDED_BY(cs_wallet);
 
+    //! Ghost Labels - payment categorization (index -> name)
+    std::map<uint32_t, std::string> m_ghost_labels GUARDED_BY(cs_wallet);
+    //! Next label index to assign
+    uint32_t m_ghost_labels_next_index GUARDED_BY(cs_wallet) = 1;
+
     /**
      * Catch wallet up to current chain, scanning new blocks, updating the best
      * block locator and m_last_block_processed, and registering for
@@ -1067,6 +1072,26 @@ public:
     //! Load a Silent Payment output from database (called by LoadWallet)
     bool LoadSilentPaymentOutput(const CScript& scriptPubKey, const Txid& txid, uint32_t vout,
                                   CAmount amount, const uint256& tweak, int64_t block_height);
+
+    //! Ghost Labels - payment categorization
+    //! Get all Ghost Labels (returns vector of index->name pairs, sorted by index)
+    std::vector<std::pair<uint32_t, std::string>> GetGhostLabels() const EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    //! Create a new Ghost Label, returns the assigned index
+    uint32_t CreateGhostLabel(const std::string& name) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    //! Rename an existing Ghost Label
+    bool RenameGhostLabel(uint32_t index, const std::string& new_name) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    //! Delete a Ghost Label (cannot delete index 0 = Uncategorized)
+    bool DeleteGhostLabel(uint32_t index) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    //! Get the name of a Ghost Label by index
+    std::string GetGhostLabelName(uint32_t index) const EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    //! Export Ghost Labels to JSON file
+    bool ExportGhostLabels(const std::string& filename) const;
+    //! Import Ghost Labels from JSON file
+    bool ImportGhostLabels(const std::string& filename);
+    //! Load a Ghost Label from database (called by LoadWallet)
+    void LoadGhostLabel(uint32_t index, const std::string& name) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
+    //! Load the next Ghost Label index from database (called by LoadWallet)
+    void LoadGhostLabelsNextIndex(uint32_t next_index) EXCLUSIVE_LOCKS_REQUIRED(cs_wallet);
 
     /** Move all records from the BDB database to a new SQLite database for storage.
      * The original BDB file will be deleted and replaced with a new SQLite file.

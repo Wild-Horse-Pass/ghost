@@ -62,6 +62,8 @@ const std::string WATCHMETA{"watchmeta"};
 const std::string WATCHS{"watchs"};
 const std::string SILENTPAYMENT_KEYS{"spkeys"};
 const std::string SILENTPAYMENT_OUTPUT{"spoutput"};
+const std::string GHOST_LABELS{"ghostlabels"};
+const std::string GHOST_LABELS_NEXT{"ghostlabelsnext"};
 const std::unordered_set<std::string> LEGACY_TYPES{CRYPTED_KEY, CSCRIPT, DEFAULTKEY, HDCHAIN, KEYMETA, KEY, OLD_KEY, POOL, WATCHMETA, WATCHS};
 } // namespace DBKeys
 
@@ -242,6 +244,26 @@ bool WalletBatch::WriteSilentPaymentOutput(const CScript& scriptPubKey, const Tx
 bool WalletBatch::EraseSilentPaymentOutput(const CScript& scriptPubKey)
 {
     return EraseIC(std::make_pair(DBKeys::SILENTPAYMENT_OUTPUT, scriptPubKey));
+}
+
+bool WalletBatch::WriteGhostLabel(uint32_t index, const std::string& name)
+{
+    return WriteIC(std::make_pair(DBKeys::GHOST_LABELS, index), name);
+}
+
+bool WalletBatch::EraseGhostLabel(uint32_t index)
+{
+    return EraseIC(std::make_pair(DBKeys::GHOST_LABELS, index));
+}
+
+bool WalletBatch::WriteGhostLabelsNextIndex(uint32_t next_index)
+{
+    return WriteIC(DBKeys::GHOST_LABELS_NEXT, next_index);
+}
+
+bool WalletBatch::ReadGhostLabelsNextIndex(uint32_t& next_index)
+{
+    return m_batch->Read(DBKeys::GHOST_LABELS_NEXT, next_index);
 }
 
 bool WalletBatch::WriteDescriptorKey(const uint256& desc_id, const CPubKey& pubkey, const CPrivKey& privkey)
@@ -1176,6 +1198,31 @@ static DBErrors LoadSilentPaymentRecords(CWallet* pwallet, DatabaseBatch& batch)
     return result;
 }
 
+static DBErrors LoadGhostLabelsRecords(CWallet* pwallet, DatabaseBatch& batch) EXCLUSIVE_LOCKS_REQUIRED(pwallet->cs_wallet)
+{
+    AssertLockHeld(pwallet->cs_wallet);
+    DBErrors result = DBErrors::LOAD_OK;
+
+    // Load Ghost Labels (payment categorization)
+    LoadResult labels_res = LoadRecords(pwallet, batch, DBKeys::GHOST_LABELS,
+        [] (CWallet* pwallet, DataStream& key, DataStream& value, std::string& strErr) {
+        uint32_t index;
+        std::string name;
+        key >> index;
+        value >> name;
+        pwallet->LoadGhostLabel(index, name);
+        return DBErrors::LOAD_OK;
+    });
+    result = std::max(result, labels_res.m_result);
+
+    // Load next index counter
+    uint32_t next_index = 1;
+    batch.Read(DBKeys::GHOST_LABELS_NEXT, next_index);
+    pwallet->LoadGhostLabelsNextIndex(next_index);
+
+    return result;
+}
+
 DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
 {
     DBErrors result = DBErrors::LOAD_OK;
@@ -1218,6 +1265,9 @@ DBErrors WalletBatch::LoadWallet(CWallet* pwallet)
 
         // Load Silent Payment records
         result = std::max(LoadSilentPaymentRecords(pwallet, *m_batch), result);
+
+        // Load Ghost Labels records
+        result = std::max(LoadGhostLabelsRecords(pwallet, *m_batch), result);
 
         // Load decryption keys
         result = std::max(LoadDecryptionKeys(pwallet, *m_batch), result);

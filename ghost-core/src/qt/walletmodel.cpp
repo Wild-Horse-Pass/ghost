@@ -607,3 +607,66 @@ CAmount WalletModel::getAvailableBalance(const CCoinControl* control)
     // Fetch balance from the wallet, taking into account the selected coins
     return wallet().getAvailableBalance(*control);
 }
+
+// =========================================================================
+// Ghost Labels Management
+// =========================================================================
+
+QList<QPair<int, QString>> WalletModel::getGhostLabels() const
+{
+    QList<QPair<int, QString>> labels;
+    // Get labels from wallet database via interface
+    auto walletLabels = m_wallet->getGhostLabels();
+    for (const auto& [index, name] : walletLabels) {
+        labels.append(qMakePair(index, QString::fromStdString(name)));
+    }
+    // Ensure default label exists
+    bool hasDefault = false;
+    for (const auto& pair : labels) {
+        if (pair.first == 0) {
+            hasDefault = true;
+            break;
+        }
+    }
+    if (!hasDefault) {
+        labels.prepend(qMakePair(0, tr("Uncategorized")));
+    }
+    return labels;
+}
+
+int WalletModel::createGhostLabel(const QString& name)
+{
+    return m_wallet->createGhostLabel(name.toStdString());
+}
+
+bool WalletModel::renameGhostLabel(int index, const QString& newName)
+{
+    if (index == 0) return false; // Cannot rename default
+    return m_wallet->renameGhostLabel(index, newName.toStdString());
+}
+
+bool WalletModel::deleteGhostLabel(int index)
+{
+    if (index == 0) return false; // Cannot delete default
+    return m_wallet->deleteGhostLabel(index);
+}
+
+QString WalletModel::getGhostLabelName(int index) const
+{
+    if (index == 0) return tr("Uncategorized");
+    auto name = m_wallet->getGhostLabelName(index);
+    if (name.empty()) {
+        return tr("Orphaned Label #%1").arg(index);
+    }
+    return QString::fromStdString(name);
+}
+
+bool WalletModel::exportGhostLabels(const QString& filename) const
+{
+    return m_wallet->exportGhostLabels(filename.toStdString());
+}
+
+bool WalletModel::importGhostLabels(const QString& filename)
+{
+    return m_wallet->importGhostLabels(filename.toStdString());
+}

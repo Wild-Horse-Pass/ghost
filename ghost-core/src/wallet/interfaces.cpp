@@ -527,6 +527,47 @@ public:
     {
         return MakeSignalHandler(m_wallet->NotifyCanGetAddressesChanged.connect(fn));
     }
+    std::vector<std::pair<int, std::string>> getGhostLabels() override
+    {
+        LOCK(m_wallet->cs_wallet);
+        auto labels = m_wallet->GetGhostLabels();
+        std::vector<std::pair<int, std::string>> result;
+        for (const auto& [index, name] : labels) {
+            result.emplace_back(static_cast<int>(index), name);
+        }
+        return result;
+    }
+    int createGhostLabel(const std::string& name) override
+    {
+        LOCK(m_wallet->cs_wallet);
+        return static_cast<int>(m_wallet->CreateGhostLabel(name));
+    }
+    bool renameGhostLabel(int index, const std::string& new_name) override
+    {
+        if (index < 0) return false;
+        LOCK(m_wallet->cs_wallet);
+        return m_wallet->RenameGhostLabel(static_cast<uint32_t>(index), new_name);
+    }
+    bool deleteGhostLabel(int index) override
+    {
+        if (index <= 0) return false; // Cannot delete default (0)
+        LOCK(m_wallet->cs_wallet);
+        return m_wallet->DeleteGhostLabel(static_cast<uint32_t>(index));
+    }
+    std::string getGhostLabelName(int index) override
+    {
+        if (index < 0) return "";
+        LOCK(m_wallet->cs_wallet);
+        return m_wallet->GetGhostLabelName(static_cast<uint32_t>(index));
+    }
+    bool exportGhostLabels(const std::string& filename) override
+    {
+        return m_wallet->ExportGhostLabels(filename);
+    }
+    bool importGhostLabels(const std::string& filename) override
+    {
+        return m_wallet->ImportGhostLabels(filename);
+    }
     CWallet* wallet() override { return m_wallet.get(); }
 
     WalletContext& m_context;

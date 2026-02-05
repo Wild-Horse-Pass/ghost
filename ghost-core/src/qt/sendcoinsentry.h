@@ -38,6 +38,9 @@ public:
     /** Return whether the entry is still empty and unedited */
     bool isClear();
 
+    /** Populate the Ghost Label combo box with available labels */
+    void populateGhostLabels();
+
     void setValue(const SendCoinsRecipient &value);
     void setAddress(const QString &address);
     void setAmount(const CAmount &amount);

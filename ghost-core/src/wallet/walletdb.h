@@ -84,6 +84,8 @@ extern const std::string WATCHMETA;
 extern const std::string WATCHS;
 extern const std::string SILENTPAYMENT_KEYS;
 extern const std::string SILENTPAYMENT_OUTPUT;
+extern const std::string GHOST_LABELS;
+extern const std::string GHOST_LABELS_NEXT;
 
 // Keys in this set pertain only to the legacy wallet (LegacyScriptPubKeyMan) and are removed during migration from legacy to descriptors.
 extern const std::unordered_set<std::string> LEGACY_TYPES;
@@ -302,6 +304,15 @@ public:
                                   CAmount amount, const uint256& tweak, int64_t block_height);
     //! Erase a Silent Payment output
     bool EraseSilentPaymentOutput(const CScript& scriptPubKey);
+
+    //! Write a Ghost Label (payment categorization)
+    bool WriteGhostLabel(uint32_t index, const std::string& name);
+    //! Erase a Ghost Label
+    bool EraseGhostLabel(uint32_t index);
+    //! Write the next Ghost Labels index counter
+    bool WriteGhostLabelsNextIndex(uint32_t next_index);
+    //! Read the next Ghost Labels index counter
+    bool ReadGhostLabelsNextIndex(uint32_t& next_index);
 
     DBErrors LoadWallet(CWallet* pwallet);
 

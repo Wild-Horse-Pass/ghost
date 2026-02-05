@@ -156,6 +156,15 @@ public:
     // Otherwise, uses the wallet's cached available balance.
     CAmount getAvailableBalance(const wallet::CCoinControl* control);
 
+    // Ghost Labels management
+    QList<QPair<int, QString>> getGhostLabels() const;
+    int createGhostLabel(const QString& name);
+    bool renameGhostLabel(int index, const QString& newName);
+    bool deleteGhostLabel(int index);
+    QString getGhostLabelName(int index) const;
+    bool exportGhostLabels(const QString& filename) const;
+    bool importGhostLabels(const QString& filename);
+
 private:
     std::unique_ptr<interfaces::Wallet> m_wallet;
     std::unique_ptr<interfaces::Handler> m_handler_unload;

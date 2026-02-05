@@ -11,6 +11,7 @@
 #include <QStackedWidget>
 
 class ClientModel;
+class GhostLabelsPage;
 class GhostLocksPage;
 class L2WalletModel;
 class OverviewPage;
@@ -77,6 +78,7 @@ private:
 
     // Ghost Pay L2 pages
     GhostLocksPage *ghostLocksPage{nullptr};
+    GhostLabelsPage *ghostLabelsPage{nullptr};
 
     TransactionView *transactionView;
 
@@ -94,6 +96,8 @@ public Q_SLOTS:
     void gotoSendCoinsPage(QString addr = "");
     /** Switch to Ghost Locks page */
     void gotoGhostLocksPage();
+    /** Switch to Ghost Labels page */
+    void gotoGhostLabelsPage();
 
     /** Show Sign/Verify Message dialog and switch to sign message tab */
     void gotoSignMessageTab(QString addr = "");

@@ -305,6 +305,22 @@ public:
     using CanGetAddressesChangedFn = std::function<void()>;
     virtual std::unique_ptr<Handler> handleCanGetAddressesChanged(CanGetAddressesChangedFn fn) = 0;
 
+    //! Ghost Labels - payment categorization
+    //! Get all Ghost Labels (returns vector of index->name pairs)
+    virtual std::vector<std::pair<int, std::string>> getGhostLabels() = 0;
+    //! Create a new Ghost Label, returns the assigned index
+    virtual int createGhostLabel(const std::string& name) = 0;
+    //! Rename an existing Ghost Label
+    virtual bool renameGhostLabel(int index, const std::string& new_name) = 0;
+    //! Delete a Ghost Label (cannot delete index 0 = Uncategorized)
+    virtual bool deleteGhostLabel(int index) = 0;
+    //! Get the name of a Ghost Label by index
+    virtual std::string getGhostLabelName(int index) = 0;
+    //! Export Ghost Labels to JSON file
+    virtual bool exportGhostLabels(const std::string& filename) = 0;
+    //! Import Ghost Labels from JSON file
+    virtual bool importGhostLabels(const std::string& filename) = 0;
+
     //! Return pointer to internal wallet class, useful for testing.
     virtual wallet::CWallet* wallet() { return nullptr; }
 };

@@ -75,6 +75,7 @@
 #include <cassert>
 #include <condition_variable>
 #include <exception>
+#include <fstream>
 #include <optional>
 #include <stdexcept>
 #include <thread>
@@ -3950,6 +3951,137 @@ bool CWallet::LoadSilentPaymentOutput(const CScript& scriptPubKey, const Txid& t
 
     m_sp_spkm->LoadDetectedOutput(output);
     return true;
+}
+
+std::vector<std::pair<uint32_t, std::string>> CWallet::GetGhostLabels() const
+{
+    AssertLockHeld(cs_wallet);
+    std::vector<std::pair<uint32_t, std::string>> result;
+    // Always include default label
+    result.emplace_back(0, "Uncategorized");
+    for (const auto& [index, name] : m_ghost_labels) {
+        if (index != 0) {
+            result.emplace_back(index, name);
+        }
+    }
+    std::sort(result.begin(), result.end());
+    return result;
+}
+
+uint32_t CWallet::CreateGhostLabel(const std::string& name)
+{
+    AssertLockHeld(cs_wallet);
+    uint32_t index = m_ghost_labels_next_index++;
+    m_ghost_labels[index] = name;
+
+    WalletBatch batch(GetDatabase());
+    batch.WriteGhostLabel(index, name);
+    batch.WriteGhostLabelsNextIndex(m_ghost_labels_next_index);
+
+    return index;
+}
+
+bool CWallet::RenameGhostLabel(uint32_t index, const std::string& new_name)
+{
+    AssertLockHeld(cs_wallet);
+    if (index == 0) return false; // Cannot rename default
+    auto it = m_ghost_labels.find(index);
+    if (it == m_ghost_labels.end()) return false;
+
+    it->second = new_name;
+    WalletBatch batch(GetDatabase());
+    return batch.WriteGhostLabel(index, new_name);
+}
+
+bool CWallet::DeleteGhostLabel(uint32_t index)
+{
+    AssertLockHeld(cs_wallet);
+    if (index == 0) return false; // Cannot delete default
+    auto it = m_ghost_labels.find(index);
+    if (it == m_ghost_labels.end()) return false;
+
+    m_ghost_labels.erase(it);
+    WalletBatch batch(GetDatabase());
+    return batch.EraseGhostLabel(index);
+}
+
+std::string CWallet::GetGhostLabelName(uint32_t index) const
+{
+    AssertLockHeld(cs_wallet);
+    if (index == 0) return "Uncategorized";
+    auto it = m_ghost_labels.find(index);
+    return (it != m_ghost_labels.end()) ? it->second : "";
+}
+
+bool CWallet::ExportGhostLabels(const std::string& filename) const
+{
+    LOCK(cs_wallet);
+    try {
+        UniValue obj(UniValue::VOBJ);
+        UniValue labels(UniValue::VOBJ);
+        for (const auto& [index, name] : m_ghost_labels) {
+            labels.pushKV(std::to_string(index), name);
+        }
+        obj.pushKV("labels", labels);
+        obj.pushKV("next_index", (int64_t)m_ghost_labels_next_index);
+        obj.pushKV("version", 1);
+
+        std::ofstream file(filename);
+        if (!file.is_open()) return false;
+        file << obj.write(2);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool CWallet::ImportGhostLabels(const std::string& filename)
+{
+    LOCK(cs_wallet);
+    try {
+        std::ifstream file(filename);
+        if (!file.is_open()) return false;
+
+        std::string content((std::istreambuf_iterator<char>(file)),
+                            std::istreambuf_iterator<char>());
+        UniValue obj;
+        if (!obj.read(content)) return false;
+
+        const UniValue& labels = obj["labels"];
+        WalletBatch batch(GetDatabase());
+
+        for (const std::string& key : labels.getKeys()) {
+            uint32_t index = std::stoul(key);
+            std::string name = labels[key].get_str();
+            if (index != 0 && m_ghost_labels.find(index) == m_ghost_labels.end()) {
+                m_ghost_labels[index] = name;
+                batch.WriteGhostLabel(index, name);
+            }
+        }
+
+        if (obj.exists("next_index")) {
+            uint32_t imported_next = obj["next_index"].getInt<uint32_t>();
+            if (imported_next > m_ghost_labels_next_index) {
+                m_ghost_labels_next_index = imported_next;
+                batch.WriteGhostLabelsNextIndex(m_ghost_labels_next_index);
+            }
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void CWallet::LoadGhostLabel(uint32_t index, const std::string& name)
+{
+    AssertLockHeld(cs_wallet);
+    m_ghost_labels[index] = name;
+}
+
+void CWallet::LoadGhostLabelsNextIndex(uint32_t next_index)
+{
+    AssertLockHeld(cs_wallet);
+    m_ghost_labels_next_index = next_index;
 }
 
 bool CWallet::MigrateToSQLite(bilingual_str& error)

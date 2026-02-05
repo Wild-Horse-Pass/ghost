@@ -146,6 +146,46 @@
     </widget>
    </item>
    <item row="2" column="0">
+    <widget class="QLabel" name="ghostLabelLabel">
+     <property name="text">
+      <string>Ghost &amp;Label:</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
+     </property>
+     <property name="buddy">
+      <cstring>ghostLabelCombo</cstring>
+     </property>
+    </widget>
+   </item>
+   <item row="2" column="1">
+    <layout class="QHBoxLayout" name="ghostLabelLayout">
+     <item>
+      <widget class="QComboBox" name="ghostLabelCombo">
+       <property name="toolTip">
+        <string>Select a label to categorize this payment (encrypted, private)</string>
+       </property>
+       <property name="minimumWidth">
+        <number>150</number>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="ghostMemoEdit">
+       <property name="toolTip">
+        <string>Optional memo (encrypted, max 59 chars)</string>
+       </property>
+       <property name="maxLength">
+        <number>59</number>
+       </property>
+       <property name="placeholderText">
+        <string>Optional encrypted memo</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item row="3" column="0">
     <widget class="QLabel" name="amountLabel">
      <property name="text">
       <string>A&amp;mount:</string>
@@ -158,7 +198,7 @@
      </property>
     </widget>
    </item>
-   <item row="2" column="1">
+   <item row="3" column="1">
     <layout class="QHBoxLayout" name="horizontalLayoutAmount" stretch="0,1,0">
      <item>
       <widget class="GhostAmountField" name="payAmount" native="true">
@@ -186,7 +226,7 @@
      </item>
     </layout>
    </item>
-   <item row="3" column="0">
+   <item row="4" column="0">
     <widget class="QLabel" name="messageLabel">
      <property name="text">
       <string>Message:</string>
@@ -196,7 +236,7 @@
      </property>
     </widget>
    </item>
-   <item row="3" column="1">
+   <item row="4" column="1">
     <widget class="QLabel" name="messageTextLabel">
      <property name="toolTip">
       <string>A message that was attached to the ghost: URI which will be stored with the transaction for your reference. Note: This message will not be sent over the Ghost network.</string>
@@ -206,7 +246,7 @@
      </property>
     </widget>
    </item>
-   <item row="4" column="0" colspan="2">
+   <item row="5" column="0" colspan="2">
     <widget class="Line" name="line">
      <property name="orientation">
       <enum>Qt::Horizontal</enum>
@@ -234,6 +274,8 @@
   <tabstop>pasteButton</tabstop>
   <tabstop>deleteButton</tabstop>
   <tabstop>addAsLabel</tabstop>
+  <tabstop>ghostLabelCombo</tabstop>
+  <tabstop>ghostMemoEdit</tabstop>
   <tabstop>payAmount</tabstop>
  </tabstops>
  <resources>

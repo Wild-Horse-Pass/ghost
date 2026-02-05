@@ -74,7 +74,19 @@ void SendCoinsEntry::setModel(WalletModel *_model)
     if (_model && _model->getOptionsModel())
         connect(_model->getOptionsModel(), &OptionsModel::displayUnitChanged, this, &SendCoinsEntry::updateDisplayUnit);
 
+    populateGhostLabels();
     clear();
+}
+
+void SendCoinsEntry::populateGhostLabels()
+{
+    ui->ghostLabelCombo->clear();
+    if (!model) return;
+
+    QList<QPair<int, QString>> labels = model->getGhostLabels();
+    for (const auto& [index, name] : labels) {
+        ui->ghostLabelCombo->addItem(name, index);
+    }
 }
 
 void SendCoinsEntry::clear()
@@ -89,6 +101,10 @@ void SendCoinsEntry::clear()
     ui->messageTextLabel->clear();
     ui->messageTextLabel->hide();
     ui->messageLabel->hide();
+
+    // Clear Ghost Label fields
+    ui->ghostLabelCombo->setCurrentIndex(0); // Default to "Uncategorized"
+    ui->ghostMemoEdit->clear();
 
     // update the display unit, to not use the default ("BTC")
     updateDisplayUnit();
@@ -152,6 +168,10 @@ SendCoinsRecipient SendCoinsEntry::getValue()
     recipient.message = ui->messageTextLabel->text();
     recipient.fSubtractFeeFromAmount = (ui->checkboxSubtractFeeFromAmount->checkState() == Qt::Checked);
 
+    // Ghost Label fields
+    recipient.ghostLabelIndex = ui->ghostLabelCombo->currentData().toInt();
+    recipient.ghostMemo = ui->ghostMemoEdit->text().left(59); // Enforce max length
+
     return recipient;
 }
 
@@ -159,7 +179,9 @@ QWidget *SendCoinsEntry::setupTabChain(QWidget *prev)
 {
     QWidget::setTabOrder(prev, ui->payTo);
     QWidget::setTabOrder(ui->payTo, ui->addAsLabel);
-    QWidget *w = ui->payAmount->setupTabChain(ui->addAsLabel);
+    QWidget::setTabOrder(ui->addAsLabel, ui->ghostLabelCombo);
+    QWidget::setTabOrder(ui->ghostLabelCombo, ui->ghostMemoEdit);
+    QWidget *w = ui->payAmount->setupTabChain(ui->ghostMemoEdit);
     QWidget::setTabOrder(w, ui->checkboxSubtractFeeFromAmount);
     QWidget::setTabOrder(ui->checkboxSubtractFeeFromAmount, ui->addressBookButton);
     QWidget::setTabOrder(ui->addressBookButton, ui->pasteButton);

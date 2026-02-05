@@ -7,6 +7,7 @@
 #include <qt/addressbookpage.h>
 #include <qt/askpassphrasedialog.h>
 #include <qt/clientmodel.h>
+#include <qt/ghostlabelspage.h>
 #include <qt/ghostlockspage.h>
 #include <qt/guiutil.h>
 #include <qt/l2walletmodel.h>
@@ -75,11 +76,15 @@ WalletView::WalletView(WalletModel* wallet_model, const PlatformStyle* _platform
     ghostLocksPage = new GhostLocksPage(platformStyle, this);
     ghostLocksPage->setWalletModel(walletModel);
 
+    ghostLabelsPage = new GhostLabelsPage(platformStyle, this);
+    ghostLabelsPage->setWalletModel(walletModel);
+
     addWidget(overviewPage);
     addWidget(transactionsPage);
     addWidget(receiveCoinsPage);
     addWidget(sendCoinsPage);
     addWidget(ghostLocksPage);
+    addWidget(ghostLabelsPage);
 
     connect(overviewPage, &OverviewPage::transactionClicked, this, &WalletView::transactionClicked);
     // Clicking on a transaction on the overview pre-selects the transaction on the transaction history page
@@ -185,6 +190,11 @@ void WalletView::gotoSendCoinsPage(QString addr)
 void WalletView::gotoGhostLocksPage()
 {
     setCurrentWidget(ghostLocksPage);
+}
+
+void WalletView::gotoGhostLabelsPage()
+{
+    setCurrentWidget(ghostLabelsPage);
 }
 
 void WalletView::gotoSignMessageTab(QString addr)
