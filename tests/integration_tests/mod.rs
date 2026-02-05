@@ -62,6 +62,7 @@ pub mod pool_cycle;
 pub mod round_management;
 pub mod rpc_client;
 pub mod security;
+pub mod silent_payment_v2;
 pub mod storage;
 pub mod stratum_payout_consensus;
 pub mod stratum_validation;

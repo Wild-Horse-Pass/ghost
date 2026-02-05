@@ -60,6 +60,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
+use ghost_keys::LabelBackup;
 use ghost_light_wallet::{LightWallet, WalletConfig};
 
 /// Ghost Light Wallet CLI
@@ -101,6 +102,14 @@ enum Commands {
         /// Force refresh from GSP
         #[arg(long)]
         refresh: bool,
+
+        /// Maximum k value to scan for Silent Payment detection (default: 10)
+        #[arg(long, default_value = "10")]
+        max_k: u32,
+
+        /// Enable recovery scanning (sets max_k to 1000)
+        #[arg(long)]
+        recovery: bool,
     },
 
     /// Send payment
@@ -115,9 +124,13 @@ enum Commands {
         #[arg(long)]
         wraith: bool,
 
-        /// Optional memo
+        /// Optional memo (max 59 chars, encrypted)
         #[arg(long)]
         memo: Option<String>,
+
+        /// Label index for categorization
+        #[arg(long)]
+        label: Option<u32>,
     },
 
     /// Generate receive address
@@ -142,6 +155,12 @@ enum Commands {
     Lock {
         #[command(subcommand)]
         action: LockCommands,
+    },
+
+    /// Manage payment labels
+    Label {
+        #[command(subcommand)]
+        action: LabelCommands,
     },
 
     /// Show wallet info
@@ -186,6 +205,44 @@ enum LockCommands {
         /// High priority (faster but higher fees)
         #[arg(long)]
         high_priority: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum LabelCommands {
+    /// Create a new label
+    Create {
+        /// Label name
+        name: String,
+    },
+
+    /// List all labels
+    List,
+
+    /// Rename a label
+    Rename {
+        /// Label index
+        index: u32,
+        /// New name
+        name: String,
+    },
+
+    /// Delete a label
+    Delete {
+        /// Label index
+        index: u32,
+    },
+
+    /// Export labels to file
+    Export {
+        /// Output file path
+        output: PathBuf,
+    },
+
+    /// Import labels from file
+    Import {
+        /// Input file path
+        input: PathBuf,
     },
 }
 
@@ -246,16 +303,22 @@ async fn main() -> Result<()> {
         Commands::Init { recover } => {
             cmd_init(config, recover).await?;
         }
-        Commands::Balance { refresh } => {
-            cmd_balance(config, refresh).await?;
+        Commands::Balance {
+            refresh,
+            max_k,
+            recovery,
+        } => {
+            let effective_max_k = if recovery { 1000 } else { max_k };
+            cmd_balance(config, refresh, effective_max_k).await?;
         }
         Commands::Send {
             recipient,
             amount,
             wraith,
             memo,
+            label,
         } => {
-            cmd_send(config, &recipient, amount, wraith, memo.as_deref()).await?;
+            cmd_send(config, &recipient, amount, wraith, memo.as_deref(), label).await?;
         }
         Commands::Receive {
             address_type,
@@ -268,6 +331,9 @@ async fn main() -> Result<()> {
         }
         Commands::Lock { action } => {
             cmd_lock(config, action).await?;
+        }
+        Commands::Label { action } => {
+            cmd_label(config, action).await?;
         }
         Commands::Info => {
             cmd_info(config).await?;
@@ -393,7 +459,7 @@ async fn cmd_init(config: WalletConfig, recover: bool) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_balance(config: WalletConfig, refresh: bool) -> Result<()> {
+async fn cmd_balance(config: WalletConfig, refresh: bool, max_k: u32) -> Result<()> {
     let password = rpassword::prompt_password("Enter wallet password: ")?;
 
     let wallet = LightWallet::open(&password, config)?;
@@ -402,10 +468,15 @@ async fn cmd_balance(config: WalletConfig, refresh: bool) -> Result<()> {
         // Connect to GSP and refresh
         let pb = ProgressBar::new_spinner();
         pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
-        pb.set_message("Connecting to GSP...");
+        if max_k > 10 {
+            pb.set_message(format!("Connecting to GSP (scanning with max_k={})...", max_k));
+        } else {
+            pb.set_message("Connecting to GSP...");
+        }
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
         wallet.connect(&wallet.config().gsp_urls[0]).await?;
+        // TODO: Pass max_k to wallet.refresh_balance() when API supports it
         let balance = wallet.refresh_balance().await?;
 
         pb.finish_and_clear();
@@ -446,14 +517,23 @@ async fn cmd_send(
     amount: u64,
     use_wraith: bool,
     memo: Option<&str>,
+    label: Option<u32>,
 ) -> Result<()> {
     let password = rpassword::prompt_password("Enter wallet password: ")?;
     let wallet = LightWallet::open(&password, config)?;
+
+    // Look up label name if provided
+    let label_name = if let Some(idx) = label {
+        wallet.lookup_label(idx)?.unwrap_or_else(|| format!("Label #{}", idx))
+    } else {
+        "Uncategorized".to_string()
+    };
 
     println!();
     println!("{}", style("Send Payment").bold().cyan());
     println!("Recipient: {}", style(recipient).green());
     println!("Amount:    {} sats", style(amount).yellow());
+    println!("Label:     {}", style(&label_name).blue());
     if let Some(m) = memo {
         println!("Memo:      {}", m);
     }
@@ -676,6 +756,84 @@ async fn cmd_backup(config: WalletConfig, output: &Path) -> Result<()> {
         "{}",
         style("For now, your recovery phrase is your backup.").yellow()
     );
+
+    Ok(())
+}
+
+async fn cmd_label(config: WalletConfig, action: LabelCommands) -> Result<()> {
+    let password = rpassword::prompt_password("Enter wallet password: ")?;
+    let wallet = LightWallet::open(&password, config)?;
+
+    match action {
+        LabelCommands::Create { name } => {
+            let index = wallet.create_label(&name)?;
+            println!(
+                "Created label '{}' with index {}",
+                style(&name).green(),
+                index
+            );
+        }
+        LabelCommands::List => {
+            let labels = wallet.list_labels()?;
+            println!();
+            println!("{}", style("Labels").bold().cyan());
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            if labels.is_empty() {
+                println!("  No labels found.");
+            } else {
+                for (index, name) in labels {
+                    println!("  [{:3}] {}", index, name);
+                }
+            }
+            println!();
+        }
+        LabelCommands::Rename { index, name } => {
+            if index == 0 {
+                println!(
+                    "{}",
+                    style("Cannot rename the default 'Uncategorized' label").red()
+                );
+            } else if wallet.rename_label(index, &name)? {
+                println!(
+                    "Renamed label {} to '{}'",
+                    index,
+                    style(&name).green()
+                );
+            } else {
+                println!("{}", style("Label not found").red());
+            }
+        }
+        LabelCommands::Delete { index } => {
+            if index == 0 {
+                println!(
+                    "{}",
+                    style("Cannot delete the default 'Uncategorized' label").red()
+                );
+            } else if wallet.delete_label(index)? {
+                println!("Deleted label {}", index);
+            } else {
+                println!("{}", style("Label not found").red());
+            }
+        }
+        LabelCommands::Export { output } => {
+            let backup = wallet.export_label_backup()?;
+            let json = backup.to_json()?;
+            std::fs::write(&output, json)?;
+            println!(
+                "Exported labels to {}",
+                style(output.display()).green()
+            );
+        }
+        LabelCommands::Import { input } => {
+            let json = std::fs::read_to_string(&input)?;
+            let backup = LabelBackup::from_json(&json)?;
+            wallet.import_label_backup(backup)?;
+            println!(
+                "Imported labels from {}",
+                style(input.display()).green()
+            );
+        }
+    }
 
     Ok(())
 }
