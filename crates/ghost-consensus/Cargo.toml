@@ -54,3 +54,9 @@ bytes = { workspace = true }
 default = []
 # Expose test-only constructors for integration testing
 test-utils = []
+# Enable ZK consensus integration with ghost-zkp
+zk-consensus = ["ghost-zkp"]
+
+[dependencies.ghost-zkp]
+workspace = true
+optional = true

@@ -101,6 +101,11 @@ impl PayoutVerifier {
         self.prepared_vk.is_some()
     }
 
+    /// Get the expected prover ID
+    pub fn prover_id(&self) -> [u8; 32] {
+        self.prover_id
+    }
+
     /// Verify a payout proof
     #[instrument(skip_all, fields(epoch = proof.epoch))]
     pub fn verify(&self, proof: &PayoutProof) -> ZkResult<bool> {

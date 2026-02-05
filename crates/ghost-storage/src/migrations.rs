@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 11;
+const SCHEMA_VERSION: u32 = 12;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -88,6 +88,10 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
 
     if current_version < 11 {
         migrate_v11(conn)?;
+    }
+
+    if current_version < 12 {
+        migrate_v12(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -1013,6 +1017,37 @@ fn migrate_v11(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("P2P-C1/C2/C3: Added canonical elder list tables");
+    Ok(())
+}
+
+/// Migration to v12: L2 state tracking for ZK consensus
+fn migrate_v12(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v12: Adding L2 state tracking for ZK consensus");
+
+    conn.execute_batch(
+        r#"
+        -- L2 state tracking for Ghost Pay ZK consensus
+        -- Stores the current L2 state root and height for recovery after restart
+        CREATE TABLE IF NOT EXISTS l2_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            height INTEGER NOT NULL DEFAULT 0,
+            state_root BLOB NOT NULL,
+            updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
+        );
+
+        -- L2 state snapshots for reorg recovery
+        -- Stores periodic snapshots that can be rolled back to
+        CREATE TABLE IF NOT EXISTS l2_snapshots (
+            height INTEGER PRIMARY KEY,
+            state_root BLOB NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
+        );
+        CREATE INDEX IF NOT EXISTS idx_l2_snapshots_created ON l2_snapshots(created_at);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("ZK-CONSENSUS: Added L2 state tracking tables");
     Ok(())
 }
 

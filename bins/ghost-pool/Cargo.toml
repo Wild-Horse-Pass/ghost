@@ -104,3 +104,9 @@ crossterm = { version = "0.27", optional = true }
 [features]
 default = []
 tui = ["ratatui", "crossterm"]
+# Enable ZK consensus for block/payout proofs
+zk-consensus = ["ghost-consensus/zk-consensus", "ghost-zkp"]
+
+[dependencies.ghost-zkp]
+workspace = true
+optional = true

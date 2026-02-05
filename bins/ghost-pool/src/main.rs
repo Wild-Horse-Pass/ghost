@@ -955,6 +955,96 @@ async fn main() -> Result<()> {
         elder_list_manager.read().current().elder_count()
     );
 
+    // ZK consensus handlers (optional feature)
+    #[cfg(feature = "zk-consensus")]
+    {
+        use ghost_consensus::{ZkVoteHandler, ZkPayoutVoteHandler};
+        use ghost_zkp::{BlockProver, BlockVerifier, PayoutProver, PayoutVerifier};
+
+        // Check production mode and load trusted params
+        if ghost_zkp::is_production_mode() {
+            ghost_zkp::load_trusted_params()?;
+            info!("ZK consensus using PRODUCTION parameters from MPC ceremony");
+        } else {
+            warn!("ZK consensus using TEST parameters - NOT SECURE FOR MAINNET");
+        }
+
+        // Initialize block prover/verifier with Groth16 setup (for L2 blocks)
+        // Using 100 max txs and depth 20 for the state tree
+        let block_prover = Arc::new(
+            BlockProver::new_with_setup_and_state_transitions(100, 20)
+                .expect("Failed to initialize block prover")
+        );
+        let block_verifier = Arc::new(
+            if let Some(vk) = block_prover.prepared_verifying_key() {
+                BlockVerifier::new_with_groth16_vk(&block_prover.verification_key(), vk)
+                    .expect("Failed to create block verifier with VK")
+            } else {
+                BlockVerifier::new(&block_prover.verification_key())
+                    .expect("Failed to create block verifier")
+            }
+        );
+
+        // Initialize payout prover/verifier with Groth16 setup
+        let payout_prover = Arc::new(
+            PayoutProver::default_params_with_setup()
+                .expect("Failed to initialize payout prover")
+        );
+        let payout_verifier = Arc::new(PayoutVerifier::for_prover(&payout_prover));
+
+        // Create broadcast callbacks for ZK handlers
+        let mesh_for_zk_block = Arc::clone(&mesh);
+        let zk_block_broadcast: ghost_consensus::zk_vote_handler::ZkBroadcastFn = Arc::new(
+            move |msg_type, payload| mesh_for_zk_block.broadcast_sync(msg_type, payload)
+        );
+
+        let mesh_for_zk_payout = Arc::clone(&mesh);
+        let zk_payout_broadcast: ghost_consensus::zk_payout_handler::ZkPayoutBroadcastFn = Arc::new(
+            move |msg_type, payload| mesh_for_zk_payout.broadcast_sync(msg_type, payload)
+        );
+
+        // Create ZK vote handler for L2 block consensus
+        let zk_vote_handler = Arc::new(
+            ZkVoteHandler::new(Arc::clone(&identity))
+                .with_verifier(ghost_consensus::zk_vote_handler::create_block_verifier(
+                    Arc::clone(&block_verifier)
+                ))
+                .with_broadcaster(zk_block_broadcast)
+        );
+
+        // Create ZK payout vote handler
+        let zk_payout_handler = Arc::new(
+            ZkPayoutVoteHandler::new(Arc::clone(&identity))
+                .with_verifier(ghost_consensus::zk_payout_handler::create_payout_verifier(
+                    Arc::clone(&payout_verifier)
+                ))
+                .with_broadcaster(zk_payout_broadcast)
+                .with_ban_manager(Arc::clone(&ban_manager))
+        );
+
+        // Initialize validators from elder list
+        let validators: std::collections::HashSet<_> = elder_list_manager
+            .read()
+            .current()
+            .get_eligible_voters()
+            .into_iter()
+            .collect();
+        zk_vote_handler.set_validators(validators.clone());
+        zk_payout_handler.set_validators(validators);
+
+        // Register ZK handlers with mesh
+        mesh.register_handler(Arc::clone(&zk_vote_handler)
+            as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
+        mesh.register_handler(Arc::clone(&zk_payout_handler)
+            as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
+
+        info!(
+            "ZK consensus handlers registered (block_verifier={}, payout_verifier={})",
+            block_verifier.has_groth16_vk(),
+            payout_verifier.has_groth16_vk()
+        );
+    }
+
     // Create shutdown channel
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 

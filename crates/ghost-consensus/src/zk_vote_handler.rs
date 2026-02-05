@@ -47,6 +47,35 @@ pub type ZkConsensusCallback = Arc<dyn Fn(ZkConsensusResult) -> GhostResult<()> 
 /// Callback for verifying ZK proofs
 pub type ZkVerifyFn = Arc<dyn Fn(&[u8], &[u8; 32], &[u8; 32]) -> bool + Send + Sync>;
 
+/// Create a ZK block verifier callback from a BlockVerifier
+///
+/// This factory function wraps the ghost-zkp BlockVerifier in a closure
+/// compatible with ZkVoteHandler's verification interface.
+///
+/// # Arguments
+/// * `verifier` - The BlockVerifier initialized with Groth16 parameters
+///
+/// # Returns
+/// A ZkVerifyFn that can be used with ZkVoteHandler::with_verifier()
+#[cfg(feature = "zk-consensus")]
+pub fn create_block_verifier(
+    verifier: std::sync::Arc<ghost_zkp::BlockVerifier>,
+) -> ZkVerifyFn {
+    Arc::new(move |proof_bytes, prev_root, new_root| {
+        // Construct a minimal BlockProof for verification
+        // The verifier will check the proof bytes against the state roots
+        let proof = ghost_zkp::BlockProof {
+            height: 0, // Height is not verified in the proof itself
+            prev_state_root: *prev_root,
+            new_state_root: *new_root,
+            tx_count: 0, // Not part of cryptographic verification
+            proof: proof_bytes.to_vec(),
+            version: ghost_zkp::BlockProof::CURRENT_VERSION,
+        };
+        verifier.verify(&proof).unwrap_or(false)
+    })
+}
+
 /// Default rate limit configuration for ZK messages
 const ZK_RATE_LIMIT_MAX_TOKENS: u32 = 50;
 const ZK_RATE_LIMIT_REFILL_RATE: u32 = 10;

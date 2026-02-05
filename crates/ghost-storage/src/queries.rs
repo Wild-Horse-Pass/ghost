@@ -4010,6 +4010,120 @@ pub struct ElderRegistrationRequestRecord {
     pub status: String,
 }
 
+// =============================================================================
+// L2 STATE QUERIES (ZK-CONSENSUS)
+// =============================================================================
+
+impl Database {
+    /// Get current L2 state (height and state root)
+    ///
+    /// Returns (height, state_root) or (0, [0u8; 32]) if not initialized.
+    pub fn get_l2_state(&self) -> GhostResult<(u64, [u8; 32])> {
+        self.with_connection(|conn| {
+            let result: Option<(i64, Vec<u8>)> = conn
+                .query_row(
+                    "SELECT height, state_root FROM l2_state WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match result {
+                Some((height, root_bytes)) => {
+                    let height = height as u64;
+                    let mut state_root = [0u8; 32];
+                    if root_bytes.len() == 32 {
+                        state_root.copy_from_slice(&root_bytes);
+                    }
+                    Ok((height, state_root))
+                }
+                None => Ok((0, [0u8; 32])),
+            }
+        })
+    }
+
+    /// Save current L2 state
+    pub fn save_l2_state(&self, height: u64, state_root: [u8; 32]) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            let now = chrono::Utc::now().timestamp_millis();
+            conn.execute(
+                "INSERT OR REPLACE INTO l2_state (id, height, state_root, updated_at)
+                 VALUES (1, ?1, ?2, ?3)",
+                params![height as i64, state_root.as_slice(), now],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Save L2 state snapshot for reorg recovery
+    pub fn save_l2_snapshot(&self, height: u64, state_root: [u8; 32]) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            let now = chrono::Utc::now().timestamp_millis();
+            conn.execute(
+                "INSERT OR REPLACE INTO l2_snapshots (height, state_root, created_at)
+                 VALUES (?1, ?2, ?3)",
+                params![height as i64, state_root.as_slice(), now],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get L2 snapshot at or before a given height (for reorg recovery)
+    pub fn get_l2_snapshot_at_or_before(&self, height: u64) -> GhostResult<Option<(u64, [u8; 32])>> {
+        self.with_connection(|conn| {
+            let result: Option<(i64, Vec<u8>)> = conn
+                .query_row(
+                    "SELECT height, state_root FROM l2_snapshots
+                     WHERE height <= ?1 ORDER BY height DESC LIMIT 1",
+                    params![height as i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match result {
+                Some((snap_height, root_bytes)) => {
+                    let mut state_root = [0u8; 32];
+                    if root_bytes.len() == 32 {
+                        state_root.copy_from_slice(&root_bytes);
+                    }
+                    Ok(Some((snap_height as u64, state_root)))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Prune old L2 snapshots, keeping the most recent N
+    pub fn prune_l2_snapshots(&self, keep_count: usize) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            // First count how many we have
+            let total: i64 = conn
+                .query_row("SELECT COUNT(*) FROM l2_snapshots", [], |row| row.get(0))
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if total <= keep_count as i64 {
+                return Ok(0);
+            }
+
+            // Delete oldest snapshots beyond keep_count
+            let delete_count = total - keep_count as i64;
+            conn.execute(
+                "DELETE FROM l2_snapshots WHERE height IN (
+                    SELECT height FROM l2_snapshots ORDER BY height ASC LIMIT ?1
+                )",
+                params![delete_count],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(delete_count as u64)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
