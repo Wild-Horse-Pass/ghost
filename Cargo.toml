@@ -39,6 +39,7 @@ members = [
     "crates/ghost-reconciliation",
     # ZK-BFT Infrastructure
     "crates/ghost-zkp",
+    "crates/ghost-mpc",
     # GSP & Light Wallet
     "crates/ghost-gsp-proto",
     "crates/ghost-gsp",
@@ -90,6 +91,7 @@ wraith-protocol = { path = "crates/wraith-protocol" }
 ghost-reconciliation = { path = "crates/ghost-reconciliation" }
 # ZK-BFT Infrastructure
 ghost-zkp = { path = "crates/ghost-zkp" }
+ghost-mpc = { path = "crates/ghost-mpc" }
 # GSP & Light Wallet crates
 ghost-gsp-proto = { path = "crates/ghost-gsp-proto" }
 ghost-gsp = { path = "crates/ghost-gsp" }

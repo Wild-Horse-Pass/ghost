@@ -1969,7 +1969,9 @@ dependencies = [
  "futures",
  "getrandom 0.2.17",
  "ghost-common",
+ "ghost-mpc",
  "ghost-storage",
+ "ghost-zkp",
  "hex",
  "once_cell",
  "parking_lot",
@@ -2167,6 +2169,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghost-mpc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bellperson",
+ "bincode",
+ "blake2",
+ "blstrs",
+ "ff",
+ "getrandom 0.2.17",
+ "ghost-common",
+ "ghost-storage",
+ "group",
+ "hex",
+ "pairing",
+ "parking_lot",
+ "rand",
+ "rusqlite",
+ "serde",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
 name = "ghost-node-tui"
 version = "1.6.0"
 dependencies = [
@@ -2254,10 +2285,12 @@ dependencies = [
  "ghost-buds",
  "ghost-common",
  "ghost-consensus",
+ "ghost-mpc",
  "ghost-policy",
  "ghost-storage",
  "ghost-template",
  "ghost-verification",
+ "ghost-zkp",
  "hex",
  "noise_sv2 1.4.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "parking_lot",

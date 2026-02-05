@@ -56,7 +56,13 @@ default = []
 test-utils = []
 # Enable ZK consensus integration with ghost-zkp
 zk-consensus = ["ghost-zkp"]
+# Enable MPC ceremony integration
+mpc-ceremony = ["ghost-mpc"]
 
 [dependencies.ghost-zkp]
+workspace = true
+optional = true
+
+[dependencies.ghost-mpc]
 workspace = true
 optional = true

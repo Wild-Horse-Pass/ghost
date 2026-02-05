@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 12;
+const SCHEMA_VERSION: u32 = 13;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -92,6 +92,10 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
 
     if current_version < 12 {
         migrate_v12(conn)?;
+    }
+
+    if current_version < 13 {
+        migrate_v13(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -1048,6 +1052,70 @@ fn migrate_v12(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("ZK-CONSENSUS: Added L2 state tracking tables");
+    Ok(())
+}
+
+/// Migration to v13: MPC ceremony tables for rolling trusted setup
+fn migrate_v13(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v13: Adding MPC ceremony tables");
+
+    conn.execute_batch(
+        r#"
+        -- MPC ceremony state (singleton)
+        -- Tracks the global state of the rolling MPC ceremony
+        CREATE TABLE IF NOT EXISTS mpc_ceremony (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            contribution_count INTEGER NOT NULL DEFAULT 0,
+            current_params_hash BLOB NOT NULL,
+            is_ossified INTEGER NOT NULL DEFAULT 0,
+            ossified_at INTEGER,
+            block_vk_hash BLOB,
+            payout_vk_hash BLOB,
+            updated_at INTEGER NOT NULL
+        );
+
+        -- MPC contribution history (one per elder, 1-101)
+        -- Each elder contributes exactly once during registration
+        CREATE TABLE IF NOT EXISTS mpc_contributions (
+            elder_position INTEGER PRIMARY KEY,
+            contributor_node_id TEXT NOT NULL,
+            prev_params_hash BLOB NOT NULL,
+            new_params_hash BLOB NOT NULL,
+            contribution_proof BLOB NOT NULL,
+            epoch INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mpc_contributions_node ON mpc_contributions(contributor_node_id);
+        CREATE INDEX IF NOT EXISTS idx_mpc_contributions_epoch ON mpc_contributions(epoch);
+
+        -- MPC verification votes for contributions
+        -- Current elders vote to approve each contribution
+        CREATE TABLE IF NOT EXISTS mpc_verification_votes (
+            contribution_position INTEGER NOT NULL,
+            voter_node_id TEXT NOT NULL,
+            approve INTEGER NOT NULL,
+            signature BLOB NOT NULL,
+            voted_at INTEGER NOT NULL,
+            PRIMARY KEY (contribution_position, voter_node_id),
+            FOREIGN KEY (contribution_position) REFERENCES mpc_contributions(elder_position) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_mpc_votes_position ON mpc_verification_votes(contribution_position);
+
+        -- MPC parameter file metadata
+        -- Tracks the actual parameter files on disk
+        CREATE TABLE IF NOT EXISTS mpc_params_files (
+            params_hash BLOB PRIMARY KEY,
+            file_path TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            contribution_count INTEGER NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mpc_params_count ON mpc_params_files(contribution_count);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("MPC-CEREMONY: Added rolling MPC ceremony tables");
     Ok(())
 }
 

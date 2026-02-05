@@ -4124,6 +4124,381 @@ impl Database {
     }
 }
 
+// =============================================================================
+// MPC CEREMONY QUERIES
+// =============================================================================
+
+/// MPC ceremony state record (singleton)
+#[derive(Debug, Clone)]
+pub struct MpcCeremonyState {
+    pub contribution_count: u32,
+    pub current_params_hash: [u8; 32],
+    pub is_ossified: bool,
+    pub ossified_at: Option<u64>,
+    pub block_vk_hash: Option<[u8; 32]>,
+    pub payout_vk_hash: Option<[u8; 32]>,
+    pub updated_at: u64,
+}
+
+/// MPC contribution record
+#[derive(Debug, Clone)]
+pub struct MpcContributionRecord {
+    pub elder_position: u32,
+    pub contributor_node_id: String,
+    pub prev_params_hash: [u8; 32],
+    pub new_params_hash: [u8; 32],
+    pub contribution_proof: Vec<u8>,
+    pub epoch: u64,
+    pub created_at: u64,
+}
+
+/// MPC verification vote record
+#[derive(Debug, Clone)]
+pub struct MpcVerificationVote {
+    pub contribution_position: u32,
+    pub voter_node_id: String,
+    pub approve: bool,
+    pub signature: Vec<u8>,
+    pub voted_at: u64,
+}
+
+/// MPC parameter file metadata
+#[derive(Debug, Clone)]
+pub struct MpcParamsFile {
+    pub params_hash: [u8; 32],
+    pub file_path: String,
+    pub size_bytes: u64,
+    pub contribution_count: u32,
+    pub created_at: u64,
+}
+
+impl Database {
+    /// Get the MPC ceremony state
+    ///
+    /// Returns None if the ceremony hasn't been initialized yet.
+    pub fn get_mpc_ceremony_state(&self) -> GhostResult<Option<MpcCeremonyState>> {
+        self.with_connection(|conn| {
+            let result: Option<(i64, Vec<u8>, i64, Option<i64>, Option<Vec<u8>>, Option<Vec<u8>>, i64)> = conn
+                .query_row(
+                    "SELECT contribution_count, current_params_hash, is_ossified, ossified_at,
+                            block_vk_hash, payout_vk_hash, updated_at
+                     FROM mpc_ceremony WHERE id = 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match result {
+                Some((count, hash_bytes, ossified, ossified_at, block_vk, payout_vk, updated)) => {
+                    let mut params_hash = [0u8; 32];
+                    if hash_bytes.len() == 32 {
+                        params_hash.copy_from_slice(&hash_bytes);
+                    }
+
+                    let block_vk_hash = block_vk.and_then(|v| {
+                        if v.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&v);
+                            Some(arr)
+                        } else {
+                            None
+                        }
+                    });
+
+                    let payout_vk_hash = payout_vk.and_then(|v| {
+                        if v.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&v);
+                            Some(arr)
+                        } else {
+                            None
+                        }
+                    });
+
+                    Ok(Some(MpcCeremonyState {
+                        contribution_count: count as u32,
+                        current_params_hash: params_hash,
+                        is_ossified: ossified != 0,
+                        ossified_at: ossified_at.map(|v| v as u64),
+                        block_vk_hash,
+                        payout_vk_hash,
+                        updated_at: updated as u64,
+                    }))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Save or update MPC ceremony state
+    pub fn save_mpc_ceremony_state(&self, state: &MpcCeremonyState) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO mpc_ceremony (id, contribution_count, current_params_hash, is_ossified,
+                                          ossified_at, block_vk_hash, payout_vk_hash, updated_at)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(id) DO UPDATE SET
+                    contribution_count = excluded.contribution_count,
+                    current_params_hash = excluded.current_params_hash,
+                    is_ossified = excluded.is_ossified,
+                    ossified_at = excluded.ossified_at,
+                    block_vk_hash = excluded.block_vk_hash,
+                    payout_vk_hash = excluded.payout_vk_hash,
+                    updated_at = excluded.updated_at",
+                params![
+                    state.contribution_count as i64,
+                    &state.current_params_hash[..],
+                    if state.is_ossified { 1i64 } else { 0i64 },
+                    state.ossified_at.map(|v| v as i64),
+                    state.block_vk_hash.as_ref().map(|v| &v[..]),
+                    state.payout_vk_hash.as_ref().map(|v| &v[..]),
+                    state.updated_at as i64,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Save an MPC contribution
+    pub fn save_mpc_contribution(&self, contribution: &MpcContributionRecord) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO mpc_contributions (elder_position, contributor_node_id, prev_params_hash,
+                                                new_params_hash, contribution_proof, epoch, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    contribution.elder_position as i64,
+                    contribution.contributor_node_id,
+                    &contribution.prev_params_hash[..],
+                    &contribution.new_params_hash[..],
+                    &contribution.contribution_proof,
+                    contribution.epoch as i64,
+                    contribution.created_at as i64,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get an MPC contribution by position
+    pub fn get_mpc_contribution(&self, position: u32) -> GhostResult<Option<MpcContributionRecord>> {
+        self.with_connection(|conn| {
+            let result: Option<(String, Vec<u8>, Vec<u8>, Vec<u8>, i64, i64)> = conn
+                .query_row(
+                    "SELECT contributor_node_id, prev_params_hash, new_params_hash,
+                            contribution_proof, epoch, created_at
+                     FROM mpc_contributions WHERE elder_position = ?1",
+                    params![position as i64],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match result {
+                Some((node_id, prev_hash, new_hash, proof, epoch, created_at)) => {
+                    let mut prev_params_hash = [0u8; 32];
+                    let mut new_params_hash = [0u8; 32];
+                    if prev_hash.len() == 32 {
+                        prev_params_hash.copy_from_slice(&prev_hash);
+                    }
+                    if new_hash.len() == 32 {
+                        new_params_hash.copy_from_slice(&new_hash);
+                    }
+
+                    Ok(Some(MpcContributionRecord {
+                        elder_position: position,
+                        contributor_node_id: node_id,
+                        prev_params_hash,
+                        new_params_hash,
+                        contribution_proof: proof,
+                        epoch: epoch as u64,
+                        created_at: created_at as u64,
+                    }))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Save an MPC verification vote
+    pub fn save_mpc_vote(&self, vote: &MpcVerificationVote) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO mpc_verification_votes (contribution_position, voter_node_id, approve,
+                                                      signature, voted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(contribution_position, voter_node_id) DO UPDATE SET
+                    approve = excluded.approve,
+                    signature = excluded.signature,
+                    voted_at = excluded.voted_at",
+                params![
+                    vote.contribution_position as i64,
+                    vote.voter_node_id,
+                    if vote.approve { 1i64 } else { 0i64 },
+                    &vote.signature,
+                    vote.voted_at as i64,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Count MPC approvals for a contribution
+    pub fn count_mpc_approvals(&self, contribution_position: u32) -> GhostResult<(u32, u32)> {
+        self.with_connection(|conn| {
+            let (approve_count, reject_count): (i64, i64) = conn
+                .query_row(
+                    "SELECT
+                        SUM(CASE WHEN approve = 1 THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN approve = 0 THEN 1 ELSE 0 END)
+                     FROM mpc_verification_votes WHERE contribution_position = ?1",
+                    params![contribution_position as i64],
+                    |row| {
+                        let approves: Option<i64> = row.get(0)?;
+                        let rejects: Option<i64> = row.get(1)?;
+                        Ok((approves.unwrap_or(0), rejects.unwrap_or(0)))
+                    },
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok((approve_count as u32, reject_count as u32))
+        })
+    }
+
+    /// Get all votes for a contribution
+    pub fn get_mpc_votes(&self, contribution_position: u32) -> GhostResult<Vec<MpcVerificationVote>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT voter_node_id, approve, signature, voted_at
+                     FROM mpc_verification_votes WHERE contribution_position = ?1",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![contribution_position as i64], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut votes = Vec::new();
+            for row in rows {
+                let (voter_id, approve, sig, voted_at) =
+                    row.map_err(|e| GhostError::Database(e.to_string()))?;
+                votes.push(MpcVerificationVote {
+                    contribution_position,
+                    voter_node_id: voter_id,
+                    approve: approve != 0,
+                    signature: sig,
+                    voted_at: voted_at as u64,
+                });
+            }
+            Ok(votes)
+        })
+    }
+
+    /// Mark ceremony as ossified
+    pub fn set_ceremony_ossified(&self, ossified_at: u64) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE mpc_ceremony SET is_ossified = 1, ossified_at = ?1 WHERE id = 1",
+                params![ossified_at as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Save MPC parameter file metadata
+    pub fn save_mpc_params_file(&self, params_file: &MpcParamsFile) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO mpc_params_files (params_hash, file_path, size_bytes, contribution_count, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(params_hash) DO UPDATE SET
+                    file_path = excluded.file_path,
+                    size_bytes = excluded.size_bytes",
+                params![
+                    &params_file.params_hash[..],
+                    params_file.file_path,
+                    params_file.size_bytes as i64,
+                    params_file.contribution_count as i64,
+                    params_file.created_at as i64,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get MPC parameter file by hash
+    pub fn get_mpc_params_file(&self, params_hash: &[u8; 32]) -> GhostResult<Option<MpcParamsFile>> {
+        self.with_connection(|conn| {
+            let result: Option<(String, i64, i64, i64)> = conn
+                .query_row(
+                    "SELECT file_path, size_bytes, contribution_count, created_at
+                     FROM mpc_params_files WHERE params_hash = ?1",
+                    params![&params_hash[..]],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match result {
+                Some((path, size, count, created)) => Ok(Some(MpcParamsFile {
+                    params_hash: *params_hash,
+                    file_path: path,
+                    size_bytes: size as u64,
+                    contribution_count: count as u32,
+                    created_at: created as u64,
+                })),
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Get the latest MPC parameter file (highest contribution count)
+    pub fn get_latest_mpc_params_file(&self) -> GhostResult<Option<MpcParamsFile>> {
+        self.with_connection(|conn| {
+            let result: Option<(Vec<u8>, String, i64, i64, i64)> = conn
+                .query_row(
+                    "SELECT params_hash, file_path, size_bytes, contribution_count, created_at
+                     FROM mpc_params_files ORDER BY contribution_count DESC LIMIT 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match result {
+                Some((hash_bytes, path, size, count, created)) => {
+                    let mut params_hash = [0u8; 32];
+                    if hash_bytes.len() == 32 {
+                        params_hash.copy_from_slice(&hash_bytes);
+                    }
+                    Ok(Some(MpcParamsFile {
+                        params_hash,
+                        file_path: path,
+                        size_bytes: size as u64,
+                        contribution_count: count as u32,
+                        created_at: created as u64,
+                    }))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

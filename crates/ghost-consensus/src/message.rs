@@ -56,6 +56,8 @@ pub mod topics {
     pub const VERIFICATION: &[u8] = b"verify";
     /// P2P-H3: Equivocation proof topic for Byzantine behavior evidence
     pub const EQUIVOCATION: &[u8] = b"equivoc";
+    /// MPC ceremony messages (contribution, verification vote, parameter sync)
+    pub const MPC: &[u8] = b"mpc";
 }
 
 /// Consensus message envelope
@@ -149,6 +151,14 @@ pub enum MessageType {
     ElderListProposal,
     /// P2P-C3: Elder list approval (vote for proposed list)
     ElderListApproval,
+    /// MPC-C1: MPC contribution (new elder's contribution to ceremony)
+    MpcContribution,
+    /// MPC-C2: MPC verification vote (elder's vote on contribution)
+    MpcVerificationVote,
+    /// MPC-C3: MPC parameters request (request params from peer)
+    MpcParametersRequest,
+    /// MPC-C4: MPC parameters response (chunked parameter data)
+    MpcParametersResponse,
 }
 
 impl MessageType {
@@ -172,6 +182,10 @@ impl MessageType {
             Self::ElderRegistrationProposal => topics::ELDER,
             Self::ElderListProposal => topics::ELDER,
             Self::ElderListApproval => topics::ELDER,
+            Self::MpcContribution => topics::MPC,
+            Self::MpcVerificationVote => topics::MPC,
+            Self::MpcParametersRequest => topics::MPC,
+            Self::MpcParametersResponse => topics::MPC,
         }
     }
 
@@ -197,6 +211,10 @@ impl MessageType {
             Self::ElderRegistrationProposal => "elder",
             Self::ElderListProposal => "elder",
             Self::ElderListApproval => "elder",
+            Self::MpcContribution => "mpc",
+            Self::MpcVerificationVote => "mpc",
+            Self::MpcParametersRequest => "mpc",
+            Self::MpcParametersResponse => "mpc",
         }
     }
 }
@@ -1053,6 +1071,173 @@ impl ElderRegistrationVoteMessage {
             }
         }
     }
+}
+
+// =============================================================================
+// MPC-C1/C2/C3/C4: MPC CEREMONY Messages
+// =============================================================================
+
+/// MPC-C1: MPC contribution message
+///
+/// Sent by a node becoming an elder to contribute to the MPC ceremony.
+/// Contains the new parameters hash and proof of valid transformation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MpcContributionMessage {
+    /// Candidate's node ID (must match pending registration)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub candidate: NodeId,
+    /// Elder position (1-101)
+    pub elder_position: u32,
+    /// Hash of the previous parameters (chain link)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub prev_params_hash: [u8; 32],
+    /// Hash of the new parameters after contribution
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub new_params_hash: [u8; 32],
+    /// Proof of valid contribution (Schnorr proof data)
+    pub contribution_proof: Vec<u8>,
+    /// Candidate's signature over the contribution
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub signature: [u8; 64],
+    /// Timestamp (Unix milliseconds)
+    pub timestamp: u64,
+}
+
+impl MpcContributionMessage {
+    /// Get the message to be signed
+    pub fn signing_message(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"MpcContribution/v1");
+        hasher.update(self.candidate);
+        hasher.update(self.elder_position.to_le_bytes());
+        hasher.update(self.prev_params_hash);
+        hasher.update(self.new_params_hash);
+        hasher.update(sha2::Sha256::digest(&self.contribution_proof));
+        hasher.finalize().into()
+    }
+
+    /// Get a hash of this contribution for voting reference
+    pub fn contribution_hash(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"MpcContributionHash/v1");
+        hasher.update(self.candidate);
+        hasher.update(self.elder_position.to_le_bytes());
+        hasher.update(self.new_params_hash);
+        hasher.finalize().into()
+    }
+
+    /// Verify the candidate's signature
+    pub fn verify_signature(&self) -> bool {
+        let message = self.signing_message();
+        match ghost_common::identity::verify_signature(&self.candidate, &message, &self.signature) {
+            Ok(valid) => valid,
+            Err(e) => {
+                tracing::warn!(
+                    candidate = %hex::encode(&self.candidate[..8]),
+                    position = self.elder_position,
+                    error = %e,
+                    "MPC contribution signature verification error"
+                );
+                false
+            }
+        }
+    }
+}
+
+/// MPC-C2: MPC verification vote message
+///
+/// Sent by current elders to vote on an MPC contribution.
+/// Requires >67% approval before contribution is applied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MpcVerificationVoteMessage {
+    /// Hash of the contribution being voted on
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub contribution_hash: [u8; 32],
+    /// Voter's node ID (must be current elder)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub voter: NodeId,
+    /// Approve (true) or reject (false)
+    pub approve: bool,
+    /// Rejection reason if not approved
+    pub rejection_reason: Option<String>,
+    /// Voter's signature
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub signature: [u8; 64],
+    /// Timestamp (Unix milliseconds)
+    pub timestamp: u64,
+}
+
+impl MpcVerificationVoteMessage {
+    /// Get the message to be signed
+    pub fn signing_message(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"MpcVerificationVote/v1");
+        hasher.update(self.contribution_hash);
+        hasher.update([self.approve as u8]);
+        hasher.finalize().into()
+    }
+
+    /// Verify the voter's signature
+    pub fn verify_signature(&self) -> bool {
+        let message = self.signing_message();
+        match ghost_common::identity::verify_signature(&self.voter, &message, &self.signature) {
+            Ok(valid) => valid,
+            Err(e) => {
+                tracing::warn!(
+                    voter = %hex::encode(&self.voter[..8]),
+                    contribution = %hex::encode(&self.contribution_hash[..8]),
+                    error = %e,
+                    "MPC verification vote signature verification error"
+                );
+                false
+            }
+        }
+    }
+}
+
+/// MPC-C3: MPC parameters request message
+///
+/// Request parameter files from peers. Used during node startup
+/// when local parameters are missing or outdated.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MpcParametersRequestMessage {
+    /// Requester's node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub requester: NodeId,
+    /// Hash of parameters being requested
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub params_hash: [u8; 32],
+    /// Specific chunk indices to request (empty = all)
+    pub chunk_indices: Vec<u32>,
+    /// Timestamp (Unix milliseconds)
+    pub timestamp: u64,
+}
+
+/// MPC-C4: MPC parameters response message
+///
+/// Response containing chunked parameter data.
+/// Parameters are ~200MB, so must be transferred in chunks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MpcParametersResponseMessage {
+    /// Hash of the parameters being sent
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub params_hash: [u8; 32],
+    /// Total size of parameters in bytes
+    pub total_size: u64,
+    /// Total number of chunks
+    pub total_chunks: u32,
+    /// Index of this chunk (0-based)
+    pub chunk_index: u32,
+    /// Chunk data (up to 1MB per chunk)
+    pub chunk_data: Vec<u8>,
+    /// Sender's node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub sender: NodeId,
+    /// Timestamp (Unix milliseconds)
+    pub timestamp: u64,
 }
 
 #[cfg(test)]

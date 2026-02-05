@@ -64,6 +64,14 @@ pub const MAX_ELDER_REGISTRATION_PROPOSAL_SIZE: usize = 1_000;
 pub const MAX_ELDER_LIST_PROPOSAL_SIZE: usize = 100_000;
 /// P2P-C3: Elder list approval (signature + epoch + merkle root)
 pub const MAX_ELDER_LIST_APPROVAL_SIZE: usize = 500;
+/// MPC-C1: MPC contribution (proof + params hash + signature)
+pub const MAX_MPC_CONTRIBUTION_SIZE: usize = 50_000;
+/// MPC-C2: MPC verification vote (signature + approval)
+pub const MAX_MPC_VERIFICATION_VOTE_SIZE: usize = 500;
+/// MPC-C3: MPC parameters request (hash + chunk indices)
+pub const MAX_MPC_PARAMS_REQUEST_SIZE: usize = 5_000;
+/// MPC-C4: MPC parameters response (chunked data ~1MB)
+pub const MAX_MPC_PARAMS_RESPONSE_SIZE: usize = 1_100_000;
 
 /// SEC-TIME-1: Maximum allowed timestamp drift from current time (30 seconds in milliseconds)
 ///
@@ -309,6 +317,10 @@ pub fn max_payload_size(msg_type: MessageType) -> usize {
         MessageType::ElderRegistrationProposal => MAX_ELDER_REGISTRATION_PROPOSAL_SIZE,
         MessageType::ElderListProposal => MAX_ELDER_LIST_PROPOSAL_SIZE,
         MessageType::ElderListApproval => MAX_ELDER_LIST_APPROVAL_SIZE,
+        MessageType::MpcContribution => MAX_MPC_CONTRIBUTION_SIZE,
+        MessageType::MpcVerificationVote => MAX_MPC_VERIFICATION_VOTE_SIZE,
+        MessageType::MpcParametersRequest => MAX_MPC_PARAMS_REQUEST_SIZE,
+        MessageType::MpcParametersResponse => MAX_MPC_PARAMS_RESPONSE_SIZE,
     }
 }
 

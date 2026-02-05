@@ -819,7 +819,11 @@ impl MeshNetwork {
             | MessageType::EquivocationProof
             | MessageType::ElderRegistrationProposal
             | MessageType::ElderListProposal
-            | MessageType::ElderListApproval => true,
+            | MessageType::ElderListApproval
+            | MessageType::MpcContribution
+            | MessageType::MpcVerificationVote
+            | MessageType::MpcParametersRequest
+            | MessageType::MpcParametersResponse => true,
         }
     }
 
@@ -1010,7 +1014,12 @@ impl MeshNetwork {
             // P2P-C1/C2/C3: Elder registration messages use elder management port
             MessageType::ElderRegistrationProposal
             | MessageType::ElderListProposal
-            | MessageType::ElderListApproval => self.config.ports.elder_management,
+            | MessageType::ElderListApproval
+            // MPC ceremony messages also use elder management port
+            | MessageType::MpcContribution
+            | MessageType::MpcVerificationVote
+            | MessageType::MpcParametersRequest
+            | MessageType::MpcParametersResponse => self.config.ports.elder_management,
             MessageType::PayoutProposal => self.config.ports.payout_proposal,
             // ZK-BFT messages use consensus voting port
             MessageType::ZkBlockProposal

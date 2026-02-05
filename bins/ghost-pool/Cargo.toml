@@ -106,7 +106,13 @@ default = []
 tui = ["ratatui", "crossterm"]
 # Enable ZK consensus for block/payout proofs
 zk-consensus = ["ghost-consensus/zk-consensus", "ghost-zkp"]
+# Enable MPC ceremony for ZK parameter generation
+mpc-ceremony = ["ghost-consensus/mpc-ceremony", "ghost-mpc"]
 
 [dependencies.ghost-zkp]
+workspace = true
+optional = true
+
+[dependencies.ghost-mpc]
 workspace = true
 optional = true

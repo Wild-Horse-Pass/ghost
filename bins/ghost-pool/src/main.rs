@@ -1056,6 +1056,69 @@ async fn main() -> Result<()> {
         );
     }
 
+    // MPC ceremony integration (optional feature)
+    #[cfg(feature = "mpc-ceremony")]
+    {
+        use ghost_mpc::CeremonyManager;
+        use ghost_consensus::MpcHandler;
+
+        // Load MPC ceremony state from database
+        let mpc_state = db.get_mpc_ceremony_state()?;
+
+        // Determine params directory (from config or default)
+        let mpc_params_dir = std::path::PathBuf::from(
+            std::env::var("MPC_PARAMS_PATH")
+                .unwrap_or_else(|_| format!("{}/.ghost/mpc_params", std::env::var("HOME").unwrap_or_default()))
+        );
+
+        // Initialize ceremony manager
+        let ceremony_manager = match CeremonyManager::load_or_init(mpc_params_dir.clone(), mpc_state.map(|s| {
+            ghost_mpc::CeremonyState {
+                contribution_count: s.contribution_count,
+                current_params_hash: s.current_params_hash,
+                is_ossified: s.is_ossified,
+                ossified_at: s.ossified_at,
+                block_vk_hash: s.block_vk_hash,
+                payout_vk_hash: s.payout_vk_hash,
+                updated_at: s.updated_at,
+            }
+        })) {
+            Ok(manager) => Arc::new(manager),
+            Err(e) => {
+                warn!(error = %e, "Failed to initialize MPC ceremony manager, continuing without MPC");
+                // Create a minimal ceremony manager that reports as ossified
+                Arc::new(CeremonyManager::new(mpc_params_dir))
+            }
+        };
+
+        // Create broadcast callback for MPC handler
+        let mesh_for_mpc = Arc::clone(&mesh);
+        let mpc_broadcast: ghost_consensus::mpc_handler::MpcBroadcastFn = Arc::new(
+            move |msg_type, payload| mesh_for_mpc.broadcast_sync(msg_type, payload)
+        );
+
+        // Create MPC handler
+        let mpc_handler = Arc::new(
+            MpcHandler::new(
+                Arc::clone(&identity),
+                Arc::clone(&elder_list_manager),
+                Arc::clone(&db),
+            )
+            .with_broadcaster(mpc_broadcast)
+            .with_state(ceremony_manager.contribution_count(), ceremony_manager.is_ossified())
+        );
+
+        // Register MPC handler with mesh
+        mesh.register_handler(Arc::clone(&mpc_handler)
+            as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
+
+        info!(
+            "MPC ceremony handler initialized (contributions={}, ossified={})",
+            ceremony_manager.contribution_count(),
+            ceremony_manager.is_ossified()
+        );
+    }
+
     // Create shutdown channel
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 

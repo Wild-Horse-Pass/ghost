@@ -72,6 +72,11 @@ pub type ElderBroadcastFn = Arc<dyn Fn(MessageType, Vec<u8>) -> GhostResult<()> 
 /// Callback invoked when an epoch transition occurs
 pub type TransitionCallback = Arc<dyn Fn(&CanonicalElderList) + Send + Sync>;
 
+/// Callback invoked when a new elder registration is approved
+/// Parameters: (candidate_node_id, elder_position)
+/// This allows MPC ceremony to trigger contribution generation
+pub type RegistrationApprovedCallback = Arc<dyn Fn(NodeId, u32) + Send + Sync>;
+
 /// Rate limiting for elder messages
 const RATE_LIMIT_MAX_TOKENS: u32 = 5;
 const RATE_LIMIT_REFILL_RATE: u32 = 1; // 1 per second
@@ -161,6 +166,8 @@ pub struct ElderRegistrationHandler {
     broadcast_fn: Option<ElderBroadcastFn>,
     /// Callback invoked on epoch transitions
     transition_callback: Option<TransitionCallback>,
+    /// Callback invoked when a registration is approved (for MPC integration)
+    registration_approved_callback: Option<RegistrationApprovedCallback>,
     /// Shared ban manager
     ban_manager: Option<Arc<BanManager>>,
     /// Rate limiter
@@ -184,6 +191,7 @@ impl ElderRegistrationHandler {
             db,
             broadcast_fn: None,
             transition_callback: None,
+            registration_approved_callback: None,
             ban_manager: None,
             rate_limiter: RateLimiter::new(RATE_LIMIT_MAX_TOKENS, RATE_LIMIT_REFILL_RATE),
             pending_proposals: RwLock::new(HashMap::new()),
@@ -206,6 +214,11 @@ impl ElderRegistrationHandler {
     /// Set the transition callback
     pub fn set_transition_callback(&mut self, callback: TransitionCallback) {
         self.transition_callback = Some(callback);
+    }
+
+    /// Set the registration approved callback (for MPC integration)
+    pub fn set_registration_approved_callback(&mut self, callback: RegistrationApprovedCallback) {
+        self.registration_approved_callback = Some(callback);
     }
 
     /// Check if a node is banned
@@ -525,6 +538,15 @@ impl ElderRegistrationHandler {
 
             self.db
                 .update_elder_registration_status(request.id, "approved")?;
+
+            // Calculate the new elder position
+            let new_elder_position = (total_elders + 1) as u32;
+
+            // Notify MPC ceremony of approved registration (if callback set)
+            // This allows the new elder to generate their MPC contribution
+            if let Some(ref callback) = self.registration_approved_callback {
+                callback(msg.candidate, new_elder_position);
+            }
 
             // If we are the proposer, prepare to create the list proposal
             if sender == self.identity.node_id() {
