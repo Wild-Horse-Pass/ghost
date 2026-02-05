@@ -113,15 +113,20 @@ impl PaymentMetadata {
                 )));
             }
             // Validate UTF-8 (String guarantees this, but be explicit)
-            if !m.is_ascii() && m.chars().any(|c| !c.is_alphanumeric() && !c.is_whitespace() && !c.is_ascii_punctuation()) {
+            if !m.is_ascii()
+                && m.chars().any(|c| {
+                    !c.is_alphanumeric() && !c.is_whitespace() && !c.is_ascii_punctuation()
+                })
+            {
                 // Allow valid UTF-8 - this check is mainly for documentation
             }
         }
 
         // Generate random padding
         let mut padding = [0u8; MAX_MEMO_LENGTH];
-        getrandom::getrandom(&mut padding)
-            .map_err(|e| GhostKeyError::CryptoError(format!("Failed to generate random padding: {}", e)))?;
+        getrandom::getrandom(&mut padding).map_err(|e| {
+            GhostKeyError::CryptoError(format!("Failed to generate random padding: {}", e))
+        })?;
 
         Ok(Self {
             label,
@@ -190,8 +195,9 @@ impl PaymentMetadata {
         // Memo content
         let memo = if memo_len > 0 {
             let memo_bytes = &bytes[5..5 + memo_len];
-            let memo_str = std::str::from_utf8(memo_bytes)
-                .map_err(|e| GhostKeyError::InvalidMetadata(format!("Invalid UTF-8 in memo: {}", e)))?;
+            let memo_str = std::str::from_utf8(memo_bytes).map_err(|e| {
+                GhostKeyError::InvalidMetadata(format!("Invalid UTF-8 in memo: {}", e))
+            })?;
             Some(memo_str.to_string())
         } else {
             None
@@ -325,9 +331,9 @@ pub fn decrypt_metadata(
 
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext.as_ref())
-        .map_err(|_| GhostKeyError::CryptoError("Decryption failed: authentication error".to_string()))?;
+    let plaintext = cipher.decrypt(nonce, ciphertext.as_ref()).map_err(|_| {
+        GhostKeyError::CryptoError("Decryption failed: authentication error".to_string())
+    })?;
 
     // Zeroize sensitive intermediate data
     let mut key_copy = key;
@@ -359,20 +365,18 @@ mod tests {
 
     fn test_shared_secret() -> [u8; 32] {
         [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
         ]
     }
 
     fn test_ephemeral_pubkey() -> [u8; 33] {
         [
             0x02, // Compressed pubkey prefix
-            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,
-            0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
-            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,
-            0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+            0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+            0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
+            0x66, 0x77, 0x88, 0x99,
         ]
     }
 
@@ -479,7 +483,8 @@ mod tests {
         let shared_secret = test_shared_secret();
         let ephemeral_pubkey = test_ephemeral_pubkey();
 
-        let mut ciphertext = encrypt_metadata(&metadata, &shared_secret, &ephemeral_pubkey).unwrap();
+        let mut ciphertext =
+            encrypt_metadata(&metadata, &shared_secret, &ephemeral_pubkey).unwrap();
 
         // Tamper with ciphertext
         ciphertext[0] ^= 0xff;

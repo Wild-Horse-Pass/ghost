@@ -30,12 +30,10 @@ use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
-use crate::derivation::{compute_tweak, derive_shared_secret, derive_spend_key};
+use crate::config::ScanConfig;
+use crate::derivation::{compute_tweak_v2, derive_shared_secret, derive_spend_key};
 use crate::error::GhostKeyError;
 use crate::ghost_id::GhostId;
-
-/// Maximum nonce to try when detecting payments
-pub const MAX_DETECTION_NONCE: u16 = 100;
 
 /// H-2: Wrapper for secret key bytes that gets zeroed on drop
 ///
@@ -176,39 +174,42 @@ impl GhostKeys {
         GhostId::new(self.scan_pubkey, self.spend_pubkey)
     }
 
-    /// Detect if a payment belongs to us
+    /// Detect if a payment belongs to us (v2 - position-independent)
     ///
     /// Given an ephemeral pubkey from a transaction and an output pubkey,
     /// determine if the output belongs to us and return the spend key if so.
     ///
+    /// This version uses counter-based k scanning, which is position-independent
+    /// and safe for shuffled outputs (critical for Wraith Protocol).
+    ///
     /// # Arguments
     /// * `ephemeral_pubkey` - The ephemeral pubkey from OP_RETURN
     /// * `output_pubkey` - The output's public key
-    /// * `index` - The output index
+    /// * `config` - Scan configuration (controls max_k)
     ///
     /// # Returns
-    /// - `Ok(Some(spend_key))` if the payment belongs to us
+    /// - `Ok(Some((spend_key, k)))` if the payment belongs to us, with the k that matched
     /// - `Ok(None)` if the payment does not belong to us (normal case)
     /// - `Err(GhostKeyError)` if a cryptographic operation failed during detection
     ///
     /// # SEC-KEY-1
-    /// This function now returns errors for cryptographic failures instead of
+    /// This function returns errors for cryptographic failures instead of
     /// silently returning None. This prevents funds from being marked as
     /// "not ours" when they actually are (but derivation failed).
     pub fn detect_payment(
         &self,
         ephemeral_pubkey: &PublicKey,
         output_pubkey: &PublicKey,
-        index: u32,
-    ) -> Result<Option<SecretKey>, GhostKeyError> {
+        config: &ScanConfig,
+    ) -> Result<Option<(SecretKey, u32)>, GhostKeyError> {
         let secp = Secp256k1::new();
 
         // Compute shared secret
         let shared_secret = derive_shared_secret(&self.scan_secret, ephemeral_pubkey);
 
-        // Try different nonces
-        for nonce in 0..=MAX_DETECTION_NONCE {
-            let tweak = compute_tweak(&shared_secret, index, nonce);
+        // Try k values from 0 to max_k
+        for k in 0..=config.max_k() {
+            let tweak = compute_tweak_v2(&shared_secret, k);
 
             // Expected pubkey = spend_pubkey + tweak*G
             if let Ok(tweak_secret) = SecretKey::from_slice(&tweak) {
@@ -223,12 +224,12 @@ impl GhostKeys {
                         // Found it! Derive spend key
                         // SEC-KEY-1: Return error instead of silently failing
                         match derive_spend_key(&self.spend_secret, &tweak) {
-                            Ok(spend_key) => return Ok(Some(spend_key)),
+                            Ok(spend_key) => return Ok(Some((spend_key, k))),
                             Err(e) => {
                                 // Payment detected but derivation failed - this is critical
                                 return Err(GhostKeyError::DerivationError(format!(
-                                    "Payment detected at index {} nonce {} but spend key derivation failed: {}",
-                                    index, nonce, e
+                                    "Payment detected at k={} but spend key derivation failed: {}",
+                                    k, e
                                 )));
                             }
                         }
@@ -239,6 +240,17 @@ impl GhostKeys {
 
         // Not our payment (normal case)
         Ok(None)
+    }
+
+    /// Detect payment with default scan config
+    ///
+    /// Convenience method that uses DEFAULT_MAX_K for scanning.
+    pub fn detect_payment_default(
+        &self,
+        ephemeral_pubkey: &PublicKey,
+        output_pubkey: &PublicKey,
+    ) -> Result<Option<(SecretKey, u32)>, GhostKeyError> {
+        self.detect_payment(ephemeral_pubkey, output_pubkey, &ScanConfig::default())
     }
 
     /// Export secret keys as bytes

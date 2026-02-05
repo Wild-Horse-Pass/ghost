@@ -47,6 +47,7 @@
 //! let (address, ephemeral_pubkey) = ghost_id.derive_payment_address(0).unwrap();
 //! ```
 
+mod config;
 mod derivation;
 mod error;
 mod ghost_id;
@@ -55,18 +56,21 @@ pub mod labels;
 pub mod metadata;
 mod scanning;
 
+pub use config::ScanConfig;
+#[allow(deprecated)]
 pub use derivation::{
-    compute_tweak, derive_payment_address, derive_shared_secret, derive_spend_key, tagged_hash,
+    compute_tweak, compute_tweak_v2, derive_payment_address, derive_payment_address_v2,
+    derive_shared_secret, derive_spend_key, tagged_hash,
 };
 pub use error::GhostKeyError;
 pub use ghost_id::GhostId;
 pub use keys::{GhostKeys, GhostKeysExport};
-pub use scanning::{BatchScanner, PaymentDetector, ScannedPayment};
 pub use labels::{LabelBackup, LabelDictionary};
 pub use metadata::{
-    decrypt_metadata, encrypt_metadata, PaymentMetadata,
-    DEFAULT_LABEL, MAX_MEMO_LENGTH, METADATA_CIPHERTEXT_SIZE, METADATA_PLAINTEXT_SIZE,
+    decrypt_metadata, encrypt_metadata, PaymentMetadata, DEFAULT_LABEL, MAX_MEMO_LENGTH,
+    METADATA_CIPHERTEXT_SIZE, METADATA_PLAINTEXT_SIZE,
 };
+pub use scanning::{BatchScanner, PaymentDetector, ScannedPayment};
 
 /// Human-readable part for Ghost ID bech32 encoding
 pub const GHOST_ID_HRP: &str = "ghost";
@@ -76,6 +80,28 @@ pub const GHOST_DERIVATION_PREFIX: u32 = 777;
 
 /// OP_RETURN marker for Ghost Pay Ghost Lock
 pub const GHOST_LOCK_MARKER: &[u8] = b"GPGL";
+
+// ============================================================================
+// Silent Payment v2 Constants (Counter-based k)
+// ============================================================================
+
+/// Default maximum k value to scan for payments
+///
+/// Most transactions have few outputs to the same recipient (typically 1-3),
+/// so k=10 covers normal usage while keeping scanning fast.
+pub const DEFAULT_MAX_K: u32 = 10;
+
+/// Maximum configurable k value (hard limit)
+///
+/// Prevents excessive scanning time. Users can configure up to 10,000 to
+/// recover payments that used higher k values.
+pub const MAX_MAX_K: u32 = 10_000;
+
+/// Domain separator for v2 tweak calculation
+///
+/// Used to ensure tweaks from v1 and v2 don't collide, and provides
+/// domain separation per BIP-340 recommendations.
+pub const DOMAIN_SEPARATOR_V2: &[u8] = b"ghost/silent-payment/v2";
 
 #[cfg(test)]
 mod tests {
@@ -106,18 +132,19 @@ mod tests {
         let receiver_keys = GhostKeys::generate();
         let ghost_id = receiver_keys.ghost_id();
 
-        // Sender derives payment address
-        let (address, ephemeral_pubkey, _tweak) =
-            ghost_id.derive_payment_address_full(0, 0).unwrap();
+        // Sender derives payment address using v2 (k-based)
+        let (address, ephemeral_pubkey) = ghost_id.derive_payment_address_v2(0).unwrap();
 
-        // Receiver can detect and spend
-        // SEC-KEY-1: detect_payment now returns Result<Option<SecretKey>>
-        let detected = receiver_keys.detect_payment(&ephemeral_pubkey, &address, 0).unwrap();
+        // Receiver can detect and spend using default config
+        let detected = receiver_keys
+            .detect_payment_default(&ephemeral_pubkey, &address)
+            .unwrap();
         assert!(detected.is_some());
 
-        let spend_key = detected.unwrap();
-        // Verify spend key matches
+        let (spend_key, k) = detected.unwrap();
+        // Verify spend key matches and k=0
         assert!(spend_key.secret_bytes().len() == 32);
+        assert_eq!(k, 0);
     }
 
     #[test]
@@ -125,13 +152,13 @@ mod tests {
         let keys = GhostKeys::generate();
         let ghost_id = keys.ghost_id();
 
-        // Multiple payments create different addresses
-        let (addr1, _, _) = ghost_id.derive_payment_address_full(0, 0).unwrap();
-        let (addr2, _, _) = ghost_id.derive_payment_address_full(0, 1).unwrap();
-        let (addr3, _, _) = ghost_id.derive_payment_address_full(1, 0).unwrap();
+        // Multiple payments with different k values create different addresses
+        let (addr0, _, _) = ghost_id.derive_payment_address_v2_full(0).unwrap();
+        let (addr1, _, _) = ghost_id.derive_payment_address_v2_full(1).unwrap();
+        let (addr2, _, _) = ghost_id.derive_payment_address_v2_full(2).unwrap();
 
+        assert_ne!(addr0, addr1);
+        assert_ne!(addr0, addr2);
         assert_ne!(addr1, addr2);
-        assert_ne!(addr1, addr3);
-        assert_ne!(addr2, addr3);
     }
 }

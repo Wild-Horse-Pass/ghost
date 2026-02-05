@@ -136,11 +136,7 @@ impl LabelDictionary {
     ///
     /// Returns tuples of (index, name) for all existing labels.
     pub fn list(&self) -> Vec<(u32, &str)> {
-        let mut labels: Vec<_> = self
-            .labels
-            .iter()
-            .map(|(k, v)| (*k, v.as_str()))
-            .collect();
+        let mut labels: Vec<_> = self.labels.iter().map(|(k, v)| (*k, v.as_str())).collect();
         labels.sort_by_key(|(k, _)| *k);
         labels
     }

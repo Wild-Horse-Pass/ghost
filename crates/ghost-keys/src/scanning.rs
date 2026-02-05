@@ -30,20 +30,16 @@ use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use subtle::ConstantTimeEq;
 
-use crate::derivation::{compute_tweak, derive_shared_secret, derive_spend_key};
+use crate::config::ScanConfig;
+use crate::derivation::{compute_tweak_v2, derive_shared_secret, derive_spend_key};
 use crate::GhostKeys;
 
 /// Transaction data for batch scanning: (ephemeral_pubkey, outputs)
 /// where outputs are (output_pubkey, optional_amount)
 pub type TransactionOutputs = (PublicKey, Vec<(PublicKey, Option<u64>)>);
 
-/// L-4: Default maximum nonce to try when scanning
-/// This can be overridden via PaymentDetector::with_max_nonce()
-pub const DEFAULT_MAX_SCAN_NONCE: u16 = 100;
-
-/// L-4: Backwards compatibility alias (for external consumers)
-#[allow(dead_code)]
-pub const MAX_SCAN_NONCE: u16 = DEFAULT_MAX_SCAN_NONCE;
+// Re-export constants for convenience
+// (Users should prefer using ScanConfig directly)
 
 // Custom serde for [u8; 33] using hex encoding
 mod pubkey_hex {
@@ -74,10 +70,10 @@ pub struct ScannedPayment {
     /// The output pubkey (hex-encoded for serde)
     #[serde(with = "pubkey_hex")]
     pub output_pubkey: [u8; 33],
-    /// The output index in the transaction
+    /// The output index in the transaction (vout for spending)
     pub output_index: u32,
-    /// The nonce used for derivation
-    pub nonce: u16,
+    /// The k value used for derivation (v2: position-independent counter)
+    pub k: u32,
     /// The tweak used to derive this address
     pub tweak: [u8; 32],
     /// The derived spend key for this output
@@ -86,44 +82,55 @@ pub struct ScannedPayment {
     pub amount: Option<u64>,
 }
 
-/// Payment detector for scanning transactions
+/// Payment detector for scanning transactions (v2 - position-independent)
+///
+/// Uses counter-based k scanning instead of position-based index.
+/// Safe for shuffled outputs (critical for Wraith Protocol).
 pub struct PaymentDetector<'a> {
     keys: &'a GhostKeys,
     secp: Secp256k1<secp256k1::All>,
-    /// L-4: Configurable maximum nonce to scan
-    max_nonce: u16,
+    /// Scan configuration (controls max_k)
+    config: ScanConfig,
 }
 
 impl<'a> PaymentDetector<'a> {
-    /// Create a new payment detector with default max nonce
+    /// Create a new payment detector with default scan config
     pub fn new(keys: &'a GhostKeys) -> Self {
         Self {
             keys,
             secp: Secp256k1::new(),
-            max_nonce: DEFAULT_MAX_SCAN_NONCE,
+            config: ScanConfig::default(),
         }
     }
 
-    /// L-4: Create a payment detector with custom max nonce
+    /// Create a payment detector with custom scan config
     ///
-    /// Use this when you need to scan more nonces (e.g., for recovery)
-    /// or fewer nonces (e.g., for fast initial sync)
-    pub fn with_max_nonce(keys: &'a GhostKeys, max_nonce: u16) -> Self {
+    /// Use this when you need to scan more k values (e.g., for recovery)
+    /// or fewer k values (e.g., for fast initial sync)
+    pub fn with_config(keys: &'a GhostKeys, config: ScanConfig) -> Self {
         Self {
             keys,
             secp: Secp256k1::new(),
-            max_nonce,
+            config,
         }
     }
 
-    /// Scan a transaction for payments to us
+    /// Get the current scan config
+    pub fn config(&self) -> &ScanConfig {
+        &self.config
+    }
+
+    /// Scan a transaction for payments to us (v2 - position-independent)
+    ///
+    /// This method iterates through k values (0..=max_k) for each output,
+    /// making it safe for shuffled outputs.
     ///
     /// # Arguments
     /// * `ephemeral_pubkey` - The ephemeral pubkey from OP_RETURN
     /// * `outputs` - List of (output_pubkey, amount) pairs
     ///
     /// # Returns
-    /// List of detected payments
+    /// List of detected payments (includes both k and output_index)
     pub fn scan_transaction(
         &self,
         ephemeral_pubkey: &PublicKey,
@@ -134,11 +141,19 @@ impl<'a> PaymentDetector<'a> {
         // Compute shared secret once
         let shared_secret = derive_shared_secret(self.keys.scan_secret(), ephemeral_pubkey);
 
-        // Check each output
-        for (index, (output_pubkey, amount)) in outputs.iter().enumerate() {
-            if let Some(payment) =
-                self.check_output(&shared_secret, output_pubkey, index as u32, *amount)
-            {
+        // Track which k values have been used (to avoid duplicates)
+        let mut used_k: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+        // Check each output against all k values
+        for (output_index, (output_pubkey, amount)) in outputs.iter().enumerate() {
+            if let Some(payment) = self.check_output(
+                &shared_secret,
+                output_pubkey,
+                output_index as u32,
+                *amount,
+                &used_k,
+            ) {
+                used_k.insert(payment.k);
                 found.push(payment);
             }
         }
@@ -146,17 +161,23 @@ impl<'a> PaymentDetector<'a> {
         found
     }
 
-    /// Check if a single output belongs to us
+    /// Check if a single output belongs to us (v2 - position-independent)
     fn check_output(
         &self,
         shared_secret: &[u8; 32],
         output_pubkey: &PublicKey,
-        index: u32,
+        output_index: u32,
         amount: Option<u64>,
+        used_k: &std::collections::HashSet<u32>,
     ) -> Option<ScannedPayment> {
-        // L-4: Try all possible nonces up to configurable max
-        for nonce in 0..=self.max_nonce {
-            let tweak = compute_tweak(shared_secret, index, nonce);
+        // Try all possible k values up to max_k
+        for k in 0..=self.config.max_k() {
+            // Skip k values already used by other outputs in this tx
+            if used_k.contains(&k) {
+                continue;
+            }
+
+            let tweak = compute_tweak_v2(shared_secret, k);
 
             // Expected pubkey = spend_pubkey + tweak*G
             if let Ok(tweak_secret) = SecretKey::from_slice(&tweak) {
@@ -172,8 +193,8 @@ impl<'a> PaymentDetector<'a> {
                         if let Ok(spend_key) = derive_spend_key(self.keys.spend_secret(), &tweak) {
                             return Some(ScannedPayment {
                                 output_pubkey: output_pubkey.serialize(),
-                                output_index: index,
-                                nonce,
+                                output_index,
+                                k,
                                 tweak,
                                 spend_key: spend_key.secret_bytes(),
                                 amount,
@@ -187,17 +208,13 @@ impl<'a> PaymentDetector<'a> {
         None
     }
 
-    /// Quick check if an output might belong to us (first nonce only)
+    /// Quick check if an output might belong to us (k=0 only)
     ///
-    /// Use this for fast filtering before doing full scan
-    pub fn quick_check(
-        &self,
-        ephemeral_pubkey: &PublicKey,
-        output_pubkey: &PublicKey,
-        index: u32,
-    ) -> bool {
+    /// Use this for fast filtering before doing full scan.
+    /// Most single-output payments use k=0.
+    pub fn quick_check(&self, ephemeral_pubkey: &PublicKey, output_pubkey: &PublicKey) -> bool {
         let shared_secret = derive_shared_secret(self.keys.scan_secret(), ephemeral_pubkey);
-        let tweak = compute_tweak(&shared_secret, index, 0);
+        let tweak = compute_tweak_v2(&shared_secret, 0);
 
         if let Ok(tweak_secret) = SecretKey::from_slice(&tweak) {
             let tweak_pubkey = PublicKey::from_secret_key(&self.secp, &tweak_secret);
@@ -214,13 +231,15 @@ impl<'a> PaymentDetector<'a> {
     }
 }
 
-/// Parallel scanner for batch processing
+/// Parallel scanner for batch processing (v2 - position-independent)
 ///
 /// Used for L1 Silent Payment scanning where we need to check blockchain
 /// outputs against our keys using ECDH.
 pub struct BatchScanner {
     /// Number of worker threads
     num_workers: usize,
+    /// Scan configuration
+    config: ScanConfig,
 }
 
 impl BatchScanner {
@@ -228,12 +247,26 @@ impl BatchScanner {
     pub fn new(num_workers: usize) -> Self {
         Self {
             num_workers: num_workers.max(1),
+            config: ScanConfig::default(),
+        }
+    }
+
+    /// Create a batch scanner with custom scan config
+    pub fn with_config(num_workers: usize, config: ScanConfig) -> Self {
+        Self {
+            num_workers: num_workers.max(1),
+            config,
         }
     }
 
     /// Get the number of workers
     pub fn num_workers(&self) -> usize {
         self.num_workers
+    }
+
+    /// Get the scan config
+    pub fn config(&self) -> &ScanConfig {
+        &self.config
     }
 
     /// Scan multiple transactions in parallel using rayon
@@ -244,12 +277,13 @@ impl BatchScanner {
         keys: &GhostKeys,
         transactions: &[TransactionOutputs],
     ) -> Vec<(usize, Vec<ScannedPayment>)> {
+        let config = self.config;
         transactions
             .par_iter()
             .enumerate()
             .filter_map(|(idx, (ephemeral, outputs))| {
                 // Create detector per thread to avoid sharing Secp256k1 context
-                let detector = PaymentDetector::new(keys);
+                let detector = PaymentDetector::with_config(keys, config);
                 let found = detector.scan_transaction(ephemeral, outputs);
                 if found.is_empty() {
                     None
@@ -271,9 +305,9 @@ mod tests {
         let keys = GhostKeys::generate();
         let ghost_id = keys.ghost_id();
 
-        // Create a payment
+        // Create a payment using v2 (k=0)
         let (output_pubkey, ephemeral_pubkey, _) =
-            ghost_id.derive_payment_address_full(0, 0).unwrap();
+            ghost_id.derive_payment_address_v2_full(0).unwrap();
 
         // Scan for it
         let detector = PaymentDetector::new(&keys);
@@ -281,47 +315,131 @@ mod tests {
 
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].output_index, 0);
-        assert_eq!(found[0].nonce, 0);
+        assert_eq!(found[0].k, 0);
         assert_eq!(found[0].amount, Some(100_000));
     }
 
     #[test]
-    fn test_scan_multiple_outputs() {
+    fn test_scan_multiple_outputs_same_recipient() {
         let keys = GhostKeys::generate();
         let ghost_id = keys.ghost_id();
 
-        // Create ephemeral key for this transaction using random entropy
-        // CR-C2: Never use hardcoded keys, even in tests
+        // Create ephemeral key for this transaction
         let secp = Secp256k1::new();
         let (ephemeral_secret, _) = secp.generate_keypair(&mut OsRng);
 
-        // Create outputs at their actual positions in the outputs vec
+        // Create outputs with k=0, 1, 2 (same recipient, different k values)
         let (out0, ephemeral, _) = ghost_id
-            .derive_payment_address_with_ephemeral(&ephemeral_secret, 0, 0)
+            .derive_payment_address_v2_with_ephemeral(&ephemeral_secret, 0)
+            .unwrap();
+        let (out1, _, _) = ghost_id
+            .derive_payment_address_v2_with_ephemeral(&ephemeral_secret, 1)
             .unwrap();
         let (out2, _, _) = ghost_id
-            .derive_payment_address_with_ephemeral(&ephemeral_secret, 2, 0)
+            .derive_payment_address_v2_with_ephemeral(&ephemeral_secret, 2)
             .unwrap();
 
-        // Add a random output that's not ours (at index 1)
-        let (_, random_pubkey) = secp.generate_keypair(&mut OsRng);
-
         let outputs = vec![
-            (out0, Some(50_000)),           // index 0
-            (random_pubkey, Some(100_000)), // index 1
-            (out2, Some(75_000)),           // index 2
+            (out0, Some(50_000)),
+            (out1, Some(75_000)),
+            (out2, Some(100_000)),
         ];
 
         let detector = PaymentDetector::new(&keys);
         let found = detector.scan_transaction(&ephemeral, &outputs);
 
+        assert_eq!(found.len(), 3);
+        assert!(found.iter().any(|p| p.k == 0 && p.amount == Some(50_000)));
+        assert!(found.iter().any(|p| p.k == 1 && p.amount == Some(75_000)));
+        assert!(found.iter().any(|p| p.k == 2 && p.amount == Some(100_000)));
+    }
+
+    #[test]
+    fn test_scan_shuffled_outputs() {
+        let keys = GhostKeys::generate();
+        let ghost_id = keys.ghost_id();
+
+        // Create ephemeral key
+        let secp = Secp256k1::new();
+        let (ephemeral_secret, _) = secp.generate_keypair(&mut OsRng);
+
+        // Create outputs with k=0, 1
+        let (out0, ephemeral, _) = ghost_id
+            .derive_payment_address_v2_with_ephemeral(&ephemeral_secret, 0)
+            .unwrap();
+        let (out1, _, _) = ghost_id
+            .derive_payment_address_v2_with_ephemeral(&ephemeral_secret, 1)
+            .unwrap();
+
+        // SHUFFLE: Put them in reverse order (simulating Wraith shuffle)
+        let outputs = vec![
+            (out1, Some(200_000)), // k=1 is first in the vec
+            (out0, Some(100_000)), // k=0 is second in the vec
+        ];
+
+        let detector = PaymentDetector::new(&keys);
+        let found = detector.scan_transaction(&ephemeral, &outputs);
+
+        // Both should still be found despite shuffle
         assert_eq!(found.len(), 2);
-        assert!(found
-            .iter()
-            .any(|p| p.output_index == 0 && p.amount == Some(50_000)));
-        assert!(found
-            .iter()
-            .any(|p| p.output_index == 2 && p.amount == Some(75_000)));
+        assert!(found.iter().any(|p| p.k == 0 && p.amount == Some(100_000)));
+        assert!(found.iter().any(|p| p.k == 1 && p.amount == Some(200_000)));
+    }
+
+    #[test]
+    fn test_scan_respects_max_k() {
+        let keys = GhostKeys::generate();
+        let ghost_id = keys.ghost_id();
+
+        // Create ephemeral key
+        let secp = Secp256k1::new();
+        let (ephemeral_secret, _) = secp.generate_keypair(&mut OsRng);
+
+        // Create output with k=15 (higher than default max_k=10)
+        let (out15, ephemeral, _) = ghost_id
+            .derive_payment_address_v2_with_ephemeral(&ephemeral_secret, 15)
+            .unwrap();
+
+        let outputs = vec![(out15, Some(100_000))];
+
+        // Default detector (max_k=10) should NOT find it
+        let detector_default = PaymentDetector::new(&keys);
+        let found = detector_default.scan_transaction(&ephemeral, &outputs);
+        assert!(found.is_empty(), "Should not find k=15 with max_k=10");
+
+        // Detector with higher max_k SHOULD find it
+        let detector_high = PaymentDetector::with_config(&keys, ScanConfig::new(20));
+        let found = detector_high.scan_transaction(&ephemeral, &outputs);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].k, 15);
+    }
+
+    #[test]
+    fn test_scan_recovery() {
+        let keys = GhostKeys::generate();
+        let ghost_id = keys.ghost_id();
+
+        // Create ephemeral key
+        let secp = Secp256k1::new();
+        let (ephemeral_secret, _) = secp.generate_keypair(&mut OsRng);
+
+        // Create output with k=500 (missed by default scanning)
+        let (out500, ephemeral, _) = ghost_id
+            .derive_payment_address_v2_with_ephemeral(&ephemeral_secret, 500)
+            .unwrap();
+
+        let outputs = vec![(out500, Some(100_000))];
+
+        // Default scan misses it
+        let detector_default = PaymentDetector::new(&keys);
+        let found = detector_default.scan_transaction(&ephemeral, &outputs);
+        assert!(found.is_empty());
+
+        // Recovery scan finds it
+        let detector_recovery = PaymentDetector::with_config(&keys, ScanConfig::recovery());
+        let found = detector_recovery.scan_transaction(&ephemeral, &outputs);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].k, 500);
     }
 
     #[test]
@@ -329,10 +447,10 @@ mod tests {
         let keys = GhostKeys::generate();
         let other_keys = GhostKeys::generate();
 
-        // Payment to someone else
+        // Payment to someone else using v2
         let (output_pubkey, ephemeral_pubkey, _) = other_keys
             .ghost_id()
-            .derive_payment_address_full(0, 0)
+            .derive_payment_address_v2_full(0)
             .unwrap();
 
         // We shouldn't find it
@@ -347,18 +465,44 @@ mod tests {
         let keys = GhostKeys::generate();
         let ghost_id = keys.ghost_id();
 
+        // Create payment with k=0
         let (output_pubkey, ephemeral_pubkey, _) =
-            ghost_id.derive_payment_address_full(0, 0).unwrap();
+            ghost_id.derive_payment_address_v2_full(0).unwrap();
 
         let detector = PaymentDetector::new(&keys);
 
-        // Our payment
-        assert!(detector.quick_check(&ephemeral_pubkey, &output_pubkey, 0));
+        // Our payment (k=0)
+        assert!(detector.quick_check(&ephemeral_pubkey, &output_pubkey));
 
         // Someone else's
         let secp = Secp256k1::new();
         let (_, random) = secp.generate_keypair(&mut OsRng);
-        assert!(!detector.quick_check(&ephemeral_pubkey, &random, 0));
+        assert!(!detector.quick_check(&ephemeral_pubkey, &random));
+    }
+
+    #[test]
+    fn test_quick_check_misses_high_k() {
+        let keys = GhostKeys::generate();
+        let ghost_id = keys.ghost_id();
+
+        // Create ephemeral key
+        let secp = Secp256k1::new();
+        let (ephemeral_secret, _) = secp.generate_keypair(&mut OsRng);
+
+        // Create payment with k=5 (quick_check only checks k=0)
+        let (output_pubkey, ephemeral_pubkey, _) = ghost_id
+            .derive_payment_address_v2_with_ephemeral(&ephemeral_secret, 5)
+            .unwrap();
+
+        let detector = PaymentDetector::new(&keys);
+
+        // quick_check should return false (it only checks k=0)
+        assert!(!detector.quick_check(&ephemeral_pubkey, &output_pubkey));
+
+        // But full scan should find it
+        let found = detector.scan_transaction(&ephemeral_pubkey, &[(output_pubkey, Some(100_000))]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].k, 5);
     }
 
     #[test]
@@ -366,9 +510,9 @@ mod tests {
         let keys = GhostKeys::generate();
         let ghost_id = keys.ghost_id();
 
-        // Create multiple transactions
-        let (out1, eph1, _) = ghost_id.derive_payment_address_full(0, 0).unwrap();
-        let (out2, eph2, _) = ghost_id.derive_payment_address_full(0, 0).unwrap();
+        // Create multiple transactions using v2
+        let (out1, eph1, _) = ghost_id.derive_payment_address_v2_full(0).unwrap();
+        let (out2, eph2, _) = ghost_id.derive_payment_address_v2_full(0).unwrap();
 
         let transactions = vec![
             (eph1, vec![(out1, Some(100_000))]),
@@ -379,5 +523,33 @@ mod tests {
         let results = scanner.scan_batch(&keys, &transactions);
 
         assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_batch_scanner_with_recovery_config() {
+        let keys = GhostKeys::generate();
+        let ghost_id = keys.ghost_id();
+
+        // Create ephemeral key
+        let secp = Secp256k1::new();
+        let (ephemeral_secret, _) = secp.generate_keypair(&mut OsRng);
+
+        // Create output with high k value
+        let (out500, ephemeral, _) = ghost_id
+            .derive_payment_address_v2_with_ephemeral(&ephemeral_secret, 500)
+            .unwrap();
+
+        let transactions = vec![(ephemeral, vec![(out500, Some(100_000))])];
+
+        // Default scanner misses it
+        let scanner_default = BatchScanner::new(4);
+        let results = scanner_default.scan_batch(&keys, &transactions);
+        assert!(results.is_empty());
+
+        // Recovery scanner finds it
+        let scanner_recovery = BatchScanner::with_config(4, ScanConfig::recovery());
+        let results = scanner_recovery.scan_batch(&keys, &transactions);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1[0].k, 500);
     }
 }

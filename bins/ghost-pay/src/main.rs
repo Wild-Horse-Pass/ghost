@@ -1031,15 +1031,16 @@ async fn derive_payment_address(
 
     let ghost_id = keys.ghost_id();
 
-    // Derive payment address - returns (output_pubkey, ephemeral_pubkey)
+    // Derive payment address using v2 (k-based, position-independent)
+    // The 'index' parameter in the API now represents k (sequential counter)
     let (output_pubkey, ephemeral_pubkey) = ghost_id
-        .derive_payment_address(req.index)
+        .derive_payment_address_v2(req.index)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     Ok(Json(serde_json::json!({
         "output_pubkey": hex::encode(output_pubkey.serialize()),
         "ephemeral_pubkey": hex::encode(ephemeral_pubkey.serialize()),
-        "index": req.index
+        "k": req.index
     })))
 }
 
