@@ -573,6 +573,7 @@ mod tests {
             min_delay_ms: 100,
             max_delay_ms: 1000,
             batching_enabled: false,
+            cover_traffic_enabled: false, // Disable to make test deterministic
             ..Default::default()
         };
 
@@ -595,6 +596,7 @@ mod tests {
         let config = EntryConfig {
             delay_enabled: false,
             batching_enabled: false,
+            cover_traffic_enabled: false, // Disable to make test deterministic
             ..Default::default()
         };
 
@@ -613,6 +615,7 @@ mod tests {
             batching_enabled: true,
             min_batch_size: 3,
             max_batch_wait_ms: 10_000,
+            cover_traffic_enabled: false, // Disable to make test deterministic
             ..Default::default()
         };
 
@@ -642,6 +645,7 @@ mod tests {
             delay_enabled: false,
             batching_enabled: true,
             min_batch_size: 10,
+            cover_traffic_enabled: false, // Disable to make test deterministic
             ..Default::default()
         };
 
@@ -663,6 +667,7 @@ mod tests {
             max_queue_size: 2,
             delay_enabled: false,
             batching_enabled: false,
+            cover_traffic_enabled: false, // Disable to make test deterministic
             ..Default::default()
         };
 
@@ -682,6 +687,7 @@ mod tests {
         let config = EntryConfig {
             delay_enabled: false,
             batching_enabled: false,
+            cover_traffic_enabled: false, // Disable to make test deterministic
             ..Default::default()
         };
 
@@ -704,6 +710,7 @@ mod tests {
         let config = EntryConfig {
             delay_enabled: false,
             batching_enabled: false,
+            cover_traffic_enabled: false, // Disable to make test deterministic
             ..Default::default()
         };
 

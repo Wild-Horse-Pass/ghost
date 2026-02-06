@@ -185,6 +185,7 @@ fn test_444_schedule_entry() {
     let config = EntryConfig {
         delay_enabled: false,
         batching_enabled: false,
+        cover_traffic_enabled: false, // Disable to make test deterministic
         ..EntryConfig::default()
     };
     let scheduler = EntryScheduler::new(config).unwrap();
@@ -214,11 +215,12 @@ fn test_446_delay_disabled() {
     let config = EntryConfig {
         delay_enabled: false,
         batching_enabled: false,
+        cover_traffic_enabled: false, // Disable to make test deterministic
         ..EntryConfig::default()
     };
     let scheduler = EntryScheduler::new(config).unwrap();
 
-    let before = Instant::now();
+    let _before = Instant::now();
     let entry = scheduler.schedule_entry([1u8; 32], vec![]).unwrap();
 
     // With delay disabled, should be ready very quickly
@@ -233,6 +235,7 @@ fn test_447_batch_formation() {
         batching_enabled: true,
         min_batch_size: 3,
         max_batch_wait_ms: 10_000,
+        cover_traffic_enabled: false, // Disable to make test deterministic
         ..EntryConfig::default()
     };
     let scheduler = EntryScheduler::new(config).unwrap();
@@ -259,6 +262,7 @@ fn test_448_batch_not_formed_below_minimum() {
         batching_enabled: true,
         min_batch_size: 5,
         max_batch_wait_ms: 10_000,
+        cover_traffic_enabled: false, // Disable to make test deterministic
         ..EntryConfig::default()
     };
     let scheduler = EntryScheduler::new(config).unwrap();
@@ -277,6 +281,7 @@ fn test_449_queue_capacity_limit() {
         delay_enabled: false,
         batching_enabled: false,
         max_queue_size: 5,
+        cover_traffic_enabled: false, // Disable to make test deterministic
         ..EntryConfig::default()
     };
     let scheduler = EntryScheduler::new(config).unwrap();
