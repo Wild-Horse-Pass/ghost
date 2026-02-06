@@ -53,6 +53,15 @@ pub fn validate_settlement(
         });
     }
 
+    // QUANTUM SAFETY: Reject P2TR addresses (bc1p...)
+    // P2TR exposes public keys on-chain, making them vulnerable to quantum attacks
+    if destination_address.starts_with("bc1p")
+        || destination_address.starts_with("tb1p")
+        || destination_address.starts_with("bcrt1p")
+    {
+        return Err(ReconciliationError::QuantumUnsafe);
+    }
+
     // Check Bitcoin address prefix
     let valid_prefix = destination_address.starts_with("bc1")
         || destination_address.starts_with("tb1")
@@ -201,6 +210,38 @@ mod tests {
 
         // Empty address
         assert!(validate_settlement("ghost1abc", "", 100_000).is_err());
+    }
+
+    #[test]
+    fn test_validate_settlement_rejects_p2tr() {
+        // QUANTUM SAFETY: P2TR addresses must be rejected
+
+        // Mainnet P2TR
+        let result = validate_settlement(
+            "ghost1abc",
+            "bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297",
+            100_000,
+        );
+        assert!(matches!(result, Err(ReconciliationError::QuantumUnsafe)));
+
+        // Testnet P2TR
+        let result = validate_settlement(
+            "ghost1abc",
+            "tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c",
+            100_000,
+        );
+        assert!(matches!(result, Err(ReconciliationError::QuantumUnsafe)));
+
+        // Regtest P2TR
+        let result = validate_settlement(
+            "ghost1abc",
+            "bcrt1ptest",
+            100_000,
+        );
+        assert!(matches!(result, Err(ReconciliationError::QuantumUnsafe)));
+
+        // P2WPKH should still work
+        assert!(validate_settlement("ghost1abc", "bc1qtest", 100_000).is_ok());
     }
 
     #[test]

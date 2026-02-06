@@ -338,6 +338,10 @@ pub enum TreasuryAddressError {
     /// Public key count mismatch
     #[error("Expected {expected} public keys, got {actual}")]
     PubkeyCountMismatch { expected: u8, actual: usize },
+
+    /// P2TR address (quantum-unsafe)
+    #[error("P2TR addresses (bc1p...) are quantum-vulnerable. Use P2WPKH (bc1q...) instead.")]
+    QuantumUnsafe,
 }
 
 /// Treasury address configuration
@@ -478,11 +482,26 @@ impl TreasuryAddress {
     }
 
     /// Validate the treasury address configuration
+    ///
+    /// # Quantum Safety
+    ///
+    /// Rejects P2TR addresses (bc1p...) for quantum safety. P2TR exposes
+    /// public keys on-chain, making them vulnerable to quantum computer
+    /// attacks while funds are locked.
     pub fn validate(&self) -> Result<(), TreasuryAddressError> {
+        // Helper to check if address is P2TR (quantum-unsafe)
+        fn is_p2tr_address(addr: &str) -> bool {
+            addr.starts_with("bc1p") || addr.starts_with("tb1p") || addr.starts_with("bcrt1p")
+        }
+
         match self {
             Self::Single(addr) => {
                 if addr.is_empty() {
                     return Err(TreasuryAddressError::EmptyAddress);
+                }
+                // QUANTUM SAFETY: Reject P2TR addresses
+                if is_p2tr_address(addr) {
+                    return Err(TreasuryAddressError::QuantumUnsafe);
                 }
                 Ok(())
             }
@@ -495,6 +514,11 @@ impl TreasuryAddress {
             } => {
                 if address.is_empty() {
                     return Err(TreasuryAddressError::EmptyAddress);
+                }
+
+                // QUANTUM SAFETY: Reject P2TR addresses
+                if is_p2tr_address(address) {
+                    return Err(TreasuryAddressError::QuantumUnsafe);
                 }
 
                 if *required == 0 || *total == 0 || *required > *total || *total > 15 {
@@ -616,6 +640,38 @@ mod tests {
             addr.validate(),
             Err(TreasuryAddressError::EmptyAddress)
         ));
+    }
+
+    #[test]
+    fn test_treasury_address_rejects_p2tr() {
+        // P2TR addresses should be rejected for quantum safety
+
+        // Mainnet P2TR
+        let p2tr_mainnet =
+            TreasuryAddress::single("bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr");
+        assert!(matches!(
+            p2tr_mainnet.validate(),
+            Err(TreasuryAddressError::QuantumUnsafe)
+        ));
+
+        // Testnet P2TR
+        let p2tr_testnet =
+            TreasuryAddress::single("tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c");
+        assert!(matches!(
+            p2tr_testnet.validate(),
+            Err(TreasuryAddressError::QuantumUnsafe)
+        ));
+
+        // Regtest P2TR
+        let p2tr_regtest = TreasuryAddress::single("bcrt1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqc8gma6");
+        assert!(matches!(
+            p2tr_regtest.validate(),
+            Err(TreasuryAddressError::QuantumUnsafe)
+        ));
+
+        // P2WPKH should be accepted (quantum-safe)
+        let p2wpkh = TreasuryAddress::single("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+        assert!(p2wpkh.validate().is_ok());
     }
 
     #[test]

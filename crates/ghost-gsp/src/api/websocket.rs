@@ -42,6 +42,20 @@ use ghost_gsp_proto::{
 use crate::error::GspError;
 use crate::server::GspState;
 
+/// QUANTUM SAFETY: Check if a Bitcoin address is quantum-safe
+///
+/// P2TR addresses (bc1p...) are quantum-vulnerable because they expose
+/// the public key on-chain. This function rejects P2TR addresses.
+fn validate_quantum_safe_address(address: &str) -> Result<(), GspError> {
+    if address.starts_with("bc1p")
+        || address.starts_with("tb1p")
+        || address.starts_with("bcrt1p")
+    {
+        return Err(GspError::QuantumUnsafe);
+    }
+    Ok(())
+}
+
 /// Verify a wallet proof for WebSocket operations
 ///
 /// This performs comprehensive verification:
@@ -486,6 +500,16 @@ async fn handle_request_jump(
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
+    // QUANTUM SAFETY: Reject P2TR target addresses
+    if let Err(e) = validate_quantum_safe_address(target_address) {
+        return Ok(Some(ServerMessage::JumpRequested {
+            success: false,
+            lock_id: lock_id.to_string(),
+            jump_txid: None,
+            error: Some(e.to_string()),
+        }));
+    }
+
     // Comprehensive proof verification:
     // - Structure and timestamp validation
     // - Schnorr signature verification
@@ -572,6 +596,15 @@ async fn handle_prepare_payment(
         .wallet_id
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
+
+    // QUANTUM SAFETY: Reject P2TR recipient addresses
+    if let Err(e) = validate_quantum_safe_address(recipient) {
+        return Ok(Some(ServerMessage::PaymentPrepared {
+            success: false,
+            payment: None,
+            error: Some(e.to_string()),
+        }));
+    }
 
     // Comprehensive proof verification:
     // - Structure and timestamp validation

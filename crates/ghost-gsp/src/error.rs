@@ -131,6 +131,13 @@ pub enum GspError {
     /// H-11: Lock UTXO has insufficient confirmations
     #[error("Insufficient confirmations: {have} < {need}")]
     InsufficientConfirmations { have: u32, need: u32 },
+
+    // =========================================================================
+    // Quantum Safety Errors
+    // =========================================================================
+    /// P2TR address is quantum-unsafe (exposes public key on-chain)
+    #[error("Quantum-unsafe: P2TR addresses (bc1p...) are quantum-vulnerable. Use P2WPKH (bc1q...) instead.")]
+    QuantumUnsafe,
 }
 
 impl From<ghost_gsp_proto::GspProtoError> for GspError {
@@ -259,6 +266,12 @@ impl IntoResponse for GspError {
                 StatusCode::CONFLICT,
                 "INSUFFICIENT_CONFIRMATIONS",
                 format!("Insufficient confirmations: {} < {}", have, need),
+            ),
+            // Quantum safety
+            GspError::QuantumUnsafe => (
+                StatusCode::BAD_REQUEST,
+                "QUANTUM_UNSAFE",
+                "P2TR addresses are quantum-vulnerable. Use P2WPKH (bc1q...) instead.".to_string(),
             ),
         };
 

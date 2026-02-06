@@ -20,38 +20,46 @@
 //| FILE: lock.rs                                                                                                        |
 //|======================================================================================================================|
 
-//! Ghost Lock - P2TR UTXO with timelock recovery
+//! Ghost Lock - P2WSH UTXO with timelock recovery (Quantum-Safe)
 //!
-//! A Ghost Lock is a Taproot output that can be spent via:
-//! - Key path: Using the lock key (normal, efficient)
-//! - Script path: Using the recovery key after timelock (emergency)
+//! A Ghost Lock is a P2WSH output that can be spent via:
+//! - Normal path (IF branch): Using the lock key
+//! - Recovery path (ELSE branch): Using the recovery key after timelock
+//!
+//! Unlike P2TR which exposes public keys on-chain, P2WSH hides the keys
+//! behind a hash until spending time, providing quantum safety.
 
-use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey, XOnlyPublicKey};
-use bitcoin::taproot::TaprootSpendInfo;
+use bitcoin::blockdata::script::ScriptBuf;
+use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+use bitcoin::WScriptHash;
 use serde::{Deserialize, Serialize};
 
 use crate::denomination::Denomination;
 use crate::error::GhostLockError;
 use crate::jump::{JumpRiskTier, JumpSchedule};
-use crate::script::{build_lock_script, ghost_lock_id, to_x_only};
+use crate::script::{build_lock_script, compute_wsh_script_hash, ghost_lock_id};
 use crate::state::{LockState, StateTransition};
 use crate::timelock::TimelockTier;
 
-/// A Ghost Lock - P2TR UTXO with timelock recovery
+/// A Ghost Lock - P2WSH UTXO with timelock recovery (Quantum-Safe)
 #[derive(Debug, Clone)]
 pub struct GhostLock {
-    /// Lock public key (x-only for key path)
-    lock_pubkey: XOnlyPublicKey,
-    /// Recovery public key (for script path)
-    recovery_pubkey: XOnlyPublicKey,
+    /// Lock public key (33-byte compressed)
+    lock_pubkey: PublicKey,
+    /// Recovery public key (33-byte compressed)
+    recovery_pubkey: PublicKey,
     /// Standard denomination
     denomination: Denomination,
     /// Timelock tier for recovery
     timelock_tier: TimelockTier,
     /// Block height when created
     creation_height: u32,
-    /// Taproot spend info
-    spend_info: TaprootSpendInfo,
+    /// The witness script (needed for spending)
+    witness_script: ScriptBuf,
+    /// SHA256 hash of witness script (for P2WSH address)
+    script_hash: WScriptHash,
+    /// The P2WSH scriptPubKey (OP_0 <hash>)
+    script_pubkey: ScriptBuf,
     /// Unique lock ID
     lock_id: [u8; 32],
     /// Current state
@@ -77,11 +85,8 @@ impl GhostLock {
             ));
         }
 
-        let lock_pubkey_full = PublicKey::from_secret_key(secp, lock_secret);
-        let recovery_pubkey_full = PublicKey::from_secret_key(secp, recovery_secret);
-
-        let lock_pubkey = to_x_only(&lock_pubkey_full);
-        let recovery_pubkey = to_x_only(&recovery_pubkey_full);
+        let lock_pubkey = PublicKey::from_secret_key(secp, lock_secret);
+        let recovery_pubkey = PublicKey::from_secret_key(secp, recovery_secret);
 
         Self::from_pubkeys(
             lock_pubkey,
@@ -94,8 +99,8 @@ impl GhostLock {
 
     /// Create from existing public keys
     pub fn from_pubkeys(
-        lock_pubkey: XOnlyPublicKey,
-        recovery_pubkey: XOnlyPublicKey,
+        lock_pubkey: PublicKey,
+        recovery_pubkey: PublicKey,
         denomination: Denomination,
         timelock_tier: TimelockTier,
         creation_height: u32,
@@ -109,13 +114,16 @@ impl GhostLock {
             )));
         }
 
-        // Build taproot script
-        let spend_info = build_lock_script(
+        // Build P2WSH script
+        let (witness_script, script_pubkey) = build_lock_script(
             &lock_pubkey,
             &recovery_pubkey,
             creation_height,
             timelock_tier,
         )?;
+
+        // Compute script hash
+        let script_hash = compute_wsh_script_hash(&witness_script);
 
         // Compute lock ID
         let lock_id = ghost_lock_id(
@@ -134,20 +142,22 @@ impl GhostLock {
             denomination,
             timelock_tier,
             creation_height,
-            spend_info,
+            witness_script,
+            script_hash,
+            script_pubkey,
             lock_id,
             state: LockState::Active,
             jump_schedule,
         })
     }
 
-    /// Get the lock public key
-    pub fn lock_pubkey(&self) -> &XOnlyPublicKey {
+    /// Get the lock public key (33-byte compressed)
+    pub fn lock_pubkey(&self) -> &PublicKey {
         &self.lock_pubkey
     }
 
-    /// Get the recovery public key
-    pub fn recovery_pubkey(&self) -> &XOnlyPublicKey {
+    /// Get the recovery public key (33-byte compressed)
+    pub fn recovery_pubkey(&self) -> &PublicKey {
         &self.recovery_pubkey
     }
 
@@ -171,14 +181,24 @@ impl GhostLock {
         self.creation_height
     }
 
-    /// Get the taproot spend info
-    pub fn spend_info(&self) -> &TaprootSpendInfo {
-        &self.spend_info
+    /// Get the witness script (needed for spending)
+    ///
+    /// IMPORTANT: The client must store this script to spend the lock.
+    /// It cannot be reconstructed from the on-chain P2WSH output alone.
+    pub fn witness_script(&self) -> &ScriptBuf {
+        &self.witness_script
     }
 
-    /// Get the taproot output key (for scriptPubKey)
-    pub fn output_key(&self) -> XOnlyPublicKey {
-        self.spend_info.output_key().to_x_only_public_key()
+    /// Get the script hash (SHA256 of witness script)
+    pub fn script_hash(&self) -> &WScriptHash {
+        &self.script_hash
+    }
+
+    /// Get the P2WSH scriptPubKey (for creating outputs)
+    ///
+    /// This is what goes in the transaction output: `OP_0 <32-byte hash>`
+    pub fn script_pubkey(&self) -> &ScriptBuf {
+        &self.script_pubkey
     }
 
     /// Get the unique lock ID
@@ -268,13 +288,24 @@ impl GhostLock {
 /// Serializable Ghost Lock data
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GhostLockData {
+    /// Lock public key (hex-encoded 33-byte compressed)
     pub lock_pubkey: String,
+    /// Recovery public key (hex-encoded 33-byte compressed)
     pub recovery_pubkey: String,
+    /// Denomination
     pub denomination: Denomination,
+    /// Timelock tier
     pub timelock_tier: TimelockTier,
+    /// Creation height
     pub creation_height: u32,
+    /// Lock ID (hex-encoded)
     pub lock_id: String,
+    /// Current state
     pub state: LockState,
+    /// Witness script (hex-encoded) - IMPORTANT: needed to spend
+    pub witness_script: String,
+    /// Script hash (hex-encoded)
+    pub script_hash: String,
 }
 
 impl From<&GhostLock> for GhostLockData {
@@ -287,6 +318,11 @@ impl From<&GhostLock> for GhostLockData {
             creation_height: lock.creation_height,
             lock_id: lock.lock_id_hex(),
             state: lock.state,
+            witness_script: hex::encode(lock.witness_script.as_bytes()),
+            script_hash: {
+                let hash_bytes: &[u8; 32] = lock.script_hash.as_ref();
+                hex::encode(hash_bytes)
+            },
         }
     }
 }
@@ -294,6 +330,7 @@ impl From<&GhostLock> for GhostLockData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::script::is_p2wsh;
     use rand::RngCore;
 
     fn generate_secret_key() -> SecretKey {
@@ -322,6 +359,33 @@ mod tests {
         assert_eq!(lock.sats(), 1_000_000);
         assert_eq!(lock.creation_height(), 800_000);
         assert_eq!(lock.state(), LockState::Active);
+
+        // Verify P2WSH format
+        assert!(is_p2wsh(lock.script_pubkey()));
+    }
+
+    #[test]
+    fn test_lock_stores_witness_script() {
+        let secp = Secp256k1::new();
+        let lock_secret = generate_secret_key();
+        let recovery_secret = generate_secret_key();
+
+        let lock = GhostLock::new(
+            &secp,
+            &lock_secret,
+            &recovery_secret,
+            Denomination::Small,
+            TimelockTier::Standard,
+            800_000,
+        )
+        .unwrap();
+
+        // Witness script should be non-empty
+        assert!(!lock.witness_script().is_empty());
+
+        // Script hash should be 32 bytes
+        let hash_bytes: &[u8; 32] = lock.script_hash().as_ref();
+        assert_eq!(hash_bytes.len(), 32);
     }
 
     #[test]
@@ -387,6 +451,10 @@ mod tests {
         let data = GhostLockData::from(&lock);
         assert_eq!(data.denomination, Denomination::Medium);
         assert_eq!(data.timelock_tier, TimelockTier::Short);
+
+        // Witness script should be included in serialization
+        assert!(!data.witness_script.is_empty());
+        assert!(!data.script_hash.is_empty());
     }
 
     #[test]
@@ -525,5 +593,26 @@ mod tests {
 
         // Should succeed at exactly the max
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_same_secret_rejected() {
+        let secp = Secp256k1::new();
+        let secret = generate_secret_key();
+
+        let result = GhostLock::new(
+            &secp,
+            &secret,
+            &secret, // Same secret
+            Denomination::Small,
+            TimelockTier::Standard,
+            800_000,
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            GhostLockError::InvalidKey(_)
+        ));
     }
 }

@@ -20,12 +20,21 @@
 //| FILE: lib.rs                                                                                                         |
 //|======================================================================================================================|
 
-//! Ghost Locks - P2TR UTXO management for Ghost Pay
+//! Ghost Locks - P2WSH UTXO management for Ghost Pay (Quantum-Safe)
 //!
 //! Ghost Locks are the on-chain representation of funds in Ghost Pay. They use
-//! Taproot outputs with:
-//! - Key path: Normal spending with Ghost Key (efficient, private)
-//! - Script path: Recovery after timelock expires
+//! P2WSH (Pay-to-Witness-Script-Hash) outputs for quantum safety:
+//!
+//! - **P2WSH hides public keys**: Only a hash is visible on-chain until spending
+//! - **Two spending paths**: Normal (lock key) and recovery (after timelock)
+//! - **Quantum-safe**: Public keys are not exposed while funds are locked
+//!
+//! # Quantum Safety
+//!
+//! Unlike P2TR (Taproot) which exposes public keys on-chain, P2WSH outputs only
+//! reveal a script hash. The actual public keys are only revealed at spend time,
+//! providing protection against quantum computers that could derive private keys
+//! from exposed public keys.
 //!
 //! # Features
 //!
@@ -57,6 +66,13 @@
 //! );
 //!
 //! assert!(lock.is_ok());
+//! let lock = lock.unwrap();
+//!
+//! // The lock provides a P2WSH scriptPubKey for creating outputs
+//! let script_pubkey = lock.script_pubkey();
+//!
+//! // IMPORTANT: Store the witness_script - needed for spending!
+//! let witness_script = lock.witness_script();
 //! ```
 
 mod denomination;
@@ -72,8 +88,10 @@ pub use error::GhostLockError;
 pub use jump::JumpRiskTier;
 pub use lock::{GhostLock, GhostLockData};
 pub use script::{
-    build_lock_script, build_normal_script, build_recovery_script, compute_output_key,
-    ghost_lock_id, to_x_only, RecoveryInputParams, RECOVERY_NSEQUENCE,
+    build_lock_script, build_normal_witness, build_p2wsh_script_pubkey, build_recovery_witness,
+    build_wsh_witness_script, compute_wsh_script_hash, ghost_lock_id, is_p2tr, is_p2wsh,
+    is_quantum_safe_address, validate_no_p2tr, RecoveryInputParams, P2TR_REJECTION_MSG,
+    RECOVERY_NSEQUENCE,
 };
 pub use state::{LockState, StateTransition};
 pub use timelock::{TimelockTier, MAX_CREATION_HEIGHT, MIN_RECOVERY_BLOCKS};
@@ -117,6 +135,9 @@ mod tests {
         assert_eq!(lock.denomination(), Denomination::Small);
         assert_eq!(lock.timelock_tier(), TimelockTier::Standard);
         assert_eq!(lock.creation_height(), 800_000);
+
+        // Verify P2WSH output
+        assert!(is_p2wsh(lock.script_pubkey()));
     }
 
     #[test]
@@ -135,8 +156,10 @@ mod tests {
         )
         .unwrap();
 
-        // Should have a valid output key
-        let _output_key = lock.output_key();
+        // Should have a valid P2WSH script pubkey
+        let script_pubkey = lock.script_pubkey();
+        assert!(is_p2wsh(script_pubkey));
+        assert!(!is_p2tr(script_pubkey));
     }
 
     #[test]
@@ -163,5 +186,14 @@ mod tests {
         let recovery_height = lock.recovery_height();
         assert!(lock.is_recovery_available(recovery_height));
         assert!(lock.is_recovery_available(recovery_height + 1000));
+    }
+
+    #[test]
+    fn test_quantum_safe_address_validation() {
+        // P2WPKH/P2WSH are quantum-safe
+        assert!(is_quantum_safe_address("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"));
+
+        // P2TR is NOT quantum-safe
+        assert!(!is_quantum_safe_address("bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr"));
     }
 }

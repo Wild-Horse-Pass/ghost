@@ -62,6 +62,10 @@ pub enum GhostLockError {
     /// Timelock too short
     #[error("Timelock too short: {blocks} blocks, minimum is {minimum}")]
     TimelockTooShort { blocks: u32, minimum: u32 },
+
+    /// Quantum-unsafe output type (P2TR)
+    #[error("Quantum-unsafe: {0}")]
+    QuantumUnsafe(String),
 }
 
 impl From<bitcoin::secp256k1::Error> for GhostLockError {

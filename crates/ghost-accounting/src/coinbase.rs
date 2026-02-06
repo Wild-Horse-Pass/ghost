@@ -185,10 +185,26 @@ impl CoinbaseBuilder {
     ///
     /// Address can be:
     /// - Raw script pubkey bytes (for internal use)
-    /// - Bech32/Bech32m encoded address string (P2WPKH, P2WSH, P2TR)
+    /// - Bech32/Bech32m encoded address string (P2WPKH, P2WSH only - P2TR rejected)
+    ///
+    /// # Quantum Safety
+    ///
+    /// P2TR addresses (bc1p...) are rejected for quantum safety.
+    /// P2TR exposes public keys on-chain, making them vulnerable to
+    /// quantum computer attacks while funds are locked.
     fn script_from_address(&self, address: &[u8]) -> GhostResult<ScriptBuf> {
         // First, try to parse as UTF-8 address string
         if let Ok(addr_str) = std::str::from_utf8(address) {
+            // QUANTUM SAFETY: Reject P2TR addresses
+            if addr_str.starts_with("bc1p")
+                || addr_str.starts_with("tb1p")
+                || addr_str.starts_with("bcrt1p")
+            {
+                return Err(GhostError::QuantumUnsafe(
+                    "P2TR addresses (bc1p...) are quantum-vulnerable. Use P2WPKH (bc1q...) instead.".into()
+                ));
+            }
+
             // Try to parse as Bitcoin address
             if let Ok(addr) =
                 addr_str.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
@@ -199,8 +215,15 @@ impl CoinbaseBuilder {
             }
         }
 
-        // If not a valid address string, treat as raw script pubkey bytes
-        // This allows internal use with pre-computed scripts
+        // If raw script pubkey bytes, check for P2TR format
+        // P2TR: 34 bytes, starts with OP_1 (0x51) + PUSH32 (0x20)
+        if address.len() == 34 && address[0] == 0x51 && address[1] == 0x20 {
+            return Err(GhostError::QuantumUnsafe(
+                "P2TR script pubkeys are quantum-vulnerable. Use P2WSH instead.".into()
+            ));
+        }
+
+        // Allow raw script pubkey bytes (for internal use with pre-computed scripts)
         Ok(ScriptBuf::from(address.to_vec()))
     }
 

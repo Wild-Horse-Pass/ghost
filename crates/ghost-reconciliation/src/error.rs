@@ -100,6 +100,10 @@ pub enum ReconciliationError {
     /// C-2: Double-spend attempt within same batch
     #[error("Double-spend in batch: input {outpoint} already consumed")]
     DoubleSpendInBatch { outpoint: String },
+
+    /// QUANTUM SAFETY: P2TR addresses are rejected
+    #[error("Quantum-unsafe: P2TR addresses (bc1p...) are quantum-vulnerable. Use P2WPKH (bc1q...) instead.")]
+    QuantumUnsafe,
 }
 
 // Simplified BatchNotFound that takes a String directly

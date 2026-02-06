@@ -59,6 +59,8 @@ pub enum ValidationError {
     InvalidProtocolVersion(u16),
     #[error("Invalid user identity: {0}")]
     InvalidUserIdentity(String),
+    #[error("Quantum-unsafe address: P2TR addresses (bc1p...) are quantum-vulnerable. Use P2WPKH (bc1q...) instead.")]
+    QuantumUnsafeAddress,
 }
 
 /// Stratum protocol version.
@@ -234,6 +236,12 @@ pub struct OpenStandardMiningChannel {
 
 impl OpenStandardMiningChannel {
     /// Validate the open channel request.
+    ///
+    /// # Quantum Safety
+    ///
+    /// Rejects P2TR addresses (bc1p...) for quantum safety. P2TR exposes
+    /// public keys on-chain, making them vulnerable to quantum computer
+    /// attacks while funds are locked.
     pub fn validate(&self) -> Result<(), ValidationError> {
         // Validate user identity length
         if self.user_identity.len() > MAX_STRING_LENGTH {
@@ -247,6 +255,13 @@ impl OpenStandardMiningChannel {
         // Validate user identity content (no control characters)
         if self.user_identity.chars().any(|c| c.is_control()) {
             return Err(ValidationError::InvalidUserIdentity(self.user_identity.clone()));
+        }
+
+        // QUANTUM SAFETY: Reject P2TR addresses
+        // User identity format: <address>.<worker_name> or just <address>
+        let address = self.user_identity.split('.').next().unwrap_or(&self.user_identity);
+        if address.starts_with("bc1p") || address.starts_with("tb1p") || address.starts_with("bcrt1p") {
+            return Err(ValidationError::QuantumUnsafeAddress);
         }
 
         // Validate hashrate (must be positive and finite)
@@ -699,6 +714,45 @@ mod tests {
             ..valid.clone()
         };
         assert!(bad_identity.validate().is_err());
+    }
+
+    #[test]
+    fn test_open_channel_rejects_p2tr_address() {
+        // P2TR addresses should be rejected for quantum safety
+        let p2tr_mainnet = OpenStandardMiningChannel {
+            request_id: 1,
+            user_identity: "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr".to_string(),
+            nominal_hash_rate: 1000.0,
+            max_target: [0u8; 32],
+        };
+        assert!(matches!(p2tr_mainnet.validate(), Err(ValidationError::QuantumUnsafeAddress)));
+
+        // With worker name
+        let p2tr_with_worker = OpenStandardMiningChannel {
+            request_id: 1,
+            user_identity: "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr.worker1".to_string(),
+            nominal_hash_rate: 1000.0,
+            max_target: [0u8; 32],
+        };
+        assert!(matches!(p2tr_with_worker.validate(), Err(ValidationError::QuantumUnsafeAddress)));
+
+        // Testnet P2TR
+        let p2tr_testnet = OpenStandardMiningChannel {
+            request_id: 1,
+            user_identity: "tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c".to_string(),
+            nominal_hash_rate: 1000.0,
+            max_target: [0u8; 32],
+        };
+        assert!(matches!(p2tr_testnet.validate(), Err(ValidationError::QuantumUnsafeAddress)));
+
+        // P2WPKH should be accepted (quantum-safe)
+        let p2wpkh = OpenStandardMiningChannel {
+            request_id: 1,
+            user_identity: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
+            nominal_hash_rate: 1000.0,
+            max_target: [0u8; 32],
+        };
+        assert!(p2wpkh.validate().is_ok());
     }
 
     #[test]

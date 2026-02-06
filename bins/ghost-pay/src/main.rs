@@ -773,12 +773,9 @@ async fn create_lock(
     )
     .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    // Generate taproot address from output key
-    let output_key = ghost_lock.output_key();
-    let address = Address::p2tr_tweaked(
-        bitcoin::key::TweakedPublicKey::dangerous_assume_tweaked(output_key),
-        state.network,
-    );
+    // Generate P2WSH address from script pubkey (quantum-safe)
+    let address = Address::from_script(ghost_lock.script_pubkey(), state.network)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -798,7 +795,7 @@ async fn create_lock(
         jump_risk: format!("{:?}", jump_risk),
         needs_jump: ghost_lock.needs_jump(creation_height),
         address: address.to_string(),
-        output_pubkey: hex::encode(output_key.serialize()),
+        output_pubkey: hex::encode(ghost_lock.lock_pubkey().serialize()),
         recovery_height: ghost_lock.recovery_height(),
         blocks_until_jump: ghost_lock.blocks_until_jump(creation_height),
     };
