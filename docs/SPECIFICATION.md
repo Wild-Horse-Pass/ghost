@@ -41,29 +41,43 @@
 
 ### 1.1 What is Bitcoin Ghost?
 
-Bitcoin Ghost is a **decentralized mining pool** where:
-- Every pool node is equal (no central server)
-- Each node builds its own blocks with its own mempool policy
-- Nodes form a P2P consensus network to agree on share accounting
-- Miners connect to any node and receive work-proportional rewards
-- Transaction fees go to the node operator (not pool)
-- Optional L2 payment network (Ghost Pay) for instant transfers
+Bitcoin Ghost is a **full Bitcoin node implementation** - a derivative of Bitcoin Core, similar in philosophy to Bitcoin Knots, but with significant additional capabilities:
 
-### 1.2 Design Principles
+- **Complete Bitcoin Node**: Full block validation, UTXO management, mempool, P2P networking
+- **Incentivized Operation**: Nodes earn rewards for running valuable features (5-4-3-2-1 share system)
+- **Decentralized Mining**: Built-in mining coordination without centralized pools
+- **Ghost Pay L2**: Instant payment layer with 10-second settlement
+- **Enhanced Privacy**: Silent payments, Wraith mixing, encrypted metadata
+- **Policy Sovereignty**: Each node enforces its own mempool/block policies via BUDS
 
-1. **Node Sovereignty**: Each node chooses its own mempool/block policy
-2. **Decentralization**: No single point of failure or control
-3. **Fair Rewards**: Work-proportional payouts, verifiable on-chain
-4. **Incentive Alignment**: 5-4-3-2-1 share system rewards valuable services
-5. **Spam Resistance**: BUDS classification enables policy-based filtering
+### 1.2 Comparison with Other Implementations
 
-### 1.3 Key Outcomes
+| Feature | Bitcoin Core | Bitcoin Knots | Bitcoin Ghost |
+|---------|--------------|---------------|---------------|
+| Full validation | Yes | Yes | Yes |
+| Custom policies | Limited | Yes | Yes + BUDS |
+| Mining support | Solo only | Solo only | Decentralized mining |
+| Node incentives | None | None | 5-4-3-2-1 rewards |
+| L2 payments | No | No | Ghost Pay |
+| Privacy features | Basic | Basic | Silent payments + Wraith |
 
-- Miners get paid proportionally to work submitted
-- Node operators earn TX fees from blocks they build
-- Qualified nodes earn bonus shares from the node reward pool
-- Treasury accumulates for network development (controlled address)
-- Optional L2 enables instant, low-fee payments
+### 1.3 Design Principles
+
+1. **Full Node First**: Complete Bitcoin validation with no trust assumptions
+2. **Node Sovereignty**: Each node chooses its own mempool/block policy
+3. **Incentive Alignment**: Nodes earn rewards for running valuable services
+4. **Decentralization**: No central servers, pools, or coordinators required
+5. **Privacy by Default**: Silent payments, encrypted metadata, optional mixing
+6. **Spam Resistance**: BUDS classification enables intelligent transaction filtering
+
+### 1.4 Key Outcomes
+
+- Node operators earn rewards for running verified capabilities
+- Node operators keep 100% of TX fees from blocks they build
+- Miners connect directly to nodes - no third-party pools required
+- Instant payments via Ghost Pay L2 (10-second settlement)
+- Policy sovereignty via BUDS classification system
+- Treasury funds ongoing development
 
 ---
 

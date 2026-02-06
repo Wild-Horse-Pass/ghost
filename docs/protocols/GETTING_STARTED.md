@@ -22,7 +22,43 @@
 
 # Getting Started
 
-Quick start guide for miners, node operators, and L2 users.
+Quick start guide for node operators, miners, and users.
+
+## What is Bitcoin Ghost?
+
+Bitcoin Ghost is a **full Bitcoin node implementation** - like Bitcoin Core or Bitcoin Knots, but with additional features:
+
+- **Earn Rewards**: Nodes with verified capabilities earn shares of block rewards
+- **Accept Miners**: Built-in mining coordination - no third-party pool needed
+- **Keep TX Fees**: Block-finding nodes keep 100% of transaction fees
+- **Instant Payments**: Ghost Pay L2 for 10-second settlement
+- **Policy Control**: Filter spam via BUDS classification
+
+## For Node Operators
+
+Running a Ghost node is similar to running Bitcoin Core, but with additional earning potential.
+
+### Requirements
+
+- 8+ GB RAM
+- 1 TB SSD (for full blockchain)
+- Reliable internet connection
+- Port forwarding (8333, 8555-8563)
+
+### Quick Start
+
+```bash
+# Install
+cargo build --release -p ghost-pool
+sudo cp target/release/ghost-pool /opt/ghost/bin/
+
+# Configure
+sudo mkdir -p /etc/ghost
+sudo cp config/mainnet.toml /etc/ghost/pool.toml
+
+# Run
+ghost-pool --config /etc/ghost/pool.toml
+```
 
 ## For Miners
 

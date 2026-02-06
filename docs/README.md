@@ -1,6 +1,6 @@
 # Bitcoin Ghost Documentation
 
-Complete documentation for the Bitcoin Ghost network - a privacy-focused Bitcoin Layer 2 with integrated mining coordination.
+Complete documentation for Bitcoin Ghost - a full Bitcoin node implementation with incentivized operation, decentralized mining, and integrated L2 payments. Similar to Bitcoin Core or Bitcoin Knots, but with significant enhancements.
 
 ## Quick Navigation
 

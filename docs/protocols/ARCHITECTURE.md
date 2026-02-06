@@ -24,13 +24,24 @@
 
 System design and component overview for Bitcoin Ghost.
 
+## What is Bitcoin Ghost?
+
+Bitcoin Ghost is a **full Bitcoin node implementation** - a derivative of Bitcoin Core, similar to Bitcoin Knots, but with significant enhancements:
+
+- **Complete Bitcoin Node**: Full block validation, UTXO management, mempool, P2P networking
+- **Incentivized Operation**: Nodes earn rewards for running valuable features
+- **Decentralized Mining**: Built-in mining coordination without centralized pools
+- **Ghost Pay L2**: Instant payment layer with 10-second settlement
+- **Enhanced Privacy**: Silent payments, Wraith mixing, encrypted metadata
+
 ## Design Principles
 
-1. **Node Sovereignty**: Each node chooses its own mempool/block policy
-2. **Decentralization**: No single point of failure or control
-3. **Fair Rewards**: Work-proportional payouts, verifiable on-chain
-4. **Incentive Alignment**: 5-4-3-2-1 share system rewards valuable services
-5. **Spam Resistance**: BUDS classification enables policy-based filtering
+1. **Full Node First**: Complete Bitcoin validation with no trust assumptions
+2. **Node Sovereignty**: Each node chooses its own mempool/block policy
+3. **Incentive Alignment**: Nodes earn rewards for running valuable services (5-4-3-2-1)
+4. **Decentralization**: No central servers, pools, or coordinators required
+5. **Privacy by Default**: Silent payments, encrypted metadata, optional mixing
+6. **Spam Resistance**: BUDS classification enables intelligent transaction filtering
 
 ## High-Level Overview
 

@@ -12,7 +12,7 @@
 
 1. [Executive Summary](#1-executive-summary)
 2. [System Architecture](#2-system-architecture)
-3. [Mining Pool Protocol](#3-mining-pool-protocol)
+3. [Decentralized Mining](#3-decentralized-mining)
 4. [P2P Consensus Network](#4-p2p-consensus-network)
 5. [Payment Systems](#5-payment-systems)
 6. [Privacy Protocols](#6-privacy-protocols)
@@ -30,63 +30,113 @@
 
 ## 1.1 What is Bitcoin Ghost?
 
-Bitcoin Ghost is a **decentralized mining pool** with an integrated **L2 payment network**. Unlike traditional pools with central servers, Ghost operates as a peer-to-peer network where:
+Bitcoin Ghost is a **full Bitcoin node implementation** - similar to Bitcoin Core or Bitcoin Knots, but with significant enhancements. Like its predecessors, Ghost validates blocks, maintains the UTXO set, and participates in the Bitcoin network. Unlike them, Ghost adds:
 
-- Every pool node is equal (no central authority)
-- Each node builds its own blocks with sovereign mempool policy
-- Nodes form a BFT consensus network for share accounting
-- Miners connect to any node and receive work-proportional rewards
-- Transaction fees flow to the block-finding node operator
-- Optional Ghost Pay L2 enables instant, private transfers
+- **Incentivized Node Operation**: Nodes earn rewards for running valuable features
+- **Decentralized Mining**: Built-in mining coordination without centralized pools
+- **Ghost Pay L2**: Instant, private payment layer with 10-second settlement
+- **Privacy Features**: Silent payments, Wraith mixing, encrypted metadata
+- **Policy Sovereignty**: Each node enforces its own mempool/block policies
 
-## 1.2 Core Components
+## 1.2 Comparison with Other Implementations
+
+| Feature | Bitcoin Core | Bitcoin Knots | Bitcoin Ghost |
+|---------|--------------|---------------|---------------|
+| Full validation | Yes | Yes | Yes |
+| Custom policies | Limited | Yes | Yes + BUDS classification |
+| Mining support | Solo only | Solo only | Decentralized pool built-in |
+| Node incentives | None | None | 5-4-3-2-1 share system |
+| L2 payments | No | No | Ghost Pay (10s settlement) |
+| Privacy | Basic | Basic | Silent payments + Wraith |
+| Light wallets | No | No | GSP backend built-in |
+
+## 1.3 Core Components
 
 | Component | Purpose |
 |-----------|---------|
-| **ghost-pool** | Main pool node binary |
-| **ghost-core** | Modified Bitcoin Core with Ghost extensions |
+| **ghostd** | Full node daemon (Bitcoin Core derivative) |
+| **ghost-pool** | Mining coordination and node incentives |
 | **Ghost Pay** | L2 instant payment network |
 | **Wraith Protocol** | CoinJoin mixing for private entry |
 | **Ghost Locks** | P2TR timelocked outputs |
-| **Silent Payments** | Stealth address implementation |
+| **Silent Payments** | Stealth address implementation (BIP-352 style) |
+| **GSP** | Light wallet backend server |
 
-## 1.3 Design Principles
+## 1.4 Design Principles
 
-1. **Node Sovereignty**: Each node chooses its own mempool/block policy
-2. **Decentralization**: No single point of failure or control
-3. **Fair Rewards**: Work-proportional payouts via BFT consensus
-4. **Privacy**: Silent payments, Wraith mixing, encrypted metadata
-5. **Spam Resistance**: BUDS classification for transaction filtering
+1. **Full Node First**: Complete Bitcoin validation - no shortcuts or trust assumptions
+2. **Node Sovereignty**: Each node chooses its own mempool/block policy
+3. **Incentive Alignment**: Nodes earn rewards for running valuable features
+4. **Decentralization**: No central servers, pools, or coordinators required
+5. **Privacy by Default**: Silent payments, encrypted metadata, optional mixing
+6. **Spam Resistance**: BUDS classification enables intelligent transaction filtering
+
+## 1.5 Why Run a Ghost Node?
+
+Running a Ghost node provides benefits beyond running Bitcoin Core:
+
+| Benefit | Description |
+|---------|-------------|
+| **Earn Rewards** | Nodes with verified capabilities earn shares of block rewards |
+| **Mine Without Pools** | Connect miners directly - no third-party pool required |
+| **Keep TX Fees** | Block-finding nodes keep 100% of transaction fees |
+| **Instant Payments** | Accept Ghost Pay for 10-second settlement |
+| **Policy Control** | Filter spam/inscriptions via BUDS without external tools |
+| **Light Wallet Support** | Serve your own light wallets via built-in GSP |
 
 ---
 
 # 2. System Architecture
 
-## 2.1 High-Level Overview
+## 2.1 Ghost as a Bitcoin Node
+
+Bitcoin Ghost extends Bitcoin Core with additional capabilities while maintaining full compatibility:
 
 ```
-                              ┌─────────────────┐
-                              │   Coordinator   │
-                              │ (Miner Routing) │
-                              └────────┬────────┘
-                                       │
-          ┌────────────────────────────┼────────────────────────────┐
-          │                            │                            │
- ┌────────▼────────┐          ┌────────▼────────┐          ┌────────▼────────┐
- │  Ghost Node 1   │◄────────►│  Ghost Node 2   │◄────────►│  Ghost Node N   │
- │ (Pool + Core)   │          │ (Pool + Core)   │          │ (Pool + Core)   │
- └────────┬────────┘          └────────┬────────┘          └────────┬────────┘
-          │                            │                            │
-          │         P2P Consensus Network (ZMQ Mesh)                │
-          └────────────────────────────┴────────────────────────────┘
-          │                            │                            │
- ┌────────▼────────┐          ┌────────▼────────┐          ┌────────▼────────┐
- │     Miners      │          │     Miners      │          │     Miners      │
- │   (SV1/SV2)     │          │   (SV1/SV2)     │          │   (SV1/SV2)     │
- └─────────────────┘          └─────────────────┘          └─────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                         BITCOIN GHOST NODE                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐     │
+│  │     ghostd      │  │   ghost-pool    │  │    Ghost Pay    │     │
+│  │  (Full Node)    │  │ (Mining + Incen)│  │   (L2 Network)  │     │
+│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘     │
+│           │                    │                    │               │
+│  ┌────────▼────────────────────▼────────────────────▼────────┐     │
+│  │                    Shared State Layer                      │     │
+│  │         (UTXO Set, Mempool, Block Database, L2 State)      │     │
+│  └────────────────────────────────────────────────────────────┘     │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+         │                    │                    │
+         ▼                    ▼                    ▼
+    Bitcoin P2P          Ghost Mesh           Miners/Wallets
+     Network              Network              Connections
 ```
 
-## 2.2 Node Components
+## 2.2 Network Overview
+
+Ghost nodes form a peer-to-peer network for consensus on mining rewards and L2 state:
+
+```
+          ┌────────────────────────────────────────────────────┐
+          │                                                    │
+ ┌────────▼────────┐          ┌─────────────────┐    ┌────────▼────────┐
+ │  Ghost Node 1   │◄────────►│  Ghost Node 2   │◄──►│  Ghost Node N   │
+ │ (Full Node +    │          │ (Full Node +    │    │ (Full Node +    │
+ │  Mining + L2)   │          │  Mining + L2)   │    │  Mining + L2)   │
+ └────────┬────────┘          └────────┬────────┘    └────────┬────────┘
+          │                            │                      │
+          │      Ghost Consensus Network (ZMQ Mesh)           │
+          └────────────────────────────┴──────────────────────┘
+          │                            │                      │
+ ┌────────▼────────┐          ┌────────▼────────┐    ┌────────▼────────┐
+ │     Miners      │          │  Light Wallets  │    │   Ghost Pay     │
+ │   (SV1/SV2)     │          │   (via GSP)     │    │     Users       │
+ └─────────────────┘          └─────────────────┘    └─────────────────┘
+```
+
+## 2.3 Node Components
 
 Each Ghost Node runs:
 
@@ -176,9 +226,21 @@ If meets network difficulty → Submit Block
 
 ---
 
-# 3. Mining Pool Protocol
+# 3. Decentralized Mining
 
-## 3.1 Stratum Support
+Ghost eliminates the need for centralized mining pools. Every Ghost node can accept miners directly, and the network coordinates reward distribution via BFT consensus.
+
+## 3.1 How It Differs from Traditional Pools
+
+| Aspect | Centralized Pool | Ghost Decentralized Mining |
+|--------|------------------|---------------------------|
+| Server | Single point of failure | Any node can accept miners |
+| Trust | Pool operator controls payouts | BFT consensus on rewards |
+| Fees | Pool takes 1-3% | Node keeps TX fees, 1% to network |
+| Policy | Pool decides block content | Each node has sovereignty |
+| Custody | Pool holds funds | Direct to miner addresses |
+
+## 3.2 Stratum Support
 
 ### Native Stratum V1 (Port 34255)
 

@@ -20,18 +20,31 @@
 //| FILE: MINING_POOL.md                                                                                                 |
 //|======================================================================================================================|
 
-# Mining Pool
+# Decentralized Mining
 
-Decentralized Bitcoin mining pool architecture and operation.
+How Bitcoin Ghost enables mining without centralized pools.
 
 ## Overview
 
-Bitcoin Ghost is a **decentralized mining pool** where:
-- Every pool node is equal (no central server)
-- Each node builds its own blocks with its own mempool policy
+Bitcoin Ghost is a **full Bitcoin node implementation** that includes decentralized mining coordination as a built-in feature. Unlike traditional setups where miners must connect to centralized pools, Ghost nodes can accept miners directly and coordinate rewards via BFT consensus.
+
+### Key Differences from Traditional Pools
+
+| Aspect | Centralized Pool | Ghost Decentralized Mining |
+|--------|------------------|---------------------------|
+| Server | Single point of failure | Any Ghost node accepts miners |
+| Trust | Pool operator controls payouts | BFT consensus on rewards |
+| Fees | Pool takes 1-3% | Node keeps TX fees, 1% to network |
+| Policy | Pool decides block content | Each node has sovereignty |
+| Custody | Pool holds funds | Direct to miner addresses |
+
+### How It Works
+
+- Every Ghost node can accept miner connections (Stratum V1/V2)
 - Nodes form a P2P consensus network to agree on share accounting
-- Miners connect to any node and receive work-proportional rewards
-- Transaction fees go to the node operator (not pool)
+- Miners receive work-proportional rewards verified by BFT consensus
+- Transaction fees go to the node operator who finds the block
+- No third-party pool required
 
 ## Architecture
 

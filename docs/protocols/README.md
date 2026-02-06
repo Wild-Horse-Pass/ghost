@@ -22,7 +22,7 @@
 
 # Bitcoin Ghost Protocol Documentation
 
-Comprehensive documentation for the Bitcoin Ghost decentralized mining pool and Ghost Pay L2 network.
+Comprehensive documentation for Bitcoin Ghost - a full Bitcoin node implementation with incentivized operation, decentralized mining, and Ghost Pay L2. Similar to Bitcoin Core or Bitcoin Knots, but with enhanced features for node operators, miners, and users.
 
 ## Quick Links
 
