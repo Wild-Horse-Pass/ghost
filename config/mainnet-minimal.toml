@@ -1,0 +1,72 @@
+# =============================================================================
+# Bitcoin Ghost - Mainnet Minimal Configuration
+# =============================================================================
+#
+# This is a minimal configuration for quick mainnet deployment.
+# For full options with documentation, see mainnet.toml
+#
+# Required environment variables:
+#   BITCOIN_RPC_PASSWORD, PUBLIC_ADDRESS, TREASURY_ADDRESS,
+#   SIGNING_KEY, INTERNAL_API_SECRET
+#
+# =============================================================================
+
+[identity]
+key_path = "/etc/ghost/node.key"
+display_name = "Ghost Pool"
+
+[bitcoin]
+rpc_host = "127.0.0.1"
+rpc_port = 8332
+rpc_user = "${BITCOIN_RPC_USER:-ghostrpc}"
+rpc_password = "${BITCOIN_RPC_PASSWORD}"
+network = "mainnet"
+zmq_hashblock = "tcp://127.0.0.1:28332"
+zmq_hashtx = "tcp://127.0.0.1:28333"
+
+[network]
+public_address = "${PUBLIC_ADDRESS}"
+sv2_port = 34255
+sv1_port = 3333
+http_port = 8080
+max_miners = 10000
+mining_mode = "public_pool"
+public_mining = true
+signing_key = "${SIGNING_KEY}"
+internal_api_secret = "${INTERNAL_API_SECRET}"
+noise_enabled = true
+seed_nodes = []
+
+[network.p2p]
+share_propagation = 8555
+block_announcement = 8556
+consensus_voting = 8557
+health_monitoring = 8558
+discovery = 8559
+elder_management = 8560
+payout_proposal = 8561
+payout_transaction = 8562
+
+[policy]
+profile = "bitcoin_pure"
+
+[storage]
+db_path = "/var/lib/ghost/data"
+wal_mode = true
+archive_mode = true
+prune_height = 0
+
+[pool]
+treasury_address = "${TREASURY_ADDRESS}"
+treasury_fee_percent = 1.0
+min_payout_sats = 100000
+payout_interval_blocks = 100
+
+[ghost_pay]
+enabled = true
+virtual_block_secs = 10
+epoch_blocks = 2160
+transfer_fee_bps = 10
+min_transfer_fee_sats = 10
+wraith_enabled = true
+wraith_fee_percent = 0.5

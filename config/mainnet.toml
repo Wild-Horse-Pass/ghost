@@ -1,0 +1,474 @@
+# =============================================================================
+# Bitcoin Ghost - Mainnet Configuration
+# =============================================================================
+#
+# IMPORTANT: This is a MAINNET configuration template.
+# Review ALL settings carefully before deploying to production.
+#
+# Environment variables can be substituted with: ${VAR_NAME} or ${VAR_NAME:-default}
+#
+# Generate required secrets before deployment:
+#   - Node key:           ghost-cli key generate --output /etc/ghost/node.key
+#   - Signing key:        openssl rand -hex 32
+#   - Internal API secret: openssl rand -hex 32
+#
+# =============================================================================
+
+# =============================================================================
+# [identity] - Node Identity Configuration
+# =============================================================================
+[identity]
+
+# Path to Ed25519 private key file
+# Generate with: ghost-cli key generate --output /etc/ghost/node.key
+# Options: Any valid file path
+# Default: ~/.ghost/node.key
+# IMMUTABLE: Cannot be changed via dashboard API (defines node identity)
+key_path = "/etc/ghost/node.key"
+
+# Optional display name for this node (shown in monitoring/logs)
+# Options: Any string, or omit for anonymous
+# Default: None
+display_name = "Ghost Pool Mainnet"
+
+# Signer configuration (optional - for HSM/remote signing)
+# Options:
+#   - Omit this section to use local key_path (default)
+#   - Configure for remote HSM signing (advanced)
+# [identity.signer]
+# type = "local"  # Options: "local" | "remote"
+# key_path = "/etc/ghost/node.key"  # For local signer
+# # For remote signer:
+# # endpoint = "https://hsm.example.com:8443"
+# # auth_token = "${HSM_AUTH_TOKEN}"
+
+# =============================================================================
+# [bitcoin] - Bitcoin Core RPC Connection
+# =============================================================================
+[bitcoin]
+
+# Bitcoin Core RPC hostname or IP address
+# Options: IP address or hostname
+# Default: 127.0.0.1
+rpc_host = "127.0.0.1"
+
+# Bitcoin Core RPC port
+# Options by network:
+#   - mainnet: 8332
+#   - signet:  38332
+#   - testnet: 18332
+#   - regtest: 18443
+# Default: 38332 (signet)
+rpc_port = 8332
+
+# RPC username (must match bitcoin.conf rpcuser)
+# Options: Any string
+# Default: "bitcoin"
+rpc_user = "${BITCOIN_RPC_USER:-ghostrpc}"
+
+# RPC password (must match bitcoin.conf rpcpassword)
+# SECURITY: Use environment variable, never hardcode!
+# Options: Any string
+# Default: None (REQUIRED)
+rpc_password = "${BITCOIN_RPC_PASSWORD}"
+
+# Bitcoin network
+# Options: "mainnet" | "signet" | "testnet" | "regtest"
+# Default: "signet"
+# IMMUTABLE: Cannot be changed via dashboard API (changing networks is catastrophic)
+network = "mainnet"
+
+# ZMQ endpoint for block notifications (highly recommended)
+# Options: tcp://host:port or omit to disable
+# Default: tcp://127.0.0.1:28332
+# Bitcoin Core config: zmqpubhashblock=tcp://0.0.0.0:28332
+zmq_hashblock = "tcp://127.0.0.1:28332"
+
+# ZMQ endpoint for transaction notifications (recommended)
+# Options: tcp://host:port or omit to disable
+# Default: tcp://127.0.0.1:28333
+# Bitcoin Core config: zmqpubhashtx=tcp://0.0.0.0:28333
+zmq_hashtx = "tcp://127.0.0.1:28333"
+
+# ZMQ endpoint for reorg/sequence detection (optional)
+# Options: tcp://host:port or omit to disable
+# Default: tcp://127.0.0.1:28334
+# Bitcoin Core config: zmqpubsequence=tcp://0.0.0.0:28334
+zmq_sequence = "tcp://127.0.0.1:28334"
+
+# =============================================================================
+# [network] - Network and Mining Configuration
+# =============================================================================
+[network]
+
+# Public IP address or hostname for external connections
+# REQUIRED for public_pool mode (DNS registration)
+# Options: IP address, hostname, or omit for private pool
+# Default: None
+public_address = "${PUBLIC_ADDRESS}"
+
+# Stratum V2 port (native protocol)
+# Options: 1-65535 (avoid well-known ports)
+# Default: 34255
+sv2_port = 34255
+
+# Stratum V1 port (legacy miners via translator)
+# Options: 1-65535
+# Default: 3333
+sv1_port = 3333
+
+# HTTP API port for monitoring and management
+# Options: 1-65535
+# Default: 8080
+http_port = 8080
+
+# Maximum number of connected miners
+# Options: 1-100000
+# Default: 1000
+max_miners = 10000
+
+# Mining mode - determines pool operation style
+# Options:
+#   - "public_pool":   DNS registered, anyone can mine, pool rewards (DEFAULT)
+#   - "private_pool":  Password required, pool rewards, not in DNS
+#   - "private_solo":  Password required, 99% to operator address
+# Default: "public_pool"
+# MUTABLE: Can be changed via dashboard API (triggers graceful restart)
+mining_mode = "public_pool"
+
+# Enable public mining (legacy, use mining_mode instead)
+# Options: true | false
+# Default: false
+# DEPRECATED: Set mining_mode = "public_pool" instead
+public_mining = true
+
+# Signing key for message authentication (REQUIRED for public mining)
+# Must be 64 hex characters (32 bytes)
+# Generate with: openssl rand -hex 32
+# Options: 64 hex chars or omit for private mining
+# Default: None
+# IMMUTABLE: Cannot be changed via dashboard API (tied to DNS registration)
+signing_key = "${SIGNING_KEY}"
+
+# Password for private mining modes (REQUIRED when mining_mode != public_pool)
+# Options: Any string (minimum 8 characters recommended)
+# Default: None
+# MUTABLE: Can be changed via dashboard API (triggers graceful restart)
+# private_mining_password = "${PRIVATE_MINING_PASSWORD}"
+
+# Payout address for private_solo mode (REQUIRED when mining_mode = private_solo)
+# Must be valid bech32 address for configured network (bc1... for mainnet)
+# Options: Valid Bitcoin address
+# Default: None
+# MUTABLE: Can be changed via dashboard API (triggers graceful restart)
+# solo_payout_address = "bc1q..."
+
+# Internal API authentication secret (REQUIRED FOR MAINNET)
+# Protects /api/internal/* and /admin/* endpoints with HMAC-SHA256
+# Must be 64 hex characters (32 bytes)
+# Generate with: openssl rand -hex 32
+# SECURITY: Node will refuse to start on mainnet without this!
+# Options: 64 hex chars
+# Default: None
+# IMMUTABLE: Cannot be changed via dashboard API (would compromise own auth)
+internal_api_secret = "${INTERNAL_API_SECRET}"
+
+# Enable Noise Protocol encryption for P2P (REQUIRED FOR MAINNET)
+# Encrypts sensitive P2P messages (shares, blocks, votes, payouts)
+# SECURITY: Node will refuse to start on mainnet with false!
+# Options: true | false
+# Default: true
+noise_enabled = true
+
+# Bootstrap seed nodes for P2P mesh discovery
+# Format: "host:port" using discovery port (8559)
+# Options: Array of peer addresses
+# Default: [] (empty)
+# IMMUTABLE: Cannot be changed via dashboard API (prevents peer poisoning)
+seed_nodes = [
+    # Add mainnet seed nodes here:
+    # "seed1.bitcoinghost.org:8559",
+    # "seed2.bitcoinghost.org:8559",
+    # "seed3.bitcoinghost.org:8559",
+]
+
+# -----------------------------------------------------------------------------
+# [network.p2p] - P2P Consensus Mesh Ports
+# -----------------------------------------------------------------------------
+# Each port serves a specific function in the consensus mesh.
+# All ports should be open in firewall for P2P communication.
+[network.p2p]
+
+# Share propagation - miners submit shares, nodes propagate
+# Options: 1-65535
+# Default: 8555
+share_propagation = 8555
+
+# Block announcements - new blocks found notification
+# Options: 1-65535
+# Default: 8556
+block_announcement = 8556
+
+# Consensus voting - BFT voting messages
+# Options: 1-65535
+# Default: 8557
+consensus_voting = 8557
+
+# Health monitoring - health pings between nodes
+# Options: 1-65535
+# Default: 8558
+health_monitoring = 8558
+
+# Discovery - peer discovery and mesh bootstrap
+# Options: 1-65535
+# Default: 8559
+discovery = 8559
+
+# Elder management - elder list updates and MPC ceremony
+# Options: 1-65535
+# Default: 8560
+elder_management = 8560
+
+# Payout proposal - payout distribution proposals
+# Options: 1-65535
+# Default: 8561
+payout_proposal = 8561
+
+# Payout transaction - signed payout transactions
+# Options: 1-65535
+# Default: 8562
+payout_transaction = 8562
+
+# =============================================================================
+# [policy] - Transaction Policy (BUDS Classification)
+# =============================================================================
+[policy]
+
+# Policy profile - determines which transactions to mine
+# Options:
+#   - "bitcoin_pure":  T0+T1 only (financial transactions, no data)
+#   - "permissive":    T0+T1+T2 (adds small OP_RETURN, most common)
+#   - "full_open":     T0+T1+T2+T3 (includes inscriptions/runes)
+#   - "custom":        Use custom settings below
+# Default: "permissive"
+# MUTABLE: Can be changed via dashboard API (triggers graceful restart)
+#
+# BUDS Tier Reference:
+#   T0: Core financial (P2PKH, P2WPKH, P2TR single-sig)
+#   T1: Extended financial (multisig, timelocks, HTLCs)
+#   T2: Data anchoring (OP_RETURN <= 80 bytes)
+#   T3: Heavy data (inscriptions, large witness, runes)
+profile = "bitcoin_pure"
+
+# -----------------------------------------------------------------------------
+# [policy.custom] - Custom Policy Rules (only when profile = "custom")
+# -----------------------------------------------------------------------------
+# Uncomment and configure if using profile = "custom"
+
+# [policy.custom]
+#
+# # Allowed BUDS transaction tiers
+# # Options: Array of "T0", "T1", "T2", "T3"
+# # Default: ["T0", "T1", "T2"]
+# allowed_tiers = ["T0", "T1"]
+#
+# # Maximum OP_RETURN data size in bytes (0 = reject all OP_RETURN)
+# # Options: 0-10000
+# # Default: 80
+# max_op_return_size = 80
+#
+# # Maximum witness size per input in bytes
+# # Options: 0-520000
+# # Default: 10000
+# max_witness_per_input = 10000
+#
+# # Maximum outputs per transaction
+# # Options: 1-10000
+# # Default: 200
+# max_tx_outputs = 200
+#
+# # Maximum transaction size in bytes
+# # Options: 1-4000000
+# # Default: 100000
+# max_tx_size = 100000
+#
+# # Allow Ordinals/inscriptions
+# # Options: true | false
+# # Default: false
+# allow_inscriptions = false
+#
+# # Allow Runes protocol
+# # Options: true | false
+# # Default: false
+# allow_runes = false
+
+# =============================================================================
+# [storage] - Database and Storage Configuration
+# =============================================================================
+[storage]
+
+# Database directory path
+# Options: Any valid directory path
+# Default: ~/.ghost/data
+db_path = "/var/lib/ghost/data"
+
+# Enable SQLite WAL (Write-Ahead Logging) mode
+# Improves concurrent read/write performance
+# Options: true | false
+# Default: true
+wal_mode = true
+
+# Enable archive mode - keep full block/share history
+# Required for ARCHIVE_MODE capability (+5 shares in node rewards)
+# Options: true | false
+# Default: false
+archive_mode = true
+
+# Pruning height - blocks of history to retain (0 = no pruning)
+# Ignored when archive_mode = true
+# Options: 0 (disabled) or positive integer
+# Default: 0
+prune_height = 0
+
+# =============================================================================
+# [pool] - Pool Economics Configuration
+# =============================================================================
+[pool]
+
+# Treasury address for pool fees
+# SECURITY: Use a secure P2TR (bc1p...) address you control!
+#
+# Options:
+#   - Simple string: "bc1p..." (single-sig)
+#   - Object for multi-sig (see below)
+#
+# For mainnet, use bc1p... (P2TR) or bc1q... (P2WPKH)
+# Default: None (REQUIRED)
+# IMMUTABLE: Cannot be changed via dashboard API (prevents redirect attacks)
+treasury_address = "${TREASURY_ADDRESS}"
+
+# Multi-sig treasury example (uncomment to use):
+# [pool.treasury_address]
+# address = "bc1q..."
+# witness_script = "522102...ae"  # Raw witness script hex
+# required = 2                     # M of N required signatures
+# total = 3                        # Total signers (N)
+
+# Pool fee percentage (operator revenue)
+# Options: 0.0-100.0
+# Default: 2.0
+# Industry standard: 1-2%
+# IMMUTABLE: Cannot be changed via dashboard API (baked into decay schedule)
+treasury_fee_percent = 1.0
+
+# Minimum payout threshold in satoshis
+# Balances below this accumulate until threshold is met
+# Options: 547+ (must be above dust limit of 546)
+# Default: 100000 (0.001 BTC)
+min_payout_sats = 100000
+
+# Payout frequency in blocks
+# How often payouts are processed
+# Options: 1+
+# Default: 100
+payout_interval_blocks = 100
+
+# =============================================================================
+# [ghost_pay] - Ghost Pay L2 Instant Payments
+# =============================================================================
+[ghost_pay]
+
+# Enable Ghost Pay L2 layer
+# Provides instant off-chain payments with periodic L1 settlement
+# Options: true | false
+# Default: false
+# MUTABLE: Can be changed via dashboard API (triggers graceful restart)
+enabled = true
+
+# Virtual block time in seconds
+# L2 processes transactions every N seconds
+# Options: 1-3600
+# Default: 10
+virtual_block_secs = 10
+
+# Epoch length in virtual blocks
+# L2 settles to L1 after each epoch
+# Options: 1-100000
+# Default: 2160 (~6 hours at 10s blocks)
+epoch_blocks = 2160
+
+# Transfer fee in basis points (1 bp = 0.01%)
+# Options: 0-10000
+# Default: 10 (0.1%)
+transfer_fee_bps = 10
+
+# Minimum transfer fee in satoshis
+# Applied when percentage fee would be less than minimum
+# Options: 0+
+# Default: 10
+min_transfer_fee_sats = 10
+
+# Enable Wraith Protocol mixing (CoinJoin privacy)
+# Provides transaction unlinkability
+# Options: true | false
+# Default: true
+wraith_enabled = true
+
+# Wraith mixing fee percentage
+# Options: 0.0-10.0
+# Default: 1.0
+wraith_fee_percent = 0.5
+
+# =============================================================================
+# [registry] - DNS Load Balancer Registration (Optional)
+# =============================================================================
+# Configure to register with Ghost DNS load balancer for miner discovery
+# Only needed for public pools wanting DNS-based miner routing
+
+# [registry]
+#
+# # Registry service URL
+# # Options: HTTP/HTTPS URL
+# # Default: None
+# url = "https://registry.bitcoinghost.org:8333"
+#
+# # Heartbeat interval in seconds
+# # How often to send health updates to registry
+# # Options: 10-300
+# # Default: 30
+# heartbeat_interval_secs = 30
+#
+# # Geographic region for latency-based routing
+# # Options:
+# #   - "us_east"
+# #   - "us_west"
+# #   - "eu_west"
+# #   - "eu_central"
+# #   - "asia_southeast"
+# #   - "asia_northeast"
+# #   - "oceania"
+# #   - "south_america"
+# #   - "africa"
+# #   - "unknown"
+# # Default: "unknown"
+# region = "us_east"
+
+# =============================================================================
+# Environment Variables Reference
+# =============================================================================
+#
+# Required for mainnet:
+#   BITCOIN_RPC_PASSWORD    - Bitcoin Core RPC password
+#   PUBLIC_ADDRESS          - Public IP/hostname for miners
+#   TREASURY_ADDRESS        - Pool fee destination (bc1p... or bc1q...)
+#   SIGNING_KEY             - 64 hex chars for message signing
+#   INTERNAL_API_SECRET     - 64 hex chars for API authentication
+#
+# Optional:
+#   BITCOIN_RPC_USER        - Bitcoin Core RPC username (default: ghostrpc)
+#   PRIVATE_MINING_PASSWORD - Password for private mining modes
+#
+# Generate secrets:
+#   openssl rand -hex 32    - Generate 64 hex char secret
+#
+# =============================================================================
