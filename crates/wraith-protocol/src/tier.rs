@@ -101,12 +101,12 @@ impl ParticipantTier {
     /// Get the balance range for this tier in satoshis (min, max)
     pub fn balance_range_sats(&self) -> (u64, u64) {
         match self {
-            ParticipantTier::Micro => (100_000, 1_000_000),                // 0.001-0.01 BTC
-            ParticipantTier::Small => (1_000_000, 10_000_000),             // 0.01-0.1 BTC
-            ParticipantTier::Medium => (10_000_000, 100_000_000),          // 0.1-1 BTC
-            ParticipantTier::Standard => (100_000_000, 1_000_000_000),     // 1-10 BTC
-            ParticipantTier::Large => (1_000_000_000, 5_000_000_000),      // 10-50 BTC
-            ParticipantTier::Whale => (5_000_000_000, u64::MAX),           // 50+ BTC
+            ParticipantTier::Micro => (100_000, 1_000_000), // 0.001-0.01 BTC
+            ParticipantTier::Small => (1_000_000, 10_000_000), // 0.01-0.1 BTC
+            ParticipantTier::Medium => (10_000_000, 100_000_000), // 0.1-1 BTC
+            ParticipantTier::Standard => (100_000_000, 1_000_000_000), // 1-10 BTC
+            ParticipantTier::Large => (1_000_000_000, 5_000_000_000), // 10-50 BTC
+            ParticipantTier::Whale => (5_000_000_000, u64::MAX), // 50+ BTC
         }
     }
 
@@ -271,28 +271,64 @@ mod tests {
     #[test]
     fn test_tier_selection_by_balance() {
         // Micro: 0.001-0.01 BTC (100k-1M sats)
-        assert_eq!(ParticipantTier::for_balance(100_000), ParticipantTier::Micro);
-        assert_eq!(ParticipantTier::for_balance(500_000), ParticipantTier::Micro);
+        assert_eq!(
+            ParticipantTier::for_balance(100_000),
+            ParticipantTier::Micro
+        );
+        assert_eq!(
+            ParticipantTier::for_balance(500_000),
+            ParticipantTier::Micro
+        );
 
         // Small: 0.01-0.1 BTC (1M-10M sats)
-        assert_eq!(ParticipantTier::for_balance(1_000_000), ParticipantTier::Small);
-        assert_eq!(ParticipantTier::for_balance(5_000_000), ParticipantTier::Small);
+        assert_eq!(
+            ParticipantTier::for_balance(1_000_000),
+            ParticipantTier::Small
+        );
+        assert_eq!(
+            ParticipantTier::for_balance(5_000_000),
+            ParticipantTier::Small
+        );
 
         // Medium: 0.1-1 BTC (10M-100M sats)
-        assert_eq!(ParticipantTier::for_balance(10_000_000), ParticipantTier::Medium);
-        assert_eq!(ParticipantTier::for_balance(50_000_000), ParticipantTier::Medium);
+        assert_eq!(
+            ParticipantTier::for_balance(10_000_000),
+            ParticipantTier::Medium
+        );
+        assert_eq!(
+            ParticipantTier::for_balance(50_000_000),
+            ParticipantTier::Medium
+        );
 
         // Standard: 1-10 BTC (100M-1B sats)
-        assert_eq!(ParticipantTier::for_balance(100_000_000), ParticipantTier::Standard);
-        assert_eq!(ParticipantTier::for_balance(500_000_000), ParticipantTier::Standard);
+        assert_eq!(
+            ParticipantTier::for_balance(100_000_000),
+            ParticipantTier::Standard
+        );
+        assert_eq!(
+            ParticipantTier::for_balance(500_000_000),
+            ParticipantTier::Standard
+        );
 
         // Large: 10-50 BTC (1B-5B sats)
-        assert_eq!(ParticipantTier::for_balance(1_000_000_000), ParticipantTier::Large);
-        assert_eq!(ParticipantTier::for_balance(3_000_000_000), ParticipantTier::Large);
+        assert_eq!(
+            ParticipantTier::for_balance(1_000_000_000),
+            ParticipantTier::Large
+        );
+        assert_eq!(
+            ParticipantTier::for_balance(3_000_000_000),
+            ParticipantTier::Large
+        );
 
         // Whale: 50+ BTC (5B+ sats)
-        assert_eq!(ParticipantTier::for_balance(5_000_000_000), ParticipantTier::Whale);
-        assert_eq!(ParticipantTier::for_balance(100_000_000_000), ParticipantTier::Whale);
+        assert_eq!(
+            ParticipantTier::for_balance(5_000_000_000),
+            ParticipantTier::Whale
+        );
+        assert_eq!(
+            ParticipantTier::for_balance(100_000_000_000),
+            ParticipantTier::Whale
+        );
     }
 
     #[test]

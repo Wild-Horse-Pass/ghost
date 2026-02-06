@@ -109,11 +109,11 @@ impl Default for BanManagerConfig {
         // Equivocation and protocol violations are Byzantine behaviors
         // that warrant significant penalties to deter attacks
         Self {
-            equivocation_secs: 24 * 60 * 60,     // 24 hours for Byzantine behavior
-            rate_limit_secs: 60 * 60,            // 1 hour for rate limits
-            invalid_messages_secs: 30 * 60,     // 30 minutes for invalid messages
+            equivocation_secs: 24 * 60 * 60, // 24 hours for Byzantine behavior
+            rate_limit_secs: 60 * 60,        // 1 hour for rate limits
+            invalid_messages_secs: 30 * 60,  // 30 minutes for invalid messages
             protocol_violation_secs: 24 * 60 * 60, // 24 hours for protocol violations
-            custom_secs: 60 * 60,                // 1 hour default for custom
+            custom_secs: 60 * 60,            // 1 hour default for custom
         }
     }
 }
@@ -208,7 +208,9 @@ impl BanManager {
         }
 
         // 2^(count-1): 1st=1x, 2nd=2x, 3rd=4x, 4th=8x, 5th+=16x
-        let multiplier = 1u32.checked_shl(effective_count.saturating_sub(1)).unwrap_or(MAX_ESCALATION_MULTIPLIER);
+        let multiplier = 1u32
+            .checked_shl(effective_count.saturating_sub(1))
+            .unwrap_or(MAX_ESCALATION_MULTIPLIER);
         multiplier.min(MAX_ESCALATION_MULTIPLIER)
     }
 
@@ -234,9 +236,8 @@ impl BanManager {
     pub fn ban(&self, node_id: NodeId, reason: BanReason) {
         let base_duration = self.config.duration_for_reason(reason);
         let multiplier = self.escalation_multiplier(&node_id);
-        let escalated_duration = Duration::from_secs(
-            base_duration.as_secs().saturating_mul(multiplier as u64)
-        );
+        let escalated_duration =
+            Duration::from_secs(base_duration.as_secs().saturating_mul(multiplier as u64));
         self.ban_for_duration_internal(node_id, reason, escalated_duration, multiplier);
     }
 

@@ -546,12 +546,13 @@ mod wraith_protocol {
 
     #[test]
     fn test_participant_tiers() {
-        // Larger tiers should have higher minimum participants
+        // Smaller denomination tiers require MORE participants for anonymity
+        // (more users with small amounts means larger anonymity sets needed)
         assert!(
-            ParticipantTier::Small.min_participants() < ParticipantTier::Medium.min_participants()
+            ParticipantTier::Small.min_participants() > ParticipantTier::Medium.min_participants()
         );
         assert!(
-            ParticipantTier::Medium.min_participants() < ParticipantTier::Large.min_participants()
+            ParticipantTier::Medium.min_participants() > ParticipantTier::Large.min_participants()
         );
     }
 }

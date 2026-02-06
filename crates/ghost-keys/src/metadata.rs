@@ -418,7 +418,8 @@ mod tests {
 
     #[test]
     fn test_default_metadata() {
-        let metadata = PaymentMetadata::default_metadata().expect("should generate default metadata");
+        let metadata =
+            PaymentMetadata::default_metadata().expect("should generate default metadata");
         assert_eq!(metadata.label, DEFAULT_LABEL);
         assert_eq!(metadata.memo, None);
     }

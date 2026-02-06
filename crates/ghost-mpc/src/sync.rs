@@ -58,10 +58,7 @@ impl ChunkRateLimiter {
         }
 
         // Check rate limit window
-        let (count, window_start) = self
-            .request_counts
-            .entry(*peer_id)
-            .or_insert((0, now));
+        let (count, window_start) = self.request_counts.entry(*peer_id).or_insert((0, now));
 
         // Reset window if expired (1 second)
         if now.duration_since(*window_start).as_secs() >= 1 {
@@ -81,8 +78,10 @@ impl ChunkRateLimiter {
     /// Cleanup old entries (call periodically)
     fn cleanup(&mut self) {
         let now = Instant::now();
-        self.last_request.retain(|_, last| now.duration_since(*last).as_secs() < 60);
-        self.request_counts.retain(|_, (_, start)| now.duration_since(*start).as_secs() < 60);
+        self.last_request
+            .retain(|_, last| now.duration_since(*last).as_secs() < 60);
+        self.request_counts
+            .retain(|_, (_, start)| now.duration_since(*start).as_secs() < 60);
     }
 }
 

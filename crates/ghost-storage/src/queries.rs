@@ -4155,7 +4155,8 @@ impl Database {
             .map_err(|e| GhostError::Database(e.to_string()))?;
 
             // 4.19 SECURITY: Use safe conversion (defensive, should never fail given the guard above)
-            i64_to_u64(delete_count, "delete_count").map_err(|e| GhostError::Database(e.to_string()))
+            i64_to_u64(delete_count, "delete_count")
+                .map_err(|e| GhostError::Database(e.to_string()))
         })
     }
 }

@@ -1893,8 +1893,7 @@ mod tests {
         denomination: WraithDenomination,
         network: Network,
     ) -> WraithCoordinator {
-        WraithCoordinator::new(tier, denomination, network)
-            .without_utxo_required_for_registration()
+        WraithCoordinator::new(tier, denomination, network).without_utxo_required_for_registration()
     }
 
     #[test]

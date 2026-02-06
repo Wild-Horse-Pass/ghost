@@ -44,12 +44,12 @@ fn test_430_session_initial_state() {
 #[test]
 fn test_431_minimum_participants_by_tier() {
     // Tiers organized by balance range, optimized for 80KB tx size limit
-    assert_eq!(ParticipantTier::Micro.min_participants(), 400);    // 0.001-0.01 BTC
-    assert_eq!(ParticipantTier::Small.min_participants(), 340);    // 0.01-0.1 BTC
-    assert_eq!(ParticipantTier::Medium.min_participants(), 290);   // 0.1-1 BTC
+    assert_eq!(ParticipantTier::Micro.min_participants(), 400); // 0.001-0.01 BTC
+    assert_eq!(ParticipantTier::Small.min_participants(), 340); // 0.01-0.1 BTC
+    assert_eq!(ParticipantTier::Medium.min_participants(), 290); // 0.1-1 BTC
     assert_eq!(ParticipantTier::Standard.min_participants(), 250); // 1-10 BTC
-    assert_eq!(ParticipantTier::Large.min_participants(), 195);    // 10-50 BTC
-    assert_eq!(ParticipantTier::Whale.min_participants(), 160);    // 50+ BTC
+    assert_eq!(ParticipantTier::Large.min_participants(), 195); // 10-50 BTC
+    assert_eq!(ParticipantTier::Whale.min_participants(), 160); // 50+ BTC
 }
 
 #[test]

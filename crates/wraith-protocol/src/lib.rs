@@ -223,11 +223,11 @@ mod tests {
     fn test_tier_participants() {
         // Tiers organized by balance range, with participant counts optimized
         // for Bitcoin L1 transaction size limits (80KB budget)
-        assert_eq!(ParticipantTier::Micro.min_participants(), 400);    // 0.001-0.01 BTC, 3 outputs
-        assert_eq!(ParticipantTier::Small.min_participants(), 340);    // 0.01-0.1 BTC, 4 outputs
-        assert_eq!(ParticipantTier::Medium.min_participants(), 290);   // 0.1-1 BTC, 5 outputs
+        assert_eq!(ParticipantTier::Micro.min_participants(), 400); // 0.001-0.01 BTC, 3 outputs
+        assert_eq!(ParticipantTier::Small.min_participants(), 340); // 0.01-0.1 BTC, 4 outputs
+        assert_eq!(ParticipantTier::Medium.min_participants(), 290); // 0.1-1 BTC, 5 outputs
         assert_eq!(ParticipantTier::Standard.min_participants(), 250); // 1-10 BTC, 6 outputs
-        assert_eq!(ParticipantTier::Large.min_participants(), 195);    // 10-50 BTC, 8 outputs
-        assert_eq!(ParticipantTier::Whale.min_participants(), 160);    // 50+ BTC, 10 outputs
+        assert_eq!(ParticipantTier::Large.min_participants(), 195); // 10-50 BTC, 8 outputs
+        assert_eq!(ParticipantTier::Whale.min_participants(), 160); // 50+ BTC, 10 outputs
     }
 }

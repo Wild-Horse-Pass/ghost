@@ -94,7 +94,10 @@ impl ScannedPayment {
     ///
     /// SECURITY: This recomputes the spend key from the original spend secret
     /// and tweak, avoiding storage of secret key material in serializable form.
-    pub fn derive_spend_key(&self, spend_secret: &SecretKey) -> Result<SecretKey, crate::error::GhostKeyError> {
+    pub fn derive_spend_key(
+        &self,
+        spend_secret: &SecretKey,
+    ) -> Result<SecretKey, crate::error::GhostKeyError> {
         derive_spend_key(spend_secret, &self.tweak)
     }
 

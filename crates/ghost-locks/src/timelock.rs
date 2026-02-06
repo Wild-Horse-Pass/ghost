@@ -49,7 +49,7 @@ pub enum TimelockTier {
     /// 1 year (~52,560 blocks)
     #[default]
     Standard,
-    /// 2 years (~105,120 blocks)
+    /// Maximum (~455 days, 65,535 blocks - BIP-68 limit)
     Long,
 }
 
@@ -57,15 +57,20 @@ impl TimelockTier {
     /// Average blocks per day (assuming 10-minute blocks)
     const BLOCKS_PER_DAY: u32 = 144;
 
+    /// BIP-68 maximum relative timelock (16-bit block count)
+    const BIP68_MAX_BLOCKS: u32 = 65535;
+
     /// Get the timelock duration in blocks (relative block count for CSV)
     ///
     /// This is the number of blocks that must pass after UTXO confirmation
     /// before the recovery script can be used. Used with OP_CHECKSEQUENCEVERIFY.
+    ///
+    /// Note: All tiers are capped at BIP-68 maximum of 65,535 blocks (~455 days).
     pub fn blocks(&self) -> u32 {
         match self {
-            TimelockTier::Short => Self::BLOCKS_PER_DAY * 365 / 2, // ~6 months
-            TimelockTier::Standard => Self::BLOCKS_PER_DAY * 365,  // ~1 year
-            TimelockTier::Long => Self::BLOCKS_PER_DAY * 365 * 2,  // ~2 years
+            TimelockTier::Short => Self::BLOCKS_PER_DAY * 365 / 2, // ~6 months (26,280 blocks)
+            TimelockTier::Standard => Self::BLOCKS_PER_DAY * 365,  // ~1 year (52,560 blocks)
+            TimelockTier::Long => Self::BIP68_MAX_BLOCKS,          // ~455 days (BIP-68 max)
         }
     }
 
@@ -93,7 +98,7 @@ impl TimelockTier {
         match self {
             TimelockTier::Short => "Short (6 months)",
             TimelockTier::Standard => "Standard (1 year)",
-            TimelockTier::Long => "Long (2 years)",
+            TimelockTier::Long => "Long (455 days max)",
         }
     }
 
@@ -135,17 +140,17 @@ mod tests {
 
     #[test]
     fn test_block_counts() {
-        // Should be approximately 6 months, 1 year, 2 years
+        // Short: ~6 months, Standard: ~1 year, Long: BIP-68 max (~455 days)
         assert_eq!(TimelockTier::Short.blocks(), 26_280);
         assert_eq!(TimelockTier::Standard.blocks(), 52_560);
-        assert_eq!(TimelockTier::Long.blocks(), 105_120);
+        assert_eq!(TimelockTier::Long.blocks(), 65_535); // BIP-68 maximum
     }
 
     #[test]
     fn test_days() {
         assert_eq!(TimelockTier::Short.days(), 182); // ~6 months
         assert_eq!(TimelockTier::Standard.days(), 365); // ~1 year
-        assert_eq!(TimelockTier::Long.days(), 730); // ~2 years
+        assert_eq!(TimelockTier::Long.days(), 455); // BIP-68 max (~15 months)
     }
 
     #[test]
@@ -162,7 +167,7 @@ mod tests {
         );
         assert_eq!(
             TimelockTier::Long.recovery_height(creation),
-            800_000 + 105_120
+            800_000 + 65_535 // BIP-68 maximum
         );
     }
 

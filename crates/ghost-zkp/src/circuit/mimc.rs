@@ -25,8 +25,8 @@ pub const MIMC_ROUNDS: usize = 23;
 /// 4.14 SECURITY: Compile-time verification that prime count matches MIMC_ROUNDS
 /// This prevents accidental mismatches when modifying round count or primes.
 const MIMC_PRIMES: [u64; MIMC_ROUNDS] = [
-    7, 13, 19, 31, 43, 61, 79, 97, 113, 131, 149, 167, 181, 199, 211, 229, 241, 263, 277, 293,
-    307, 317, 337,
+    7, 13, 19, 31, 43, 61, 79, 97, 113, 131, 149, 167, 181, 199, 211, 229, 241, 263, 277, 293, 307,
+    317, 337,
 ];
 
 // 4.14: Compile-time assertion that primes array length matches MIMC_ROUNDS

@@ -804,8 +804,7 @@ mod tests {
     /// Create a handler with a permissive test verifier
     /// This is needed because we implement fail-closed: no verifier = reject all proofs
     fn create_test_handler(identity: Arc<NodeIdentity>) -> ZkPayoutVoteHandler {
-        ZkPayoutVoteHandler::new(identity)
-            .with_verifier(Arc::new(|_, _, _, _, _| true))
+        ZkPayoutVoteHandler::new(identity).with_verifier(Arc::new(|_, _, _, _, _| true))
     }
 
     #[test]

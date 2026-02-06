@@ -141,7 +141,10 @@ impl GhostId {
     ///
     /// SECURITY: Validates that the HRP matches the expected network
     /// to prevent cross-network address confusion.
-    pub fn decode_for_network(s: &str, expected_network: GhostNetwork) -> Result<Self, GhostKeyError> {
+    pub fn decode_for_network(
+        s: &str,
+        expected_network: GhostNetwork,
+    ) -> Result<Self, GhostKeyError> {
         let (hrp, data) =
             bech32::decode(s).map_err(|e| GhostKeyError::Bech32Error(e.to_string()))?;
 

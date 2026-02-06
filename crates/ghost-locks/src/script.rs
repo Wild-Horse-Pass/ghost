@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(short_params.timelock_blocks, 26_280); // ~6 months
 
         let long_params = RecoveryInputParams::for_tier(TimelockTier::Long);
-        assert_eq!(long_params.timelock_blocks, 105_120); // ~2 years
+        assert_eq!(long_params.timelock_blocks, 65_535); // BIP-68 max (~455 days)
     }
 
     #[test]

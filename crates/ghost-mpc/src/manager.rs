@@ -283,8 +283,13 @@ impl CeremonyManager {
 
         // Generate the contribution
         let mut rng = OsRng;
-        let (new_params, contribution) =
-            generate_contribution(params.as_ref(), &ceremony_id, next_position, contributor_id, &mut rng)?;
+        let (new_params, contribution) = generate_contribution(
+            params.as_ref(),
+            &ceremony_id,
+            next_position,
+            contributor_id,
+            &mut rng,
+        )?;
 
         info!(
             position = next_position,
@@ -328,7 +333,12 @@ impl CeremonyManager {
         })?;
 
         // 4.22: Verify the contribution with ceremony_id binding
-        verify_contribution(params.as_ref(), new_params, contribution, &state.ceremony_id)
+        verify_contribution(
+            params.as_ref(),
+            new_params,
+            contribution,
+            &state.ceremony_id,
+        )
     }
 
     /// Apply a contribution after BFT approval

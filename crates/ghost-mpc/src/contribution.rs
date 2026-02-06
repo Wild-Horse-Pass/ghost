@@ -367,17 +367,32 @@ pub fn verify_contribution(
     let beta_g1: G1Affine = deserialize_g1(&contribution.proof.beta_g1)?;
 
     // 4.22: Verify Schnorr proofs are bound to this ceremony
-    if !schnorr_verify(g1_generator, &tau_g1, ceremony_id, &contribution.proof.tau_pok)? {
+    if !schnorr_verify(
+        g1_generator,
+        &tau_g1,
+        ceremony_id,
+        &contribution.proof.tau_pok,
+    )? {
         return Err(MpcError::InvalidProof(
             "tau proof verification failed".into(),
         ));
     }
-    if !schnorr_verify(g1_generator, &alpha_g1, ceremony_id, &contribution.proof.alpha_pok)? {
+    if !schnorr_verify(
+        g1_generator,
+        &alpha_g1,
+        ceremony_id,
+        &contribution.proof.alpha_pok,
+    )? {
         return Err(MpcError::InvalidProof(
             "alpha proof verification failed".into(),
         ));
     }
-    if !schnorr_verify(g1_generator, &beta_g1, ceremony_id, &contribution.proof.beta_pok)? {
+    if !schnorr_verify(
+        g1_generator,
+        &beta_g1,
+        ceremony_id,
+        &contribution.proof.beta_pok,
+    )? {
         return Err(MpcError::InvalidProof(
             "beta proof verification failed".into(),
         ));
