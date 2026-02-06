@@ -71,8 +71,17 @@ pub use metadata::{
 };
 pub use scanning::{BatchScanner, PaymentDetector, ScannedPayment};
 
-/// Human-readable part for Ghost ID bech32 encoding
+/// Human-readable part for Ghost ID bech32 encoding (mainnet)
 pub const GHOST_ID_HRP: &str = "ghost";
+
+/// Human-readable part for Ghost ID bech32 encoding (testnet)
+pub const GHOST_ID_HRP_TESTNET: &str = "tghost";
+
+/// Human-readable part for Ghost ID bech32 encoding (signet)
+pub const GHOST_ID_HRP_SIGNET: &str = "sghost";
+
+/// Human-readable part for Ghost ID bech32 encoding (regtest)
+pub const GHOST_ID_HRP_REGTEST: &str = "rghost";
 
 /// Derivation path prefix for Ghost Keys (m/777'/...)
 pub const GHOST_DERIVATION_PREFIX: u32 = 777;

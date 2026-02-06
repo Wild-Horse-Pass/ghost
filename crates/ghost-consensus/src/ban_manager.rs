@@ -105,12 +105,15 @@ pub struct BanManagerConfig {
 
 impl Default for BanManagerConfig {
     fn default() -> Self {
+        // 4.1 SECURITY: 24-hour base bans for serious violations
+        // Equivocation and protocol violations are Byzantine behaviors
+        // that warrant significant penalties to deter attacks
         Self {
-            equivocation_secs: 600,
-            rate_limit_secs: 300,
-            invalid_messages_secs: 180,
-            protocol_violation_secs: 900,
-            custom_secs: 600,
+            equivocation_secs: 24 * 60 * 60,     // 24 hours for Byzantine behavior
+            rate_limit_secs: 60 * 60,            // 1 hour for rate limits
+            invalid_messages_secs: 30 * 60,     // 30 minutes for invalid messages
+            protocol_violation_secs: 24 * 60 * 60, // 24 hours for protocol violations
+            custom_secs: 60 * 60,                // 1 hour default for custom
         }
     }
 }
@@ -129,6 +132,22 @@ impl BanManagerConfig {
     }
 }
 
+/// 4.1 SECURITY: Ban history entry for tracking repeat offenders
+#[derive(Debug, Clone)]
+struct BanHistoryEntry {
+    /// Number of times this node has been banned
+    count: u32,
+    /// When the last ban was issued (for decay calculation)
+    last_banned: Instant,
+}
+
+/// 4.1 SECURITY: History decay period (7 days)
+/// Ban history count decays by 1 for each 7-day period since last ban
+const BAN_HISTORY_DECAY_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// 4.1 SECURITY: Maximum escalation multiplier (caps at 16x base duration)
+const MAX_ESCALATION_MULTIPLIER: u32 = 16;
+
 /// Shared ban manager for cross-handler enforcement
 ///
 /// Thread-safe via RwLock - can be shared across multiple handlers using Arc<BanManager>
@@ -139,12 +158,14 @@ pub struct BanManager {
     default_duration: Duration,
     /// P2P4-M3: Configurable durations per reason
     config: BanManagerConfig,
+    /// 4.1 SECURITY: Ban history for escalation tracking
+    ban_history: RwLock<HashMap<NodeId, BanHistoryEntry>>,
 }
 
 impl BanManager {
-    /// Create a new ban manager with default 10-minute ban duration
+    /// Create a new ban manager with default 1-hour ban duration
     pub fn new() -> Self {
-        Self::with_duration(Duration::from_secs(600))
+        Self::with_duration(Duration::from_secs(3600))
     }
 
     /// Create a new ban manager with custom default duration
@@ -153,6 +174,7 @@ impl BanManager {
             banned_nodes: RwLock::new(HashMap::new()),
             default_duration,
             config: BanManagerConfig::default(),
+            ban_history: RwLock::new(HashMap::new()),
         }
     }
 
@@ -162,19 +184,77 @@ impl BanManager {
             banned_nodes: RwLock::new(HashMap::new()),
             default_duration: Duration::from_secs(config.custom_secs),
             config,
+            ban_history: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// 4.1 SECURITY: Calculate escalation multiplier for repeat offenders
+    ///
+    /// Returns 2^(effective_count - 1) capped at MAX_ESCALATION_MULTIPLIER.
+    /// Effective count decays over time - decreases by 1 for each 7 days since last ban.
+    fn escalation_multiplier(&self, node_id: &NodeId) -> u32 {
+        let history = self.ban_history.read();
+        let Some(entry) = history.get(node_id) else {
+            return 1; // First offense, no escalation
+        };
+
+        // Calculate decay based on time since last ban
+        let elapsed = entry.last_banned.elapsed();
+        let decay_periods = (elapsed.as_secs() / BAN_HISTORY_DECAY_SECS) as u32;
+        let effective_count = entry.count.saturating_sub(decay_periods);
+
+        if effective_count == 0 {
+            return 1; // Fully decayed, treat as first offense
+        }
+
+        // 2^(count-1): 1st=1x, 2nd=2x, 3rd=4x, 4th=8x, 5th+=16x
+        let multiplier = 1u32.checked_shl(effective_count.saturating_sub(1)).unwrap_or(MAX_ESCALATION_MULTIPLIER);
+        multiplier.min(MAX_ESCALATION_MULTIPLIER)
+    }
+
+    /// 4.1 SECURITY: Record a ban in the history for escalation tracking
+    fn record_ban_history(&self, node_id: NodeId) {
+        let mut history = self.ban_history.write();
+        history
+            .entry(node_id)
+            .and_modify(|entry| {
+                entry.count = entry.count.saturating_add(1);
+                entry.last_banned = Instant::now();
+            })
+            .or_insert(BanHistoryEntry {
+                count: 1,
+                last_banned: Instant::now(),
+            });
     }
 
     /// Ban a node for a specific reason using configured duration for that reason
     ///
     /// P2P4-M3: Uses configurable durations from BanManagerConfig
+    /// 4.1 SECURITY: Applies escalation multiplier for repeat offenders
     pub fn ban(&self, node_id: NodeId, reason: BanReason) {
-        let duration = self.config.duration_for_reason(reason);
-        self.ban_for_duration(node_id, reason, duration);
+        let base_duration = self.config.duration_for_reason(reason);
+        let multiplier = self.escalation_multiplier(&node_id);
+        let escalated_duration = Duration::from_secs(
+            base_duration.as_secs().saturating_mul(multiplier as u64)
+        );
+        self.ban_for_duration_internal(node_id, reason, escalated_duration, multiplier);
     }
 
-    /// Ban a node for a specific duration
+    /// Ban a node for a specific duration (bypasses escalation)
+    ///
+    /// Use this for custom ban durations where escalation doesn't apply.
     pub fn ban_for_duration(&self, node_id: NodeId, reason: BanReason, duration: Duration) {
+        self.ban_for_duration_internal(node_id, reason, duration, 1);
+    }
+
+    /// Internal ban implementation
+    fn ban_for_duration_internal(
+        &self,
+        node_id: NodeId,
+        reason: BanReason,
+        duration: Duration,
+        multiplier: u32,
+    ) {
         let now = Instant::now();
         let entry = BanEntry {
             expire_at: now + duration,
@@ -185,10 +265,14 @@ impl BanManager {
         let node_hex = hex::encode(&node_id[..8]);
         self.banned_nodes.write().insert(node_id, entry);
 
+        // 4.1: Record in history for future escalation
+        self.record_ban_history(node_id);
+
         warn!(
             node_id = %node_hex,
             reason = ?reason,
             duration_secs = duration.as_secs(),
+            escalation_multiplier = multiplier,
             "Node banned (shared BanManager)"
         );
     }

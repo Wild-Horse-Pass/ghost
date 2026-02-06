@@ -123,7 +123,8 @@ impl Default for EntryConfig {
             min_batch_size: 5,         // Wait for at least 5 entries
             max_batch_wait_ms: 30_000, // Or 30 seconds max
             jitter_ms: 500,            // ±500ms jitter
-            cover_traffic_enabled: false,
+            // SECURITY: Cover traffic enabled by default to prevent timing analysis
+            cover_traffic_enabled: true,
             cover_traffic_ratio: 0.1, // 10% cover traffic
             max_queue_size: 1000,
         }

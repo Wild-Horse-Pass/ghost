@@ -22,6 +22,16 @@ use ff::PrimeField;
 /// Increased from 10 to 23 for improved security margin
 pub const MIMC_ROUNDS: usize = 23;
 
+/// 4.14 SECURITY: Compile-time verification that prime count matches MIMC_ROUNDS
+/// This prevents accidental mismatches when modifying round count or primes.
+const MIMC_PRIMES: [u64; MIMC_ROUNDS] = [
+    7, 13, 19, 31, 43, 61, 79, 97, 113, 131, 149, 167, 181, 199, 211, 229, 241, 263, 277, 293,
+    307, 317, 337,
+];
+
+// 4.14: Compile-time assertion that primes array length matches MIMC_ROUNDS
+const _: () = assert!(MIMC_PRIMES.len() == MIMC_ROUNDS);
+
 /// Generate MiMC round constants deterministically
 ///
 /// Constants are derived deterministically from small primes.
@@ -29,10 +39,8 @@ pub const MIMC_ROUNDS: usize = 23;
 pub fn mimc_round_constants<F: PrimeField>() -> [F; MIMC_ROUNDS] {
     // We derive deterministic constants from small primes + index
     // This is simpler and more portable than hash-to-field
-    let primes: [u64; MIMC_ROUNDS] = [
-        7, 13, 19, 31, 43, 61, 79, 97, 113, 131, 149, 167, 181, 199, 211, 229, 241, 263, 277, 293,
-        307, 317, 337,
-    ];
+    // 4.14: Use the const array instead of inline definition
+    let primes = MIMC_PRIMES;
 
     let mut constants = [F::ZERO; MIMC_ROUNDS];
     for i in 0..MIMC_ROUNDS {

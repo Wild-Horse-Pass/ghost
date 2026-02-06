@@ -929,10 +929,9 @@ async fn join_session(
     State(state): State<Arc<AppState>>,
     Json(req): Json<JoinSessionRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // Parse tier
+    // Parse tier (based on participant balance range)
     let tier = match req.tier.to_lowercase().as_str() {
-        "express" => ParticipantTier::Express,
-        "quick" => ParticipantTier::Quick,
+        "micro" | "express" | "quick" => ParticipantTier::Micro,
         "small" => ParticipantTier::Small,
         "medium" => ParticipantTier::Medium,
         "standard" => ParticipantTier::Standard,
@@ -1363,7 +1362,9 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
 
         for vout in vout_array.iter() {
             let value_btc = vout.get("value").and_then(|v| v.as_f64()).unwrap_or(0.0);
-            let value_sats = (value_btc * SATS_PER_BTC_F64) as u64;
+            // SECURITY: Use round() to prevent precision loss from f64 representation
+            // Bitcoin Core RPC returns BTC as f64, this is the standard conversion approach
+            let value_sats = (value_btc * SATS_PER_BTC_F64).round() as u64;
 
             // Get scriptPubKey hex
             let script_hex = vout
@@ -1502,8 +1503,7 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                     let mut sessions = state.sessions.write();
                     if let Some(session) = sessions.iter_mut().find(|s| s.id == session_id) {
                         let tier = match session.tier.as_str() {
-                            "express" => ParticipantTier::Express,
-                            "quick" => ParticipantTier::Quick,
+                            "micro" | "express" | "quick" => ParticipantTier::Micro,
                             "small" => ParticipantTier::Small,
                             "medium" => ParticipantTier::Medium,
                             "standard" => ParticipantTier::Standard,

@@ -412,11 +412,16 @@ impl AuditLog {
                 .query_map(params![start_time, end_time, limit as i64], |row| {
                     let details_str: String = row.get(5)?;
                     // L-STOR-1: Check size before deserializing to prevent OOM
-                    let details = if details_str.len() > MAX_JSON_SIZE {
-                        serde_json::Value::Null
-                    } else {
-                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null)
-                    };
+                    // 3.21: Reject oversized JSON instead of silently returning Null
+                    if details_str.len() > MAX_JSON_SIZE {
+                        return Err(rusqlite::Error::InvalidParameterName(format!(
+                            "JSON size {} exceeds maximum {}",
+                            details_str.len(),
+                            MAX_JSON_SIZE
+                        )));
+                    }
+                    let details =
+                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null);
                     Ok(AuditEntry {
                         id: row.get(0)?,
                         timestamp: row.get(1)?,
@@ -461,11 +466,16 @@ impl AuditLog {
                 .query_map(params![event_type.to_string(), limit as i64], |row| {
                     let details_str: String = row.get(5)?;
                     // L-STOR-1: Check size before deserializing to prevent OOM
-                    let details = if details_str.len() > MAX_JSON_SIZE {
-                        serde_json::Value::Null
-                    } else {
-                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null)
-                    };
+                    // 3.21: Reject oversized JSON instead of silently returning Null
+                    if details_str.len() > MAX_JSON_SIZE {
+                        return Err(rusqlite::Error::InvalidParameterName(format!(
+                            "JSON size {} exceeds maximum {}",
+                            details_str.len(),
+                            MAX_JSON_SIZE
+                        )));
+                    }
+                    let details =
+                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null);
                     Ok(AuditEntry {
                         id: row.get(0)?,
                         timestamp: row.get(1)?,
@@ -502,11 +512,16 @@ impl AuditLog {
                 .query_map(params![actor, limit as i64], |row| {
                     let details_str: String = row.get(5)?;
                     // L-STOR-1: Check size before deserializing to prevent OOM
-                    let details = if details_str.len() > MAX_JSON_SIZE {
-                        serde_json::Value::Null
-                    } else {
-                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null)
-                    };
+                    // 3.21: Reject oversized JSON instead of silently returning Null
+                    if details_str.len() > MAX_JSON_SIZE {
+                        return Err(rusqlite::Error::InvalidParameterName(format!(
+                            "JSON size {} exceeds maximum {}",
+                            details_str.len(),
+                            MAX_JSON_SIZE
+                        )));
+                    }
+                    let details =
+                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null);
                     Ok(AuditEntry {
                         id: row.get(0)?,
                         timestamp: row.get(1)?,

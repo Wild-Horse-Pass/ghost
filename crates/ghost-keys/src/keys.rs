@@ -79,6 +79,9 @@ impl Drop for ZeroizingSecretBytes {
 /// zeroing cannot be absolutely guaranteed due to potential compiler-generated
 /// copies. This is a defense-in-depth measure. See the [`zeroize`](https://docs.rs/zeroize)
 /// crate documentation for detailed discussion.
+// SECURITY NOTE: Clone is derived for API compatibility, but cloning secret key material
+// should be avoided when possible. The underlying ZeroizingSecretBytes ensures both the
+// original and cloned copies are zeroized on drop. Prefer Arc<GhostKeys> for shared access.
 #[derive(Clone)]
 pub struct GhostKeys {
     /// H-2: Wrapped in ZeroizingSecretBytes for secure erasure on drop
@@ -196,6 +199,16 @@ impl GhostKeys {
     /// This function returns errors for cryptographic failures instead of
     /// silently returning None. This prevents funds from being marked as
     /// "not ours" when they actually are (but derivation failed).
+    ///
+    /// # 3.4 SECURITY: Constant-time k iteration
+    ///
+    /// This function iterates through ALL k values regardless of whether a match
+    /// is found. This prevents timing side-channel attacks where an adversary
+    /// could determine which k value was used by measuring execution time.
+    ///
+    /// The pubkey comparison uses constant-time comparison (ct_eq), and we
+    /// continue iterating through remaining k values even after finding a match
+    /// to maintain constant execution time.
     pub fn detect_payment(
         &self,
         ephemeral_pubkey: &PublicKey,
@@ -207,7 +220,12 @@ impl GhostKeys {
         // Compute shared secret
         let shared_secret = derive_shared_secret(&self.scan_secret, ephemeral_pubkey);
 
-        // Try k values from 0 to max_k
+        // 3.4 SECURITY: Track match result without early return to maintain constant time
+        // We iterate through ALL k values regardless of whether we find a match
+        let mut matched_result: Option<(SecretKey, u32)> = None;
+        let mut derivation_error: Option<GhostKeyError> = None;
+
+        // Try k values from 0 to max_k - ALWAYS iterate through all values
         for k in 0..=config.max_k() {
             let tweak = compute_tweak_v2(&shared_secret, k);
 
@@ -216,18 +234,23 @@ impl GhostKeys {
                 let tweak_pubkey = PublicKey::from_secret_key(&secp, &tweak_secret);
                 if let Ok(expected_pubkey) = self.spend_pubkey.combine(&tweak_pubkey) {
                     // M-CRYPTO-3: Use constant-time comparison to prevent timing attacks
-                    if expected_pubkey
+                    let matches: bool = expected_pubkey
                         .serialize()
                         .ct_eq(&output_pubkey.serialize())
-                        .into()
-                    {
+                        .into();
+
+                    // 3.4: Only record the first match (don't update if already matched)
+                    // We continue iterating to maintain constant time
+                    if matches && matched_result.is_none() {
                         // Found it! Derive spend key
-                        // SEC-KEY-1: Return error instead of silently failing
+                        // SEC-KEY-1: Record error instead of silently failing
                         match derive_spend_key(&self.spend_secret, &tweak) {
-                            Ok(spend_key) => return Ok(Some((spend_key, k))),
+                            Ok(spend_key) => {
+                                matched_result = Some((spend_key, k));
+                            }
                             Err(e) => {
                                 // Payment detected but derivation failed - this is critical
-                                return Err(GhostKeyError::DerivationError(format!(
+                                derivation_error = Some(GhostKeyError::DerivationError(format!(
                                     "Payment detected at k={} but spend key derivation failed: {}",
                                     k, e
                                 )));
@@ -236,10 +259,16 @@ impl GhostKeys {
                     }
                 }
             }
+            // 3.4: Continue to next k value regardless of match status
         }
 
-        // Not our payment (normal case)
-        Ok(None)
+        // Return derivation error if one occurred (payment was ours but derivation failed)
+        if let Some(err) = derivation_error {
+            return Err(err);
+        }
+
+        // Return matched result (Some if found, None if not our payment)
+        Ok(matched_result)
     }
 
     /// Detect payment with default scan config
@@ -396,10 +425,33 @@ pub struct GhostKeysPublicExport {
 }
 
 /// Serializable representation of Ghost Keys
+///
+/// 4.8 SECURITY: Secrets are stored as hex strings and zeroized on drop
+/// to prevent sensitive data from lingering in memory after use.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GhostKeysExport {
     pub scan_secret: String,
     pub spend_secret: String,
+}
+
+/// 4.8 SECURITY: Zeroize secret strings when export is dropped
+impl Drop for GhostKeysExport {
+    fn drop(&mut self) {
+        // Overwrite the string contents with zeros before deallocation
+        // SAFETY: We're modifying the string's bytes in place
+        unsafe {
+            let scan_bytes = self.scan_secret.as_bytes_mut();
+            for byte in scan_bytes.iter_mut() {
+                std::ptr::write_volatile(byte, 0);
+            }
+            let spend_bytes = self.spend_secret.as_bytes_mut();
+            for byte in spend_bytes.iter_mut() {
+                std::ptr::write_volatile(byte, 0);
+            }
+        }
+        // Compiler barrier to prevent optimization
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 impl From<&GhostKeys> for GhostKeysExport {

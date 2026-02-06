@@ -65,6 +65,10 @@ mod pubkey_hex {
 }
 
 /// A detected payment that belongs to us
+///
+/// SECURITY: The spend_key field is skipped during serialization to prevent
+/// accidental leakage of secret key material. Use `derive_spend_key()` with
+/// the original GhostKeys to recompute the spend key when needed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScannedPayment {
     /// The output pubkey (hex-encoded for serde)
@@ -77,9 +81,31 @@ pub struct ScannedPayment {
     /// The tweak used to derive this address
     pub tweak: [u8; 32],
     /// The derived spend key for this output
-    pub spend_key: [u8; 32],
+    /// SECURITY: Skipped during serialization to prevent secret key leakage
+    #[serde(skip)]
+    #[serde(default)]
+    spend_key: [u8; 32],
     /// Amount in satoshis (if known)
     pub amount: Option<u64>,
+}
+
+impl ScannedPayment {
+    /// Derive the spend key for this payment
+    ///
+    /// SECURITY: This recomputes the spend key from the original spend secret
+    /// and tweak, avoiding storage of secret key material in serializable form.
+    pub fn derive_spend_key(&self, spend_secret: &SecretKey) -> Result<SecretKey, crate::error::GhostKeyError> {
+        derive_spend_key(spend_secret, &self.tweak)
+    }
+
+    /// Get the spend key (if cached from scanning)
+    ///
+    /// DEPRECATED: Use `derive_spend_key()` instead for security.
+    /// This field is NOT serialized and will be zeroed after deserialization.
+    #[deprecated(note = "Use derive_spend_key() with the original spend secret instead")]
+    pub fn spend_key_bytes(&self) -> &[u8; 32] {
+        &self.spend_key
+    }
 }
 
 /// Payment detector for scanning transactions (v2 - position-independent)

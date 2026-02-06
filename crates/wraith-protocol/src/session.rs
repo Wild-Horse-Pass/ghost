@@ -498,33 +498,37 @@ mod tests {
 
     #[test]
     fn test_add_participants() {
-        let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
+        // Use Whale tier (160 minimum) for practical test values
+        let mut session = WraithSession::new(ParticipantTier::Whale, WraithDenomination::Small);
 
-        for _ in 0..25 {
+        for _ in 0..160 {
             assert!(session.add_participant());
         }
 
-        assert_eq!(session.participant_count(), 25);
+        assert_eq!(session.participant_count(), 160);
         assert!(session.has_minimum_participants());
     }
 
     #[test]
     fn test_fill_percentage() {
-        let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
+        // Use Whale tier (160 minimum) for practical test values
+        let mut session = WraithSession::new(ParticipantTier::Whale, WraithDenomination::Small);
 
-        for _ in 0..12 {
+        for _ in 0..80 {
             session.add_participant();
         }
 
-        assert!((session.fill_percentage() - 48.0).abs() < 1.0);
+        // 80/160 = 50%
+        assert!((session.fill_percentage() - 50.0).abs() < 1.0);
     }
 
     #[test]
     fn test_session_lifecycle() {
-        let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
+        // Use Whale tier (160 minimum) for practical test values
+        let mut session = WraithSession::new(ParticipantTier::Whale, WraithDenomination::Small);
 
         // Add minimum participants
-        for _ in 0..25 {
+        for _ in 0..160 {
             session.add_participant();
         }
 
@@ -580,7 +584,7 @@ mod tests {
     /// WR-L3 Test: Monotonic clock for timeouts
     #[test]
     fn test_monotonic_timeout() {
-        let session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
+        let session = WraithSession::new(ParticipantTier::Micro, WraithDenomination::Small);
 
         // Session should not be timed out immediately
         assert!(!session.is_timed_out());
@@ -602,7 +606,7 @@ mod tests {
     /// WR-L3 Test: Timeout extension uses monotonic clock
     #[test]
     fn test_timeout_extension() {
-        let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
+        let mut session = WraithSession::new(ParticipantTier::Micro, WraithDenomination::Small);
 
         let initial_remaining = session.remaining_secs();
 

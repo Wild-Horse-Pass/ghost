@@ -284,11 +284,22 @@ impl Treasury {
     ///
     /// Note: `balance_sats` tracks cumulative deposits, NOT on-chain balance.
     /// The treasury operator should move funds to cold storage.
+    ///
+    /// # Panics
+    /// Panics if the deposit would cause overflow. This should never happen
+    /// in practice as 2^64 sats far exceeds Bitcoin's total supply.
     pub fn deposit(&mut self, amount: u64, current_height: TrustedBlockHeight) {
         let was_below_threshold = !self.at_threshold();
 
-        self.balance_sats += amount;
-        self.total_collected_sats += amount;
+        // SECURITY: Use checked arithmetic to prevent overflow
+        self.balance_sats = self
+            .balance_sats
+            .checked_add(amount)
+            .expect("Treasury balance overflow - exceeds u64::MAX sats");
+        self.total_collected_sats = self
+            .total_collected_sats
+            .checked_add(amount)
+            .expect("Treasury total overflow - exceeds u64::MAX sats");
 
         // Record when threshold is first reached
         if was_below_threshold && self.at_threshold() && self.threshold_reached_height.is_none() {
@@ -394,28 +405,65 @@ impl Treasury {
         1.0 - self.treasury_allocation_percent(current_height)
     }
 
+    /// Get treasury allocation in basis points (integer math)
+    ///
+    /// Returns basis points where 10000 = 100%, 50 = 0.5%, 0 = 0%
+    /// Use this for monetary calculations instead of the f64 percent version.
+    pub fn treasury_allocation_bps(&self, current_height: TrustedBlockHeight) -> u64 {
+        if !self.at_threshold() || self.threshold_reached_height.is_none() {
+            return 50; // 0.5% = 50 basis points
+        }
+
+        let Some(threshold_height) = self.threshold_reached_height else {
+            return 50;
+        };
+
+        let blocks_elapsed = current_height.height().saturating_sub(threshold_height);
+        let decay_blocks = (self.decay_years as u64) * BLOCKS_PER_YEAR;
+
+        if blocks_elapsed >= decay_blocks {
+            return 0; // Fully decayed
+        }
+
+        // Linear decay: 50 bps -> 0 bps over decay_blocks
+        // bps = 50 - (50 * blocks_elapsed / decay_blocks)
+        50 - (50 * blocks_elapsed / decay_blocks)
+    }
+
+    /// Get node pool allocation in basis points (integer math)
+    ///
+    /// Returns basis points where 10000 = 100%, 50 = 0.5%, 100 = 1.0%
+    pub fn node_pool_allocation_bps(&self, current_height: TrustedBlockHeight) -> u64 {
+        // Node pool gets whatever treasury doesn't (total pool fee is 100 bps = 1%)
+        100 - self.treasury_allocation_bps(current_height)
+    }
+
     /// Calculate treasury amount from block subsidy
     ///
     /// Returns the satoshi amount that should go to treasury.
+    /// Uses integer arithmetic to prevent floating-point precision errors.
     pub fn calculate_treasury_amount(
         &self,
         subsidy_sats: u64,
         current_height: TrustedBlockHeight,
     ) -> u64 {
-        let percent = self.treasury_allocation_percent(current_height);
-        ((subsidy_sats as f64) * (percent / 100.0)) as u64
+        let bps = self.treasury_allocation_bps(current_height);
+        // Use u128 intermediate to prevent overflow: (subsidy * bps) / 10000
+        ((subsidy_sats as u128 * bps as u128) / 10000) as u64
     }
 
     /// Calculate node pool amount from block subsidy
     ///
     /// Returns the satoshi amount that should go to node rewards.
+    /// Uses integer arithmetic to prevent floating-point precision errors.
     pub fn calculate_node_pool_amount(
         &self,
         subsidy_sats: u64,
         current_height: TrustedBlockHeight,
     ) -> u64 {
-        let percent = self.node_pool_allocation_percent(current_height);
-        ((subsidy_sats as f64) * (percent / 100.0)) as u64
+        let bps = self.node_pool_allocation_bps(current_height);
+        // Use u128 intermediate to prevent overflow: (subsidy * bps) / 10000
+        ((subsidy_sats as u128 * bps as u128) / 10000) as u64
     }
 
     /// Get the current decay year (0-5)
@@ -481,8 +529,15 @@ impl L2FeeAllocation {
     /// L2 fees are split:
     /// - 50% to GhostPay-enabled nodes
     /// - 50% to treasury
+    ///
+    /// # Panics
+    /// Panics if total fees would overflow u64 (should never happen in practice).
     pub fn calculate(transfer_fees: u64, wraith_fees: u64, reconciliation_fees: u64) -> Self {
-        let total = transfer_fees + wraith_fees + reconciliation_fees;
+        // SECURITY: Use checked arithmetic to prevent overflow
+        let total = transfer_fees
+            .checked_add(wraith_fees)
+            .and_then(|t| t.checked_add(reconciliation_fees))
+            .expect("L2 fee total overflow - exceeds u64::MAX sats");
         let to_nodes = total / 2;
         let to_treasury = total - to_nodes;
 
@@ -496,8 +551,13 @@ impl L2FeeAllocation {
     }
 
     /// Total fees collected
+    ///
+    /// Uses checked arithmetic to prevent overflow.
     pub fn total_fees(&self) -> u64 {
-        self.transfer_fees_sats + self.wraith_fees_sats + self.reconciliation_fees_sats
+        self.transfer_fees_sats
+            .checked_add(self.wraith_fees_sats)
+            .and_then(|t| t.checked_add(self.reconciliation_fees_sats))
+            .expect("L2 fee total overflow")
     }
 }
 

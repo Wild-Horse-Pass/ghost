@@ -38,6 +38,33 @@
 //!
 //! This module distributes trust across multiple independent coordinators.
 //!
+//! ## 3.18 SECURITY NOTE: Surveillance Limitation
+//!
+//! **IMPORTANT**: Coordinator rotation provides *temporal* distribution of trust,
+//! NOT *concurrent* trust distribution. Key limitations:
+//!
+//! 1. **Single Active Coordinator**: At any time, exactly one coordinator is active.
+//!    That coordinator can observe ALL session metadata during its active period.
+//!
+//! 2. **Session Correlation**: A compromised coordinator during a session sees:
+//!    - All participant connection times
+//!    - All participant IP addresses (even via Tor - timing correlation possible)
+//!    - Input/output counts per participant
+//!    - Session timing patterns
+//!
+//! 3. **What Rotation Prevents**: A single entity gaining long-term surveillance.
+//!    After rotation, the previous coordinator loses access to new sessions.
+//!
+//! 4. **What Rotation Does NOT Prevent**:
+//!    - Targeted surveillance during the active period
+//!    - Collusion between multiple coordinators
+//!    - A majority of coordinators being compromised
+//!
+//! **For true concurrent trust distribution**, consider:
+//! - Multi-party computation (MPC) coordinators (not implemented)
+//! - Threshold blind signatures across coordinators (future enhancement)
+//! - Decentralized coordination protocols (requires protocol changes)
+//!
 //! # Architecture
 //!
 //! ```text

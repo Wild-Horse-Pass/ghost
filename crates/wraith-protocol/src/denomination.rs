@@ -64,9 +64,46 @@ impl WraithDenomination {
         self.output_sats() + self.fee_sats()
     }
 
-    /// Get the intermediate UTXO size (output / SPLIT_RATIO)
+    /// Get the base intermediate UTXO size (output / SPLIT_RATIO)
+    ///
+    /// This returns the fixed base amount. For privacy-enhanced intermediate amounts
+    /// with random offsets, use `intermediate_sats_randomized()`.
     pub fn intermediate_sats(&self) -> u64 {
         self.output_sats() / SPLIT_RATIO as u64
+    }
+
+    /// Get intermediate UTXO size with random offset (3.17 privacy fix)
+    ///
+    /// Adds a random offset of ±5% to the intermediate amount to prevent
+    /// amount fingerprinting. This makes it harder for chain analysis to
+    /// correlate intermediate UTXOs based on their exact values.
+    ///
+    /// # Returns
+    /// The base intermediate amount plus a random offset in range [-5%, +5%]
+    pub fn intermediate_sats_randomized(&self) -> u64 {
+        let base = self.intermediate_sats();
+
+        // 5% variance range (±5% of base)
+        let variance_range = base / 20; // 5% = 1/20
+
+        if variance_range == 0 {
+            return base; // Too small for meaningful variance
+        }
+
+        // Generate random offset in range [0, 2 * variance_range]
+        // Then subtract variance_range to get range [-variance_range, +variance_range]
+        let mut rng_bytes = [0u8; 8];
+        if getrandom::getrandom(&mut rng_bytes).is_err() {
+            return base; // Fallback to base on RNG failure
+        }
+
+        let random_value = u64::from_le_bytes(rng_bytes);
+        let offset_magnitude = random_value % (2 * variance_range + 1);
+
+        // Apply offset: base + offset - variance_range gives us [-variance_range, +variance_range]
+        // Use saturating arithmetic to prevent underflow
+        base.saturating_add(offset_magnitude)
+            .saturating_sub(variance_range)
     }
 
     /// Get the output amount in BTC
@@ -81,6 +118,30 @@ impl WraithDenomination {
             WraithDenomination::Small => "Small",
             WraithDenomination::Medium => "Medium",
             WraithDenomination::Large => "Large",
+        }
+    }
+
+    /// 4.9 SECURITY: Get distinctive 2-char code for protocol messages
+    ///
+    /// Uses 2-character codes to prevent ambiguity in protocol messages and logs.
+    /// Single-char codes (M, S, M, L) would have collision between Micro and Medium.
+    pub fn short_code(&self) -> &'static str {
+        match self {
+            WraithDenomination::Micro => "MI",  // Micro
+            WraithDenomination::Small => "SM",  // Small
+            WraithDenomination::Medium => "MD", // Medium
+            WraithDenomination::Large => "LG",  // Large
+        }
+    }
+
+    /// 4.9: Parse denomination from 2-char short code
+    pub fn from_short_code(code: &str) -> Option<Self> {
+        match code {
+            "MI" => Some(WraithDenomination::Micro),
+            "SM" => Some(WraithDenomination::Small),
+            "MD" => Some(WraithDenomination::Medium),
+            "LG" => Some(WraithDenomination::Large),
+            _ => None,
         }
     }
 

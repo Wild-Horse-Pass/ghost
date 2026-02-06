@@ -91,7 +91,18 @@ pub fn build_normal_script(lock_pubkey: &XOnlyPublicKey) -> ScriptBuf {
 ///
 /// When spending via this script path, the transaction input's nSequence
 /// must be set to enable CSV validation. Use [`RECOVERY_NSEQUENCE`] (0xFFFFFFFE).
+///
+/// # Panics
+/// Panics if recovery_blocks exceeds BIP-68 maximum (65535 blocks, ~455 days).
 pub fn build_recovery_script(recovery_pubkey: &XOnlyPublicKey, recovery_blocks: u32) -> ScriptBuf {
+    // SECURITY: Validate recovery_blocks is within BIP-68 limits
+    // BIP-68 uses 16 bits for block count, max is 65535 (~455 days)
+    assert!(
+        recovery_blocks <= 65535,
+        "recovery_blocks {} exceeds BIP-68 maximum of 65535",
+        recovery_blocks
+    );
+
     Builder::new()
         // Relative timelock first (must be satisfied before signature check)
         // CSV uses relative block count, not absolute height

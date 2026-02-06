@@ -57,6 +57,7 @@ aes-gcm = { workspace = true }
 scrypt = "0.11"
 getrandom = { workspace = true }
 secp256k1 = { version = "0.29", features = ["rand", "global-context"] }
+zeroize = { version = "1.7", features = ["derive"] }
 
 # Database
 rusqlite = { workspace = true }

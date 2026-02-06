@@ -387,10 +387,13 @@ impl Database {
     ///
     /// Deletes shares older than the specified number of rounds.
     /// Returns the number of shares deleted.
+    ///
+    /// 4.17 SECURITY: Wrapped in transaction for atomicity
     pub fn prune_old_shares(&self, keep_rounds: u64) -> GhostResult<usize> {
-        self.with_connection(|conn| {
+        // 4.17: Use transaction method for atomic prune
+        self.transaction(|tx| {
             // Find the minimum round ID to keep
-            let current_round: Option<u64> = conn
+            let current_round: Option<u64> = tx
                 .query_row("SELECT MAX(round_id) FROM rounds", [], |row| row.get(0))
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
@@ -400,7 +403,7 @@ impl Database {
 
             let min_round_to_keep = current.saturating_sub(keep_rounds);
 
-            let deleted = conn
+            let deleted = tx
                 .execute(
                     "DELETE FROM shares WHERE round_id < ?1",
                     [min_round_to_keep],
@@ -420,10 +423,13 @@ impl Database {
     /// Deletes rounds older than the specified number and their associated data.
     /// Only deletes rounds that are confirmed or orphaned.
     /// Returns the number of rounds deleted.
+    ///
+    /// 4.17 SECURITY: Wrapped in transaction for atomicity and cascade deletion
     pub fn prune_old_rounds(&self, keep_rounds: u64) -> GhostResult<usize> {
-        self.with_connection(|conn| {
+        // 4.17: Use transaction method for atomic prune with cascade
+        self.transaction(|tx| {
             // Find the minimum round ID to keep
-            let current_round: Option<u64> = conn
+            let current_round: Option<u64> = tx
                 .query_row(
                     "SELECT MAX(round_id) FROM rounds",
                     [],
@@ -437,8 +443,15 @@ impl Database {
 
             let min_round_to_keep = current.saturating_sub(keep_rounds);
 
+            // 4.17: Delete shares first (child records) before rounds (parent)
+            let shares_deleted = tx.execute(
+                "DELETE FROM shares WHERE round_id < ?1",
+                [min_round_to_keep],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+
             // Only delete confirmed or orphaned rounds
-            let deleted = conn.execute(
+            let deleted = tx.execute(
                 "DELETE FROM rounds WHERE round_id < ?1 AND payout_status IN ('confirmed', 'orphaned', 'failed')",
                 [min_round_to_keep],
             )
@@ -446,9 +459,10 @@ impl Database {
 
             if deleted > 0 {
                 info!(
-                    deleted,
+                    rounds_deleted = deleted,
+                    shares_deleted = shares_deleted,
                     min_round = min_round_to_keep,
-                    "Pruned old rounds"
+                    "Pruned old rounds and associated shares"
                 );
             }
 

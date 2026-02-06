@@ -37,7 +37,7 @@ use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use ghost_common::error::GhostResult;
 use ghost_common::identity::NodeIdentity;
@@ -419,9 +419,10 @@ impl ZkPayoutVoteHandler {
                 proposal.treasury_amount,
             )
         } else {
-            // No verifier set - accept by default (for testing)
-            warn!("No ZK payout verifier set, accepting proof by default");
-            true
+            // SECURITY: No verifier configured - REJECT all proofs
+            // Fail-closed is mandatory for mainnet security
+            error!("SECURITY: No ZK payout verifier configured - rejecting proof");
+            false
         };
 
         let (approve, rejection_reason) = if proof_valid {
@@ -800,6 +801,13 @@ mod tests {
         }
     }
 
+    /// Create a handler with a permissive test verifier
+    /// This is needed because we implement fail-closed: no verifier = reject all proofs
+    fn create_test_handler(identity: Arc<NodeIdentity>) -> ZkPayoutVoteHandler {
+        ZkPayoutVoteHandler::new(identity)
+            .with_verifier(Arc::new(|_, _, _, _, _| true))
+    }
+
     #[test]
     fn test_zk_payout_handler_creation() {
         let identity = create_test_identity();
@@ -877,7 +885,7 @@ mod tests {
     #[test]
     fn test_proposal_handling() {
         let identity = create_test_identity();
-        let handler = ZkPayoutVoteHandler::new(identity);
+        let handler = create_test_handler(identity);
 
         // Add ourselves plus other validators (so we don't reach immediate consensus)
         let our_id = handler.identity.node_id();
@@ -907,7 +915,7 @@ mod tests {
     #[test]
     fn test_voting_consensus() {
         let identity = create_test_identity();
-        let handler = ZkPayoutVoteHandler::new(identity);
+        let handler = create_test_handler(identity);
 
         // Add validators (including ourselves)
         let our_id = handler.identity.node_id();

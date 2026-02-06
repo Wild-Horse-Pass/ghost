@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use ghost_common::error::GhostResult;
 use ghost_common::identity::NodeIdentity;
@@ -351,9 +351,10 @@ impl ZkVoteHandler {
                 &proposal.new_state_root,
             )
         } else {
-            // No verifier set - accept by default (for testing)
-            warn!("No ZK verifier set, accepting proof by default");
-            true
+            // SECURITY: No verifier configured - REJECT all proofs
+            // Fail-closed is mandatory for mainnet security
+            error!("SECURITY: No ZK verifier configured - rejecting proof");
+            false
         };
 
         let (approve, rejection_reason) = if proof_valid {

@@ -80,6 +80,24 @@ fn i64_to_u32_count(value: i64, field_name: &str) -> Result<u32, rusqlite::Error
     Ok(value as u32)
 }
 
+/// 4.19 SECURITY: Generic i64 to u64 conversion for non-satoshi values (epochs, timestamps, heights)
+///
+/// SQLite stores all integers as signed i64. This helper validates the conversion for
+/// values that should never be negative (epochs, timestamps, block heights, counts).
+fn i64_to_u64(value: i64, field_name: &str) -> Result<u64, rusqlite::Error> {
+    if value < 0 {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Integer,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid negative {} value: {}", field_name, value),
+            )),
+        ));
+    }
+    Ok(value as u64)
+}
+
 // =============================================================================
 // SHARE QUERIES
 // =============================================================================
@@ -1342,11 +1360,23 @@ fn node_from_row(row: &rusqlite::Row) -> rusqlite::Result<NodeRecord> {
 
 impl Database {
     /// Get or create node reward entry
+    ///
+    /// 4.18 SECURITY: Uses INSERT OR IGNORE to prevent race conditions when
+    /// multiple concurrent calls try to create the same entry.
     pub fn get_or_create_node_reward(&self, node_id: &str) -> GhostResult<NodeRewardEntry> {
         let now = chrono::Utc::now().timestamp();
 
         self.with_connection(|conn| {
-            // Try to get existing
+            // 4.18: Try to insert first with IGNORE to handle race conditions
+            // If entry already exists, this does nothing
+            conn.execute(
+                "INSERT OR IGNORE INTO node_rewards (node_id, balance_sats, created_at, updated_at)
+                 VALUES (?1, 0, ?2, ?2)",
+                params![node_id, now],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            // Now we can safely SELECT - the entry definitely exists
             let mut stmt = conn
                 .prepare(
                     "SELECT node_id, balance_sats, last_credited_round, total_credits_sats,
@@ -1355,7 +1385,7 @@ impl Database {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            if let Some(entry) = stmt
+            let entry = stmt
                 .query_row([node_id], |row| {
                     Ok(NodeRewardEntry {
                         node_id: row.get(0)?,
@@ -1367,29 +1397,9 @@ impl Database {
                         updated_at: row.get(6)?,
                     })
                 })
-                .optional()
-                .map_err(|e| GhostError::Database(e.to_string()))?
-            {
-                return Ok(entry);
-            }
+                .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            // Create new entry
-            conn.execute(
-                "INSERT INTO node_rewards (node_id, balance_sats, created_at, updated_at)
-                 VALUES (?1, 0, ?2, ?2)",
-                params![node_id, now],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            Ok(NodeRewardEntry {
-                node_id: node_id.to_string(),
-                balance_sats: 0,
-                last_credited_round: 0,
-                total_credits_sats: 0,
-                total_withdrawals_sats: 0,
-                created_at: now,
-                updated_at: now,
-            })
+            Ok(entry)
         })
     }
 
@@ -2549,7 +2559,8 @@ impl Database {
             let count: i64 = conn
                 .query_row("SELECT COUNT(*) FROM payouts", [], |row| row.get(0))
                 .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(count as u64)
+            // 4.19 SECURITY: Use safe conversion to detect database corruption
+            i64_to_u64(count, "payout_count").map_err(|e| GhostError::Database(e.to_string()))
         })
     }
 
@@ -2645,7 +2656,8 @@ impl Database {
                     |row| row.get(0),
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(count as u64)
+            // 4.19 SECURITY: Use safe conversion to detect database corruption
+            i64_to_u64(count, "round_count").map_err(|e| GhostError::Database(e.to_string()))
         })
     }
 
@@ -4110,7 +4122,10 @@ impl Database {
                     if root_bytes.len() == 32 {
                         state_root.copy_from_slice(&root_bytes);
                     }
-                    Ok(Some((snap_height as u64, state_root)))
+                    // 4.19 SECURITY: Use safe conversion
+                    let height = i64_to_u64(snap_height, "snapshot_height")
+                        .map_err(|e| GhostError::Database(e.to_string()))?;
+                    Ok(Some((height, state_root)))
                 }
                 None => Ok(None),
             }
@@ -4139,7 +4154,8 @@ impl Database {
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            Ok(delete_count as u64)
+            // 4.19 SECURITY: Use safe conversion (defensive, should never fail given the guard above)
+            i64_to_u64(delete_count, "delete_count").map_err(|e| GhostError::Database(e.to_string()))
         })
     }
 }

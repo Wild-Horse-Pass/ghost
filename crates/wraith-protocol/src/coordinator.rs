@@ -36,12 +36,11 @@ const MAX_STRIKES: u32 = 3;
 /// Prevents unbounded memory growth in long-running coordinators
 const MAX_USED_TOKENS: usize = 100_000;
 
-/// Maximum age for tokens in the cache (8 days)
-/// WR-C3: Extended from 24 hours to 8 days to exceed maximum session duration (7 days).
-/// This prevents token replay attacks where a token from an old session could be
-/// reused after cache eviction but before the session it was issued for expires.
-/// Tokens older than this are eligible for eviction.
-const TOKEN_MAX_AGE_SECS: u64 = 8 * 24 * 60 * 60;
+/// Maximum age for tokens in the cache (14 days)
+/// SECURITY: Must exceed 2x maximum session duration (7 days) to prevent replay attacks.
+/// This ensures tokens from completed sessions cannot be replayed after cache eviction.
+/// 14 days provides sufficient margin for edge cases and clock drift.
+const TOKEN_MAX_AGE_SECS: u64 = 14 * 24 * 60 * 60;
 
 /// WR4-L7: Maximum number of outputs in a single mix transaction
 /// This prevents transactions that exceed Bitcoin's consensus limits
@@ -149,12 +148,16 @@ impl TokenCache {
 ///
 /// Tracks participants who fail to complete signing to prevent repeat offenders.
 /// This is a simple strike-based system: 3 strikes and you're banned.
+///
+/// 4.11 SECURITY: Uses hashed ghost_id instead of plaintext to prevent
+/// identity leakage through memory dumps or logging.
 #[derive(Debug, Clone, Default)]
 pub struct ReputationTracker {
     /// Strike counts for participants who failed to sign
-    /// ghost_id -> number of failures
+    /// hashed_id -> number of failures
+    /// 4.11: Keys are hashed for privacy
     strikes: HashMap<String, u32>,
-    /// Permanently banned participants
+    /// Permanently banned participants (by hashed ID)
     banned: HashSet<String>,
 }
 
@@ -164,19 +167,33 @@ impl ReputationTracker {
         Self::default()
     }
 
+    /// 4.11 SECURITY: Hash ghost_id for privacy-preserving storage
+    ///
+    /// Uses SHA256 with domain separation to prevent rainbow table attacks
+    /// and ensure hashes are distinct from other uses of ghost_id hashes.
+    fn hash_ghost_id(ghost_id: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"wraith/reputation/v1/");
+        hasher.update(ghost_id.as_bytes());
+        hex::encode(hasher.finalize())
+    }
+
     /// Check if a participant is allowed to join (not banned)
     pub fn is_allowed(&self, ghost_id: &str) -> bool {
-        !self.banned.contains(ghost_id)
+        let hashed = Self::hash_ghost_id(ghost_id);
+        !self.banned.contains(&hashed)
     }
 
     /// Record a failure to sign for a participant
     ///
     /// Increments strike count. If strikes >= MAX_STRIKES, the participant is banned.
     pub fn record_failure(&mut self, ghost_id: &str) {
-        let strikes = self.strikes.entry(ghost_id.to_string()).or_insert(0);
+        let hashed = Self::hash_ghost_id(ghost_id);
+        let strikes = self.strikes.entry(hashed.clone()).or_insert(0);
         *strikes += 1;
         if *strikes >= MAX_STRIKES {
-            self.banned.insert(ghost_id.to_string());
+            self.banned.insert(hashed);
         }
     }
 
@@ -184,24 +201,28 @@ impl ReputationTracker {
     ///
     /// Good behavior reduces strike count by 1 (but not below 0).
     pub fn record_success(&mut self, ghost_id: &str) {
-        if let Some(strikes) = self.strikes.get_mut(ghost_id) {
+        let hashed = Self::hash_ghost_id(ghost_id);
+        if let Some(strikes) = self.strikes.get_mut(&hashed) {
             *strikes = strikes.saturating_sub(1);
         }
     }
 
     /// Get the strike count for a participant
     pub fn get_strikes(&self, ghost_id: &str) -> u32 {
-        self.strikes.get(ghost_id).copied().unwrap_or(0)
+        let hashed = Self::hash_ghost_id(ghost_id);
+        self.strikes.get(&hashed).copied().unwrap_or(0)
     }
 
     /// Check if a participant is banned
     pub fn is_banned(&self, ghost_id: &str) -> bool {
-        self.banned.contains(ghost_id)
+        let hashed = Self::hash_ghost_id(ghost_id);
+        self.banned.contains(&hashed)
     }
 
     /// Manually ban a participant
     pub fn ban(&mut self, ghost_id: &str) {
-        self.banned.insert(ghost_id.to_string());
+        let hashed = Self::hash_ghost_id(ghost_id);
+        self.banned.insert(hashed);
     }
 
     /// Manually unban a participant (use with caution)
@@ -442,6 +463,16 @@ impl Participant {
 ///
 /// Computes H(ghost_id || session_id) to create a unique identifier
 /// that cannot be linked across sessions.
+///
+/// ## 3.14 SECURITY: Full 32-byte hash for collision resistance
+///
+/// Uses the full 32-byte SHA256 output for the participant ID. Previously
+/// this was truncated to 16 bytes (128 bits), which while still very unlikely
+/// to collide, provides less margin against birthday attacks when sessions
+/// have many participants.
+///
+/// With full 32 bytes (256 bits), finding a collision would require ~2^128
+/// operations (birthday bound), compared to ~2^64 with 16 bytes.
 fn derive_session_participant_id(ghost_id: &str, session_id: &[u8; 32]) -> String {
     use bitcoin::hashes::{sha256, Hash, HashEngine};
     let mut engine = sha256::Hash::engine();
@@ -449,7 +480,8 @@ fn derive_session_participant_id(ghost_id: &str, session_id: &[u8; 32]) -> Strin
     engine.input(ghost_id.as_bytes());
     engine.input(session_id);
     let hash = sha256::Hash::from_engine(engine);
-    hex::encode(&hash[..16]) // Use first 16 bytes (32 hex chars)
+    // 3.14: Use full 32 bytes for maximum collision resistance
+    hex::encode(&hash[..])
 }
 
 /// Broadcast function type for transaction broadcasting
@@ -539,7 +571,8 @@ impl WraithCoordinator {
             used_tokens: TokenCache::default(),
             submitted_addresses: HashSet::new(),
             utxo_verifier: None,
-            require_utxo_for_registration: false,
+            // SECURITY: UTXO proof is required by default to prevent Sybil attacks
+            require_utxo_for_registration: true,
             reputation: None,
             audit_log: None,
         };
@@ -585,8 +618,22 @@ impl WraithCoordinator {
     /// sessions without having real UTXOs.
     ///
     /// Note: Requires `with_utxo_verifier()` to be set first.
+    /// This is enabled by default for security.
     pub fn with_utxo_required_for_registration(mut self) -> Self {
         self.require_utxo_for_registration = true;
+        self
+    }
+
+    /// Disable UTXO proof requirement for registration
+    ///
+    /// WARNING: This weakens security by allowing Sybil attacks. Only use for:
+    /// - Testing (where UTXO verification is not the focus)
+    /// - Development environments
+    ///
+    /// NEVER use this in production.
+    #[cfg(any(test, feature = "dev-mode"))]
+    pub fn without_utxo_required_for_registration(mut self) -> Self {
+        self.require_utxo_for_registration = false;
         self
     }
 
@@ -796,7 +843,7 @@ impl WraithCoordinator {
     pub fn submit_input(&mut self, ghost_id: &str, input: WraithInput) -> Result<(), WraithError> {
         let session_id = self
             .get_session_participant_id(ghost_id)
-            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
         let participant = self
             .participants
@@ -847,7 +894,7 @@ impl WraithCoordinator {
     pub fn request_nonces(&mut self, ghost_id: &str) -> Result<Vec<PublicNonce>, WraithError> {
         let session_id = self
             .get_session_participant_id(ghost_id)
-            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
 
         // Create nonces for each intermediate output, BOUND to session-specific participant ID
@@ -887,7 +934,7 @@ impl WraithCoordinator {
 
         let session_id = self
             .get_session_participant_id(ghost_id)
-            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
 
         // Sign each blinded challenge WITH session-specific participant verification
@@ -929,7 +976,7 @@ impl WraithCoordinator {
 
         let session_id = self
             .get_session_participant_id(ghost_id)
-            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
         let participant = self
             .participants
@@ -1020,45 +1067,16 @@ impl WraithCoordinator {
         hasher.finalize().into()
     }
 
-    /// DEPRECATED: Submit tokens with ghost_id linking (insecure)
-    ///
-    /// WARNING: This method creates input-output linkage that defeats blind signatures.
-    /// Use `submit_tokens_anonymous()` instead for privacy-preserving token submission.
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use submit_tokens_anonymous() for privacy-preserving token submission"
-    )]
-    pub fn submit_tokens(
-        &mut self,
-        ghost_id: &str,
-        tokens: Vec<UnblindedToken>,
-    ) -> Result<(), WraithError> {
-        if tokens.len() != SPLIT_RATIO {
-            return Err(WraithError::InvalidInput(format!(
-                "Expected {} tokens, got {}",
-                SPLIT_RATIO,
-                tokens.len()
-            )));
-        }
-
-        // Verify each token using standard Schnorr verification
-        for (i, token) in tokens.iter().enumerate() {
-            let valid = self.signer.verify_signature(token)?;
-            if !valid {
-                return Err(WraithError::InvalidSignature(format!(
-                    "Token {} verification failed for participant {}",
-                    i, ghost_id
-                )));
-            }
-        }
-
-        let participant = self.participants.get_mut(ghost_id).ok_or_else(|| {
-            WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id))
-        })?;
-
-        participant.tokens = tokens;
-        Ok(())
-    }
+    // 3.13 SECURITY: Removed deprecated submit_tokens() method
+    //
+    // The submit_tokens(ghost_id, tokens) method was deprecated because it creates
+    // input-output linkage that defeats blind signatures. The ghost_id parameter
+    // allowed the coordinator to correlate which tokens belonged to which participant,
+    // completely defeating the privacy guarantees of the blind signature scheme.
+    //
+    // Use submit_tokens_anonymous(tokens) instead, which adds tokens to an anonymous
+    // pool without any participant linkage. The coordinator can verify tokens are
+    // valid (signed by coordinator) but cannot determine which participant submitted them.
 
     /// Convert an x-only pubkey to a P2TR address string
     fn xonly_to_p2tr_address(&self, xonly: &[u8; 32]) -> Result<String, WraithError> {
@@ -1129,7 +1147,7 @@ impl WraithCoordinator {
         // Add inputs in order
         for ghost_id in &self.participant_order {
             let participant = self.participants.get(ghost_id).ok_or_else(|| {
-                WraithError::InvalidInput(format!("Missing participant in order: {}", ghost_id))
+                WraithError::InvalidInput("Missing participant in order".to_string())
             })?;
             if let Some(ref input) = participant.input {
                 builder.add_input(input.clone())?;
@@ -1242,7 +1260,7 @@ impl WraithCoordinator {
     pub fn add_phase1_signature(&mut self, ghost_id: &str) -> Result<bool, WraithError> {
         let session_id = self
             .get_session_participant_id(ghost_id)
-            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
         let participant = self
             .participants
@@ -1428,7 +1446,7 @@ impl WraithCoordinator {
     pub fn add_phase2_signature(&mut self, ghost_id: &str) -> Result<bool, WraithError> {
         let session_id = self
             .get_session_participant_id(ghost_id)
-            .ok_or_else(|| WraithError::InvalidInput(format!("Unknown participant: {}", ghost_id)))?
+            .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
         let participant = self
             .participants
@@ -1869,10 +1887,20 @@ pub enum TimeoutAction {
 mod tests {
     use super::*;
 
+    /// Create a coordinator for testing (UTXO requirement disabled)
+    fn create_test_coordinator(
+        tier: ParticipantTier,
+        denomination: WraithDenomination,
+        network: Network,
+    ) -> WraithCoordinator {
+        WraithCoordinator::new(tier, denomination, network)
+            .without_utxo_required_for_registration()
+    }
+
     #[test]
     fn test_coordinator_creation() {
-        let coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+        let coord = create_test_coordinator(
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );
@@ -1886,8 +1914,8 @@ mod tests {
 
     #[test]
     fn test_participant_registration() {
-        let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+        let mut coord = create_test_coordinator(
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );
@@ -1903,8 +1931,8 @@ mod tests {
 
     #[test]
     fn test_duplicate_registration_fails() {
-        let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+        let mut coord = create_test_coordinator(
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );
@@ -1922,8 +1950,8 @@ mod tests {
     fn test_token_submission_unlinkable() {
         use crate::blind::BlindingContext;
 
-        let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+        let mut coord = create_test_coordinator(
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );
@@ -1997,8 +2025,8 @@ mod tests {
     /// WR-H2 Security Test: Duplicate addresses are rejected
     #[test]
     fn test_duplicate_address_rejected() {
-        let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+        let mut coord = create_test_coordinator(
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );
@@ -2037,8 +2065,8 @@ mod tests {
         use crate::blind::BlindingContext;
         use bitcoin::ScriptBuf;
 
-        let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+        let mut coord = create_test_coordinator(
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );
@@ -2114,13 +2142,13 @@ mod tests {
     #[test]
     fn test_session_specific_participant_ids() {
         // Create two coordinators with different sessions
-        let coord1 = WraithCoordinator::new(
-            ParticipantTier::Express,
+        let coord1 = create_test_coordinator(
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );
-        let coord2 = WraithCoordinator::new(
-            ParticipantTier::Express,
+        let coord2 = create_test_coordinator(
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );
@@ -2182,16 +2210,22 @@ mod tests {
         }
 
         let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         )
-        .with_reputation(reputation);
+        .with_reputation(reputation)
+        .without_utxo_required_for_registration();
 
         // Banned ghost_id should be rejected
         let result = coord.register_participant("banned_ghost".to_string());
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("banned"));
+        assert!(result.is_err(), "Banned ghost should be rejected");
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("banned") || err_str.contains("Participant is banned"),
+            "Error should mention banned: {}",
+            err_str
+        );
 
         // Non-banned ghost_id should be accepted
         let result = coord.register_participant("good_ghost".to_string());
@@ -2208,14 +2242,15 @@ mod tests {
         let verification_called_clone = verification_called.clone();
 
         let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         )
         .with_utxo_verifier(move |_txid, _vout| {
             verification_called_clone.store(true, Ordering::SeqCst);
             Ok(true) // UTXO exists
-        });
+        })
+        .without_utxo_required_for_registration();
 
         coord.register_participant("ghost1".to_string()).unwrap();
 
@@ -2248,13 +2283,14 @@ mod tests {
         use bitcoin::ScriptBuf;
 
         let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         )
         .with_utxo_verifier(|_txid, _vout| {
             Ok(false) // UTXO does NOT exist
-        });
+        })
+        .without_utxo_required_for_registration();
 
         coord.register_participant("ghost1".to_string()).unwrap();
 
@@ -2346,7 +2382,7 @@ mod tests {
     #[test]
     fn test_utxo_required_for_registration() {
         let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         )
@@ -2371,7 +2407,7 @@ mod tests {
         let verification_called_clone = verification_called.clone();
 
         let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         )
@@ -2399,7 +2435,7 @@ mod tests {
     #[test]
     fn test_registration_with_invalid_utxo_rejected() {
         let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         )
@@ -2420,8 +2456,8 @@ mod tests {
     /// M-WRAITH-2 Test: Registration without verifier fails
     #[test]
     fn test_registration_with_utxo_no_verifier() {
-        let mut coord = WraithCoordinator::new(
-            ParticipantTier::Express,
+        let mut coord = create_test_coordinator(
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );
@@ -2442,22 +2478,23 @@ mod tests {
     // Security Tests (WR-C1, WR-C2, WR-C3, WR-C4)
     // ==========================================================================
 
-    /// WR-C3 Test: Token cache TTL is extended to 8 days
+    /// WR-C3 Test: Token cache TTL is extended to 14 days
+    /// SECURITY: Must exceed 2x maximum session duration (7 days) to prevent replay attacks
     #[test]
     fn test_token_cache_ttl_extended() {
-        // Verify the constant is set to 8 days
+        // Verify the constant is set to 14 days (2x max session duration)
         assert_eq!(
             TOKEN_MAX_AGE_SECS,
-            8 * 24 * 60 * 60,
-            "Token cache TTL should be 8 days"
+            14 * 24 * 60 * 60,
+            "Token cache TTL should be 14 days (2x max session duration)"
         );
 
         // Default cache should use the extended TTL
         let cache = TokenCache::default();
         assert_eq!(
             cache.max_age,
-            std::time::Duration::from_secs(8 * 24 * 60 * 60),
-            "Default cache should use 8-day TTL"
+            std::time::Duration::from_secs(14 * 24 * 60 * 60),
+            "Default cache should use 14-day TTL"
         );
     }
 
@@ -2465,13 +2502,13 @@ mod tests {
     #[test]
     fn test_token_hash_session_bound() {
         // Create two coordinators with different sessions
-        let mut coord1 = WraithCoordinator::new(
-            ParticipantTier::Express,
+        let mut coord1 = create_test_coordinator(
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );
-        let mut coord2 = WraithCoordinator::new(
-            ParticipantTier::Express,
+        let mut coord2 = create_test_coordinator(
+            ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );

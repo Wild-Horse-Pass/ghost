@@ -385,17 +385,20 @@ impl SeenMessageCache {
                 if state.highest_seq > WRAP_DETECTION_THRESHOLD
                     && sequence < WRAP_DETECTION_THRESHOLD
                 {
-                    // Sequence wrapped around - increment epoch and reset
+                    // 4.3 SECURITY: Sequence wrapped around - increment epoch and RESET highest
+                    // After wrap-around, the new sequence (e.g., 1) is the new baseline
                     state.epoch = state.epoch.saturating_add(1);
+                    state.highest_seq = sequence; // Reset to new sequence after wrap
                     debug!(
                         sender = %hex::encode(&sender[..8]),
-                        old_seq = state.highest_seq,
                         new_seq = sequence,
                         epoch = state.epoch,
-                        "Sequence wrap-around detected"
+                        "Sequence wrap-around detected, epoch incremented"
                     );
+                } else {
+                    // Normal case: update to max of current and new
+                    state.highest_seq = state.highest_seq.max(sequence);
                 }
-                state.highest_seq = state.highest_seq.max(sequence);
             })
             .or_insert(SequenceState {
                 highest_seq: sequence,

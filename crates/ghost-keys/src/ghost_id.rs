@@ -34,7 +34,44 @@ use std::str::FromStr;
 
 use crate::derivation::{derive_payment_address_v2, derive_shared_secret};
 use crate::error::GhostKeyError;
-use crate::GHOST_ID_HRP;
+use crate::{GHOST_ID_HRP, GHOST_ID_HRP_REGTEST, GHOST_ID_HRP_SIGNET, GHOST_ID_HRP_TESTNET};
+
+/// Network type for Ghost ID encoding
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GhostNetwork {
+    /// Bitcoin mainnet
+    #[default]
+    Mainnet,
+    /// Bitcoin testnet
+    Testnet,
+    /// Bitcoin signet
+    Signet,
+    /// Bitcoin regtest
+    Regtest,
+}
+
+impl GhostNetwork {
+    /// Get the HRP for this network
+    pub fn hrp(&self) -> &'static str {
+        match self {
+            GhostNetwork::Mainnet => GHOST_ID_HRP,
+            GhostNetwork::Testnet => GHOST_ID_HRP_TESTNET,
+            GhostNetwork::Signet => GHOST_ID_HRP_SIGNET,
+            GhostNetwork::Regtest => GHOST_ID_HRP_REGTEST,
+        }
+    }
+
+    /// Detect network from HRP string
+    pub fn from_hrp(hrp: &str) -> Option<Self> {
+        match hrp {
+            GHOST_ID_HRP => Some(GhostNetwork::Mainnet),
+            GHOST_ID_HRP_TESTNET => Some(GhostNetwork::Testnet),
+            GHOST_ID_HRP_SIGNET => Some(GhostNetwork::Signet),
+            GHOST_ID_HRP_REGTEST => Some(GhostNetwork::Regtest),
+            _ => None,
+        }
+    }
+}
 
 /// Ghost ID - Public identifier for receiving payments
 ///
@@ -75,9 +112,17 @@ impl GhostId {
         &self.spend_pubkey
     }
 
-    /// Encode as bech32m string
+    /// Encode as bech32m string (mainnet by default)
     pub fn encode(&self) -> String {
-        let hrp = Hrp::parse(GHOST_ID_HRP).expect("valid HRP");
+        self.encode_for_network(GhostNetwork::Mainnet)
+    }
+
+    /// Encode as bech32m string for a specific network
+    ///
+    /// SECURITY: Different networks use different HRPs to prevent
+    /// accidentally sending to wrong network addresses.
+    pub fn encode_for_network(&self, network: GhostNetwork) -> String {
+        let hrp = Hrp::parse(network.hrp()).expect("valid HRP");
 
         // Concatenate scan and spend pubkeys (66 bytes total)
         let mut data = Vec::with_capacity(66);
@@ -87,15 +132,25 @@ impl GhostId {
         bech32::encode::<Bech32m>(hrp, &data).expect("valid encoding")
     }
 
-    /// Decode from bech32m string
+    /// Decode from bech32m string (mainnet only)
     pub fn decode(s: &str) -> Result<Self, GhostKeyError> {
+        Self::decode_for_network(s, GhostNetwork::Mainnet)
+    }
+
+    /// Decode from bech32m string for a specific network
+    ///
+    /// SECURITY: Validates that the HRP matches the expected network
+    /// to prevent cross-network address confusion.
+    pub fn decode_for_network(s: &str, expected_network: GhostNetwork) -> Result<Self, GhostKeyError> {
         let (hrp, data) =
             bech32::decode(s).map_err(|e| GhostKeyError::Bech32Error(e.to_string()))?;
 
-        if hrp.as_str() != GHOST_ID_HRP {
+        let expected_hrp = expected_network.hrp();
+        if hrp.as_str() != expected_hrp {
             return Err(GhostKeyError::InvalidGhostId(format!(
-                "Expected HRP '{}', got '{}'",
-                GHOST_ID_HRP,
+                "Expected HRP '{}' for {:?}, got '{}'",
+                expected_hrp,
+                expected_network,
                 hrp.as_str()
             )));
         }
@@ -115,6 +170,38 @@ impl GhostId {
             .map_err(|_| GhostKeyError::InvalidGhostId("Invalid spend pubkey".to_string()))?;
 
         Self::from_bytes(&scan_bytes, &spend_bytes)
+    }
+
+    /// Decode from bech32m string and detect network from HRP
+    ///
+    /// Returns the GhostId and the detected network.
+    pub fn decode_any_network(s: &str) -> Result<(Self, GhostNetwork), GhostKeyError> {
+        let (hrp, data) =
+            bech32::decode(s).map_err(|e| GhostKeyError::Bech32Error(e.to_string()))?;
+
+        let network = GhostNetwork::from_hrp(hrp.as_str()).ok_or_else(|| {
+            GhostKeyError::InvalidGhostId(format!(
+                "Unknown network HRP '{}'. Valid HRPs: ghost, tghost, sghost, rghost",
+                hrp.as_str()
+            ))
+        })?;
+
+        if data.len() != 66 {
+            return Err(GhostKeyError::InvalidGhostId(format!(
+                "Expected 66 bytes, got {}",
+                data.len()
+            )));
+        }
+
+        let scan_bytes: [u8; 33] = data[0..33]
+            .try_into()
+            .map_err(|_| GhostKeyError::InvalidGhostId("Invalid scan pubkey".to_string()))?;
+        let spend_bytes: [u8; 33] = data[33..66]
+            .try_into()
+            .map_err(|_| GhostKeyError::InvalidGhostId("Invalid spend pubkey".to_string()))?;
+
+        let ghost_id = Self::from_bytes(&scan_bytes, &spend_bytes)?;
+        Ok((ghost_id, network))
     }
 
     /// Derive a payment address for sending to this Ghost ID (v2 - position-independent)

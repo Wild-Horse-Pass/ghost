@@ -377,6 +377,13 @@ struct PendingProposal {
 /// Ban duration for equivocating nodes (10 minutes)
 const EQUIVOCATION_BAN_DURATION_SECS: u64 = 600;
 
+/// 4.4 SECURITY: Maximum allowed gap between proposal and known block height
+const MAX_BLOCK_HEIGHT_GAP: u64 = 1000;
+
+/// 4.4 SECURITY: Fallback max height when no current height is known
+/// This is used during initial sync before we receive block updates
+const FALLBACK_MAX_BLOCK_HEIGHT: u64 = 10_000_000;
+
 /// Vote handler - processes votes and manages consensus sessions
 pub struct VoteHandler {
     /// Our node identity
@@ -406,6 +413,8 @@ pub struct VoteHandler {
     db: Option<Arc<ghost_storage::Database>>,
     /// M-P2P-2: Path for rate limiter persistence
     rate_limiter_persist_path: Option<PathBuf>,
+    /// 4.4 SECURITY: Current known best block height for dynamic validation
+    known_best_height: RwLock<Option<u64>>,
 }
 
 impl VoteHandler {
@@ -437,6 +446,19 @@ impl VoteHandler {
             ban_duration: std::time::Duration::from_secs(EQUIVOCATION_BAN_DURATION_SECS),
             db: None,
             rate_limiter_persist_path: None,
+            known_best_height: RwLock::new(None),
+        }
+    }
+
+    /// 4.4 SECURITY: Update the known best block height for dynamic validation
+    ///
+    /// Call this when a new block is received to keep the validation bound current.
+    /// Proposals with block heights outside (known_height - GAP, known_height + GAP) will be rejected.
+    pub fn update_block_height(&self, height: u64) {
+        let mut known = self.known_best_height.write();
+        // Only update if new height is greater (prevent rollback attacks via stale data)
+        if known.map_or(true, |h| height > h) {
+            *known = Some(height);
         }
     }
 
@@ -823,9 +845,9 @@ impl VoteHandler {
         }
 
         // 7. Validate timestamp is reasonable (not too far in the past or future)
-        // Allow 2-hour window to account for clock skew between nodes
-        // Note: For production, consider using ClockMonitor for network-adjusted time
-        const TIMESTAMP_TOLERANCE_SECS: u64 = 7200; // 2 hours
+        // 4.2 SECURITY: Reduced to 30 minutes to limit replay attack window
+        // Nodes should use NTP or similar time sync to stay within tolerance
+        const TIMESTAMP_TOLERANCE_SECS: u64 = 1800; // 30 minutes
         let now = chrono::Utc::now().timestamp() as u64;
         let min_valid = now.saturating_sub(TIMESTAMP_TOLERANCE_SECS);
         let max_valid = now.saturating_add(TIMESTAMP_TOLERANCE_SECS);
@@ -833,11 +855,22 @@ impl VoteHandler {
             return Err("proposal timestamp out of range");
         }
 
-        // 8. Validate block height is reasonable (sanity check)
-        // Block height should not be impossibly high
-        // Note: No lower bound - allows signet/testnet networks with fewer blocks
-        if proposal.block_height > 10_000_000 {
-            return Err("invalid block height");
+        // 8. Validate block height is reasonable
+        // 4.4 SECURITY: Dynamic bound based on known block height
+        let known_height = *self.known_best_height.read();
+        if let Some(current) = known_height {
+            // Dynamic validation: must be within MAX_BLOCK_HEIGHT_GAP of known height
+            let min_valid = current.saturating_sub(MAX_BLOCK_HEIGHT_GAP);
+            let max_valid = current.saturating_add(MAX_BLOCK_HEIGHT_GAP);
+            if proposal.block_height < min_valid || proposal.block_height > max_valid {
+                return Err("block height outside valid range");
+            }
+        } else {
+            // Fallback: no known height yet, use static bound
+            // This only happens during initial sync before receiving block updates
+            if proposal.block_height > FALLBACK_MAX_BLOCK_HEIGHT {
+                return Err("invalid block height");
+            }
         }
 
         // 9. Validate miner payout distribution is proportional (basic sanity check)

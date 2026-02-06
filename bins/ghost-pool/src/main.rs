@@ -776,12 +776,18 @@ async fn main() -> Result<()> {
     info!("Shared BanManager created for cross-handler ban enforcement");
 
     // Create vote handler with callbacks and shared ban manager
+    // 4.5 SECURITY: Rate limiter persistence is now enabled by default to prevent
+    // attackers from bypassing rate limits by triggering node restarts.
+    let rate_limiter_path = data_dir.join("rate_limiter.json");
     let vote_handler = Arc::new(
         VoteHandler::new(Arc::clone(&identity), Arc::clone(&voting_manager))
             .with_broadcaster(broadcast_fn)
             .with_executor(execute_fn)
-            .with_ban_manager(Arc::clone(&ban_manager)),
+            .with_ban_manager(Arc::clone(&ban_manager))
+            .with_rate_limiter_persistence(rate_limiter_path),
     );
+    // Start the background persistence task (persists every 60 seconds)
+    vote_handler.start_persistence_task();
 
     // Populate elders from database for BFT voting
     match db.get_elders() {

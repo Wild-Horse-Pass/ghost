@@ -22,6 +22,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{info, warn};
 
+/// 3.9 SECURITY: Maximum ceremony duration before auto-ossification (30 days)
+/// This ensures the ceremony cannot remain open indefinitely, preventing
+/// attackers from waiting for an opportune moment to contribute malicious parameters.
+const MAX_CEREMONY_DURATION_SECS: u64 = 30 * 24 * 60 * 60; // 30 days
+
 /// State of the MPC ceremony
 #[derive(Debug, Clone)]
 pub struct CeremonyState {
@@ -39,6 +44,11 @@ pub struct CeremonyState {
     pub payout_vk_hash: Option<[u8; 32]>,
     /// Last update timestamp
     pub updated_at: u64,
+    /// 3.9: Genesis timestamp for time-based ossification
+    pub genesis_timestamp: Option<u64>,
+    /// 4.22 SECURITY: Unique ceremony identifier for binding proofs
+    /// Derived from genesis parameters hash to ensure uniqueness across ceremonies
+    pub ceremony_id: [u8; 32],
 }
 
 impl Default for CeremonyState {
@@ -51,7 +61,33 @@ impl Default for CeremonyState {
             block_vk_hash: None,
             payout_vk_hash: None,
             updated_at: 0,
+            genesis_timestamp: None,
+            // Default ceremony_id is all zeros - must be set at initialization
+            ceremony_id: [0u8; 32],
         }
+    }
+}
+
+impl CeremonyState {
+    /// 3.9 SECURITY: Check if ceremony should auto-ossify due to time limit
+    ///
+    /// The ceremony automatically ossifies 30 days after genesis to prevent
+    /// attackers from waiting indefinitely for an opportune moment to contribute.
+    pub fn should_time_ossify(&self) -> bool {
+        if self.is_ossified {
+            return false; // Already ossified
+        }
+
+        let Some(genesis_ts) = self.genesis_timestamp else {
+            return false; // No genesis yet
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        now.saturating_sub(genesis_ts) >= MAX_CEREMONY_DURATION_SECS
     }
 }
 
@@ -222,6 +258,14 @@ impl CeremonyManager {
             return Err(MpcError::CeremonyOssified(state.contribution_count));
         }
 
+        // 3.9 SECURITY: Check time-based ossification (30 days from genesis)
+        if state.should_time_ossify() {
+            drop(state);
+            // Trigger ossification
+            self.ossify()?;
+            return Err(MpcError::CeremonyOssified(self.contribution_count()));
+        }
+
         let next_position = state.contribution_count + 1;
         if next_position > MAX_CEREMONY_CONTRIBUTORS {
             return Err(MpcError::CeremonyOssified(state.contribution_count));
@@ -233,12 +277,14 @@ impl CeremonyManager {
             MpcError::Internal("No current parameters loaded for contribution".into())
         })?;
 
+        // 4.22: Get ceremony_id for binding proofs to this ceremony
+        let ceremony_id = state.ceremony_id;
         drop(state); // Release read lock before generating
 
         // Generate the contribution
         let mut rng = OsRng;
         let (new_params, contribution) =
-            generate_contribution(params.as_ref(), next_position, contributor_id, &mut rng)?;
+            generate_contribution(params.as_ref(), &ceremony_id, next_position, contributor_id, &mut rng)?;
 
         info!(
             position = next_position,
@@ -281,8 +327,8 @@ impl CeremonyManager {
             MpcError::Internal("No current parameters loaded for verification".into())
         })?;
 
-        // Verify the contribution
-        verify_contribution(params.as_ref(), new_params, contribution)
+        // 4.22: Verify the contribution with ceremony_id binding
+        verify_contribution(params.as_ref(), new_params, contribution, &state.ceremony_id)
     }
 
     /// Apply a contribution after BFT approval
@@ -404,15 +450,21 @@ impl CeremonyManager {
         *self.block_vk.write() = Some(Arc::new(vk));
 
         // Update state - contribution count stays 0 for genesis
-        state.current_params_hash = params_hash;
-        state.updated_at = std::time::SystemTime::now()
+        let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
+        state.current_params_hash = params_hash;
+        state.updated_at = now;
+        // 3.9: Record genesis timestamp for time-based ossification
+        state.genesis_timestamp = Some(now);
+
         info!(
             params_hash = %hex::encode(params_hash),
-            "Initialized MPC ceremony with genesis parameters"
+            genesis_timestamp = now,
+            max_duration_days = 30,
+            "Initialized MPC ceremony with genesis parameters (30-day ossification timer started)"
         );
 
         Ok(())

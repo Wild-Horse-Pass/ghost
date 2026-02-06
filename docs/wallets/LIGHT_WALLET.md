@@ -435,6 +435,16 @@ priority = 3
 - Connect to untrusted GSP servers
 - Ignore software update notifications
 
+### Note: BIP-39 Passphrase (25th Word) Not Supported
+
+Ghost Light Wallet intentionally does not support BIP-39 passphrases for the following reasons:
+
+1. **Reduced complexity**: One less thing to remember/lose during recovery
+2. **Recovery consistency**: The 24-word mnemonic alone is sufficient for full recovery
+3. **Protection via encryption**: The wallet password already encrypts keys at rest
+
+The 24-word mnemonic provides 256 bits of entropy, which is cryptographically sufficient for security. If you have funds in a wallet that was created with a BIP-39 passphrase in another application, you cannot recover them using Ghost Light Wallet.
+
 ## Troubleshooting
 
 ### Connection Issues

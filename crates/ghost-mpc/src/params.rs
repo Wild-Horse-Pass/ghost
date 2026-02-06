@@ -91,6 +91,10 @@ impl ParameterFiles {
     }
 
     /// List all parameter versions available
+    ///
+    /// 4.16 SECURITY: Handles version gaps gracefully
+    /// If versions [1, 2, 5] exist (gaps at 3, 4), this returns [1, 2, 5] sorted.
+    /// Use `has_version_gaps()` to detect if gaps exist.
     pub fn list_versions(&self) -> MpcResult<Vec<u32>> {
         let mut versions = Vec::new();
 
@@ -120,9 +124,44 @@ impl ParameterFiles {
     pub fn latest_version(&self) -> MpcResult<Option<u32>> {
         Ok(self.list_versions()?.into_iter().max())
     }
+
+    /// 4.16 SECURITY: Check if there are gaps in the version sequence
+    ///
+    /// Gaps indicate missing intermediate contributions, which could mean:
+    /// - Failed/reverted contributions
+    /// - Corrupted parameter files
+    /// - Incomplete ceremony state
+    ///
+    /// Returns the list of missing version numbers, if any.
+    pub fn find_version_gaps(&self) -> MpcResult<Vec<u32>> {
+        let versions = self.list_versions()?;
+        if versions.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut gaps = Vec::new();
+        let min_version = *versions.first().unwrap();
+        let max_version = *versions.last().unwrap();
+
+        for expected in min_version..=max_version {
+            if !versions.contains(&expected) {
+                gaps.push(expected);
+            }
+        }
+
+        Ok(gaps)
+    }
+
+    /// 4.16: Check if there are any version gaps
+    pub fn has_version_gaps(&self) -> MpcResult<bool> {
+        Ok(!self.find_version_gaps()?.is_empty())
+    }
 }
 
 /// Save parameters to a file
+///
+/// SECURITY: Uses fsync to ensure parameters are durably written to disk.
+/// This prevents data loss if the system crashes before the OS flushes buffers.
 pub fn save_parameters(path: &Path, params: &Parameters<Bls12>) -> MpcResult<()> {
     let file = File::create(path)?;
     let mut writer = BufWriter::new(file);
@@ -134,11 +173,16 @@ pub fn save_parameters(path: &Path, params: &Parameters<Bls12>) -> MpcResult<()>
 
     writer.flush()?;
 
+    // SECURITY: Ensure data is synced to persistent storage
+    // This prevents parameter corruption if the system crashes before
+    // the OS flushes its write buffers to disk.
+    writer.get_ref().sync_all()?;
+
     let file_size = fs::metadata(path)?.len();
     info!(
         path = %path.display(),
         size_bytes = file_size,
-        "Saved MPC parameters"
+        "Saved MPC parameters (synced to disk)"
     );
 
     Ok(())

@@ -26,6 +26,7 @@ use bip39::{Language, Mnemonic};
 use bitcoin::bip32::{ChildNumber, DerivationPath, Xpriv};
 use bitcoin::Network;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use ghost_gsp_proto::WalletId;
 use ghost_keys::{GhostId, GhostKeys};
@@ -36,6 +37,9 @@ use crate::error::{LightWalletError, WalletResult};
 ///
 /// Derived from BIP-39 mnemonic using BIP-32 HD key derivation.
 /// All keys are derived from the master seed following BIP-352 paths.
+///
+/// SECURITY NOTE: Clone is derived for API compatibility (async patterns require owned values).
+/// Prefer Arc<MasterKey> for shared access where possible to minimize copies of secret material.
 #[derive(Clone)]
 pub struct MasterKey {
     /// Ghost Keys for payments
@@ -209,12 +213,16 @@ impl MasterKey {
 }
 
 /// Exportable master key data (for encrypted storage)
-#[derive(Debug, Clone)]
+///
+/// SECURITY: Implements ZeroizeOnDrop to securely erase secret key material
+/// from memory when the struct is dropped.
+#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
 pub struct MasterKeyExport {
     pub scan_secret: [u8; 32],
     pub spend_secret: [u8; 32],
     pub auth_secret: [u8; 32],
     pub auth_pubkey: [u8; 32],
+    #[zeroize(skip)]
     pub network: Network,
 }
 

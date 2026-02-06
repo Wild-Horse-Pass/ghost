@@ -35,7 +35,7 @@ use std::str::FromStr;
 
 use crate::denomination::WraithDenomination;
 use crate::error::WraithError;
-use crate::{SPLIT_RATIO, WRAITH_PHASE1_MARKER, WRAITH_PHASE2_MARKER};
+use crate::{generate_encrypted_marker, SPLIT_RATIO};
 
 /// Input UTXO for Wraith participation
 #[derive(Debug, Clone)]
@@ -418,27 +418,47 @@ impl WraithTransactionBuilder {
     }
 
     /// Build OP_RETURN data for Phase 1
+    ///
+    /// 4.10 SECURITY: Uses encrypted marker instead of plain-text marker and session hash.
+    /// The encrypted marker looks like random data to observers who don't know the session ID,
+    /// preventing blockchain fingerprinting of Wraith transactions.
     fn build_phase1_op_return(&self) -> Vec<u8> {
         let mut data = Vec::new();
-        data.extend_from_slice(WRAITH_PHASE1_MARKER);
-        // Add session ID hash (first 8 bytes)
-        let session_hash = sha256_first_8(&self.session_id);
-        data.extend_from_slice(&session_hash);
+        // 4.10: Use encrypted marker (32 bytes) instead of WR1 + truncated session hash
+        // Hash the session_id string to get a 32-byte key
+        let session_key = self.session_id_hash();
+        let encrypted_marker = generate_encrypted_marker(1, &session_key);
+        data.extend_from_slice(&encrypted_marker);
         // Add participant count (2 bytes)
         data.extend_from_slice(&(self.inputs.len() as u16).to_le_bytes());
         data
     }
 
     /// Build OP_RETURN data for Phase 2
+    ///
+    /// 4.10 SECURITY: Uses encrypted marker instead of plain-text marker and session hash.
+    /// The encrypted marker looks like random data to observers who don't know the session ID,
+    /// preventing blockchain fingerprinting of Wraith transactions.
     fn build_phase2_op_return(&self) -> Vec<u8> {
         let mut data = Vec::new();
-        data.extend_from_slice(WRAITH_PHASE2_MARKER);
-        // Add session ID hash (first 8 bytes)
-        let session_hash = sha256_first_8(&self.session_id);
-        data.extend_from_slice(&session_hash);
+        // 4.10: Use encrypted marker (32 bytes) instead of WR2 + truncated session hash
+        // Hash the session_id string to get a 32-byte key
+        let session_key = self.session_id_hash();
+        let encrypted_marker = generate_encrypted_marker(2, &session_key);
+        data.extend_from_slice(&encrypted_marker);
         // Add participant count (2 bytes)
         data.extend_from_slice(&(self.inputs.len() as u16).to_le_bytes());
         data
+    }
+
+    /// 4.10: Hash the session_id string to a 32-byte key
+    #[cfg_attr(test, allow(dead_code))]
+    pub fn session_id_hash(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let hash = Sha256::digest(self.session_id.as_bytes());
+        let mut result = [0u8; 32];
+        result.copy_from_slice(&hash);
+        result
     }
 
     /// Generate 32-byte shuffle seed from session ID and optional entropy
@@ -536,15 +556,6 @@ impl MergeTransaction {
     pub fn txid(&self) -> Txid {
         self.transaction.compute_txid()
     }
-}
-
-/// SHA256 hash, return first 8 bytes
-fn sha256_first_8(data: &str) -> [u8; 8] {
-    use sha2::{Digest, Sha256};
-    let hash = Sha256::digest(data.as_bytes());
-    let mut result = [0u8; 8];
-    result.copy_from_slice(&hash[..8]);
-    result
 }
 
 /// Build OP_RETURN script from data
@@ -719,6 +730,8 @@ mod tests {
 
     #[test]
     fn test_op_return_data() {
+        use crate::verify_encrypted_marker;
+
         let builder = WraithTransactionBuilder::new(
             "session123".to_string(),
             WraithDenomination::Small,
@@ -726,8 +739,15 @@ mod tests {
         );
 
         let data = builder.build_phase1_op_return();
-        assert!(data.starts_with(WRAITH_PHASE1_MARKER));
+
+        // 4.10: OP_RETURN now uses encrypted marker (32 bytes) + participant count (2 bytes)
+        assert_eq!(data.len(), 34); // 32-byte marker + 2-byte count
         assert!(data.len() <= 80); // OP_RETURN limit
+
+        // Verify the marker can be decrypted with the session key
+        let session_key = builder.session_id_hash();
+        let marker: [u8; 32] = data[..32].try_into().unwrap();
+        assert_eq!(verify_encrypted_marker(&marker, &session_key), Some(1)); // Phase 1
     }
 
     /// WR-C1 Security Test: Verify shuffle uses CSPRNG entropy

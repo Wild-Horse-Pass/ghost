@@ -136,16 +136,25 @@ impl PaymentMetadata {
     }
 
     /// Create default metadata (label 0, no memo)
-    pub fn default_metadata() -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if random padding generation fails (getrandom failure).
+    /// This is a security-critical operation - zero padding would leak information.
+    pub fn default_metadata() -> Result<Self, crate::error::GhostKeyError> {
         let mut padding = [0u8; MAX_MEMO_LENGTH];
-        // Best effort random padding, fall back to zeros if RNG fails
-        let _ = getrandom::getrandom(&mut padding);
+        // SECURITY: Random padding is required for privacy - failure must be an error
+        getrandom::getrandom(&mut padding).map_err(|e| {
+            crate::error::GhostKeyError::InvalidGhostId(format!(
+                "Failed to generate random padding for metadata: {}",
+                e
+            ))
+        })?;
 
-        Self {
+        Ok(Self {
             label: DEFAULT_LABEL,
             memo: None,
             padding,
-        }
+        })
     }
 
     /// Serialize to fixed 64-byte plaintext
@@ -409,7 +418,7 @@ mod tests {
 
     #[test]
     fn test_default_metadata() {
-        let metadata = PaymentMetadata::default_metadata();
+        let metadata = PaymentMetadata::default_metadata().expect("should generate default metadata");
         assert_eq!(metadata.label, DEFAULT_LABEL);
         assert_eq!(metadata.memo, None);
     }

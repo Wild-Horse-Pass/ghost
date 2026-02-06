@@ -70,6 +70,13 @@ impl GhostLock {
         timelock_tier: TimelockTier,
         creation_height: u32,
     ) -> Result<Self, GhostLockError> {
+        // SECURITY: Lock and recovery keys must be different to ensure proper 2-of-2 security
+        if lock_secret.secret_bytes() == recovery_secret.secret_bytes() {
+            return Err(GhostLockError::InvalidKey(
+                "Lock and recovery secrets must be different".to_string(),
+            ));
+        }
+
         let lock_pubkey_full = PublicKey::from_secret_key(secp, lock_secret);
         let recovery_pubkey_full = PublicKey::from_secret_key(secp, recovery_secret);
 

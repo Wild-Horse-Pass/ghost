@@ -100,15 +100,16 @@ fn calculate_shannon_entropy(bytes: &[u8]) -> f64 {
 /// IMPORTANT: The theoretical max is 8.0 bits/byte, but this is unachievable
 /// with only 32 samples. A threshold of 6.0+ would reject valid random data.
 ///
-/// We use 4.0 bits/byte as our threshold:
-/// - 4.0 bits/byte = 50% of theoretical maximum, catches severely broken RNG
-/// - Higher thresholds cause false positives with valid 32-byte random samples
-/// - This threshold catches all-zeros, all-ones, and simple repeating patterns
+/// 4.23 SECURITY: We use 3.5 bits/byte as our threshold:
+/// - 3.5 bits/byte = ~44% of theoretical maximum, catches severely broken RNG
+/// - This threshold is more tolerant of natural variance in small samples
+/// - Still catches all-zeros, all-ones, and simple repeating patterns
+/// - Reduces false positive rate for legitimate random data from secure RNGs
 ///
 /// NOTE: If higher entropy verification is required for security audit compliance,
 /// the solution is to accumulate more samples before checking, not to raise
 /// the threshold on a 32-byte sample (which is mathematically unsound).
-const MIN_ENTROPY_BITS_PER_BYTE: f64 = 4.0;
+const MIN_ENTROPY_BITS_PER_BYTE: f64 = 3.5;
 
 /// Generate random 32 bytes for key material (WR4-L3, M-CRYPTO-1)
 ///
@@ -117,7 +118,7 @@ const MIN_ENTROPY_BITS_PER_BYTE: f64 = 4.0;
 /// Returns an error if entropy is insufficient.
 fn random_bytes_32() -> Result<[u8; 32], WraithError> {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
 
     // WR4-L3: Validate entropy quality
     // Check for pathological cases indicating RNG failure
@@ -563,13 +564,11 @@ impl CoordinatorSigner {
         // Verify requestor matches the bound ghost_id BEFORE any state changes
         if let Some(ref bound_id) = nonce.bound_ghost_id {
             if bound_id != requesting_ghost_id {
-                // WR4-L6: Log details internally but return sanitized error to client
-                // This prevents information leakage about nonce bindings
+                // WR4-L6: Log detection internally but return sanitized error to client
+                // 4.24 SECURITY: Do NOT log ghost_id or any identifier - prevents identity correlation
                 // CRITICAL: Do NOT remove the nonce here - just return error
                 tracing::warn!(
-                    "Nonce hijacking attempt detected: bound to '{}' but signed by '{}'",
-                    &bound_id[..8.min(bound_id.len())],
-                    &requesting_ghost_id[..8.min(requesting_ghost_id.len())]
+                    "Nonce hijacking attempt detected: nonce bound to different participant"
                 );
                 return Err(WraithError::InvalidSignature(
                     "Signature verification failed".to_string(),

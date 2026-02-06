@@ -27,13 +27,13 @@ use wraith_protocol::{
 fn test_429_create_session_with_tier_parameters() {
     let session = WraithSession::new(ParticipantTier::Standard, WraithDenomination::Small);
 
-    assert_eq!(session.tier().min_participants(), 500);
+    assert_eq!(session.tier().min_participants(), 250);
     assert_eq!(session.denomination().output_sats(), 1_000_000);
 }
 
 #[test]
 fn test_430_session_initial_state() {
-    let session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
+    let session = WraithSession::new(ParticipantTier::Micro, WraithDenomination::Small);
 
     assert!(matches!(
         session.state(),
@@ -43,14 +43,13 @@ fn test_430_session_initial_state() {
 
 #[test]
 fn test_431_minimum_participants_by_tier() {
-    // Real ParticipantTier values
-    assert_eq!(ParticipantTier::Express.min_participants(), 25);
-    assert_eq!(ParticipantTier::Quick.min_participants(), 50);
-    assert_eq!(ParticipantTier::Small.min_participants(), 100);
-    assert_eq!(ParticipantTier::Medium.min_participants(), 250);
-    assert_eq!(ParticipantTier::Standard.min_participants(), 500);
-    assert_eq!(ParticipantTier::Large.min_participants(), 750);
-    assert_eq!(ParticipantTier::Whale.min_participants(), 1000);
+    // Tiers organized by balance range, optimized for 80KB tx size limit
+    assert_eq!(ParticipantTier::Micro.min_participants(), 400);    // 0.001-0.01 BTC
+    assert_eq!(ParticipantTier::Small.min_participants(), 340);    // 0.01-0.1 BTC
+    assert_eq!(ParticipantTier::Medium.min_participants(), 290);   // 0.1-1 BTC
+    assert_eq!(ParticipantTier::Standard.min_participants(), 250); // 1-10 BTC
+    assert_eq!(ParticipantTier::Large.min_participants(), 195);    // 10-50 BTC
+    assert_eq!(ParticipantTier::Whale.min_participants(), 160);    // 50+ BTC
 }
 
 #[test]
@@ -64,7 +63,7 @@ fn test_432_denomination_outputs() {
 
 #[test]
 fn test_433_add_participant_to_session() {
-    let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
+    let mut session = WraithSession::new(ParticipantTier::Micro, WraithDenomination::Small);
 
     assert_eq!(session.participant_count(), 0);
     assert!(session.add_participant());
@@ -74,12 +73,12 @@ fn test_433_add_participant_to_session() {
 #[test]
 fn test_434_session_can_start_when_min_reached() {
     let mut session = WraithSession::new(
-        ParticipantTier::Express, // 25 minimum
+        ParticipantTier::Whale, // 160 minimum (smallest tier)
         WraithDenomination::Small,
     );
 
     // Not enough participants
-    for _ in 0..24 {
+    for _ in 0..159 {
         session.add_participant();
     }
     assert!(!session.has_minimum_participants());
@@ -91,9 +90,9 @@ fn test_434_session_can_start_when_min_reached() {
 
 #[test]
 fn test_435_session_start_transitions_state() {
-    let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
+    let mut session = WraithSession::new(ParticipantTier::Whale, WraithDenomination::Small);
 
-    for _ in 0..25 {
+    for _ in 0..160 {
         session.add_participant();
     }
 
@@ -103,7 +102,7 @@ fn test_435_session_start_transitions_state() {
 
 #[test]
 fn test_436_session_start_fails_without_minimum() {
-    let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
+    let mut session = WraithSession::new(ParticipantTier::Micro, WraithDenomination::Small);
 
     session.add_participant();
     let result = session.start_collecting();
@@ -112,10 +111,10 @@ fn test_436_session_start_fails_without_minimum() {
 
 #[test]
 fn test_437_phase_progression() {
-    let mut session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
+    let mut session = WraithSession::new(ParticipantTier::Whale, WraithDenomination::Small);
 
-    // Fill session
-    for _ in 0..25 {
+    // Fill session with minimum participants
+    for _ in 0..160 {
         session.add_participant();
     }
     session.start_collecting().unwrap();
@@ -547,7 +546,7 @@ fn test_464_phase_ordering() {
 #[test]
 fn test_465_coordinator_creates_session() {
     // Test that we can create sessions from a coordinator context
-    let session = WraithSession::new(ParticipantTier::Express, WraithDenomination::Small);
+    let session = WraithSession::new(ParticipantTier::Micro, WraithDenomination::Small);
 
     // Session should have an ID
     let session_id = session.session_id();

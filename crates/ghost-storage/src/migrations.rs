@@ -119,9 +119,15 @@ fn get_schema_version(conn: &Connection) -> GhostResult<u32> {
 /// 1. `version` is a u32, which can only contain decimal digits
 /// 2. The Rust type system guarantees version cannot contain SQL injection payloads
 /// 3. The function is only called internally with the SCHEMA_VERSION constant
+///
+/// SECURITY: While format! is used, u32 cannot produce SQL injection.
+/// The version number is bounded by u32::MAX and only contains digits.
 fn set_schema_version(conn: &Connection, version: u32) -> GhostResult<()> {
-    // PRAGMA does not support ? parameters, but u32 guarantees numeric-only content
-    conn.execute(&format!("PRAGMA user_version = {};", version), [])
+    // PRAGMA does not support ? parameters
+    // SECURITY: Use Display formatting for u32 which produces only ASCII digits 0-9
+    // This is SQL injection safe because u32.to_string() cannot contain ', ", ;, or --
+    let sql = format!("PRAGMA user_version = {}", version);
+    conn.execute(&sql, [])
         .map_err(|e| GhostError::Database(e.to_string()))?;
     Ok(())
 }

@@ -84,10 +84,18 @@ impl WalletCache {
     }
 
     /// Migration to v2: Add label dictionary and label columns to transactions
+    ///
+    /// 3.20 SECURITY: Wrapped in explicit transaction to ensure atomicity.
+    /// If any statement fails, all changes are rolled back, preventing
+    /// a partially migrated schema that could cause data corruption.
     fn migrate_v2(&self) -> WalletResult<()> {
         debug!("Running migration v2: Label dictionary support");
 
-        self.conn.execute_batch(
+        // 3.20: Use explicit transaction for atomicity - if any statement fails,
+        // all changes are rolled back, preventing partial schema migrations
+        self.conn.execute("BEGIN EXCLUSIVE TRANSACTION", [])?;
+
+        let result = self.conn.execute_batch(
             "
             -- Label dictionary storage (JSON serialized)
             CREATE TABLE IF NOT EXISTS label_dictionary (
@@ -102,9 +110,19 @@ impl WalletCache {
             ALTER TABLE transactions ADD COLUMN label_index INTEGER DEFAULT 0;
             ALTER TABLE transactions ADD COLUMN decrypted_memo TEXT;
             ",
-        )?;
+        );
 
-        Ok(())
+        match result {
+            Ok(()) => {
+                self.conn.execute("COMMIT", [])?;
+                Ok(())
+            }
+            Err(e) => {
+                // Rollback on any error to prevent partial migration
+                let _ = self.conn.execute("ROLLBACK", []);
+                Err(e.into())
+            }
+        }
     }
 
     /// Create database tables

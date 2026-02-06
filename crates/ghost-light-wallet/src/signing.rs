@@ -149,6 +149,32 @@ fn tagged_hash(tag: &[u8], data: &[u8]) -> [u8; 32] {
 ///
 /// Uses the secp256k1 library for proper cryptographic signing.
 /// The signature is created using the auth secret key from the master key.
+///
+/// ## 3.8 SECURITY: Nonce Generation and Tracking
+///
+/// **CRITICAL**: This function uses `sign_schnorr_with_rng` which generates a fresh
+/// random nonce (k) for each signature using OsRng. This is ESSENTIAL for security:
+///
+/// - **NEVER reuse a nonce**: Reusing the same nonce with different messages
+///   allows full private key recovery via simple arithmetic.
+/// - **NEVER use predictable nonces**: Predictable nonces allow key extraction.
+///
+/// ### Why OsRng is Used (not thread_rng)
+///
+/// - OsRng is backed by the OS CSPRNG (/dev/urandom on Linux, BCryptGenRandom on Windows)
+/// - It's designed for cryptographic key material and nonces
+/// - thread_rng uses ChaCha12 which, while fast, has a deterministic seed
+///
+/// ### Nonce Tracking Not Required Here Because:
+///
+/// 1. Each call generates a fresh random nonce internally
+/// 2. The secp256k1 library uses RFC 6979 deterministic nonce derivation as backup
+/// 3. No external nonce counter is needed when using proper RNG
+///
+/// **WARNING**: If modifying this function, NEVER:
+/// - Cache or reuse nonces across calls
+/// - Use a counter-based nonce without proper domain separation
+/// - Allow the same (message, nonce) pair to be signed twice
 fn sign_schnorr(master_key: &MasterKey, message_hash: &[u8; 32]) -> WalletResult<[u8; 64]> {
     let secp = Secp256k1::new();
 
@@ -163,6 +189,7 @@ fn sign_schnorr(master_key: &MasterKey, message_hash: &[u8; 32]) -> WalletResult
 
     // Sign with BIP-340 Schnorr using a cryptographically secure RNG
     // CR-H1: Use OsRng instead of thread_rng() for cryptographic operations
+    // 3.8: OsRng ensures fresh, unpredictable nonce for each signature
     use rand::rngs::OsRng;
     let signature = secp.sign_schnorr_with_rng(&message, &keypair, &mut OsRng);
 

@@ -37,7 +37,19 @@ pub fn bytes_to_field(bytes: &[u8; 32]) -> ZkResult<Fr> {
     }
 
     // Value exceeds field modulus - use hash-based reduction
-    // This is cryptographically sound: H(x) is uniformly distributed in field
+    //
+    // 4.21 SECURITY: COLLISION RISK DOCUMENTATION
+    // When the hash-based reduction path is taken:
+    // - Multiple distinct byte arrays can produce the same field element
+    // - This is inherent to reducing a ~256-bit space to a ~254-bit field
+    // - Collision probability is ~2^-254, computationally infeasible to exploit
+    // - The hash function provides uniform distribution over the field
+    // - Domain separator "GhostZKP/hash-to-field/v1" ensures independence from other uses
+    //
+    // This is acceptable because:
+    // 1. The probability of accidental collision is negligible (~2^-254)
+    // 2. Finding collisions intentionally requires breaking SHA256
+    // 3. The circuit constraints provide additional protection against malicious inputs
     let mut hasher = Sha256::new();
     hasher.update(b"GhostZKP/hash-to-field/v1");
     hasher.update(bytes);

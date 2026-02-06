@@ -228,7 +228,17 @@ impl<F: PrimeField> BlockCircuit<F> {
         Ok(())
     }
 
-    /// Synthesize legacy mode (payment validity only, no state root proving)
+    /// Synthesize legacy mode (payment validity only)
+    ///
+    /// SECURITY WARNING: Legacy mode does NOT verify state root transitions!
+    /// It only validates payment arithmetic. Validators must re-execute transactions
+    /// to verify state roots independently.
+    ///
+    /// For production use with ZK-verified state roots, use `with_state_transitions()`
+    /// instead of this mode. Legacy mode is retained only for:
+    /// - Parameter generation (dummy circuits)
+    /// - Backward compatibility during migration
+    /// - Testing payment circuits in isolation
     fn synthesize_legacy<CS: ConstraintSystem<F>>(
         self,
         cs: &mut CS,
@@ -242,6 +252,7 @@ impl<F: PrimeField> BlockCircuit<F> {
         }
 
         // Placeholder: constrain roots are allocated (prevents optimization away)
+        // SECURITY NOTE: This does NOT verify state transitions - roots can be arbitrary!
         cs.enforce(
             || "prev_root_used",
             |lc| lc + prev_root.get_variable(),
