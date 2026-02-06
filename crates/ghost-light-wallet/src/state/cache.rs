@@ -76,6 +76,9 @@ impl WalletCache {
                 self.migrate_v2()?;
             }
 
+            // 3.19 SECURITY: format! is safe here because SCHEMA_VERSION is a u32 constant.
+            // SQLite PRAGMA does not support parameterized queries, but u32.to_string()
+            // can only produce ASCII digits 0-9, making SQL injection impossible.
             self.conn
                 .execute(&format!("PRAGMA user_version = {}", SCHEMA_VERSION), [])?;
         }

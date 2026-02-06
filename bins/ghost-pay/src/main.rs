@@ -223,7 +223,9 @@ fn get_encryption_password(args: &Args) -> String {
 /// Application state
 struct AppState {
     /// Ghost keys for this node
-    keys: RwLock<Option<GhostKeys>>,
+    /// 2.5 HIGH: GhostKeys wrapped in Arc to allow sharing across async boundaries
+    /// without cloning the secret key material.
+    keys: RwLock<Option<Arc<GhostKeys>>>,
     /// Ghost ID (owner identifier for DB)
     ghost_id: RwLock<Option<String>>,
     /// Active ghost locks (actual GhostLock objects) - cached from DB
@@ -437,7 +439,7 @@ async fn main() -> Result<()> {
                                 }
 
                                 info!("Loaded existing ghost keys (encrypted): {}", ghost_id);
-                                *state.keys.write() = Some(keys);
+                                *state.keys.write() = Some(Arc::new(keys));
                                 *state.ghost_id.write() = Some(ghost_id_str);
                                 keys_loaded = true;
                             }
@@ -520,7 +522,7 @@ async fn main() -> Result<()> {
                         "Loaded existing ghost keys (migrated from plaintext): {}",
                         ghost_id
                     );
-                    *state.keys.write() = Some(keys);
+                    *state.keys.write() = Some(Arc::new(keys));
                     *state.ghost_id.write() = Some(ghost_id_str);
                 }
             }
@@ -623,7 +625,7 @@ async fn generate_keys(
         }
     }
 
-    *state.keys.write() = Some(keys);
+    *state.keys.write() = Some(Arc::new(keys));
     *state.ghost_id.write() = Some(ghost_id_str.clone());
 
     // Load existing locks from database for this ghost_id (pending and active, not spent/settling)
@@ -1322,11 +1324,11 @@ async fn run_scanner(state: Arc<AppState>, mut rx: mpsc::Receiver<ScanRequest>) 
     info!("Starting background payment scanner");
 
     while let Some(req) = rx.recv().await {
-        // Clone keys to avoid holding lock across await
+        // Clone the Arc to release lock before await (Arc clone, not key clone)
         let keys = {
             let keys_guard = state.keys.read();
             match keys_guard.as_ref() {
-                Some(k) => k.clone(),
+                Some(k) => Arc::clone(k),
                 None => {
                     debug!("No keys loaded, skipping scan");
                     continue;

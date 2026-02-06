@@ -434,6 +434,31 @@ impl VotingSession {
         result
     }
 
+    /// 3.2 SECURITY: Invalidate a voter and remove their vote
+    ///
+    /// Called when a node is banned (e.g., for equivocation). This removes
+    /// the node from eligible_voters and removes any vote they cast.
+    /// This prevents banned nodes' votes from influencing consensus.
+    ///
+    /// Returns true if the voter had a vote that was removed.
+    pub fn invalidate_voter(&mut self, node_id: &NodeId) -> bool {
+        // Remove from eligible voters
+        self.eligible_voters.remove(node_id);
+
+        // Remove their vote if present
+        let had_vote = self.votes.remove(node_id).is_some();
+
+        if had_vote {
+            tracing::info!(
+                voter = hex::encode(&node_id[..8]),
+                round_id = self.round_id,
+                "3.2 SECURITY: Invalidated vote from banned voter"
+            );
+        }
+
+        had_vote
+    }
+
     /// Get current vote counts
     pub fn vote_counts(&self) -> (u32, u32, u32) {
         let approvals = self.votes.values().filter(|v| v.approve).count() as u32;
@@ -702,6 +727,34 @@ impl VotingManager {
         }
 
         results
+    }
+
+    /// 3.2 SECURITY: Invalidate a voter in all active sessions
+    ///
+    /// Called when a node is banned. This removes the node from all
+    /// active voting sessions and removes any votes they have cast.
+    /// This prevents banned nodes' votes from influencing any ongoing consensus.
+    ///
+    /// Returns the number of sessions where the voter's vote was invalidated.
+    pub fn invalidate_voter_in_all_sessions(&self, node_id: &NodeId) -> usize {
+        let mut sessions = self.sessions.write();
+        let mut invalidated_count = 0;
+
+        for session in sessions.values_mut() {
+            if session.invalidate_voter(node_id) {
+                invalidated_count += 1;
+            }
+        }
+
+        if invalidated_count > 0 {
+            tracing::warn!(
+                voter = hex::encode(&node_id[..8]),
+                sessions_affected = invalidated_count,
+                "3.2 SECURITY: Invalidated votes from banned voter in all active sessions"
+            );
+        }
+
+        invalidated_count
     }
 
     /// Cancel all sessions for a round (called on reorg)

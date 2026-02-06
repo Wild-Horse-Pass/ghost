@@ -39,6 +39,7 @@ use ghost_common::identity::NodeIdentity;
 use ghost_common::types::{ConsensusResult, NodeId, PayoutProposal, RoundId, VoteType};
 
 use crate::ban_manager::{BanManager, BanReason};
+use crate::elder_list::CanonicalElderList;
 use crate::mesh::MessageHandler;
 use crate::message::{
     EquivocationProofMessage, MessageEnvelope, MessageType, PayoutProposalMessage, VoteMessage,
@@ -390,8 +391,11 @@ pub struct VoteHandler {
     identity: Arc<NodeIdentity>,
     /// Voting manager
     voting_manager: Arc<VotingManager>,
-    /// Known elder nodes (eligible voters)
+    /// Known elder nodes (eligible voters) - DEPRECATED: use canonical_elder_list
     elders: RwLock<HashSet<NodeId>>,
+    /// 3.1 SECURITY: Canonical elder list for BFT-secure voting sessions
+    /// This ensures all nodes agree on eligible voters through the canonical list.
+    canonical_elder_list: RwLock<Option<CanonicalElderList>>,
     /// Pending proposals awaiting votes (with timestamps)
     pending_proposals: RwLock<std::collections::HashMap<[u8; 32], PendingProposal>>,
     /// Broadcast function
@@ -433,6 +437,7 @@ impl VoteHandler {
             identity,
             voting_manager,
             elders: RwLock::new(HashSet::new()),
+            canonical_elder_list: RwLock::new(None),
             pending_proposals: RwLock::new(std::collections::HashMap::new()),
             broadcast_fn: None,
             execute_fn: None,
@@ -562,6 +567,7 @@ impl VoteHandler {
     /// Ban a node for equivocation
     ///
     /// Uses shared BanManager if available (C1 fix), otherwise local tracking.
+    /// 3.2 SECURITY: Also invalidates any votes the node has cast in active sessions.
     fn ban_node(&self, node_id: NodeId) {
         if let Some(ref ban_manager) = self.ban_manager {
             // Use shared BanManager for cross-handler enforcement
@@ -576,6 +582,10 @@ impl VoteHandler {
                 "Node banned for equivocation (local)"
             );
         }
+
+        // 3.2 SECURITY: Invalidate the banned node's votes in all active sessions
+        // This prevents their votes from counting toward consensus
+        self.voting_manager.invalidate_voter_in_all_sessions(&node_id);
     }
 
     /// Check if a node is currently banned
@@ -691,6 +701,23 @@ impl VoteHandler {
         self.elders.read().len()
     }
 
+    /// 3.1 SECURITY: Set canonical elder list for BFT-secure voting
+    ///
+    /// This MUST be called with a valid CanonicalElderList before any voting
+    /// sessions are created. Using the canonical list ensures all nodes agree
+    /// on eligible voters, which is required for BFT consensus security.
+    pub fn set_canonical_elder_list(&self, elder_list: CanonicalElderList) {
+        // Also update legacy elders for backwards compatibility
+        let elder_ids: HashSet<NodeId> = elder_list.elders.iter().map(|e| e.node_id).collect();
+        *self.elders.write() = elder_ids;
+        *self.canonical_elder_list.write() = Some(elder_list);
+    }
+
+    /// Get the current canonical elder list epoch
+    pub fn canonical_elder_epoch(&self) -> Option<u64> {
+        self.canonical_elder_list.read().as_ref().map(|l| l.epoch)
+    }
+
     /// Handle a payout proposal
     pub fn handle_proposal(&self, proposal: PayoutProposal) -> GhostResult<[u8; 32]> {
         // Compute proposal hash
@@ -720,20 +747,40 @@ impl VoteHandler {
             .write()
             .insert(proposal_hash, pending);
 
-        // Create voting session
-        let elders = self.elders.read().clone();
-        if elders.is_empty() {
-            warn!("No elders registered for voting");
-            return Ok(proposal_hash);
-        }
-
-        let session = VotingSession::new(
-            proposal.round_id,
-            proposal_hash,
-            VoteType::PayoutApproval,
-            elders,
-            self.config.vote_timeout_ms,
-        );
+        // 3.1 SECURITY: Create voting session using canonical elder list for BFT security
+        // This ensures all nodes agree on eligible voters through the canonical list.
+        let session = {
+            let elder_list_guard = self.canonical_elder_list.read();
+            if let Some(ref elder_list) = *elder_list_guard {
+                // Use BFT-secure constructor with canonical elder list
+                match VotingSession::from_elder_list(
+                    proposal.round_id,
+                    proposal_hash,
+                    VoteType::PayoutApproval,
+                    elder_list,
+                    self.config.vote_timeout_ms,
+                ) {
+                    Ok(session) => session,
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "Failed to create voting session from canonical elder list"
+                        );
+                        return Err(e);
+                    }
+                }
+            } else {
+                // No canonical elder list set - this is a configuration error in production
+                warn!(
+                    "3.1 SECURITY: No canonical elder list set. \
+                     VotingSession requires canonical elder list for BFT security. \
+                     Call set_canonical_elder_list() before handling proposals."
+                );
+                return Err(ghost_common::error::GhostError::Internal(
+                    "No canonical elder list configured for voting".to_string(),
+                ));
+            }
+        };
 
         if self.voting_manager.start_session(session) {
             info!(

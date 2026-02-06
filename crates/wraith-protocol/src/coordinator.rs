@@ -487,6 +487,20 @@ fn derive_session_participant_id(ghost_id: &str, session_id: &[u8; 32]) -> Strin
 /// Broadcast function type for transaction broadcasting
 type BroadcastFn = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 
+/// Anonymous token batch with final address
+///
+/// CRITICAL PRIVACY: This structure stores tokens and final addresses together
+/// WITHOUT any participant identity linkage. The coordinator knows which tokens
+/// belong together (they were submitted as a batch) and which final address
+/// corresponds to that batch, but cannot determine which participant owns it.
+#[derive(Debug, Clone)]
+pub struct AnonymousTokenBatch {
+    /// Tokens in this batch (SPLIT_RATIO tokens per batch)
+    pub tokens: Vec<UnblindedToken>,
+    /// Final output address for Phase 2 (submitted anonymously with tokens)
+    pub final_address: String,
+}
+
 /// Wraith Coordinator - manages a single session's full lifecycle
 pub struct WraithCoordinator {
     /// The underlying session
@@ -511,8 +525,13 @@ pub struct WraithCoordinator {
     phase1_outputs: Vec<(Txid, u32, u64, ScriptBuf)>, // (txid, vout, amount, script_pubkey)
     /// Broadcast callback
     broadcast_fn: Option<BroadcastFn>,
-    /// Anonymous token pool - tokens verified but NOT linked to any participant
-    /// This is CRITICAL for privacy: coordinator verifies validity without knowing submitter
+    /// Anonymous token batches - tokens and final addresses verified but NOT linked to any participant
+    /// CRITICAL PRIVACY: coordinator verifies validity without knowing submitter identity.
+    /// Each batch contains SPLIT_RATIO tokens and one final address.
+    anonymous_token_batches: Vec<AnonymousTokenBatch>,
+    /// Legacy anonymous tokens (deprecated - use anonymous_token_batches instead)
+    /// Kept for backward compatibility with existing sessions
+    #[allow(dead_code)]
     anonymous_tokens: Vec<UnblindedToken>,
     /// Tokens that have been used (for replay prevention) - time-based LRU cache
     /// SECURITY: Prevents resubmission of the same token
@@ -567,7 +586,8 @@ impl WraithCoordinator {
             phase2_tx: None,
             phase1_outputs: Vec::new(),
             broadcast_fn: None,
-            anonymous_tokens: Vec::new(),
+            anonymous_token_batches: Vec::new(),
+            anonymous_tokens: Vec::new(), // Legacy field, deprecated
             used_tokens: TokenCache::default(),
             submitted_addresses: HashSet::new(),
             utxo_verifier: None,
@@ -957,10 +977,28 @@ impl WraithCoordinator {
         Ok(responses)
     }
 
-    /// Submit final output address for Phase 2
+    /// Submit final output address for Phase 2 (DEPRECATED - PRIVACY LEAK!)
     ///
-    /// SECURITY: Rejects duplicate addresses across all participants.
-    /// This prevents address reuse attacks that could enable tracing.
+    /// # Deprecated
+    ///
+    /// **CRITICAL PRIVACY ISSUE (CRIT-1):** This method takes `ghost_id` which links
+    /// the participant's identity to their final output address. This defeats the
+    /// privacy guarantees of the blind signature scheme.
+    ///
+    /// Use `submit_tokens_with_address_anonymous` instead, which accepts both
+    /// tokens and final address in a single anonymous submission without ghost_id.
+    ///
+    /// This method is kept only for backward compatibility and will be removed
+    /// in a future version.
+    ///
+    /// ## Security Note
+    ///
+    /// Rejects duplicate addresses across all participants to prevent address
+    /// reuse attacks that could enable tracing.
+    #[deprecated(
+        since = "1.7.0",
+        note = "PRIVACY LEAK: Use submit_tokens_with_address_anonymous instead"
+    )]
     pub fn submit_final_address(
         &mut self,
         ghost_id: &str,
@@ -994,23 +1032,45 @@ impl WraithCoordinator {
         Ok(())
     }
 
-    /// Submit unblinded tokens anonymously (Step 3 of interactive protocol)
+    /// Submit unblinded tokens with final address anonymously
     ///
-    /// CRITICAL PRIVACY: This method does NOT take ghost_id, breaking the link
-    /// between token submission and participant identity. The coordinator only
-    /// verifies that tokens are valid (signed by coordinator) but cannot determine
-    /// which participant submitted them.
+    /// CRITICAL PRIVACY FIX (CRIT-1): This method takes both tokens AND final address
+    /// WITHOUT any participant identity (ghost_id). This breaks the linkage between
+    /// participant identity and output address that previously existed in submit_final_address.
     ///
-    /// Tokens are added to an anonymous pool and later used for Phase 1 outputs.
-    pub fn submit_tokens_anonymous(
+    /// The coordinator:
+    /// 1. Verifies tokens are valid (signed by coordinator)
+    /// 2. Stores tokens + final_address together as an anonymous batch
+    /// 3. CANNOT determine which participant submitted which batch
+    ///
+    /// When Phase 2 is built, final addresses come from these anonymous batches,
+    /// NOT from participant.final_address (which would leak identity).
+    pub fn submit_tokens_with_address_anonymous(
         &mut self,
         tokens: Vec<UnblindedToken>,
+        final_address: String,
     ) -> Result<(), WraithError> {
         if tokens.len() != SPLIT_RATIO {
             return Err(WraithError::InvalidInput(format!(
                 "Expected {} tokens, got {}",
                 SPLIT_RATIO,
                 tokens.len()
+            )));
+        }
+
+        // Validate final address is not empty
+        if final_address.is_empty() {
+            return Err(WraithError::InvalidInput(
+                "Final address cannot be empty".into(),
+            ));
+        }
+
+        // SECURITY: Check for duplicate address BEFORE accepting
+        // This prevents address reuse attacks across anonymous submissions
+        if self.submitted_addresses.contains(&final_address) {
+            return Err(WraithError::InvalidInput(format!(
+                "Duplicate address rejected: {} (already submitted)",
+                final_address
             )));
         }
 
@@ -1038,15 +1098,76 @@ impl WraithCoordinator {
 
         // Mark tokens as used AFTER verification
         // M-WRAITH-1: TokenCache handles size limits with time-based LRU eviction
-        // This prevents the vulnerability of clearing ALL tokens at once
         for token in &tokens {
             let hash = self.compute_token_hash(token);
-            // check_and_mark returns true if already seen (replay), but we already checked above
-            // so we just call it to mark the token as used
             let _ = self.used_tokens.check_and_mark(hash);
         }
 
-        // Add to anonymous pool - NO ghost_id linkage!
+        // Record address to prevent duplicates
+        self.submitted_addresses.insert(final_address.clone());
+
+        // Add to anonymous batch pool - NO ghost_id linkage!
+        // The batch contains both tokens and final address together
+        self.anonymous_token_batches.push(AnonymousTokenBatch {
+            tokens,
+            final_address,
+        });
+
+        Ok(())
+    }
+
+    /// Submit unblinded tokens anonymously (DEPRECATED)
+    ///
+    /// # Deprecated
+    ///
+    /// This method is DEPRECATED because it requires a separate call to
+    /// `submit_final_address` which takes ghost_id, creating a privacy leak.
+    ///
+    /// Use `submit_tokens_with_address_anonymous` instead, which accepts both
+    /// tokens and final address in a single anonymous submission.
+    #[deprecated(
+        since = "1.7.0",
+        note = "Use submit_tokens_with_address_anonymous instead to avoid privacy leak via submit_final_address"
+    )]
+    pub fn submit_tokens_anonymous(
+        &mut self,
+        tokens: Vec<UnblindedToken>,
+    ) -> Result<(), WraithError> {
+        if tokens.len() != SPLIT_RATIO {
+            return Err(WraithError::InvalidInput(format!(
+                "Expected {} tokens, got {}",
+                SPLIT_RATIO,
+                tokens.len()
+            )));
+        }
+
+        // SECURITY: Check for replay BEFORE verification
+        for token in &tokens {
+            let hash = self.compute_token_hash(token);
+            if self.used_tokens.contains(&hash) {
+                return Err(WraithError::InvalidInput("Token replay detected".into()));
+            }
+        }
+
+        // Verify each token
+        for (i, token) in tokens.iter().enumerate() {
+            let valid = self.signer.verify_signature(token)?;
+            if !valid {
+                return Err(WraithError::InvalidSignature(format!(
+                    "Token {} verification failed",
+                    i
+                )));
+            }
+        }
+
+        // Mark tokens as used
+        for token in &tokens {
+            let hash = self.compute_token_hash(token);
+            let _ = self.used_tokens.check_and_mark(hash);
+        }
+
+        // Add to legacy anonymous pool
+        // WARNING: This requires separate submit_final_address call which leaks identity!
         self.anonymous_tokens.extend(tokens);
         Ok(())
     }
@@ -1100,16 +1221,32 @@ impl WraithCoordinator {
         // Need all participants to have inputs
         let all_have_inputs = self.participants.values().all(|p| p.input.is_some());
 
-        // Need enough anonymous tokens for all participants (SPLIT_RATIO per participant)
-        let expected_tokens = self.participants.len() * SPLIT_RATIO;
-        let have_enough_tokens = self.anonymous_tokens.len() >= expected_tokens;
+        // Need one anonymous batch per participant (each batch has SPLIT_RATIO tokens + final address)
+        // CRIT-1 FIX: Use anonymous_token_batches which include final addresses
+        let have_enough_batches = self.anonymous_token_batches.len() >= self.participants.len();
 
-        all_have_inputs && have_enough_tokens
+        // Legacy fallback: also check old anonymous_tokens if batches aren't being used
+        // This maintains backward compatibility during transition
+        let expected_tokens = self.participants.len() * SPLIT_RATIO;
+        let have_enough_legacy_tokens = self.anonymous_tokens.len() >= expected_tokens;
+
+        all_have_inputs && (have_enough_batches || have_enough_legacy_tokens)
     }
 
-    /// Get count of anonymous tokens submitted
+    /// Get count of anonymous token batches submitted
+    pub fn anonymous_batch_count(&self) -> usize {
+        self.anonymous_token_batches.len()
+    }
+
+    /// Get count of anonymous tokens submitted (total across all batches)
     pub fn anonymous_token_count(&self) -> usize {
-        self.anonymous_tokens.len()
+        let batch_tokens: usize = self
+            .anonymous_token_batches
+            .iter()
+            .map(|b| b.tokens.len())
+            .sum();
+        // Include legacy tokens for backward compatibility
+        batch_tokens + self.anonymous_tokens.len()
     }
 
     /// Build Phase 1 (split) transaction
@@ -1154,42 +1291,66 @@ impl WraithCoordinator {
             }
         }
 
-        // Collect intermediate addresses from ANONYMOUS token pool
-        // CRITICAL: Tokens are NOT linked to specific participants - this is the privacy guarantee
-        // The shuffle in build_split_transaction randomizes output order
-        let expected_tokens = self.participants.len() * SPLIT_RATIO;
-        if self.anonymous_tokens.len() < expected_tokens {
-            return Err(WraithError::PhaseError(format!(
-                "Not enough anonymous tokens: need {}, have {}",
-                expected_tokens,
-                self.anonymous_tokens.len()
-            )));
+        // CRIT-1 FIX: Use anonymous_token_batches which include both tokens AND final addresses
+        // This eliminates the need for the separate submit_final_address call that leaked identity
+        let use_new_batches = self.anonymous_token_batches.len() >= self.participants.len();
+
+        // WR-C1: CRYPTOGRAPHIC SHUFFLE before batching to break submission order correlation
+        if use_new_batches {
+            self.shuffle_anonymous_token_batches()?;
+        } else {
+            // Legacy path: shuffle individual tokens
+            self.shuffle_anonymous_tokens()?;
         }
 
-        // WR-C1: CRYPTOGRAPHIC SHUFFLE of anonymous tokens BEFORE batching
-        // This prevents an attacker from correlating token submission order with participants.
-        // The shuffle uses session_id + fresh entropy for unpredictability.
-        self.shuffle_anonymous_tokens()?;
-
-        // Group anonymous tokens into participant-sized batches
-        // Note: We don't know WHICH participant each batch belongs to - that's the point!
+        // Collect intermediate addresses from token batches
+        // CRITICAL: Neither tokens NOR final addresses are linked to participants - this is the privacy guarantee
         let mut intermediate_addresses: Vec<Vec<String>> = Vec::new();
-        for batch_idx in 0..self.participants.len() {
-            let start = batch_idx * SPLIT_RATIO;
-            let end = start + SPLIT_RATIO;
-            let mut addrs = Vec::with_capacity(SPLIT_RATIO);
-            for token in &self.anonymous_tokens[start..end] {
-                // The message is the x-only pubkey (32 bytes)
-                let address_bytes: [u8; 32] = token.message.clone().try_into().map_err(|_| {
-                    WraithError::InvalidInput(format!(
-                        "Token message is not 32 bytes (got {})",
-                        token.message.len()
-                    ))
-                })?;
-                let addr = self.xonly_to_p2tr_address(&address_bytes)?;
-                addrs.push(addr);
+
+        if use_new_batches {
+            // New secure path: each batch has tokens + final address together
+            for batch in &self.anonymous_token_batches {
+                let mut addrs = Vec::with_capacity(SPLIT_RATIO);
+                for token in &batch.tokens {
+                    let address_bytes: [u8; 32] = token.message.clone().try_into().map_err(|_| {
+                        WraithError::InvalidInput(format!(
+                            "Token message is not 32 bytes (got {})",
+                            token.message.len()
+                        ))
+                    })?;
+                    let addr = self.xonly_to_p2tr_address(&address_bytes)?;
+                    addrs.push(addr);
+                }
+                intermediate_addresses.push(addrs);
             }
-            intermediate_addresses.push(addrs);
+        } else {
+            // Legacy path: tokens submitted without final addresses
+            // WARNING: This path requires separate submit_final_address which leaks identity!
+            let expected_tokens = self.participants.len() * SPLIT_RATIO;
+            if self.anonymous_tokens.len() < expected_tokens {
+                return Err(WraithError::PhaseError(format!(
+                    "Not enough anonymous tokens: need {}, have {}",
+                    expected_tokens,
+                    self.anonymous_tokens.len()
+                )));
+            }
+
+            for batch_idx in 0..self.participants.len() {
+                let start = batch_idx * SPLIT_RATIO;
+                let end = start + SPLIT_RATIO;
+                let mut addrs = Vec::with_capacity(SPLIT_RATIO);
+                for token in &self.anonymous_tokens[start..end] {
+                    let address_bytes: [u8; 32] = token.message.clone().try_into().map_err(|_| {
+                        WraithError::InvalidInput(format!(
+                            "Token message is not 32 bytes (got {})",
+                            token.message.len()
+                        ))
+                    })?;
+                    let addr = self.xonly_to_p2tr_address(&address_bytes)?;
+                    addrs.push(addr);
+                }
+                intermediate_addresses.push(addrs);
+            }
         }
 
         let tx = builder.build_split_transaction(&intermediate_addresses)?;
@@ -1234,14 +1395,43 @@ impl WraithCoordinator {
         Ok(())
     }
 
+    /// CRIT-1 FIX: Cryptographically shuffle anonymous token batches
+    ///
+    /// This shuffle keeps tokens and final addresses together while randomizing
+    /// the order of batches. This prevents an attacker from correlating
+    /// submission order with participant identities.
+    fn shuffle_anonymous_token_batches(&mut self) -> Result<(), WraithError> {
+        use rand::seq::SliceRandom;
+        use rand::SeedableRng;
+        use rand_chacha::ChaCha20Rng;
+        use sha2::{Digest, Sha256};
+
+        // Generate fresh entropy from CSPRNG
+        let mut entropy = [0u8; 32];
+        getrandom::getrandom(&mut entropy)
+            .map_err(|e| WraithError::InvalidInput(format!("Failed to generate entropy: {}", e)))?;
+
+        // Derive seed from session_id + entropy for unpredictability
+        let mut hasher = Sha256::new();
+        hasher.update(b"wraith/batch-shuffle/v1");
+        hasher.update(self.session.session_id());
+        hasher.update(entropy);
+        let seed: [u8; 32] = hasher.finalize().into();
+
+        let mut rng = ChaCha20Rng::from_seed(seed);
+        self.anonymous_token_batches.shuffle(&mut rng);
+        Ok(())
+    }
+
     /// Clear sensitive data immediately after building transactions
     /// This reduces the window for compromise (WR-H3)
     ///
     /// SECURITY: Call this immediately after building each phase transaction
     /// to minimize the window during which sensitive data could be compromised.
     pub fn clear_sensitive_data_post_build(&mut self) {
-        // Clear anonymous tokens - no longer needed after building tx
+        // Clear anonymous tokens and batches - no longer needed after building tx
         self.anonymous_tokens.clear();
+        // Note: Don't clear anonymous_token_batches yet - needed for Phase 2 final addresses!
 
         // Clear participant-linked data
         for participant in self.participants.values_mut() {
@@ -1355,19 +1545,32 @@ impl WraithCoordinator {
 
     /// Check if ready for Phase 2
     pub fn ready_for_phase2(&self) -> bool {
-        // Need Phase 1 confirmed and all final addresses submitted
-        matches!(
+        // Need Phase 1 confirmed
+        let phase1_confirmed = matches!(
             self.session.state(),
             SessionState::WaitingPhase1Confirmation
         ) && self
             .session
             .phase1()
             .map(|p| p.state() == PhaseState::Confirmed)
-            .unwrap_or(false)
-            && self
-                .participants
-                .values()
-                .all(|p| p.final_address.is_some())
+            .unwrap_or(false);
+
+        if !phase1_confirmed {
+            return false;
+        }
+
+        // CRIT-1 FIX: Check anonymous_token_batches for final addresses (new secure path)
+        // Each batch contains a final address that was submitted anonymously
+        let have_anonymous_addresses =
+            self.anonymous_token_batches.len() >= self.participants.len();
+
+        // Legacy fallback: check participant.final_address (deprecated, leaks identity)
+        let have_legacy_addresses = self
+            .participants
+            .values()
+            .all(|p| p.final_address.is_some());
+
+        have_anonymous_addresses || have_legacy_addresses
     }
 
     /// Build Phase 2 (merge) transaction
@@ -1407,29 +1610,57 @@ impl WraithCoordinator {
             intermediate_inputs.push(participant_inputs);
         }
 
-        // WR-C2: Validate ALL participants have final addresses before building Phase 2
-        // Previously this used unwrap_or_default() which would silently create empty addresses
-        let mut final_addresses: Vec<String> = Vec::with_capacity(self.participant_order.len());
-        for session_id in &self.participant_order {
-            let participant = self.participants.get(session_id).ok_or_else(|| {
-                WraithError::PhaseError(format!("Missing participant in order: {}", session_id))
-            })?;
+        // CRIT-1 FIX: Collect final addresses from ANONYMOUS batches (not linked to participants)
+        // This eliminates the privacy leak where submit_final_address(ghost_id, addr) linked
+        // participant identity to output address.
+        let use_anonymous_addresses =
+            self.anonymous_token_batches.len() >= self.participants.len();
 
-            let address = participant.final_address.as_ref().ok_or_else(|| {
-                WraithError::PhaseError(format!(
-                    "Participant {} has not submitted a final address",
-                    session_id
-                ))
-            })?;
+        let final_addresses: Vec<String> = if use_anonymous_addresses {
+            // New secure path: addresses come from anonymous batches (shuffled during Phase 1)
+            // The order matches the shuffled token batches, so there's no identity linkage
+            self.anonymous_token_batches
+                .iter()
+                .map(|batch| batch.final_address.clone())
+                .collect()
+        } else {
+            // Legacy path: addresses from participant.final_address (DEPRECATED - leaks identity!)
+            // This path exists for backward compatibility but should not be used
+            let mut addrs = Vec::with_capacity(self.participant_order.len());
+            for session_id in &self.participant_order {
+                let participant = self.participants.get(session_id).ok_or_else(|| {
+                    WraithError::PhaseError(format!(
+                        "Missing participant in order: {}",
+                        session_id
+                    ))
+                })?;
 
-            if address.is_empty() {
-                return Err(WraithError::PhaseError(format!(
-                    "Participant {} has empty final address",
-                    session_id
-                )));
+                let address = participant.final_address.as_ref().ok_or_else(|| {
+                    WraithError::PhaseError(format!(
+                        "Participant {} has not submitted a final address (use submit_tokens_with_address_anonymous)",
+                        session_id
+                    ))
+                })?;
+
+                if address.is_empty() {
+                    return Err(WraithError::PhaseError(format!(
+                        "Participant {} has empty final address",
+                        session_id
+                    )));
+                }
+
+                addrs.push(address.clone());
             }
+            addrs
+        };
 
-            final_addresses.push(address.clone());
+        // Validate we have the right number of addresses
+        if final_addresses.len() != self.participants.len() {
+            return Err(WraithError::PhaseError(format!(
+                "Address count mismatch: have {}, need {}",
+                final_addresses.len(),
+                self.participants.len()
+            )));
         }
 
         let tx = builder.build_merge_transaction(&intermediate_inputs, &final_addresses)?;
@@ -1713,8 +1944,9 @@ impl WraithCoordinator {
         // Clear used tokens for this session
         self.used_tokens.clear();
 
-        // Clear anonymous token pool
+        // Clear anonymous token pool and batches
         self.anonymous_tokens.clear();
+        self.anonymous_token_batches.clear();
 
         // Clear submitted addresses
         self.submitted_addresses.clear();
@@ -1858,8 +2090,9 @@ impl WraithCoordinator {
         // Clear used tokens (privacy: prevents cross-session token correlation)
         self.used_tokens.clear();
 
-        // Clear anonymous tokens pool
+        // Clear anonymous tokens pool and batches
         self.anonymous_tokens.clear();
+        self.anonymous_token_batches.clear();
 
         Some(audit)
     }

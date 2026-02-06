@@ -66,9 +66,13 @@ mod pubkey_hex {
 
 /// A detected payment that belongs to us
 ///
-/// SECURITY: The spend_key field is skipped during serialization to prevent
-/// accidental leakage of secret key material. Use `derive_spend_key()` with
-/// the original GhostKeys to recompute the spend key when needed.
+/// # 2.8 HIGH: Spend key is NOT stored
+///
+/// The spend key is derived on-demand using `derive_spend_key()` rather than
+/// being stored. This prevents:
+/// - Secret key material lingering in memory
+/// - Accidental serialization of secrets
+/// - Secrets being copied to logs, caches, or databases
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScannedPayment {
     /// The output pubkey (hex-encoded for serde)
@@ -80,11 +84,6 @@ pub struct ScannedPayment {
     pub k: u32,
     /// The tweak used to derive this address
     pub tweak: [u8; 32],
-    /// The derived spend key for this output
-    /// SECURITY: Skipped during serialization to prevent secret key leakage
-    #[serde(skip)]
-    #[serde(default)]
-    spend_key: [u8; 32],
     /// Amount in satoshis (if known)
     pub amount: Option<u64>,
 }
@@ -92,22 +91,23 @@ pub struct ScannedPayment {
 impl ScannedPayment {
     /// Derive the spend key for this payment
     ///
-    /// SECURITY: This recomputes the spend key from the original spend secret
-    /// and tweak, avoiding storage of secret key material in serializable form.
+    /// # 2.8 HIGH: Spend key is derived, not stored
+    ///
+    /// This recomputes the spend key from the original spend secret
+    /// and tweak. The spend key is never stored in the ScannedPayment
+    /// struct to prevent secret key material from lingering in memory
+    /// or being accidentally serialized.
+    ///
+    /// # Arguments
+    /// * `spend_secret` - The spend secret from GhostKeys
+    ///
+    /// # Returns
+    /// The derived spend key for signing transactions spending this output
     pub fn derive_spend_key(
         &self,
         spend_secret: &SecretKey,
     ) -> Result<SecretKey, crate::error::GhostKeyError> {
         derive_spend_key(spend_secret, &self.tweak)
-    }
-
-    /// Get the spend key (if cached from scanning)
-    ///
-    /// DEPRECATED: Use `derive_spend_key()` instead for security.
-    /// This field is NOT serialized and will be zeroed after deserialization.
-    #[deprecated(note = "Use derive_spend_key() with the original spend secret instead")]
-    pub fn spend_key_bytes(&self) -> &[u8; 32] {
-        &self.spend_key
     }
 }
 
@@ -191,6 +191,8 @@ impl<'a> PaymentDetector<'a> {
     }
 
     /// Check if a single output belongs to us (v2 - position-independent)
+    ///
+    /// 2.8 HIGH: Spend key is NOT stored in ScannedPayment - it's derived on-demand.
     fn check_output(
         &self,
         shared_secret: &[u8; 32],
@@ -218,17 +220,16 @@ impl<'a> PaymentDetector<'a> {
                         .ct_eq(&output_pubkey.serialize())
                         .into()
                     {
-                        // Found it! Compute spend key
-                        if let Ok(spend_key) = derive_spend_key(self.keys.spend_secret(), &tweak) {
-                            return Some(ScannedPayment {
-                                output_pubkey: output_pubkey.serialize(),
-                                output_index,
-                                k,
-                                tweak,
-                                spend_key: spend_key.secret_bytes(),
-                                amount,
-                            });
-                        }
+                        // Found a match! Return payment info.
+                        // 2.8 HIGH: We do NOT store the spend key - it's derived via
+                        // ScannedPayment::derive_spend_key() when needed for signing.
+                        return Some(ScannedPayment {
+                            output_pubkey: output_pubkey.serialize(),
+                            output_index,
+                            k,
+                            tweak,
+                            amount,
+                        });
                     }
                 }
             }

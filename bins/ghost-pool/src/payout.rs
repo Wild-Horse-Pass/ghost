@@ -462,29 +462,45 @@ impl PayoutProposalCreator {
 
     /// Calculate miner payouts proportional to work
     /// Returns (payouts, dust_amount) where dust is redirected to node reward pool
+    ///
+    /// 3.3 SECURITY: Uses scaled integer arithmetic (10^12) instead of floating point
+    /// to prevent precision loss in payout calculations.
     fn calculate_miner_payouts(
         &self,
         miner_work: &[(String, f64)],
         total_sats: u64,
     ) -> GhostResult<(Vec<PayoutEntry>, u64)> {
+        // 3.3 SECURITY: Scale factor for integer arithmetic (10^12)
+        // This provides 12 decimal places of precision, more than enough for work calculations
+        const WORK_SCALE: u128 = 1_000_000_000_000;
+
         let mut payouts = Vec::new();
         let mut dust_total: u64 = 0;
-        let total_work: f64 = miner_work.iter().map(|(_, w)| w).sum();
 
-        if total_work <= 0.0 {
+        // 3.3 SECURITY: Convert float work values to scaled integers immediately
+        // This prevents any floating point precision issues in subsequent calculations
+        let scaled_work: Vec<(String, u128)> = miner_work
+            .iter()
+            .filter(|(_, w)| *w > 0.0 && w.is_finite())
+            .map(|(id, w)| (id.clone(), (*w * WORK_SCALE as f64) as u128))
+            .collect();
+
+        let total_work: u128 = scaled_work.iter().map(|(_, w)| w).sum();
+
+        if total_work == 0 {
             return Ok((payouts, dust_total));
         }
 
-        // Sort by work descending, take top N
-        let mut sorted: Vec<_> = miner_work.to_vec();
-        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        // Sort by work descending, take top N (using scaled integer comparison)
+        let mut sorted = scaled_work;
+        sorted.sort_by(|a, b| b.1.cmp(&a.1));
         sorted.truncate(self.config.max_miner_outputs);
 
         // Recalculate total work for top miners
-        let top_work: f64 = sorted.iter().map(|(_, w)| w).sum();
+        let top_work: u128 = sorted.iter().map(|(_, w)| w).sum();
 
         // Safety check: avoid division by zero after truncation
-        if top_work <= 0.0 {
+        if top_work == 0 {
             warn!("Top miners have zero total work after truncation - no payouts");
             return Ok((payouts, dust_total));
         }
@@ -493,16 +509,14 @@ impl PayoutProposalCreator {
         let mut allocated_total: u64 = 0;
 
         for (miner_id, work) in sorted {
-            // Skip miners with non-positive work
-            if work <= 0.0 {
+            // Skip miners with zero scaled work
+            if work == 0 {
                 continue;
             }
-            // SECURITY: Use integer arithmetic with basis points to avoid floating point rounding errors
-            // Calculate share in basis points: (work * 10000) / top_work
-            let share_bps = ((work * 10000.0) / top_work) as u64;
-            // Calculate amount: (total_sats * share_bps) / 10000
-            // Use u128 to prevent overflow for large amounts
-            let amount = (total_sats as u128 * share_bps as u128 / 10000) as u64;
+            // 3.3 SECURITY: Pure integer arithmetic for payout calculation
+            // Formula: amount = (total_sats * work) / top_work
+            // Using u128 to prevent overflow: max is ~21M BTC * 10^8 sats * 10^12 scale
+            let amount = ((total_sats as u128 * work) / top_work) as u64;
 
             if amount < self.config.dust_threshold_sats {
                 // Dust amount redirected to node reward pool

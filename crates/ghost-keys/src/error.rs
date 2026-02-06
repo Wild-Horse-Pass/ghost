@@ -54,6 +54,10 @@ pub enum GhostKeyError {
     /// Invalid payment metadata
     #[error("Invalid metadata: {0}")]
     InvalidMetadata(String),
+
+    /// Tweak derivation failed (should never happen with constant-time implementation)
+    #[error("Invalid tweak: {0}")]
+    InvalidTweak(String),
 }
 
 impl From<secp256k1::Error> for GhostKeyError {

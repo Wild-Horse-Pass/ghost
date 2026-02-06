@@ -548,15 +548,46 @@ pub struct BlockWitnessV2 {
     pub transitions: Vec<PaymentTransitionWitness>,
     /// Merkle tree depth
     pub tree_depth: usize,
+    /// 2.3 HIGH: Intermediate merkle roots after each transition.
+    /// intermediate_roots[i] = root after transitions[i] is applied.
+    /// This enables the circuit to verify the complete state transition chain.
+    pub intermediate_roots: Vec<[u8; 32]>,
 }
 
 impl BlockWitnessV2 {
     /// Create a new block witness
+    ///
+    /// Note: For proper circuit verification, use `new_with_roots` to provide
+    /// intermediate merkle roots. This constructor defaults to empty roots
+    /// which may cause circuit verification to fail.
     pub fn new(
         height: u64,
         prev_state_root: [u8; 32],
         new_state_root: [u8; 32],
         transitions: Vec<PaymentTransitionWitness>,
+        tree_depth: usize,
+    ) -> Self {
+        // Default: intermediate_roots empty (will be computed if needed)
+        Self {
+            height,
+            prev_state_root,
+            new_state_root,
+            transitions,
+            tree_depth,
+            intermediate_roots: Vec::new(),
+        }
+    }
+
+    /// Create a block witness with explicit intermediate roots
+    ///
+    /// This is the preferred constructor for proper circuit verification.
+    /// intermediate_roots[i] should be the merkle root after transitions[i] is applied.
+    pub fn new_with_roots(
+        height: u64,
+        prev_state_root: [u8; 32],
+        new_state_root: [u8; 32],
+        transitions: Vec<PaymentTransitionWitness>,
+        intermediate_roots: Vec<[u8; 32]>,
         tree_depth: usize,
     ) -> Self {
         Self {
@@ -565,6 +596,7 @@ impl BlockWitnessV2 {
             new_state_root,
             transitions,
             tree_depth,
+            intermediate_roots,
         }
     }
 
@@ -576,6 +608,7 @@ impl BlockWitnessV2 {
             new_state_root: state_root,
             transitions: Vec::new(),
             tree_depth,
+            intermediate_roots: Vec::new(),
         }
     }
 

@@ -126,12 +126,92 @@ pub const fn is_production_mode() -> bool {
 /// H-1: Environment variable for trusted setup parameters path
 pub const ZK_PARAMS_PATH_ENV: &str = "ZK_PARAMS_PATH";
 
+/// H-1: Environment variable for expected parameter hashes (from MPC ceremony)
+///
+/// Format: "BLOCK:sha256hex,PAYOUT:sha256hex"
+/// Example: "BLOCK:abc123...,PAYOUT:def456..."
+pub const ZK_PARAMS_HASH_ENV: &str = "ZK_PARAMS_HASH";
+
+/// 2.4 HIGH: Compute SHA-256 hash of a parameters file
+///
+/// Streams the file to handle large parameter sets efficiently.
+#[cfg(feature = "zk-production")]
+fn compute_params_file_hash(path: &std::path::Path) -> ZkResult<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        ZkError::InvalidParams(format!("Failed to open params file: {}", e))
+    })?;
+
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+
+    loop {
+        let bytes_read = file.read(&mut buffer).map_err(|e| {
+            ZkError::InvalidParams(format!("Failed to read params file: {}", e))
+        })?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+
+    Ok(hasher.finalize().into())
+}
+
+/// 2.4 HIGH: Parse expected hashes from environment variable
+#[cfg(feature = "zk-production")]
+fn parse_expected_hashes() -> ZkResult<std::collections::HashMap<String, [u8; 32]>> {
+    use std::env;
+
+    let hash_env = env::var(ZK_PARAMS_HASH_ENV).map_err(|_| {
+        ZkError::InvalidParams(format!(
+            "2.4 HIGH: Production mode requires {} environment variable. \
+             Set to ceremony output hashes in format: BLOCK:sha256hex,PAYOUT:sha256hex",
+            ZK_PARAMS_HASH_ENV
+        ))
+    })?;
+
+    let mut hashes = std::collections::HashMap::new();
+
+    for pair in hash_env.split(',') {
+        let parts: Vec<&str> = pair.split(':').collect();
+        if parts.len() != 2 {
+            return Err(ZkError::InvalidParams(format!(
+                "Invalid hash format: {}. Expected TYPE:sha256hex",
+                pair
+            )));
+        }
+
+        let param_type = parts[0].to_uppercase();
+        let hash_hex = parts[1];
+
+        if hash_hex.len() != 64 {
+            return Err(ZkError::InvalidParams(format!(
+                "Invalid hash length for {}: expected 64 hex chars, got {}",
+                param_type,
+                hash_hex.len()
+            )));
+        }
+
+        let hash_bytes: [u8; 32] = hex::decode(hash_hex)
+            .map_err(|e| ZkError::InvalidParams(format!("Invalid hex in hash: {}", e)))?
+            .try_into()
+            .map_err(|_| ZkError::InvalidParams("Hash decode failed".to_string()))?;
+
+        hashes.insert(param_type, hash_bytes);
+    }
+
+    Ok(hashes)
+}
+
 /// H-1: Load and validate trusted setup parameters
 ///
 /// In production mode (`zk-production` feature enabled):
 /// - Loads parameters from `ZK_PARAMS_PATH` environment variable
-/// - Verifies parameters match expected hash from ceremony
-/// - Returns error if parameters are missing or invalid
+/// - Verifies parameters match expected hash from ceremony (2.4 HIGH)
+/// - Returns error if parameters are missing, invalid, or tampered
 ///
 /// In test mode (default):
 /// - Uses default test parameters
@@ -154,8 +234,8 @@ pub fn load_trusted_params() -> ZkResult<()> {
         ))
     })?;
 
-    let path = PathBuf::from(&params_path);
-    if !path.exists() {
+    let base_path = PathBuf::from(&params_path);
+    if !base_path.exists() {
         return Err(ZkError::InvalidParams(format!(
             "H-1: Trusted setup parameters not found at {}. \
              Complete MPC ceremony first.",
@@ -163,16 +243,54 @@ pub fn load_trusted_params() -> ZkResult<()> {
         )));
     }
 
-    // TODO: After MPC ceremony is completed, add hash verification here:
-    // let expected_hash = "sha256:...";
-    // let actual_hash = compute_params_hash(&path)?;
-    // if actual_hash != expected_hash {
-    //     return Err(ZkError::InvalidParams("Parameter hash mismatch"));
-    // }
+    // 2.4 HIGH: Verify parameter hashes against ceremony output
+    let expected_hashes = parse_expected_hashes()?;
+
+    // Check block parameters
+    let block_params_path = base_path.join("block_params_current.bin");
+    if block_params_path.exists() {
+        let actual_hash = compute_params_file_hash(&block_params_path)?;
+        if let Some(expected) = expected_hashes.get("BLOCK") {
+            if &actual_hash != expected {
+                return Err(ZkError::InvalidParams(format!(
+                    "2.4 HIGH: Block parameter hash mismatch! \
+                     Expected: {}, Got: {}. \
+                     Parameters may be corrupted or tampered.",
+                    hex::encode(expected),
+                    hex::encode(actual_hash)
+                )));
+            }
+            tracing::info!(
+                hash = %hex::encode(actual_hash),
+                "2.4 HIGH: Block parameters hash verified"
+            );
+        }
+    }
+
+    // Check payout parameters
+    let payout_params_path = base_path.join("payout_params_current.bin");
+    if payout_params_path.exists() {
+        let actual_hash = compute_params_file_hash(&payout_params_path)?;
+        if let Some(expected) = expected_hashes.get("PAYOUT") {
+            if &actual_hash != expected {
+                return Err(ZkError::InvalidParams(format!(
+                    "2.4 HIGH: Payout parameter hash mismatch! \
+                     Expected: {}, Got: {}. \
+                     Parameters may be corrupted or tampered.",
+                    hex::encode(expected),
+                    hex::encode(actual_hash)
+                )));
+            }
+            tracing::info!(
+                hash = %hex::encode(actual_hash),
+                "2.4 HIGH: Payout parameters hash verified"
+            );
+        }
+    }
 
     tracing::info!(
         path = %params_path,
-        "H-1: Loaded trusted setup parameters for production mode"
+        "H-1: Loaded and verified trusted setup parameters for production mode"
     );
 
     Ok(())

@@ -285,15 +285,39 @@ fn alloc_siblings<F: PrimeField, CS: ConstraintSystem<F>>(
         .collect()
 }
 
-/// Compute merkle root from leaf and siblings
+/// 2.3 HIGH: Hash a balance value to create a merkle leaf
+///
+/// Uses MiMC with domain separator to match BalanceTree::hash_leaf().
+/// This ensures the circuit and native code compute the same merkle roots.
+///
+/// Domain separator: "LEAF" = 0x4c454146
+fn hash_leaf<F: PrimeField, CS: ConstraintSystem<F>>(
+    mut cs: CS,
+    balance: &AllocatedNum<F>,
+) -> Result<AllocatedNum<F>, SynthesisError> {
+    // Allocate the domain separator as a constant
+    let domain_sep = AllocatedNum::alloc(cs.namespace(|| "leaf_domain_sep"), || {
+        Ok(F::from(0x4c454146u64))
+    })?;
+
+    // Hash balance with domain separator
+    mimc_hash(cs.namespace(|| "hash_leaf"), balance, &domain_sep)
+}
+
+/// Compute merkle root from balance and siblings
+///
+/// 2.3 HIGH: Now hashes the balance value before starting merkle tree traversal
+/// to match BalanceTree::hash_leaf() behavior.
 fn compute_root<F: PrimeField, CS: ConstraintSystem<F>>(
     mut cs: CS,
-    leaf: &AllocatedNum<F>,
+    balance: &AllocatedNum<F>,
     index_bits: &[Boolean],
     siblings: &[AllocatedNum<F>],
 ) -> Result<AllocatedNum<F>, SynthesisError> {
-    let mut current = leaf.clone();
+    // First hash the balance to create the leaf
+    let mut current = hash_leaf(cs.namespace(|| "hash_balance_leaf"), balance)?;
 
+    // Then traverse up the tree with siblings
     for (i, (bit, sibling)) in index_bits.iter().zip(siblings.iter()).enumerate() {
         current = hash_pair(
             cs.namespace(|| format!("hash_level_{}", i)),
@@ -445,9 +469,18 @@ mod tests {
     use bellperson::util_cs::test_cs::TestConstraintSystem;
     use blstrs::Scalar as Fr;
 
+    /// 2.3 HIGH: Hash a balance value to create a merkle leaf
+    /// Matches BalanceTree::hash_leaf() and the circuit's hash_leaf()
+    fn hash_leaf_native(balance: Fr) -> Fr {
+        let domain_sep = Fr::from(0x4c454146u64);
+        mimc_hash_native(balance, domain_sep)
+    }
+
     /// Helper to compute merkle root using MiMC hash
-    fn compute_test_root(leaf: Fr, index: u64, siblings: &[Fr]) -> Fr {
-        let mut current = leaf;
+    /// 2.3 HIGH: Now hashes the balance first to match circuit behavior
+    fn compute_test_root(balance: Fr, index: u64, siblings: &[Fr]) -> Fr {
+        // First hash the balance to create the leaf
+        let mut current = hash_leaf_native(balance);
         let mut idx = index;
 
         for sibling in siblings {
@@ -488,6 +521,7 @@ mod tests {
         let sender_balance_after = sender_balance_before - amount;
         let recipient_balance_after = recipient_balance_before + amount;
 
+        // 2.3 HIGH: Balances as field elements (for circuit input)
         let sender_leaf = Fr::from(sender_balance_before);
         let sender_new_leaf = Fr::from(sender_balance_after);
         let recipient_leaf = Fr::from(recipient_balance_before);
@@ -498,28 +532,38 @@ mod tests {
         // Level 1: [hash_01, hash_23]
         // Root: hash(hash_01, hash_23)
 
-        let sibling_0 = Fr::from(100u64); // Leaf at index 1
-        let leaf_3 = Fr::from(300u64); // Leaf at index 3
+        // 2.3 HIGH: Sibling values are LEAF HASHES (not raw balances)
+        // because compute_root now hashes balance values before tree traversal
+        let sibling_0_balance = Fr::from(100u64); // Balance at index 1
+        let leaf_3_balance = Fr::from(300u64); // Balance at index 3
+        let sibling_0 = hash_leaf_native(sibling_0_balance); // Hash of balance
+        let leaf_3 = hash_leaf_native(leaf_3_balance); // Hash of balance
         let recipient_idx = 2u64;
+
+        // 2.3 HIGH: Hash the balances to get leaf hashes first
+        let sender_leaf_hash = hash_leaf_native(sender_leaf);
+        let sender_new_leaf_hash = hash_leaf_native(sender_new_leaf);
+        let recipient_leaf_hash = hash_leaf_native(recipient_leaf);
+        let recipient_new_leaf_hash = hash_leaf_native(recipient_new_leaf);
 
         // Compute hashes using MiMC (matches circuit)
         // Initial state
-        let hash_01_initial = mimc_hash_native(sender_leaf, sibling_0);
-        let hash_23_initial = mimc_hash_native(recipient_leaf, leaf_3);
+        let hash_01_initial = mimc_hash_native(sender_leaf_hash, sibling_0);
+        let hash_23_initial = mimc_hash_native(recipient_leaf_hash, leaf_3);
         let input_root = mimc_hash_native(hash_01_initial, hash_23_initial);
 
         // After sender update (intermediate state)
-        let hash_01_after_sender = mimc_hash_native(sender_new_leaf, sibling_0);
+        let hash_01_after_sender = mimc_hash_native(sender_new_leaf_hash, sibling_0);
         let intermediate_root = mimc_hash_native(hash_01_after_sender, hash_23_initial);
 
         // After recipient update (final state)
-        let hash_23_final = mimc_hash_native(recipient_new_leaf, leaf_3);
+        let hash_23_final = mimc_hash_native(recipient_new_leaf_hash, leaf_3);
         let output_root = mimc_hash_native(hash_01_after_sender, hash_23_final);
 
-        // Sender at index 0: siblings = [sibling_0, hash_23_initial]
+        // Sender at index 0: siblings = [sibling_0 hash, hash_23_initial]
         let sender_siblings = vec![sibling_0, hash_23_initial];
 
-        // Recipient at index 2: siblings = [leaf_3, hash_01_after_sender]
+        // Recipient at index 2: siblings = [leaf_3 hash, hash_01_after_sender]
         let recipient_siblings = vec![leaf_3, hash_01_after_sender];
 
         // Verify our native computation matches what the circuit expects

@@ -106,7 +106,9 @@ impl WalletBalance {
 /// Light Wallet - main wallet interface
 pub struct LightWallet {
     /// Master key (encrypted in storage)
-    master_key: Arc<RwLock<Option<MasterKey>>>,
+    /// 2.5 HIGH: MasterKey is wrapped in Arc to allow sharing across async boundaries
+    /// without cloning the secret key material. The Arc is cloned, not the key.
+    master_key: Arc<RwLock<Option<Arc<MasterKey>>>>,
 
     /// Configuration
     config: WalletConfig,
@@ -150,7 +152,7 @@ impl LightWallet {
         // The Arc is still useful for shared ownership even in single-threaded async.
         #[allow(clippy::arc_with_non_send_sync)]
         Ok(Self {
-            master_key: Arc::new(RwLock::new(Some(master_key))),
+            master_key: Arc::new(RwLock::new(Some(Arc::new(master_key)))),
             config,
             gsp_client: Arc::new(RwLock::new(None)),
             cache: Arc::new(cache),
@@ -187,7 +189,7 @@ impl LightWallet {
         // The Arc is still useful for shared ownership even in single-threaded async.
         #[allow(clippy::arc_with_non_send_sync)]
         Ok(Self {
-            master_key: Arc::new(RwLock::new(Some(master_key))),
+            master_key: Arc::new(RwLock::new(Some(Arc::new(master_key)))),
             config,
             gsp_client: Arc::new(RwLock::new(None)),
             cache: Arc::new(cache),
@@ -307,7 +309,7 @@ impl LightWallet {
     /// Unlock the wallet
     pub fn unlock(&self, password: &str) -> WalletResult<()> {
         let master_key = self.cache.load_master_key(password)?;
-        *self.master_key.write() = Some(master_key);
+        *self.master_key.write() = Some(Arc::new(master_key));
         info!("Wallet unlocked");
         Ok(())
     }
@@ -334,13 +336,14 @@ impl LightWallet {
         amount_sats: u64,
         use_wraith: bool,
     ) -> WalletResult<ghost_gsp_proto::PreparedPayment> {
-        // Clone the key and client to release locks before await
+        // Clone the Arc to release locks before await (Arc clone, not key clone)
         let master_key = {
             let key_guard = self.master_key.read();
-            key_guard
-                .as_ref()
-                .ok_or(LightWalletError::NotInitialized)?
-                .clone()
+            Arc::clone(
+                key_guard
+                    .as_ref()
+                    .ok_or(LightWalletError::NotInitialized)?,
+            )
         };
 
         let client = {
@@ -365,13 +368,14 @@ impl LightWallet {
         &self,
         prepared: &ghost_gsp_proto::PreparedPayment,
     ) -> WalletResult<String> {
-        // Clone the key and client to release locks before await
+        // Clone the Arc to release locks before await (Arc clone, not key clone)
         let master_key = {
             let key_guard = self.master_key.read();
-            key_guard
-                .as_ref()
-                .ok_or(LightWalletError::NotInitialized)?
-                .clone()
+            Arc::clone(
+                key_guard
+                    .as_ref()
+                    .ok_or(LightWalletError::NotInitialized)?,
+            )
         };
 
         let client = {

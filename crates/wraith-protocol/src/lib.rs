@@ -45,11 +45,11 @@
 //!
 //! // Create a new Wraith session
 //! let session = WraithSession::new(
-//!     ParticipantTier::Standard,  // 500 participants
+//!     ParticipantTier::Standard,  // 250 participants (optimized for 80KB limit)
 //!     WraithDenomination::Small,  // 0.01 BTC output
 //! );
 //!
-//! assert_eq!(session.tier().min_participants(), 500);
+//! assert_eq!(session.tier().min_participants(), 250);
 //! ```
 
 mod blind;

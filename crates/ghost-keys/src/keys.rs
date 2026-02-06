@@ -41,7 +41,8 @@ use crate::ghost_id::GhostId;
 /// While `secp256k1::SecretKey` has `non_secure_erase()`, using the `zeroize` crate
 /// provides more reliable memory clearing with compiler barriers to prevent
 /// optimization from removing the zeroing operation.
-#[derive(Clone)]
+///
+/// 2.5 HIGH: Clone intentionally NOT derived - secret bytes should not be cloneable.
 struct ZeroizingSecretBytes([u8; 32]);
 
 impl ZeroizingSecretBytes {
@@ -79,10 +80,15 @@ impl Drop for ZeroizingSecretBytes {
 /// zeroing cannot be absolutely guaranteed due to potential compiler-generated
 /// copies. This is a defense-in-depth measure. See the [`zeroize`](https://docs.rs/zeroize)
 /// crate documentation for detailed discussion.
-// SECURITY NOTE: Clone is derived for API compatibility, but cloning secret key material
-// should be avoided when possible. The underlying ZeroizingSecretBytes ensures both the
-// original and cloned copies are zeroized on drop. Prefer Arc<GhostKeys> for shared access.
-#[derive(Clone)]
+///
+/// # 2.5 HIGH: Clone intentionally NOT derived
+///
+/// Secret key material should not be cloneable. This prevents:
+/// - Accidental duplication of secrets in memory
+/// - Multiple copies that may not all be properly zeroized
+/// - Misuse patterns like passing keys by value
+///
+/// Use `Arc<GhostKeys>` for shared access patterns.
 pub struct GhostKeys {
     /// H-2: Wrapped in ZeroizingSecretBytes for secure erasure on drop
     /// These fields exist solely to be zeroed when the struct is dropped

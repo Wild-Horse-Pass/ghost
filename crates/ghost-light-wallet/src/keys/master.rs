@@ -38,9 +38,10 @@ use crate::error::{LightWalletError, WalletResult};
 /// Derived from BIP-39 mnemonic using BIP-32 HD key derivation.
 /// All keys are derived from the master seed following BIP-352 paths.
 ///
-/// SECURITY NOTE: Clone is derived for API compatibility (async patterns require owned values).
-/// Prefer Arc<MasterKey> for shared access where possible to minimize copies of secret material.
-#[derive(Clone)]
+/// # Security
+///
+/// 2.5 HIGH: Clone is NOT implemented to prevent secret key duplication.
+/// Use Arc<MasterKey> for shared access across async tasks.
 pub struct MasterKey {
     /// Ghost Keys for payments
     ghost_keys: GhostKeys,

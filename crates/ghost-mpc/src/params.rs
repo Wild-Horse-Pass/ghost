@@ -215,7 +215,10 @@ pub fn save_verifying_key(path: &Path, vk: &VerifyingKey<Bls12>) -> MpcResult<()
 
     writer.flush()?;
 
-    info!(path = %path.display(), "Saved verifying key");
+    // SECURITY: Ensure data is synced to persistent storage
+    writer.get_ref().sync_all()?;
+
+    info!(path = %path.display(), "Saved verifying key (synced to disk)");
 
     Ok(())
 }
