@@ -441,14 +441,14 @@ mod tests {
         if data_size <= 40 {
             // Small OP_RETURN: OP_RETURN + PUSHBYTES_40 + 40 bytes
             bytes.push(40); // OP_PUSHBYTES_40
-            bytes.extend(std::iter::repeat(0u8).take(40));
+            bytes.extend(std::iter::repeat_n(0u8, 40));
         } else {
             // Large OP_RETURN (>80 bytes): Use multiple pushes
             // OP_RETURN + PUSHBYTES_50 + 50 bytes + PUSHBYTES_50 + 50 bytes
             bytes.push(50); // OP_PUSHBYTES_50
-            bytes.extend(std::iter::repeat(0u8).take(50));
+            bytes.extend(std::iter::repeat_n(0u8, 50));
             bytes.push(50); // OP_PUSHBYTES_50
-            bytes.extend(std::iter::repeat(0u8).take(50));
+            bytes.extend(std::iter::repeat_n(0u8, 50));
         }
 
         ScriptBuf::from(bytes)

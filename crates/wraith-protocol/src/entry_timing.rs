@@ -721,7 +721,7 @@ mod tests {
         // Test that random values are in valid range
         for _ in 0..100 {
             let r = random_f64();
-            assert!(r >= 0.0 && r < 1.0);
+            assert!((0.0..1.0).contains(&r));
         }
     }
 

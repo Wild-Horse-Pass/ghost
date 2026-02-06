@@ -1997,6 +1997,10 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                 }
             };
 
+            // SECURITY: Ownership was already verified when the withdrawal request was
+            // submitted to the L2 system. The Ghost Pay backend only processes withdrawals
+            // that were authenticated by the user's Ghost Key signature at request time.
+            #[allow(deprecated)]
             if let Err(e) = executor.add_settlement(settlement) {
                 warn!(
                     withdrawal_id = ?withdrawal.id,

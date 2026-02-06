@@ -51,5 +51,8 @@ parking_lot = { workspace = true }
 getrandom = { workspace = true }
 tracing = { workspace = true }
 
+[features]
+dev-mode = []  # Enables unsafe testing utilities - NEVER use in production
+
 [dev-dependencies]
 rand = "0.8"

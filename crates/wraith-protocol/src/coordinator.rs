@@ -1061,9 +1061,9 @@ impl WraithCoordinator {
         let mut hasher = Sha256::new();
         hasher.update(b"wraith/token-hash/v2");
         hasher.update(self.session.session_id());
-        hasher.update(&token.session_key_id);
-        hasher.update(&token.nonce_point);
-        hasher.update(&token.signature_scalar);
+        hasher.update(token.session_key_id);
+        hasher.update(token.nonce_point);
+        hasher.update(token.signature_scalar);
         hasher.finalize().into()
     }
 
@@ -1226,7 +1226,7 @@ impl WraithCoordinator {
         let mut hasher = Sha256::new();
         hasher.update(b"wraith/token-shuffle/v1");
         hasher.update(self.session.session_id());
-        hasher.update(&entropy);
+        hasher.update(entropy);
         let seed: [u8; 32] = hasher.finalize().into();
 
         let mut rng = ChaCha20Rng::from_seed(seed);
@@ -2502,12 +2502,12 @@ mod tests {
     #[test]
     fn test_token_hash_session_bound() {
         // Create two coordinators with different sessions
-        let mut coord1 = create_test_coordinator(
+        let coord1 = create_test_coordinator(
             ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
         );
-        let mut coord2 = create_test_coordinator(
+        let coord2 = create_test_coordinator(
             ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,

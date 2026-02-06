@@ -627,6 +627,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Testing deprecated method explicitly
     fn test_add_settlement() {
         let mut executor = BatchExecutor::new(Network::Regtest, "bcrt1qtest".to_string());
 
@@ -659,6 +660,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)] // Testing deprecated method explicitly
     fn test_should_form_batch_min_size() {
         let mut executor = BatchExecutor::new(Network::Regtest, "bcrt1qtest".to_string());
 

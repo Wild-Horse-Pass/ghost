@@ -1089,7 +1089,7 @@ mod tests {
         let policy = RotationPolicy::default();
         let pool = CoordinatorPool::new(policy).unwrap();
 
-        let mut coord = test_coordinator(1, "A");
+        let coord = test_coordinator(1, "A");
         pool.register_coordinator(coord.clone()).unwrap();
         pool.activate_coordinator(&coord.id).unwrap();
 
