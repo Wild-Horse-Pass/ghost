@@ -69,6 +69,10 @@ pub enum MpcError {
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(String),
+
+    /// Random number generation failure
+    #[error("Random number generation failed: {0}")]
+    RandomFailure(String),
 }
 
 impl From<bincode::Error> for MpcError {

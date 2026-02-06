@@ -141,7 +141,8 @@ impl BalanceTree {
         let recipient_merkle_proof = self.get_proof(recipient_index);
 
         // Update recipient balance
-        let recipient_balance_after = recipient_balance_before + amount;
+        let recipient_balance_after = recipient_balance_before.checked_add(amount)
+            .ok_or(ZkError::BalanceOverflow { balance: recipient_balance_before, amount })?;
         self.set_balance(recipient_index, recipient_balance_after);
 
         Ok(PaymentTransitionWitness::new(
@@ -413,6 +414,26 @@ mod tests {
                 assert_eq!(needs, 100);
             }
             _ => panic!("Expected InsufficientBalance error"),
+        }
+    }
+
+    #[test]
+    fn test_apply_payment_balance_overflow() {
+        let mut tree = BalanceTree::new(10);
+
+        tree.set_balance(0, 100); // Sender has 100
+        tree.set_balance(1, u64::MAX - 1); // Recipient near max
+
+        // Try to send 2 (would overflow recipient's balance)
+        let result = tree.apply_payment(0, 1, 2);
+
+        assert!(result.is_err());
+        match result {
+            Err(ZkError::BalanceOverflow { balance, amount }) => {
+                assert_eq!(balance, u64::MAX - 1);
+                assert_eq!(amount, 2);
+            }
+            _ => panic!("Expected BalanceOverflow error"),
         }
     }
 

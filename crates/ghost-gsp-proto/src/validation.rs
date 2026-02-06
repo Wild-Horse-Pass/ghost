@@ -191,9 +191,7 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             signature,
             public_key,
         } => {
-            if payment_id.is_empty() {
-                result.add_error("Payment ID cannot be empty");
-            }
+            validate_payment_id(payment_id, &mut result);
 
             // Validate signature (64 bytes = 128 hex chars)
             if signature.len() != 128 {
@@ -211,15 +209,11 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
         }
 
         ClientMessage::GetPaymentStatus { payment_id } => {
-            if payment_id.is_empty() {
-                result.add_error("Payment ID cannot be empty");
-            }
+            validate_payment_id(payment_id, &mut result);
         }
 
         ClientMessage::CancelPayment { payment_id, proof } => {
-            if payment_id.is_empty() {
-                result.add_error("Payment ID cannot be empty");
-            }
+            validate_payment_id(payment_id, &mut result);
 
             if let Err(e) = proof.validate_structure() {
                 result.add_error(format!("Invalid proof: {}", e));
@@ -366,6 +360,25 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
     }
 
     result
+}
+
+/// Validate payment ID format
+///
+/// Payment IDs must be:
+/// - Non-empty
+/// - At most 128 characters
+/// - Only contain alphanumeric characters, hyphens, or underscores
+fn validate_payment_id(id: &str, result: &mut ValidationResult) {
+    if id.is_empty() {
+        result.add_error("Payment ID cannot be empty");
+    } else if id.len() > 128 {
+        result.add_error("Payment ID exceeds 128 character limit");
+    } else if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        result.add_error("Payment ID contains invalid characters (allowed: alphanumeric, -, _)");
+    }
 }
 
 /// Check if recipient is a valid Ghost ID or Bitcoin address
@@ -518,5 +531,55 @@ mod tests {
         };
         let result2 = validate_message(&msg2);
         assert!(!result2.valid);
+    }
+
+    #[test]
+    fn test_l11_payment_id_validation() {
+        // L-11: Test payment ID validation
+
+        // Valid payment IDs
+        let msg = ClientMessage::GetPaymentStatus {
+            payment_id: "valid-payment_123".to_string(),
+        };
+        let result = validate_message(&msg);
+        assert!(result.valid, "Should accept valid payment ID");
+
+        // Empty payment ID
+        let msg = ClientMessage::GetPaymentStatus {
+            payment_id: "".to_string(),
+        };
+        let result = validate_message(&msg);
+        assert!(!result.valid, "Should reject empty payment ID");
+        assert!(result.errors.iter().any(|e| e.contains("empty")));
+
+        // Payment ID too long (>128 chars)
+        let msg = ClientMessage::GetPaymentStatus {
+            payment_id: "a".repeat(129),
+        };
+        let result = validate_message(&msg);
+        assert!(!result.valid, "Should reject payment ID over 128 chars");
+        assert!(result.errors.iter().any(|e| e.contains("128")));
+
+        // Payment ID with invalid characters
+        let msg = ClientMessage::GetPaymentStatus {
+            payment_id: "payment@id!with#invalid$chars".to_string(),
+        };
+        let result = validate_message(&msg);
+        assert!(!result.valid, "Should reject payment ID with invalid chars");
+        assert!(result.errors.iter().any(|e| e.contains("invalid characters")));
+
+        // Payment ID at exactly 128 chars (boundary - should pass)
+        let msg = ClientMessage::GetPaymentStatus {
+            payment_id: "a".repeat(128),
+        };
+        let result = validate_message(&msg);
+        assert!(result.valid, "Should accept payment ID at exactly 128 chars");
+
+        // Valid payment ID with all allowed characters
+        let msg = ClientMessage::GetPaymentStatus {
+            payment_id: "abc-XYZ_123-payment_ID".to_string(),
+        };
+        let result = validate_message(&msg);
+        assert!(result.valid, "Should accept alphanumeric, hyphen, underscore");
     }
 }

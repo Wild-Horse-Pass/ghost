@@ -47,9 +47,10 @@
 use anyhow::Result;
 use clap::Parser;
 use parking_lot::RwLock;
+use secrecy::{ExposeSecret, Secret};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
@@ -173,17 +174,27 @@ async fn main() -> Result<()> {
 }
 
 /// Mining mode and password configuration for authorization
-#[derive(Debug, Clone)]
+/// L-19: Password stored as Secret<String> to prevent accidental logging/exposure
+#[derive(Clone)]
 struct AuthConfig {
     mining_mode: MiningMode,
-    password: Option<String>,
+    password: Option<Secret<String>>,
+}
+
+impl std::fmt::Debug for AuthConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthConfig")
+            .field("mining_mode", &self.mining_mode)
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 impl AuthConfig {
     fn new(mining_mode: MiningMode, password: Option<String>) -> Self {
         Self {
             mining_mode,
-            password,
+            password: password.map(Secret::new),
         }
     }
 
@@ -195,7 +206,7 @@ impl AuthConfig {
     /// Validate the provided password
     fn validate_password(&self, provided: &str) -> bool {
         match &self.password {
-            Some(expected) => provided == expected,
+            Some(expected) => provided == expected.expose_secret(),
             None => !self.requires_password(), // OK if no password required
         }
     }
@@ -207,6 +218,15 @@ struct Translator {
     sv2_upstream: SocketAddr,
     max_connections: usize,
     auth_config: Arc<AuthConfig>,
+}
+
+/// L-23: Guard to ensure connection count is decremented when connection closes
+struct ConnectionGuard(Arc<AtomicUsize>);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl Translator {
@@ -229,27 +249,32 @@ impl Translator {
         let listener = tokio::net::TcpListener::bind(self.sv1_listen).await?;
         info!("Listening for SV1 connections on {}", self.sv1_listen);
 
-        let mut connection_count = 0;
+        // L-23: Use AtomicUsize for thread-safe connection counting with proper cleanup
+        let connection_count = Arc::new(AtomicUsize::new(0));
 
         loop {
             let (stream, addr) = listener.accept().await?;
 
-            if connection_count >= self.max_connections {
-                tracing::warn!("Max connections reached, rejecting {}", addr);
+            let current_count = connection_count.load(Ordering::SeqCst);
+            if current_count >= self.max_connections {
+                warn!("Max connections reached ({}), rejecting {}", current_count, addr);
                 continue;
             }
 
-            connection_count += 1;
+            connection_count.fetch_add(1, Ordering::SeqCst);
+            let new_count = connection_count.load(Ordering::SeqCst);
             info!(
                 "New SV1 connection from {} (total: {})",
-                addr, connection_count
+                addr, new_count
             );
 
             let sv2_upstream = self.sv2_upstream;
             let auth_config = Arc::clone(&self.auth_config);
+            let guard = ConnectionGuard(Arc::clone(&connection_count));
             tokio::spawn(async move {
+                let _guard = guard; // Dropped when task ends, decrementing count
                 if let Err(e) = handle_connection(stream, sv2_upstream, auth_config).await {
-                    tracing::error!("Connection error: {}", e);
+                    error!("Connection error: {}", e);
                 }
             });
         }
@@ -606,7 +631,10 @@ async fn handle_sv1_request(
             frame.extend(payload);
             sv2_tx.send(frame).await?;
 
-            // Send immediate acceptance (will be corrected if rejected)
+            // M-16 NOTE: We send immediate acceptance for latency, but log if upstream rejects.
+            // This matches common SV1 translator behavior. The SubmitSharesError handler (line 901+)
+            // already logs rejection but cannot retroactively notify the miner.
+            debug!(job = %submit.job_id, "Sending immediate share acceptance (upstream validation pending)");
             let response = sv1::Response::success(request.id, serde_json::json!(true));
             let json = serde_json::to_string(&response)?;
             sv1_tx.send(json).await?;
@@ -757,6 +785,26 @@ async fn handle_sv2_message(
                     state_guard
                         .reverse_job_map
                         .insert(sv2_job_id, job_str.clone());
+
+                    // M-17: Bound job map size to prevent memory exhaustion
+                    const MAX_JOBS: usize = 1000;
+                    while state_guard.job_map.len() > MAX_JOBS {
+                        // Remove oldest job (lowest numeric ID)
+                        if let Some(oldest) = state_guard
+                            .job_map
+                            .keys()
+                            .filter_map(|k| k.parse::<u64>().ok().map(|n| (k.clone(), n)))
+                            .min_by_key(|(_, n)| *n)
+                            .map(|(k, _)| k)
+                        {
+                            if let Some(sv2_id) = state_guard.job_map.remove(&oldest) {
+                                state_guard.reverse_job_map.remove(&sv2_id);
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
                     state_guard.coinbase_prefix = coinbase_prefix.clone();
                     state_guard.coinbase_suffix = coinbase_suffix.clone();
                     state_guard.merkle_path = merkle_branches
@@ -923,13 +971,11 @@ async fn handle_sv2_message(
     Ok(())
 }
 
+/// M-15: Cryptographically secure random for extranonce1 generation
 fn rand_u32() -> u32 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos();
-    nanos ^ 0xdeadbeef
+    let mut bytes = [0u8; 4];
+    getrandom::getrandom(&mut bytes).expect("RNG failure");
+    u32::from_le_bytes(bytes)
 }
 
 /// Convert a 256-bit target to SV1 difficulty

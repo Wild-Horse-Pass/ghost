@@ -336,16 +336,50 @@ impl BanManager {
         removed
     }
 
-    /// Clean up all expired bans
+    /// Clean up all expired bans and stale history
     ///
-    /// Call this periodically (e.g., every 60 seconds) to prevent memory growth
+    /// Call this periodically (e.g., every 60 seconds) to prevent memory growth.
+    /// Also cleans up ban history entries older than 90 days.
     pub fn cleanup_expired(&self) -> usize {
+        let expired_bans = self.cleanup_expired_bans();
+        let stale_history = self.cleanup_stale_history();
+        expired_bans + stale_history
+    }
+
+    /// Clean up expired bans only (internal helper)
+    fn cleanup_expired_bans(&self) -> usize {
         let mut banned = self.banned_nodes.write();
         let before = banned.len();
         banned.retain(|_, entry| !entry.is_expired());
         let removed = before - banned.len();
         if removed > 0 {
             info!(removed, remaining = banned.len(), "Cleaned up expired bans");
+        }
+        removed
+    }
+
+    /// Clean up ban history entries older than 90 days
+    ///
+    /// L-7 FIX: Prevents unbounded growth of the ban_history HashMap.
+    /// History entries are used for escalation tracking, but entries where
+    /// the last ban was more than 90 days ago are no longer relevant since
+    /// the escalation count would have fully decayed (7-day decay periods).
+    pub fn cleanup_stale_history(&self) -> usize {
+        // 90 days = ~13 decay periods, which would decay even the maximum
+        // escalation level back to zero
+        const MAX_HISTORY_AGE_SECS: u64 = 90 * 24 * 60 * 60;
+        let max_age = Duration::from_secs(MAX_HISTORY_AGE_SECS);
+
+        let mut history = self.ban_history.write();
+        let before = history.len();
+        history.retain(|_, entry| entry.last_banned.elapsed() < max_age);
+        let removed = before - history.len();
+        if removed > 0 {
+            info!(
+                removed,
+                remaining = history.len(),
+                "Cleaned up stale ban history entries"
+            );
         }
         removed
     }
@@ -483,5 +517,65 @@ mod tests {
             BanReason::ProtocolViolation.default_duration(),
             Duration::from_secs(900)
         );
+    }
+
+    #[test]
+    fn test_cleanup_stale_history_preserves_recent() {
+        let manager = BanManager::new();
+        let node_id = [10u8; 32];
+
+        // Ban a node (this creates a history entry)
+        manager.ban_for_duration(node_id, BanReason::Custom, Duration::from_millis(1));
+
+        // Wait for ban to expire
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Clear the expired ban
+        manager.cleanup_expired_bans();
+        assert_eq!(manager.banned_count(), 0);
+
+        // History should still exist (it's recent, not stale)
+        {
+            let history = manager.ban_history.read();
+            assert_eq!(history.len(), 1);
+            assert!(history.contains_key(&node_id));
+        }
+
+        // cleanup_stale_history should NOT remove recent entries
+        let removed = manager.cleanup_stale_history();
+        assert_eq!(removed, 0);
+
+        // History should still be there
+        {
+            let history = manager.ban_history.read();
+            assert_eq!(history.len(), 1);
+        }
+    }
+
+    #[test]
+    fn test_ban_history_count() {
+        let manager = BanManager::new();
+
+        // Ban multiple different nodes
+        for i in 0..5 {
+            manager.ban_for_duration([i; 32], BanReason::Custom, Duration::from_millis(1));
+        }
+
+        // Check that history was recorded for each
+        {
+            let history = manager.ban_history.read();
+            assert_eq!(history.len(), 5);
+        }
+
+        // Wait for bans to expire and cleanup
+        std::thread::sleep(Duration::from_millis(10));
+        manager.cleanup_expired_bans();
+        assert_eq!(manager.banned_count(), 0);
+
+        // History should still exist for all nodes
+        {
+            let history = manager.ban_history.read();
+            assert_eq!(history.len(), 5);
+        }
     }
 }

@@ -86,16 +86,19 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<GspState>>,
 ) -> impl IntoResponse {
-    // Check connection limit
-    if !state.can_accept_connection() {
+    // L-12: Atomically check and increment connection count
+    // This eliminates the TOCTOU race condition that existed with separate
+    // can_accept_connection() and add_connection() calls
+    if !state.try_add_connection() {
+        warn!("WebSocket connection rejected: max connections reached");
         return ws
             .on_failed_upgrade(|_| {
-                warn!("WebSocket connection rejected: max connections reached");
+                // Connection was never added, nothing to clean up
             })
             .on_upgrade(|_| async {});
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    ws.on_upgrade(move |socket| handle_socket_with_connection(socket, state))
 }
 
 /// Connection state
@@ -111,9 +114,9 @@ struct ConnectionState {
     lock_state_subscriptions: Vec<String>,
 }
 
-/// Handle a WebSocket connection
-async fn handle_socket(socket: WebSocket, state: Arc<GspState>) {
-    state.add_connection();
+/// Handle a WebSocket connection (connection already counted via try_add_connection)
+async fn handle_socket_with_connection(socket: WebSocket, state: Arc<GspState>) {
+    // L-12: Connection was already added atomically in ws_handler via try_add_connection()
     debug!("WebSocket connection established");
 
     let (mut sender, mut receiver) = socket.split();

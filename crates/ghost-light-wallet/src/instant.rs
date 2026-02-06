@@ -47,7 +47,7 @@
 
 use parking_lot::RwLock;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use ghost_common::instant::{InstantCapability, InstantReceipt, LockSnapshot};
 
@@ -231,32 +231,7 @@ impl InstantPaymentChecker {
 
     /// Fetch lock snapshot from GSP
     async fn fetch_lock_snapshot(&self, lock_id: &str) -> WalletResult<LockSnapshot> {
-        // In a real implementation, this would query the GSP via WebSocket
-        // For now, return a placeholder that the GSP would fill in
-
-        // TODO: Implement actual GSP query
-        // let response = self.gsp.query_lock_state(lock_id).await?;
-        // return Ok(response.into());
-
-        // Placeholder - GSP would provide this data
-        warn!(
-            lock_id,
-            "GSP lock query not yet implemented, using placeholder"
-        );
-
-        Ok(LockSnapshot {
-            lock_id: lock_id.to_string(),
-            state: "Active".to_string(),
-            balance_sats: 0,
-            funding_height: 0,
-            confirmations: 0,
-            denomination: "Unknown".to_string(),
-            jump_urgency: 1.0, // Not capable by default
-            recovery_blocks_remaining: 0,
-            recovery_window_total: 52560,
-            in_mempool: false,
-            pending_l2_sats: 0,
-        })
+        self.gsp.query_lock_state(lock_id).await
     }
 
     /// Get cached capability if valid

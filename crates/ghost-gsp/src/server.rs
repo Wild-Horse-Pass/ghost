@@ -24,16 +24,22 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
+    http::{header, Method},
     routing::{get, post},
     Router,
 };
 use bitcoin::Network;
-use parking_lot::RwLock;
 use rand::RngCore;
-use tower_http::cors::CorsLayer;
+use tower_governor::{
+    errors::GovernorError, governor::GovernorConfigBuilder, key_extractor::KeyExtractor,
+    GovernorLayer,
+};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -44,6 +50,53 @@ use crate::proxy::PayNodeProxy;
 use crate::state::{ReorgBridge, ReorgBridgeConfig, ReorgNotifier, SubscriptionManager};
 
 use ghost_consensus::reorg::{L1ChainMonitor, L2ForkDetector};
+
+/// H-3: IP-based key extractor for rate limiting
+///
+/// Extracts client IP from X-Forwarded-For, X-Real-IP, or connection info.
+/// Used to rate limit requests per client IP address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IpKeyExtractor;
+
+/// Key type for IP-based rate limiting
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IpKey(String);
+
+impl KeyExtractor for IpKeyExtractor {
+    type Key = IpKey;
+
+    fn extract<T>(&self, req: &axum::http::Request<T>) -> Result<Self::Key, GovernorError> {
+        // Try X-Forwarded-For first (standard for proxied requests)
+        if let Some(xff) = req.headers().get("X-Forwarded-For") {
+            if let Ok(xff_str) = xff.to_str() {
+                if let Some(ip_str) = xff_str.split(',').next() {
+                    let ip_trimmed = ip_str.trim();
+                    if !ip_trimmed.is_empty() {
+                        return Ok(IpKey(ip_trimmed.to_string()));
+                    }
+                }
+            }
+        }
+
+        // Try X-Real-IP (nginx convention)
+        if let Some(xri) = req.headers().get("X-Real-IP") {
+            if let Ok(ip_str) = xri.to_str() {
+                return Ok(IpKey(ip_str.to_string()));
+            }
+        }
+
+        // Fall back to peer IP from ConnectInfo
+        if let Some(connect_info) = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        {
+            return Ok(IpKey(connect_info.0.ip().to_string()));
+        }
+
+        // Last resort: return error (no IP could be extracted)
+        Err(GovernorError::UnableToExtractKey)
+    }
+}
 
 /// GSP server configuration
 #[derive(Debug, Clone)]
@@ -140,8 +193,8 @@ pub struct GspState {
     /// Reorg notification broadcaster
     pub reorg_notifier: ReorgNotifier,
 
-    /// Current connection count
-    pub connection_count: RwLock<usize>,
+    /// Current connection count (L-12: AtomicUsize for race-free connection limiting)
+    pub connection_count: AtomicUsize,
 }
 
 impl GspState {
@@ -173,24 +226,36 @@ impl GspState {
             pay_node,
             subscriptions,
             reorg_notifier,
-            connection_count: RwLock::new(0),
+            connection_count: AtomicUsize::new(0),
         })
     }
 
-    /// Check if we can accept more connections
-    pub fn can_accept_connection(&self) -> bool {
-        *self.connection_count.read() < self.config.max_ws_connections
-    }
-
-    /// Increment connection count
-    pub fn add_connection(&self) {
-        *self.connection_count.write() += 1;
+    /// L-12: Atomically try to add a connection, returns true if successful
+    ///
+    /// This eliminates the TOCTOU race condition that existed with separate
+    /// `can_accept_connection()` and `add_connection()` calls. The connection
+    /// limit check and increment happen atomically.
+    pub fn try_add_connection(&self) -> bool {
+        let max = self.config.max_ws_connections;
+        self.connection_count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                if current < max {
+                    Some(current + 1)
+                } else {
+                    None
+                }
+            })
+            .is_ok()
     }
 
     /// Decrement connection count
     pub fn remove_connection(&self) {
-        let mut count = self.connection_count.write();
-        *count = count.saturating_sub(1);
+        self.connection_count.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    /// Get current connection count
+    pub fn connection_count(&self) -> usize {
+        self.connection_count.load(Ordering::SeqCst)
     }
 
     /// Start the reorg bridge to forward chain events to WebSocket subscribers
@@ -278,7 +343,44 @@ impl GspServer {
     }
 
     /// Build the Axum router
+    ///
+    /// # Security
+    /// - H-3: Rate limiting applied using tower_governor (per-IP)
+    /// - H-4: Restrictive CORS policy allowing only trusted origins
     fn build_router(state: Arc<GspState>) -> Router {
+        // H-3: Build rate limiter from config
+        // Convert RPM to per-second rate, with minimum of 1 per second
+        let per_second = (state.config.rate_limit_rpm.max(60) / 60).max(1);
+        let burst_size = state.config.rate_limit_rpm.max(10);
+
+        let governor_config = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(per_second as u64)
+                .burst_size(burst_size)
+                .key_extractor(IpKeyExtractor)
+                .finish()
+                .expect("Invalid rate limit config"),
+        );
+
+        // Spawn background task to clean up rate limiter state periodically
+        let governor_limiter = governor_config.limiter().clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                governor_limiter.retain_recent();
+            }
+        });
+
+        // H-4: Restrictive CORS - only allow trusted Ghost origins
+        let cors = CorsLayer::new()
+            .allow_origin(AllowOrigin::list([
+                "https://bitcoinghost.org".parse().unwrap(),
+                "https://wallet.bitcoinghost.org".parse().unwrap(),
+            ]))
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+            .max_age(Duration::from_secs(3600));
+
         Router::new()
             // Health check
             .route("/health", get(rest::health))
@@ -290,8 +392,12 @@ impl GspServer {
             .route("/api/v1/session", post(rest::create_session))
             // WebSocket endpoint
             .route("/ws/v1", get(websocket::ws_handler))
-            // CORS and tracing
-            .layer(CorsLayer::permissive())
+            // H-3: Rate limiting layer
+            .layer(GovernorLayer {
+                config: governor_config,
+            })
+            // H-4: Restrictive CORS layer
+            .layer(cors)
             .layer(TraceLayer::new_for_http())
             .with_state(state)
     }
@@ -379,13 +485,38 @@ mod tests {
         let config = create_test_config();
         let state = GspState::new(config).unwrap();
 
-        assert!(state.can_accept_connection());
-        assert_eq!(*state.connection_count.read(), 0);
+        // L-12: Test atomic connection tracking
+        assert_eq!(state.connection_count(), 0);
 
-        state.add_connection();
-        assert_eq!(*state.connection_count.read(), 1);
+        // Should successfully add connection
+        assert!(state.try_add_connection());
+        assert_eq!(state.connection_count(), 1);
 
+        // Remove connection
         state.remove_connection();
-        assert_eq!(*state.connection_count.read(), 0);
+        assert_eq!(state.connection_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_l12_atomic_connection_limit() {
+        // L-12: Test that connection limit is enforced atomically
+        let mut config = create_test_config();
+        config.max_ws_connections = 2;
+        let state = GspState::new(config).unwrap();
+
+        // Add connections up to limit
+        assert!(state.try_add_connection()); // 1
+        assert!(state.try_add_connection()); // 2
+        assert_eq!(state.connection_count(), 2);
+
+        // Should fail at limit
+        assert!(!state.try_add_connection()); // Would be 3, rejected
+        assert_eq!(state.connection_count(), 2); // Still 2
+
+        // After removing one, should be able to add again
+        state.remove_connection();
+        assert_eq!(state.connection_count(), 1);
+        assert!(state.try_add_connection()); // Now 2 again
+        assert_eq!(state.connection_count(), 2);
     }
 }

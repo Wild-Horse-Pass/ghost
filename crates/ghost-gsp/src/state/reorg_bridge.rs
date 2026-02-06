@@ -34,6 +34,7 @@ use ghost_consensus::reorg::{L1ChainMonitor, L1Event, L2Event, L2ForkDetector};
 use ghost_gsp_proto::{L2ReorgReason, ReorgLayer};
 
 use super::ReorgNotifier;
+use crate::proxy::PayNodeProxy;
 
 /// Configuration for the reorg bridge
 #[derive(Debug, Clone)]
@@ -63,6 +64,8 @@ impl Default for ReorgBridgeConfig {
 pub struct ReorgBridge {
     config: ReorgBridgeConfig,
     notifier: Arc<ReorgNotifier>,
+    /// Optional pay node proxy for querying affected locks (M-11)
+    pay_node: Option<Arc<PayNodeProxy>>,
     /// Track blocks since last reorg for stability detection
     l1_blocks_since_reorg: std::sync::atomic::AtomicU32,
     l2_blocks_since_reorg: std::sync::atomic::AtomicU32,
@@ -77,6 +80,27 @@ impl ReorgBridge {
         Self {
             config,
             notifier,
+            pay_node: None,
+            l1_blocks_since_reorg: std::sync::atomic::AtomicU32::new(0),
+            l2_blocks_since_reorg: std::sync::atomic::AtomicU32::new(0),
+            last_l1_reorg_height: std::sync::atomic::AtomicU64::new(0),
+            last_l2_reorg_height: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Create a new reorg bridge with pay node access (M-11)
+    ///
+    /// When a PayNodeProxy is provided, the bridge can query for affected locks
+    /// during reorg notifications, providing more specific information to clients.
+    pub fn with_pay_node(
+        notifier: Arc<ReorgNotifier>,
+        config: ReorgBridgeConfig,
+        pay_node: Arc<PayNodeProxy>,
+    ) -> Self {
+        Self {
+            config,
+            notifier,
+            pay_node: Some(pay_node),
             l1_blocks_since_reorg: std::sync::atomic::AtomicU32::new(0),
             l2_blocks_since_reorg: std::sync::atomic::AtomicU32::new(0),
             last_l1_reorg_height: std::sync::atomic::AtomicU64::new(0),
@@ -101,7 +125,7 @@ impl ReorgBridge {
                 info!("Reorg bridge: Started L1 event listener");
                 loop {
                     match rx.recv().await {
-                        Ok(event) => bridge.handle_l1_event(event),
+                        Ok(event) => bridge.handle_l1_event(event).await,
                         Err(broadcast::error::RecvError::Lagged(n)) => {
                             warn!(skipped = n, "Reorg bridge: L1 events lagged");
                         }
@@ -138,7 +162,9 @@ impl ReorgBridge {
     }
 
     /// Handle an L1 (Bitcoin) chain event
-    fn handle_l1_event(&self, event: L1Event) {
+    ///
+    /// M-11: Made async to support querying affected locks from pay node.
+    async fn handle_l1_event(&self, event: L1Event) {
         use std::sync::atomic::Ordering;
 
         match event {
@@ -186,15 +212,50 @@ impl ReorgBridge {
                     .store(from_height, Ordering::SeqCst);
                 self.l1_blocks_since_reorg.store(0, Ordering::SeqCst);
 
-                // Send notification
-                // TODO: Query affected payments and locks from database
+                // M-11: Query affected locks from pay node
+                // Locks confirmed at or after the reorg height may have been affected
+                let affected_locks = match &self.pay_node {
+                    Some(pay_node) => {
+                        match pay_node.get_locks_confirmed_after(from_height).await {
+                            Ok(locks) => {
+                                if !locks.is_empty() {
+                                    info!(
+                                        count = locks.len(),
+                                        from_height,
+                                        "Found locks potentially affected by L1 reorg"
+                                    );
+                                }
+                                locks
+                            }
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    "Failed to query affected locks for reorg notification"
+                                );
+                                vec![]
+                            }
+                        }
+                    }
+                    None => {
+                        debug!("No pay node configured - cannot query affected locks");
+                        vec![]
+                    }
+                };
+
+                // For L1 reorgs, affected payments are L2 payments that were confirmed
+                // on the L1 chain (settlements). Currently L2 is tracked separately,
+                // so we return empty for L1 payments. In the future, this could
+                // query for settlement transactions.
+                let affected_payments: Vec<String> = vec![];
+
+                // Send notification with affected items
                 self.notifier.notify_l1_reorg(
                     from_height,
                     depth,
                     hex::encode(old_tip),
                     hex::encode(new_tip),
-                    vec![], // affected_payments - to be populated from DB
-                    vec![], // affected_locks - to be populated from DB
+                    affected_payments,
+                    affected_locks,
                 );
             }
 

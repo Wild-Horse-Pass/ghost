@@ -49,6 +49,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 
 # Networking
 axum = { workspace = true }
+http = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 

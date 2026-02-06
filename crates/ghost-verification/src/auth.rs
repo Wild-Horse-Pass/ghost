@@ -123,11 +123,7 @@ impl InternalAuth {
             .unwrap_or_default()
             .as_secs();
 
-        let drift = if timestamp > now {
-            timestamp - now
-        } else {
-            now - timestamp
-        };
+        let drift = timestamp.abs_diff(now);
 
         if drift > MAX_TIMESTAMP_DRIFT_SECS {
             return Err(AuthError::TimestampOutOfRange {

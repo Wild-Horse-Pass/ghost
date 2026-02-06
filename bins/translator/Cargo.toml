@@ -56,3 +56,5 @@ thiserror = { workspace = true }
 # Utilities
 hex = { workspace = true }
 parking_lot = { workspace = true }
+getrandom = { workspace = true }
+secrecy = { workspace = true }

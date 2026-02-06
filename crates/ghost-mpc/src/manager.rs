@@ -612,11 +612,11 @@ impl CeremonyManager {
             return Err(MpcError::CeremonyOssified(state.contribution_count));
         }
 
-        Ok(ContributionCommitment::new(
+        ContributionCommitment::new(
             contributor_id,
             state.current_params_hash,
             state.ceremony_id,
-        ))
+        )
     }
 
     /// Verify all commitments were honored before ossification
@@ -750,7 +750,7 @@ mod tests {
         // Create and record a commitment
         // Note: This will fail because ceremony_id is all zeros and params hash is all zeros
         // which matches default state
-        let commitment = ContributionCommitment::new("node1", [0u8; 32], [0u8; 32]);
+        let commitment = ContributionCommitment::new("node1", [0u8; 32], [0u8; 32]).unwrap();
         let result = manager.record_commitment(commitment);
         assert!(result.is_ok());
 
@@ -764,7 +764,7 @@ mod tests {
         let (manager, _temp) = create_test_manager();
 
         // Record first commitment
-        let commitment = ContributionCommitment::new("node1", [0u8; 32], [0u8; 32]);
+        let commitment = ContributionCommitment::new("node1", [0u8; 32], [0u8; 32]).unwrap();
         let hash = manager.record_commitment(commitment.clone()).unwrap();
 
         // Try to record same commitment again - should fail
@@ -783,7 +783,7 @@ mod tests {
         let (manager, _temp) = create_test_manager();
 
         // Record a commitment
-        let commitment = ContributionCommitment::new("node1", [0u8; 32], [0u8; 32]);
+        let commitment = ContributionCommitment::new("node1", [0u8; 32], [0u8; 32]).unwrap();
         manager.record_commitment(commitment).unwrap();
 
         // Verification should fail because commitment is not fulfilled
@@ -809,7 +809,7 @@ mod tests {
         let (manager, _temp) = create_test_manager();
         manager.ossify().unwrap();
 
-        let commitment = ContributionCommitment::new("node1", [0u8; 32], [0u8; 32]);
+        let commitment = ContributionCommitment::new("node1", [0u8; 32], [0u8; 32]).unwrap();
         let result = manager.record_commitment(commitment);
         assert!(matches!(result, Err(MpcError::CeremonyOssified(_))));
     }

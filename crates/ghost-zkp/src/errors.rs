@@ -49,6 +49,10 @@ pub enum ZkError {
     #[error("Insufficient balance: has {has}, needs {needs}")]
     InsufficientBalance { has: u64, needs: u64 },
 
+    /// Balance overflow during payment
+    #[error("Balance overflow: adding {amount} to {balance} exceeds u64::MAX")]
+    BalanceOverflow { balance: u64, amount: u64 },
+
     /// Block proof height mismatch
     #[error("Block height mismatch: expected {expected}, got {actual}")]
     HeightMismatch { expected: u64, actual: u64 },

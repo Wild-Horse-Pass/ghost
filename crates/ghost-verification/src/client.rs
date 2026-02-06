@@ -102,7 +102,14 @@ impl VerificationClient {
         let mut builder = reqwest::Client::builder().timeout(config.timeout);
 
         if config.danger_accept_invalid_certs {
-            warn!("DANGER: Verification client configured to accept invalid TLS certificates");
+            // M-7: Require explicit environment variable to allow insecure TLS
+            // This prevents accidental MITM vulnerability from misconfiguration
+            if std::env::var("GHOST_ALLOW_INSECURE_TLS").is_err() {
+                return Err(GhostError::Config(
+                    "danger_accept_invalid_certs requires GHOST_ALLOW_INSECURE_TLS=1 environment variable".into()
+                ));
+            }
+            warn!("DANGER: Verification client accepting invalid TLS certificates - GHOST_ALLOW_INSECURE_TLS is set");
             builder = builder.danger_accept_invalid_certs(true);
         }
 
@@ -511,5 +518,57 @@ mod tests {
         result.stratum_verified = false;
 
         assert_eq!(result.pass_rate(), 0.5);
+    }
+
+    #[test]
+    fn test_insecure_tls_requires_env_var() {
+        // M-7: Ensure insecure TLS is rejected without env var
+        // First, ensure the env var is NOT set
+        std::env::remove_var("GHOST_ALLOW_INSECURE_TLS");
+
+        let config = VerificationClientConfig {
+            use_https: true,
+            timeout: std::time::Duration::from_secs(10),
+            danger_accept_invalid_certs: true,
+        };
+
+        let result = VerificationClient::with_config(config);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("GHOST_ALLOW_INSECURE_TLS"),
+            "Error should mention required env var: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_insecure_tls_allowed_with_env_var() {
+        // M-7: Ensure insecure TLS works when env var is set
+        std::env::set_var("GHOST_ALLOW_INSECURE_TLS", "1");
+
+        let config = VerificationClientConfig {
+            use_https: true,
+            timeout: std::time::Duration::from_secs(10),
+            danger_accept_invalid_certs: true,
+        };
+
+        let result = VerificationClient::with_config(config);
+        assert!(result.is_ok(), "Should succeed with env var set");
+
+        // Clean up
+        std::env::remove_var("GHOST_ALLOW_INSECURE_TLS");
+    }
+
+    #[test]
+    fn test_secure_tls_does_not_require_env_var() {
+        // M-7: Normal secure TLS should work without env var
+        std::env::remove_var("GHOST_ALLOW_INSECURE_TLS");
+
+        let config = VerificationClientConfig::default();
+        assert!(!config.danger_accept_invalid_certs);
+
+        let result = VerificationClient::with_config(config);
+        assert!(result.is_ok(), "Secure TLS should work without env var");
     }
 }

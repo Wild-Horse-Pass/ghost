@@ -66,11 +66,15 @@ impl ContributionCommitment {
     ///
     /// # Returns
     /// A commitment that should be broadcast to all elders before revealing the contribution
-    pub fn new(contributor: &str, prev_params_hash: [u8; 32], ceremony_id: [u8; 32]) -> Self {
+    ///
+    /// # Errors
+    /// Returns `MpcError::RandomFailure` if secure random number generation fails
+    pub fn new(contributor: &str, prev_params_hash: [u8; 32], ceremony_id: [u8; 32]) -> MpcResult<Self> {
         let mut nonce = [0u8; 32];
-        getrandom::getrandom(&mut nonce).expect("Failed to generate random nonce");
+        getrandom::getrandom(&mut nonce)
+            .map_err(|e| MpcError::RandomFailure(format!("Failed to generate nonce: {}", e)))?;
 
-        Self {
+        Ok(Self {
             contributor: contributor.to_string(),
             prev_params_hash,
             nonce,
@@ -79,7 +83,7 @@ impl ContributionCommitment {
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
             ceremony_id,
-        }
+        })
     }
 
     /// Compute the commitment hash

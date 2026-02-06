@@ -50,9 +50,9 @@ use clap::Parser;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::{debug, info, warn, Level};
+use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use bitcoin::secp256k1::Secp256k1;
@@ -109,9 +109,9 @@ struct Args {
     #[arg(short, long, default_value = "info")]
     log_level: String,
 
-    /// Treasury address for settlement batches
-    #[arg(long, default_value = "")]
-    treasury_address: String,
+    /// Treasury address for settlement batches (required for withdrawal settlements)
+    #[arg(long)]
+    treasury_address: Option<String>,
 
     /// Password for encrypting keys at rest (H-PAY-2 security fix)
     /// If not provided, keys will be stored encrypted with a derived password
@@ -204,20 +204,33 @@ fn decrypt_keys(encrypted: &[u8], password: &str) -> Result<Vec<u8>, anyhow::Err
 }
 
 /// Get or derive the encryption password
-/// Uses provided password or derives one from machine-specific data
-fn get_encryption_password(args: &Args) -> String {
+/// For mainnet, requires explicit password via --key-password or GHOST_PAY_PASSWORD env var
+/// For non-mainnet, allows machine-derived password with a warning
+fn get_encryption_password(args: &Args, network: Network) -> Result<String> {
+    // Check explicit password argument first
     if let Some(ref password) = args.key_password {
-        return password.clone();
+        return Ok(password.clone());
     }
 
-    // Derive a machine-specific password from hostname + data directory
-    // This provides basic protection while allowing unattended startup
-    // For production, users should provide GHOST_PAY_PASSWORD env var
+    // Check environment variable
+    if let Ok(password) = std::env::var("GHOST_PAY_PASSWORD") {
+        return Ok(password);
+    }
+
+    // For mainnet, require explicit password
+    if network == Network::Bitcoin {
+        return Err(anyhow::anyhow!(
+            "GHOST_PAY_PASSWORD environment variable or --key-password required for mainnet"
+        ));
+    }
+
+    // For non-mainnet, allow machine-derived password with warning
+    warn!("Using machine-derived password - NOT SAFE FOR MAINNET");
     let hostname = std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "ghost-pay-node".to_string());
 
-    format!("ghost-pay:{}:{}", hostname, args.data_dir)
+    Ok(format!("ghost-pay:{}:{}", hostname, args.data_dir))
 }
 
 /// Application state
@@ -366,8 +379,11 @@ async fn main() -> Result<()> {
     )?);
     info!("Bitcoin RPC configured: {}:{}", rpc_host, rpc_port);
 
-    // Save treasury address before args is moved
-    let treasury_configured = !args.treasury_address.is_empty();
+    // Check treasury address configuration before args is moved
+    let treasury_configured = args.treasury_address.is_some();
+    if !treasury_configured {
+        warn!("No treasury address configured - settlement features disabled");
+    }
 
     // Initialize state
     let state = Arc::new(AppState {
@@ -386,7 +402,7 @@ async fn main() -> Result<()> {
 
     // H-PAY-2 FIX: Load existing keys from database with encryption support
     // Try encrypted keys first (new format), fall back to legacy plaintext for migration
-    let encryption_password = get_encryption_password(&state.config);
+    let encryption_password = get_encryption_password(&state.config, network)?;
     let mut keys_loaded = false;
 
     // Try to load encrypted keys first (new secure format)
@@ -547,9 +563,7 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             run_settlement_loop(state_clone).await;
         });
-    } else {
-        warn!("No treasury address configured - L1 settlement disabled");
-        warn!("Use --treasury_address to enable withdrawal settlements");
+        info!("L1 settlement loop enabled");
     }
 
     // Build router
@@ -578,7 +592,20 @@ async fn main() -> Result<()> {
         // Status
         .route("/api/v1/status", get(get_status))
         .route("/health", get(health_check))
-        .layer(CorsLayer::permissive())
+        .layer(
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list([
+                    "https://bitcoinghost.org".parse().unwrap(),
+                    "https://wallet.bitcoinghost.org".parse().unwrap(),
+                ]))
+                .allow_methods([
+                    http::Method::GET,
+                    http::Method::POST,
+                    http::Method::OPTIONS,
+                ])
+                .allow_headers([http::header::CONTENT_TYPE, http::header::AUTHORIZATION])
+                .max_age(std::time::Duration::from_secs(3600)),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
 
@@ -609,7 +636,13 @@ async fn generate_keys(
     // H-PAY-2 FIX: Save keys to database with encryption
     let keys_export = GhostKeysExport::from(&keys);
     if let Ok(keys_json) = serde_json::to_vec(&keys_export) {
-        let encryption_password = get_encryption_password(&state.config);
+        let encryption_password = match get_encryption_password(&state.config, state.network) {
+            Ok(pwd) => pwd,
+            Err(e) => {
+                error!("Cannot generate keys without encryption password: {}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        };
         match encrypt_keys(&keys_json, &encryption_password) {
             Ok(encrypted) => {
                 let encrypted_hex = hex::encode(&encrypted);
@@ -732,10 +765,10 @@ async fn create_lock(
         .get_blockchain_info()
         .await
         .map(|info| info.blocks as u32)
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "Failed to get block height, using default");
-            800_000u32 // Fallback for testing/development
-        });
+        .map_err(|e| {
+            error!(error = %e, "Bitcoin RPC unavailable - cannot determine block height");
+            StatusCode::SERVICE_UNAVAILABLE
+        })?;
 
     let keys_guard = state.keys.read();
     let keys = keys_guard.as_ref().ok_or(StatusCode::NOT_FOUND)?;
@@ -1853,8 +1886,8 @@ async fn run_settlement_loop(state: Arc<AppState>) {
     let check_interval = std::time::Duration::from_secs(300);
 
     // Create batch executor with treasury address from config
-    // Note: Settlement loop only starts if treasury_address is configured
-    let treasury_address = state.config.treasury_address.clone();
+    // Note: Settlement loop only starts if treasury_address is configured (checked in main)
+    let treasury_address = state.config.treasury_address.clone().unwrap_or_default();
     let mut executor = BatchExecutor::new(state.network, treasury_address);
 
     // Track processed withdrawal IDs for current batch

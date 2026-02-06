@@ -62,7 +62,7 @@ pub struct InfoResponse {
 
 /// GSP info handler
 pub async fn info(State(state): State<Arc<GspState>>) -> Json<InfoResponse> {
-    let connections = *state.connection_count.read();
+    let connections = state.connection_count();
 
     // Check pay node connectivity
     let sync_status = match state.pay_node.health_check().await {

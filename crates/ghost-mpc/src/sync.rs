@@ -23,6 +23,9 @@ use std::time::Instant;
 use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
+/// Maximum entries in rate limiter HashMaps to prevent memory exhaustion
+const MAX_RATE_LIMIT_ENTRIES: usize = 10_000;
+
 /// 3.11 SECURITY: Rate limiter for chunk requests
 /// Prevents bandwidth exhaustion attacks from malicious peers
 struct ChunkRateLimiter {
@@ -50,6 +53,13 @@ impl ChunkRateLimiter {
     fn check_and_record(&mut self, peer_id: &[u8; 32]) -> bool {
         let now = Instant::now();
 
+        // L-3 FIX: Clean up stale entries if we're at capacity to prevent memory exhaustion
+        if self.last_request.len() >= MAX_RATE_LIMIT_ENTRIES
+            || self.request_counts.len() >= MAX_RATE_LIMIT_ENTRIES
+        {
+            self.cleanup_stale();
+        }
+
         // Check minimum interval
         if let Some(last) = self.last_request.get(peer_id) {
             if now.duration_since(*last).as_millis() < self.min_interval_ms as u128 {
@@ -75,13 +85,22 @@ impl ChunkRateLimiter {
         true
     }
 
+    /// Remove entries older than the cutoff duration (60 seconds)
+    ///
+    /// Called automatically when capacity is reached, and can be called
+    /// periodically via cleanup_rate_limiter() for proactive cleanup.
+    fn cleanup_stale(&mut self) {
+        let now = Instant::now();
+        let cutoff = std::time::Duration::from_secs(60);
+        self.last_request
+            .retain(|_, last| now.duration_since(*last) < cutoff);
+        self.request_counts
+            .retain(|_, (_, start)| now.duration_since(*start) < cutoff);
+    }
+
     /// Cleanup old entries (call periodically)
     fn cleanup(&mut self) {
-        let now = Instant::now();
-        self.last_request
-            .retain(|_, last| now.duration_since(*last).as_secs() < 60);
-        self.request_counts
-            .retain(|_, (_, start)| now.duration_since(*start).as_secs() < 60);
+        self.cleanup_stale();
     }
 }
 

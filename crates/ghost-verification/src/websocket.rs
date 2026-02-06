@@ -192,7 +192,7 @@ impl WsAuthQuery {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                let diff = if ts > now { ts - now } else { now - ts };
+                let diff = ts.abs_diff(now);
                 if diff >= WS_MAX_TIMESTAMP_DRIFT_SECS {
                     return false;
                 }
@@ -243,7 +243,7 @@ impl WsAuthQuery {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                let diff = if ts > now { ts - now } else { now - ts };
+                let diff = ts.abs_diff(now);
                 diff < WS_MAX_TIMESTAMP_DRIFT_SECS
             })
             .unwrap_or(false);

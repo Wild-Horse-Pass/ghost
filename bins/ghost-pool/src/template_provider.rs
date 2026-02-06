@@ -55,14 +55,15 @@ use tracing::{debug, error, info, warn};
 // Use types from stratum-apps (stratum-core) consistently to avoid version conflicts
 use stratum_apps::network_helpers::noise_stream::NoiseTcpStream;
 use stratum_apps::stratum_core::{
-    binary_sv2::Seq0255,
+    binary_sv2::{B016M, B064K, Seq064K, Seq0255},
     codec_sv2::{HandshakeRole, StandardSv2Frame},
     common_messages_sv2::SetupConnectionSuccess,
     framing_sv2::framing::Frame,
     noise_sv2::Responder,
     parsers_sv2::{AnyMessage, TemplateDistribution},
     template_distribution_sv2::{
-        CoinbaseOutputConstraints, NewTemplate, SetNewPrevHash, SubmitSolution,
+        CoinbaseOutputConstraints, NewTemplate, RequestTransactionDataError,
+        RequestTransactionDataSuccess, SetNewPrevHash, SubmitSolution,
     },
 };
 use stratum_apps::utils::protocol_message_type::{protocol_message_type, MessageType};
@@ -533,7 +534,137 @@ async fn handle_template_distribution_message(
                 "Received RequestTransactionData for template {} from client {}",
                 request.template_id, client_id
             );
-            // TODO: Return full transaction data for the requested template
+
+            // Get the client's frame sender for responding
+            let frame_tx = {
+                let clients_guard = clients.read();
+                clients_guard
+                    .get(&client_id)
+                    .map(|c| c.frame_tx.clone())
+            };
+
+            let Some(frame_tx) = frame_tx else {
+                warn!("Client {} not found when handling RequestTransactionData", client_id);
+                return Ok(());
+            };
+
+            // Look up the work state for the requested template
+            match template_processor.get_work_state(request.template_id) {
+                Some(work_state) => {
+                    // Convert template transactions to SV2 format
+                    // Each transaction is serialized as B016M (max 16MB per transaction)
+                    let mut tx_list: Vec<B016M<'static>> = Vec::with_capacity(
+                        work_state.template.transactions.len()
+                    );
+
+                    for tx in &work_state.template.transactions {
+                        match hex::decode(&tx.data) {
+                            Ok(tx_bytes) => {
+                                match tx_bytes.try_into() {
+                                    Ok(b016m) => tx_list.push(b016m),
+                                    Err(_) => {
+                                        // Transaction too large (>16MB), which should never happen
+                                        warn!(
+                                            "Transaction {} too large for B016M in template {}",
+                                            tx.txid, request.template_id
+                                        );
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Failed to decode transaction {} hex: {}",
+                                    tx.txid, e
+                                );
+                            }
+                        }
+                    }
+
+                    // Create the success response
+                    let transaction_list: Seq064K<'static, B016M<'static>> = match Seq064K::new(tx_list) {
+                        Ok(seq) => seq,
+                        Err(_) => {
+                            // Too many transactions (shouldn't happen with valid blocks)
+                            warn!(
+                                "Too many transactions for Seq064K in template {}",
+                                request.template_id
+                            );
+                            // Send error response
+                            let error = RequestTransactionDataError {
+                                template_id: request.template_id,
+                                error_code: "transaction-list-overflow"
+                                    .to_string()
+                                    .try_into()
+                                    .unwrap_or_else(|_| vec![].try_into().unwrap()),
+                            };
+                            let error_frame: Sv2Frame = AnyMessage::TemplateDistribution(
+                                TemplateDistribution::RequestTransactionDataError(error).into_static(),
+                            )
+                            .try_into()
+                            .map_err(|_| anyhow::anyhow!("Failed to create error frame"))?;
+                            frame_tx.send(error_frame).await.ok();
+                            return Ok(());
+                        }
+                    };
+
+                    let excess_data: B064K<'static> = vec![]
+                        .try_into()
+                        .expect("empty vec should always be valid for B064K");
+
+                    let success = RequestTransactionDataSuccess {
+                        template_id: request.template_id,
+                        transaction_list,
+                        excess_data,
+                    };
+
+                    let success_frame: Sv2Frame = AnyMessage::TemplateDistribution(
+                        TemplateDistribution::RequestTransactionDataSuccess(success).into_static(),
+                    )
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("Failed to create success frame"))?;
+
+                    if let Err(e) = frame_tx.send(success_frame).await {
+                        warn!(
+                            "Failed to send RequestTransactionDataSuccess to client {}: {:?}",
+                            client_id, e
+                        );
+                    } else {
+                        debug!(
+                            "Sent RequestTransactionDataSuccess for template {} ({} transactions)",
+                            request.template_id,
+                            work_state.template.transactions.len()
+                        );
+                    }
+                }
+                None => {
+                    // Template not found or expired
+                    warn!(
+                        "Template {} not found for RequestTransactionData from client {}",
+                        request.template_id, client_id
+                    );
+
+                    let error = RequestTransactionDataError {
+                        template_id: request.template_id,
+                        error_code: "template-id-not-found"
+                            .to_string()
+                            .try_into()
+                            .unwrap_or_else(|_| vec![].try_into().unwrap()),
+                    };
+
+                    let error_frame: Sv2Frame = AnyMessage::TemplateDistribution(
+                        TemplateDistribution::RequestTransactionDataError(error).into_static(),
+                    )
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("Failed to create error frame"))?;
+
+                    if let Err(e) = frame_tx.send(error_frame).await {
+                        warn!(
+                            "Failed to send RequestTransactionDataError to client {}: {:?}",
+                            client_id, e
+                        );
+                    }
+                }
+            }
         }
         TemplateDistribution::SubmitSolution(solution) => {
             info!(
