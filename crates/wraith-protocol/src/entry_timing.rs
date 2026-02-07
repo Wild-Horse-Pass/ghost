@@ -332,8 +332,9 @@ impl EntryScheduler {
         let random = match random_f64() {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(error = %e, "C-7: RNG failed in calculate_delay, using zero delay");
-                return Duration::ZERO;
+                // L-19: Use 5 second fallback delay instead of zero to prevent timing attacks
+                tracing::warn!(error = %e, "L-19: RNG failed in calculate_delay, using 5s fallback");
+                return Duration::from_secs(5);
             }
         };
         let mean = (self.config.max_delay_ms - self.config.min_delay_ms) as f64;

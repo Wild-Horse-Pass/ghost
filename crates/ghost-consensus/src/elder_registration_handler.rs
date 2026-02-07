@@ -42,6 +42,20 @@
 //! - Uptime requirement ensures node reliability
 //! - BFT threshold (67%) prevents malicious elder additions
 //! - Merkle root verification ensures all nodes converge on same list
+//!
+//! ## M-1 SECURITY: Runtime Integration Status
+//!
+//! **IMPORTANT**: The transition callback mechanism is currently incomplete.
+//! The handler is created and registered with the mesh, but the transition
+//! callback cannot be set after Arc wrapping. This means epoch transitions
+//! work for elder list updates but the VoteHandler's eligible voters list
+//! is not automatically updated.
+//!
+//! **Current workaround**: VoteHandler's set_canonical_elder_list() must be
+//! called manually after epoch transitions.
+//!
+//! **TODO**: Refactor to use interior mutability pattern or builder pattern
+//! that allows setting callbacks before Arc wrapping.
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -212,6 +226,23 @@ impl ElderRegistrationHandler {
     }
 
     /// Set the transition callback
+    ///
+    /// **M-1 SECURITY WARNING**: This method requires `&mut self` which means it cannot
+    /// be called after the handler is wrapped in `Arc`. The callback must be set
+    /// before creating the Arc wrapper.
+    ///
+    /// # Example (CORRECT)
+    /// ```ignore
+    /// let mut handler = ElderRegistrationHandler::new(identity, manager, db);
+    /// handler.set_transition_callback(callback);
+    /// let handler_arc = Arc::new(handler);
+    /// ```
+    ///
+    /// # Example (WRONG - will not compile)
+    /// ```ignore
+    /// let handler = Arc::new(ElderRegistrationHandler::new(identity, manager, db));
+    /// handler.set_transition_callback(callback); // ERROR: cannot borrow Arc as mutable
+    /// ```
     pub fn set_transition_callback(&mut self, callback: TransitionCallback) {
         self.transition_callback = Some(callback);
     }

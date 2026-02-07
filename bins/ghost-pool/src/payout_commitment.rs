@@ -291,12 +291,14 @@ impl CommitmentManager {
     }
 
     /// Generate a new random pool secret
-    pub fn generate() -> Self {
+    ///
+    /// HIGH-5: Returns Result instead of panicking on RNG failure
+    pub fn generate() -> Result<Self, getrandom::Error> {
         let mut secret = [0u8; 32];
-        getrandom::getrandom(&mut secret).expect("Failed to generate random secret");
-        Self {
+        getrandom::getrandom(&mut secret)?;
+        Ok(Self {
             pool_secret: secret,
-        }
+        })
     }
 
     /// Create a commitment for a payout address
@@ -440,7 +442,7 @@ mod tests {
 
     #[test]
     fn test_commitment_manager_generate() {
-        let manager = CommitmentManager::generate();
+        let manager = CommitmentManager::generate().expect("RNG should work in tests");
         let address = test_address();
 
         let commitment = manager.commit(address);

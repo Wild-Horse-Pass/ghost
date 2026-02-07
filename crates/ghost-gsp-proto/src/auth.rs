@@ -253,26 +253,18 @@ impl WalletProof {
     }
 }
 
-/// Generate a random 16-byte nonce
+/// Generate a cryptographically secure random 16-byte nonce
+///
+/// CRIT-1 FIX: Uses getrandom for CSPRNG-quality randomness instead of
+/// the insecure time-based approach. This is essential for replay protection
+/// in wallet proofs - predictable nonces could allow replay attacks.
 fn rand_nonce() -> [u8; 16] {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // Use system time and thread ID for basic randomness
-    // In production, this would use getrandom or similar
-    let time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-
     let mut nonce = [0u8; 16];
-    let time_bytes = time.as_nanos().to_le_bytes();
-    nonce[0..8].copy_from_slice(&time_bytes[0..8]);
-
-    // Add some entropy from thread ID
-    let thread_id = std::thread::current().id();
-    let thread_hash = format!("{:?}", thread_id);
-    let hash = Sha256::digest(thread_hash.as_bytes());
-    nonce[8..16].copy_from_slice(&hash[0..8]);
-
+    // getrandom uses the OS CSPRNG (/dev/urandom on Linux, CryptGenRandom on Windows)
+    // This will panic only if the OS entropy pool is completely unavailable,
+    // which indicates a catastrophic system failure where crypto operations
+    // should not proceed anyway.
+    getrandom::getrandom(&mut nonce).expect("OS entropy source unavailable");
     nonce
 }
 
@@ -464,5 +456,51 @@ mod tests {
         assert!(!debug_output.contains("super_secret_jwt_token"));
         // wallet_id is not sensitive (it's derived from public key hash)
         assert!(debug_output.contains("abc123"));
+    }
+
+    #[test]
+    fn test_crit1_nonce_is_cryptographically_random() {
+        // CRIT-1 TEST: Verify nonces are generated using CSPRNG and are unique
+        use std::collections::HashSet;
+
+        // Generate multiple nonces and verify they're all unique
+        let mut seen_nonces = HashSet::new();
+        for _ in 0..100 {
+            let nonce = super::rand_nonce();
+            // Each nonce should be unique
+            assert!(
+                seen_nonces.insert(nonce),
+                "CRIT-1 FAILURE: Duplicate nonce detected - this indicates weak randomness"
+            );
+        }
+
+        // Verify all 16 bytes are being used (not just a few bytes)
+        let nonce = super::rand_nonce();
+        let zeros: usize = nonce.iter().filter(|&&b| b == 0).count();
+        // Statistically, having more than 12 zero bytes in 16 random bytes is extremely unlikely
+        // P(12+ zeros) = sum(C(16,k) * (1/256)^k * (255/256)^(16-k) for k in 12..17) < 1e-20
+        assert!(
+            zeros < 12,
+            "CRIT-1 FAILURE: Too many zero bytes ({}/16) - suggests weak entropy",
+            zeros
+        );
+    }
+
+    #[test]
+    fn test_crit1_wallet_proof_has_random_nonce() {
+        // CRIT-1 TEST: Verify WalletProof uses CSPRNG nonces
+        let pubkey = [1u8; 32];
+        let proof1 = WalletProof::new("register", &pubkey);
+        let proof2 = WalletProof::new("register", &pubkey);
+
+        // Nonces must be different even for same action and pubkey
+        assert_ne!(
+            proof1.nonce, proof2.nonce,
+            "CRIT-1 FAILURE: Two proofs generated same nonce - replay attacks possible"
+        );
+
+        // Verify nonce is properly formatted (32 hex chars = 16 bytes)
+        assert_eq!(proof1.nonce.len(), 32);
+        assert!(proof1.nonce.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }

@@ -425,7 +425,7 @@ impl BatchExecutor {
             .collect();
 
         // Create batch from cloned settlements
-        let mut batch = Batch::new();
+        let mut batch = Batch::new()?;
         for settlement in &candidate_settlements {
             batch.add_settlement(settlement)?;
         }

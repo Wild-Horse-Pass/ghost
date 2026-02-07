@@ -6,11 +6,13 @@ key_path = "/etc/ghost/node.key"
 display_name = "Ghost Pool (Docker)"
 
 [bitcoin]
-# These are overridden by environment variables
+# M-17 FIX: RPC credentials must be set via environment variables
+# Set BITCOIN_RPC_USER and BITCOIN_RPC_PASSWORD in your environment or docker-compose.yml
+# Example: docker run -e BITCOIN_RPC_USER=myuser -e BITCOIN_RPC_PASSWORD=mysecurepassword ...
 rpc_host = "bitcoind"
 rpc_port = 8332
-rpc_user = "ghostrpc"
-rpc_password = "changeme"
+rpc_user = "${BITCOIN_RPC_USER}"
+rpc_password = "${BITCOIN_RPC_PASSWORD}"
 network = "signet"
 zmq_hashblock = "tcp://bitcoind:28332"
 zmq_hashtx = "tcp://bitcoind:28333"

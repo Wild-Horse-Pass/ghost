@@ -182,6 +182,71 @@ use crate::challenge::*;
 use crate::routes::create_router;
 use crate::websocket::WsState;
 
+/// M-12: Validate that a CORS origin is a properly formatted HTTPS URL.
+///
+/// Returns true only if:
+/// - The origin starts with "https://" (enforced for security)
+/// - The origin has a valid host after the scheme
+/// - The origin doesn't contain path components (origins are scheme + host + optional port)
+///
+/// This prevents malformed origins from bypassing CORS protection.
+fn is_valid_cors_origin(origin: &str) -> bool {
+    // Must start with https:// for security
+    if !origin.starts_with("https://") {
+        tracing::warn!(
+            origin = %origin,
+            "M-12: Rejecting CORS origin without https:// scheme"
+        );
+        return false;
+    }
+
+    // Extract the host part (after scheme, before any path)
+    let host_part = &origin[8..]; // Skip "https://"
+
+    // Must have a non-empty host
+    if host_part.is_empty() {
+        tracing::warn!(origin = %origin, "M-12: Rejecting CORS origin with empty host");
+        return false;
+    }
+
+    // Split host from optional port
+    let host = if let Some(colon_pos) = host_part.rfind(':') {
+        // Check if this is actually a port (not part of IPv6)
+        let potential_port = &host_part[colon_pos + 1..];
+        if potential_port.chars().all(|c| c.is_ascii_digit()) {
+            &host_part[..colon_pos]
+        } else {
+            host_part
+        }
+    } else {
+        host_part
+    };
+
+    // Should not have path components
+    if host.contains('/') {
+        tracing::warn!(
+            origin = %origin,
+            "M-12: Rejecting CORS origin with path component"
+        );
+        return false;
+    }
+
+    // Host must be valid (letters, digits, dots, hyphens)
+    let is_valid_host = host.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '[' || c == ']' || c == ':'
+    });
+
+    if !is_valid_host {
+        tracing::warn!(
+            origin = %origin,
+            "M-12: Rejecting CORS origin with invalid host characters"
+        );
+        return false;
+    }
+
+    true
+}
+
 /// Parse a share hash hex string to [u8; 32]
 /// Returns zeros if the string is invalid or too short
 fn parse_share_hash(hash_str: &str) -> [u8; 32] {
@@ -413,6 +478,11 @@ pub struct VerificationState {
     /// Signal to trigger graceful restart (set by config update API)
     /// When true, main.rs will initiate shutdown and exit with code 100
     pub restart_signal: Arc<AtomicBool>,
+    /// L-28: Debug endpoints enabled flag - IMMUTABLE after startup
+    /// This is set once from DashboardConfig during construction and cannot be changed
+    /// at runtime via any API. This prevents attackers from enabling debug endpoints
+    /// to gain access to sensitive system information.
+    debug_endpoints_frozen: AtomicBool,
 }
 
 /// Archive handler trait
@@ -491,6 +561,8 @@ impl VerificationState {
     ) -> Self {
         // Initialize dashboard config with defaults (all features enabled)
         let dashboard_config = DashboardConfig::default();
+        // L-28: Capture debug endpoint setting at startup - immutable thereafter
+        let debug_enabled = dashboard_config.enable_debug_endpoints;
         Self {
             node_id,
             version,
@@ -522,6 +594,8 @@ impl VerificationState {
             // VF-C2: Default to requiring internal auth for security
             require_internal_auth: true,
             restart_signal: Arc::new(AtomicBool::new(false)),
+            // L-28: Debug endpoints flag frozen at startup
+            debug_endpoints_frozen: AtomicBool::new(debug_enabled),
         }
     }
 
@@ -538,6 +612,35 @@ impl VerificationState {
     /// Get the restart signal for external monitoring (main.rs)
     pub fn restart_signal(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.restart_signal)
+    }
+
+    /// L-28: Check if debug endpoints are enabled.
+    ///
+    /// This value is frozen at startup and cannot be changed at runtime.
+    /// Even if DashboardConfig.enable_debug_endpoints is modified, this
+    /// method will return the original startup value.
+    ///
+    /// # Security
+    /// This prevents runtime attacks that attempt to enable debug endpoints
+    /// to gain access to sensitive system information.
+    pub fn debug_endpoints_enabled(&self) -> bool {
+        self.debug_endpoints_frozen.load(Ordering::Relaxed)
+    }
+
+    /// L-28: Set debug endpoints enabled (builder pattern).
+    ///
+    /// **WARNING**: This can only be called during construction (before start_server).
+    /// Once the server is started, this setting is immutable.
+    ///
+    /// Default is false (disabled) for security.
+    pub fn with_debug_endpoints(self, enabled: bool) -> Self {
+        self.debug_endpoints_frozen.store(enabled, Ordering::Relaxed);
+        // Also update dashboard_config for consistency in responses
+        {
+            let mut config = self.dashboard_config.write();
+            config.enable_debug_endpoints = enabled;
+        }
+        self
     }
 
     /// Set internal API authentication (H10/H11 security fix)
@@ -1237,12 +1340,23 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
     // C-1: CORS configuration - restricted to trusted origins
     // Environment variable allows deployment-specific configuration
     // Default: bitcoinghost.org domains only
+    // M-12: Origins are validated to ensure proper https:// URL format
     let allowed_origins = std::env::var("GHOST_VERIFICATION_ALLOWED_ORIGINS")
         .unwrap_or_else(|_| "https://bitcoinghost.org,https://wallet.bitcoinghost.org".to_string());
 
+    // M-12: Validate each origin before parsing
     let origins: Vec<axum::http::HeaderValue> = allowed_origins
         .split(',')
-        .filter_map(|s| s.trim().parse().ok())
+        .filter_map(|s| {
+            let trimmed = s.trim();
+            // M-12: Validate URL format before accepting
+            if is_valid_cors_origin(trimmed) {
+                trimmed.parse().ok()
+            } else {
+                // Warning already logged in is_valid_cors_origin
+                None
+            }
+        })
         .collect();
 
     // If no valid origins parsed, use secure defaults
@@ -1269,7 +1383,7 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
     } else {
         info!(
             origins = ?origins.iter().map(|h| h.to_str().unwrap_or("?")).collect::<Vec<_>>(),
-            "C-1: CORS configured with allowed origins"
+            "C-1: CORS configured with validated origins (M-12: https:// enforced)"
         );
         CorsLayer::new()
             .allow_origin(tower_http::cors::AllowOrigin::list(origins))
@@ -1463,5 +1577,97 @@ mod tests {
         // So: true && true = true -> error
         let should_fail = state.require_internal_auth && state.internal_auth.is_none();
         assert!(should_fail, "Should require auth by default");
+    }
+
+    // M-12: CORS origin validation tests
+    #[test]
+    fn test_cors_origin_valid_https() {
+        assert!(is_valid_cors_origin("https://bitcoinghost.org"));
+        assert!(is_valid_cors_origin("https://wallet.bitcoinghost.org"));
+        assert!(is_valid_cors_origin("https://localhost:8080"));
+        assert!(is_valid_cors_origin("https://192.168.1.1:443"));
+    }
+
+    #[test]
+    fn test_cors_origin_rejects_http() {
+        // Must use https:// for security
+        assert!(!is_valid_cors_origin("http://bitcoinghost.org"));
+        assert!(!is_valid_cors_origin("http://localhost"));
+    }
+
+    #[test]
+    fn test_cors_origin_rejects_no_scheme() {
+        assert!(!is_valid_cors_origin("bitcoinghost.org"));
+        assert!(!is_valid_cors_origin("localhost:8080"));
+    }
+
+    #[test]
+    fn test_cors_origin_rejects_path() {
+        // Origins should not have path components
+        assert!(!is_valid_cors_origin("https://bitcoinghost.org/api"));
+        assert!(!is_valid_cors_origin("https://example.com/path/to/page"));
+    }
+
+    #[test]
+    fn test_cors_origin_rejects_empty_host() {
+        assert!(!is_valid_cors_origin("https://"));
+    }
+
+    #[test]
+    fn test_cors_origin_rejects_invalid_chars() {
+        // Origins with spaces or special chars should be rejected
+        assert!(!is_valid_cors_origin("https://example .com"));
+        assert!(!is_valid_cors_origin("https://example<script>.com"));
+    }
+
+    // L-28: Debug endpoints immutability tests
+    #[test]
+    fn test_debug_endpoints_frozen_at_startup_disabled() {
+        let state = VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        );
+
+        // Default should be disabled
+        assert!(!state.debug_endpoints_enabled());
+    }
+
+    #[test]
+    fn test_debug_endpoints_frozen_at_startup_enabled() {
+        let state = VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        )
+        .with_debug_endpoints(true);
+
+        // Should be enabled after with_debug_endpoints(true)
+        assert!(state.debug_endpoints_enabled());
+    }
+
+    #[test]
+    fn test_debug_endpoints_immutable_after_set() {
+        let state = VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        )
+        .with_debug_endpoints(true);
+
+        // Even if someone modifies DashboardConfig, the frozen value should persist
+        {
+            let mut config = state.dashboard_config.write();
+            config.enable_debug_endpoints = false;
+        }
+
+        // The frozen value should still be true (from startup)
+        assert!(
+            state.debug_endpoints_enabled(),
+            "L-28: Frozen debug flag should not change after startup"
+        );
     }
 }

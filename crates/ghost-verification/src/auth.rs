@@ -55,8 +55,9 @@ use tracing::warn;
 /// HMAC-SHA256 type alias
 type HmacSha256 = Hmac<Sha256>;
 
-/// Maximum timestamp drift allowed (5 minutes)
-const MAX_TIMESTAMP_DRIFT_SECS: u64 = 300;
+/// L-27: Maximum timestamp drift allowed (60 seconds)
+/// Reduced from 5 minutes to minimize replay attack window while allowing for clock drift
+const MAX_TIMESTAMP_DRIFT_SECS: u64 = 60;
 
 /// Internal API authentication using HMAC-SHA256
 ///
@@ -373,12 +374,12 @@ mod tests {
         let auth = InternalAuth::new(&secret).unwrap();
 
         let body = b"test body content";
-        // 10 minutes ago (beyond 5 minute window)
+        // L-27: 2 minutes ago (beyond 60 second window)
         let old_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
-            - 600;
+            - 120;
 
         let signature = auth.sign(old_timestamp, body);
         let result = auth.verify(&signature, old_timestamp, body);
@@ -429,5 +430,57 @@ mod tests {
             InternalAuth::from_hex(bad_hex),
             Err(AuthError::InvalidSecret(_))
         ));
+    }
+
+    // L-27: Verify 60-second timestamp tolerance
+    #[test]
+    fn test_timestamp_within_60_seconds_accepted() {
+        let secret = test_secret();
+        let auth = InternalAuth::new(&secret).unwrap();
+        let body = b"test body";
+
+        // 30 seconds ago should be accepted (within 60 second window)
+        let timestamp_30s_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 30;
+
+        let signature = auth.sign(timestamp_30s_ago, body);
+        let result = auth.verify(&signature, timestamp_30s_ago, body);
+        assert!(
+            result.is_ok(),
+            "L-27: Timestamp 30s ago should be within 60s tolerance"
+        );
+    }
+
+    #[test]
+    fn test_timestamp_just_over_60_seconds_rejected() {
+        let secret = test_secret();
+        let auth = InternalAuth::new(&secret).unwrap();
+        let body = b"test body";
+
+        // 65 seconds ago should be rejected (outside 60 second window)
+        let timestamp_65s_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 65;
+
+        let signature = auth.sign(timestamp_65s_ago, body);
+        let result = auth.verify(&signature, timestamp_65s_ago, body);
+        assert!(
+            matches!(result, Err(AuthError::TimestampOutOfRange { .. })),
+            "L-27: Timestamp 65s ago should be outside 60s tolerance"
+        );
+    }
+
+    #[test]
+    fn test_timestamp_tolerance_constant() {
+        // L-27: Verify the constant is 60 seconds
+        assert_eq!(
+            MAX_TIMESTAMP_DRIFT_SECS, 60,
+            "L-27: Timestamp tolerance should be 60 seconds"
+        );
     }
 }

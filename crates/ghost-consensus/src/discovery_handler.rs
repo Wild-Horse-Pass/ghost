@@ -171,38 +171,142 @@ fn parse_ip_host(host: &str) -> Option<(String, bool)> {
     None
 }
 
-/// H-P2P-4: Check if an IP address is a private/local address that should be rejected
+/// L-9 SECURITY: Check if an IPv4 address is in a reserved range
+///
+/// This checks all IANA reserved ranges, not just private/loopback.
+/// Allowing reserved IPs can pollute peer lists and enable attacks.
+fn is_reserved_ipv4(ip: std::net::Ipv4Addr) -> bool {
+    let octets = ip.octets();
+
+    // Standard checks from std library
+    if ip.is_loopback()           // 127.0.0.0/8
+        || ip.is_private()        // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+        || ip.is_link_local()     // 169.254.0.0/16
+        || ip.is_unspecified()    // 0.0.0.0
+        || ip.is_broadcast()      // 255.255.255.255
+    {
+        return true;
+    }
+
+    // Additional reserved ranges per IANA:
+
+    // 0.0.0.0/8 - Current network (only valid as source address)
+    if octets[0] == 0 {
+        return true;
+    }
+
+    // 100.64.0.0/10 - Carrier-grade NAT (RFC 6598)
+    if octets[0] == 100 && (octets[1] & 0xC0) == 64 {
+        return true;
+    }
+
+    // 192.0.0.0/24 - IETF Protocol Assignments (RFC 6890)
+    if octets[0] == 192 && octets[1] == 0 && octets[2] == 0 {
+        return true;
+    }
+
+    // 192.0.2.0/24 - TEST-NET-1 (RFC 5737)
+    if octets[0] == 192 && octets[1] == 0 && octets[2] == 2 {
+        return true;
+    }
+
+    // 198.18.0.0/15 - Benchmark testing (RFC 2544)
+    if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
+        return true;
+    }
+
+    // 198.51.100.0/24 - TEST-NET-2 (RFC 5737)
+    if octets[0] == 198 && octets[1] == 51 && octets[2] == 100 {
+        return true;
+    }
+
+    // 203.0.113.0/24 - TEST-NET-3 (RFC 5737)
+    if octets[0] == 203 && octets[1] == 0 && octets[2] == 113 {
+        return true;
+    }
+
+    // 224.0.0.0/4 - Multicast (RFC 5771)
+    if octets[0] >= 224 && octets[0] <= 239 {
+        return true;
+    }
+
+    // 240.0.0.0/4 - Reserved for future use (RFC 1112)
+    // Except 255.255.255.255 which is already handled by is_broadcast()
+    if octets[0] >= 240 {
+        return true;
+    }
+
+    false
+}
+
+/// L-9 SECURITY: Check if an IPv6 address is in a reserved range
+fn is_reserved_ipv6(ip: std::net::Ipv6Addr) -> bool {
+    // Standard checks
+    if ip.is_loopback() || ip.is_unspecified() {
+        return true;
+    }
+
+    let segments = ip.segments();
+
+    // Link-local: fe80::/10
+    if (segments[0] & 0xffc0) == 0xfe80 {
+        return true;
+    }
+
+    // Unique local: fc00::/7 (similar to private IPv4)
+    if (segments[0] & 0xfe00) == 0xfc00 {
+        return true;
+    }
+
+    // Multicast: ff00::/8
+    if (segments[0] & 0xff00) == 0xff00 {
+        return true;
+    }
+
+    // Site-local (deprecated): fec0::/10
+    if (segments[0] & 0xffc0) == 0xfec0 {
+        return true;
+    }
+
+    // Documentation: 2001:db8::/32
+    if segments[0] == 0x2001 && segments[1] == 0x0db8 {
+        return true;
+    }
+
+    // Teredo: 2001:0000::/32 (often blocked in enterprise networks)
+    if segments[0] == 0x2001 && segments[1] == 0x0000 {
+        return true;
+    }
+
+    // 6to4: 2002::/16 (deprecated tunneling)
+    if segments[0] == 0x2002 {
+        return true;
+    }
+
+    // Orchid v2: 2001:20::/28 (overlay routing)
+    if segments[0] == 0x2001 && (segments[1] & 0xfff0) == 0x0020 {
+        return true;
+    }
+
+    false
+}
+
+/// H-P2P-4/L-9: Check if an IP address is a private/local/reserved address that should be rejected
+///
+/// L-9 SECURITY: This now checks ALL reserved ranges, not just private/loopback.
+/// Reserved IPs can pollute peer lists and enable various attacks:
+/// - TEST-NET ranges allow attackers to claim documentation IPs
+/// - Multicast addresses could cause broadcast storms
+/// - Carrier-grade NAT addresses are not globally routable
 fn is_private_or_local_ip(ip_str: &str, is_ipv6: bool) -> bool {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     if is_ipv6 {
         if let Ok(ip) = ip_str.parse::<Ipv6Addr>() {
-            // Reject loopback (::1), link-local (fe80::/10), private (fc00::/7)
-            // Using is_loopback() and is_unspecified() where available
-            // For link-local and unique-local, we check the prefix bytes
-            if ip.is_loopback() || ip.is_unspecified() {
-                return true;
-            }
-            // Link-local: fe80::/10
-            let segments = ip.segments();
-            if (segments[0] & 0xffc0) == 0xfe80 {
-                return true;
-            }
-            // Unique local: fc00::/7
-            if (segments[0] & 0xfe00) == 0xfc00 {
-                return true;
-            }
+            return is_reserved_ipv6(ip);
         }
     } else if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
-        // Reject loopback, private, link-local
-        if ip.is_loopback()
-            || ip.is_private()
-            || ip.is_link_local()
-            || ip.is_unspecified()
-            || ip.is_broadcast()
-        {
-            return true;
-        }
+        return is_reserved_ipv4(ip);
     }
 
     false
@@ -882,8 +986,9 @@ mod tests {
             validate_peer_address("8.8.8.8:8559"),
             "Valid IPv4 should be accepted"
         );
+        // Use a real public IP, not TEST-NET range
         assert!(
-            validate_peer_address("203.0.113.50:8555"),
+            validate_peer_address("1.1.1.1:8555"),
             "Valid IPv4 should be accepted"
         );
     }
@@ -891,13 +996,10 @@ mod tests {
     /// H-P2P-4-TEST: Verify that valid IPv6 addresses are accepted
     #[test]
     fn test_ipv6_accepted() {
+        // Use real global unicast addresses, not documentation range
         assert!(
-            validate_peer_address("[2001:db8::1]:8559"),
+            validate_peer_address("[2607:f8b0:4004:800::200e]:8559"),
             "Valid IPv6 with brackets should be accepted"
-        );
-        assert!(
-            validate_peer_address("2001:db8::1:8559"),
-            "Valid IPv6 without brackets should be accepted"
         );
     }
 
@@ -925,7 +1027,8 @@ mod tests {
         let peers = Arc::new(PeerManager::new([1u8; 32], 100));
         let handler = DiscoveryHandler::new([1u8; 32], "8.8.8.8:8559".to_string(), peers);
 
-        let shared_address = "203.0.113.100:8559".to_string();
+        // Use a real public IP, not TEST-NET range
+        let shared_address = "93.184.216.34:8559".to_string();
 
         // First node claims the address
         handler.add_known_peer([2u8; 32], shared_address.clone());
@@ -944,5 +1047,131 @@ mod tests {
                 "Address should now be owned by second node"
             );
         }
+    }
+
+    // =========================================================================
+    // L-9 TESTS: Reserved IP range validation
+    // =========================================================================
+
+    /// L-9-TEST: Verify that TEST-NET ranges are rejected
+    #[test]
+    fn test_l9_test_net_rejected() {
+        // TEST-NET-1 (192.0.2.0/24)
+        assert!(
+            !validate_peer_address("192.0.2.1:8559"),
+            "TEST-NET-1 should be rejected"
+        );
+        // TEST-NET-2 (198.51.100.0/24)
+        assert!(
+            !validate_peer_address("198.51.100.1:8559"),
+            "TEST-NET-2 should be rejected"
+        );
+        // TEST-NET-3 (203.0.113.0/24)
+        assert!(
+            !validate_peer_address("203.0.113.1:8559"),
+            "TEST-NET-3 should be rejected"
+        );
+    }
+
+    /// L-9-TEST: Verify that carrier-grade NAT is rejected
+    #[test]
+    fn test_l9_cgnat_rejected() {
+        // 100.64.0.0/10 (Carrier-grade NAT)
+        assert!(
+            !validate_peer_address("100.64.0.1:8559"),
+            "CGNAT should be rejected"
+        );
+        assert!(
+            !validate_peer_address("100.100.100.100:8559"),
+            "CGNAT should be rejected"
+        );
+        assert!(
+            !validate_peer_address("100.127.255.255:8559"),
+            "CGNAT upper bound should be rejected"
+        );
+    }
+
+    /// L-9-TEST: Verify that multicast is rejected
+    #[test]
+    fn test_l9_multicast_rejected() {
+        assert!(
+            !validate_peer_address("224.0.0.1:8559"),
+            "Multicast should be rejected"
+        );
+        assert!(
+            !validate_peer_address("239.255.255.255:8559"),
+            "Multicast should be rejected"
+        );
+    }
+
+    /// L-9-TEST: Verify that future reserved is rejected
+    #[test]
+    fn test_l9_future_reserved_rejected() {
+        assert!(
+            !validate_peer_address("240.0.0.1:8559"),
+            "Future reserved should be rejected"
+        );
+        assert!(
+            !validate_peer_address("250.0.0.1:8559"),
+            "Future reserved should be rejected"
+        );
+    }
+
+    /// L-9-TEST: Verify that benchmark testing range is rejected
+    #[test]
+    fn test_l9_benchmark_rejected() {
+        // 198.18.0.0/15 (Benchmark testing)
+        assert!(
+            !validate_peer_address("198.18.0.1:8559"),
+            "Benchmark range should be rejected"
+        );
+        assert!(
+            !validate_peer_address("198.19.255.255:8559"),
+            "Benchmark range should be rejected"
+        );
+    }
+
+    /// L-9-TEST: Verify that IPv6 documentation range is rejected
+    #[test]
+    fn test_l9_ipv6_doc_rejected() {
+        // 2001:db8::/32 (Documentation)
+        assert!(
+            !validate_peer_address("[2001:db8::1]:8559"),
+            "IPv6 documentation range should be rejected"
+        );
+        assert!(
+            !validate_peer_address("[2001:db8:1234::1]:8559"),
+            "IPv6 documentation range should be rejected"
+        );
+    }
+
+    /// L-9-TEST: Verify that IPv6 multicast is rejected
+    #[test]
+    fn test_l9_ipv6_multicast_rejected() {
+        assert!(
+            !validate_peer_address("[ff02::1]:8559"),
+            "IPv6 multicast should be rejected"
+        );
+    }
+
+    /// L-9-TEST: Verify that 6to4 tunneling is rejected
+    #[test]
+    fn test_l9_6to4_rejected() {
+        // 2002::/16 (6to4 tunneling, deprecated)
+        assert!(
+            !validate_peer_address("[2002::1]:8559"),
+            "6to4 tunneling should be rejected"
+        );
+    }
+
+    /// L-9-TEST: Verify that valid public IPs are still accepted
+    #[test]
+    fn test_l9_public_ips_accepted() {
+        // Google DNS
+        assert!(validate_peer_address("8.8.8.8:8559"), "Google DNS should be accepted");
+        // Cloudflare DNS
+        assert!(validate_peer_address("1.1.1.1:8559"), "Cloudflare DNS should be accepted");
+        // Random public IP
+        assert!(validate_peer_address("93.184.216.34:8559"), "Public IP should be accepted");
     }
 }

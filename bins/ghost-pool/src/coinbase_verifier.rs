@@ -345,33 +345,28 @@ impl CoinbaseOutput {
 }
 
 /// Read a Bitcoin varint from a byte slice
+///
+/// HIGH-9: Uses bounds-checked .get() for all array accesses
 fn read_varint(data: &[u8]) -> Option<(usize, usize)> {
-    if data.is_empty() {
-        return None;
-    }
+    let first = *data.get(0)?;
 
-    let first = data[0];
     if first < 0xfd {
         Some((first as usize, 1))
     } else if first == 0xfd {
-        if data.len() < 3 {
-            return None;
-        }
-        let val = u16::from_le_bytes([data[1], data[2]]) as usize;
+        // Need bytes at indices 1, 2
+        let b1 = *data.get(1)?;
+        let b2 = *data.get(2)?;
+        let val = u16::from_le_bytes([b1, b2]) as usize;
         Some((val, 3))
     } else if first == 0xfe {
-        if data.len() < 5 {
-            return None;
-        }
-        let val = u32::from_le_bytes([data[1], data[2], data[3], data[4]]) as usize;
+        // Need bytes at indices 1, 2, 3, 4
+        let bytes: [u8; 4] = data.get(1..5)?.try_into().ok()?;
+        let val = u32::from_le_bytes(bytes) as usize;
         Some((val, 5))
     } else {
-        if data.len() < 9 {
-            return None;
-        }
-        let val = u64::from_le_bytes([
-            data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
-        ]) as usize;
+        // first == 0xff: Need bytes at indices 1-8
+        let bytes: [u8; 8] = data.get(1..9)?.try_into().ok()?;
+        let val = u64::from_le_bytes(bytes) as usize;
         Some((val, 9))
     }
 }

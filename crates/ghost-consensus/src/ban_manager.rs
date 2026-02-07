@@ -141,12 +141,22 @@ struct BanHistoryEntry {
     last_banned: Instant,
 }
 
-/// 4.1 SECURITY: History decay period (7 days)
-/// Ban history count decays by 1 for each 7-day period since last ban
-const BAN_HISTORY_DECAY_SECS: u64 = 7 * 24 * 60 * 60;
+/// L-10 SECURITY: History decay period (30 days)
+///
+/// Ban history count decays by 1 for each 30-day period since last ban.
+/// The previous 7-day decay allowed attackers to cycle attacks with minimal
+/// downtime between ban periods. 30 days provides much stronger deterrence
+/// against persistent attackers while still allowing legitimate nodes that
+/// made a one-time mistake to eventually recover.
+const BAN_HISTORY_DECAY_SECS: u64 = 30 * 24 * 60 * 60;
 
-/// 4.1 SECURITY: Maximum escalation multiplier (caps at 16x base duration)
-const MAX_ESCALATION_MULTIPLIER: u32 = 16;
+/// L-10 SECURITY: Maximum escalation multiplier (caps at 32x base duration)
+///
+/// With the longer decay period, we also increase the max multiplier to 32x.
+/// This means a repeat offender can be banned for up to 32 days (with 24h base).
+/// Combined with the 30-day decay, this effectively requires 60+ days of good
+/// behavior before ban history is fully cleared after severe violations.
+const MAX_ESCALATION_MULTIPLIER: u32 = 32;
 
 /// Shared ban manager for cross-handler enforcement
 ///
@@ -358,16 +368,16 @@ impl BanManager {
         removed
     }
 
-    /// Clean up ban history entries older than 90 days
+    /// Clean up ban history entries older than 365 days
     ///
-    /// L-7 FIX: Prevents unbounded growth of the ban_history HashMap.
-    /// History entries are used for escalation tracking, but entries where
-    /// the last ban was more than 90 days ago are no longer relevant since
-    /// the escalation count would have fully decayed (7-day decay periods).
+    /// L-10 SECURITY: Updated for 30-day decay periods.
+    /// With 30-day decay and max 32x escalation, we need ~960 days for
+    /// full decay from maximum. However, 365 days is a reasonable cleanup
+    /// threshold as it covers most realistic scenarios while preventing
+    /// unbounded memory growth.
     pub fn cleanup_stale_history(&self) -> usize {
-        // 90 days = ~13 decay periods, which would decay even the maximum
-        // escalation level back to zero
-        const MAX_HISTORY_AGE_SECS: u64 = 90 * 24 * 60 * 60;
+        // 365 days = ~12 decay periods (30 days each)
+        const MAX_HISTORY_AGE_SECS: u64 = 365 * 24 * 60 * 60;
         let max_age = Duration::from_secs(MAX_HISTORY_AGE_SECS);
 
         let mut history = self.ban_history.write();
@@ -577,5 +587,62 @@ mod tests {
             let history = manager.ban_history.read();
             assert_eq!(history.len(), 5);
         }
+    }
+
+    // =========================================================================
+    // L-10 TESTS: 30-day decay and stronger escalation
+    // =========================================================================
+
+    #[test]
+    fn test_l10_decay_period_is_30_days() {
+        // L-10: Verify the decay period is 30 days
+        assert_eq!(BAN_HISTORY_DECAY_SECS, 30 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn test_l10_max_escalation_is_32x() {
+        // L-10: Verify max escalation multiplier is 32x
+        assert_eq!(MAX_ESCALATION_MULTIPLIER, 32);
+    }
+
+    #[test]
+    fn test_l10_escalation_multiplier_calculation() {
+        let manager = BanManager::new();
+        let node_id = [42u8; 32];
+
+        // First ban: multiplier should be 1
+        assert_eq!(manager.escalation_multiplier(&node_id), 1);
+
+        // Ban once
+        manager.ban_for_duration(node_id, BanReason::Custom, Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Second ban: multiplier should be 2
+        // (count=1, so 2^(1-1) = 2^0 = 1... wait, after first ban count becomes 1)
+        // Actually escalation is calculated before recording, let me trace this
+        // After first ban is recorded, history count = 1
+        // For second ban, escalation_multiplier reads count = 1, returns 2^0 = 1
+        // Then ban() calls record_ban_history which increments to 2
+        // For third ban, escalation_multiplier reads count = 2, returns 2^1 = 2
+
+        // Second offense: multiplier should still be 1 (first offense was recorded)
+        // No, wait - the first ban WAS recorded, so count=1, but decay is calculated
+        // Since we just banned, no decay has occurred, effective_count = 1
+        // 2^(1-1) = 1
+        assert_eq!(manager.escalation_multiplier(&node_id), 1);
+
+        // Ban again to increment
+        manager.ban_for_duration(node_id, BanReason::Custom, Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Third offense: count=2, effective=2, 2^(2-1) = 2
+        assert_eq!(manager.escalation_multiplier(&node_id), 2);
+
+        // Ban again
+        manager.ban_for_duration(node_id, BanReason::Custom, Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Fourth offense: count=3, effective=3, 2^(3-1) = 4
+        assert_eq!(manager.escalation_multiplier(&node_id), 4);
     }
 }

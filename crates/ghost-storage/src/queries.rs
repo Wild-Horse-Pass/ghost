@@ -3300,11 +3300,15 @@ impl Database {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
+            // M-10 FIX: Use safe conversions instead of direct `as u32` casts
             let result = stmt
                 .query_row(params![node_id, since], |row| {
                     let passed: Option<i64> = row.get(0)?;
                     let total: i64 = row.get(1)?;
-                    Ok((passed.unwrap_or(0) as u32, total as u32))
+                    Ok((
+                        i64_to_u32_count(passed.unwrap_or(0), "archive_passed")?,
+                        i64_to_u32_count(total, "archive_total")?,
+                    ))
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
@@ -3326,11 +3330,15 @@ impl Database {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
+            // M-10 FIX: Use safe conversions instead of direct `as u32` casts
             let result = stmt
                 .query_row(params![node_id, since], |row| {
                     let passed: Option<i64> = row.get(0)?;
                     let total: i64 = row.get(1)?;
-                    Ok((passed.unwrap_or(0) as u32, total as u32))
+                    Ok((
+                        i64_to_u32_count(passed.unwrap_or(0), "policy_passed")?,
+                        i64_to_u32_count(total, "policy_total")?,
+                    ))
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
@@ -3352,11 +3360,15 @@ impl Database {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
+            // M-10 FIX: Use safe conversions instead of direct `as u32` casts
             let result = stmt
                 .query_row(params![node_id, since], |row| {
                     let passed: Option<i64> = row.get(0)?;
                     let total: i64 = row.get(1)?;
-                    Ok((passed.unwrap_or(0) as u32, total as u32))
+                    Ok((
+                        i64_to_u32_count(passed.unwrap_or(0), "stratum_passed")?,
+                        i64_to_u32_count(total, "stratum_total")?,
+                    ))
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
@@ -3378,11 +3390,15 @@ impl Database {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
+            // M-10 FIX: Use safe conversions instead of direct `as u32` casts
             let result = stmt
                 .query_row(params![node_id, since], |row| {
                     let passed: Option<i64> = row.get(0)?;
                     let total: i64 = row.get(1)?;
-                    Ok((passed.unwrap_or(0) as u32, total as u32))
+                    Ok((
+                        i64_to_u32_count(passed.unwrap_or(0), "ghostpay_passed")?,
+                        i64_to_u32_count(total, "ghostpay_total")?,
+                    ))
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
@@ -3407,7 +3423,9 @@ impl Database {
                     |row| row.get(0),
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(count as u32)
+            // M-10 FIX: Use safe conversion
+            i64_to_u32_count(count, "archive_unique_challengers")
+                .map_err(|e| GhostError::Database(e.to_string()))
         })
     }
 
@@ -3424,7 +3442,9 @@ impl Database {
                     |row| row.get(0),
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(count as u32)
+            // M-10 FIX: Use safe conversion
+            i64_to_u32_count(count, "policy_unique_challengers")
+                .map_err(|e| GhostError::Database(e.to_string()))
         })
     }
 
@@ -3441,7 +3461,9 @@ impl Database {
                     |row| row.get(0),
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(count as u32)
+            // M-10 FIX: Use safe conversion
+            i64_to_u32_count(count, "stratum_unique_challengers")
+                .map_err(|e| GhostError::Database(e.to_string()))
         })
     }
 
@@ -3458,7 +3480,9 @@ impl Database {
                     |row| row.get(0),
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(count as u32)
+            // M-10 FIX: Use safe conversion
+            i64_to_u32_count(count, "ghostpay_unique_challengers")
+                .map_err(|e| GhostError::Database(e.to_string()))
         })
     }
 
@@ -3679,7 +3703,9 @@ impl Database {
                     |row| row.get(0),
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(count as u32)
+            // M-10 FIX: Use safe conversion
+            i64_to_u32_count(count, "equivocation_count")
+                .map_err(|e| GhostError::Database(e.to_string()))
         })
     }
 
@@ -3717,12 +3743,13 @@ impl Database {
                      FROM canonical_elder_lists WHERE epoch = ?1",
                 [epoch as i64],
                 |row| {
+                    // M-10 FIX: Use safe conversions
                     Ok(CanonicalElderListRecord {
-                        epoch: row.get::<_, i64>(0)? as u64,
+                        epoch: i64_to_u64(row.get::<_, i64>(0)?, "epoch")?,
                         merkle_root: row.get(1)?,
-                        elder_count: row.get::<_, i64>(2)? as u32,
-                        activated_at: row.get::<_, i64>(3)? as u64,
-                        created_at: row.get::<_, i64>(4)? as u64,
+                        elder_count: i64_to_u32_count(row.get::<_, i64>(2)?, "elder_count")?,
+                        activated_at: i64_to_u64(row.get::<_, i64>(3)?, "activated_at")?,
+                        created_at: i64_to_u64(row.get::<_, i64>(4)?, "created_at")?,
                     })
                 },
             );
@@ -3745,12 +3772,13 @@ impl Database {
                      FROM canonical_elder_lists ORDER BY epoch DESC LIMIT 1",
                 [],
                 |row| {
+                    // M-10 FIX: Use safe conversions
                     Ok(CanonicalElderListRecord {
-                        epoch: row.get::<_, i64>(0)? as u64,
+                        epoch: i64_to_u64(row.get::<_, i64>(0)?, "epoch")?,
                         merkle_root: row.get(1)?,
-                        elder_count: row.get::<_, i64>(2)? as u32,
-                        activated_at: row.get::<_, i64>(3)? as u64,
-                        created_at: row.get::<_, i64>(4)? as u64,
+                        elder_count: i64_to_u32_count(row.get::<_, i64>(2)?, "elder_count")?,
+                        activated_at: i64_to_u64(row.get::<_, i64>(3)?, "activated_at")?,
+                        created_at: i64_to_u64(row.get::<_, i64>(4)?, "created_at")?,
                     })
                 },
             );
@@ -3810,17 +3838,18 @@ impl Database {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
+            // M-10 FIX: Use safe conversions
             let entries = stmt
                 .query_map(params![epoch as i64, Self::MAX_QUERY_RESULTS], |row| {
                     Ok(ElderEntryRecord {
-                        epoch: row.get::<_, i64>(0)? as u64,
+                        epoch: i64_to_u64(row.get::<_, i64>(0)?, "epoch")?,
                         node_id: row.get(1)?,
-                        registered_epoch: row.get::<_, i64>(2)? as u64,
-                        pow_nonce: row.get::<_, i64>(3)? as u64,
-                        pow_difficulty: row.get::<_, i64>(4)? as u32,
-                        first_seen: row.get::<_, i64>(5)? as u64,
+                        registered_epoch: i64_to_u64(row.get::<_, i64>(2)?, "registered_epoch")?,
+                        pow_nonce: i64_to_u64(row.get::<_, i64>(3)?, "pow_nonce")?,
+                        pow_difficulty: i64_to_u32_count(row.get::<_, i64>(4)?, "pow_difficulty")?,
+                        first_seen: i64_to_u64(row.get::<_, i64>(5)?, "first_seen")?,
                         uptime_at_registration: row.get(6)?,
-                        position: row.get::<_, i64>(7)? as u32,
+                        position: i64_to_u32_count(row.get::<_, i64>(7)?, "position")?,
                     })
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?
@@ -3863,13 +3892,14 @@ impl Database {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
+            // M-10 FIX: Use safe conversions
             let approvals = stmt
                 .query_map([epoch as i64], |row| {
                     Ok(ElderApprovalRecord {
-                        epoch: row.get::<_, i64>(0)? as u64,
+                        epoch: i64_to_u64(row.get::<_, i64>(0)?, "epoch")?,
                         approver_node_id: row.get(1)?,
                         signature: row.get(2)?,
-                        approved_at: row.get::<_, i64>(3)? as u64,
+                        approved_at: i64_to_u64(row.get::<_, i64>(3)?, "approved_at")?,
                     })
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?
@@ -3890,7 +3920,9 @@ impl Database {
                     |row| row.get(0),
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(count as u32)
+            // M-10 FIX: Use safe conversion
+            i64_to_u32_count(count, "elder_approval_count")
+                .map_err(|e| GhostError::Database(e.to_string()))
         })
     }
 
@@ -3938,15 +3970,16 @@ impl Database {
                      WHERE candidate_node_id = ?1 AND status = 'pending'",
                 [candidate_node_id],
                 |row| {
+                    // M-10 FIX: Use safe conversions
                     Ok(ElderRegistrationRequestRecord {
                         id: row.get(0)?,
                         candidate_node_id: row.get(1)?,
-                        pow_nonce: row.get::<_, i64>(2)? as u64,
-                        pow_difficulty: row.get::<_, i64>(3)? as u32,
-                        first_seen: row.get::<_, i64>(4)? as u64,
+                        pow_nonce: i64_to_u64(row.get::<_, i64>(2)?, "pow_nonce")?,
+                        pow_difficulty: i64_to_u32_count(row.get::<_, i64>(3)?, "pow_difficulty")?,
+                        first_seen: i64_to_u64(row.get::<_, i64>(4)?, "first_seen")?,
                         uptime_percent: row.get(5)?,
-                        target_epoch: row.get::<_, i64>(6)? as u64,
-                        requested_at: row.get::<_, i64>(7)? as u64,
+                        target_epoch: i64_to_u64(row.get::<_, i64>(6)?, "target_epoch")?,
+                        requested_at: i64_to_u64(row.get::<_, i64>(7)?, "requested_at")?,
                         status: row.get(8)?,
                     })
                 },
@@ -4008,7 +4041,13 @@ impl Database {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            Ok((approvals as u32, rejections as u32))
+            // M-10 FIX: Use safe conversions
+            Ok((
+                i64_to_u32_count(approvals, "registration_approvals")
+                    .map_err(|e| GhostError::Database(e.to_string()))?,
+                i64_to_u32_count(rejections, "registration_rejections")
+                    .map_err(|e| GhostError::Database(e.to_string()))?,
+            ))
         })
     }
 
@@ -4095,8 +4134,10 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             match result {
-                Some((height, root_bytes)) => {
-                    let height = height as u64;
+                Some((height_i64, root_bytes)) => {
+                    // M-10 FIX: Use safe conversion
+                    let height = i64_to_u64(height_i64, "l2_height")
+                        .map_err(|e| GhostError::Database(e.to_string()))?;
                     let mut state_root = [0u8; 32];
                     if root_bytes.len() == 32 {
                         state_root.copy_from_slice(&root_bytes);
@@ -4308,14 +4349,21 @@ impl Database {
                         }
                     });
 
+                    // M-10 FIX: Use safe conversions
                     Ok(Some(MpcCeremonyState {
-                        contribution_count: count as u32,
+                        contribution_count: i64_to_u32_count(count, "contribution_count")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
                         current_params_hash: params_hash,
                         is_ossified: ossified != 0,
-                        ossified_at: ossified_at.map(|v| v as u64),
+                        ossified_at: match ossified_at {
+                            Some(v) => Some(i64_to_u64(v, "ossified_at")
+                                .map_err(|e| GhostError::Database(e.to_string()))?),
+                            None => None,
+                        },
                         block_vk_hash,
                         payout_vk_hash,
-                        updated_at: updated as u64,
+                        updated_at: i64_to_u64(updated, "updated_at")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
                     }))
                 }
                 None => Ok(None),
@@ -4413,14 +4461,17 @@ impl Database {
                         new_params_hash.copy_from_slice(&new_hash);
                     }
 
+                    // M-10 FIX: Use safe conversions
                     Ok(Some(MpcContributionRecord {
                         elder_position: position,
                         contributor_node_id: node_id,
                         prev_params_hash,
                         new_params_hash,
                         contribution_proof: proof,
-                        epoch: epoch as u64,
-                        created_at: created_at as u64,
+                        epoch: i64_to_u64(epoch, "mpc_epoch")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
+                        created_at: i64_to_u64(created_at, "mpc_created_at")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
                     }))
                 }
                 None => Ok(None),
@@ -4470,7 +4521,13 @@ impl Database {
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            Ok((approve_count as u32, reject_count as u32))
+            // M-10 FIX: Use safe conversions
+            Ok((
+                i64_to_u32_count(approve_count, "mpc_approve_count")
+                    .map_err(|e| GhostError::Database(e.to_string()))?,
+                i64_to_u32_count(reject_count, "mpc_reject_count")
+                    .map_err(|e| GhostError::Database(e.to_string()))?,
+            ))
         })
     }
 
@@ -4502,12 +4559,15 @@ impl Database {
             for row in rows {
                 let (voter_id, approve, sig, voted_at) =
                     row.map_err(|e| GhostError::Database(e.to_string()))?;
+                // M-10 FIX: Use safe conversion
+                let voted_at_u64 = i64_to_u64(voted_at, "mpc_voted_at")
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
                 votes.push(MpcVerificationVote {
                     contribution_position,
                     voter_node_id: voter_id,
                     approve: approve != 0,
                     signature: sig,
-                    voted_at: voted_at as u64,
+                    voted_at: voted_at_u64,
                 });
             }
             Ok(votes)
@@ -4565,13 +4625,19 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             match result {
-                Some((path, size, count, created)) => Ok(Some(MpcParamsFile {
-                    params_hash: *params_hash,
-                    file_path: path,
-                    size_bytes: size as u64,
-                    contribution_count: count as u32,
-                    created_at: created as u64,
-                })),
+                Some((path, size, count, created)) => {
+                    // M-10 FIX: Use safe conversions
+                    Ok(Some(MpcParamsFile {
+                        params_hash: *params_hash,
+                        file_path: path,
+                        size_bytes: i64_to_u64(size, "mpc_size_bytes")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
+                        contribution_count: i64_to_u32_count(count, "mpc_contribution_count")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
+                        created_at: i64_to_u64(created, "mpc_created_at")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
+                    }))
+                }
                 None => Ok(None),
             }
         })
@@ -4604,16 +4670,175 @@ impl Database {
                     if hash_bytes.len() == 32 {
                         params_hash.copy_from_slice(&hash_bytes);
                     }
+                    // M-10 FIX: Use safe conversions
                     Ok(Some(MpcParamsFile {
                         params_hash,
                         file_path: path,
-                        size_bytes: size as u64,
-                        contribution_count: count as u32,
-                        created_at: created as u64,
+                        size_bytes: i64_to_u64(size, "mpc_size_bytes")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
+                        contribution_count: i64_to_u32_count(count, "mpc_contribution_count")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
+                        created_at: i64_to_u64(created, "mpc_created_at")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
                     }))
                 }
                 None => Ok(None),
             }
+        })
+    }
+}
+
+// =============================================================================
+// L-24 FIX: INSTANT PAYMENT RESERVATION QUERIES
+// =============================================================================
+
+/// Record for persisted instant payment reservation
+#[derive(Debug, Clone)]
+pub struct InstantReservationRecord {
+    /// Payment ID (32 bytes)
+    pub payment_id: [u8; 32],
+    /// Lock ID this reservation is for
+    pub lock_id: String,
+    /// Amount reserved in satoshis
+    pub amount_sats: u64,
+    /// When created (Unix millis)
+    pub created_at: u64,
+    /// When expires (Unix millis)
+    pub expires_at: u64,
+}
+
+impl Database {
+    /// Save an instant payment reservation
+    ///
+    /// L-24 FIX: Persists reservations so they survive restarts
+    pub fn save_instant_reservation(&self, reservation: &InstantReservationRecord) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO instant_payment_reservations
+                 (payment_id, lock_id, amount_sats, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    reservation.payment_id.as_slice(),
+                    reservation.lock_id,
+                    reservation.amount_sats as i64,
+                    reservation.created_at as i64,
+                    reservation.expires_at as i64,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get all active reservations for a lock
+    ///
+    /// L-24 FIX: Returns reservations that haven't expired yet
+    pub fn get_active_reservations_for_lock(
+        &self,
+        lock_id: &str,
+        current_time_millis: u64,
+    ) -> GhostResult<Vec<InstantReservationRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT payment_id, lock_id, amount_sats, created_at, expires_at
+                     FROM instant_payment_reservations
+                     WHERE lock_id = ?1 AND expires_at > ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let reservations = stmt
+                .query_map(params![lock_id, current_time_millis as i64], |row| {
+                    let payment_id_bytes: Vec<u8> = row.get(0)?;
+                    let mut payment_id = [0u8; 32];
+                    if payment_id_bytes.len() == 32 {
+                        payment_id.copy_from_slice(&payment_id_bytes);
+                    }
+                    Ok(InstantReservationRecord {
+                        payment_id,
+                        lock_id: row.get(1)?,
+                        amount_sats: i64_to_u64_sats(row.get::<_, i64>(2)?, "amount_sats")?,
+                        created_at: i64_to_u64(row.get::<_, i64>(3)?, "created_at")?,
+                        expires_at: i64_to_u64(row.get::<_, i64>(4)?, "expires_at")?,
+                    })
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(reservations)
+        })
+    }
+
+    /// Get total reserved amount for a lock
+    ///
+    /// L-24 FIX: Efficiently sums all active reservations
+    pub fn get_total_reserved_for_lock(
+        &self,
+        lock_id: &str,
+        current_time_millis: u64,
+    ) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let total: Option<i64> = conn
+                .query_row(
+                    "SELECT SUM(amount_sats) FROM instant_payment_reservations
+                     WHERE lock_id = ?1 AND expires_at > ?2",
+                    params![lock_id, current_time_millis as i64],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match total {
+                Some(sats) => i64_to_u64_sats(sats, "total_reserved")
+                    .map_err(|e| GhostError::Database(e.to_string())),
+                None => Ok(0),
+            }
+        })
+    }
+
+    /// Delete a reservation (e.g., when settled or cancelled)
+    ///
+    /// L-24 FIX: Removes reservation after it's no longer needed
+    pub fn delete_instant_reservation(&self, payment_id: &[u8; 32]) -> GhostResult<bool> {
+        self.with_connection(|conn| {
+            let affected = conn
+                .execute(
+                    "DELETE FROM instant_payment_reservations WHERE payment_id = ?1",
+                    [payment_id.as_slice()],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(affected > 0)
+        })
+    }
+
+    /// Prune expired reservations
+    ///
+    /// L-24 FIX: Clean up expired reservations to prevent unbounded growth
+    pub fn prune_expired_reservations(&self, current_time_millis: u64) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM instant_payment_reservations WHERE expires_at <= ?1",
+                    [current_time_millis as i64],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(deleted as u64)
+        })
+    }
+
+    /// Check if a reservation exists
+    ///
+    /// L-24 FIX: Quick check without loading full record
+    pub fn has_instant_reservation(&self, payment_id: &[u8; 32]) -> GhostResult<bool> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM instant_payment_reservations WHERE payment_id = ?1",
+                    [payment_id.as_slice()],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count > 0)
         })
     }
 }
@@ -5189,5 +5414,98 @@ mod tests {
             result.is_err(),
             "Large negative satoshi value should be rejected"
         );
+    }
+
+    // =========================================================================
+    // L-24 FIX TESTS: Instant Payment Reservation Persistence
+    // =========================================================================
+
+    #[test]
+    fn test_instant_reservation_persistence() {
+        let db = Database::in_memory().unwrap();
+        let current_time = 1700000000000u64;
+
+        let reservation = InstantReservationRecord {
+            payment_id: [1u8; 32],
+            lock_id: "lock123".to_string(),
+            amount_sats: 50_000,
+            created_at: current_time,
+            expires_at: current_time + 30_000, // 30 seconds
+        };
+
+        // Save reservation
+        db.save_instant_reservation(&reservation).unwrap();
+
+        // Verify it exists
+        assert!(db.has_instant_reservation(&[1u8; 32]).unwrap());
+
+        // Get active reservations
+        let active = db.get_active_reservations_for_lock("lock123", current_time).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].amount_sats, 50_000);
+
+        // Get total reserved
+        let total = db.get_total_reserved_for_lock("lock123", current_time).unwrap();
+        assert_eq!(total, 50_000);
+    }
+
+    #[test]
+    fn test_instant_reservation_expiry() {
+        let db = Database::in_memory().unwrap();
+        let start_time = 1700000000000u64;
+
+        let reservation = InstantReservationRecord {
+            payment_id: [2u8; 32],
+            lock_id: "lock456".to_string(),
+            amount_sats: 25_000,
+            created_at: start_time,
+            expires_at: start_time + 30_000,
+        };
+
+        db.save_instant_reservation(&reservation).unwrap();
+
+        // Before expiry - should be active
+        let active = db.get_active_reservations_for_lock("lock456", start_time + 15_000).unwrap();
+        assert_eq!(active.len(), 1);
+
+        // After expiry - should not be returned
+        let active = db.get_active_reservations_for_lock("lock456", start_time + 31_000).unwrap();
+        assert_eq!(active.len(), 0);
+
+        // Prune expired
+        let pruned = db.prune_expired_reservations(start_time + 31_000).unwrap();
+        assert_eq!(pruned, 1);
+
+        // Should no longer exist
+        assert!(!db.has_instant_reservation(&[2u8; 32]).unwrap());
+    }
+
+    #[test]
+    fn test_instant_reservation_multiple_locks() {
+        let db = Database::in_memory().unwrap();
+        let current_time = 1700000000000u64;
+
+        // Create reservations for different locks
+        for i in 0..3 {
+            let reservation = InstantReservationRecord {
+                payment_id: [i as u8; 32],
+                lock_id: format!("lock{}", i),
+                amount_sats: 10_000 * (i as u64 + 1),
+                created_at: current_time,
+                expires_at: current_time + 30_000,
+            };
+            db.save_instant_reservation(&reservation).unwrap();
+        }
+
+        // Verify each lock has correct total
+        assert_eq!(db.get_total_reserved_for_lock("lock0", current_time).unwrap(), 10_000);
+        assert_eq!(db.get_total_reserved_for_lock("lock1", current_time).unwrap(), 20_000);
+        assert_eq!(db.get_total_reserved_for_lock("lock2", current_time).unwrap(), 30_000);
+
+        // Delete one reservation
+        db.delete_instant_reservation(&[1u8; 32]).unwrap();
+
+        // lock1 should now have 0 reserved
+        assert_eq!(db.get_total_reserved_for_lock("lock1", current_time).unwrap(), 0);
     }
 }

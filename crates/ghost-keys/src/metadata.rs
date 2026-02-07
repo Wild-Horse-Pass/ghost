@@ -81,12 +81,15 @@ pub struct PaymentMetadata {
 impl Zeroize for PaymentMetadata {
     fn zeroize(&mut self) {
         self.label = 0;
-        if let Some(ref mut memo) = self.memo {
-            // Zeroize the string's bytes by replacing with zeros then clearing
-            let bytes = unsafe { memo.as_bytes_mut() };
+        // L-18: Safe zeroization using Vec<u8> conversion
+        // Convert String to Vec<u8>, zeroize the bytes, then drop
+        if let Some(memo) = self.memo.take() {
+            // String::into_bytes() gives us ownership of the underlying buffer
+            let mut bytes = memo.into_bytes();
+            // Zeroize the bytes in place (safe, no unsafe needed)
             bytes.zeroize();
+            // bytes is dropped here with zeroed memory
         }
-        self.memo = None;
         self.padding.zeroize();
     }
 }

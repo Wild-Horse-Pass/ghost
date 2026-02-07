@@ -43,13 +43,90 @@ const PING_TIMEOUT_SECS: u64 = 30;
 /// How often to send pings to check client liveness.
 const PING_INTERVAL_SECS: u64 = 15;
 
+/// HIGH-2: Rate limit configuration for WebSocket messages
+/// Maximum messages per second (sustained rate)
+const RATE_LIMIT_MESSAGES_PER_SEC: u32 = 100;
+
+/// HIGH-2: Rate limit bucket capacity (burst allowance)
+/// Allows brief bursts up to 3x the sustained rate
+const RATE_LIMIT_BUCKET_CAPACITY: u32 = 300;
+
+/// HIGH-2: Token bucket refill interval in milliseconds
+const RATE_LIMIT_REFILL_INTERVAL_MS: u64 = 10;
+
 use ghost_gsp_proto::{
     validate_message, ClientMessage, PaymentMode, PaymentStatus, PreparedPayment, ServerMessage,
-    WalletId, WalletProof,
+    SignedInstantPayment, WalletId, WalletProof,
 };
 
 use crate::error::GspError;
 use crate::server::GspState;
+
+// =============================================================================
+// HIGH-2 FIX: Token Bucket Rate Limiter
+// =============================================================================
+
+/// Token bucket rate limiter for per-connection rate limiting
+///
+/// HIGH-2 FIX: Prevents WebSocket message flooding attacks by limiting
+/// the rate of messages each connection can process.
+struct TokenBucket {
+    /// Current number of tokens available
+    tokens: u32,
+    /// Maximum tokens (bucket capacity)
+    capacity: u32,
+    /// Tokens added per refill
+    refill_rate: u32,
+    /// Last time tokens were refilled
+    last_refill: Instant,
+    /// Time between refills
+    refill_interval: Duration,
+}
+
+impl TokenBucket {
+    /// Create a new token bucket with the specified capacity and refill rate
+    fn new(capacity: u32, tokens_per_second: u32) -> Self {
+        // Calculate how many tokens to add per refill interval
+        // With 10ms intervals, we need tokens_per_second / 100 per interval
+        let refill_rate = (tokens_per_second / 100).max(1);
+
+        Self {
+            tokens: capacity, // Start full
+            capacity,
+            refill_rate,
+            last_refill: Instant::now(),
+            refill_interval: Duration::from_millis(RATE_LIMIT_REFILL_INTERVAL_MS),
+        }
+    }
+
+    /// Try to consume one token. Returns true if allowed, false if rate limited.
+    fn try_consume(&mut self) -> bool {
+        self.refill();
+
+        if self.tokens > 0 {
+            self.tokens -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Refill tokens based on elapsed time
+    fn refill(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill);
+
+        // Calculate how many intervals have passed
+        let intervals = (elapsed.as_millis() / self.refill_interval.as_millis()) as u32;
+
+        if intervals > 0 {
+            // Add tokens for each interval, capped at capacity
+            let new_tokens = self.tokens.saturating_add(intervals * self.refill_rate);
+            self.tokens = new_tokens.min(self.capacity);
+            self.last_refill = now;
+        }
+    }
+}
 
 /// QUANTUM SAFETY: Check if a Bitcoin address is quantum-safe
 ///
@@ -111,7 +188,6 @@ pub async fn ws_handler(
 }
 
 /// Connection state
-#[derive(Default)]
 struct ConnectionState {
     /// Authenticated wallet ID (None if not yet authenticated)
     wallet_id: Option<WalletId>,
@@ -124,6 +200,24 @@ struct ConnectionState {
 
     /// M-3: Last time we received any message from the client
     last_activity: Option<Instant>,
+
+    /// HIGH-2: Per-connection rate limiter to prevent message flooding
+    rate_limiter: TokenBucket,
+}
+
+impl Default for ConnectionState {
+    fn default() -> Self {
+        Self {
+            wallet_id: None,
+            subscriptions: Vec::new(),
+            lock_state_subscriptions: Vec::new(),
+            last_activity: None,
+            rate_limiter: TokenBucket::new(
+                RATE_LIMIT_BUCKET_CAPACITY,
+                RATE_LIMIT_MESSAGES_PER_SEC,
+            ),
+        }
+    }
 }
 
 /// Handle a WebSocket connection (connection already counted via try_add_connection)
@@ -158,15 +252,28 @@ async fn handle_socket_with_connection(socket: WebSocket, state: Arc<GspState>) 
                 // M-3: Update last activity time on any message
                 conn_state.last_activity = Some(Instant::now());
 
+                // HIGH-2 FIX: Check rate limit before processing message
+                // This prevents message flooding attacks by limiting the rate
+                // at which messages are processed per connection.
+                if !conn_state.rate_limiter.try_consume() {
+                    warn!("HIGH-2: Rate limit exceeded for connection, rejecting message");
+                    let response = ServerMessage::Error {
+                        code: "RATE_LIMIT_EXCEEDED".to_string(),
+                        message: "Too many requests. Please slow down.".to_string(),
+                        request_id: None,
+                    };
+                    let json = serde_json::to_string(&response).unwrap_or_default();
+                    if sender.send(Message::Text(json)).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
+
                 // Handle message
                 let response = match handle_message(&state, &mut conn_state, msg).await {
                     Ok(Some(resp)) => resp,
                     Ok(None) => continue, // No response needed (ping/pong handled by axum)
-                    Err(e) => ServerMessage::Error {
-                        code: "ERROR".to_string(),
-                        message: e.to_string(),
-                        request_id: None,
-                    },
+                    Err(e) => sanitize_websocket_error(e),
                 };
 
                 // Send response
@@ -233,6 +340,74 @@ fn cleanup_connection_state(state: &Arc<GspState>, conn_state: &ConnectionState)
         conn_state.subscriptions.len(),
         conn_state.lock_state_subscriptions.len()
     );
+}
+
+/// HIGH-3 FIX: Sanitize error messages before sending to clients
+///
+/// This function logs the full error details internally for debugging but
+/// returns a sanitized error message to the client to prevent information
+/// disclosure attacks. Internal implementation details, file paths, and
+/// database errors are hidden from clients.
+fn sanitize_websocket_error(error: GspError) -> ServerMessage {
+    // Log full error internally for debugging
+    error!(
+        error_type = ?std::mem::discriminant(&error),
+        full_error = %error,
+        "HIGH-3: WebSocket error (full details logged, sanitized for client)"
+    );
+
+    // Map errors to safe client-facing messages
+    let (code, message) = match &error {
+        // Authentication errors - safe to expose these codes (common)
+        GspError::Unauthorized => ("UNAUTHORIZED", "Authentication required"),
+        GspError::SessionExpired => ("SESSION_EXPIRED", "Session has expired"),
+        GspError::WalletNotRegistered => ("WALLET_NOT_REGISTERED", "Wallet not registered"),
+        GspError::WalletAlreadyRegistered => {
+            ("WALLET_ALREADY_REGISTERED", "Wallet already registered")
+        }
+        GspError::WalletIdMismatch => ("WALLET_ID_MISMATCH", "Wallet ID verification failed"),
+        GspError::NonceReplay => ("NONCE_REPLAY", "Nonce has already been used"),
+        GspError::RateLimitExceeded => ("RATE_LIMIT_EXCEEDED", "Rate limit exceeded"),
+
+        // Validation errors - safe to give generic feedback
+        GspError::BadRequest(_) => ("BAD_REQUEST", "Invalid request format"),
+        GspError::NotFound(_) => ("NOT_FOUND", "Resource not found"),
+
+        // Payment/Lock errors - use generic messages to avoid leaking payment state
+        GspError::PaymentOwnershipMismatch => ("FORBIDDEN", "Access denied"),
+        GspError::LockNotFound(_) => ("LOCK_NOT_FOUND", "Lock not found"),
+        GspError::LockPending => ("LOCK_PENDING", "Lock is pending"),
+        GspError::InsufficientConfirmations { .. } => {
+            ("INSUFFICIENT_CONFIRMATIONS", "Insufficient confirmations")
+        }
+        GspError::QuantumUnsafe => (
+            "QUANTUM_UNSAFE",
+            "P2TR addresses are not supported. Use P2WPKH.",
+        ),
+
+        // Internal errors - NEVER expose details to clients
+        GspError::Config(_) => ("INTERNAL_ERROR", "Internal server error"),
+        GspError::InvalidBindAddress(_) => ("INTERNAL_ERROR", "Internal server error"),
+        GspError::InsecureJwtSecret(_) => ("INTERNAL_ERROR", "Internal server error"),
+        GspError::InvalidCredentials(_) => ("INVALID_CREDENTIALS", "Invalid credentials"),
+        GspError::InvalidToken(_) => ("INVALID_TOKEN", "Invalid or expired token"),
+        GspError::SignatureVerification(_) => {
+            ("SIGNATURE_FAILED", "Signature verification failed")
+        }
+        GspError::PayNodeUnavailable(_) => {
+            ("SERVICE_UNAVAILABLE", "Payment service temporarily unavailable")
+        }
+        GspError::PayNodeError(_) => ("SERVICE_ERROR", "Payment service error"),
+        GspError::Database(_) => ("INTERNAL_ERROR", "Internal server error"),
+        GspError::Internal(_) => ("INTERNAL_ERROR", "Internal server error"),
+        GspError::Protocol(_) => ("PROTOCOL_ERROR", "Invalid protocol message"),
+    };
+
+    ServerMessage::Error {
+        code: code.to_string(),
+        message: message.to_string(),
+        request_id: None,
+    }
 }
 
 /// Handle a single WebSocket message
@@ -393,9 +568,17 @@ async fn handle_message(
             sender_lock_id,
             amount_sats,
             proof,
+            signed_payment,
         } => {
-            handle_accept_instant_payment(state, conn_state, &sender_lock_id, amount_sats, &proof)
-                .await
+            handle_accept_instant_payment(
+                state,
+                conn_state,
+                &sender_lock_id,
+                amount_sats,
+                &proof,
+                &signed_payment,
+            )
+            .await
         }
     }
 }
@@ -940,6 +1123,8 @@ async fn handle_get_payment_status(
 }
 
 /// Handle cancel payment request
+///
+/// M-14 FIX: Returns PaymentCancelled message type instead of PaymentSubmitted
 async fn handle_cancel_payment(
     state: &Arc<GspState>,
     conn_state: &ConnectionState,
@@ -957,10 +1142,9 @@ async fn handle_cancel_payment(
     // - Wallet ID derivation check (pubkey -> wallet ID)
     // - Nonce replay protection
     if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
-        return Ok(Some(ServerMessage::PaymentSubmitted {
+        return Ok(Some(ServerMessage::PaymentCancelled {
             success: false,
             payment_id: payment_id.to_string(),
-            txid: None,
             error: Some(e),
         }));
     }
@@ -973,10 +1157,9 @@ async fn handle_cancel_payment(
 
     // Cancel payment via pay node
     match state.pay_node.cancel_payment(payment_id).await {
-        Ok(success) => Ok(Some(ServerMessage::PaymentSubmitted {
+        Ok(success) => Ok(Some(ServerMessage::PaymentCancelled {
             success,
             payment_id: payment_id.to_string(),
-            txid: None,
             error: if success {
                 None
             } else {
@@ -991,10 +1174,9 @@ async fn handle_cancel_payment(
                 "Payment cancellation failed"
             );
 
-            Ok(Some(ServerMessage::PaymentSubmitted {
+            Ok(Some(ServerMessage::PaymentCancelled {
                 success: false,
                 payment_id: payment_id.to_string(),
-                txid: None,
                 error: Some(e.to_string()),
             }))
         }
@@ -1259,6 +1441,9 @@ async fn handle_unsubscribe_lock_state(
 /// This allows merchants to show "Confirmed" immediately for small payments,
 /// with actual settlement happening on the next virtual block.
 ///
+/// M-9 Security: Before accepting, we MUST verify the SignedInstantPayment from the sender.
+/// Without this, anyone could claim payments from any lock without authorization.
+///
 /// H-11 Security: Before accepting an instant payment, we MUST verify that
 /// the sender's lock UTXO actually exists on L1 with sufficient confirmations.
 /// This prevents attacks where:
@@ -1272,13 +1457,14 @@ async fn handle_accept_instant_payment(
     sender_lock_id: &str,
     amount_sats: u64,
     proof: &WalletProof,
+    signed_payment: &SignedInstantPayment,
 ) -> Result<Option<ServerMessage>, GspError> {
     let wallet_id = conn_state
         .wallet_id
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
-    // Comprehensive proof verification:
+    // Comprehensive proof verification for MERCHANT:
     // - Structure and timestamp validation
     // - Schnorr signature verification
     // - Wallet ID derivation check (pubkey -> wallet ID)
@@ -1290,6 +1476,103 @@ async fn handle_accept_instant_payment(
             request_id: None,
         }));
     }
+
+    // =========================================================================
+    // M-9 FIX: Verify SignedInstantPayment from SENDER
+    // =========================================================================
+    // This is CRITICAL. Without verifying the sender's signature, a malicious
+    // merchant could claim payments from locks they don't control. The sender
+    // must prove they own the lock by signing the payment details.
+
+    // M-9 Check 1: Verify sender_lock_id matches the signed payment
+    if signed_payment.sender_lock_id != sender_lock_id {
+        warn!(
+            wallet_id = %wallet_id,
+            expected_lock_id = %sender_lock_id,
+            signed_lock_id = %signed_payment.sender_lock_id,
+            "M-9 Security: Lock ID mismatch in signed payment"
+        );
+        return Ok(Some(ServerMessage::Error {
+            code: "SIGNED_PAYMENT_INVALID".to_string(),
+            message: "Signed payment lock ID does not match request".to_string(),
+            request_id: None,
+        }));
+    }
+
+    // M-9 Check 2: Verify amount matches
+    if signed_payment.amount_sats != amount_sats {
+        warn!(
+            wallet_id = %wallet_id,
+            expected_amount = amount_sats,
+            signed_amount = signed_payment.amount_sats,
+            "M-9 Security: Amount mismatch in signed payment"
+        );
+        return Ok(Some(ServerMessage::Error {
+            code: "SIGNED_PAYMENT_INVALID".to_string(),
+            message: "Signed payment amount does not match request".to_string(),
+            request_id: None,
+        }));
+    }
+
+    // M-9 Check 3: Verify recipient is the merchant's wallet
+    // The signed payment's recipient should match the authenticated wallet
+    let merchant_wallet_id_str = wallet_id.to_string();
+    if signed_payment.recipient != merchant_wallet_id_str {
+        warn!(
+            wallet_id = %wallet_id,
+            signed_recipient = %signed_payment.recipient,
+            "M-9 Security: Recipient mismatch - payment not intended for this merchant"
+        );
+        return Ok(Some(ServerMessage::Error {
+            code: "SIGNED_PAYMENT_INVALID".to_string(),
+            message: "Signed payment recipient does not match this wallet".to_string(),
+            request_id: None,
+        }));
+    }
+
+    // M-9 Check 4: Verify the timestamp is recent (prevent replay of old payments)
+    let now_millis = chrono::Utc::now().timestamp_millis() as u64;
+    const MAX_PAYMENT_AGE_MILLIS: u64 = 5 * 60 * 1000; // 5 minutes
+    if signed_payment.timestamp + MAX_PAYMENT_AGE_MILLIS < now_millis {
+        warn!(
+            wallet_id = %wallet_id,
+            payment_timestamp = signed_payment.timestamp,
+            current_time = now_millis,
+            "M-9 Security: Signed payment has expired"
+        );
+        return Ok(Some(ServerMessage::Error {
+            code: "SIGNED_PAYMENT_EXPIRED".to_string(),
+            message: "Signed payment has expired".to_string(),
+            request_id: None,
+        }));
+    }
+
+    // M-9 Check 5: Verify the BIP-340 Schnorr signature
+    // The signature must be valid over the payment message using the sender's pubkey
+    if let Err(e) = verify_instant_payment_signature(signed_payment) {
+        warn!(
+            wallet_id = %wallet_id,
+            sender_lock_id = %sender_lock_id,
+            error = %e,
+            "M-9 Security: Sender signature verification failed"
+        );
+        return Ok(Some(ServerMessage::Error {
+            code: "SIGNATURE_VERIFICATION_FAILED".to_string(),
+            message: "Sender signature verification failed".to_string(),
+            request_id: None,
+        }));
+    }
+
+    info!(
+        wallet_id = %wallet_id,
+        sender_lock_id = %sender_lock_id,
+        amount_sats = amount_sats,
+        sender_pubkey = hex::encode(signed_payment.sender_pubkey),
+        "M-9: Sender signature verified, processing instant payment acceptance"
+    );
+    // =========================================================================
+    // End M-9 signature verification
+    // =========================================================================
 
     info!(
         wallet_id = %wallet_id,
@@ -1444,4 +1727,43 @@ fn generate_instant_payment_id(lock_id: &str, amount: u64, height: u64) -> [u8; 
             .to_le_bytes(),
     );
     hasher.finalize().into()
+}
+
+/// M-9 FIX: Verify the BIP-340 Schnorr signature on a SignedInstantPayment
+///
+/// This function verifies that the sender has properly signed the payment details
+/// using their lock's private key. The message format is defined in SignedInstantPayment.
+///
+/// Returns Ok(()) if signature is valid, Err with description if invalid.
+fn verify_instant_payment_signature(signed_payment: &SignedInstantPayment) -> Result<(), String> {
+    use bitcoin::secp256k1::{schnorr::Signature, Message, Secp256k1, XOnlyPublicKey};
+    use sha2::{Digest, Sha256};
+
+    // Get the secp256k1 context for verification
+    let secp = Secp256k1::verification_only();
+
+    // Parse the sender's public key (x-only, 32 bytes)
+    let pubkey = XOnlyPublicKey::from_slice(&signed_payment.sender_pubkey)
+        .map_err(|e| format!("Invalid sender public key: {}", e))?;
+
+    // Parse the signature (64 bytes)
+    let signature = Signature::from_slice(&signed_payment.signature)
+        .map_err(|e| format!("Invalid signature format: {}", e))?;
+
+    // Compute the message that was signed
+    // This uses the signing_message() method from SignedInstantPayment
+    let msg_bytes = signed_payment.signing_message();
+
+    // BIP-340 uses SHA256 to hash the message for Schnorr signatures
+    let msg_hash = Sha256::digest(&msg_bytes);
+
+    // Create a secp256k1 Message from the hash
+    let message = Message::from_digest_slice(&msg_hash)
+        .map_err(|e| format!("Failed to create message: {}", e))?;
+
+    // Verify the Schnorr signature
+    secp.verify_schnorr(&signature, &message, &pubkey)
+        .map_err(|_| "Schnorr signature verification failed".to_string())?;
+
+    Ok(())
 }

@@ -547,6 +547,22 @@ impl CoordinatorSigner {
     /// Expire nonces older than NONCE_EXPIRY_SECS (1 hour)
     ///
     /// This is called automatically before creating new nonces.
+    ///
+    /// # L-22: Single-Node Limitation
+    ///
+    /// This function uses `std::time::Instant` (monotonic local time) for expiry
+    /// calculations. This is intentional and correct for single-node deployments,
+    /// but has the following implications:
+    ///
+    /// - Expiry timing is LOCAL to this process and not synchronized across nodes
+    /// - If the system clock is adjusted, Instant remains monotonic (correct behavior)
+    /// - In a multi-node deployment, each node tracks expiry independently
+    /// - Nonces are inherently single-node (they're stored in local memory, not DB)
+    ///
+    /// This design is secure because:
+    /// 1. Nonces are never shared between nodes (each node has its own NonceManager)
+    /// 2. The expiry is purely for memory cleanup, not security (nonces are single-use)
+    /// 3. Monotonic time prevents time-travel attacks that could extend nonce lifetime
     fn expire_old_nonces(&mut self) {
         let now = Instant::now();
         let expiry_duration = std::time::Duration::from_secs(NONCE_EXPIRY_SECS);

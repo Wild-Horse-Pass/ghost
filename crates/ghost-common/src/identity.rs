@@ -430,8 +430,15 @@ impl NodeIdentity {
     ///
     /// Note: This creates a new VerifyingKey from the public key.
     /// For LocalSigner, this matches the internal key.
-    pub fn verifying_key(&self) -> VerifyingKey {
-        VerifyingKey::from_bytes(&self.public_key).expect("public key is always valid")
+    ///
+    /// # Errors
+    ///
+    /// Returns `GhostError::InvalidKey` if the public key bytes are not a valid
+    /// Ed25519 public key. This should never happen for properly constructed
+    /// `NodeIdentity` instances, but we handle it gracefully rather than panicking.
+    pub fn verifying_key(&self) -> GhostResult<VerifyingKey> {
+        VerifyingKey::from_bytes(&self.public_key)
+            .map_err(|e| GhostError::InvalidKey(format!("Invalid public key: {}", e)))
     }
 
     /// Get the proof-of-work proof
@@ -801,5 +808,44 @@ mod tests {
         let short = identity.node_id_short();
         assert_eq!(short.len(), 8);
         assert!(identity.node_id_hex().starts_with(&short));
+    }
+
+    #[test]
+    fn test_verifying_key_returns_result() {
+        let identity = NodeIdentity::generate();
+        // A properly constructed identity should always have a valid verifying key
+        let result = identity.verifying_key();
+        assert!(result.is_ok());
+
+        // The verifying key should match the node_id (public key)
+        let vk = result.unwrap();
+        assert_eq!(vk.as_bytes(), &identity.node_id());
+    }
+
+    #[test]
+    fn test_verify_signature_rejects_invalid_node_id() {
+        // Test that verify_signature properly handles invalid public key bytes
+        // Use a 32-byte value that is definitely NOT a valid Ed25519 point
+        // The last byte > 0x7f triggers the "non-canonical" check in Ed25519
+        // and certain patterns don't represent valid curve points
+        let mut invalid_node_id: [u8; 32] = [0x01; 32];
+        invalid_node_id[31] = 0x80; // High bit set on y-coordinate = invalid
+
+        let message = b"test message";
+        let fake_signature = [0u8; 64];
+
+        let result = verify_signature(&invalid_node_id, message, &fake_signature);
+        // Should either return an error OR return Ok(false) for signature verification failure
+        // The important thing is it shouldn't panic
+        match result {
+            Err(e) => {
+                // Expected path - invalid public key
+                assert!(e.to_string().contains("Invalid public key"));
+            }
+            Ok(verified) => {
+                // Alternate valid path - signature verification failed
+                assert!(!verified, "Invalid key should not verify any signature");
+            }
+        }
     }
 }

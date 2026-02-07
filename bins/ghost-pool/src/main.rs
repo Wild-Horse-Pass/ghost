@@ -394,7 +394,11 @@ async fn main() -> Result<()> {
         .with_line_number(false)
         .finish();
 
-    tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
+    // HIGH-8: Use fallible initialization - if subscriber is already set, that's fine
+    if tracing::subscriber::set_global_default(subscriber).is_err() {
+        // A subscriber is already registered (e.g., from test harness). Continue with existing one.
+        eprintln!("Note: Tracing subscriber already initialized, using existing configuration");
+    }
 
     // Expand data directory
     let data_dir = expand_path(&args.data_dir)?;
@@ -927,38 +931,37 @@ async fn main() -> Result<()> {
             },
         );
 
-    // Create the elder registration handler
-    let elder_registration_handler = Arc::new(
-        ghost_consensus::ElderRegistrationHandler::new(
-            Arc::clone(&identity),
-            Arc::clone(&elder_list_manager),
-            Arc::clone(&db),
-        )
-        .with_broadcaster(elder_broadcast_fn)
-        .with_ban_manager(Arc::clone(&ban_manager)),
-    );
+    // M-1 SECURITY FIX: Set up transition callback BEFORE Arc wrapping
+    // This callback updates VoteHandler's eligible voters when epoch transitions occur
+    let vh_for_elder_transition = Arc::clone(&vote_handler);
+    let transition_callback: ghost_consensus::elder_registration_handler::TransitionCallback =
+        Arc::new(move |new_list: &ghost_consensus::CanonicalElderList| {
+            // Update eligible voters in VoteHandler from the new canonical list
+            vh_for_elder_transition.set_canonical_elder_list(new_list.clone());
+            info!(
+                epoch = new_list.epoch,
+                elder_count = new_list.elder_count(),
+                "M-1: Updated VoteHandler with new canonical elder list"
+            );
+        });
+
+    // Create the elder registration handler with transition callback set BEFORE Arc wrapping
+    let mut elder_handler = ghost_consensus::ElderRegistrationHandler::new(
+        Arc::clone(&identity),
+        Arc::clone(&elder_list_manager),
+        Arc::clone(&db),
+    )
+    .with_broadcaster(elder_broadcast_fn)
+    .with_ban_manager(Arc::clone(&ban_manager));
+
+    // M-1: Set callback before Arc wrapping (required because set_transition_callback takes &mut self)
+    elder_handler.set_transition_callback(transition_callback);
+
+    let elder_registration_handler = Arc::new(elder_handler);
 
     // Register elder registration handler with mesh
     mesh.register_handler(Arc::clone(&elder_registration_handler)
         as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
-
-    // Set up transition callback to update VoteHandler's eligible voters on epoch change
-    // Note: Currently not used as the handler is Arc wrapped. Keep for future integration
-    // when runtime callback configuration is supported.
-    let vh_for_elder_transition = Arc::clone(&vote_handler);
-    let _transition_callback: ghost_consensus::elder_registration_handler::TransitionCallback =
-        Arc::new(move |new_list: &ghost_consensus::CanonicalElderList| {
-            // Update eligible voters in VoteHandler from the new canonical list
-            let voters = new_list.get_eligible_voters();
-            for voter in voters {
-                vh_for_elder_transition.add_elder(voter);
-            }
-            info!(
-                epoch = new_list.epoch,
-                elder_count = new_list.elder_count(),
-                "Updated VoteHandler with new elder list"
-            );
-        });
 
     info!(
         "Elder registration handler initialized (epoch {}, {} elders)",
@@ -1714,9 +1717,18 @@ async fn main() -> Result<()> {
         let key_bytes = std::fs::read(&key_path)
             .map_err(|e| anyhow::anyhow!("Failed to read node key for TDP: {}", e))?;
 
+        // HIGH-6: Proper error handling instead of panic on short key file
+        if key_bytes.len() < 32 {
+            return Err(anyhow::anyhow!(
+                "Node key file '{}' is too short: expected at least 32 bytes, got {}. \
+                 Generate a new key with: ghost-pool --generate-identity",
+                key_path.display(),
+                key_bytes.len()
+            ));
+        }
         let tdp_secret_key: [u8; 32] = key_bytes[..32]
             .try_into()
-            .expect("Node key must be at least 32 bytes");
+            .map_err(|_| anyhow::anyhow!("Node key slice conversion failed"))?;
 
         let mut tdp_config = TdpConfig::new(tdp_secret_key);
         tdp_config.port = args.tdp_port;
@@ -2035,7 +2047,12 @@ async fn main() -> Result<()> {
             sequence_endpoint: sequence_endpoint.clone(),
         };
 
-        let zmq_subscriber = ZmqSubscriber::new(zmq_config);
+        let zmq_subscriber = ZmqSubscriber::new(zmq_config).map_err(|e| {
+            anyhow::anyhow!(
+                "ZMQ security validation failed: {}. Only localhost endpoints are allowed.",
+                e
+            )
+        })?;
         let mut block_rx = zmq_subscriber.subscribe_blocks();
 
         // Start block event handler for new blocks

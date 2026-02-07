@@ -58,6 +58,7 @@
 use tracing::{debug, info, warn};
 
 use ghost_common::constants::{TREASURY_DECAY_YEARS, TREASURY_THRESHOLD_SATS};
+use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::types::TreasuryAddress;
 
 /// A block height that has been verified to come from a trusted source
@@ -285,21 +286,35 @@ impl Treasury {
     /// Note: `balance_sats` tracks cumulative deposits, NOT on-chain balance.
     /// The treasury operator should move funds to cold storage.
     ///
-    /// # Panics
-    /// Panics if the deposit would cause overflow. This should never happen
-    /// in practice as 2^64 sats far exceeds Bitcoin's total supply.
-    pub fn deposit(&mut self, amount: u64, current_height: TrustedBlockHeight) {
+    /// # Errors
+    /// Returns `GhostError::TreasuryOverflow` if the deposit would cause overflow.
+    /// This is practically impossible (u64::MAX exceeds Bitcoin's total supply by orders
+    /// of magnitude) but must be handled gracefully for mainnet code.
+    pub fn deposit(
+        &mut self,
+        amount: u64,
+        current_height: TrustedBlockHeight,
+    ) -> GhostResult<()> {
         let was_below_threshold = !self.at_threshold();
 
-        // SECURITY: Use checked arithmetic to prevent overflow
-        self.balance_sats = self
-            .balance_sats
-            .checked_add(amount)
-            .expect("Treasury balance overflow - exceeds u64::MAX sats");
-        self.total_collected_sats = self
-            .total_collected_sats
-            .checked_add(amount)
-            .expect("Treasury total overflow - exceeds u64::MAX sats");
+        // SECURITY: Use checked arithmetic to prevent overflow - return error instead of panic
+        let new_balance = self.balance_sats.checked_add(amount).ok_or_else(|| {
+            GhostError::TreasuryOverflow {
+                current_balance: self.balance_sats,
+                amount,
+            }
+        })?;
+
+        let new_total = self.total_collected_sats.checked_add(amount).ok_or_else(|| {
+            GhostError::TreasuryOverflow {
+                current_balance: self.total_collected_sats,
+                amount,
+            }
+        })?;
+
+        // Only update state after all checks pass
+        self.balance_sats = new_balance;
+        self.total_collected_sats = new_total;
 
         // Record when threshold is first reached
         if was_below_threshold && self.at_threshold() && self.threshold_reached_height.is_none() {
@@ -316,6 +331,8 @@ impl Treasury {
             balance = self.balance_sats,
             "Treasury deposit"
         );
+
+        Ok(())
     }
 
     /// Withdraw from treasury
@@ -530,34 +547,42 @@ impl L2FeeAllocation {
     /// - 50% to GhostPay-enabled nodes
     /// - 50% to treasury
     ///
-    /// # Panics
-    /// Panics if total fees would overflow u64 (should never happen in practice).
-    pub fn calculate(transfer_fees: u64, wraith_fees: u64, reconciliation_fees: u64) -> Self {
-        // SECURITY: Use checked arithmetic to prevent overflow
+    /// # Errors
+    /// Returns `GhostError::L2FeeOverflow` if total fees would overflow u64.
+    /// This is practically impossible but must be handled gracefully for mainnet code.
+    pub fn calculate(
+        transfer_fees: u64,
+        wraith_fees: u64,
+        reconciliation_fees: u64,
+    ) -> GhostResult<Self> {
+        // SECURITY: Use checked arithmetic to prevent overflow - return error instead of panic
         let total = transfer_fees
             .checked_add(wraith_fees)
             .and_then(|t| t.checked_add(reconciliation_fees))
-            .expect("L2 fee total overflow - exceeds u64::MAX sats");
+            .ok_or(GhostError::L2FeeOverflow)?;
+
         let to_nodes = total / 2;
         let to_treasury = total - to_nodes;
 
-        Self {
+        Ok(Self {
             transfer_fees_sats: transfer_fees,
             wraith_fees_sats: wraith_fees,
             reconciliation_fees_sats: reconciliation_fees,
             to_ghostpay_nodes_sats: to_nodes,
             to_treasury_sats: to_treasury,
-        }
+        })
     }
 
     /// Total fees collected
     ///
-    /// Uses checked arithmetic to prevent overflow.
-    pub fn total_fees(&self) -> u64 {
+    /// # Errors
+    /// Returns `GhostError::L2FeeOverflow` if total would overflow u64.
+    /// This is practically impossible but must be handled gracefully for mainnet code.
+    pub fn total_fees(&self) -> GhostResult<u64> {
         self.transfer_fees_sats
             .checked_add(self.wraith_fees_sats)
             .and_then(|t| t.checked_add(self.reconciliation_fees_sats))
-            .expect("L2 fee total overflow")
+            .ok_or(GhostError::L2FeeOverflow)
     }
 }
 
@@ -571,7 +596,9 @@ mod tests {
     fn test_treasury_operations() {
         let mut treasury = Treasury::new(vec![0u8; 25]);
 
-        treasury.deposit(1_000_000, TrustedBlockHeight::for_test(800_000));
+        treasury
+            .deposit(1_000_000, TrustedBlockHeight::for_test(800_000))
+            .expect("deposit should succeed");
         assert_eq!(treasury.balance_sats, 1_000_000);
 
         assert!(treasury.withdraw(500_000));
@@ -589,17 +616,23 @@ mod tests {
         assert!(treasury.threshold_reached_height.is_none());
 
         // Deposit below threshold
-        treasury.deposit(50_000_000, TrustedBlockHeight::for_test(800_000));
+        treasury
+            .deposit(50_000_000, TrustedBlockHeight::for_test(800_000))
+            .expect("deposit should succeed");
         assert!(!treasury.at_threshold());
         assert!(treasury.threshold_reached_height.is_none());
 
         // Deposit to reach threshold
-        treasury.deposit(50_000_000, TrustedBlockHeight::for_test(800_100));
+        treasury
+            .deposit(50_000_000, TrustedBlockHeight::for_test(800_100))
+            .expect("deposit should succeed");
         assert!(treasury.at_threshold());
         assert_eq!(treasury.threshold_reached_height, Some(800_100));
 
         // Further deposits don't change threshold_reached_height
-        treasury.deposit(10_000_000, TrustedBlockHeight::for_test(800_200));
+        treasury
+            .deposit(10_000_000, TrustedBlockHeight::for_test(800_200))
+            .expect("deposit should succeed");
         assert_eq!(treasury.threshold_reached_height, Some(800_100));
     }
 
@@ -621,7 +654,9 @@ mod tests {
     #[test]
     fn test_treasury_allocation_decay() {
         let mut treasury = Treasury::with_threshold(vec![0u8; 25], TEST_THRESHOLD);
-        treasury.deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000)); // Reach threshold at block 800,000
+        treasury
+            .deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000))
+            .expect("deposit should succeed"); // Reach threshold at block 800,000
 
         let threshold_height = 800_000u64;
 
@@ -664,7 +699,9 @@ mod tests {
     #[test]
     fn test_treasury_allocation_mid_year() {
         let mut treasury = Treasury::with_threshold(vec![0u8; 25], TEST_THRESHOLD);
-        treasury.deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000));
+        treasury
+            .deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000))
+            .expect("deposit should succeed");
 
         // 2.5 years: should be 0.25% treasury
         let mid_year_2 = TrustedBlockHeight::for_test(800_000 + (BLOCKS_PER_YEAR * 5 / 2));
@@ -675,7 +712,9 @@ mod tests {
     #[test]
     fn test_calculate_treasury_amount() {
         let mut treasury = Treasury::with_threshold(vec![0u8; 25], TEST_THRESHOLD);
-        treasury.deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000));
+        treasury
+            .deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000))
+            .expect("deposit should succeed");
 
         let subsidy = 312_500_000u64; // 3.125 BTC
 
@@ -695,7 +734,9 @@ mod tests {
     #[test]
     fn test_decay_year() {
         let mut treasury = Treasury::with_threshold(vec![0u8; 25], TEST_THRESHOLD);
-        treasury.deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000));
+        treasury
+            .deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000))
+            .expect("deposit should succeed");
 
         assert_eq!(
             treasury.decay_year(TrustedBlockHeight::for_test(800_000)),
@@ -726,7 +767,9 @@ mod tests {
     #[test]
     fn test_is_decay_complete() {
         let mut treasury = Treasury::with_threshold(vec![0u8; 25], TEST_THRESHOLD);
-        treasury.deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000));
+        treasury
+            .deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000))
+            .expect("deposit should succeed");
 
         assert!(!treasury.is_decay_complete(TrustedBlockHeight::for_test(800_000)));
         assert!(!treasury.is_decay_complete(TrustedBlockHeight::for_test(
@@ -749,7 +792,9 @@ mod tests {
             .years_since_threshold(TrustedBlockHeight::for_test(800_000))
             .is_none());
 
-        treasury.deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000));
+        treasury
+            .deposit(TEST_THRESHOLD, TrustedBlockHeight::for_test(800_000))
+            .expect("deposit should succeed");
 
         // At threshold: 0 years
         assert!(
@@ -790,9 +835,10 @@ mod tests {
             10_000, // transfer fees
             5_000,  // wraith fees
             1_000,  // reconciliation fees
-        );
+        )
+        .expect("L2FeeAllocation should succeed");
 
-        assert_eq!(allocation.total_fees(), 16_000);
+        assert_eq!(allocation.total_fees().expect("total_fees should succeed"), 16_000);
         assert_eq!(allocation.to_ghostpay_nodes_sats, 8_000);
         assert_eq!(allocation.to_treasury_sats, 8_000);
     }
@@ -817,5 +863,109 @@ mod tests {
         // At block 750,000 + 2.5 years worth of blocks
         let current = TrustedBlockHeight::for_test(750_000 + (BLOCKS_PER_YEAR * 5 / 2));
         assert!((treasury.treasury_allocation_percent(current) - 0.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_treasury_deposit_overflow_returns_error() {
+        // SECURITY TEST: Verify that treasury deposit returns an error on overflow
+        // instead of panicking. This is critical for mainnet safety.
+        let mut treasury = Treasury::new(vec![0u8; 25]);
+
+        // Set balance close to u64::MAX
+        treasury.balance_sats = u64::MAX - 100;
+        treasury.total_collected_sats = u64::MAX - 100;
+
+        // Attempt to deposit an amount that would cause overflow
+        let result = treasury.deposit(200, TrustedBlockHeight::for_test(800_000));
+
+        // Should return an error, NOT panic
+        assert!(result.is_err(), "deposit should return error on overflow");
+
+        match result.unwrap_err() {
+            GhostError::TreasuryOverflow {
+                current_balance,
+                amount,
+            } => {
+                assert_eq!(current_balance, u64::MAX - 100);
+                assert_eq!(amount, 200);
+            }
+            other => panic!("Expected TreasuryOverflow error, got: {:?}", other),
+        }
+
+        // Balance should be unchanged after failed deposit
+        assert_eq!(treasury.balance_sats, u64::MAX - 100);
+        assert_eq!(treasury.total_collected_sats, u64::MAX - 100);
+    }
+
+    #[test]
+    fn test_treasury_deposit_at_max_succeeds() {
+        // Test that depositing exactly to MAX works (edge case)
+        let mut treasury = Treasury::new(vec![0u8; 25]);
+        treasury.balance_sats = u64::MAX - 100;
+        treasury.total_collected_sats = u64::MAX - 100;
+
+        // Deposit exactly the remaining amount (no overflow)
+        let result = treasury.deposit(100, TrustedBlockHeight::for_test(800_000));
+        assert!(result.is_ok(), "deposit up to MAX should succeed");
+        assert_eq!(treasury.balance_sats, u64::MAX);
+    }
+
+    #[test]
+    fn test_l2_fee_allocation_overflow_returns_error() {
+        // SECURITY TEST: Verify L2FeeAllocation returns error on overflow
+        let result = L2FeeAllocation::calculate(
+            u64::MAX,
+            1, // This would cause overflow
+            0,
+        );
+
+        assert!(
+            result.is_err(),
+            "L2FeeAllocation should return error on overflow"
+        );
+
+        match result.unwrap_err() {
+            GhostError::L2FeeOverflow => {} // Expected
+            other => panic!("Expected L2FeeOverflow error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_l2_fee_allocation_total_fees_overflow_returns_error() {
+        // SECURITY TEST: Verify total_fees() returns error if the struct was somehow
+        // constructed with values that would overflow when summed
+        let allocation = L2FeeAllocation {
+            transfer_fees_sats: u64::MAX,
+            wraith_fees_sats: 1,
+            reconciliation_fees_sats: 0,
+            to_ghostpay_nodes_sats: 0,
+            to_treasury_sats: 0,
+        };
+
+        let result = allocation.total_fees();
+        assert!(
+            result.is_err(),
+            "total_fees should return error on overflow"
+        );
+
+        match result.unwrap_err() {
+            GhostError::L2FeeOverflow => {} // Expected
+            other => panic!("Expected L2FeeOverflow error, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_l2_fee_allocation_normal_case_succeeds() {
+        // Verify normal operations still work correctly
+        let result = L2FeeAllocation::calculate(1_000_000, 500_000, 250_000);
+        assert!(result.is_ok());
+
+        let allocation = result.unwrap();
+        assert_eq!(
+            allocation.total_fees().expect("total_fees should succeed"),
+            1_750_000
+        );
+        assert_eq!(allocation.to_ghostpay_nodes_sats, 875_000);
+        assert_eq!(allocation.to_treasury_sats, 875_000);
     }
 }

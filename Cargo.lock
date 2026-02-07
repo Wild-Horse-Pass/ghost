@@ -1976,6 +1976,7 @@ dependencies = [
  "ghost-storage",
  "ghost-zkp",
  "hex",
+ "hmac",
  "once_cell",
  "parking_lot",
  "serde",
@@ -2050,6 +2051,7 @@ version = "1.6.0"
 dependencies = [
  "bitcoin",
  "chrono",
+ "getrandom 0.2.17",
  "ghost-common",
  "hex",
  "rand",
@@ -2078,6 +2080,7 @@ dependencies = [
  "sha2 0.10.9",
  "subtle",
  "thiserror 1.0.69",
+ "tracing",
  "zeroize",
 ]
 

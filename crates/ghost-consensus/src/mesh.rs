@@ -313,6 +313,11 @@ const MIN_MESSAGES_BEFORE_WRAP: u64 = 1_000_000;
 /// Prevents attacker from jumping directly to near u64::MAX to trigger wrap.
 const MAX_SEQUENCE_JUMP: u64 = 1_000_000;
 
+/// M-3: Maximum allowed time between messages during wrap-around (1 hour in seconds)
+/// This provides a secondary timing-based check to prevent replay attacks during wrap-around.
+/// A legitimate wrap-around should happen immediately - not hours after the last message.
+const MAX_WRAP_AROUND_GAP_SECS: u64 = 3600;
+
 /// M-2/H-P2P-5: Sequence state tracking with wrap-around protection
 /// Handles the case where sequence numbers wrap from MAX back to 1,
 /// while preventing attackers from trivially triggering wrap-around.
@@ -324,6 +329,8 @@ struct SequenceState {
     epoch: u32,
     /// H-P2P-5: Total message count from this sender (for wrap validation)
     message_count: u64,
+    /// M-3: Timestamp of last message (Unix seconds) for timing-based wrap-around validation
+    last_message_time: u64,
 }
 
 /// Bounded LRU-like cache for seen message deduplication (P2P-L1)
@@ -378,7 +385,7 @@ impl SeenMessageCache {
         }
     }
 
-    /// M-2/H-P2P-5: Check if a sequence number is valid with strict wrap-around handling
+    /// M-2/M-3/H-P2P-5: Check if a sequence number is valid with strict wrap-around handling
     ///
     /// Returns true if this sequence is valid (not a replay).
     ///
@@ -386,6 +393,11 @@ impl SeenMessageCache {
     /// 1. Wrap-around only allowed after MIN_MESSAGES_BEFORE_WRAP messages
     /// 2. Large sequence jumps (> MAX_SEQUENCE_JUMP) are rejected
     /// 3. Sequence must be strictly greater than highest seen (no reuse)
+    ///
+    /// M-3 SECURITY: Timestamp-based validation during wrap-around:
+    /// Wrap-around requires that the last message was received recently (within 1 hour).
+    /// This prevents an attacker from capturing an old sequence near MAX and replaying
+    /// it later with a "wrap-around" to low sequences.
     fn is_sequence_valid(&self, sender: &NodeId, sequence: u64) -> bool {
         match self.sequence_state.get(sender) {
             Some(state) => {
@@ -406,7 +418,29 @@ impl SeenMessageCache {
                         );
                         return false;
                     }
-                    // Legitimate wrap-around after many messages - accept if > 0
+
+                    // M-3 SECURITY: Add timestamp-based validation during wrap-around
+                    // The last message must be recent - a wrap-around should happen immediately,
+                    // not hours after the last message (which would indicate a replay attack)
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+
+                    let time_since_last = now_secs.saturating_sub(state.last_message_time);
+                    if time_since_last > MAX_WRAP_AROUND_GAP_SECS {
+                        warn!(
+                            sender = %hex::encode(&sender[..8]),
+                            highest_seq = state.highest_seq,
+                            new_seq = sequence,
+                            last_message_age_secs = time_since_last,
+                            max_gap_secs = MAX_WRAP_AROUND_GAP_SECS,
+                            "M-3: Rejecting wrap-around - last message too old (possible replay attack)"
+                        );
+                        return false;
+                    }
+
+                    // Legitimate wrap-around after many messages and recent activity - accept if > 0
                     return sequence > 0;
                 }
 
@@ -446,17 +480,25 @@ impl SeenMessageCache {
         }
     }
 
-    /// M-2/H-P2P-5: Update the highest sequence seen from a sender with wrap-around handling
+    /// M-2/M-3/H-P2P-5: Update the highest sequence seen from a sender with wrap-around handling
     ///
     /// Should be called after accepting a valid message.
     /// Detects wrap-around and increments epoch accordingly.
     /// H-P2P-5: Also tracks message count for wrap-around validation.
+    /// M-3: Also tracks last message timestamp for timing-based wrap-around validation.
     fn update_highest_seq(&mut self, sender: &NodeId, sequence: u64) {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
         self.sequence_state
             .entry(*sender)
             .and_modify(|state| {
                 // H-P2P-5: Always increment message count
                 state.message_count = state.message_count.saturating_add(1);
+                // M-3: Always update last message time
+                state.last_message_time = now_secs;
 
                 // M-2: Detect wrap-around
                 if state.highest_seq > WRAP_DETECTION_THRESHOLD
@@ -464,7 +506,7 @@ impl SeenMessageCache {
                 {
                     // 4.3/H-P2P-5 SECURITY: Sequence wrapped around - increment epoch and RESET highest
                     // After wrap-around, the new sequence (e.g., 1) is the new baseline
-                    // Note: is_sequence_valid already verified this is legitimate (enough messages)
+                    // Note: is_sequence_valid already verified this is legitimate (enough messages + recent)
                     state.epoch = state.epoch.saturating_add(1);
                     state.highest_seq = sequence; // Reset to new sequence after wrap
                     info!(
@@ -472,7 +514,7 @@ impl SeenMessageCache {
                         new_seq = sequence,
                         epoch = state.epoch,
                         message_count = state.message_count,
-                        "H-P2P-5: Legitimate sequence wrap-around detected"
+                        "H-P2P-5/M-3: Legitimate sequence wrap-around detected"
                     );
                 } else {
                     // Normal case: update to max of current and new
@@ -483,6 +525,7 @@ impl SeenMessageCache {
                 highest_seq: sequence,
                 epoch: 0,
                 message_count: 1,
+                last_message_time: now_secs,
             });
     }
 

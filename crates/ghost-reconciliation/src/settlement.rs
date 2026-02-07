@@ -312,6 +312,14 @@ impl Settlement {
         // H-9: Use ceiling division and minimum 1 sat via calculate_fee()
         let fee_sats = crate::rules::calculate_fee(amount_sats);
 
+        // L-26: Validate fee is less than amount to ensure positive net value
+        if fee_sats >= amount_sats {
+            return Err(ReconciliationError::InvalidSettlement(format!(
+                "L-26: Calculated fee {} sats >= amount {} sats - this indicates a bug in fee calculation",
+                fee_sats, amount_sats
+            )));
+        }
+
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -319,7 +327,7 @@ impl Settlement {
 
         // Generate unique ID with cryptographic nonce for collision resistance
         let mut nonce = [0u8; 16];
-        getrandom::getrandom(&mut nonce).expect("System RNG failure is unrecoverable");
+        getrandom::getrandom(&mut nonce).map_err(|_| ReconciliationError::RngFailure)?;
 
         let mut hasher = Sha256::new();
         hasher.update(b"GhostSettlement/v2");
@@ -383,8 +391,32 @@ impl Settlement {
     }
 
     /// Get net amount (amount - fee)
+    ///
+    /// # L-26: Fee Validation
+    ///
+    /// This function uses saturating_sub which returns 0 if fee >= amount.
+    /// Callers should use `validate_fee()` or check that `net_amount_sats() > 0`
+    /// before processing settlements to avoid creating zero-value outputs.
+    ///
+    /// The Settlement::new() constructor already validates minimum amounts and
+    /// calculates fees using `calculate_fee()`, so valid settlements created
+    /// through the normal path will always have fee < amount.
     pub fn net_amount_sats(&self) -> u64 {
         self.amount_sats.saturating_sub(self.fee_sats)
+    }
+
+    /// Validate that the fee is less than the amount
+    ///
+    /// L-26: Returns an error if fee >= amount, which would result in a
+    /// zero or negative net amount.
+    pub fn validate_fee(&self) -> ReconciliationResult<()> {
+        if self.fee_sats >= self.amount_sats {
+            return Err(ReconciliationError::InvalidSettlement(format!(
+                "L-26: Fee {} sats >= amount {} sats - settlement would have zero net value",
+                self.fee_sats, self.amount_sats
+            )));
+        }
+        Ok(())
     }
 
     /// Get current state

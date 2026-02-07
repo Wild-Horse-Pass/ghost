@@ -137,42 +137,25 @@ impl ZmqSubscriber {
     /// in this implementation, so remote endpoints would allow anyone to inject
     /// fake block notifications.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if a non-localhost endpoint is provided. This is intentional -
-    /// connecting to remote ZMQ without authentication is a critical security flaw.
-    pub fn new(config: ZmqConfig) -> Self {
+    /// Returns `ZmqSecurityError` if a non-localhost endpoint is provided.
+    /// Connecting to remote ZMQ without authentication is a critical security flaw.
+    pub fn new(config: ZmqConfig) -> Result<Self, ZmqSecurityError> {
         // SECURITY: Validate all endpoints are localhost
-        let endpoints = [
-            &config.hashblock_endpoint,
-            &config.hashtx_endpoint,
-            &config.rawblock_endpoint,
-            &config.rawtx_endpoint,
-            &config.sequence_endpoint,
-        ];
-        for endpoint in endpoints.iter().copied().flatten() {
-            if !is_localhost_endpoint(endpoint) {
-                panic!(
-                    "ZMQ SECURITY ERROR: Non-localhost endpoint '{}' is not allowed. \
-                     ZMQ does not support authentication - remote endpoints would allow \
-                     attackers to inject fake block notifications. Use localhost only, \
-                     or tunnel through SSH/VPN.",
-                    endpoint
-                );
-            }
-        }
+        Self::validate_config(&config)?;
 
         let (block_tx, _) = broadcast::channel(1000);
         let (tx_tx, _) = broadcast::channel(10000);
         let (block_event_tx, _) = broadcast::channel(1000);
         let (shutdown_tx, _) = broadcast::channel(1);
 
-        let subscriber = Self {
+        let subscriber = Ok(Self {
             block_tx: block_tx.clone(),
             tx_tx: tx_tx.clone(),
             block_event_tx: block_event_tx.clone(),
             shutdown_tx: shutdown_tx.clone(),
-        };
+        });
 
         // Spawn hashblock subscriber
         if let Some(endpoint) = config.hashblock_endpoint {
@@ -451,12 +434,23 @@ pub struct BlockWatcher {
 
 impl BlockWatcher {
     /// Create a new block watcher with reorg detection
-    pub fn new(hashblock_endpoint: &str) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `ZmqSecurityError` if the endpoint is not localhost.
+    pub fn new(hashblock_endpoint: &str) -> Result<Self, ZmqSecurityError> {
         Self::with_sequence(hashblock_endpoint, None)
     }
 
     /// Create a block watcher with explicit sequence endpoint for reorg detection
-    pub fn with_sequence(hashblock_endpoint: &str, sequence_endpoint: Option<&str>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `ZmqSecurityError` if any endpoint is not localhost.
+    pub fn with_sequence(
+        hashblock_endpoint: &str,
+        sequence_endpoint: Option<&str>,
+    ) -> Result<Self, ZmqSecurityError> {
         let config = ZmqConfig {
             hashblock_endpoint: Some(hashblock_endpoint.to_string()),
             hashtx_endpoint: None,
@@ -465,9 +459,9 @@ impl BlockWatcher {
             sequence_endpoint: sequence_endpoint.map(|s| s.to_string()),
         };
 
-        Self {
-            subscriber: ZmqSubscriber::new(config),
-        }
+        Ok(Self {
+            subscriber: ZmqSubscriber::new(config)?,
+        })
     }
 
     /// Get a receiver for new block hashes
@@ -490,5 +484,107 @@ mod tests {
         let config = ZmqConfig::default();
         assert!(config.hashblock_endpoint.is_some());
         assert!(config.hashtx_endpoint.is_some());
+    }
+
+    #[test]
+    fn test_localhost_endpoint_validation() {
+        // Valid localhost endpoints
+        assert!(is_localhost_endpoint("tcp://127.0.0.1:28332"));
+        assert!(is_localhost_endpoint("tcp://localhost:28332"));
+        assert!(is_localhost_endpoint("tcp://[::1]:28332"));
+
+        // Invalid remote endpoints
+        assert!(!is_localhost_endpoint("tcp://192.168.1.1:28332"));
+        assert!(!is_localhost_endpoint("tcp://10.0.0.1:28332"));
+        assert!(!is_localhost_endpoint("tcp://example.com:28332"));
+    }
+
+    #[test]
+    fn test_zmq_subscriber_rejects_remote_endpoint() {
+        let config = ZmqConfig {
+            hashblock_endpoint: Some("tcp://192.168.1.100:28332".to_string()),
+            hashtx_endpoint: None,
+            rawblock_endpoint: None,
+            rawtx_endpoint: None,
+            sequence_endpoint: None,
+        };
+
+        let result = ZmqSubscriber::new(config);
+        assert!(result.is_err());
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("Expected error but got Ok"),
+        };
+        assert!(err.0.contains("192.168.1.100"));
+        assert!(err.0.contains("not localhost"));
+    }
+
+    #[test]
+    fn test_zmq_subscriber_rejects_all_remote_endpoints() {
+        // Test each endpoint type
+        let test_cases = [
+            ("hashblock", ZmqConfig {
+                hashblock_endpoint: Some("tcp://10.0.0.1:28332".to_string()),
+                hashtx_endpoint: None,
+                rawblock_endpoint: None,
+                rawtx_endpoint: None,
+                sequence_endpoint: None,
+            }),
+            ("hashtx", ZmqConfig {
+                hashblock_endpoint: None,
+                hashtx_endpoint: Some("tcp://10.0.0.1:28333".to_string()),
+                rawblock_endpoint: None,
+                rawtx_endpoint: None,
+                sequence_endpoint: None,
+            }),
+            ("sequence", ZmqConfig {
+                hashblock_endpoint: None,
+                hashtx_endpoint: None,
+                rawblock_endpoint: None,
+                rawtx_endpoint: None,
+                sequence_endpoint: Some("tcp://10.0.0.1:28334".to_string()),
+            }),
+        ];
+
+        for (name, config) in test_cases {
+            let result = ZmqSubscriber::new(config);
+            assert!(
+                result.is_err(),
+                "Expected {} endpoint to be rejected",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_block_watcher_rejects_remote_endpoint() {
+        let result = BlockWatcher::new("tcp://192.168.1.100:28332");
+        assert!(result.is_err());
+
+        let result = BlockWatcher::with_sequence(
+            "tcp://127.0.0.1:28332",
+            Some("tcp://192.168.1.100:28334"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_config_success() {
+        let config = ZmqConfig::default();
+        assert!(ZmqSubscriber::validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_failure() {
+        let config = ZmqConfig {
+            hashblock_endpoint: Some("tcp://evil.attacker.com:28332".to_string()),
+            hashtx_endpoint: None,
+            rawblock_endpoint: None,
+            rawtx_endpoint: None,
+            sequence_endpoint: None,
+        };
+        let result = ZmqSubscriber::validate_config(&config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().0.contains("evil.attacker.com"));
     }
 }

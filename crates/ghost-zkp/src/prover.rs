@@ -130,7 +130,8 @@ impl BlockProver {
     /// See `docs/ZK_TRUSTED_SETUP.md` for ceremony requirements.
     #[instrument(skip_all, fields(max_txs, tree_depth))]
     pub fn new_with_setup(max_txs: usize, tree_depth: usize) -> ZkResult<Self> {
-        warn!(
+        // L-21: Use error! level for trusted setup warning so it can't be silently ignored
+        error!(
             "SECURITY WARNING: Using random trusted setup. \
              This is INSECURE for production. Use MPC-generated parameters."
         );

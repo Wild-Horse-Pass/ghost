@@ -756,6 +756,17 @@ impl PayoutProposalCreator {
             );
         }
 
+        // L-16: Verify that allocated_total + rounding_remainder == total_sats
+        // This assertion catches any arithmetic bugs in basis point calculations
+        debug_assert_eq!(
+            allocated_total.saturating_add(rounding_remainder),
+            total_sats,
+            "L-16: Payout accounting error: allocated {} + remainder {} != total {}",
+            allocated_total,
+            rounding_remainder,
+            total_sats
+        );
+
         // Merge payouts going to the same address (e.g., multiple nodes using treasury)
         let mut merged_payouts: Vec<PayoutEntry> = Vec::new();
         for payout in payouts {

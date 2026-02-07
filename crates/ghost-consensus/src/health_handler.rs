@@ -76,11 +76,175 @@ pub type CapabilityVerifierCallback =
 const HEALTH_RATE_LIMIT_MAX_TOKENS: u32 = 10;
 const HEALTH_RATE_LIMIT_REFILL_RATE: u32 = 1;
 
+/// L-7 SECURITY: Dynamic PoW difficulty adjustment configuration
+///
+/// The difficulty is adjusted based on recent ping rates to prevent
+/// Sybil attacks during high-traffic periods while maintaining usability
+/// during low-activity periods.
+
+/// Base PoW difficulty (minimum)
+const BASE_POW_DIFFICULTY: u32 = 16;
+
+/// Maximum PoW difficulty under attack conditions
+const MAX_POW_DIFFICULTY: u32 = 24;
+
+/// Number of pings to track for rate calculation
+const PING_RATE_WINDOW_SIZE: usize = 1000;
+
+/// Threshold: if we receive more than this many pings per second, increase difficulty
+const HIGH_TRAFFIC_THRESHOLD_PER_SEC: f64 = 50.0;
+
+/// Low traffic threshold (pings per second) below which we decrease difficulty
+const LOW_TRAFFIC_THRESHOLD_PER_SEC: f64 = 5.0;
+
+/// How often to recalculate difficulty (seconds)
+const DIFFICULTY_ADJUSTMENT_INTERVAL_SECS: u64 = 60;
+
 /// Token bucket for rate limiting
 #[derive(Clone)]
 struct TokenBucket {
     tokens: f64,
     last_update: Instant,
+}
+
+/// L-7 SECURITY: Dynamic difficulty adjuster for health ping PoW
+///
+/// Adjusts PoW difficulty based on recent ping rates:
+/// - Under attack (high traffic): Increase difficulty to make Sybil expensive
+/// - Normal operation (low traffic): Decrease difficulty for usability
+pub struct DynamicDifficultyAdjuster {
+    /// Timestamps of recent pings for rate calculation
+    ping_timestamps: RwLock<std::collections::VecDeque<Instant>>,
+    /// Current effective difficulty
+    current_difficulty: RwLock<u32>,
+    /// Last time difficulty was adjusted
+    last_adjustment: RwLock<Instant>,
+}
+
+impl DynamicDifficultyAdjuster {
+    /// Create a new difficulty adjuster with base difficulty
+    pub fn new() -> Self {
+        Self {
+            ping_timestamps: RwLock::new(std::collections::VecDeque::with_capacity(
+                PING_RATE_WINDOW_SIZE,
+            )),
+            current_difficulty: RwLock::new(BASE_POW_DIFFICULTY),
+            last_adjustment: RwLock::new(Instant::now()),
+        }
+    }
+
+    /// Record a ping and potentially adjust difficulty
+    ///
+    /// Returns the current required difficulty
+    pub fn record_ping(&self) -> u32 {
+        let now = Instant::now();
+
+        // Record this ping
+        {
+            let mut timestamps = self.ping_timestamps.write();
+            timestamps.push_back(now);
+
+            // Keep only recent pings (within 60 seconds)
+            let cutoff = now - Duration::from_secs(60);
+            while timestamps
+                .front()
+                .map(|t| *t < cutoff)
+                .unwrap_or(false)
+            {
+                timestamps.pop_front();
+            }
+
+            // Cap at window size
+            while timestamps.len() > PING_RATE_WINDOW_SIZE {
+                timestamps.pop_front();
+            }
+        }
+
+        // Check if it's time to adjust difficulty
+        let should_adjust = {
+            let last = self.last_adjustment.read();
+            now.duration_since(*last).as_secs() >= DIFFICULTY_ADJUSTMENT_INTERVAL_SECS
+        };
+
+        if should_adjust {
+            self.adjust_difficulty();
+        }
+
+        *self.current_difficulty.read()
+    }
+
+    /// Get the current difficulty without recording a ping
+    pub fn current_difficulty(&self) -> u32 {
+        *self.current_difficulty.read()
+    }
+
+    /// Adjust difficulty based on recent ping rate
+    fn adjust_difficulty(&self) {
+        let now = Instant::now();
+        let rate = self.calculate_ping_rate();
+        let current = *self.current_difficulty.read();
+
+        let new_difficulty = if rate > HIGH_TRAFFIC_THRESHOLD_PER_SEC {
+            // Under attack - increase difficulty
+            let increase = ((rate / HIGH_TRAFFIC_THRESHOLD_PER_SEC).log2() as u32).max(1);
+            (current + increase).min(MAX_POW_DIFFICULTY)
+        } else if rate < LOW_TRAFFIC_THRESHOLD_PER_SEC && current > BASE_POW_DIFFICULTY {
+            // Low traffic - decrease difficulty (but not below base)
+            (current - 1).max(BASE_POW_DIFFICULTY)
+        } else {
+            current
+        };
+
+        if new_difficulty != current {
+            debug!(
+                old_difficulty = current,
+                new_difficulty,
+                ping_rate = rate,
+                "L-7: Adjusting PoW difficulty based on traffic"
+            );
+            *self.current_difficulty.write() = new_difficulty;
+        }
+
+        *self.last_adjustment.write() = now;
+    }
+
+    /// Calculate pings per second over the tracking window
+    fn calculate_ping_rate(&self) -> f64 {
+        let timestamps = self.ping_timestamps.read();
+        if timestamps.len() < 2 {
+            return 0.0;
+        }
+
+        let first = timestamps.front().unwrap();
+        let last = timestamps.back().unwrap();
+        let duration = last.duration_since(*first).as_secs_f64();
+
+        if duration < 0.001 {
+            return 0.0;
+        }
+
+        timestamps.len() as f64 / duration
+    }
+
+    /// Clean up old ping timestamps (call periodically)
+    pub fn cleanup(&self) {
+        let now = Instant::now();
+        let cutoff = now - Duration::from_secs(60);
+        let mut timestamps = self.ping_timestamps.write();
+        while timestamps
+            .front()
+            .map(|t| *t < cutoff)
+            .unwrap_or(false)
+        {
+            timestamps.pop_front();
+        }
+    }
+}
+
+impl Default for DynamicDifficultyAdjuster {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Rate limiter for health pings
@@ -232,6 +396,8 @@ pub struct HealthPingHandler {
     last_registration: RwLock<HashMap<NodeId, Instant>>,
     /// First seen time per node (C2 security fix - uptime tracking)
     first_seen_times: RwLock<HashMap<NodeId, Instant>>,
+    /// L-7 SECURITY: Dynamic PoW difficulty adjuster
+    difficulty_adjuster: DynamicDifficultyAdjuster,
 }
 
 impl HealthPingHandler {
@@ -260,6 +426,7 @@ impl HealthPingHandler {
             ban_manager: None,
             last_registration: RwLock::new(HashMap::new()),
             first_seen_times: RwLock::new(HashMap::new()),
+            difficulty_adjuster: DynamicDifficultyAdjuster::new(),
         }
     }
 
@@ -308,6 +475,7 @@ impl HealthPingHandler {
     /// Clean up rate limiter state (call periodically)
     pub fn cleanup_rate_limiter(&self) {
         self.rate_limiter.cleanup(300); // 5 minute TTL
+        self.difficulty_adjuster.cleanup(); // L-7: Clean up old ping timestamps
     }
 
     /// Get rate limiter statistics
@@ -317,6 +485,10 @@ impl HealthPingHandler {
 
     /// Verify the PoW proof from a health ping
     ///
+    /// L-7 SECURITY: Uses dynamic difficulty that adjusts based on traffic.
+    /// Under attack conditions, difficulty increases to make Sybil expensive.
+    /// During low activity, difficulty decreases for usability.
+    ///
     /// Returns true if:
     /// - PoW is not required (config.require_pow = false), OR
     /// - The ping contains a valid PoW proof with sufficient difficulty
@@ -325,13 +497,25 @@ impl HealthPingHandler {
             return true;
         }
 
+        // L-7: Use dynamic difficulty instead of static config value
+        let required_difficulty = self.difficulty_adjuster.current_difficulty();
+
         match pow_proof {
             Some((nonce, difficulty)) => {
                 let proof = NodeIdProof { nonce, difficulty };
-                proof.verify(node_id, self.config.pow_difficulty)
+                // Verify against the dynamically adjusted difficulty
+                proof.verify(node_id, required_difficulty)
             }
             None => false,
         }
+    }
+
+    /// L-7: Get the current required PoW difficulty
+    ///
+    /// This is useful for nodes to know what difficulty they should target
+    /// when generating their PoW proofs.
+    pub fn current_pow_difficulty(&self) -> u32 {
+        self.difficulty_adjuster.current_difficulty()
     }
 
     /// Validate health ping timestamp (H4 security fix)
@@ -447,6 +631,9 @@ impl HealthPingHandler {
                 short_id
             )));
         }
+
+        // L-7: Record this ping for dynamic difficulty adjustment
+        self.difficulty_adjuster.record_ping();
 
         // Deserialize the health ping
         let ping_msg: HealthPingMessage = serde_json::from_slice(&envelope.payload)
@@ -684,28 +871,23 @@ mod tests {
         let peers = Arc::new(PeerManager::new(our_node_id, 100));
         let handler = HealthPingHandler::new(peers, None);
 
-        // Generate a node with valid PoW
+        // L-7: Dynamic difficulty starts at BASE_POW_DIFFICULTY (16)
+        // Generate a node with valid PoW at that difficulty
         let test_key = [1u8; 32];
-        let proof = NodeIdProof::mine(&test_key, 8).unwrap(); // Low difficulty for test
+        let proof = NodeIdProof::mine(&test_key, BASE_POW_DIFFICULTY).unwrap();
 
-        // Create config that requires lower difficulty for testing
-        let mut config = HealthHandlerConfig::default();
-        config.pow_difficulty = 8;
-        let peers2 = Arc::new(PeerManager::new(our_node_id, 100));
-        let handler_low_diff = HealthPingHandler::with_config(peers2, None, config);
-
-        // Valid PoW should pass
-        assert!(handler_low_diff.verify_pow(&test_key, Some((proof.nonce, proof.difficulty))));
+        // Valid PoW should pass (at base difficulty which the dynamic adjuster uses)
+        assert!(handler.verify_pow(&test_key, Some((proof.nonce, proof.difficulty))));
 
         // No PoW should fail
-        assert!(!handler_low_diff.verify_pow(&test_key, None));
+        assert!(!handler.verify_pow(&test_key, None));
 
         // Wrong nonce should fail
-        assert!(!handler_low_diff.verify_pow(&test_key, Some((999999999, 8))));
+        assert!(!handler.verify_pow(&test_key, Some((999999999, BASE_POW_DIFFICULTY))));
 
         // Wrong node_id should fail
         let wrong_key = [2u8; 32];
-        assert!(!handler_low_diff.verify_pow(&wrong_key, Some((proof.nonce, proof.difficulty))));
+        assert!(!handler.verify_pow(&wrong_key, Some((proof.nonce, proof.difficulty))));
     }
 
     #[test]
@@ -721,5 +903,61 @@ mod tests {
 
         // Should pass without PoW when not required
         assert!(handler.verify_pow(&node_id, None));
+    }
+
+    // =========================================================================
+    // L-7 TESTS: Dynamic PoW difficulty adjustment
+    // =========================================================================
+
+    #[test]
+    fn test_dynamic_difficulty_starts_at_base() {
+        let adjuster = DynamicDifficultyAdjuster::new();
+        assert_eq!(adjuster.current_difficulty(), BASE_POW_DIFFICULTY);
+    }
+
+    #[test]
+    fn test_dynamic_difficulty_records_pings() {
+        let adjuster = DynamicDifficultyAdjuster::new();
+
+        // Record some pings
+        for _ in 0..10 {
+            adjuster.record_ping();
+        }
+
+        // Should still be at base difficulty (not enough time/traffic for adjustment)
+        assert_eq!(adjuster.current_difficulty(), BASE_POW_DIFFICULTY);
+    }
+
+    #[test]
+    fn test_dynamic_difficulty_cleanup() {
+        let adjuster = DynamicDifficultyAdjuster::new();
+
+        // Record some pings
+        for _ in 0..5 {
+            adjuster.record_ping();
+        }
+
+        // Cleanup should not panic
+        adjuster.cleanup();
+
+        // Difficulty should still be accessible
+        let _ = adjuster.current_difficulty();
+    }
+
+    #[test]
+    fn test_dynamic_difficulty_default() {
+        let adjuster = DynamicDifficultyAdjuster::default();
+        assert_eq!(adjuster.current_difficulty(), BASE_POW_DIFFICULTY);
+    }
+
+    #[test]
+    fn test_handler_uses_dynamic_difficulty() {
+        let our_node_id = [0u8; 32];
+        let peers = Arc::new(PeerManager::new(our_node_id, 100));
+        let handler = HealthPingHandler::new(peers, None);
+
+        // Handler should expose current difficulty
+        let difficulty = handler.current_pow_difficulty();
+        assert_eq!(difficulty, BASE_POW_DIFFICULTY);
     }
 }

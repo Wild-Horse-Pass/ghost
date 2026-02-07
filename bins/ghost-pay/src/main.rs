@@ -93,13 +93,13 @@ struct Args {
     #[arg(long, default_value = "http://127.0.0.1:8332")]
     bitcoin_rpc: String,
 
-    /// Bitcoin Core RPC user
-    #[arg(long, default_value = "bitcoin")]
-    rpc_user: String,
+    /// Bitcoin Core RPC user (required, or set BITCOIN_RPC_USER env var)
+    #[arg(long, env = "BITCOIN_RPC_USER")]
+    rpc_user: Option<String>,
 
-    /// Bitcoin Core RPC password
-    #[arg(long, default_value = "bitcoin")]
-    rpc_password: String,
+    /// Bitcoin Core RPC password (required, or set BITCOIN_RPC_PASSWORD env var)
+    #[arg(long, env = "BITCOIN_RPC_PASSWORD")]
+    rpc_password: Option<String>,
 
     /// Network (mainnet, testnet, signet, regtest)
     #[arg(long, default_value = "regtest")]
@@ -208,9 +208,12 @@ fn decrypt_keys(encrypted: &[u8], password: &str) -> Result<Vec<u8>, anyhow::Err
     Ok(plaintext)
 }
 
+/// Password file name for auto-generated secure passwords
+const AUTO_PASSWORD_FILE: &str = ".ghost-pay-key";
+
 /// Get or derive the encryption password
 /// For mainnet, requires explicit password via --key-password or GHOST_PAY_PASSWORD env var
-/// For non-mainnet, allows machine-derived password with a warning
+/// For non-mainnet, generates and stores a secure random password in the data directory
 fn get_encryption_password(args: &Args, network: Network) -> Result<String> {
     // Check explicit password argument first
     if let Some(ref password) = args.key_password {
@@ -222,20 +225,74 @@ fn get_encryption_password(args: &Args, network: Network) -> Result<String> {
         return Ok(password);
     }
 
-    // For mainnet, require explicit password
+    // For mainnet, require explicit password - no auto-generation
     if network == Network::Bitcoin {
         return Err(anyhow::anyhow!(
             "GHOST_PAY_PASSWORD environment variable or --key-password required for mainnet"
         ));
     }
 
-    // For non-mainnet, allow machine-derived password with warning
-    warn!("Using machine-derived password - NOT SAFE FOR MAINNET");
-    let hostname = std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "ghost-pay-node".to_string());
+    // M-13 FIX: For non-mainnet, use a secure random password stored in a file
+    // This replaces the predictable hostname-based derivation
+    let password_path = std::path::Path::new(&args.data_dir).join(AUTO_PASSWORD_FILE);
 
-    Ok(format!("ghost-pay:{}:{}", hostname, args.data_dir))
+    // Try to read existing password file
+    if let Ok(password) = std::fs::read_to_string(&password_path) {
+        let password = password.trim().to_string();
+        if password.len() >= 32 {
+            info!(
+                "Using stored key password from {}",
+                password_path.display()
+            );
+            return Ok(password);
+        }
+        // Password file exists but is too short - regenerate
+        warn!(
+            "Existing password file too short, regenerating: {}",
+            password_path.display()
+        );
+    }
+
+    // Generate new secure random password (64 hex chars = 32 bytes of entropy)
+    let mut random_bytes = [0u8; 32];
+    getrandom::getrandom(&mut random_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to generate secure random password: {}", e))?;
+
+    let password = hex::encode(random_bytes);
+
+    // Store the password with restricted permissions
+    // First, ensure the data directory exists
+    std::fs::create_dir_all(&args.data_dir)?;
+
+    // Write password file
+    std::fs::write(&password_path, &password).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to write password file {}: {}",
+            password_path.display(),
+            e
+        )
+    })?;
+
+    // On Unix, set restrictive permissions (owner read/write only)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&password_path, perms).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to set permissions on password file {}: {}",
+                password_path.display(),
+                e
+            )
+        })?;
+    }
+
+    info!(
+        "Generated and stored new key password at {} (non-mainnet only)",
+        password_path.display()
+    );
+
+    Ok(password)
 }
 
 // =============================================================================
@@ -497,15 +554,22 @@ async fn main() -> Result<()> {
     let db = Arc::new(Database::open(&db_path)?);
     info!("Database opened: {}", db_path.display());
 
+    // M-16 FIX: Require explicit RPC credentials - no defaults
+    let rpc_user = args.rpc_user.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Bitcoin RPC user required. Set --rpc-user or BITCOIN_RPC_USER environment variable."
+        )
+    })?;
+    let rpc_password = args.rpc_password.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Bitcoin RPC password required. Set --rpc-password or BITCOIN_RPC_PASSWORD environment variable."
+        )
+    })?;
+
     // Parse Bitcoin RPC URL and create client
     let rpc_url = &args.bitcoin_rpc;
     let (rpc_host, rpc_port) = parse_rpc_url(rpc_url, network);
-    let rpc = Arc::new(BitcoinRpc::new(
-        &rpc_host,
-        rpc_port,
-        &args.rpc_user,
-        &args.rpc_password,
-    )?);
+    let rpc = Arc::new(BitcoinRpc::new(&rpc_host, rpc_port, rpc_user, rpc_password)?);
     info!("Bitcoin RPC configured: {}:{}", rpc_host, rpc_port);
 
     // Check treasury address configuration before args is moved

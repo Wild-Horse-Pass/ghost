@@ -62,7 +62,9 @@ impl Default for ServerConfig {
 }
 
 /// Cloudflare API configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// M-18 FIX: Custom Debug implementation to redact api_token
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CloudflareConfig {
     /// Cloudflare Zone ID for the domain
     pub zone_id: String,
@@ -73,6 +75,18 @@ pub struct CloudflareConfig {
     pub base_domain: String,
     /// Enable Cloudflare integration (can be disabled for testing)
     pub enabled: bool,
+}
+
+// M-18 FIX: Custom Debug that redacts api_token to prevent accidental exposure in logs
+impl std::fmt::Debug for CloudflareConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CloudflareConfig")
+            .field("zone_id", &self.zone_id)
+            .field("api_token", &"[REDACTED]")
+            .field("base_domain", &self.base_domain)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
 }
 
 impl Default for CloudflareConfig {

@@ -54,6 +54,18 @@ pub const MIN_RECOVERY_WINDOW_PERCENT: f32 = 0.5;
 /// Instant capability validity window (blocks)
 pub const INSTANT_VALIDITY_BLOCKS: u32 = 6; // ~1 hour
 
+/// M-8 FIX: Legacy receipt cutoff block height.
+/// After this block height, legacy receipts (with zero state hash) are rejected.
+/// This prevents unbounded backwards compatibility that could allow state manipulation.
+///
+/// Set to mainnet target launch height + 6 months (~26,280 blocks at 10 min/block).
+/// This gives operators time to upgrade while ensuring legacy receipts eventually expire.
+/// For signet/testnet, set lower for faster testing.
+///
+/// Production value: 890_000 (approximately Feb 2025 + 6 months)
+/// This can be overridden via GHOST_LEGACY_RECEIPT_CUTOFF env var for testing.
+pub const LEGACY_RECEIPT_CUTOFF_HEIGHT: u64 = 890_000;
+
 /// Reservation expiry time in seconds (CRIT-1)
 pub const RESERVATION_EXPIRY_SECS: i64 = 30;
 
@@ -677,6 +689,59 @@ impl std::fmt::Display for InstantPaymentError {
 
 impl std::error::Error for InstantPaymentError {}
 
+/// M-8 FIX: Result of lock state verification with detailed failure reasons
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockStateVerificationResult {
+    /// State hash matches - verification passed
+    Valid,
+    /// Legacy receipt accepted (before cutoff height)
+    LegacyReceiptAccepted,
+    /// Legacy receipt rejected - past cutoff height
+    LegacyReceiptExpired {
+        current_height: u64,
+        cutoff_height: u64,
+    },
+    /// State hash mismatch - lock state changed
+    StateMismatch {
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
+}
+
+impl LockStateVerificationResult {
+    /// Returns true if verification passed
+    pub fn is_valid(&self) -> bool {
+        matches!(
+            self,
+            LockStateVerificationResult::Valid | LockStateVerificationResult::LegacyReceiptAccepted
+        )
+    }
+}
+
+impl std::fmt::Display for LockStateVerificationResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Valid => write!(f, "Lock state verification passed"),
+            Self::LegacyReceiptAccepted => {
+                write!(f, "Legacy receipt accepted (before cutoff height)")
+            }
+            Self::LegacyReceiptExpired {
+                current_height,
+                cutoff_height,
+            } => {
+                write!(
+                    f,
+                    "Legacy receipt rejected: current height {} >= cutoff {}",
+                    current_height, cutoff_height
+                )
+            }
+            Self::StateMismatch { .. } => {
+                write!(f, "Lock state mismatch: state changed since receipt creation")
+            }
+        }
+    }
+}
+
 /// Instant payment receipt (for merchant confirmation)
 ///
 /// CRIT-2 FIX: Now includes sender_pubkey and signature for verification
@@ -726,15 +791,67 @@ impl InstantReceipt {
     /// - Settlement when lock has been frozen/recovered
     /// - Settlement when balance has been exhausted
     ///
+    /// M-8 FIX: Legacy receipts (with zero state hash) are now rejected after
+    /// LEGACY_RECEIPT_CUTOFF_HEIGHT to prevent unbounded backwards compatibility attacks.
+    ///
     /// Returns true if the current lock state matches the state at receipt creation.
-    pub fn verify_lock_state(&self, current_snapshot: &LockSnapshot) -> bool {
+    pub fn verify_lock_state(&self, current_snapshot: &LockSnapshot, current_height: u64) -> bool {
         // If lock_state_hash is all zeros, this is a legacy receipt without state binding
-        // For backwards compatibility, allow these BUT log a warning in the caller
         if self.lock_state_hash == [0u8; 32] {
+            // M-8 FIX: Check if we're past the legacy receipt cutoff
+            // Allow env var override for testing (must be explicitly set)
+            let cutoff = std::env::var("GHOST_LEGACY_RECEIPT_CUTOFF")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(LEGACY_RECEIPT_CUTOFF_HEIGHT);
+
+            if current_height >= cutoff {
+                // Legacy receipt rejected - past cutoff
+                return false;
+            }
+
+            // Before cutoff, allow legacy receipts for backwards compatibility
             return true;
         }
 
         current_snapshot.state_hash() == self.lock_state_hash
+    }
+
+    /// H-AUTH-3/M-8: Verify lock state with explicit cutoff check
+    ///
+    /// Returns a detailed result explaining why verification failed.
+    pub fn verify_lock_state_detailed(
+        &self,
+        current_snapshot: &LockSnapshot,
+        current_height: u64,
+    ) -> LockStateVerificationResult {
+        // Check for legacy receipt
+        if self.lock_state_hash == [0u8; 32] {
+            let cutoff = std::env::var("GHOST_LEGACY_RECEIPT_CUTOFF")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(LEGACY_RECEIPT_CUTOFF_HEIGHT);
+
+            if current_height >= cutoff {
+                return LockStateVerificationResult::LegacyReceiptExpired {
+                    current_height,
+                    cutoff_height: cutoff,
+                };
+            }
+
+            return LockStateVerificationResult::LegacyReceiptAccepted;
+        }
+
+        // Compare state hashes
+        let current_hash = current_snapshot.state_hash();
+        if current_hash == self.lock_state_hash {
+            LockStateVerificationResult::Valid
+        } else {
+            LockStateVerificationResult::StateMismatch {
+                expected: self.lock_state_hash,
+                actual: current_hash,
+            }
+        }
     }
 
     /// Check if this receipt has state binding (H-AUTH-3 compliant)
@@ -999,8 +1116,8 @@ mod tests {
             lock_state_hash: state_hash,
         };
 
-        // Same lock should verify
-        assert!(receipt.verify_lock_state(&lock),
+        // Same lock should verify (using height before cutoff)
+        assert!(receipt.verify_lock_state(&lock, 200),
             "Receipt should verify against unchanged lock");
     }
 
@@ -1026,7 +1143,7 @@ mod tests {
         let mut modified_lock = create_healthy_lock();
         modified_lock.balance_sats = 400_000; // Balance changed!
 
-        assert!(!receipt.verify_lock_state(&modified_lock),
+        assert!(!receipt.verify_lock_state(&modified_lock, 200),
             "Receipt should NOT verify against modified lock");
     }
 
@@ -1063,8 +1180,112 @@ mod tests {
             lock_state_hash: [0u8; 32],
         };
         assert!(!legacy_receipt.has_state_binding());
-        // Legacy receipts should still verify for backwards compat
-        assert!(legacy_receipt.verify_lock_state(&lock));
+        // Legacy receipts should still verify for backwards compat (before cutoff)
+        assert!(legacy_receipt.verify_lock_state(&lock, 200));
+    }
+
+    // =========================================================================
+    // M-8 FIX TESTS: Legacy Receipt Cutoff
+    // =========================================================================
+
+    #[test]
+    fn test_legacy_receipt_accepted_before_cutoff() {
+        let lock = create_healthy_lock();
+
+        let legacy_receipt = InstantReceipt {
+            payment_id: [1u8; 32],
+            sender_lock_id: "abc123".to_string(),
+            recipient: "merchant456".to_string(),
+            amount_sats: 50_000,
+            capability: InstantCapability::capable(100_000, 0.95, 210),
+            timestamp: 1700000000,
+            settlement_block: 205,
+            sender_pubkey: [1u8; 32],
+            signature: [0u8; 64],
+            lock_state_hash: [0u8; 32], // Legacy: no state binding
+        };
+
+        // Before cutoff, should be accepted
+        assert!(legacy_receipt.verify_lock_state(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT - 1),
+            "Legacy receipt should be accepted before cutoff");
+    }
+
+    #[test]
+    fn test_legacy_receipt_rejected_after_cutoff() {
+        let lock = create_healthy_lock();
+
+        let legacy_receipt = InstantReceipt {
+            payment_id: [1u8; 32],
+            sender_lock_id: "abc123".to_string(),
+            recipient: "merchant456".to_string(),
+            amount_sats: 50_000,
+            capability: InstantCapability::capable(100_000, 0.95, 210),
+            timestamp: 1700000000,
+            settlement_block: 205,
+            sender_pubkey: [1u8; 32],
+            signature: [0u8; 64],
+            lock_state_hash: [0u8; 32], // Legacy: no state binding
+        };
+
+        // At cutoff, should be rejected
+        assert!(!legacy_receipt.verify_lock_state(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT),
+            "Legacy receipt should be rejected at cutoff");
+
+        // After cutoff, should be rejected
+        assert!(!legacy_receipt.verify_lock_state(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT + 1000),
+            "Legacy receipt should be rejected after cutoff");
+    }
+
+    #[test]
+    fn test_verify_lock_state_detailed() {
+        let lock = create_healthy_lock();
+
+        // Receipt with valid state hash
+        let valid_receipt = InstantReceipt {
+            payment_id: [1u8; 32],
+            sender_lock_id: "abc123".to_string(),
+            recipient: "merchant456".to_string(),
+            amount_sats: 50_000,
+            capability: InstantCapability::capable(100_000, 0.95, 210),
+            timestamp: 1700000000,
+            settlement_block: 205,
+            sender_pubkey: [1u8; 32],
+            signature: [0u8; 64],
+            lock_state_hash: lock.state_hash(),
+        };
+
+        let result = valid_receipt.verify_lock_state_detailed(&lock, 200);
+        assert!(result.is_valid());
+        assert_eq!(result, LockStateVerificationResult::Valid);
+
+        // Legacy receipt before cutoff
+        let legacy_receipt = InstantReceipt {
+            payment_id: [1u8; 32],
+            sender_lock_id: "abc123".to_string(),
+            recipient: "merchant456".to_string(),
+            amount_sats: 50_000,
+            capability: InstantCapability::capable(100_000, 0.95, 210),
+            timestamp: 1700000000,
+            settlement_block: 205,
+            sender_pubkey: [1u8; 32],
+            signature: [0u8; 64],
+            lock_state_hash: [0u8; 32],
+        };
+
+        let result = legacy_receipt.verify_lock_state_detailed(&lock, 200);
+        assert!(result.is_valid());
+        assert_eq!(result, LockStateVerificationResult::LegacyReceiptAccepted);
+
+        // Legacy receipt after cutoff
+        let result = legacy_receipt.verify_lock_state_detailed(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT + 100);
+        assert!(!result.is_valid());
+        match result {
+            LockStateVerificationResult::LegacyReceiptExpired { current_height, cutoff_height } => {
+                assert_eq!(current_height, LEGACY_RECEIPT_CUTOFF_HEIGHT + 100);
+                assert_eq!(cutoff_height, LEGACY_RECEIPT_CUTOFF_HEIGHT);
+            }
+            _ => panic!("Expected LegacyReceiptExpired"),
+        }
     }
 
     // =========================================================================

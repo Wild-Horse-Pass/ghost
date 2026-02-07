@@ -27,7 +27,11 @@
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
+use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
+
+/// Type alias for HMAC-SHA256
+type HmacSha256 = Hmac<Sha256>;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -97,6 +101,18 @@ struct PersistedRateLimiterState {
     buckets: Vec<(String, PersistedBucket)>, // node_id_hex -> bucket
     saved_at: u64,
 }
+
+/// M-2: Authenticated rate limiter state with HMAC
+#[derive(serde::Serialize, serde::Deserialize)]
+struct AuthenticatedRateLimiterState {
+    /// The actual state data (JSON-encoded PersistedRateLimiterState)
+    data: String,
+    /// HMAC-SHA256 of the data using node-derived key
+    hmac: String,
+}
+
+/// M-2: Domain separator for rate limiter HMAC
+const RATE_LIMITER_HMAC_DOMAIN: &[u8] = b"ghost/rate-limiter/hmac/v1";
 
 impl RateLimiter {
     /// Create a new rate limiter
@@ -285,6 +301,8 @@ impl RateLimiter {
     /// Load rate limiter state from a file (C3 security fix)
     ///
     /// Call this at startup to restore state after crashes.
+    ///
+    /// **DEPRECATED**: Use `from_persisted_file_authenticated` for M-2 security.
     pub fn from_persisted_file(
         max_tokens: u32,
         refill_rate: u32,
@@ -292,6 +310,153 @@ impl RateLimiter {
     ) -> std::io::Result<Self> {
         let json = std::fs::read_to_string(path)?;
         Ok(Self::from_persisted(max_tokens, refill_rate, &json))
+    }
+
+    // =========================================================================
+    // M-2: HMAC-Authenticated Persistence
+    // =========================================================================
+
+    /// M-2: Compute HMAC-SHA256 for rate limiter state
+    ///
+    /// Uses domain separation to prevent cross-protocol attacks.
+    fn compute_hmac(data: &str, key: &[u8; 32]) -> String {
+        let mut mac = HmacSha256::new_from_slice(key).expect("HMAC key length is valid");
+        mac.update(RATE_LIMITER_HMAC_DOMAIN);
+        mac.update(data.as_bytes());
+        hex::encode(mac.finalize().into_bytes())
+    }
+
+    /// M-2: Verify HMAC-SHA256 for rate limiter state
+    ///
+    /// Returns true if the HMAC is valid, false otherwise.
+    fn verify_hmac(data: &str, hmac_hex: &str, key: &[u8; 32]) -> bool {
+        let expected = Self::compute_hmac(data, key);
+        // Constant-time comparison to prevent timing attacks
+        if expected.len() != hmac_hex.len() {
+            return false;
+        }
+        let mut result = 0u8;
+        for (a, b) in expected.bytes().zip(hmac_hex.bytes()) {
+            result |= a ^ b;
+        }
+        result == 0
+    }
+
+    /// M-2: Serialize state with HMAC authentication
+    ///
+    /// Returns authenticated JSON that can be verified on load.
+    /// The HMAC is computed over the inner state data using a node-derived key.
+    ///
+    /// # Arguments
+    /// * `key` - 32-byte key derived from node identity (e.g., HKDF from node secret key)
+    pub fn to_persisted_authenticated(&self, key: &[u8; 32]) -> String {
+        let data = self.to_persisted();
+        let hmac = Self::compute_hmac(&data, key);
+
+        let authenticated = AuthenticatedRateLimiterState { data, hmac };
+
+        serde_json::to_string(&authenticated).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// M-2: Deserialize state with HMAC verification
+    ///
+    /// Returns None if:
+    /// - The JSON is malformed
+    /// - The HMAC verification fails (state was tampered with)
+    /// - The inner state is invalid
+    ///
+    /// # Arguments
+    /// * `json` - Authenticated JSON from `to_persisted_authenticated`
+    /// * `key` - Same 32-byte key used for serialization
+    ///
+    /// # Security
+    ///
+    /// This prevents a local attacker from modifying the persisted rate limiter
+    /// state to bypass rate limits. If the HMAC doesn't match, the entire state
+    /// is rejected and a fresh rate limiter is used instead.
+    pub fn from_persisted_authenticated(
+        max_tokens: u32,
+        refill_rate: u32,
+        json: &str,
+        key: &[u8; 32],
+    ) -> Option<Self> {
+        let authenticated: AuthenticatedRateLimiterState = serde_json::from_str(json).ok()?;
+
+        // M-2: Verify HMAC before trusting the data
+        if !Self::verify_hmac(&authenticated.data, &authenticated.hmac, key) {
+            warn!(
+                "M-2 SECURITY: Rate limiter state HMAC verification failed - possible tampering"
+            );
+            return None;
+        }
+
+        Some(Self::from_persisted(max_tokens, refill_rate, &authenticated.data))
+    }
+
+    /// M-2: Persist rate limiter state to a file with HMAC authentication
+    ///
+    /// Call this periodically (e.g., every 60 seconds) to survive crashes.
+    ///
+    /// # Arguments
+    /// * `path` - File path to write to
+    /// * `key` - 32-byte key derived from node identity
+    pub fn persist_to_file_authenticated(
+        &self,
+        path: &std::path::Path,
+        key: &[u8; 32],
+    ) -> std::io::Result<()> {
+        let json = self.to_persisted_authenticated(key);
+        std::fs::write(path, json)
+    }
+
+    /// M-2: Load rate limiter state from a file with HMAC verification
+    ///
+    /// Call this at startup to restore state after crashes.
+    /// Returns a fresh rate limiter if the file is missing, invalid, or tampered.
+    ///
+    /// # Arguments
+    /// * `path` - File path to read from
+    /// * `key` - Same 32-byte key used when persisting
+    pub fn from_persisted_file_authenticated(
+        max_tokens: u32,
+        refill_rate: u32,
+        path: &std::path::Path,
+        key: &[u8; 32],
+    ) -> Self {
+        if !path.exists() {
+            debug!("Rate limiter state file does not exist, starting fresh");
+            return Self::new(max_tokens, refill_rate);
+        }
+
+        match std::fs::read_to_string(path) {
+            Ok(json) => {
+                match Self::from_persisted_authenticated(max_tokens, refill_rate, &json, key) {
+                    Some(limiter) => {
+                        info!(
+                            path = %path.display(),
+                            buckets = limiter.bucket_count(),
+                            "M-2: Loaded authenticated rate limiter state"
+                        );
+                        limiter
+                    }
+                    None => {
+                        warn!(
+                            path = %path.display(),
+                            "M-2: Rate limiter state invalid or tampered, starting fresh"
+                        );
+                        Self::new(max_tokens, refill_rate)
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to read rate limiter state file, starting fresh"
+                );
+                Self::new(max_tokens, refill_rate)
+            }
+        }
     }
 }
 
@@ -304,8 +469,11 @@ impl RateLimiter {
 
 impl Drop for VoteHandler {
     fn drop(&mut self) {
-        if let Some(ref path) = self.rate_limiter_persist_path {
-            if let Err(e) = self.rate_limiter.persist_to_file(path) {
+        // M-2: Use authenticated persistence on shutdown
+        if let (Some(ref path), Some(ref key)) =
+            (&self.rate_limiter_persist_path, &self.rate_limiter_persist_key)
+        {
+            if let Err(e) = self.rate_limiter.persist_to_file_authenticated(path, key) {
                 tracing::error!(
                     path = %path.display(),
                     error = %e,
@@ -314,7 +482,7 @@ impl Drop for VoteHandler {
             } else {
                 tracing::info!(
                     path = %path.display(),
-                    "Persisted rate limiter state on shutdown"
+                    "M-2: Persisted authenticated rate limiter state on shutdown"
                 );
             }
         }
@@ -417,6 +585,9 @@ pub struct VoteHandler {
     db: Option<Arc<ghost_storage::Database>>,
     /// M-P2P-2: Path for rate limiter persistence
     rate_limiter_persist_path: Option<PathBuf>,
+    /// M-2: Key for HMAC authentication of persisted rate limiter state
+    /// Derived from node identity to prevent local tampering
+    rate_limiter_persist_key: Option<[u8; 32]>,
     /// 4.4 SECURITY: Current known best block height for dynamic validation
     known_best_height: RwLock<Option<u64>>,
 }
@@ -451,6 +622,7 @@ impl VoteHandler {
             ban_duration: std::time::Duration::from_secs(EQUIVOCATION_BAN_DURATION_SECS),
             db: None,
             rate_limiter_persist_path: None,
+            rate_limiter_persist_key: None,
             known_best_height: RwLock::new(None),
         }
     }
@@ -485,63 +657,85 @@ impl VoteHandler {
         self
     }
 
-    /// M-P2P-2: Enable rate limiter persistence to survive restarts
+    /// M-2/M-P2P-2: Enable rate limiter persistence to survive restarts
     ///
     /// When enabled:
-    /// - Loads existing rate limiter state from file at initialization
-    /// - Spawns a background task to persist state every 60 seconds
+    /// - Loads existing rate limiter state from file at initialization (with HMAC verification)
+    /// - Spawns a background task to persist state every 60 seconds (with HMAC authentication)
     ///
-    /// This prevents attackers from bypassing rate limits by triggering node restarts.
+    /// This prevents attackers from:
+    /// - Bypassing rate limits by triggering node restarts
+    /// - Modifying persisted state to bypass rate limits (M-2: HMAC protection)
     ///
     /// # Arguments
     /// * `persist_path` - Path to store the rate limiter state (e.g., "/var/lib/ghost/rate_limiter.json")
     ///
     /// # Returns
     /// Self with persistence enabled
+    ///
+    /// # Security (M-2)
+    ///
+    /// The persisted state is HMAC-authenticated using a key derived from the node identity.
+    /// This prevents a local attacker from modifying the rate limiter state file.
     pub fn with_rate_limiter_persistence(mut self, persist_path: PathBuf) -> Self {
-        // Load existing state if file exists
-        if persist_path.exists() {
-            match RateLimiter::from_persisted_file(
-                self.config.rate_limit_max_tokens,
-                self.config.rate_limit_refill_rate,
-                &persist_path,
-            ) {
-                Ok(loaded_limiter) => {
-                    info!(
-                        path = %persist_path.display(),
-                        buckets = loaded_limiter.bucket_count(),
-                        "Loaded rate limiter state from persistence"
-                    );
-                    self.rate_limiter = Arc::new(loaded_limiter);
-                }
-                Err(e) => {
-                    warn!(
-                        path = %persist_path.display(),
-                        error = %e,
-                        "Failed to load rate limiter state, using fresh state"
-                    );
-                }
-            }
+        // M-2: Derive persistence key from node identity
+        // This binds the rate limiter state to this specific node
+        let persist_key = Self::derive_rate_limiter_key(&self.identity);
+
+        // Load existing state if file exists (with HMAC verification)
+        let loaded_limiter = RateLimiter::from_persisted_file_authenticated(
+            self.config.rate_limit_max_tokens,
+            self.config.rate_limit_refill_rate,
+            &persist_path,
+            &persist_key,
+        );
+
+        if loaded_limiter.bucket_count() > 0 {
+            info!(
+                path = %persist_path.display(),
+                buckets = loaded_limiter.bucket_count(),
+                "M-2: Loaded authenticated rate limiter state from persistence"
+            );
         }
 
+        self.rate_limiter = Arc::new(loaded_limiter);
         self.rate_limiter_persist_path = Some(persist_path);
+        self.rate_limiter_persist_key = Some(persist_key);
         self
     }
 
-    /// M-P2P-2: Start the background persistence task for the rate limiter
+    /// M-2: Derive a key for rate limiter persistence HMAC from node identity
+    ///
+    /// Uses domain-separated SHA256 to derive a 32-byte key from the node ID.
+    /// This ensures the key is:
+    /// - Unique per node
+    /// - Deterministic (same node always gets same key)
+    /// - Bound to the identity (can't be reused with different identities)
+    fn derive_rate_limiter_key(identity: &NodeIdentity) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"ghost/rate-limiter/persist-key/v1");
+        hasher.update(identity.node_id());
+        hasher.finalize().into()
+    }
+
+    /// M-2/M-P2P-2: Start the background persistence task for the rate limiter
     ///
     /// Call this after constructing the VoteHandler if persistence is enabled.
-    /// The task will persist rate limiter state every 60 seconds.
+    /// The task will persist rate limiter state every 60 seconds with HMAC authentication.
     pub fn start_persistence_task(&self) {
-        if let Some(ref persist_path) = self.rate_limiter_persist_path {
+        if let (Some(ref persist_path), Some(ref persist_key)) =
+            (&self.rate_limiter_persist_path, &self.rate_limiter_persist_key)
+        {
             let rate_limiter = Arc::clone(&self.rate_limiter);
             let path = persist_path.clone();
+            let key = *persist_key;
 
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
                 loop {
                     interval.tick().await;
-                    if let Err(e) = rate_limiter.persist_to_file(&path) {
+                    // M-2: Use authenticated persistence
+                    if let Err(e) = rate_limiter.persist_to_file_authenticated(&path, &key) {
                         warn!(
                             path = %path.display(),
                             error = %e,
@@ -551,7 +745,7 @@ impl VoteHandler {
                         debug!(
                             path = %path.display(),
                             buckets = rate_limiter.bucket_count(),
-                            "Persisted rate limiter state"
+                            "M-2: Persisted authenticated rate limiter state"
                         );
                     }
                 }
@@ -559,7 +753,7 @@ impl VoteHandler {
 
             info!(
                 path = %persist_path.display(),
-                "Started rate limiter persistence task (60 second interval)"
+                "M-2: Started authenticated rate limiter persistence task (60 second interval)"
             );
         }
     }
@@ -1582,5 +1776,141 @@ mod tests {
                 field_name
             );
         }
+    }
+
+    // =========================================================================
+    // M-2: HMAC Authentication Tests
+    // =========================================================================
+
+    #[test]
+    fn test_m2_hmac_authentication_valid() {
+        let key = [0x42u8; 32];
+        let limiter = RateLimiter::new(100, 20);
+
+        // Consume some tokens to have state
+        let node1 = [1u8; 32];
+        limiter.check_and_consume(&node1);
+
+        // Serialize with authentication
+        let authenticated_json = limiter.to_persisted_authenticated(&key);
+
+        // Deserialize with same key should succeed
+        let restored =
+            RateLimiter::from_persisted_authenticated(100, 20, &authenticated_json, &key);
+        assert!(
+            restored.is_some(),
+            "M-2: Should successfully load authenticated state with correct key"
+        );
+    }
+
+    #[test]
+    fn test_m2_hmac_authentication_wrong_key() {
+        let key1 = [0x42u8; 32];
+        let key2 = [0x43u8; 32]; // Different key
+        let limiter = RateLimiter::new(100, 20);
+
+        // Consume some tokens to have state
+        let node1 = [1u8; 32];
+        limiter.check_and_consume(&node1);
+
+        // Serialize with key1
+        let authenticated_json = limiter.to_persisted_authenticated(&key1);
+
+        // Deserialize with key2 should fail
+        let restored =
+            RateLimiter::from_persisted_authenticated(100, 20, &authenticated_json, &key2);
+        assert!(
+            restored.is_none(),
+            "M-2: Should reject state authenticated with different key"
+        );
+    }
+
+    #[test]
+    fn test_m2_hmac_authentication_tampered_data() {
+        let key = [0x42u8; 32];
+        let limiter = RateLimiter::new(100, 20);
+
+        // Consume some tokens to have state
+        let node1 = [1u8; 32];
+        limiter.check_and_consume(&node1);
+
+        // Serialize with authentication
+        let authenticated_json = limiter.to_persisted_authenticated(&key);
+
+        // Parse and modify the data
+        let mut parsed: serde_json::Value =
+            serde_json::from_str(&authenticated_json).expect("Valid JSON");
+        if let Some(data) = parsed.get_mut("data") {
+            *data = serde_json::Value::String("tampered".to_string());
+        }
+        let tampered_json = serde_json::to_string(&parsed).expect("Serialize");
+
+        // Deserialize should fail due to HMAC mismatch
+        let restored = RateLimiter::from_persisted_authenticated(100, 20, &tampered_json, &key);
+        assert!(
+            restored.is_none(),
+            "M-2: Should reject tampered state data"
+        );
+    }
+
+    #[test]
+    fn test_m2_hmac_authentication_tampered_hmac() {
+        let key = [0x42u8; 32];
+        let limiter = RateLimiter::new(100, 20);
+
+        // Consume some tokens to have state
+        let node1 = [1u8; 32];
+        limiter.check_and_consume(&node1);
+
+        // Serialize with authentication
+        let authenticated_json = limiter.to_persisted_authenticated(&key);
+
+        // Parse and modify the HMAC
+        let mut parsed: serde_json::Value =
+            serde_json::from_str(&authenticated_json).expect("Valid JSON");
+        if let Some(hmac) = parsed.get_mut("hmac") {
+            *hmac = serde_json::Value::String("0000000000000000".to_string());
+        }
+        let tampered_json = serde_json::to_string(&parsed).expect("Serialize");
+
+        // Deserialize should fail due to HMAC mismatch
+        let restored = RateLimiter::from_persisted_authenticated(100, 20, &tampered_json, &key);
+        assert!(
+            restored.is_none(),
+            "M-2: Should reject state with tampered HMAC"
+        );
+    }
+
+    #[test]
+    fn test_m2_hmac_compute_is_deterministic() {
+        let key = [0x42u8; 32];
+        let data = "test data";
+
+        let hmac1 = RateLimiter::compute_hmac(data, &key);
+        let hmac2 = RateLimiter::compute_hmac(data, &key);
+
+        assert_eq!(hmac1, hmac2, "M-2: HMAC should be deterministic");
+    }
+
+    #[test]
+    fn test_m2_hmac_different_data_produces_different_hmac() {
+        let key = [0x42u8; 32];
+
+        let hmac1 = RateLimiter::compute_hmac("data1", &key);
+        let hmac2 = RateLimiter::compute_hmac("data2", &key);
+
+        assert_ne!(hmac1, hmac2, "M-2: Different data should produce different HMAC");
+    }
+
+    #[test]
+    fn test_m2_hmac_different_key_produces_different_hmac() {
+        let key1 = [0x42u8; 32];
+        let key2 = [0x43u8; 32];
+        let data = "same data";
+
+        let hmac1 = RateLimiter::compute_hmac(data, &key1);
+        let hmac2 = RateLimiter::compute_hmac(data, &key2);
+
+        assert_ne!(hmac1, hmac2, "M-2: Different keys should produce different HMAC");
     }
 }

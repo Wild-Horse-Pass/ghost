@@ -495,13 +495,56 @@ impl CanonicalElderList {
     }
 }
 
+/// L-12 SECURITY: Approval collection timeout (10 minutes)
+///
+/// If approval collection doesn't reach threshold within this time,
+/// the pending list is discarded and a new proposal must be submitted.
+/// This prevents approval collection from hanging indefinitely.
+pub const APPROVAL_COLLECTION_TIMEOUT_SECS: u64 = 10 * 60;
+
+/// State for tracking pending list approval collection
+#[derive(Debug, Clone)]
+pub struct PendingListState {
+    /// The pending elder list
+    pub list: CanonicalElderList,
+    /// When approval collection started (Unix milliseconds)
+    pub started_at: u64,
+    /// Number of retry attempts for this transition
+    pub retry_count: u32,
+}
+
+impl PendingListState {
+    /// Create new pending state for a list
+    pub fn new(list: CanonicalElderList) -> Self {
+        Self {
+            list,
+            started_at: chrono::Utc::now().timestamp_millis() as u64,
+            retry_count: 0,
+        }
+    }
+
+    /// Check if this pending state has timed out
+    pub fn is_timed_out(&self) -> bool {
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let elapsed_ms = now.saturating_sub(self.started_at);
+        elapsed_ms > APPROVAL_COLLECTION_TIMEOUT_SECS * 1000
+    }
+
+    /// Get remaining time before timeout (milliseconds)
+    pub fn remaining_ms(&self) -> u64 {
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let elapsed_ms = now.saturating_sub(self.started_at);
+        let timeout_ms = APPROVAL_COLLECTION_TIMEOUT_SECS * 1000;
+        timeout_ms.saturating_sub(elapsed_ms)
+    }
+}
+
 /// Manages the canonical elder list state and transitions
 pub struct ElderListManager {
     /// Current canonical elder list
     current_list: RwLock<Arc<CanonicalElderList>>,
-    /// Pending list being voted on (if any)
-    #[allow(dead_code)]
-    pending_list: RwLock<Option<CanonicalElderList>>,
+    /// L-12: Pending list being voted on (with timeout tracking)
+    pending_list: RwLock<Option<PendingListState>>,
     /// Pending registration requests
     pending_registrations: RwLock<HashMap<NodeId, ElderRegistrationRequest>>,
 }
@@ -787,6 +830,187 @@ impl ElderListManager {
 
         let mut pending = self.pending_registrations.write();
         pending.retain(|_, req| now - req.requested_at < max_age_ms);
+    }
+
+    // =========================================================================
+    // L-12: PENDING LIST MANAGEMENT WITH TIMEOUT
+    // =========================================================================
+
+    /// L-12: Start collecting approvals for a new elder list proposal
+    ///
+    /// If there's an existing pending list that hasn't timed out, this fails.
+    /// Use `check_pending_timeout()` first to clean up stale pending lists.
+    pub fn start_approval_collection(&self, list: CanonicalElderList) -> GhostResult<()> {
+        let mut pending = self.pending_list.write();
+
+        // Check if there's already a pending list
+        if let Some(ref existing) = *pending {
+            if !existing.is_timed_out() {
+                return Err(GhostError::Config(
+                    "L-12: Cannot start new approval collection - existing collection in progress"
+                        .to_string(),
+                ));
+            }
+            // Timed out - will be replaced
+            warn!(
+                epoch = existing.list.epoch,
+                retry_count = existing.retry_count,
+                "L-12: Replacing timed out pending list"
+            );
+        }
+
+        info!(
+            epoch = list.epoch,
+            elder_count = list.elder_count(),
+            "L-12: Starting approval collection for new elder list"
+        );
+
+        *pending = Some(PendingListState::new(list));
+        Ok(())
+    }
+
+    /// L-12: Add an approval to the pending list
+    ///
+    /// Returns Ok(true) if the list now has sufficient approvals and
+    /// should be promoted via `finalize_pending_list()`.
+    /// Returns Ok(false) if more approvals are needed.
+    /// Returns Err if no pending list or approval is invalid.
+    pub fn add_pending_approval(
+        &self,
+        approval: ElderApproval,
+        previous_elders: &HashSet<NodeId>,
+    ) -> GhostResult<bool> {
+        let mut pending = self.pending_list.write();
+
+        let state = pending.as_mut().ok_or_else(|| {
+            GhostError::Config("L-12: No pending list to add approval to".to_string())
+        })?;
+
+        // Check for timeout
+        if state.is_timed_out() {
+            warn!(
+                epoch = state.list.epoch,
+                "L-12: Cannot add approval - pending list has timed out"
+            );
+            return Err(GhostError::Config(
+                "L-12: Pending list has timed out".to_string(),
+            ));
+        }
+
+        // Add the approval
+        if !state.list.add_approval(approval) {
+            // Approval was invalid or duplicate
+            return Ok(false);
+        }
+
+        // Check if we now have sufficient approvals
+        Ok(state.list.has_sufficient_approvals(previous_elders))
+    }
+
+    /// L-12: Check if the pending list has timed out
+    ///
+    /// Returns Some((epoch, retry_count)) if there was a timeout, None otherwise.
+    /// Call this periodically to detect and handle timeouts.
+    pub fn check_pending_timeout(&self) -> Option<(u64, u32)> {
+        let pending = self.pending_list.read();
+        if let Some(ref state) = *pending {
+            if state.is_timed_out() {
+                return Some((state.list.epoch, state.retry_count));
+            }
+        }
+        None
+    }
+
+    /// L-12: Cancel the pending list (e.g., on timeout)
+    ///
+    /// Returns the pending state if there was one, None otherwise.
+    pub fn cancel_pending_list(&self) -> Option<PendingListState> {
+        self.pending_list.write().take()
+    }
+
+    /// L-12: Retry approval collection with the same list
+    ///
+    /// Use this after a timeout to start a new collection attempt.
+    /// Increments the retry counter.
+    pub fn retry_approval_collection(&self) -> GhostResult<()> {
+        let mut pending = self.pending_list.write();
+
+        let state = pending.as_mut().ok_or_else(|| {
+            GhostError::Config("L-12: No pending list to retry".to_string())
+        })?;
+
+        if !state.is_timed_out() {
+            return Err(GhostError::Config(
+                "L-12: Cannot retry - pending list has not timed out".to_string(),
+            ));
+        }
+
+        // Reset the timer and increment retry count
+        state.started_at = chrono::Utc::now().timestamp_millis() as u64;
+        state.retry_count += 1;
+
+        // Clear old approvals to start fresh
+        state.list.approval_signatures.clear();
+
+        info!(
+            epoch = state.list.epoch,
+            retry_count = state.retry_count,
+            "L-12: Retrying approval collection"
+        );
+
+        Ok(())
+    }
+
+    /// L-12: Finalize the pending list if it has sufficient approvals
+    ///
+    /// Promotes the pending list to be the current canonical list.
+    pub fn finalize_pending_list(&self, previous_elders: &HashSet<NodeId>) -> GhostResult<()> {
+        let pending_state = self.pending_list.write().take();
+
+        let state = pending_state.ok_or_else(|| {
+            GhostError::Config("L-12: No pending list to finalize".to_string())
+        })?;
+
+        if !state.list.has_sufficient_approvals(previous_elders) {
+            // Put it back and return error
+            *self.pending_list.write() = Some(state);
+            return Err(GhostError::Config(
+                "L-12: Pending list does not have sufficient approvals".to_string(),
+            ));
+        }
+
+        // Perform the transition
+        let mut new_list = state.list;
+        new_list.activate();
+
+        info!(
+            epoch = new_list.epoch,
+            elder_count = new_list.elder_count(),
+            approvals = new_list.approval_signatures.len(),
+            "L-12: Finalized and activated new canonical elder list"
+        );
+
+        *self.current_list.write() = Arc::new(new_list);
+        Ok(())
+    }
+
+    /// L-12: Get remaining time before pending list times out
+    ///
+    /// Returns None if no pending list, Some(remaining_ms) otherwise.
+    pub fn pending_timeout_remaining(&self) -> Option<u64> {
+        self.pending_list.read().as_ref().map(|s| s.remaining_ms())
+    }
+
+    /// L-12: Get the pending list state (for diagnostics)
+    pub fn get_pending_state(&self) -> Option<(u64, usize, u32, bool)> {
+        self.pending_list.read().as_ref().map(|s| {
+            (
+                s.list.epoch,
+                s.list.approval_signatures.len(),
+                s.retry_count,
+                s.is_timed_out(),
+            )
+        })
     }
 
     // =========================================================================
@@ -1245,5 +1469,99 @@ mod tests {
             loaded.current().approval_signatures[0].approver,
             identity.node_id()
         );
+    }
+
+    // =========================================================================
+    // L-12 TESTS: Pending list timeout
+    // =========================================================================
+
+    #[test]
+    fn test_l12_approval_timeout_constant() {
+        // L-12: Verify timeout is 10 minutes
+        assert_eq!(APPROVAL_COLLECTION_TIMEOUT_SECS, 10 * 60);
+    }
+
+    #[test]
+    fn test_l12_pending_state_creation() {
+        let elders = vec![create_test_elder_entry([1u8; 32], 0)];
+        let list = CanonicalElderList::new(1, elders);
+
+        let state = PendingListState::new(list);
+        assert_eq!(state.retry_count, 0);
+        assert!(!state.is_timed_out()); // Just created, shouldn't be timed out
+        assert!(state.remaining_ms() > 0);
+    }
+
+    #[test]
+    fn test_l12_start_approval_collection() {
+        let manager = ElderListManager::new(vec![]);
+
+        let elders = vec![create_test_elder_entry([1u8; 32], 1)];
+        let list = CanonicalElderList::new(1, elders);
+
+        // Start collection
+        let result = manager.start_approval_collection(list.clone());
+        assert!(result.is_ok());
+
+        // Should have pending state now
+        let state = manager.get_pending_state();
+        assert!(state.is_some());
+        let (epoch, approvals, retry_count, timed_out) = state.unwrap();
+        assert_eq!(epoch, 1);
+        assert_eq!(approvals, 0);
+        assert_eq!(retry_count, 0);
+        assert!(!timed_out);
+
+        // Can't start another while one is in progress
+        let elders2 = vec![create_test_elder_entry([2u8; 32], 2)];
+        let list2 = CanonicalElderList::new(2, elders2);
+        let result = manager.start_approval_collection(list2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_l12_cancel_pending_list() {
+        let manager = ElderListManager::new(vec![]);
+
+        let elders = vec![create_test_elder_entry([1u8; 32], 1)];
+        let list = CanonicalElderList::new(1, elders);
+
+        manager.start_approval_collection(list).unwrap();
+        assert!(manager.get_pending_state().is_some());
+
+        // Cancel
+        let cancelled = manager.cancel_pending_list();
+        assert!(cancelled.is_some());
+        assert!(manager.get_pending_state().is_none());
+    }
+
+    #[test]
+    fn test_l12_pending_timeout_remaining() {
+        let manager = ElderListManager::new(vec![]);
+
+        // No pending list
+        assert!(manager.pending_timeout_remaining().is_none());
+
+        let elders = vec![create_test_elder_entry([1u8; 32], 1)];
+        let list = CanonicalElderList::new(1, elders);
+        manager.start_approval_collection(list).unwrap();
+
+        // Should have remaining time
+        let remaining = manager.pending_timeout_remaining();
+        assert!(remaining.is_some());
+        assert!(remaining.unwrap() > 0);
+    }
+
+    #[test]
+    fn test_l12_check_pending_timeout_not_expired() {
+        let manager = ElderListManager::new(vec![]);
+
+        let elders = vec![create_test_elder_entry([1u8; 32], 1)];
+        let list = CanonicalElderList::new(1, elders);
+        manager.start_approval_collection(list).unwrap();
+
+        // Shouldn't be timed out immediately
+        let timeout = manager.check_pending_timeout();
+        assert!(timeout.is_none());
     }
 }

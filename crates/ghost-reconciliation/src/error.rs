@@ -129,6 +129,10 @@ pub enum ReconciliationError {
     /// M-VAL-1: Invalid input data
     #[error("Invalid input: {0}")]
     InvalidInput(String),
+
+    /// HIGH-5: RNG failure during cryptographic operations
+    #[error("RNG failure: system entropy source unavailable")]
+    RngFailure,
 }
 
 // Simplified BatchNotFound that takes a String directly

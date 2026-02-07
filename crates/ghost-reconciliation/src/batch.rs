@@ -100,20 +100,22 @@ pub struct Batch {
 
 impl Batch {
     /// Create a new batch
-    pub fn new() -> Self {
+    ///
+    /// Returns an error if the system RNG is unavailable.
+    pub fn new() -> ReconciliationResult<Self> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
-        // Generate unique ID
+        // Generate unique ID with cryptographic random bytes
         let mut hasher = Sha256::new();
         hasher.update(b"batch");
         hasher.update(now.to_le_bytes());
-        hasher.update(rand_bytes());
+        hasher.update(rand_bytes()?);
         let id: [u8; 32] = hasher.finalize().into();
 
-        Self {
+        Ok(Self {
             id,
             state: BatchState::Collecting,
             settlement_hashes: Vec::new(),
@@ -125,7 +127,7 @@ impl Batch {
             l1_txid: None,
             l1_height: None,
             dispute_deadline: None,
-        }
+        })
     }
 
     /// Get batch ID
@@ -334,7 +336,7 @@ impl Batch {
 
 impl Default for Batch {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("System RNG should be available for Batch::new()")
     }
 }
 
@@ -536,10 +538,10 @@ pub fn verify_merkle_proof(
     &computed_root == root
 }
 
-fn rand_bytes() -> [u8; 16] {
+fn rand_bytes() -> ReconciliationResult<[u8; 16]> {
     let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes).expect("System RNG failure is unrecoverable");
-    bytes
+    getrandom::getrandom(&mut bytes).map_err(|_| ReconciliationError::RngFailure)?;
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -548,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_batch_creation() {
-        let batch = Batch::new();
+        let batch = Batch::new().expect("RNG should work in tests");
         assert_eq!(batch.state(), BatchState::Collecting);
         assert_eq!(batch.settlement_count(), 0);
     }
@@ -636,7 +638,7 @@ mod tests {
 
         let mut ids = HashSet::new();
         for _ in 0..1000 {
-            let batch = Batch::new();
+            let batch = Batch::new().expect("RNG should work in tests");
             let id = *batch.id();
             assert!(
                 ids.insert(id),

@@ -125,14 +125,15 @@ impl ParameterFiles {
     /// Returns the list of missing version numbers, if any.
     pub fn find_version_gaps(&self) -> MpcResult<Vec<u32>> {
         let versions = self.list_versions()?;
-        if versions.is_empty() {
-            return Ok(vec![]);
-        }
+
+        // HIGH-7: Use pattern matching instead of unwrap after empty check
+        let (min_version, max_version) = match (versions.first(), versions.last()) {
+            (Some(&min), Some(&max)) => (min, max),
+            // Empty or single-element list has no gaps
+            _ => return Ok(vec![]),
+        };
 
         let mut gaps = Vec::new();
-        let min_version = *versions.first().unwrap();
-        let max_version = *versions.last().unwrap();
-
         for expected in min_version..=max_version {
             if !versions.contains(&expected) {
                 gaps.push(expected);

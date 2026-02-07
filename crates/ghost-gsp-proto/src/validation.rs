@@ -342,6 +342,7 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             sender_lock_id,
             amount_sats,
             proof,
+            signed_payment,
         } => {
             if sender_lock_id.is_empty() {
                 result.add_error("Sender lock ID cannot be empty");
@@ -360,6 +361,24 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
 
             if !proof.is_timestamp_valid() {
                 result.add_error("Proof timestamp out of range");
+            }
+
+            // M-9 FIX: Validate signed_payment structure
+            // Verify sender_lock_id matches
+            if signed_payment.sender_lock_id != *sender_lock_id {
+                result.add_error("Signed payment sender_lock_id must match request sender_lock_id");
+            }
+            // Verify amount matches
+            if signed_payment.amount_sats != *amount_sats {
+                result.add_error("Signed payment amount must match request amount");
+            }
+            // Verify signature is not empty (64 bytes)
+            if signed_payment.signature == [0u8; 64] {
+                result.add_error("Signed payment signature cannot be empty");
+            }
+            // Verify sender pubkey is not empty (32 bytes)
+            if signed_payment.sender_pubkey == [0u8; 32] {
+                result.add_error("Signed payment sender pubkey cannot be empty");
             }
         }
     }

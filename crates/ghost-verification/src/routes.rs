@@ -188,7 +188,7 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/network/treasury", get(api_treasury_handler))
         .route("/api/v1/rewards/current", get(api_rewards_current_handler))
         .route("/api/v1/rewards/history", get(api_rewards_history_handler))
-        .route("/api/v1/logs", get(api_logs_handler))
+        // HIGH-4: /api/v1/logs endpoint REMOVED - exposed journalctl output (security risk)
         .route("/api/v1/locks", get(api_locks_handler))
         .route("/api/v1/node/nickname", get(api_nickname_handler))
         // Additional endpoints for dashboard compatibility
@@ -1079,6 +1079,9 @@ async fn ghostpay_handler(
 async fn api_node_status_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
     let config = state.dashboard_config.read();
+    // M-11: This endpoint exposes this node's own status, which is intentionally public.
+    // The node advertises these capabilities to participate in the network.
+    // Sensitive details like internal IP addresses are NOT exposed here.
     Json(serde_json::json!({
         "online": health.healthy,
         "node_id": health.node_id,
@@ -1088,9 +1091,11 @@ async fn api_node_status_handler(State(state): State<Arc<VerificationState>>) ->
         "round_id": health.round_id,
         "uptime_seconds": health.uptime_secs,
         "uptime_secs": health.uptime_secs,
+        // M-11: Only show counts, not actual peer/miner identifiers
         "peer_count": health.peer_count,
         "miner_count": health.miner_count,
         "is_synced": true,
+        // Capability flags are public - used for verification challenges
         "mempool_profile": config.mempool_profile,
         "template_profile": config.template_profile,
         "archive_mode": config.archive_mode,
@@ -1192,33 +1197,36 @@ async fn api_mining_status_handler(
 async fn api_miners_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
-    // Query miners from the current round's shares
-    let miners = if let Some(ref db) = state.database {
+    // M-11: Query miners but redact sensitive details from public endpoint
+    // Only show counts and aggregated stats, not individual miner IDs and work values
+    let (active_count, total_work) = if let Some(ref db) = state.database {
         match db.get_round_miners(health.round_id) {
-            Ok(miner_work) => miner_work
-                .iter()
-                .map(|(miner_id, work)| {
-                    serde_json::json!({
-                        "miner_id": miner_id,
-                        "work": work,
-                        "shares_this_round": work.floor() as u64,
-                        "active": true
-                    })
-                })
-                .collect::<Vec<_>>(),
+            Ok(miner_work) => {
+                let count = miner_work.len();
+                // Sum work values from Vec<(String, f64)>
+                let work: f64 = miner_work.iter().map(|(_, w)| w).sum();
+                (count, work)
+            }
             Err(e) => {
                 error!(error = %e, "Failed to query miners");
-                vec![]
+                (0, 0.0)
             }
         }
     } else {
-        vec![]
+        (0, 0.0)
     };
 
+    // M-11: Public endpoint shows only aggregate stats, not individual miner details
+    // Individual miner data could be used for targeted attacks or competitor analysis
     Json(serde_json::json!({
         "total_miners": health.miner_count,
-        "active_miners": miners.len(),
-        "miners": miners
+        "active_miners": active_count,
+        "total_work_this_round": total_work,
+        "round_id": health.round_id,
+        // M-11: Individual miner list redacted from public endpoint
+        // Use authenticated internal API for full miner details
+        "miners_redacted": true,
+        "message": "Individual miner details require authentication"
     }))
 }
 
@@ -1651,70 +1659,15 @@ async fn api_rewards_history_handler(
     }))
 }
 
-/// API v1 Logs handler
-async fn api_logs_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
-    // M-STOR-2: Check if debug endpoints are enabled
-    {
-        let config = state.dashboard_config.read();
-        if !config.enable_debug_endpoints {
-            return Json(serde_json::json!({
-                "error": "Debug endpoints disabled",
-                "entries": [],
-                "total": 0
-            }));
-        }
-    }
-
-    // Try to read recent log entries from journalctl
-    let entries = match tokio::process::Command::new("journalctl")
-        .args(["-u", "ghost-pool", "-n", "100", "--no-pager", "-o", "json"])
-        .output()
-        .await
-    {
-        Ok(output) => {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                // Parse JSON lines
-                stdout
-                    .lines()
-                    .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                    .map(|entry| {
-                        serde_json::json!({
-                            "timestamp": entry.get("__REALTIME_TIMESTAMP")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.parse::<u64>().unwrap_or(0) / 1000000)
-                                .unwrap_or(0),
-                            "level": entry.get("PRIORITY")
-                                .and_then(|v| v.as_str())
-                                .map(|p| match p {
-                                    "3" => "error",
-                                    "4" => "warn",
-                                    "5" | "6" => "info",
-                                    "7" => "debug",
-                                    _ => "info"
-                                })
-                                .unwrap_or("info"),
-                            "message": entry.get("MESSAGE")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                        })
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                vec![]
-            }
-        }
-        Err(_) => vec![],
-    };
-
-    let total = entries.len();
-
-    Json(serde_json::json!({
-        "entries": entries,
-        "total": total,
-        "node_id": state.node_id
-    }))
-}
+// HIGH-4: api_logs_handler REMOVED
+// This endpoint exposed journalctl output which is a security risk.
+// System logs can reveal sensitive information about:
+// - Internal IP addresses and network topology
+// - Error messages with stack traces
+// - Configuration details
+// - Timing information useful for attacks
+// The endpoint has been completely removed rather than adding authentication
+// because even authenticated access to logs is a security concern.
 
 /// API v1 Locks handler (Ghost Lock state channels)
 async fn api_locks_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
@@ -1923,36 +1876,33 @@ async fn api_settlement_status_handler(
 async fn api_swarm_nodes_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
-    // Start with self
-    let mut nodes = vec![serde_json::json!({
+    // M-11: Redact peer addresses from public endpoint to protect network topology
+    // Only show this node's public info and aggregate peer counts
+    let self_node = serde_json::json!({
         "node_id": health.node_id,
-        "region": "unknown",
         "version": health.version,
         "online": health.healthy,
         "is_self": true
-    })];
+    });
 
-    // Add peers from database
-    if let Some(ref db) = state.database {
-        if let Ok(peers) = db.get_active_peers(50) {
-            for peer in peers {
-                if let Some(ref node_id) = peer.node_id {
-                    nodes.push(serde_json::json!({
-                        "node_id": node_id,
-                        "address": format!("{}:{}", peer.address, peer.port),
-                        "online": true,
-                        "last_seen": peer.last_seen,
-                        "is_self": false
-                    }));
-                }
-            }
-        }
-    }
+    // Count peers without exposing their details
+    let peer_count = if let Some(ref db) = state.database {
+        db.get_active_peers(50)
+            .map(|peers| peers.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
 
-    let total = nodes.len();
+    // M-11: Public endpoint shows only self node and peer count
+    // Exposing peer addresses reveals network topology which aids targeted attacks
     Json(serde_json::json!({
-        "nodes": nodes,
-        "total": total
+        "nodes": [self_node],
+        "total": peer_count + 1,
+        "peer_count": peer_count,
+        // M-11: Peer addresses redacted from public endpoint
+        "peers_redacted": true,
+        "message": "Peer addresses require authentication"
     }))
 }
 
@@ -2170,58 +2120,133 @@ async fn api_backup_history_handler(
         config.backup_dir.clone()
     };
 
-    // SEC-PATH-1: Validate backup path to prevent traversal attacks
+    // M-15: Proper path validation using canonicalization
+    // Step 1: Must be absolute path
     let backup_dir = std::path::Path::new(&backup_dir_path);
-    if !backup_dir.is_absolute() || backup_dir_path.contains("..") {
+    if !backup_dir.is_absolute() {
         tracing::warn!(
             path = %backup_dir_path,
-            "Rejecting invalid backup_dir path (must be absolute, no traversal)"
+            "M-15: Rejecting relative backup_dir path"
         );
         return Json(serde_json::json!({
             "backups": [],
             "total": 0,
             "backup_dir": backup_dir_path,
-            "error": "Invalid backup directory path"
+            "error": "Backup directory must be an absolute path"
         }));
     }
 
-    let backups = if backup_dir.exists() {
-        match std::fs::read_dir(backup_dir) {
-            Ok(entries) => entries
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .map(|ext| ext == "backup" || ext == "db")
-                        .unwrap_or(false)
-                })
-                .filter_map(|e| {
-                    let metadata = e.metadata().ok()?;
-                    let modified = metadata
-                        .modified()
-                        .ok()?
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .ok()?
-                        .as_secs();
-                    Some(serde_json::json!({
-                        "filename": e.file_name().to_string_lossy(),
-                        "path": e.path().to_string_lossy(),
-                        "size_bytes": metadata.len(),
-                        "created_at": modified
-                    }))
-                })
-                .collect::<Vec<_>>(),
-            Err(_) => vec![],
+    // Step 2: Canonicalize the path to resolve symlinks and ../ components
+    // This is the proper way to prevent path traversal attacks
+    let canonical_backup_dir = match backup_dir.canonicalize() {
+        Ok(path) => path,
+        Err(e) => {
+            // If directory doesn't exist yet, that's okay - return empty list
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Json(serde_json::json!({
+                    "backups": [],
+                    "total": 0,
+                    "backup_dir": backup_dir_path
+                }));
+            }
+            tracing::warn!(
+                path = %backup_dir_path,
+                error = %e,
+                "M-15: Failed to canonicalize backup_dir path"
+            );
+            return Json(serde_json::json!({
+                "backups": [],
+                "total": 0,
+                "backup_dir": backup_dir_path,
+                "error": "Invalid backup directory path"
+            }));
         }
-    } else {
-        vec![]
+    };
+
+    // Step 3: Verify the canonical path is still within an allowed base directory
+    // This prevents traversal attacks via symlinks
+    // Allow: /home/ghost/.ghost/backups, /var/lib/ghost/backups, /tmp/ghost-backups
+    let allowed_base_paths = [
+        std::path::PathBuf::from("/home/ghost/.ghost"),
+        std::path::PathBuf::from("/var/lib/ghost"),
+        std::path::PathBuf::from("/tmp/ghost-backups"),
+        std::path::PathBuf::from("/opt/ghost"),
+    ];
+
+    let is_within_allowed = allowed_base_paths.iter().any(|base| {
+        if let Ok(canonical_base) = base.canonicalize() {
+            canonical_backup_dir.starts_with(&canonical_base)
+        } else {
+            // Base doesn't exist, check if backup_dir would be under it if it existed
+            canonical_backup_dir.starts_with(base)
+        }
+    });
+
+    if !is_within_allowed {
+        tracing::warn!(
+            path = %backup_dir_path,
+            canonical = %canonical_backup_dir.display(),
+            "M-15: Backup directory outside allowed base paths"
+        );
+        return Json(serde_json::json!({
+            "backups": [],
+            "total": 0,
+            "backup_dir": backup_dir_path,
+            "error": "Backup directory must be within allowed paths"
+        }));
+    }
+
+    let backups = match std::fs::read_dir(&canonical_backup_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                // M-15: Verify each file is actually within the backup directory
+                // (prevents symlink attacks within the directory)
+                let file_path = e.path();
+                let canonical_file = match file_path.canonicalize() {
+                    Ok(p) => p,
+                    Err(_) => return None,
+                };
+
+                // File must be directly in the backup dir (not in subdirs via symlinks)
+                if canonical_file.parent() != Some(&canonical_backup_dir) {
+                    tracing::debug!(
+                        file = %file_path.display(),
+                        "M-15: Skipping file outside backup directory"
+                    );
+                    return None;
+                }
+
+                // Only allow .backup and .db extensions
+                let ext = file_path.extension()?;
+                if ext != "backup" && ext != "db" {
+                    return None;
+                }
+
+                let metadata = e.metadata().ok()?;
+                let modified = metadata
+                    .modified()
+                    .ok()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?
+                    .as_secs();
+
+                // Only return the filename, not the full path (avoid information disclosure)
+                Some(serde_json::json!({
+                    "filename": e.file_name().to_string_lossy(),
+                    "size_bytes": metadata.len(),
+                    "created_at": modified
+                }))
+            })
+            .collect::<Vec<_>>(),
+        Err(_) => vec![],
     };
 
     let total = backups.len();
     Json(serde_json::json!({
         "backups": backups,
         "total": total,
-        "backup_dir": backup_dir.to_string_lossy()
+        "backup_dir": canonical_backup_dir.to_string_lossy()
     }))
 }
 

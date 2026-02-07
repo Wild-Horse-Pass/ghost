@@ -31,7 +31,9 @@ use crate::lock::GhostLockInfo;
 use crate::payment::{PaymentMode, PaymentStatus, PreparedPayment};
 
 // Re-export instant types for convenience
-pub use ghost_common::instant::{InstantCapability, InstantCondition, LockSnapshot};
+pub use ghost_common::instant::{
+    InstantCapability, InstantCondition, LockSnapshot, SignedInstantPayment,
+};
 
 /// Messages sent from Light Wallet client to GSP server
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +207,10 @@ pub enum ClientMessage {
     },
 
     /// Accept an instant payment as merchant
+    ///
+    /// M-9 SECURITY: This message now REQUIRES a SignedInstantPayment from the sender.
+    /// The GSP verifies the sender's BIP-340 Schnorr signature before accepting.
+    /// Without this verification, anyone could claim payments from any lock.
     AcceptInstantPayment {
         /// Sender's lock ID
         sender_lock_id: String,
@@ -212,6 +218,10 @@ pub enum ClientMessage {
         amount_sats: u64,
         /// Merchant's authentication proof
         proof: WalletProof,
+        /// M-9 FIX: Signed instant payment from sender (required)
+        /// Contains sender's BIP-340 Schnorr signature over the payment details.
+        /// The payment_id, sender_lock_id, recipient, and amount are bound by this signature.
+        signed_payment: SignedInstantPayment,
     },
 }
 
@@ -309,6 +319,16 @@ pub enum ServerMessage {
         /// Transaction ID if broadcast
         txid: Option<String>,
         /// Error message if failed
+        error: Option<String>,
+    },
+
+    /// M-14 FIX: Payment cancellation result (distinct from PaymentSubmitted)
+    PaymentCancelled {
+        /// Whether cancellation succeeded
+        success: bool,
+        /// Payment ID that was cancelled
+        payment_id: String,
+        /// Error message if cancellation failed
         error: Option<String>,
     },
 

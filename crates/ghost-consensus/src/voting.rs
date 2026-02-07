@@ -263,6 +263,16 @@ impl VotingSession {
         self
     }
 
+    /// L-11 SECURITY: Minimum voters for proper BFT guarantees
+    ///
+    /// For f=2 Byzantine faults, we need n >= 3f+1 = 7 voters.
+    /// The previous minimum of 4 (f=1) was close to the Byzantine threshold
+    /// and provided minimal margin for error. With 7 voters:
+    /// - We can tolerate 2 Byzantine nodes (f=2)
+    /// - 67% threshold requires 5 of 7 votes (properly above 2/3)
+    /// - More robust consensus even if some nodes are slow/offline
+    pub const MIN_VOTERS_FOR_BFT: usize = 7;
+
     /// Create a new voting session using a canonical elder list
     ///
     /// P2P-C1/C2/C3: This constructor uses the canonical elder list to determine
@@ -275,8 +285,10 @@ impl VotingSession {
     ///
     /// # Errors
     ///
-    /// Returns `GhostError::InsufficientVoters` if fewer than 4 eligible voters
-    /// are available. BFT requires n >= 3f+1, so for f=1 Byzantine node, need n >= 4.
+    /// L-11 SECURITY: Returns `GhostError::InsufficientVoters` if fewer than 7
+    /// eligible voters are available. BFT requires n >= 3f+1, so for f=2 Byzantine
+    /// nodes, we need n >= 7. The previous minimum of 4 was too close to the
+    /// Byzantine threshold.
     pub fn from_elder_list(
         round_id: RoundId,
         proposal_hash: [u8; 32],
@@ -286,16 +298,18 @@ impl VotingSession {
     ) -> Result<Self, GhostError> {
         let eligible_voters = elder_list.get_eligible_voters();
 
-        // H-1: BFT requires n >= 3f+1, so for f=1 Byzantine node, need n >= 4
-        // This is a hard requirement - without 4 voters, BFT security cannot be guaranteed
-        if eligible_voters.len() < 4 {
+        // L-11: BFT requires n >= 3f+1, so for f=2 Byzantine nodes, need n >= 7
+        // The previous f=1 (4 voters) was too close to the threshold
+        // With f=2, we have proper safety margin for real-world conditions
+        if eligible_voters.len() < Self::MIN_VOTERS_FOR_BFT {
             error!(
                 epoch = elder_list.epoch,
                 voters = eligible_voters.len(),
-                "Cannot create voting session: BFT requires at least 4 eligible voters (n >= 3f+1 for f=1)"
+                required = Self::MIN_VOTERS_FOR_BFT,
+                "Cannot create voting session: BFT requires at least 7 eligible voters (n >= 3f+1 for f=2)"
             );
             return Err(GhostError::InsufficientVoters {
-                required: 4,
+                required: Self::MIN_VOTERS_FOR_BFT,
                 available: eligible_voters.len(),
             });
         }
@@ -1259,9 +1273,9 @@ mod tests {
         );
     }
 
-    /// H-1-TEST: Verify that from_elder_list requires minimum 4 voters for BFT security
+    /// L-11-TEST: Verify that from_elder_list requires minimum 7 voters for BFT security
     #[test]
-    fn test_from_elder_list_requires_minimum_4_voters() {
+    fn test_from_elder_list_requires_minimum_7_voters() {
         use crate::elder_list::{CanonicalElderList, ElderEntry};
         use ghost_common::identity::NodeIdProof;
 
@@ -1279,8 +1293,8 @@ mod tests {
             )
         }
 
-        // Create an elder list with only 3 voters
-        let small_elders: Vec<ElderEntry> = (0u8..3).map(make_elder).collect();
+        // L-11: Create an elder list with only 6 voters (should fail)
+        let small_elders: Vec<ElderEntry> = (0u8..6).map(make_elder).collect();
         let small_elder_list = CanonicalElderList::new(1, small_elders);
 
         let result = VotingSession::from_elder_list(
@@ -1294,23 +1308,23 @@ mod tests {
         // Should fail with InsufficientVoters
         assert!(
             result.is_err(),
-            "Should reject elder list with fewer than 4 voters"
+            "L-11: Should reject elder list with fewer than 7 voters"
         );
         let err = result.unwrap_err();
         assert!(
             matches!(
                 err,
                 ghost_common::error::GhostError::InsufficientVoters {
-                    required: 4,
-                    available: 3
+                    required: 7,
+                    available: 6
                 }
             ),
-            "Expected InsufficientVoters error with required=4, available=3, got {:?}",
+            "L-11: Expected InsufficientVoters error with required=7, available=6, got {:?}",
             err
         );
 
-        // Create an elder list with exactly 4 voters
-        let valid_elders: Vec<ElderEntry> = (0u8..4).map(make_elder).collect();
+        // L-11: Create an elder list with exactly 7 voters (should succeed)
+        let valid_elders: Vec<ElderEntry> = (0u8..7).map(make_elder).collect();
         let valid_elder_list = CanonicalElderList::new(1, valid_elders);
 
         let result = VotingSession::from_elder_list(
@@ -1321,16 +1335,16 @@ mod tests {
             5000,
         );
 
-        // Should succeed with exactly 4 voters
+        // Should succeed with exactly 7 voters
         assert!(
             result.is_ok(),
-            "Should accept elder list with exactly 4 voters"
+            "L-11: Should accept elder list with exactly 7 voters"
         );
         let session = result.unwrap();
-        assert_eq!(session.eligible_voters.len(), 4);
+        assert_eq!(session.eligible_voters.len(), 7);
     }
 
-    /// H-1-TEST: Verify edge case with 0 voters
+    /// L-11-TEST: Verify edge case with 0 voters
     #[test]
     fn test_from_elder_list_rejects_empty() {
         use crate::elder_list::CanonicalElderList;
@@ -1351,11 +1365,11 @@ mod tests {
             matches!(
                 err,
                 ghost_common::error::GhostError::InsufficientVoters {
-                    required: 4,
+                    required: 7,
                     available: 0
                 }
             ),
-            "Expected InsufficientVoters error with available=0, got {:?}",
+            "L-11: Expected InsufficientVoters error with required=7, available=0, got {:?}",
             err
         );
     }
@@ -1382,8 +1396,8 @@ mod tests {
             }
         }
 
-        // Create an elder list with 5 voters
-        let elders: Vec<ElderEntry> = (0u8..5).map(make_elder).collect();
+        // L-11: Create an elder list with 7 voters (minimum required)
+        let elders: Vec<ElderEntry> = (0u8..7).map(make_elder).collect();
         let mut elder_list = CanonicalElderList::new(1, elders);
 
         // Tamper with the merkle root
@@ -1428,8 +1442,8 @@ mod tests {
             }
         }
 
-        // Create a genesis elder list (epoch 0) with 5 voters
-        let elders: Vec<ElderEntry> = (0u8..5).map(make_elder).collect();
+        // L-11: Create a genesis elder list (epoch 0) with 7 voters (minimum required)
+        let elders: Vec<ElderEntry> = (0u8..7).map(make_elder).collect();
         let genesis_list = CanonicalElderList::genesis(elders);
 
         // Empty previous elders (appropriate for genesis)
@@ -1446,7 +1460,7 @@ mod tests {
 
         assert!(result.is_ok(), "Genesis list should not require approvals");
         let session = result.unwrap();
-        assert_eq!(session.eligible_voters.len(), 5);
+        assert_eq!(session.eligible_voters.len(), 7);
     }
 
     /// CRIT-4-TEST: Verify that from_elder_list_with_validation rejects non-genesis without previous elders
@@ -1467,7 +1481,7 @@ mod tests {
         }
 
         // Create a non-genesis elder list (epoch 1) with 5 voters
-        let elders: Vec<ElderEntry> = (0u8..5).map(make_elder).collect();
+        let elders: Vec<ElderEntry> = (0u8..7).map(make_elder).collect();
         let elder_list = CanonicalElderList::new(1, elders);
 
         // Empty previous elders - this should cause validation to fail for epoch > 0
@@ -1509,7 +1523,7 @@ mod tests {
         }
 
         // Create an elder list with 5 voters
-        let elders: Vec<ElderEntry> = (0u8..5).map(make_elder).collect();
+        let elders: Vec<ElderEntry> = (0u8..7).map(make_elder).collect();
         let elder_list = CanonicalElderList::new(1, elders);
         // No approval signatures added - this should fail validation
 

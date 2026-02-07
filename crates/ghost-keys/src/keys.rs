@@ -28,6 +28,7 @@ use rand::rngs::OsRng;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
+use tracing::warn;
 use zeroize::Zeroize;
 
 use crate::config::ScanConfig;
@@ -236,31 +237,41 @@ impl GhostKeys {
             let tweak = compute_tweak_v2(&shared_secret, k);
 
             // Expected pubkey = spend_pubkey + tweak*G
-            if let Ok(tweak_secret) = SecretKey::from_slice(&tweak) {
-                let tweak_pubkey = PublicKey::from_secret_key(&secp, &tweak_secret);
-                if let Ok(expected_pubkey) = self.spend_pubkey.combine(&tweak_pubkey) {
-                    // M-CRYPTO-3: Use constant-time comparison to prevent timing attacks
-                    let matches: bool = expected_pubkey
-                        .serialize()
-                        .ct_eq(&output_pubkey.serialize())
-                        .into();
+            // L-20: Log warning if tweak fails (probability ~2^-128, but should be monitored)
+            let tweak_secret = match SecretKey::from_slice(&tweak) {
+                Ok(ts) => ts,
+                Err(e) => {
+                    warn!(
+                        k = k,
+                        error = %e,
+                        "L-20: Tweak derivation failed (probability ~2^-128) - this may indicate a bug"
+                    );
+                    continue;
+                }
+            };
+            let tweak_pubkey = PublicKey::from_secret_key(&secp, &tweak_secret);
+            if let Ok(expected_pubkey) = self.spend_pubkey.combine(&tweak_pubkey) {
+                // M-CRYPTO-3: Use constant-time comparison to prevent timing attacks
+                let matches: bool = expected_pubkey
+                    .serialize()
+                    .ct_eq(&output_pubkey.serialize())
+                    .into();
 
-                    // 3.4: Only record the first match (don't update if already matched)
-                    // We continue iterating to maintain constant time
-                    if matches && matched_result.is_none() {
-                        // Found it! Derive spend key
-                        // SEC-KEY-1: Record error instead of silently failing
-                        match derive_spend_key(&self.spend_secret, &tweak) {
-                            Ok(spend_key) => {
-                                matched_result = Some((spend_key, k));
-                            }
-                            Err(e) => {
-                                // Payment detected but derivation failed - this is critical
-                                derivation_error = Some(GhostKeyError::DerivationError(format!(
-                                    "Payment detected at k={} but spend key derivation failed: {}",
-                                    k, e
-                                )));
-                            }
+                // 3.4: Only record the first match (don't update if already matched)
+                // We continue iterating to maintain constant time
+                if matches && matched_result.is_none() {
+                    // Found it! Derive spend key
+                    // SEC-KEY-1: Record error instead of silently failing
+                    match derive_spend_key(&self.spend_secret, &tweak) {
+                        Ok(spend_key) => {
+                            matched_result = Some((spend_key, k));
+                        }
+                        Err(e) => {
+                            // Payment detected but derivation failed - this is critical
+                            derivation_error = Some(GhostKeyError::DerivationError(format!(
+                                "Payment detected at k={} but spend key derivation failed: {}",
+                                k, e
+                            )));
                         }
                     }
                 }

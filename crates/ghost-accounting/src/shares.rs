@@ -115,7 +115,24 @@ impl RoundShares {
 
         trace!(miner = %miner_id, work = work, "Adding miner work");
 
+        // L-14: Bounds check before float-to-int conversion
+        // Maximum safe work value before scaling would overflow u128:
+        // u128::MAX / WORK_SCALE = 340_282_366_920_938_463_463 (approx 3.4e20)
+        // f64 can only represent integers exactly up to 2^53 (~9e15)
+        // So we use a conservative upper bound that's well within f64 precision
+        const MAX_SAFE_WORK: f64 = 1e15; // Well within both f64 precision and u128/WORK_SCALE
+        if work > MAX_SAFE_WORK {
+            error!(
+                miner = %miner_id,
+                work = work,
+                max_safe = MAX_SAFE_WORK,
+                "Rejected work value exceeding safe conversion limit - potential attack or bug"
+            );
+            return false;
+        }
+
         // Convert to scaled integer (H7 security fix)
+        // L-14: At this point work <= MAX_SAFE_WORK, so work * WORK_SCALE fits in f64 and u128
         let work_scaled = (work * WORK_SCALE as f64) as u128;
 
         // Update scaled storage
@@ -460,5 +477,34 @@ mod tests {
 
         // Verify no work was added
         assert_eq!(shares.total_miner_work, 0.0);
+    }
+
+    /// L-14: Verify that work values exceeding safe conversion limits are rejected
+    #[test]
+    fn test_overflow_work_rejected() {
+        let mut shares = RoundShares::new(1, 100);
+
+        // Values above MAX_SAFE_WORK (1e15) should be rejected
+        let result = shares.add_miner_work("miner1", 1e16);
+        assert!(!result, "Work above MAX_SAFE_WORK should return false");
+        assert_eq!(shares.miner_count(), 0);
+
+        // Very large values should be rejected
+        let result = shares.add_miner_work("miner2", 1e18);
+        assert!(!result, "Very large work should return false");
+        assert_eq!(shares.miner_count(), 0);
+
+        // Values at the limit should be rejected
+        let result = shares.add_miner_work("miner3", 1.0000001e15);
+        assert!(!result, "Work at limit boundary should return false");
+        assert_eq!(shares.miner_count(), 0);
+
+        // Values below the limit should be accepted
+        let result = shares.add_miner_work("miner4", 9e14);
+        assert!(result, "Work below MAX_SAFE_WORK should return true");
+        assert_eq!(shares.miner_count(), 1);
+
+        // Verify no overflow work was added, only the valid one
+        assert!(shares.total_miner_work > 0.0);
     }
 }

@@ -280,6 +280,8 @@ pub struct WsState {
     auth_secret: Option<[u8; 32]>,
     /// VF-C1: Whether to require authentication (reject unauthenticated connections)
     require_auth: bool,
+    /// L-30 FIX: Whether running on mainnet (blocks format-only validation fallback)
+    is_mainnet: bool,
 }
 
 impl WsState {
@@ -290,6 +292,7 @@ impl WsState {
             tx,
             auth_secret: None,
             require_auth: false,
+            is_mainnet: false,
         }
     }
 
@@ -304,6 +307,25 @@ impl WsState {
             tx,
             auth_secret: Some(secret),
             require_auth,
+            is_mainnet: false,
+        }
+    }
+
+    /// L-30 FIX: Create new WebSocket state for mainnet with mandatory authentication
+    ///
+    /// On mainnet, auth_secret is REQUIRED. Format-only validation fallback is blocked.
+    /// This prevents accepting unauthenticated connections that could be exploited.
+    ///
+    /// # Panics
+    /// Panics if auth_secret is not provided for mainnet. This is intentional to
+    /// prevent accidental deployment without proper authentication configuration.
+    pub fn mainnet(secret: [u8; 32]) -> Self {
+        let (tx, _) = broadcast::channel(1000);
+        Self {
+            tx,
+            auth_secret: Some(secret),
+            require_auth: true, // Always required on mainnet
+            is_mainnet: true,
         }
     }
 
@@ -315,6 +337,11 @@ impl WsState {
     /// Check if authentication is required
     pub fn requires_auth(&self) -> bool {
         self.require_auth
+    }
+
+    /// L-30 FIX: Check if running on mainnet
+    pub fn is_mainnet(&self) -> bool {
+        self.is_mainnet
     }
 
     /// Get a receiver for events
@@ -384,9 +411,24 @@ pub async fn ws_handler(
         let valid = if let Some(secret) = ws_state.auth_secret() {
             auth.validate_with_secret(secret)
         } else {
-            // No secret configured - fall back to format-only validation
+            // L-30 FIX: On mainnet, REJECT format-only validation - never fall back
+            if ws_state.is_mainnet() {
+                error!("L-30 SECURITY: WebSocket auth secret not configured on mainnet - rejecting connection");
+                return ws.on_upgrade(|socket| async move {
+                    let (mut sender, _) = socket.split();
+                    let error = WsEvent::Error {
+                        message: "Server misconfigured: auth secret required on mainnet".to_string(),
+                    };
+                    if let Ok(json) = serde_json::to_string(&error) {
+                        let _ = sender.send(Message::Text(json)).await;
+                    }
+                    let _ = sender.send(Message::Close(None)).await;
+                });
+            }
+
+            // No secret configured - fall back to format-only validation (non-mainnet only)
             // SECURITY: This is insecure! In production, always configure ws_auth_secret
-            warn!("WebSocket auth secret not configured - using insecure format-only validation");
+            warn!("WebSocket auth secret not configured - using insecure format-only validation (non-mainnet)");
             auth.validate_format_only()
         };
 
@@ -801,6 +843,7 @@ mod tests {
 
         assert!(state.requires_auth());
         assert_eq!(state.auth_secret(), Some(&secret));
+        assert!(!state.is_mainnet());
     }
 
     #[test]
@@ -809,6 +852,18 @@ mod tests {
 
         assert!(!state.requires_auth());
         assert!(state.auth_secret().is_none());
+        assert!(!state.is_mainnet());
+    }
+
+    #[test]
+    fn test_ws_state_mainnet() {
+        // L-30 FIX: Test mainnet configuration
+        let secret = create_test_secret();
+        let state = WsState::mainnet(secret);
+
+        assert!(state.requires_auth());
+        assert_eq!(state.auth_secret(), Some(&secret));
+        assert!(state.is_mainnet());
     }
 
     #[test]

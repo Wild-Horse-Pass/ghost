@@ -42,6 +42,7 @@ bitcoin = { workspace = true }
 # Cryptography
 sha2 = { workspace = true }
 hex = { workspace = true }
+getrandom = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }

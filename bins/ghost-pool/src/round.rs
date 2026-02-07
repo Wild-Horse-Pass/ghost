@@ -293,8 +293,9 @@ impl RoundManager {
             return Err(ShareError::RoundFull);
         }
 
-        // SECURITY: Check if this miner would exceed the maximum share percentage
+        // M-5 SECURITY: Enforce maximum share percentage by REJECTING excess shares
         // This prevents a single miner from dominating a round (e.g., >10% of total work)
+        // Previous behavior only logged; now we enforce by rejecting the share.
         if round.total_miner_work > 0.0 {
             let current_miner_work = round.miner_shares.get(miner_id).copied().unwrap_or(0.0);
             let new_miner_work = current_miner_work + work;
@@ -302,14 +303,18 @@ impl RoundManager {
             let new_share_percent = new_miner_work / new_total_work;
 
             if new_share_percent > self.config.max_miner_share_percent {
-                // Log but still accept - capping is done at payout time
-                // We don't want to reject valid shares, just cap contribution
-                debug!(
+                // M-5: REJECT shares that exceed the cap instead of just logging
+                warn!(
                     miner_id,
-                    current_percent = new_share_percent,
-                    max_percent = self.config.max_miner_share_percent,
-                    "Miner exceeds share cap - share accepted but payout may be capped"
+                    current_percent = new_share_percent * 100.0,
+                    max_percent = self.config.max_miner_share_percent * 100.0,
+                    "M-5: Rejecting share - miner exceeds share cap"
                 );
+                return Err(ShareError::MinerShareCapExceeded {
+                    miner_id: miner_id.to_string(),
+                    current_percent: new_share_percent * 100.0,
+                    max_percent: self.config.max_miner_share_percent * 100.0,
+                });
             }
         }
 
@@ -359,22 +364,37 @@ impl RoundManager {
 
     /// Handle a share proof from the P2P network
     ///
-    /// Security fixes C4, C5, and M-MINE-1:
+    /// Security fixes C4, C5, M-MINE-1, and M-6:
     /// - C4: Cryptographic verification that share_hash meets claimed difficulty
     /// - C5: Duplicate detection using submitted_shares HashMap
     /// - M-MINE-1: Template validation to reject stale shares
+    /// - M-6: Require template_id to be present (no bypass via None)
     pub fn handle_share_proof(&self, proof: ShareProof) -> Result<(), ShareError> {
-        // M-MINE-1: Validate template if provided
-        // This prevents accepting shares for old/stale templates
-        if let Some(template_id) = proof.template_id {
-            if !self.is_valid_template(&template_id) {
+        // M-6 SECURITY: Require template_id to be present
+        // Previously, if template_id was None, validation was skipped entirely.
+        // This allowed an attacker to bypass template validation by omitting the field.
+        // Now we REQUIRE template_id for all share proofs.
+        let template_id = match proof.template_id {
+            Some(id) => id,
+            None => {
                 warn!(
-                    template_id = %hex::encode(&template_id[..8]),
                     round_id = proof.round_id,
-                    "Share proof references stale template"
+                    miner = %hex::encode(&proof.miner_id[..8]),
+                    "M-6: Share proof missing required template_id"
                 );
-                return Err(ShareError::StaleTemplate);
+                return Err(ShareError::MissingTemplateId);
             }
+        };
+
+        // M-MINE-1: Validate template is current or recent
+        // This prevents accepting shares for old/stale templates
+        if !self.is_valid_template(&template_id) {
+            warn!(
+                template_id = %hex::encode(&template_id[..8]),
+                round_id = proof.round_id,
+                "Share proof references stale template"
+            );
+            return Err(ShareError::StaleTemplate);
         }
 
         let diff_calc = self.difficulty.read();
@@ -385,8 +405,9 @@ impl RoundManager {
         }
 
         // C4: Verify work consistency - calculated work should match claimed work
+        // L-17: Reduced tolerance from 1% to 0.1% to prevent accumulation gaming
         let calculated_work = diff_calc.calculate_work(proof.difficulty);
-        let tolerance = calculated_work * 0.01; // 1% tolerance for floating point
+        let tolerance = calculated_work * 0.001; // 0.1% tolerance for floating point
         if (proof.work - calculated_work).abs() > tolerance {
             tracing::warn!(
                 claimed_work = proof.work,
@@ -817,6 +838,10 @@ pub enum ShareError {
     /// M-MINE-1: Share references a stale/unknown template
     #[error("Stale template: share references template that is not current or recent")]
     StaleTemplate,
+
+    /// M-6: Share proof missing required template_id
+    #[error("Missing template_id: share proofs must include template_id for validation")]
+    MissingTemplateId,
 }
 
 /// Round statistics

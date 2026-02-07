@@ -282,42 +282,51 @@ fn validate_addresses(proposal: &PayoutProposal) -> Result<(), PayoutValidationE
 }
 
 /// Validate a Bitcoin output script (scriptPubKey)
+///
+/// HIGH-10: Uses bounds-checked access patterns for all script validation
 fn validate_output_script(script: &[u8]) -> Result<(), PayoutValidationError> {
+    // Helper to safely get a byte at an index
+    let get = |idx: usize| script.get(idx).copied();
+
     // Standard script types and their expected lengths
-    match script.len() {
+    let is_valid = match script.len() {
         // P2PKH: OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG
-        25 if script[0] == 0x76
-            && script[1] == 0xa9
-            && script[2] == 0x14
-            && script[23] == 0x88
-            && script[24] == 0xac =>
-        {
-            Ok(())
+        25 => {
+            get(0) == Some(0x76)
+                && get(1) == Some(0xa9)
+                && get(2) == Some(0x14)
+                && get(23) == Some(0x88)
+                && get(24) == Some(0xac)
         }
 
         // P2SH: OP_HASH160 <20 bytes> OP_EQUAL
-        23 if script[0] == 0xa9 && script[1] == 0x14 && script[22] == 0x87 => Ok(()),
+        23 => get(0) == Some(0xa9) && get(1) == Some(0x14) && get(22) == Some(0x87),
 
         // P2WPKH: OP_0 <20 bytes>
-        22 if script[0] == 0x00 && script[1] == 0x14 => Ok(()),
+        22 => get(0) == Some(0x00) && get(1) == Some(0x14),
 
         // P2WSH: OP_0 <32 bytes>
         // This covers both standard P2WSH and multi-sig P2WSH
-        34 if script[0] == 0x00 && script[1] == 0x20 => Ok(()),
-
         // P2TR: OP_1 <32 bytes>
-        34 if script[0] == 0x51 && script[1] == 0x20 => Ok(()),
-
-        // Unknown format
-        _ => {
-            let hex = hex::encode(script);
-            let preview = if hex.len() > 40 {
-                format!("{}...", &hex[..40])
-            } else {
-                hex
-            };
-            Err(PayoutValidationError::InvalidScript(preview))
+        34 => {
+            (get(0) == Some(0x00) && get(1) == Some(0x20))
+                || (get(0) == Some(0x51) && get(1) == Some(0x20))
         }
+
+        // Unknown length
+        _ => false,
+    };
+
+    if is_valid {
+        Ok(())
+    } else {
+        let hex = hex::encode(script);
+        let preview = if hex.len() > 40 {
+            format!("{}...", &hex[..40])
+        } else {
+            hex
+        };
+        Err(PayoutValidationError::InvalidScript(preview))
     }
 }
 

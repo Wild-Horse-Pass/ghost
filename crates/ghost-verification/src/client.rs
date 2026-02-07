@@ -44,6 +44,9 @@ pub struct VerificationClientConfig {
     pub timeout: Duration,
     /// Accept invalid TLS certificates (DANGEROUS - testing only)
     pub danger_accept_invalid_certs: bool,
+    /// L-29 FIX: Whether running on mainnet (blocks insecure TLS bypass)
+    /// When true, GHOST_ALLOW_INSECURE_TLS is completely ignored
+    pub is_mainnet: bool,
 }
 
 impl Default for VerificationClientConfig {
@@ -52,6 +55,7 @@ impl Default for VerificationClientConfig {
             use_https: true,
             timeout: Duration::from_secs(VERIFICATION_TIMEOUT_SECS),
             danger_accept_invalid_certs: false,
+            is_mainnet: false, // Default to non-mainnet for safety in testing
         }
     }
 }
@@ -62,6 +66,16 @@ impl VerificationClientConfig {
         Self::default()
     }
 
+    /// L-29 FIX: Create a config for mainnet (HTTPS required, insecure bypass blocked)
+    pub fn mainnet() -> Self {
+        Self {
+            use_https: true,
+            timeout: Duration::from_secs(VERIFICATION_TIMEOUT_SECS),
+            danger_accept_invalid_certs: false,
+            is_mainnet: true, // Blocks all insecure TLS bypass attempts
+        }
+    }
+
     /// Create a config for testing (HTTP allowed)
     ///
     /// WARNING: Do not use in production - allows MITM attacks.
@@ -70,6 +84,7 @@ impl VerificationClientConfig {
             use_https: false,
             timeout: Duration::from_secs(VERIFICATION_TIMEOUT_SECS),
             danger_accept_invalid_certs: false,
+            is_mainnet: false,
         }
     }
 }
@@ -98,18 +113,29 @@ impl VerificationClient {
     ///
     /// # Errors
     /// Returns an error if the HTTP client cannot be created
+    ///
+    /// L-29 FIX: On mainnet, insecure TLS bypass is completely blocked
     pub fn with_config(config: VerificationClientConfig) -> GhostResult<Self> {
         let mut builder = reqwest::Client::builder().timeout(config.timeout);
 
         if config.danger_accept_invalid_certs {
-            // M-7: Require explicit environment variable to allow insecure TLS
+            // L-29 FIX: On mainnet, COMPLETELY block insecure TLS - no env var override
+            if config.is_mainnet {
+                return Err(GhostError::Config(
+                    "L-29 SECURITY: Insecure TLS is NEVER allowed on mainnet. \
+                     GHOST_ALLOW_INSECURE_TLS has no effect on mainnet."
+                        .into(),
+                ));
+            }
+
+            // For non-mainnet: Require explicit environment variable to allow insecure TLS
             // This prevents accidental MITM vulnerability from misconfiguration
             if std::env::var("GHOST_ALLOW_INSECURE_TLS").is_err() {
                 return Err(GhostError::Config(
-                    "danger_accept_invalid_certs requires GHOST_ALLOW_INSECURE_TLS=1 environment variable".into()
+                    "danger_accept_invalid_certs requires GHOST_ALLOW_INSECURE_TLS=1 environment variable (non-mainnet only)".into()
                 ));
             }
-            warn!("DANGER: Verification client accepting invalid TLS certificates - GHOST_ALLOW_INSECURE_TLS is set");
+            warn!("DANGER: Verification client accepting invalid TLS certificates - GHOST_ALLOW_INSECURE_TLS is set (non-mainnet)");
             builder = builder.danger_accept_invalid_certs(true);
         }
 
@@ -530,6 +556,7 @@ mod tests {
             use_https: true,
             timeout: std::time::Duration::from_secs(10),
             danger_accept_invalid_certs: true,
+            is_mainnet: false, // Test non-mainnet behavior
         };
 
         let result = VerificationClient::with_config(config);
@@ -551,6 +578,7 @@ mod tests {
             use_https: true,
             timeout: std::time::Duration::from_secs(10),
             danger_accept_invalid_certs: true,
+            is_mainnet: false, // Test non-mainnet behavior
         };
 
         let result = VerificationClient::with_config(config);

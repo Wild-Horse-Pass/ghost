@@ -142,12 +142,37 @@ impl BlockVerifier {
     /// `Ok(true)` if the proof is valid, `Ok(false)` if invalid
     #[instrument(skip_all, fields(height = proof.height, tx_count = proof.tx_count))]
     pub fn verify(&self, proof: &BlockProof) -> ZkResult<bool> {
-        // M-2: Runtime check to block simulated proofs in production
+        // M-7 FIX: Runtime check to block simulated proofs in production
+        // Previously used compile-time #[cfg] which could be bypassed by enabling test-utils feature.
+        // Now uses runtime environment variable check that CANNOT be bypassed at compile time.
         if proof.is_simulated() {
-            #[cfg(not(any(test, feature = "test-utils")))]
+            // In test builds, allow simulated proofs for testing
+            #[cfg(test)]
             {
-                error!("SECURITY: Simulated proof rejected in production mode");
-                return Err(ZkError::SimulatedProofRejected);
+                // Allow in tests
+            }
+            #[cfg(not(test))]
+            {
+                // In non-test builds, require explicit opt-in via environment variable.
+                // This prevents accidental use in production while allowing development/staging.
+                // The env var must be set to "1" explicitly - any other value is rejected.
+                let allow_simulated = std::env::var("GHOST_ALLOW_SIMULATED_PROOFS")
+                    .map(|v| v == "1")
+                    .unwrap_or(false);
+
+                if !allow_simulated {
+                    error!(
+                        "SECURITY: Simulated proof rejected. \
+                         Set GHOST_ALLOW_SIMULATED_PROOFS=1 to allow (development only, NEVER in production)."
+                    );
+                    return Err(ZkError::SimulatedProofRejected);
+                }
+
+                // Log warning even when allowed - this should never happen in production
+                warn!(
+                    "SECURITY WARNING: Accepting simulated proof because GHOST_ALLOW_SIMULATED_PROOFS=1. \
+                     This MUST NOT be used in production!"
+                );
             }
         }
 

@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 13;
+const SCHEMA_VERSION: u32 = 14;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -96,6 +96,10 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
 
     if current_version < 13 {
         migrate_v13(conn)?;
+    }
+
+    if current_version < 14 {
+        migrate_v14(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -1122,6 +1126,34 @@ fn migrate_v13(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("MPC-CEREMONY: Added rolling MPC ceremony tables");
+    Ok(())
+}
+
+/// Migration v14: Add instant payment reservations table (L-24 fix)
+///
+/// Persists fund reservations for instant payments to survive restarts.
+/// This prevents double-spending when the node restarts with pending payments.
+fn migrate_v14(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v14: Adding instant payment reservations table");
+
+    conn.execute_batch(
+        r#"
+        -- L-24 FIX: Instant payment fund reservations
+        -- Persists reservations to survive restarts and prevent double-spend
+        CREATE TABLE IF NOT EXISTS instant_payment_reservations (
+            payment_id BLOB PRIMARY KEY,
+            lock_id TEXT NOT NULL,
+            amount_sats INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_reservations_lock ON instant_payment_reservations(lock_id);
+        CREATE INDEX IF NOT EXISTS idx_reservations_expires ON instant_payment_reservations(expires_at);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("L-24 FIX: Added instant payment reservations table");
     Ok(())
 }
 

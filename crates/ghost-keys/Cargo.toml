@@ -49,6 +49,9 @@ bitcoin = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
+# Logging
+tracing = { workspace = true }
+
 # Constant-time operations for side-channel resistance
 subtle = "2"
 

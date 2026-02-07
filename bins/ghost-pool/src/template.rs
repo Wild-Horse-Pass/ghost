@@ -2029,23 +2029,25 @@ const WITNESS_COMMITMENT_MAGIC: [u8; 4] = [0xaa, 0x21, 0xa9, 0xed];
 /// OP_RETURN OP_PUSH(36) <4-byte magic: 0xaa21a9ed> <32-byte commitment hash>
 ///
 /// Total script length: 1 (OP_RETURN) + 1 (push opcode) + 4 (magic) + 32 (hash) = 38 bytes
+/// HIGH-9: Uses bounds-checked .get() for all array accesses
 fn validate_witness_commitment_script(script: &[u8]) -> bool {
-    // Minimum length: OP_RETURN + push opcode + magic + 32-byte hash
-    if script.len() < 38 {
-        return false;
-    }
-
     // First byte must be OP_RETURN (0x6a)
-    if script[0] != 0x6a {
+    let Some(&first_byte) = script.get(0) else {
+        return false;
+    };
+    if first_byte != 0x6a {
         warn!(
-            first_byte = script[0],
+            first_byte = first_byte,
             "Witness commitment script doesn't start with OP_RETURN"
         );
         return false;
     }
 
     // Second byte is the push length - should be at least 36 (4 magic + 32 hash)
-    let push_len = script[1] as usize;
+    let Some(&push_len_byte) = script.get(1) else {
+        return false;
+    };
+    let push_len = push_len_byte as usize;
     if push_len < 36 {
         warn!(
             push_len = push_len,
@@ -2054,22 +2056,29 @@ fn validate_witness_commitment_script(script: &[u8]) -> bool {
         return false;
     }
 
-    // Verify we have enough bytes for the pushed data
+    // Check for BIP 141 magic bytes at offset 2 (need indices 2..6)
+    let Some(magic_slice) = script.get(2..6) else {
+        warn!(
+            script_len = script.len(),
+            "Witness commitment script too short for magic bytes"
+        );
+        return false;
+    };
+    if magic_slice != WITNESS_COMMITMENT_MAGIC {
+        warn!(
+            magic = hex::encode(magic_slice),
+            expected = hex::encode(WITNESS_COMMITMENT_MAGIC),
+            "Witness commitment magic bytes mismatch"
+        );
+        return false;
+    }
+
+    // Verify we have enough bytes for the pushed data (need at least 2 + push_len bytes)
     if script.len() < 2 + push_len {
         warn!(
             script_len = script.len(),
             expected = 2 + push_len,
             "Witness commitment script truncated"
-        );
-        return false;
-    }
-
-    // Check for BIP 141 magic bytes at offset 2
-    if script[2..6] != WITNESS_COMMITMENT_MAGIC {
-        warn!(
-            magic = hex::encode(&script[2..6]),
-            expected = hex::encode(WITNESS_COMMITMENT_MAGIC),
-            "Witness commitment magic bytes mismatch"
         );
         return false;
     }
@@ -2081,6 +2090,7 @@ fn validate_witness_commitment_script(script: &[u8]) -> bool {
 ///
 /// This is used to validate raw script bytes that may come from payout entries.
 /// We accept standard script types that have known valid formats.
+/// HIGH-10: Uses bounds-checked access patterns for all script validation
 fn is_valid_script_bytes(script: &[u8]) -> bool {
     if script.is_empty() {
         return false;
@@ -2091,30 +2101,31 @@ fn is_valid_script_bytes(script: &[u8]) -> bool {
         return false;
     }
 
+    // Helper to safely get a byte at an index
+    let get = |idx: usize| script.get(idx).copied();
+
     match script.len() {
         // P2PKH: OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG (25 bytes)
         25 => {
-            script[0] == 0x76
-                && script[1] == 0xa9
-                && script[2] == 0x14
-                && script[23] == 0x88
-                && script[24] == 0xac
+            get(0) == Some(0x76)
+                && get(1) == Some(0xa9)
+                && get(2) == Some(0x14)
+                && get(23) == Some(0x88)
+                && get(24) == Some(0xac)
         }
 
         // P2SH: OP_HASH160 <20 bytes> OP_EQUAL (23 bytes)
-        23 => script[0] == 0xa9 && script[1] == 0x14 && script[22] == 0x87,
+        23 => get(0) == Some(0xa9) && get(1) == Some(0x14) && get(22) == Some(0x87),
 
         // P2WPKH: OP_0 <20 bytes> (22 bytes)
-        22 => script[0] == 0x00 && script[1] == 0x14,
+        22 => get(0) == Some(0x00) && get(1) == Some(0x14),
 
         // P2WSH or P2TR: 34 bytes
-        // Note: using explicit form for readability over clippy's minimized suggestion
-        #[allow(clippy::nonminimal_bool)]
         34 => {
             // P2WSH: OP_0 <32 bytes>
             // P2TR: OP_1 <32 bytes>
-            (script[0] == 0x00 && script[1] == 0x20)
-                || (script[0] == 0x51 && script[1] == 0x20)
+            (get(0) == Some(0x00) && get(1) == Some(0x20))
+                || (get(0) == Some(0x51) && get(1) == Some(0x20))
         }
 
         _ => false,

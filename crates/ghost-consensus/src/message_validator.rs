@@ -73,19 +73,35 @@ pub const MAX_MPC_PARAMS_REQUEST_SIZE: usize = 5_000;
 /// MPC-C4: MPC parameters response (chunked data ~1MB)
 pub const MAX_MPC_PARAMS_RESPONSE_SIZE: usize = 1_100_000;
 
-/// SEC-TIME-1: Default timestamp drift window (60 seconds in milliseconds)
+/// L-13 SECURITY: Global pending message memory limit (100MB)
+///
+/// This limits the total memory that can be consumed by pending messages
+/// across ALL message types. Without this limit, an attacker could send
+/// many messages of different types, each within their per-type limit,
+/// but collectively exhausting available memory.
+///
+/// The 100MB limit is generous for normal operation while providing
+/// protection against memory exhaustion attacks.
+pub const AGGREGATE_PENDING_MESSAGE_LIMIT_BYTES: usize = 100 * 1024 * 1024;
+
+/// L-8 SECURITY: Default timestamp drift window (30 seconds in milliseconds)
 ///
 /// This is the default value used when no explicit drift is configured.
-/// 60 seconds provides a good balance between:
-/// - Security: Limits the window for replay attacks
-/// - Usability: Allows for clock drift across geographically distributed nodes
-/// - Network: Accounts for message propagation delays
+/// 30 seconds provides a tighter security window while still allowing for:
+/// - Clock drift: Nodes running NTP should stay well within 30s
+/// - Network propagation: Even high-latency links are sub-second
+/// - Processing delays: Normal message handling is milliseconds
 ///
-/// Nodes should run NTP to maintain clock synchronization within this window.
-pub const DEFAULT_TIMESTAMP_DRIFT_MS: u64 = 60 * 1000;
+/// The previous 60-second window was more permissive than necessary and
+/// allowed a larger replay attack window. 30 seconds is still generous
+/// for properly synchronized nodes while reducing attack surface.
+///
+/// Nodes MUST run NTP to maintain clock synchronization within this window.
+pub const DEFAULT_TIMESTAMP_DRIFT_MS: u64 = 30 * 1000;
 
-/// SEC-TIME-1: Legacy constant for backwards compatibility
+/// L-8 SECURITY: Legacy constant for backwards compatibility
 /// Use DEFAULT_TIMESTAMP_DRIFT_MS for new code.
+/// NOTE: Reduced from 60s to 30s for improved security.
 pub const MAX_TIMESTAMP_DRIFT_MS: u64 = DEFAULT_TIMESTAMP_DRIFT_MS;
 
 /// Minimum allowed timestamp drift (1 second)
@@ -508,6 +524,135 @@ pub struct ValidationStats {
     pub bad_signature: u64,
     pub bad_timestamp: u64,
     pub other_errors: u64,
+    /// L-13: Messages rejected due to aggregate memory limit
+    pub memory_limit_exceeded: u64,
+}
+
+/// L-13 SECURITY: Error type for aggregate memory limit exceeded
+#[derive(Debug, Clone, Error)]
+#[error("Aggregate pending message memory limit exceeded: {current_bytes} bytes (limit: {limit_bytes})")]
+pub struct AggregateMemoryLimitExceeded {
+    pub current_bytes: usize,
+    pub limit_bytes: usize,
+}
+
+/// L-13 SECURITY: Tracker for aggregate pending message memory
+///
+/// Tracks total memory used by pending messages across all types.
+/// Must be updated when messages are added to and removed from queues.
+///
+/// Thread-safe via atomic operations.
+#[derive(Debug)]
+pub struct AggregateMemoryTracker {
+    /// Current total bytes of pending messages
+    current_bytes: std::sync::atomic::AtomicUsize,
+    /// Maximum allowed bytes
+    limit_bytes: usize,
+}
+
+impl AggregateMemoryTracker {
+    /// Create a new tracker with default limit (100MB)
+    pub fn new() -> Self {
+        Self::with_limit(AGGREGATE_PENDING_MESSAGE_LIMIT_BYTES)
+    }
+
+    /// Create a new tracker with custom limit
+    pub fn with_limit(limit_bytes: usize) -> Self {
+        Self {
+            current_bytes: std::sync::atomic::AtomicUsize::new(0),
+            limit_bytes,
+        }
+    }
+
+    /// Try to reserve space for a new message
+    ///
+    /// Returns Ok(()) if space is available and reserved.
+    /// Returns Err if the message would exceed the limit.
+    ///
+    /// IMPORTANT: If Ok is returned, the caller MUST eventually call `release()`
+    /// with the same size when the message is processed/dropped.
+    pub fn try_reserve(&self, size_bytes: usize) -> Result<(), AggregateMemoryLimitExceeded> {
+        use std::sync::atomic::Ordering;
+
+        loop {
+            let current = self.current_bytes.load(Ordering::Acquire);
+            let new_total = current.saturating_add(size_bytes);
+
+            if new_total > self.limit_bytes {
+                return Err(AggregateMemoryLimitExceeded {
+                    current_bytes: current,
+                    limit_bytes: self.limit_bytes,
+                });
+            }
+
+            // Try to atomically update
+            match self.current_bytes.compare_exchange_weak(
+                current,
+                new_total,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return Ok(()),
+                Err(_) => continue, // Retry on contention
+            }
+        }
+    }
+
+    /// Release space when a message is processed or dropped
+    ///
+    /// MUST be called exactly once for each successful `try_reserve()`.
+    pub fn release(&self, size_bytes: usize) {
+        use std::sync::atomic::Ordering;
+
+        let previous = self
+            .current_bytes
+            .fetch_sub(size_bytes, Ordering::Release);
+
+        // Sanity check: we should never go negative
+        if previous < size_bytes {
+            warn!(
+                size_bytes,
+                previous,
+                "L-13: Released more memory than was reserved (underflow)"
+            );
+            // Reset to 0 to recover from inconsistent state
+            self.current_bytes.store(0, Ordering::Release);
+        }
+    }
+
+    /// Get the current total bytes of pending messages
+    pub fn current_bytes(&self) -> usize {
+        self.current_bytes.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Get the memory limit in bytes
+    pub fn limit_bytes(&self) -> usize {
+        self.limit_bytes
+    }
+
+    /// Get the percentage of the limit currently used
+    pub fn usage_percent(&self) -> f64 {
+        let current = self.current_bytes() as f64;
+        let limit = self.limit_bytes as f64;
+        (current / limit) * 100.0
+    }
+
+    /// Check if we're at high memory usage (>80%)
+    pub fn is_high_usage(&self) -> bool {
+        self.current_bytes() > (self.limit_bytes * 80) / 100
+    }
+
+    /// Reset the tracker (for testing or recovery)
+    pub fn reset(&self) {
+        self.current_bytes
+            .store(0, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl Default for AggregateMemoryTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ValidationStats {
@@ -632,6 +777,31 @@ mod tests {
             validate_timestamp(future_ms),
             Err(MessageValidationError::TimestampInFuture(_))
         ));
+    }
+
+    #[test]
+    fn test_l8_timestamp_drift_is_30_seconds() {
+        // L-8: Verify the default drift is 30 seconds (not the old 60s)
+        assert_eq!(DEFAULT_TIMESTAMP_DRIFT_MS, 30_000);
+        assert_eq!(MAX_TIMESTAMP_DRIFT_MS, 30_000);
+
+        // 40 seconds in the future should be rejected (beyond 30s limit)
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let future_40s = now_ms + 40_000;
+        assert!(
+            matches!(
+                validate_timestamp(future_40s),
+                Err(MessageValidationError::TimestampInFuture(_))
+            ),
+            "L-8: 40s drift should be rejected with 30s limit"
+        );
+
+        // 25 seconds should still be valid (within 30s limit)
+        let future_25s = now_ms + 25_000;
+        assert!(
+            validate_timestamp(future_25s).is_ok(),
+            "L-8: 25s drift should be valid with 30s limit"
+        );
     }
 
     #[test]
@@ -817,5 +987,94 @@ mod tests {
 
         let result = extract_message_type_fast(&data);
         assert_eq!(result.unwrap(), None);
+    }
+
+    // =========================================================================
+    // L-13 TESTS: Aggregate memory limit
+    // =========================================================================
+
+    #[test]
+    fn test_l13_aggregate_limit_constant() {
+        // L-13: Verify limit is 100MB
+        assert_eq!(AGGREGATE_PENDING_MESSAGE_LIMIT_BYTES, 100 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_l13_tracker_creation() {
+        let tracker = AggregateMemoryTracker::new();
+        assert_eq!(tracker.current_bytes(), 0);
+        assert_eq!(tracker.limit_bytes(), AGGREGATE_PENDING_MESSAGE_LIMIT_BYTES);
+    }
+
+    #[test]
+    fn test_l13_tracker_custom_limit() {
+        let tracker = AggregateMemoryTracker::with_limit(1000);
+        assert_eq!(tracker.limit_bytes(), 1000);
+    }
+
+    #[test]
+    fn test_l13_reserve_and_release() {
+        let tracker = AggregateMemoryTracker::with_limit(1000);
+
+        // Reserve some space
+        assert!(tracker.try_reserve(500).is_ok());
+        assert_eq!(tracker.current_bytes(), 500);
+
+        // Reserve more
+        assert!(tracker.try_reserve(400).is_ok());
+        assert_eq!(tracker.current_bytes(), 900);
+
+        // This would exceed the limit
+        assert!(tracker.try_reserve(200).is_err());
+        assert_eq!(tracker.current_bytes(), 900); // Unchanged
+
+        // Release some
+        tracker.release(500);
+        assert_eq!(tracker.current_bytes(), 400);
+
+        // Now we can reserve more
+        assert!(tracker.try_reserve(500).is_ok());
+        assert_eq!(tracker.current_bytes(), 900);
+    }
+
+    #[test]
+    fn test_l13_usage_percent() {
+        let tracker = AggregateMemoryTracker::with_limit(1000);
+
+        tracker.try_reserve(500).unwrap();
+        assert!((tracker.usage_percent() - 50.0).abs() < 0.01);
+
+        tracker.try_reserve(300).unwrap();
+        assert!((tracker.usage_percent() - 80.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_l13_high_usage_detection() {
+        let tracker = AggregateMemoryTracker::with_limit(1000);
+
+        tracker.try_reserve(799).unwrap();
+        assert!(!tracker.is_high_usage()); // 79.9% < 80%
+
+        tracker.try_reserve(2).unwrap();
+        assert!(tracker.is_high_usage()); // 80.1% > 80%
+    }
+
+    #[test]
+    fn test_l13_reset() {
+        let tracker = AggregateMemoryTracker::with_limit(1000);
+        tracker.try_reserve(500).unwrap();
+        assert_eq!(tracker.current_bytes(), 500);
+
+        tracker.reset();
+        assert_eq!(tracker.current_bytes(), 0);
+    }
+
+    #[test]
+    fn test_l13_stats_memory_limit_field() {
+        let mut stats = ValidationStats::default();
+        assert_eq!(stats.memory_limit_exceeded, 0);
+
+        stats.memory_limit_exceeded += 1;
+        assert_eq!(stats.memory_limit_exceeded, 1);
     }
 }
