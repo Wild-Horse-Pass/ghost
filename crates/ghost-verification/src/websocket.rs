@@ -311,22 +311,34 @@ impl WsState {
         }
     }
 
+    /// HIGH-API-2: Create new WebSocket state with mandatory authentication
+    ///
+    /// Authentication is REQUIRED on all networks to prevent bugs in auth integration
+    /// from being masked on non-mainnet environments.
+    ///
+    /// This method replaces the previous `mainnet()` method and is now used for all networks.
+    pub fn with_required_auth(secret: [u8; 32], is_mainnet: bool) -> Self {
+        let (tx, _) = broadcast::channel(1000);
+        Self {
+            tx,
+            auth_secret: Some(secret),
+            require_auth: true, // Always required on all networks (HIGH-API-2)
+            is_mainnet,
+        }
+    }
+
     /// L-30 FIX: Create new WebSocket state for mainnet with mandatory authentication
     ///
+    /// DEPRECATED: Use `with_required_auth()` instead.
     /// On mainnet, auth_secret is REQUIRED. Format-only validation fallback is blocked.
     /// This prevents accepting unauthenticated connections that could be exploited.
     ///
     /// # Panics
     /// Panics if auth_secret is not provided for mainnet. This is intentional to
     /// prevent accidental deployment without proper authentication configuration.
+    #[deprecated(note = "Use with_required_auth() instead - auth now required on all networks")]
     pub fn mainnet(secret: [u8; 32]) -> Self {
-        let (tx, _) = broadcast::channel(1000);
-        Self {
-            tx,
-            auth_secret: Some(secret),
-            require_auth: true, // Always required on mainnet
-            is_mainnet: true,
-        }
+        Self::with_required_auth(secret, true)
     }
 
     /// Get the auth secret if configured

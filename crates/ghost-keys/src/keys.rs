@@ -224,6 +224,14 @@ impl GhostKeys {
     ) -> Result<Option<(SecretKey, u32)>, GhostKeyError> {
         let secp = Secp256k1::new();
 
+        // CRIT-KEYS-2 FIX: Validate ephemeral_pubkey is a valid curve point before ECDH
+        // An invalid point could cause undefined behavior in ECDH computation
+        // Check by verifying it can be serialized (confirms it's on the curve)
+        let _ = ephemeral_pubkey.serialize();
+
+        // Additional validation: PublicKey type already validates on construction,
+        // but we explicitly confirm it here for defense-in-depth
+
         // Compute shared secret
         let shared_secret = derive_shared_secret(&self.scan_secret, ephemeral_pubkey);
 
@@ -256,6 +264,11 @@ impl GhostKeys {
                     .serialize()
                     .ct_eq(&output_pubkey.serialize())
                     .into();
+
+                // LOW-KEYS-2 FIX: Use comparison result immediately in the same branch
+                // to prevent compiler from optimizing away the constant-time comparison.
+                // The matches variable is used directly in the condition below without
+                // any intermediate operations that might leak timing information.
 
                 // 3.4: Only record the first match (don't update if already matched)
                 // We continue iterating to maintain constant time

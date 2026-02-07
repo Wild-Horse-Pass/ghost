@@ -280,11 +280,34 @@ impl RecoveryInputParams {
         }
     }
 
-    /// Check if the given nSequence value would enable CSV validation.
+    /// HIGH-LOCKS-1 FIX: Validate nSequence for CSV requirements
     ///
-    /// For CSV to work, nSequence must be < 0xFFFFFFFF.
+    /// For OP_CHECKSEQUENCEVERIFY to work correctly, nSequence must satisfy:
+    /// 1. Must not be 0xFFFFFFFF (final, disables all timelocks)
+    /// 2. Bit 31 (disable flag) must be 0 (nSequence < 0x80000000)
+    ///
+    /// Note: RECOVERY_NSEQUENCE (0xFFFFFFFE) is valid for CSV:
+    /// - Not final (0xFFFFFFFE != 0xFFFFFFFF)
+    /// - Bit 31 is 1, but that's OKAY - it enables RBF, doesn't disable CSV
+    /// - CSV is disabled only when nSequence == 0xFFFFFFFF exactly
+    ///
+    /// See BIP-68 and BIP-125 for details.
     pub fn is_valid_nsequence(nsequence: u32) -> bool {
+        // Only 0xFFFFFFFF disables CSV
         nsequence != u32::MAX
+    }
+
+    /// Validate that an nSequence value matches the expected timelock blocks
+    ///
+    /// This checks that the nSequence encodes the correct block count for CSV.
+    pub fn matches_timelock(nsequence: u32, expected_blocks: u32) -> bool {
+        if !Self::is_valid_nsequence(nsequence) {
+            return false;
+        }
+
+        // Extract block count from lower 16 bits
+        let encoded_blocks = nsequence & 0x0000FFFF;
+        encoded_blocks == expected_blocks
     }
 }
 
@@ -340,6 +363,51 @@ pub fn validate_no_p2tr(script: &ScriptBuf) -> Result<(), GhostLockError> {
     Ok(())
 }
 
+/// MED-LOCKS-1 FIX: Check if a scriptPubKey is quantum-safe
+///
+/// Parses the actual scriptPubKey bytes instead of string-based detection.
+/// This is more robust than string matching on addresses.
+///
+/// Returns true for P2WPKH, P2WSH, P2PKH, P2SH (all hash-based).
+/// Returns false for P2TR (key-exposed, quantum vulnerable).
+pub fn is_quantum_safe_script(script: &ScriptBuf) -> bool {
+    let bytes = script.as_bytes();
+
+    // P2WPKH: OP_0 <20-byte hash>
+    if bytes.len() == 22 && bytes[0] == 0x00 && bytes[1] == 0x14 {
+        return true;
+    }
+
+    // P2WSH: OP_0 <32-byte hash>
+    if bytes.len() == 34 && bytes[0] == 0x00 && bytes[1] == 0x20 {
+        return true;
+    }
+
+    // P2TR: OP_1 <32-byte x-only pubkey> - QUANTUM VULNERABLE
+    if bytes.len() == 34 && bytes[0] == 0x51 && bytes[1] == 0x20 {
+        return false;
+    }
+
+    // P2PKH: OP_DUP OP_HASH160 <20-byte hash> OP_EQUALVERIFY OP_CHECKSIG
+    if bytes.len() == 25
+        && bytes[0] == 0x76
+        && bytes[1] == 0xa9
+        && bytes[2] == 0x14
+        && bytes[23] == 0x88
+        && bytes[24] == 0xac
+    {
+        return true;
+    }
+
+    // P2SH: OP_HASH160 <20-byte hash> OP_EQUAL
+    if bytes.len() == 23 && bytes[0] == 0xa9 && bytes[1] == 0x14 && bytes[22] == 0x87 {
+        return true;
+    }
+
+    // Unknown format - be conservative and reject
+    false
+}
+
 /// Check if a Bitcoin address string is quantum-safe
 ///
 /// P2WPKH: bc1q... (42 chars, 20-byte program) - SAFE
@@ -347,6 +415,9 @@ pub fn validate_no_p2tr(script: &ScriptBuf) -> Result<(), GhostLockError> {
 /// P2TR:   bc1p... (62 chars) - QUANTUM VULNERABLE (rejected)
 ///
 /// Returns true for P2WPKH and P2WSH addresses, false for P2TR.
+///
+/// NOTE: For production use, prefer `is_quantum_safe_script()` which
+/// parses the actual scriptPubKey instead of string matching.
 pub fn is_quantum_safe_address(addr: &str) -> bool {
     // P2TR addresses start with bc1p (mainnet) or tb1p (testnet/signet)
     if addr.starts_with("bc1p") || addr.starts_with("tb1p") || addr.starts_with("bcrt1p") {

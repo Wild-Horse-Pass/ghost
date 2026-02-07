@@ -35,10 +35,14 @@ use ghost_storage::Database;
 /// Seconds in a day
 const SECONDS_PER_DAY: i64 = 86_400;
 
-/// M-15: Minimum unique challengers required for capability qualification
+/// M-15: Base minimum unique challengers required for capability qualification
 /// This prevents Sybil attacks where colluding nodes verify each other.
 /// Increased from 5 to 10 to require more diverse verification sources.
-const MIN_UNIQUE_CHALLENGERS: u32 = 10;
+/// MED-VER-6: This is the base value; actual requirement scales with network size
+const BASE_MIN_UNIQUE_CHALLENGERS: u32 = 10;
+
+/// MED-VER-6: Maximum unique challengers required (cap for very large networks)
+const MAX_MIN_UNIQUE_CHALLENGERS: u32 = 50;
 
 /// Configuration for capability qualification
 ///
@@ -85,7 +89,7 @@ impl Default for QualificationConfig {
         };
         Self {
             min_challenges: MIN_CHALLENGES_FOR_QUALIFICATION as u32,
-            min_unique_challengers: MIN_UNIQUE_CHALLENGERS,
+            min_unique_challengers: BASE_MIN_UNIQUE_CHALLENGERS, // MED-VER-6: Base value, scaled at runtime
             archive_pass_rate: ARCHIVE_PASS_RATE,
             ghostpay_pass_rate: GHOSTPAY_PASS_RATE,
             stratum_pass_rate: STRATUM_PASS_RATE,
@@ -119,6 +123,28 @@ impl QualifiedCapabilityProvider {
     /// Create with custom configuration
     pub fn with_config(db: Arc<Database>, config: QualificationConfig) -> Self {
         Self { db, config }
+    }
+
+    /// MED-VER-6: Calculate scaled unique challenger requirement based on network size
+    ///
+    /// Scales logarithmically with total node count to balance Sybil resistance
+    /// with practical achievability:
+    /// - 10-50 nodes: 10 unique challengers (base)
+    /// - 100 nodes: 13 unique challengers
+    /// - 500 nodes: 19 unique challengers
+    /// - 1000 nodes: 23 unique challengers
+    /// - 5000+ nodes: 50 unique challengers (cap)
+    ///
+    /// Formula: min(MAX, BASE + sqrt(network_size / 10))
+    fn scaled_min_unique_challengers(&self, network_size: usize) -> u32 {
+        if network_size <= 10 {
+            return BASE_MIN_UNIQUE_CHALLENGERS;
+        }
+
+        let scaled = BASE_MIN_UNIQUE_CHALLENGERS as f64
+            + ((network_size as f64) / 10.0).sqrt().floor();
+
+        (scaled as u32).min(MAX_MIN_UNIQUE_CHALLENGERS)
     }
 
     /// Get the lookback timestamp
@@ -213,7 +239,13 @@ impl QualifiedCapabilityProvider {
             .get_ghostpay_unique_challengers(&node_id_hex, since)
             .unwrap_or(0);
 
-        // AUTH4-L3: Log per-capability pass rate requirements
+        // MED-VER-6: Get network size for scaled requirements
+        let network_size = self.db.get_all_node_ids_with_payout()
+            .map(|ids| ids.len())
+            .unwrap_or(100);
+        let min_unique_scaled = self.scaled_min_unique_challengers(network_size);
+
+        // AUTH4-L3 + MED-VER-6: Log per-capability pass rate requirements
         info!(
             node = %&node_id_hex[..8],
             archive = format!("{}/{}", archive_stats.0, archive_stats.1),
@@ -225,16 +257,23 @@ impl QualifiedCapabilityProvider {
             stratum_unique = stratum_unique,
             ghostpay_unique = ghostpay_unique,
             min_challenges = self.config.min_challenges,
-            min_unique = self.config.min_unique_challengers,
+            min_unique = min_unique_scaled,
+            network_size = network_size,
             archive_rate = format!("{:.0}%", self.config.archive_pass_rate * 100.0),
             ghostpay_rate = format!("{:.0}%", self.config.ghostpay_pass_rate * 100.0),
-            "DIAG: Node challenge stats"
+            "DIAG: Node challenge stats (MED-VER-6: scaled unique requirement)"
         );
 
         // GATEKEEPER: Check uptime first
         if !self.check_uptime_gatekeeper(node_id) {
             return NodeCapabilities::default(); // 0 shares if uptime < 95%
         }
+
+        // MED-VER-6: Calculate scaled unique challenger requirement based on network size
+        let network_size = self.db.get_all_node_ids_with_payout()
+            .map(|ids| ids.len())
+            .unwrap_or(100); // Default to 100 if query fails
+        let min_unique = self.scaled_min_unique_challengers(network_size);
 
         // Get qualified capabilities from database
         // AUTH4-L3: Use archive_pass_rate as the baseline (0.95), but each capability
@@ -247,48 +286,53 @@ impl QualifiedCapabilityProvider {
             self.config.archive_pass_rate,
         ) {
             Ok(mut caps) => {
-                // C-2: Apply unique challengers requirement (Sybil prevention)
+                // C-2 + MED-VER-6: Apply unique challengers requirement (Sybil prevention)
                 // A capability is only qualified if challenges came from multiple independent nodes
-                if archive_unique < self.config.min_unique_challengers {
+                // The requirement now scales with network size for better Sybil resistance
+                if archive_unique < min_unique {
                     if caps.archive_mode {
                         info!(
                             node = %&node_id_hex[..8],
                             unique = archive_unique,
-                            required = self.config.min_unique_challengers,
-                            "C-2: Archive capability disqualified - insufficient unique challengers"
+                            required = min_unique,
+                            network_size = network_size,
+                            "C-2/MED-VER-6: Archive capability disqualified - insufficient unique challengers"
                         );
                     }
                     caps.archive_mode = false;
                 }
-                if policy_unique < self.config.min_unique_challengers {
+                if policy_unique < min_unique {
                     if caps.bitcoin_pure {
                         info!(
                             node = %&node_id_hex[..8],
                             unique = policy_unique,
-                            required = self.config.min_unique_challengers,
-                            "C-2: Policy capability disqualified - insufficient unique challengers"
+                            required = min_unique,
+                            network_size = network_size,
+                            "C-2/MED-VER-6: Policy capability disqualified - insufficient unique challengers"
                         );
                     }
                     caps.bitcoin_pure = false;
                 }
-                if stratum_unique < self.config.min_unique_challengers {
+                if stratum_unique < min_unique {
                     if caps.public_mining {
                         info!(
                             node = %&node_id_hex[..8],
                             unique = stratum_unique,
-                            required = self.config.min_unique_challengers,
-                            "C-2: Stratum capability disqualified - insufficient unique challengers"
+                            required = min_unique,
+                            network_size = network_size,
+                            "C-2/MED-VER-6: Stratum capability disqualified - insufficient unique challengers"
                         );
                     }
                     caps.public_mining = false;
                 }
-                if ghostpay_unique < self.config.min_unique_challengers {
+                if ghostpay_unique < min_unique {
                     if caps.ghost_pay {
                         info!(
                             node = %&node_id_hex[..8],
                             unique = ghostpay_unique,
-                            required = self.config.min_unique_challengers,
-                            "C-2: GhostPay capability disqualified - insufficient unique challengers"
+                            required = min_unique,
+                            network_size = network_size,
+                            "C-2/MED-VER-6: GhostPay capability disqualified - insufficient unique challengers"
                         );
                     }
                     caps.ghost_pay = false;
@@ -625,7 +669,7 @@ mod tests {
             ghost_common::constants::MIN_CHALLENGES_FOR_QUALIFICATION as u32
         );
         // C-2: Test minimum unique challengers requirement
-        assert_eq!(config.min_unique_challengers, MIN_UNIQUE_CHALLENGERS);
+        assert_eq!(config.min_unique_challengers, BASE_MIN_UNIQUE_CHALLENGERS);
         // AUTH4-L3: Test per-capability pass rates
         assert!((config.archive_pass_rate - 0.95).abs() < 0.001);
         assert!((config.ghostpay_pass_rate - 0.90).abs() < 0.001);

@@ -88,6 +88,27 @@ impl GhostLock {
         let lock_pubkey = PublicKey::from_secret_key(secp, lock_secret);
         let recovery_pubkey = PublicKey::from_secret_key(secp, recovery_secret);
 
+        // CRIT-LOCKS-1 FIX: Check for key negation attack
+        // Verify that lock_pubkey != recovery_pubkey AND lock_pubkey != -recovery_pubkey
+        // If lock_pubkey == -recovery_pubkey, the 2-of-2 security model breaks because
+        // whoever knows lock_secret can derive recovery_secret (or vice versa).
+        // We check by attempting to combine them and seeing if we get the point-at-infinity.
+        let combined = lock_pubkey.combine(&recovery_pubkey);
+
+        if combined.is_err() {
+            // combine() returns error if the points are exact negations
+            return Err(GhostLockError::InvalidKey(
+                "Lock and recovery keys are negations of each other - this breaks 2-of-2 security".to_string(),
+            ));
+        }
+
+        // Additional check: Verify they're not the same public key
+        if lock_pubkey == recovery_pubkey {
+            return Err(GhostLockError::InvalidKey(
+                "Lock and recovery public keys must be different".to_string(),
+            ));
+        }
+
         Self::from_pubkeys(
             lock_pubkey,
             recovery_pubkey,

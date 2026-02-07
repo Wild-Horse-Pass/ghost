@@ -211,18 +211,33 @@ fn random_bytes_32() -> Result<[u8; 32], WraithError> {
     Ok(bytes)
 }
 
+/// LOW-WRAITH-2 FIX: Maximum RNG retry attempts before giving up
+const MAX_RNG_RETRIES: usize = 100;
+
 /// Generate random 32 bytes for key material (infallible version for key generation)
 ///
-/// This version loops until valid entropy is obtained. Use for critical key generation
-/// where we cannot propagate errors but must have valid keys.
+/// LOW-WRAITH-2 FIX: Added circuit breaker with MAX_RNG_RETRIES limit.
+/// This version loops until valid entropy is obtained, but will panic after
+/// MAX_RNG_RETRIES failed attempts to prevent infinite loops if RNG is broken.
+/// Use for critical key generation where we cannot propagate errors but must have valid keys.
 fn random_bytes_32_infallible() -> [u8; 32] {
-    loop {
+    for attempt in 0..MAX_RNG_RETRIES {
         if let Ok(bytes) = random_bytes_32() {
             return bytes;
         }
         // If we get here, RNG is broken - log and retry
-        tracing::error!("RNG produced invalid entropy, retrying...");
+        tracing::error!(
+            attempt = attempt + 1,
+            max = MAX_RNG_RETRIES,
+            "RNG produced invalid entropy, retrying..."
+        );
     }
+
+    // LOW-WRAITH-2: Circuit breaker - RNG is persistently failing
+    panic!(
+        "CRITICAL: RNG failed {} consecutive attempts. System RNG may be broken. Terminating for safety.",
+        MAX_RNG_RETRIES
+    );
 }
 
 /// Generate a random secret key

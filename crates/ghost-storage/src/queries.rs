@@ -52,6 +52,11 @@ pub const MAX_EQUIVOCATION_PROOF_SIZE: usize = 100 * 1024;
 /// At most this should be ~500 bytes, so 10KB provides generous headroom.
 pub const MAX_ROTATION_PROOF_SIZE: usize = 10 * 1024;
 
+/// LOW-STOR-4: Maximum signature size (hex-encoded Ed25519 signature: 128 hex chars = 64 bytes)
+/// Ed25519 signatures are exactly 64 bytes (128 hex characters).
+/// Allow up to 256 chars for potential future signature types or encoding overhead.
+pub const MAX_SIGNATURE_SIZE: usize = 256;
+
 /// M-2: Maximum size for kv_store values (1 MB)
 /// Prevents storage exhaustion attacks through the key-value store API.
 pub const MAX_KV_VALUE_SIZE: usize = 1024 * 1024;
@@ -123,6 +128,21 @@ fn i64_to_u64(value: i64, field_name: &str) -> Result<u64, rusqlite::Error> {
         ));
     }
     Ok(value as u64)
+}
+
+/// LOW-STOR-1: Safely convert u64 to i64 for SQLite storage, rejecting values > i64::MAX
+///
+/// SQLite stores all integers as signed i64. This validates that u64 values
+/// (epochs, timestamps, heights) can safely fit in i64 before INSERT.
+fn u64_to_i64(value: u64, field_name: &str) -> Result<i64, GhostError> {
+    i64::try_from(value).map_err(|_| {
+        GhostError::InvalidInput(format!(
+            "{} value {} exceeds i64::MAX ({}), cannot store in SQLite",
+            field_name,
+            value,
+            i64::MAX
+        ))
+    })
 }
 
 // =============================================================================
@@ -287,6 +307,11 @@ impl Database {
 
         self.with_connection(|conn| {
             // M-STOR-1: Escape SQL LIKE wildcards to prevent injection
+            // LOW-STOR-3: SQLite LIKE escaping behavior
+            // - We use backslash (\) as the escape character via ESCAPE '\\'
+            // - First replace \ with \\ to escape existing backslashes
+            // - Then replace % with \% and _ with \_ to escape wildcards
+            // - The ESCAPE clause in the SQL tells SQLite to treat \ as escape char
             let escaped_query = query
                 .replace('\\', "\\\\") // Escape backslash first
                 .replace('%', "\\%")
@@ -3853,6 +3878,8 @@ impl Database {
     // ==========================================================================
 
     /// Store a canonical elder list for an epoch
+    ///
+    /// LOW-STOR-1: Validates epoch and activated_at fit in i64 before INSERT
     pub fn store_canonical_elder_list(
         &self,
         epoch: u64,
@@ -3860,11 +3887,15 @@ impl Database {
         elder_count: u32,
         activated_at: u64,
     ) -> GhostResult<()> {
+        // LOW-STOR-1: Validate u64->i64 conversion before INSERT
+        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
+        let activated_at_i64 = u64_to_i64(activated_at, "activated_at")?;
+
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO canonical_elder_lists (epoch, merkle_root, elder_count, activated_at)
                  VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![epoch as i64, merkle_root, elder_count, activated_at as i64],
+                rusqlite::params![epoch_i64, merkle_root, elder_count, activated_at_i64],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
@@ -3872,15 +3903,20 @@ impl Database {
     }
 
     /// Get a canonical elder list by epoch
+    ///
+    /// LOW-STOR-1: Validates epoch fits in i64 before query
     pub fn get_canonical_elder_list(
         &self,
         epoch: u64,
     ) -> GhostResult<Option<CanonicalElderListRecord>> {
+        // LOW-STOR-1: Validate u64->i64 conversion before query
+        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
+
         self.with_connection(|conn| {
             let result = conn.query_row(
                 "SELECT epoch, merkle_root, elder_count, activated_at, created_at
                      FROM canonical_elder_lists WHERE epoch = ?1",
-                [epoch as i64],
+                [epoch_i64],
                 |row| {
                     // M-10 FIX: Use safe conversions
                     Ok(CanonicalElderListRecord {
@@ -3931,6 +3967,8 @@ impl Database {
     }
 
     /// Store an elder entry for an epoch
+    ///
+    /// LOW-STOR-1: Validates epoch, registered_epoch, pow_nonce, and first_seen fit in i64
     #[allow(clippy::too_many_arguments)]
     pub fn store_elder_entry(
         &self,
@@ -3943,18 +3981,24 @@ impl Database {
         uptime_at_registration: f64,
         position: u32,
     ) -> GhostResult<()> {
+        // LOW-STOR-1: Validate u64->i64 conversions before INSERT
+        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
+        let registered_epoch_i64 = u64_to_i64(registered_epoch, "registered_epoch")?;
+        let pow_nonce_i64 = u64_to_i64(pow_nonce, "pow_nonce")?;
+        let first_seen_i64 = u64_to_i64(first_seen, "first_seen")?;
+
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO elder_entries
                  (epoch, node_id, registered_epoch, pow_nonce, pow_difficulty, first_seen, uptime_at_registration, position)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 rusqlite::params![
-                    epoch as i64,
+                    epoch_i64,
                     node_id,
-                    registered_epoch as i64,
-                    pow_nonce as i64,
+                    registered_epoch_i64,
+                    pow_nonce_i64,
                     pow_difficulty,
-                    first_seen as i64,
+                    first_seen_i64,
                     uptime_at_registration,
                     position
                 ],
@@ -3967,7 +4011,11 @@ impl Database {
     /// Get all elder entries for an epoch
     ///
     /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
+    /// LOW-STOR-1: Validates epoch fits in i64 before query
     pub fn get_elder_entries_for_epoch(&self, epoch: u64) -> GhostResult<Vec<ElderEntryRecord>> {
+        // LOW-STOR-1: Validate u64->i64 conversion before query
+        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
+
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -3979,7 +4027,7 @@ impl Database {
 
             // M-10 FIX: Use safe conversions
             let entries = stmt
-                .query_map(params![epoch as i64, Self::MAX_QUERY_RESULTS], |row| {
+                .query_map(params![epoch_i64, Self::MAX_QUERY_RESULTS], |row| {
                     Ok(ElderEntryRecord {
                         epoch: i64_to_u64(row.get::<_, i64>(0)?, "epoch")?,
                         node_id: row.get(1)?,
@@ -4000,6 +4048,9 @@ impl Database {
     }
 
     /// Store an elder approval (BFT signature)
+    ///
+    /// LOW-STOR-4: Validates signature size before INSERT
+    /// LOW-STOR-1: Validates epoch and approved_at fit in i64
     pub fn store_elder_approval(
         &self,
         epoch: u64,
@@ -4007,11 +4058,24 @@ impl Database {
         signature: &str,
         approved_at: u64,
     ) -> GhostResult<()> {
+        // LOW-STOR-4: Validate signature size before INSERT
+        if signature.len() > MAX_SIGNATURE_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "Signature too large: {} chars (max {} chars)",
+                signature.len(),
+                MAX_SIGNATURE_SIZE
+            )));
+        }
+
+        // LOW-STOR-1: Validate u64->i64 conversions before INSERT
+        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
+        let approved_at_i64 = u64_to_i64(approved_at, "approved_at")?;
+
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO elder_approvals (epoch, approver_node_id, signature, approved_at)
                  VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![epoch as i64, approver_node_id, signature, approved_at as i64],
+                rusqlite::params![epoch_i64, approver_node_id, signature, approved_at_i64],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
@@ -4019,10 +4083,15 @@ impl Database {
     }
 
     /// Get all approvals for an epoch
+    ///
+    /// LOW-STOR-1: Validates epoch fits in i64 before query
     pub fn get_elder_approvals_for_epoch(
         &self,
         epoch: u64,
     ) -> GhostResult<Vec<ElderApprovalRecord>> {
+        // LOW-STOR-1: Validate u64->i64 conversion before query
+        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
+
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -4033,7 +4102,7 @@ impl Database {
 
             // M-10 FIX: Use safe conversions
             let approvals = stmt
-                .query_map([epoch as i64], |row| {
+                .query_map([epoch_i64], |row| {
                     Ok(ElderApprovalRecord {
                         epoch: i64_to_u64(row.get::<_, i64>(0)?, "epoch")?,
                         approver_node_id: row.get(1)?,
@@ -4050,12 +4119,17 @@ impl Database {
     }
 
     /// Count approvals for an epoch
+    ///
+    /// LOW-STOR-1: Validates epoch fits in i64 before query
     pub fn count_elder_approvals(&self, epoch: u64) -> GhostResult<u32> {
+        // LOW-STOR-1: Validate u64->i64 conversion before query
+        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
+
         self.with_connection(|conn| {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM elder_approvals WHERE epoch = ?1",
-                    [epoch as i64],
+                    [epoch_i64],
                     |row| row.get(0),
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -4066,6 +4140,8 @@ impl Database {
     }
 
     /// Create an elder registration request
+    ///
+    /// LOW-STOR-1: Validates pow_nonce, first_seen, and target_epoch fit in i64
     pub fn create_elder_registration_request(
         &self,
         candidate_node_id: &str,
@@ -4075,6 +4151,11 @@ impl Database {
         uptime_percent: f64,
         target_epoch: u64,
     ) -> GhostResult<i64> {
+        // LOW-STOR-1: Validate u64->i64 conversions before INSERT
+        let pow_nonce_i64 = u64_to_i64(pow_nonce, "pow_nonce")?;
+        let first_seen_i64 = u64_to_i64(first_seen, "first_seen")?;
+        let target_epoch_i64 = u64_to_i64(target_epoch, "target_epoch")?;
+
         self.with_connection(|conn| {
             let now = chrono::Utc::now().timestamp_millis();
             conn.execute(
@@ -4083,11 +4164,11 @@ impl Database {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending')",
                 rusqlite::params![
                     candidate_node_id,
-                    pow_nonce as i64,
+                    pow_nonce_i64,
                     pow_difficulty,
-                    first_seen as i64,
+                    first_seen_i64,
                     uptime_percent,
-                    target_epoch as i64,
+                    target_epoch_i64,
                     now
                 ],
             )

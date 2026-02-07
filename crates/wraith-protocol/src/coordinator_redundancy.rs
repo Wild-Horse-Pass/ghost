@@ -764,7 +764,11 @@ impl CoordinatorPool {
         // Sort by trust score (descending)
         candidates.sort_by(|a, b| b.1.trust_score.cmp(&a.1.trust_score));
 
-        Ok(*candidates[0].0)
+        // CRIT-PANIC-2: Use .first() instead of [0] indexing
+        candidates
+            .first()
+            .map(|(id, _)| **id)
+            .ok_or(PoolError::NoStandbyAvailable)
     }
 
     /// Trigger failover (active coordinator failed) (WR4-L8)

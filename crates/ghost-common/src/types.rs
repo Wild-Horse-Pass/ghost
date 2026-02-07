@@ -68,23 +68,36 @@ impl NodeCapabilities {
     }
 
     /// Calculate total shares (0-15)
+    ///
+    /// MEDIUM-STOR-1: Uses checked arithmetic to prevent overflow.
+    /// The compile-time assertion below ensures max possible shares < i32::MAX.
     pub fn total_shares(&self) -> i32 {
-        let mut shares = 0;
+        let mut shares = 0i32;
         if self.archive_mode {
-            shares += crate::constants::ARCHIVE_MODE_SHARES;
+            shares = shares
+                .checked_add(crate::constants::ARCHIVE_MODE_SHARES)
+                .expect("BUG: share calculation overflow - max possible shares verified < i32::MAX");
         }
         if self.ghost_pay {
-            shares += crate::constants::GHOST_PAY_SHARES;
+            shares = shares
+                .checked_add(crate::constants::GHOST_PAY_SHARES)
+                .expect("BUG: share calculation overflow - max possible shares verified < i32::MAX");
         }
         if self.public_mining {
-            shares += crate::constants::PUBLIC_MINING_SHARES;
+            shares = shares
+                .checked_add(crate::constants::PUBLIC_MINING_SHARES)
+                .expect("BUG: share calculation overflow - max possible shares verified < i32::MAX");
         }
         if self.bitcoin_pure {
             // Bitcoin Pure works with both private and public mining
-            shares += crate::constants::BITCOIN_PURE_SHARES;
+            shares = shares
+                .checked_add(crate::constants::BITCOIN_PURE_SHARES)
+                .expect("BUG: share calculation overflow - max possible shares verified < i32::MAX");
         }
         if self.elder_status {
-            shares += crate::constants::ELDER_STATUS_SHARES;
+            shares = shares
+                .checked_add(crate::constants::ELDER_STATUS_SHARES)
+                .expect("BUG: share calculation overflow - max possible shares verified < i32::MAX");
         }
         shares
     }

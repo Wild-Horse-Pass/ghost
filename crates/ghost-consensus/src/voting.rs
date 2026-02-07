@@ -215,40 +215,40 @@ impl std::fmt::Debug for VotingSession {
 impl VotingSession {
     /// Create a new voting session
     ///
-    /// SEC-VOTE-3: This constructor is crate-private. External code should use
-    /// from_elder_list() to ensure all nodes agree on eligible voters through
-    /// the canonical elder list for BFT security.
+    /// CRIT-CONS-2 SECURITY: This constructor MUST enforce MIN_VOTERS_FOR_BFT to prevent
+    /// Byzantine control. It is intentionally private to force use of from_elder_list()
+    /// which provides additional validation.
     ///
-    /// Within the crate, this can be used during the transition period while
-    /// vote_handler.rs is being migrated to use CanonicalElderList.
+    /// This is the ONLY way to create VotingSession instances. All other constructors
+    /// (from_elder_list, from_elder_list_with_validation, new_for_testing) delegate here.
     ///
     /// H-5 SECURITY: Enforces MIN_VOTERS_FOR_BFT (7) to ensure proper BFT guarantees.
     /// BFT requires n >= 3f+1, so for f=2 Byzantine nodes, we need n >= 7.
     /// Creating a voting session with fewer voters would allow Byzantine nodes to
     /// control the outcome (e.g., with 4 voters and 2 Byzantine, they have 50% control).
     ///
-    /// H-P2P-2: Timeout is enforced to be at least MIN_TIMEOUT_MS (1 second).
-    /// Values below this are clamped up to prevent DoS via zero timeout.
+    /// MED-CONS-1 SECURITY: Timeout must be >= MIN_TIMEOUT_MS (1 second), otherwise error.
+    /// Values below this are REJECTED (not clamped) to prevent DoS via zero timeout.
     ///
     /// # Errors
     ///
-    /// Returns `GhostError::InsufficientVoters` if fewer than MIN_VOTERS_FOR_BFT (7)
-    /// eligible voters are provided.
-    pub(crate) fn new(
+    /// - Returns `GhostError::InsufficientVoters` if fewer than MIN_VOTERS_FOR_BFT (7)
+    /// - Returns `GhostError::Config` if timeout_ms < MIN_TIMEOUT_MS
+    fn new(
         round_id: RoundId,
         proposal_hash: [u8; 32],
         vote_type: VoteType,
         eligible_voters: HashSet<NodeId>,
         timeout_ms: u64,
     ) -> Result<Self, GhostError> {
-        // H-5 SECURITY: Enforce minimum voter count for BFT guarantees
-        // This check MUST be present in ALL constructors, not just from_elder_list()
+        // CRIT-CONS-2 SECURITY: This validation is the security gate for all voting sessions.
+        // Every VotingSession MUST go through this check - no bypasses allowed.
         if eligible_voters.len() < Self::MIN_VOTERS_FOR_BFT {
             error!(
                 round_id,
                 voters = eligible_voters.len(),
                 required = Self::MIN_VOTERS_FOR_BFT,
-                "H-5: Cannot create voting session: BFT requires at least {} eligible voters",
+                "CRIT-CONS-2: Cannot create voting session: BFT requires at least {} eligible voters",
                 Self::MIN_VOTERS_FOR_BFT
             );
             return Err(GhostError::InsufficientVoters {
@@ -257,14 +257,19 @@ impl VotingSession {
             });
         }
 
-        // H-P2P-2: Enforce minimum timeout to prevent DoS
-        let effective_timeout = timeout_ms.max(MIN_TIMEOUT_MS);
+        // MED-CONS-1 SECURITY: Enforce minimum timeout strictly (error, not clamp)
+        // Clamping silently allowed DoS - now we reject invalid timeouts
         if timeout_ms < MIN_TIMEOUT_MS {
-            warn!(
-                requested = timeout_ms,
-                enforced = effective_timeout,
-                "H-P2P-2: Timeout below minimum, clamping to MIN_TIMEOUT_MS"
+            error!(
+                round_id,
+                requested_timeout = timeout_ms,
+                minimum = MIN_TIMEOUT_MS,
+                "MED-CONS-1: Timeout is below minimum, rejecting voting session creation"
             );
+            return Err(GhostError::Config(format!(
+                "MED-CONS-1: Voting session timeout must be >= {} ms, got {} ms",
+                MIN_TIMEOUT_MS, timeout_ms
+            )));
         }
 
         Ok(Self {
@@ -272,7 +277,7 @@ impl VotingSession {
             proposal_hash,
             vote_type,
             started: Instant::now(),
-            timeout_ms: effective_timeout,
+            timeout_ms, // MED-CONS-1: Use the validated timeout directly (no clamping)
             eligible_voters,
             votes: HashMap::new(),
             result: None,
@@ -1756,40 +1761,40 @@ mod tests {
     // H-P2P-2 TESTS: Timeout validation
     // =========================================================================
 
-    /// H-P2P-2-TEST: Verify that timeout_ms=0 is clamped to MIN_TIMEOUT_MS
+    /// H-P2P-2-TEST: Verify that timeout_ms=0 is rejected (MED-CONS-1: strict validation)
     #[test]
-    fn test_zero_timeout_clamped() {
+    fn test_zero_timeout_rejected() {
         // H-5: Use at least MIN_VOTERS_FOR_BFT (7) eligible voters
         let mut eligible = HashSet::new();
         for i in 0..10 {
             eligible.insert([i as u8; 32]);
         }
 
-        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 0)
-            .expect("Session should have enough voters");
+        let result = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 0);
 
-        assert_eq!(
-            session.timeout_ms, MIN_TIMEOUT_MS,
-            "H-P2P-2: Zero timeout should be clamped to MIN_TIMEOUT_MS"
-        );
+        // MED-CONS-1: Invalid timeouts are now rejected, not clamped
+        assert!(result.is_err(), "Zero timeout should be rejected");
+        if let Err(e) = result {
+            assert!(e.to_string().contains("timeout must be"), "Error should mention timeout");
+        }
     }
 
-    /// H-P2P-2-TEST: Verify that timeout below minimum is clamped
+    /// H-P2P-2-TEST: Verify that timeout below minimum is rejected (MED-CONS-1: strict validation)
     #[test]
-    fn test_low_timeout_clamped() {
+    fn test_low_timeout_rejected() {
         // H-5: Use at least MIN_VOTERS_FOR_BFT (7) eligible voters
         let mut eligible = HashSet::new();
         for i in 0..10 {
             eligible.insert([i as u8; 32]);
         }
 
-        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 500)
-            .expect("Session should have enough voters");
+        let result = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 500);
 
-        assert_eq!(
-            session.timeout_ms, MIN_TIMEOUT_MS,
-            "H-P2P-2: Timeout below MIN_TIMEOUT_MS should be clamped"
-        );
+        // MED-CONS-1: Invalid timeouts are now rejected, not clamped
+        assert!(result.is_err(), "Timeout below MIN_TIMEOUT_MS should be rejected");
+        if let Err(e) = result {
+            assert!(e.to_string().contains("timeout must be"), "Error should mention timeout");
+        }
     }
 
     /// H-P2P-2-TEST: Verify that valid timeout is preserved

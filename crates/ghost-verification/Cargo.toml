@@ -53,6 +53,7 @@ hmac = { workspace = true }
 rand = { workspace = true }
 chrono = { workspace = true }
 getrandom = { workspace = true }
+uuid = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]

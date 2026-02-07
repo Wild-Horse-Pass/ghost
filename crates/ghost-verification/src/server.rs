@@ -24,6 +24,8 @@
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::Method;
+use axum::middleware::Next;
+use axum::response::Response;
 use ghost_common::constants::{SV1_STRATUM_PORT, SV2_STRATUM_PORT};
 use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::identity::NodeIdentity;
@@ -35,6 +37,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 use crate::config::NodeConfig;
 /// Full node configuration from ghost_common (pool.toml)
@@ -358,6 +361,98 @@ fn is_valid_cors_origin(origin: &str) -> bool {
     }
 
     true
+}
+
+/// HIGH-API-5: Middleware to add X-Request-ID header for request correlation
+///
+/// This middleware:
+/// 1. Checks if the client provided an X-Request-ID header
+/// 2. If not, generates a new UUID v4
+/// 3. Adds the ID to the response headers
+/// 4. Logs the request with the correlation ID
+///
+/// This enables request tracing across distributed systems and makes debugging easier.
+async fn correlation_id_middleware(
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    // Check if client provided X-Request-ID
+    let request_id = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            // Generate new UUID v4 if not provided
+            Uuid::new_v4().to_string()
+        });
+
+    // Store in request extensions for handlers to access
+    request.extensions_mut().insert(request_id.clone());
+
+    // Log the request with correlation ID
+    tracing::debug!(
+        request_id = %request_id,
+        method = %request.method(),
+        uri = %request.uri(),
+        "HIGH-API-5: Request received"
+    );
+
+    // Process request
+    let mut response = next.run(request).await;
+
+    // Add X-Request-ID to response
+    // MED-PANIC-1: Handle parse failure gracefully instead of unwrap
+    if let Ok(value) = request_id.parse() {
+        response.headers_mut().insert("x-request-id", value);
+    } else if let Ok(fallback) = Uuid::new_v4().to_string().parse() {
+        response.headers_mut().insert("x-request-id", fallback);
+    }
+    // If both fail (extremely unlikely), skip the header rather than panic
+
+    response
+}
+
+/// LOW-API-1: Middleware to add security headers
+///
+/// Adds standard security headers to all responses:
+/// - X-Content-Type-Options: nosniff (prevent MIME sniffing)
+/// - X-Frame-Options: DENY (prevent clickjacking)
+/// - X-XSS-Protection: 1; mode=block (legacy XSS protection)
+/// - Content-Security-Policy: restrict resources
+/// - Referrer-Policy: no-referrer (don't leak referrer)
+async fn security_headers_middleware(
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let mut response = next.run(request).await;
+
+    let headers = response.headers_mut();
+
+    // MED-PANIC-1: Use HeaderValue::from_static for known-valid header values
+    // These are compile-time validated ASCII strings that cannot fail
+    use axum::http::HeaderValue;
+
+    // LOW-API-1: Add security headers
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert(
+        "x-xss-protection",
+        HeaderValue::from_static("1; mode=block"),
+    );
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+    );
+    headers.insert(
+        "referrer-policy",
+        HeaderValue::from_static("no-referrer"),
+    );
+
+    response
 }
 
 /// Parse a share hash hex string to [u8; 32]
@@ -1509,14 +1604,17 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
     };
 
     // Rate limiting configuration - AUTH4-M1: NodeId-based rate limiting
-    // - 50 requests per second burst capacity
-    // - Refills at 10 requests per second
+    // HIGH-VER-5: Tightened rate limits for verification endpoints
+    // - 20 requests per second burst capacity (down from 50)
+    // - Refills at 5 requests per second (down from 10)
     // - Per NodeId (from X-Ghost-NodeId header) with IP fallback
+    // This prevents abuse while allowing legitimate verification traffic
+    // (3 peers * 4 capabilities = 12 requests per 5-minute cycle)
     // L-28: Use proper error handling instead of expect()
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
-            .per_second(10)
-            .burst_size(50)
+            .per_second(5) // HIGH-VER-5: Reduced from 10 to 5
+            .burst_size(20) // HIGH-VER-5: Reduced from 50 to 20
             .key_extractor(NodeIdKeyExtractor::new())
             .finish()
             .ok_or_else(|| {
@@ -1539,10 +1637,14 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
     });
 
     // Build service with security layers
-    // - Rate limiting: 50 req/s burst, 10 req/s sustained per NodeId/IP
+    // HIGH-VER-5: Tightened rate limiting: 20 req/s burst, 5 req/s sustained per NodeId/IP
     // - CORS: restrict to allowed origins
     // - Request body limit: 1MB max to prevent DoS
+    // - HIGH-API-5: Request correlation IDs for distributed tracing
+    // - LOW-API-1: Security headers (X-Content-Type-Options, X-Frame-Options, etc.)
     let app = create_router(state)
+        .layer(axum::middleware::from_fn(security_headers_middleware))
+        .layer(axum::middleware::from_fn(correlation_id_middleware))
         .layer(GovernorLayer {
             config: governor_conf,
         })
@@ -1550,7 +1652,11 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
         .layer(DefaultBodyLimit::max(1024 * 1024)); // 1MB limit
 
     let addr = format!("0.0.0.0:{}", port);
-    info!(address = %addr, rate_limit = "50 burst / 10 per sec (NodeId/IP keyed)", "Starting verification server");
+    info!(
+        address = %addr,
+        rate_limit = "HIGH-VER-5: 20 burst / 5 per sec (NodeId/IP keyed)",
+        "Starting verification server with tightened rate limits"
+    );
 
     let listener = TcpListener::bind(&addr)
         .await

@@ -640,7 +640,8 @@ async fn handle_get_utxos(
         .get_utxos(&wallet_id.to_string(), min_confirmations)
         .await?;
 
-    let total_sats: u64 = utxos.iter().map(|u| u.amount_sats).sum();
+    // MED-OVERFLOW-1 FIX: Use fold with saturating_add instead of sum
+    let total_sats: u64 = utxos.iter().fold(0u64, |acc, u| acc.saturating_add(u.amount_sats));
 
     Ok(Some(ServerMessage::Utxos { utxos, total_sats }))
 }
@@ -661,7 +662,8 @@ async fn handle_get_ghost_locks(
         .get_ghost_locks(&wallet_id.to_string())
         .await?;
 
-    let total_locked_sats: u64 = locks.iter().map(|l| l.balance_sats).sum();
+    // MED-OVERFLOW-1 FIX: Use fold with saturating_add instead of sum
+    let total_locked_sats: u64 = locks.iter().fold(0u64, |acc, l| acc.saturating_add(l.balance_sats));
 
     Ok(Some(ServerMessage::GhostLocks {
         locks,
@@ -912,6 +914,9 @@ async fn handle_prepare_payment(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
 
+            // MED-OVERFLOW-1 FIX: Use saturating_add for total calculation
+            let total_sats = amount_sats.saturating_add(fee_sats);
+
             let payment = PreparedPayment {
                 payment_id,
                 mode: *mode,
@@ -919,7 +924,7 @@ async fn handle_prepare_payment(
                 original_recipient: recipient.to_string(),
                 amount_sats,
                 fee_sats,
-                total_sats: amount_sats + fee_sats,
+                total_sats,
                 sighash,
                 signing_method: "schnorr".to_string(),
                 expires_at,
@@ -972,16 +977,17 @@ async fn handle_submit_signed_payment(
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
-    // H-9: Verify payment belongs to this wallet before allowing submission
+    // H-9/HIGH-AUTHZ-1: Verify payment belongs to this wallet before allowing submission
     // This prevents payment hijacking attacks where an attacker could submit
     // signatures for payments created by other wallets.
-    let payment = state.pay_node.get_payment(payment_id).await?;
+    // HIGH-AUTHZ-1: Pass wallet_id to enable server-side access control
+    let payment = state.pay_node.get_payment(payment_id, &wallet_id.to_string()).await?;
     if payment.wallet_id != wallet_id.to_string() {
         warn!(
             wallet_id = %wallet_id,
             payment_id = %payment_id,
             payment_owner = %payment.wallet_id,
-            "H-9 Security: Payment ownership mismatch - rejecting signature submission"
+            "H-9/HIGH-AUTHZ-1: Payment ownership mismatch - rejecting signature submission"
         );
         return Err(GspError::PaymentOwnershipMismatch);
     }
@@ -1745,52 +1751,107 @@ async fn handle_accept_instant_payment(
     }
 
     // Generate payment ID
-    let payment_id = generate_instant_payment_id(sender_lock_id, amount_sats, current_height);
+    let payment_id = generate_instant_payment_id(sender_lock_id, amount_sats, current_height)?;
     let settlement_block = current_height + 1;
     let timestamp = chrono::Utc::now().timestamp();
 
-    // Record the instant payment acceptance (for later settlement verification)
-    // In production, this would record to the database for reconciliation
-    info!(
-        payment_id = hex::encode(payment_id),
-        sender_lock_id = sender_lock_id,
-        amount_sats = amount_sats,
-        settlement_block = settlement_block,
-        confidence = capability.confidence,
-        l1_confirmations = utxo_state.confirmations,
-        "Instant payment accepted (L1 verified) - show Confirmed"
-    );
+    // =========================================================================
+    // HIGH-RACE-1 FIX: Atomic check-and-insert to prevent double-acceptance
+    // =========================================================================
+    // This is CRITICAL. Without atomic insertion with UNIQUE constraint, the same
+    // instant payment could be accepted multiple times (double-spend). We call
+    // the pay node's accept_instant_payment endpoint which will atomically insert
+    // into accepted_instant_payments table with UNIQUE constraint on
+    // (sender_lock_id, payment_id, merchant_wallet_id) to ensure exactly-once semantics.
 
-    Ok(Some(ServerMessage::InstantPaymentAccepted {
-        payment_id: hex::encode(payment_id),
-        sender_lock_id: sender_lock_id.to_string(),
-        amount_sats,
-        settlement_block,
-        confidence: capability.confidence,
-        timestamp,
-    }))
+    let merchant_wallet_id_str = wallet_id.to_string();
+
+    // Call pay node to atomically record the instant payment acceptance
+    // The pay node will use a database UNIQUE constraint to prevent double-acceptance
+    match state
+        .pay_node
+        .accept_instant_payment(
+            &hex::encode(payment_id),
+            sender_lock_id,
+            &merchant_wallet_id_str,
+            amount_sats,
+            settlement_block,
+            capability.confidence.into(),
+            &signed_payment.sender_pubkey,
+            &signed_payment.signature,
+        )
+        .await
+    {
+        Ok(_) => {
+            // Successfully recorded - this is the FIRST acceptance
+            info!(
+                payment_id = hex::encode(payment_id),
+                sender_lock_id = sender_lock_id,
+                merchant_wallet_id = %wallet_id,
+                amount_sats = amount_sats,
+                settlement_block = settlement_block,
+                confidence = capability.confidence,
+                l1_confirmations = utxo_state.confirmations,
+                "HIGH-RACE-1: Instant payment accepted (L1 verified, atomically recorded) - show Confirmed"
+            );
+
+            Ok(Some(ServerMessage::InstantPaymentAccepted {
+                payment_id: hex::encode(payment_id),
+                sender_lock_id: sender_lock_id.to_string(),
+                amount_sats,
+                settlement_block,
+                confidence: capability.confidence,
+                timestamp,
+            }))
+        }
+        Err(e) if matches!(&e, GspError::PayNodeError(msg) if msg.contains("already accepted")) => {
+            // Payment was already accepted (double-acceptance attempt blocked)
+            warn!(
+                payment_id = hex::encode(payment_id),
+                sender_lock_id = sender_lock_id,
+                merchant_wallet_id = %wallet_id,
+                "HIGH-RACE-1: Instant payment double-acceptance PREVENTED by database constraint"
+            );
+
+            Ok(Some(ServerMessage::Error {
+                code: "PAYMENT_ALREADY_ACCEPTED".to_string(),
+                message: "This instant payment has already been accepted".to_string(),
+                request_id: None,
+            }))
+        }
+        Err(e) => {
+            // Other error
+            error!(
+                payment_id = hex::encode(payment_id),
+                error = %e,
+                "Failed to record instant payment acceptance"
+            );
+            Err(e)
+        }
+    }
 }
 
 /// Generate a unique payment ID for instant payments
 ///
-/// M-10 FIX: Uses 32 bytes of cryptographically secure random data from getrandom
+/// M-10/HIGH-CRYPTO-1 FIX: Uses 32 bytes of cryptographically secure random data from getrandom
 /// instead of predictable timestamp. This prevents payment ID guessing attacks
 /// where an attacker could predict future payment IDs and exploit timing windows.
-fn generate_instant_payment_id(lock_id: &str, amount: u64, height: u64) -> [u8; 32] {
+///
+/// HIGH-CRYPTO-1 FIX: Returns Result instead of panicking on getrandom failure.
+fn generate_instant_payment_id(lock_id: &str, amount: u64, height: u64) -> Result<[u8; 32], GspError> {
     use sha2::{Digest, Sha256};
 
-    // M-10 FIX: Use cryptographically secure random bytes instead of timestamp
+    // M-10/HIGH-CRYPTO-1 FIX: Use cryptographically secure random bytes
+    // Return error instead of panic if randomness fails
     let mut random_bytes = [0u8; 32];
-    if let Err(e) = getrandom::getrandom(&mut random_bytes) {
-        // getrandom should never fail on supported platforms, but if it does
-        // we must not proceed with a predictable fallback - that would defeat
-        // the entire security purpose of this fix
-        panic!(
-            "CRITICAL: Failed to get cryptographic randomness for payment ID: {}. \
-             Cannot generate secure payment IDs without CSPRNG.",
+    getrandom::getrandom(&mut random_bytes).map_err(|e| {
+        GspError::Internal(format!(
+            "HIGH-CRYPTO-1: Failed to get cryptographic randomness for payment ID: {}. \
+             Cannot generate secure payment IDs without CSPRNG. \
+             This indicates a critical system-level failure.",
             e
-        );
-    }
+        ))
+    })?;
 
     let mut hasher = Sha256::new();
     hasher.update(b"ghost-instant-payment-v2"); // Version bump indicates new format
@@ -1798,7 +1859,7 @@ fn generate_instant_payment_id(lock_id: &str, amount: u64, height: u64) -> [u8; 
     hasher.update(amount.to_le_bytes());
     hasher.update(height.to_le_bytes());
     hasher.update(random_bytes); // 32 bytes of cryptographic randomness
-    hasher.finalize().into()
+    Ok(hasher.finalize().into())
 }
 
 /// M-9 FIX: Verify the BIP-340 Schnorr signature on a SignedInstantPayment

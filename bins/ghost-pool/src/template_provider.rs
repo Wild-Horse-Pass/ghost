@@ -143,14 +143,27 @@ impl TdpConfig {
 
 impl Default for TdpConfig {
     fn default() -> Self {
-        // Generate a random key for default (SHOULD be replaced with persistent key)
+        // CRIT-PANIC-5: Handle getrandom failure gracefully
+        // WARNING: Default impl is for testing only - production MUST provide explicit config
         let mut secret_key = [0u8; 32];
-        getrandom::getrandom(&mut secret_key).expect("Failed to generate random key");
-        // L-26: Using expect here in Default impl is acceptable since:
-        // 1. getrandom succeeded, so we have valid random bytes
-        // 2. The only way new() fails is with an invalid secret key
-        // 3. Valid random bytes from getrandom will always produce a valid secp256k1 key
-        Self::new(secret_key).expect("Failed to create TdpConfig from random key")
+
+        // Try to generate random key
+        match getrandom::getrandom(&mut secret_key) {
+            Ok(_) => {
+                // Got random bytes, create config
+                match Self::new(secret_key) {
+                    Ok(config) => config,
+                    Err(e) => panic!("TDP Default: generated invalid secp256k1 key: {}", e),
+                }
+            }
+            Err(e) => {
+                // getrandom failed - this should never happen on modern systems
+                panic!(
+                    "TDP Default: getrandom failed ({}). Production deployments must provide explicit TdpConfig.",
+                    e
+                );
+            }
+        }
     }
 }
 

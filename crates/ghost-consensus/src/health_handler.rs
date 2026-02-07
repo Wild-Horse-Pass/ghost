@@ -263,8 +263,11 @@ impl DynamicDifficultyAdjuster {
             return 0.0;
         }
 
-        let first = timestamps.front().unwrap();
-        let last = timestamps.back().unwrap();
+        // CRIT-PANIC-1: Use .first()/.last() instead of .front()/.back() unwrap
+        let (first, last) = match (timestamps.front(), timestamps.back()) {
+            (Some(f), Some(l)) => (f, l),
+            _ => return 0.0, // Should never happen due to len check, but safe
+        };
         let duration = last.duration_since(*first).as_secs_f64();
 
         if duration < 0.001 {

@@ -147,8 +147,9 @@ impl PayNodeProxy {
     /// # L-27 Security Fix
     /// Uses proper error handling instead of expect() to prevent panics
     ///
-    /// # M-15 Security Fix
-    /// Reads GHOST_PAY_INTERNAL_SECRET from environment for internal authentication
+    /// # CRIT-AUTH-1/CRIT-AUTH-2 Security Fix
+    /// Reads and validates GHOST_PAY_INTERNAL_SECRET from environment for internal authentication.
+    /// FAILS AT STARTUP if secret is not set or does not meet security requirements.
     pub fn new(base_url: &str) -> GspResult<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -161,19 +162,69 @@ impl PayNodeProxy {
                 ))
             })?;
 
-        // M-15: Read internal auth secret from environment
-        let internal_secret = std::env::var("GHOST_PAY_INTERNAL_SECRET").ok();
-        if internal_secret.is_none() {
-            tracing::warn!(
-                "M-15: GHOST_PAY_INTERNAL_SECRET not set - pay node requests will be unauthenticated. \
-                 Set this environment variable in production to enable authenticated internal communication."
-            );
+        // CRIT-AUTH-1: REQUIRE internal auth secret in production
+        let internal_secret = std::env::var("GHOST_PAY_INTERNAL_SECRET")
+            .map_err(|_| {
+                GspError::Config(
+                    "CRIT-AUTH-1: GHOST_PAY_INTERNAL_SECRET environment variable is required. \
+                     The GSP server cannot operate without authenticated communication to the pay node. \
+                     Set a strong secret: export GHOST_PAY_INTERNAL_SECRET=$(openssl rand -base64 32)".to_string()
+                )
+            })?;
+
+        // CRIT-AUTH-2: Validate secret strength
+        if internal_secret.len() < 32 {
+            return Err(GspError::Config(
+                format!(
+                    "CRIT-AUTH-2: GHOST_PAY_INTERNAL_SECRET is too short ({} bytes). \
+                     Minimum 32 bytes required for cryptographic security. \
+                     Generate a strong secret: openssl rand -base64 32",
+                    internal_secret.len()
+                )
+            ));
         }
+
+        // CRIT-AUTH-2: Check for weak/predictable secrets
+        let weak_secrets = [
+            "test", "password", "secret", "changeme", "default",
+            "admin", "root", "12345", "abc", "ghost"
+        ];
+        let secret_lower = internal_secret.to_lowercase();
+        for weak in &weak_secrets {
+            if secret_lower.contains(weak) {
+                return Err(GspError::Config(
+                    format!(
+                        "CRIT-AUTH-2: GHOST_PAY_INTERNAL_SECRET contains weak pattern '{}'. \
+                         Use cryptographically random secret: openssl rand -base64 32",
+                        weak
+                    )
+                ));
+            }
+        }
+
+        // CRIT-AUTH-2: Check for sufficient entropy (at least 16 unique characters)
+        let unique_chars: std::collections::HashSet<char> = internal_secret.chars().collect();
+        if unique_chars.len() < 16 {
+            return Err(GspError::Config(
+                format!(
+                    "CRIT-AUTH-2: GHOST_PAY_INTERNAL_SECRET has insufficient entropy ({} unique characters). \
+                     Minimum 16 unique characters required. \
+                     Generate a strong secret: openssl rand -base64 32",
+                    unique_chars.len()
+                )
+            ));
+        }
+
+        tracing::info!(
+            secret_length = internal_secret.len(),
+            unique_chars = unique_chars.len(),
+            "CRIT-AUTH-1/2: Internal authentication secret validated successfully"
+        );
 
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
-            internal_secret,
+            internal_secret: Some(internal_secret),
         })
     }
 
@@ -288,7 +339,8 @@ impl PayNodeProxy {
         for lock in locks {
             // Count balance from active and in-use locks
             if lock.status.can_spend() || lock.status.can_jump() {
-                locked += lock.balance_sats;
+                // MED-OVERFLOW-1 FIX: Use checked arithmetic to prevent overflow
+                locked = locked.saturating_add(lock.balance_sats);
             }
         }
 
@@ -521,11 +573,15 @@ impl PayNodeProxy {
         })
     }
 
-    /// H-3/H-4 FIX: Check if a wallet owns a specific lock
+    /// H-3/H-4/HIGH-STATE-1 FIX: Check if a wallet owns a specific lock
     ///
     /// Verifies ownership by checking if the lock exists in the wallet's lock list.
     /// This is used to ensure that lock state subscriptions and capability checks
     /// can only be performed by the lock owner.
+    ///
+    /// HIGH-STATE-1 FIX: First tries the efficient /api/v1/locks/{lock_id}/owner endpoint
+    /// which does server-side ownership check. Falls back to client-side check if endpoint
+    /// doesn't exist yet (for backwards compatibility).
     ///
     /// # Arguments
     /// * `wallet_id` - The wallet ID to check ownership for
@@ -536,11 +592,50 @@ impl PayNodeProxy {
     /// * `Ok(false)` - Wallet does not own the lock
     /// * `Err(_)` - Error checking ownership
     pub async fn is_lock_owner(&self, wallet_id: &str, lock_id: &str) -> GspResult<bool> {
-        // Get all locks for this wallet
-        let locks = self.get_ghost_locks(wallet_id).await?;
+        // HIGH-STATE-1: Try the efficient server-side endpoint first
+        let url = format!(
+            "{}/api/v1/locks/{}/owner?wallet_id={}",
+            self.base_url, lock_id, wallet_id
+        );
+        debug!(
+            url = %url,
+            wallet_id = %wallet_id,
+            lock_id = %lock_id,
+            "HIGH-STATE-1: Checking lock ownership via server-side endpoint"
+        );
 
-        // Check if the requested lock is in the wallet's list
-        Ok(locks.iter().any(|lock| lock.lock_id == lock_id))
+        // M-15: Add internal auth header
+        let response = self
+            .add_internal_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            // Endpoint doesn't exist yet - fall back to client-side check
+            debug!("HIGH-STATE-1: Server-side endpoint not available, falling back to client-side check");
+            let locks = self.get_ghost_locks(wallet_id).await?;
+            return Ok(locks.iter().any(|lock| lock.lock_id == lock_id));
+        }
+
+        if !response.status().is_success() {
+            return Err(GspError::PayNodeError(format!(
+                "Lock ownership check failed: {}",
+                response.status()
+            )));
+        }
+
+        #[derive(Deserialize)]
+        struct OwnershipResponse {
+            is_owner: bool,
+        }
+
+        let result: OwnershipResponse = response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(e.to_string()))?;
+
+        Ok(result.is_owner)
     }
 
     /// Get transaction history
@@ -1002,17 +1097,27 @@ impl PayNodeProxy {
     }
 
     // =========================================================================
-    // H-9: Payment Ownership Verification
+    // H-9/HIGH-AUTHZ-1: Payment Ownership Verification
     // =========================================================================
 
-    /// H-9: Get payment details including wallet ownership
+    /// H-9/HIGH-AUTHZ-1: Get payment details including wallet ownership
     ///
     /// Returns payment details including the wallet_id that created the payment.
     /// This is used to verify that a wallet can only submit signatures for
     /// payments they created, preventing payment hijacking.
-    pub async fn get_payment(&self, payment_id: &str) -> GspResult<PaymentInfo> {
-        let url = format!("{}/api/v1/payments/{}", self.base_url, payment_id);
-        debug!(url = %url, payment_id = %payment_id, "Getting payment for ownership verification");
+    ///
+    /// HIGH-AUTHZ-1: Includes requesting_wallet_id for server-side access control.
+    pub async fn get_payment(&self, payment_id: &str, requesting_wallet_id: &str) -> GspResult<PaymentInfo> {
+        let url = format!(
+            "{}/api/v1/payments/{}?wallet_id={}",
+            self.base_url, payment_id, requesting_wallet_id
+        );
+        debug!(
+            url = %url,
+            payment_id = %payment_id,
+            requesting_wallet_id = %requesting_wallet_id,
+            "HIGH-AUTHZ-1: Getting payment with wallet ownership verification"
+        );
 
         // M-15: Add internal auth header
         let response = self
@@ -1028,10 +1133,89 @@ impl PayNodeProxy {
             )));
         }
 
+        if response.status() == reqwest::StatusCode::FORBIDDEN {
+            return Err(GspError::PaymentOwnershipMismatch);
+        }
+
         if !response.status().is_success() {
             return Err(GspError::PayNodeError(format!(
                 "Payment request failed: {}",
                 response.status()
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(e.to_string()))
+    }
+
+    // =========================================================================
+    // HIGH-RACE-1: Atomic Instant Payment Acceptance
+    // =========================================================================
+
+    /// HIGH-RACE-1: Atomically record instant payment acceptance
+    ///
+    /// This calls the pay node to record the instant payment acceptance in the database
+    /// with a UNIQUE constraint that prevents double-acceptance. The database operation
+    /// is atomic - either this is the first acceptance (success) or it was already
+    /// accepted (UNIQUE constraint violation).
+    #[allow(clippy::too_many_arguments)] // HIGH-RACE-1: All parameters needed for atomic double-spend prevention
+    pub async fn accept_instant_payment(
+        &self,
+        payment_id: &str,
+        sender_lock_id: &str,
+        merchant_wallet_id: &str,
+        amount_sats: u64,
+        settlement_block: u64,
+        confidence: f64,
+        sender_pubkey: &[u8],
+        signature: &[u8],
+    ) -> GspResult<serde_json::Value> {
+        let url = format!("{}/api/v1/instant-payments/accept", self.base_url);
+        debug!(
+            url = %url,
+            payment_id = %payment_id,
+            sender_lock_id = %sender_lock_id,
+            merchant_wallet_id = %merchant_wallet_id,
+            "HIGH-RACE-1: Recording instant payment acceptance"
+        );
+
+        #[derive(Serialize)]
+        struct AcceptInstantPaymentRequest {
+            payment_id: String,
+            sender_lock_id: String,
+            merchant_wallet_id: String,
+            amount_sats: u64,
+            settlement_block: u64,
+            confidence: f64,
+            sender_pubkey: String,
+            signature: String,
+        }
+
+        let request = AcceptInstantPaymentRequest {
+            payment_id: payment_id.to_string(),
+            sender_lock_id: sender_lock_id.to_string(),
+            merchant_wallet_id: merchant_wallet_id.to_string(),
+            amount_sats,
+            settlement_block,
+            confidence,
+            sender_pubkey: hex::encode(sender_pubkey),
+            signature: hex::encode(signature),
+        };
+
+        // M-15: Add internal auth header
+        let response = self
+            .add_internal_auth(self.client.post(&url).json(&request))
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(GspError::PayNodeError(format!(
+                "Instant payment acceptance failed: {}",
+                error_text
             )));
         }
 
@@ -1135,8 +1319,18 @@ pub struct UtxoState {
 mod tests {
     use super::*;
 
+    /// Set up test environment with required secret
+    fn setup_test_env() {
+        // CRIT-AUTH-1: Tests need a valid secret to pass auth validation
+        std::env::set_var(
+            "GHOST_PAY_INTERNAL_SECRET",
+            "xK9mN2pQ8rS5tY7vW1zA3bC6dE4fG0hJ2kL8mN5pQ9rS", // 40+ chars for entropy check
+        );
+    }
+
     #[test]
     fn test_proxy_creation() {
+        setup_test_env();
         let proxy = PayNodeProxy::new("http://localhost:8800").expect("valid proxy creation");
         assert_eq!(proxy.base_url, "http://localhost:8800");
 

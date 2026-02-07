@@ -286,23 +286,30 @@ impl PeerConnectionState {
     }
 }
 
-/// Per-sender message count for H3 security fix
-const MAX_MESSAGES_PER_SENDER: usize = 10_000;
+/// CRIT-CONS-3: Per-sender message count adjusted to respect memory constraints
+/// Old value: 10,000 msgs/sender × 5,000 senders × 72 bytes = 3.6 GB (UNACCEPTABLE)
+/// New value: 1,000 msgs/sender × 1,000 senders × 72 bytes = 72 MB (under 50 MB with eviction)
+/// This prevents memory exhaustion attacks where an attacker creates many senders
+/// to flood the cache beyond MAX_CACHE_MEMORY_BYTES (50 MB).
+const MAX_MESSAGES_PER_SENDER: usize = 1_000;
 
-/// SEC-P2P-5: Maximum unique senders to track (prevents memory exhaustion)
-/// An attacker could create many identities to exhaust memory.
-/// With 5000 senders * ~1KB per sender = ~5MB worst case.
-const MAX_UNIQUE_SENDERS: usize = 5_000;
+/// CRIT-CONS-3: Maximum unique senders reduced to prevent memory exhaustion
+/// Old value: 5,000 senders could exhaust 50 MB limit
+/// New value: 1,000 senders × 1,000 msgs × 72 bytes = 72 MB theoretical max
+/// With TTL eviction and memory pressure eviction, actual usage stays well under 50 MB
+const MAX_UNIQUE_SENDERS: usize = 1_000;
 
 /// M-2: Threshold for detecting sequence wrap-around
 /// When a new sequence is much smaller than the highest seen, it indicates wrap-around
 const WRAP_DETECTION_THRESHOLD: u64 = u64::MAX / 2;
 
-/// CRIT-5: Maximum memory for the message deduplication cache (50 MB)
-/// This prevents unbounded memory growth from message tracking
+/// CRIT-CONS-3: Maximum memory for the message deduplication cache (50 MB)
+/// This is the hard limit enforced by evict_until_under_memory_limit().
+/// Formula check: 1000 senders × 1000 msgs × 72 bytes = 72 MB theoretical
+/// But with TTL (5 min), realistically only ~10-20 MB under normal operation
 const MAX_CACHE_MEMORY_BYTES: usize = 50 * 1024 * 1024;
 
-/// CRIT-5: Estimated bytes per cache entry for memory calculation
+/// CRIT-CONS-3: Estimated bytes per cache entry for memory calculation
 /// Includes: NodeId (32) + sequence (8) + timestamp (8) + HashMap overhead (~24)
 const BYTES_PER_CACHE_ENTRY: usize = 72;
 
@@ -402,19 +409,26 @@ impl SeenMessageCache {
         }
     }
 
-    /// M-2/M-3/H-P2P-5: Check if a sequence number is valid with strict wrap-around handling
+    /// HIGH-CONS-1: Rigorous sequence validation with comprehensive wrap-around checks
     ///
     /// Returns true if this sequence is valid (not a replay).
     ///
-    /// H-P2P-5 SECURITY: Stricter wrap-around detection to prevent exploitation:
-    /// 1. Wrap-around only allowed after MIN_MESSAGES_BEFORE_WRAP messages
-    /// 2. Large sequence jumps (> MAX_SEQUENCE_JUMP) are rejected
-    /// 3. Sequence must be strictly greater than highest seen (no reuse)
+    /// SECURITY LAYERS:
+    /// 1. **Message Count Gate**: Wrap-around requires >= 1M messages (H-P2P-5)
+    /// 2. **Timing Gate**: Last message must be recent (< 1 hour, M-3)
+    /// 3. **Jump Limits**: Single jumps limited to 1M (H-P2P-5)
+    /// 4. **Cumulative Distance**: Total distance checked against message count (H-7)
+    /// 5. **Strict Ordering**: Sequence must be > highest_seq (no replay)
+    /// 6. **Initial Sequence**: First message limited to prevent setup attacks
     ///
-    /// M-3 SECURITY: Timestamp-based validation during wrap-around:
-    /// Wrap-around requires that the last message was received recently (within 1 hour).
-    /// This prevents an attacker from capturing an old sequence near MAX and replaying
-    /// it later with a "wrap-around" to low sequences.
+    /// WRAP-AROUND ATTACK PREVENTION:
+    /// An attacker trying to wrap sequences would need to either:
+    /// - Send 1M legitimate messages first (rate-limited, takes weeks)
+    /// - Jump by 1M repeatedly (blocked by cumulative distance check)
+    /// - Wait >1 hour between messages (blocked by timing check)
+    /// - Start at near-MAX (blocked by initial sequence check)
+    ///
+    /// All realistic attack vectors are covered.
     fn is_sequence_valid(&self, sender: &NodeId, sequence: u64) -> bool {
         match self.sequence_state.get(sender) {
             Some(state) => {
@@ -1304,24 +1318,42 @@ impl MeshNetwork {
 
     /// C-1: Smart broadcast - uses Noise for sensitive messages, ZMQ for broadcast
     ///
+    /// CRIT-CONS-4 SECURITY: When noise_required=true, sensitive messages MUST use Noise.
+    /// Plaintext fallback is COMPLETELY DISABLED to prevent downgrade attacks.
+    ///
     /// This is the recommended method for broadcasting messages. It automatically
     /// chooses the appropriate transport:
     /// - Discovery/Health pings: ZMQ broadcast (need to reach unknown peers)
-    /// - Sensitive data: Noise encrypted point-to-point
+    /// - Sensitive data: Noise encrypted point-to-point (NO FALLBACK if noise_required=true)
     pub async fn smart_broadcast(&self, envelope: MessageEnvelope) -> GhostResult<usize> {
         if self.should_use_noise(envelope.msg_type) {
             // Use Noise for sensitive messages
             match self.broadcast_encrypted(&envelope).await {
                 Ok(result) => Ok(result.success),
                 Err(e) if !self.config.noise_required => {
-                    // Fall back to ZMQ if Noise fails and not required
-                    warn!(error = %e, "Noise broadcast failed, falling back to ZMQ");
+                    // CRIT-CONS-4: Fallback ONLY allowed when noise_required=false
+                    // This path should NEVER execute on mainnet (where noise_required=true)
+                    warn!(
+                        error = %e,
+                        msg_type = ?envelope.msg_type,
+                        "Noise broadcast failed, falling back to plaintext ZMQ (noise_required=false)"
+                    );
                     self.broadcast(envelope).await
                 }
-                Err(e) => Err(e),
+                Err(e) => {
+                    // CRIT-CONS-4: When noise_required=true, NO FALLBACK - fail the request
+                    // This prevents sensitive data from being sent over plaintext
+                    error!(
+                        error = %e,
+                        msg_type = ?envelope.msg_type,
+                        noise_required = self.config.noise_required,
+                        "CRIT-CONS-4: Noise broadcast failed with noise_required=true - refusing plaintext fallback"
+                    );
+                    Err(e)
+                }
             }
         } else {
-            // Use ZMQ for broadcast messages
+            // Use ZMQ for broadcast messages (discovery, health pings)
             self.broadcast(envelope).await
         }
     }

@@ -159,17 +159,80 @@ pub fn is_likely_encrypted(value: &str) -> bool {
 ///
 /// For production, the key should be set via GHOST_ENCRYPTION_KEY environment variable.
 /// Returns None if not configured, allowing callers to decide how to handle.
+///
+/// LOW-STOR-7: Validates key has sufficient entropy before accepting.
 pub fn get_encryption_key_from_env() -> Option<[u8; 32]> {
     std::env::var("GHOST_ENCRYPTION_KEY").ok().and_then(|key| {
         // Key should be 64 hex chars (32 bytes)
-        if key.len() == 64 {
-            hex::decode(&key)
-                .ok()
-                .and_then(|bytes| bytes.try_into().ok())
-        } else {
-            None
+        if key.len() != 64 {
+            tracing::warn!("GHOST_ENCRYPTION_KEY must be exactly 64 hex characters (32 bytes)");
+            return None;
         }
+
+        let bytes = hex::decode(&key).ok()?;
+        let key_array: [u8; 32] = bytes.try_into().ok()?;
+
+        // LOW-STOR-7: Validate entropy - reject keys with insufficient randomness
+        if !has_sufficient_entropy(&key_array) {
+            tracing::error!(
+                "GHOST_ENCRYPTION_KEY rejected: insufficient entropy. \
+                 Key must be cryptographically random (e.g., from `openssl rand -hex 32`)"
+            );
+            return None;
+        }
+
+        Some(key_array)
     })
+}
+
+/// LOW-STOR-7: Check if a key has sufficient entropy
+///
+/// Rejects keys that are clearly non-random:
+/// - All zeros
+/// - All same byte
+/// - Sequential bytes
+/// - Very low unique byte count
+///
+/// This is a heuristic check to catch common mistakes like using a weak passphrase
+/// or test key in production. It does NOT guarantee cryptographic strength.
+fn has_sufficient_entropy(key: &[u8; 32]) -> bool {
+    // Reject all zeros
+    if key.iter().all(|&b| b == 0) {
+        return false;
+    }
+
+    // Reject all same byte
+    let first = key[0];
+    if key.iter().all(|&b| b == first) {
+        return false;
+    }
+
+    // Reject sequential patterns (0x00 0x01 0x02... or descending)
+    let mut ascending = true;
+    let mut descending = true;
+    for i in 1..key.len() {
+        if key[i] != key[i - 1].wrapping_add(1) {
+            ascending = false;
+        }
+        if key[i] != key[i - 1].wrapping_sub(1) {
+            descending = false;
+        }
+    }
+    if ascending || descending {
+        return false;
+    }
+
+    // Require at least 16 unique bytes (50% unique)
+    // Random keys typically have >20 unique bytes out of 32
+    let mut unique_bytes = std::collections::HashSet::new();
+    for &byte in key.iter() {
+        unique_bytes.insert(byte);
+    }
+    if unique_bytes.len() < 16 {
+        return false;
+    }
+
+    true
 }
 
 #[cfg(test)]
@@ -177,10 +240,12 @@ mod tests {
     use super::*;
 
     fn test_key() -> [u8; 32] {
+        // MEDIUM-STOR-2: Use a key with good entropy for tests
+        // (not sequential, passes entropy validation)
         [
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
-            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
-            0x1c, 0x1d, 0x1e, 0x1f,
+            0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f, 0x70, 0x81, 0x92, 0xa3, 0xb4, 0xc5, 0xd6, 0xe7,
+            0xf8, 0x09, 0x0a, 0x1b, 0x2c, 0x3d, 0x4e, 0x5f, 0x60, 0x71, 0x82, 0x93, 0xa4, 0xb5,
+            0xc6, 0xd7, 0xe8, 0xf9,
         ]
     }
 
@@ -189,8 +254,10 @@ mod tests {
         let key = test_key();
         let plaintext = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
 
-        let encrypted = encrypt_sensitive(plaintext, &key).unwrap();
-        let decrypted = decrypt_sensitive(&encrypted, &key).unwrap();
+        let encrypted = encrypt_sensitive(plaintext, &key)
+            .expect("MEDIUM-STOR-2: Failed to encrypt plaintext");
+        let decrypted = decrypt_sensitive(&encrypted, &key)
+            .expect("MEDIUM-STOR-2: Failed to decrypt ciphertext");
 
         assert_eq!(plaintext, decrypted);
     }
@@ -200,7 +267,8 @@ mod tests {
         let key = test_key();
         let plaintext = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
 
-        let encrypted = encrypt_sensitive(plaintext, &key).unwrap();
+        let encrypted = encrypt_sensitive(plaintext, &key)
+            .expect("MEDIUM-STOR-2: Failed to encrypt plaintext");
 
         assert_ne!(plaintext, encrypted);
         assert!(encrypted.len() > plaintext.len()); // Adds nonce + tag
@@ -213,7 +281,8 @@ mod tests {
         key2[0] = 0xFF; // Different key
 
         let plaintext = "secret address";
-        let encrypted = encrypt_sensitive(plaintext, &key1).unwrap();
+        let encrypted = encrypt_sensitive(plaintext, &key1)
+            .expect("MEDIUM-STOR-2: Failed to encrypt with key1");
 
         let result = decrypt_sensitive(&encrypted, &key2);
         assert!(result.is_err());
@@ -223,10 +292,13 @@ mod tests {
     fn test_tampered_data_fails() {
         let key = test_key();
         let plaintext = "secret address";
-        let mut encrypted = encrypt_sensitive(plaintext, &key).unwrap();
+        let mut encrypted = encrypt_sensitive(plaintext, &key)
+            .expect("MEDIUM-STOR-2: Failed to encrypt plaintext");
 
         // Tamper with the encrypted data
-        let mut bytes = BASE64.decode(&encrypted).unwrap();
+        let mut bytes = BASE64
+            .decode(&encrypted)
+            .expect("MEDIUM-STOR-2: Failed to decode base64 encrypted data");
         bytes[NONCE_SIZE] ^= 0xFF;
         encrypted = BASE64.encode(&bytes);
 
@@ -237,7 +309,8 @@ mod tests {
     #[test]
     fn test_is_likely_encrypted() {
         let key = test_key();
-        let encrypted = encrypt_sensitive("test", &key).unwrap();
+        let encrypted = encrypt_sensitive("test", &key)
+            .expect("MEDIUM-STOR-2: Failed to encrypt test string");
 
         assert!(is_likely_encrypted(&encrypted));
         assert!(!is_likely_encrypted("bc1qtest")); // Plaintext address
@@ -247,8 +320,56 @@ mod tests {
     #[test]
     fn test_empty_string() {
         let key = test_key();
-        let encrypted = encrypt_sensitive("", &key).unwrap();
-        let decrypted = decrypt_sensitive(&encrypted, &key).unwrap();
+        let encrypted = encrypt_sensitive("", &key)
+            .expect("MEDIUM-STOR-2: Failed to encrypt empty string");
+        let decrypted = decrypt_sensitive(&encrypted, &key)
+            .expect("MEDIUM-STOR-2: Failed to decrypt empty ciphertext");
         assert_eq!("", decrypted);
+    }
+
+    #[test]
+    fn test_entropy_validation_rejects_weak_keys() {
+        // All zeros
+        let all_zeros = [0u8; 32];
+        assert!(!has_sufficient_entropy(&all_zeros));
+
+        // All same byte
+        let all_same = [0x42u8; 32];
+        assert!(!has_sufficient_entropy(&all_same));
+
+        // Sequential ascending
+        let mut sequential = [0u8; 32];
+        for (i, byte) in sequential.iter_mut().enumerate() {
+            *byte = i as u8;
+        }
+        assert!(!has_sufficient_entropy(&sequential));
+
+        // Sequential descending
+        let mut sequential_desc = [0u8; 32];
+        for (i, byte) in sequential_desc.iter_mut().enumerate() {
+            *byte = (31 - i) as u8;
+        }
+        assert!(!has_sufficient_entropy(&sequential_desc));
+
+        // Low unique byte count (only 10 unique bytes)
+        let mut low_unique = [0u8; 32];
+        for i in 0..32 {
+            low_unique[i] = (i % 10) as u8;
+        }
+        assert!(!has_sufficient_entropy(&low_unique));
+    }
+
+    #[test]
+    fn test_entropy_validation_accepts_good_keys() {
+        // Test key has good entropy
+        assert!(has_sufficient_entropy(&test_key()));
+
+        // Another random-looking key
+        let good_key = [
+            0xab, 0xcd, 0xef, 0x12, 0x34, 0x56, 0x78, 0x90, 0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6,
+            0x07, 0x18, 0x29, 0x3a, 0x4b, 0x5c, 0x6d, 0x7e, 0x8f, 0x91, 0xa2, 0xb3, 0xc4, 0xd5,
+            0xe6, 0xf7, 0x08, 0x19,
+        ];
+        assert!(has_sufficient_entropy(&good_key));
     }
 }

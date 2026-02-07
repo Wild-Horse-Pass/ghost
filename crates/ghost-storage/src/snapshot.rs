@@ -499,11 +499,22 @@ impl SnapshotManager {
     }
 
     /// Get snapshot count
+    ///
+    /// LOW-STOR-2: Validates count is non-negative before conversion
     pub fn snapshot_count(&self) -> GhostResult<usize> {
         self.db.with_connection(|conn| {
             let count: i64 = conn
                 .query_row("SELECT COUNT(*) FROM state_snapshots", [], |row| row.get(0))
                 .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            // LOW-STOR-2: Validate non-negative (same as other count functions)
+            if count < 0 {
+                return Err(GhostError::Database(format!(
+                    "Invalid negative snapshot count: {}",
+                    count
+                )));
+            }
+
             Ok(count as usize)
         })
     }
@@ -514,7 +525,7 @@ mod tests {
     use super::*;
 
     fn setup_test_db() -> Database {
-        Database::in_memory().unwrap()
+        Database::in_memory().expect("MEDIUM-STOR-2: Failed to create in-memory test database")
     }
 
     #[test]
@@ -539,9 +550,13 @@ mod tests {
         balances.insert("alice".to_string(), 1000);
         balances.insert("bob".to_string(), 2000);
 
-        mgr.create_snapshot(100, &state_root, &balances).unwrap();
+        mgr.create_snapshot(100, &state_root, &balances)
+            .expect("MEDIUM-STOR-2: Failed to create snapshot");
 
-        let snapshot = mgr.get_snapshot_at(100).unwrap().unwrap();
+        let snapshot = mgr
+            .get_snapshot_at(100)
+            .expect("MEDIUM-STOR-2: Failed to get snapshot")
+            .expect("MEDIUM-STOR-2: Snapshot should exist at height 100");
         assert_eq!(snapshot.height, 100);
         assert_eq!(snapshot.state_root, hex::encode(state_root));
         assert_eq!(snapshot.balances.get("alice"), Some(&1000));

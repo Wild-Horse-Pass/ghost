@@ -105,9 +105,14 @@ impl PaymentMetadata {
     ///
     /// # Errors
     ///
-    /// Returns error if memo exceeds 59 bytes when UTF-8 encoded
+    /// Returns error if memo exceeds 59 bytes when UTF-8 encoded,
+    /// or if random padding generation fails.
+    ///
+    /// MED-KEYS-2 FIX: Validates entropy of padding to detect RNG failures.
     pub fn new(label: u32, memo: Option<String>) -> Result<Self, GhostKeyError> {
         if let Some(ref m) = memo {
+            // LOW-KEYS-1 FIX: Effective memo validation
+            // Check length in bytes (UTF-8 encoding)
             if m.len() > MAX_MEMO_LENGTH {
                 return Err(GhostKeyError::InvalidMetadata(format!(
                     "Memo exceeds maximum length of {} bytes (got {} bytes)",
@@ -115,13 +120,17 @@ impl PaymentMetadata {
                     m.len()
                 )));
             }
-            // Validate UTF-8 (String guarantees this, but be explicit)
-            if !m.is_ascii()
-                && m.chars().any(|c| {
-                    !c.is_alphanumeric() && !c.is_whitespace() && !c.is_ascii_punctuation()
-                })
-            {
-                // Allow valid UTF-8 - this check is mainly for documentation
+
+            // Validate that memo is valid UTF-8 (String type already guarantees this,
+            // but we explicitly check to document the requirement)
+            // No additional character restrictions - allow all valid UTF-8
+
+            // Optional: Warn if memo contains non-printable characters (but allow it)
+            if m.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
+                tracing::warn!(
+                    "Memo contains non-printable control characters. \
+                     This is allowed but may cause display issues."
+                );
             }
         }
 
@@ -130,6 +139,32 @@ impl PaymentMetadata {
         getrandom::getrandom(&mut padding).map_err(|e| {
             GhostKeyError::CryptoError(format!("Failed to generate random padding: {}", e))
         })?;
+
+        // MED-KEYS-2 FIX: Validate padding entropy to detect RNG failures
+        // Check for pathological patterns that indicate broken RNG
+        if padding.iter().all(|&b| b == 0) {
+            return Err(GhostKeyError::CryptoError(
+                "Padding entropy error: all zeros - RNG failure detected".to_string(),
+            ));
+        }
+        if padding.iter().all(|&b| b == 0xff) {
+            return Err(GhostKeyError::CryptoError(
+                "Padding entropy error: all ones - RNG failure detected".to_string(),
+            ));
+        }
+
+        // Basic entropy check: at least 8 unique bytes in 59 bytes of padding
+        // (birthday paradox expects ~50+ unique values)
+        let mut seen = std::collections::HashSet::new();
+        for &byte in padding.iter() {
+            seen.insert(byte);
+        }
+        if seen.len() < 8 {
+            return Err(GhostKeyError::CryptoError(format!(
+                "Padding entropy error: only {} unique bytes in padding - RNG may be faulty",
+                seen.len()
+            )));
+        }
 
         Ok(Self {
             label,
@@ -240,12 +275,17 @@ impl PaymentMetadata {
 /// - Unique ephemeral key per payment = unique salt = unique derived key
 /// - Domain-separated info string prevents key reuse across different protocols
 /// - HKDF-SHA256 provides strong key derivation from ECDH shared secret
-fn derive_metadata_key(shared_secret: &[u8], ephemeral_pubkey: &[u8]) -> [u8; 32] {
+fn derive_metadata_key(
+    shared_secret: &[u8],
+    ephemeral_pubkey: &[u8],
+) -> Result<[u8; 32], GhostKeyError> {
     let hk = Hkdf::<Sha256>::new(Some(ephemeral_pubkey), shared_secret);
     let mut key = [0u8; 32];
-    hk.expand(HKDF_KEY_INFO, &mut key)
-        .expect("32 bytes is valid output length for HKDF");
-    key
+    // CRIT-PANIC-4: Return Result instead of expect
+    hk.expand(HKDF_KEY_INFO, &mut key).map_err(|_| {
+        GhostKeyError::CryptoError("HKDF key derivation failed: invalid output length".to_string())
+    })?;
+    Ok(key)
 }
 
 /// Derive nonce from shared secret using HKDF-SHA256
@@ -258,12 +298,17 @@ fn derive_metadata_key(shared_secret: &[u8], ephemeral_pubkey: &[u8]) -> [u8; 32
 /// - Unique ephemeral key per payment = unique nonce per (key, nonce) pair
 /// - Never reuse same (key, nonce) pair since ephemeral key is single-use
 /// - Separate info string provides independence from key derivation
-fn derive_metadata_nonce(shared_secret: &[u8], ephemeral_pubkey: &[u8]) -> [u8; 12] {
+fn derive_metadata_nonce(
+    shared_secret: &[u8],
+    ephemeral_pubkey: &[u8],
+) -> Result<[u8; 12], GhostKeyError> {
     let hk = Hkdf::<Sha256>::new(Some(ephemeral_pubkey), shared_secret);
     let mut nonce = [0u8; 12];
-    hk.expand(HKDF_NONCE_INFO, &mut nonce)
-        .expect("12 bytes is valid output length for HKDF");
-    nonce
+    // CRIT-PANIC-4: Return Result instead of expect
+    hk.expand(HKDF_NONCE_INFO, &mut nonce).map_err(|_| {
+        GhostKeyError::CryptoError("HKDF nonce derivation failed: invalid output length".to_string())
+    })?;
+    Ok(nonce)
 }
 
 /// Encrypt payment metadata
@@ -285,8 +330,8 @@ pub fn encrypt_metadata(
     shared_secret: &[u8],
     ephemeral_pubkey: &[u8],
 ) -> Result<[u8; METADATA_CIPHERTEXT_SIZE], GhostKeyError> {
-    let key = derive_metadata_key(shared_secret, ephemeral_pubkey);
-    let nonce_bytes = derive_metadata_nonce(shared_secret, ephemeral_pubkey);
+    let key = derive_metadata_key(shared_secret, ephemeral_pubkey)?;
+    let nonce_bytes = derive_metadata_nonce(shared_secret, ephemeral_pubkey)?;
 
     let cipher = ChaCha20Poly1305::new_from_slice(&key)
         .map_err(|e| GhostKeyError::CryptoError(format!("Failed to create cipher: {}", e)))?;
@@ -335,8 +380,8 @@ pub fn decrypt_metadata(
     shared_secret: &[u8],
     ephemeral_pubkey: &[u8],
 ) -> Result<PaymentMetadata, GhostKeyError> {
-    let key = derive_metadata_key(shared_secret, ephemeral_pubkey);
-    let nonce_bytes = derive_metadata_nonce(shared_secret, ephemeral_pubkey);
+    let key = derive_metadata_key(shared_secret, ephemeral_pubkey)?;
+    let nonce_bytes = derive_metadata_nonce(shared_secret, ephemeral_pubkey)?;
 
     let cipher = ChaCha20Poly1305::new_from_slice(&key)
         .map_err(|e| GhostKeyError::CryptoError(format!("Failed to create cipher: {}", e)))?;

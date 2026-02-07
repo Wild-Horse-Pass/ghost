@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 15;
+const SCHEMA_VERSION: u32 = 16;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -104,6 +104,10 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
 
     if current_version < 15 {
         migrate_v15(conn)?;
+    }
+
+    if current_version < 16 {
+        migrate_v16(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -1198,6 +1202,45 @@ fn migrate_v15(conn: &Connection) -> GhostResult<()> {
     Ok(())
 }
 
+/// Migration v16: Add accepted instant payments table (HIGH-RACE-1 fix)
+///
+/// Prevents double-acceptance of instant payments by tracking accepted payments
+/// with a unique constraint on (sender_lock_id, payment_id, merchant_wallet_id).
+/// This eliminates the TOCTOU race condition where the same instant payment could
+/// be accepted multiple times by the same or different merchants.
+fn migrate_v16(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v16: Adding accepted instant payments table (HIGH-RACE-1 fix)");
+
+    conn.execute_batch(
+        r#"
+        -- HIGH-RACE-1 FIX: Accepted instant payments tracking
+        -- Prevents double-acceptance of the same instant payment
+        CREATE TABLE IF NOT EXISTS accepted_instant_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            payment_id BLOB NOT NULL,
+            sender_lock_id TEXT NOT NULL,
+            merchant_wallet_id TEXT NOT NULL,
+            amount_sats INTEGER NOT NULL,
+            accepted_at INTEGER NOT NULL,
+            settlement_block INTEGER NOT NULL,
+            confidence REAL NOT NULL,
+            sender_pubkey BLOB NOT NULL,
+            signature BLOB NOT NULL,
+            -- UNIQUE constraint prevents double-acceptance atomically
+            UNIQUE(sender_lock_id, payment_id, merchant_wallet_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_instant_payments_sender_lock ON accepted_instant_payments(sender_lock_id);
+        CREATE INDEX IF NOT EXISTS idx_instant_payments_merchant ON accepted_instant_payments(merchant_wallet_id);
+        CREATE INDEX IF NOT EXISTS idx_instant_payments_settlement ON accepted_instant_payments(settlement_block);
+        CREATE INDEX IF NOT EXISTS idx_instant_payments_accepted_at ON accepted_instant_payments(accepted_at);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("HIGH-RACE-1 FIX: Added accepted instant payments table with atomic double-spend prevention");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1205,22 +1248,26 @@ mod tests {
 
     #[test]
     fn test_migrations() {
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+        let conn = Connection::open_in_memory()
+            .expect("MEDIUM-STOR-2: Failed to create in-memory connection for migration test");
+        run_migrations(&conn).expect("MEDIUM-STOR-2: Failed to run migrations");
 
-        let version = get_schema_version(&conn).unwrap();
+        let version = get_schema_version(&conn)
+            .expect("MEDIUM-STOR-2: Failed to get schema version after migrations");
         assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
     fn test_idempotent_migrations() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = Connection::open_in_memory()
+            .expect("MEDIUM-STOR-2: Failed to create in-memory connection for idempotency test");
 
         // Run migrations twice
-        run_migrations(&conn).unwrap();
-        run_migrations(&conn).unwrap();
+        run_migrations(&conn).expect("MEDIUM-STOR-2: Failed to run migrations first time");
+        run_migrations(&conn).expect("MEDIUM-STOR-2: Failed to run migrations second time (idempotency)");
 
-        let version = get_schema_version(&conn).unwrap();
+        let version = get_schema_version(&conn)
+            .expect("MEDIUM-STOR-2: Failed to get schema version after idempotent migrations");
         assert_eq!(version, SCHEMA_VERSION);
     }
 }

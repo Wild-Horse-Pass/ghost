@@ -104,25 +104,21 @@ impl ElderEntry {
     }
 }
 
-/// L-6/M-7: Maximum allowed timestamp drift for elder approvals (15 seconds in milliseconds)
+/// HIGH-CONS-3: Maximum allowed timestamp drift for elder approvals (10 seconds)
 ///
-/// This prevents replay attacks with old approvals while allowing for reasonable
-/// clock skew. Reduced from 30 seconds to 15 seconds to minimize the replay window.
+/// REDUCED from 15s to 10s to tighten the replay attack window. Nodes MUST use NTP
+/// to maintain accurate clocks. This shorter window is acceptable because:
 ///
-/// M-7 DESIGN NOTE: 15-second window is appropriate for distributed systems
+/// **Network Requirements (HIGH-CONS-3):**
+/// - All nodes should use NTP for clock synchronization (< 100ms typical drift)
+/// - P2P propagation latency is typically < 2 seconds on modern networks
+/// - Processing time is typically < 500ms
+/// - Total typical delay: ~3 seconds, well under 10 second limit
 ///
-/// This window balances security against operational requirements:
-///
-/// **Why not shorter (e.g., 5 seconds)?**
-/// - Global networks have significant propagation delays
-/// - NTP sync isn't always perfect (mobile nodes, firewalled nodes)
-/// - Shorter windows cause false rejections, reducing liveness
-/// - Elder list transitions are rare (days/weeks apart)
-///
-/// **Why not longer (e.g., 60 seconds)?**
-/// - Longer windows increase replay attack surface
-/// - 15 seconds is already 10x typical network delay
-/// - Approval messages are one-time (not continuous traffic)
+/// **Why 10 seconds?**
+/// - Reduces replay window by 33% compared to 15s
+/// - Still provides 3x margin over typical 3s end-to-end latency
+/// - Nodes without NTP will experience rejections (this is acceptable - use NTP)
 ///
 /// **Defense in Depth:**
 /// - Approvals are tied to specific epoch+merkle_root (can't replay for different list)
@@ -131,15 +127,10 @@ impl ElderEntry {
 /// - Elder list transitions require BFT quorum (>67%)
 ///
 /// A successful replay attack would require:
-/// 1. Capturing a valid approval within 15 seconds of signing
+/// 1. Capturing a valid approval within 10 seconds of signing
 /// 2. Replaying before the epoch transitions
 /// 3. The replay providing additional approval weight (unlikely if honest majority)
-///
-/// 15 seconds is sufficient for:
-/// - Normal clock skew between nodes (typically < 1 second with NTP)
-/// - Network propagation delays (typically < 5 seconds)
-/// - Processing time on recipient (typically < 1 second)
-pub const MAX_APPROVAL_TIMESTAMP_DRIFT_MS: u64 = 15 * 1000;
+pub const MAX_APPROVAL_TIMESTAMP_DRIFT_MS: u64 = 10 * 1000;
 
 /// An approval signature from an elder
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -552,6 +543,12 @@ impl CanonicalElderList {
 
         // CRIT-4: Verify we have enough valid approval signatures from previous epoch elders
         // BFT threshold: >67% of previous elders must have approved
+        //
+        // HIGH-CONS-2: The previous_elders parameter MUST be the canonical elder list
+        // from epoch N-1 (where N is self.epoch). This is enforced by the caller:
+        // - ElderListManager::transition_to() passes current.get_eligible_voters()
+        // - The transition_to() method verifies new_list.epoch == current.epoch + 1
+        // Therefore, previous_elders is guaranteed to be from epoch N-1.
         if previous_elders.is_empty() {
             // This should not happen for epoch > 0, but handle gracefully
             warn!(
@@ -568,11 +565,16 @@ impl CanonicalElderList {
             .div_ceil(100)
             .max(1) as usize;
 
-        // Count valid approvals from previous elders
+        // HIGH-CONS-2: Count valid approvals from epoch N-1 elders ONLY
+        // The .filter checks that a.approver is in previous_elders (epoch N-1 set)
+        // Approvers not in this set are ignored (prevents approval replay from older epochs)
         let valid_approvals = self
             .approval_signatures
             .iter()
-            .filter(|a| previous_elders.contains(&a.approver))
+            .filter(|a| {
+                // HIGH-CONS-2: Only count approvals from previous epoch (N-1) elders
+                previous_elders.contains(&a.approver)
+            })
             .filter(|a| a.verify(self.epoch, &self.merkle_root))
             .count();
 
@@ -885,30 +887,31 @@ impl ElderListManager {
 
     /// Transition to a new canonical list (after sufficient approvals)
     ///
-    /// C-4 SECURITY: Uses verify_canonical_with_min_epoch() to prevent epoch rollback attacks.
+    /// CRIT-CONS-1 SECURITY: Strict epoch validation to prevent rollback attacks.
     /// An attacker could attempt to replay an old, legitimately signed elder list from a
     /// previous epoch to override the current elder set. This check ensures the new list's
-    /// epoch is at least current.epoch (which combined with the sequential check ensures
-    /// it must be exactly current.epoch + 1).
+    /// epoch is EXACTLY current.epoch + 1 (not just >= current.epoch).
     pub fn transition_to(&self, new_list: CanonicalElderList) -> GhostResult<()> {
         let current = self.current();
         let prev_elders = current.get_eligible_voters();
 
-        // C-4 SECURITY: Full canonical verification with epoch rollback protection
-        // This verifies:
-        // 1. Merkle root integrity (tamper detection)
-        // 2. Sufficient BFT approvals from previous elders (>67%)
-        // 3. Epoch >= current.epoch (rollback prevention)
-        new_list.verify_canonical_with_min_epoch(&prev_elders, current.epoch)?;
-
-        // Verify epoch is sequential (must be exactly current + 1, not just >= current)
+        // CRIT-CONS-1: Verify epoch is EXACTLY current + 1 (reject both rollbacks AND skips)
+        // This prevents:
+        // - Rollback attacks (epoch < current)
+        // - Skip attacks (epoch > current + 1, could skip intermediate states)
         if new_list.epoch != current.epoch + 1 {
-            return Err(GhostError::Config(format!(
-                "Epoch must be sequential: expected {}, got {}",
+            return Err(GhostError::ConsensusFailed(format!(
+                "CRIT-CONS-1: Elder list epoch must be exactly current + 1 (sequential). Expected {}, got {}. \
+                 This prevents both rollback and epoch-skipping attacks.",
                 current.epoch + 1,
                 new_list.epoch
             )));
         }
+
+        // CRIT-CONS-1: Full canonical verification with strict minimum epoch
+        // After verifying sequential increment, we verify the list is properly approved
+        // The min_epoch parameter ensures verify_canonical won't accept old lists
+        new_list.verify_canonical_with_min_epoch(&prev_elders, current.epoch + 1)?;
 
         // Perform the transition
         let mut new_list = new_list;
@@ -1699,12 +1702,13 @@ mod tests {
 
     #[test]
     fn test_l2_approval_timestamp_window() {
-        // L-6: Verify the approval timestamp drift is 15 seconds (reduced from 30s)
-        // This reduces the replay attack window while still allowing for clock skew
+        // HIGH-CONS-3: Verify the approval timestamp drift is 10 seconds
+        // Reduced from 15s to further minimize the replay attack window.
+        // Nodes MUST use NTP for accurate time synchronization.
         assert_eq!(
             MAX_APPROVAL_TIMESTAMP_DRIFT_MS,
-            15 * 1000,
-            "L-6: Approval timestamp drift should be 15 seconds"
+            10 * 1000,
+            "HIGH-CONS-3: Approval timestamp drift should be 10 seconds (use NTP)"
         );
     }
 
@@ -1733,26 +1737,26 @@ mod tests {
             "L-2: Current timestamp should be valid"
         );
 
-        // Old timestamp (beyond 30s) should be invalid
+        // Old timestamp (beyond 10s drift limit) should be invalid
         let old_approval = ElderApproval {
             approver: identity.node_id(),
             signature,
-            timestamp: now - 60_000, // 60 seconds ago
+            timestamp: now - 15_000, // 15 seconds ago (beyond 10s limit)
         };
         assert!(
             !old_approval.is_timestamp_valid(),
-            "L-2: Old timestamp (60s ago) should be invalid"
+            "HIGH-CONS-3: Old timestamp (15s ago, beyond 10s limit) should be invalid"
         );
 
-        // Future timestamp (beyond 30s) should be invalid
+        // Future timestamp (beyond 10s drift limit) should be invalid
         let future_approval = ElderApproval {
             approver: identity.node_id(),
             signature,
-            timestamp: now + 60_000, // 60 seconds in future
+            timestamp: now + 15_000, // 15 seconds in future (beyond 10s limit)
         };
         assert!(
             !future_approval.is_timestamp_valid(),
-            "L-2: Future timestamp (60s ahead) should be invalid"
+            "HIGH-CONS-3: Future timestamp (15s ahead, beyond 10s limit) should be invalid"
         );
     }
 

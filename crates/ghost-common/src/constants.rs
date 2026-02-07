@@ -92,6 +92,20 @@ pub const ELDER_STATUS_SHARES: i32 = 1;
 /// Maximum possible node shares
 pub const MAX_NODE_SHARES: i32 = 15;
 
+/// MEDIUM-STOR-1: Compile-time assertion that max shares cannot overflow i32
+/// This ensures total_shares() can safely use checked arithmetic
+const _: () = {
+    assert!(
+        (ARCHIVE_MODE_SHARES as i64
+            + GHOST_PAY_SHARES as i64
+            + PUBLIC_MINING_SHARES as i64
+            + BITCOIN_PURE_SHARES as i64
+            + ELDER_STATUS_SHARES as i64)
+            < i32::MAX as i64,
+        "Maximum possible node shares must be less than i32::MAX"
+    );
+};
+
 // =============================================================================
 // UPTIME & ELDER
 // =============================================================================

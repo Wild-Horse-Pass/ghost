@@ -760,39 +760,47 @@ impl DiscoveryHandler {
                     "Rejecting invalid peer address from discovery"
                 );
             } else {
-                // H-6 SECURITY FIX: Acquire write locks ONCE and do both check and update atomically
-                // Previous code had a TOCTOU race condition:
-                // 1. Read lock to check ownership
-                // 2. Release read lock
-                // 3. Write lock to update
-                // Between steps 2 and 3, another thread could claim the address.
-                // Now we hold write locks for the entire check+update operation.
+                // CRIT-CONS-5 SECURITY: Atomic check-and-insert to prevent address hijacking race
+                //
+                // The attack scenario this prevents:
+                // Thread 1: Checks address is free
+                // Thread 2: Claims the address (between check and insert)
+                // Thread 1: Inserts, overwriting Thread 2's claim
+                //
+                // Solution: Hold BOTH write locks for the entire operation (no intermediate releases)
+                // This ensures the check and insert are atomic with respect to other threads.
                 let (is_new, should_connect) = {
                     let mut addresses = self.known_addresses.write();
                     let mut owners = self.address_owners.write();
 
-                    // H-P2P-4: Check for address hijacking (different node claiming same address)
-                    if let Some(&existing_owner) = owners.get(&discovery_msg.public_address) {
-                        if existing_owner != envelope.sender {
+                    // CRIT-CONS-5: Atomic check-and-set for address ownership
+                    // Check if address is already owned BEFORE any modifications
+                    match owners.get(&discovery_msg.public_address) {
+                        Some(&existing_owner) if existing_owner != envelope.sender => {
+                            // CRIT-CONS-5: Address already claimed by a DIFFERENT node - REJECT
                             warn!(
                                 sender = %sender_id_hex,
                                 address = %discovery_msg.public_address,
                                 existing_owner = %hex::encode(&existing_owner[..8]),
-                                "H-P2P-4: Rejecting address already claimed by different node"
+                                "CRIT-CONS-5: Rejecting address hijacking attempt - address already owned"
                             );
-                            // Don't update the address - keep the original owner
-                            (false, false)
-                        } else {
-                            // Same node, this is an update which is fine
                             (false, false)
                         }
-                    } else {
-                        // New address, add it atomically
-                        let is_new = !addresses.contains_key(&envelope.sender);
-                        addresses.insert(envelope.sender, discovery_msg.public_address.clone());
-                        owners.insert(discovery_msg.public_address.clone(), envelope.sender);
-                        (is_new, is_new)
+                        Some(&existing_owner) => {
+                            // Same node re-announcing - this is fine, no-op
+                            debug_assert_eq!(existing_owner, envelope.sender);
+                            (false, false)
+                        }
+                        None => {
+                            // CRIT-CONS-5: Address is free - claim it atomically
+                            // BOTH inserts happen while holding BOTH locks
+                            let is_new = !addresses.contains_key(&envelope.sender);
+                            addresses.insert(envelope.sender, discovery_msg.public_address.clone());
+                            owners.insert(discovery_msg.public_address.clone(), envelope.sender);
+                            (is_new, is_new)
+                        }
                     }
+                    // Locks are released here - AFTER both checks and inserts completed
                 };
 
                 if is_new {

@@ -39,9 +39,9 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::{info, Level};
+use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use api::{build_router, AppState};
@@ -160,22 +160,75 @@ async fn main() -> Result<()> {
         health_config: config.health.clone(),
     });
 
+    // CRIT-API-2: Build CORS layer with explicit allowed origins (no Any)
+    let cors = if let Some(ref origins_str) = config.server.cors_allowed_origins {
+        // Parse and validate allowed origins
+        let origins: Vec<_> = origins_str
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .filter_map(|origin| {
+                // CRIT-API-2 + MED-API-1: Require https:// for all origins
+                if !origin.starts_with("https://") {
+                    warn!(
+                        origin = %origin,
+                        "CRIT-API-2: Rejecting CORS origin without https:// scheme"
+                    );
+                    return None;
+                }
+                // Parse as HeaderValue
+                origin.parse::<axum::http::HeaderValue>().ok()
+            })
+            .collect();
+
+        if origins.is_empty() {
+            warn!("CRIT-API-2: No valid CORS origins configured, using secure defaults");
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list([
+                    "https://bitcoinghost.org".parse().unwrap(),
+                ]))
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_headers([axum::http::header::CONTENT_TYPE])
+        } else {
+            info!(
+                "CRIT-API-2: CORS configured with {} validated https:// origins",
+                origins.len()
+            );
+            CorsLayer::new()
+                .allow_origin(AllowOrigin::list(origins))
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_headers([axum::http::header::CONTENT_TYPE])
+        }
+    } else {
+        warn!("CRIT-API-2: No CORS origins configured, using secure defaults");
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list([
+                "https://bitcoinghost.org".parse().unwrap(),
+            ]))
+            .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+            .allow_headers([axum::http::header::CONTENT_TYPE])
+    };
+
     // Build router with middleware
     let app = build_router(app_state)
         .layer(TraceLayer::new_for_http())
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        );
+        .layer(cors);
 
     // Parse listen address
     let addr: SocketAddr = config.server.listen.parse()?;
 
+    // CRIT-API-1: Check TLS configuration and warn if not using reverse proxy
+    if config.server.tls_cert_path.is_none() && config.server.tls_key_path.is_none() {
+        error!(
+            "CRIT-API-1: TLS not configured! Server will use unencrypted HTTP. \
+             For production, use a reverse proxy (nginx/Cloudflare) for TLS termination."
+        );
+    }
+
     info!("════════════════════════════════════════════════════════════════");
     info!("Ghost Registry is ready!");
     info!("  HTTP API:     {}", addr);
+    info!("  TLS:          Use reverse proxy (nginx/Cloudflare recommended)");
     info!("  Health check: {}/health", addr);
     info!(
         "  Cloudflare:   {}",
@@ -188,6 +241,16 @@ async fn main() -> Result<()> {
     info!("════════════════════════════════════════════════════════════════");
 
     // Start server
+    // CRIT-API-1 NOTE: TLS configuration fields added to config but not yet implemented.
+    // For production, use a reverse proxy (nginx/Cloudflare) to terminate TLS.
+    // This is the recommended approach for operational simplicity.
+    if config.server.tls_cert_path.is_some() || config.server.tls_key_path.is_some() {
+        warn!(
+            "CRIT-API-1: TLS configuration detected but native TLS not yet implemented. \
+             Use a reverse proxy (nginx/Cloudflare) for TLS termination in production."
+        );
+    }
+
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
     axum::serve(listener, app)

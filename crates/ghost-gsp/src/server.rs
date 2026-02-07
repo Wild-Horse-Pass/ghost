@@ -606,31 +606,26 @@ impl GspServer {
         let per_second = (state.config.rate_limit_rpm.max(60) / 60).max(1);
         let burst_size = state.config.rate_limit_rpm.max(10);
 
-        // M-2 FIX: Use proper error handling instead of expect() for rate limiter builder.
-        // The finish() method returns Option, so we handle None gracefully with a sensible
-        // fallback configuration that is known to work.
-        let governor_config = Arc::new(
-            GovernorConfigBuilder::default()
-                .per_second(per_second as u64)
-                .burst_size(burst_size)
-                .key_extractor(IpKeyExtractor::new())
-                .finish()
-                .unwrap_or_else(|| {
-                    tracing::error!(
-                        per_second = per_second,
-                        burst_size = burst_size,
-                        "M-2: Failed to build rate limiter config, using safe defaults"
-                    );
-                    // Use safe fallback values that are guaranteed to work:
-                    // 1 request per second with burst of 10
-                    GovernorConfigBuilder::default()
-                        .per_second(1)
-                        .burst_size(10)
-                        .key_extractor(IpKeyExtractor::new())
-                        .finish()
-                        .expect("M-2: Fallback rate limit config with hardcoded safe values must succeed")
-                }),
-        );
+        // HIGH-API-4: Fail startup if rate limiter can't be initialized properly
+        // Rate limiting is a critical security control and must be properly configured.
+        let governor_config = GovernorConfigBuilder::default()
+            .per_second(per_second as u64)
+            .burst_size(burst_size)
+            .key_extractor(IpKeyExtractor::new())
+            .finish();
+
+        let governor_config = Arc::new(match governor_config {
+            Some(config) => config,
+            None => {
+                // HIGH-API-4: Don't use fallback - fail startup instead
+                panic!(
+                    "HIGH-API-4: Failed to build rate limiter config with per_second={}, burst_size={}. \
+                     Rate limiting is a critical security control and must be properly configured. \
+                     Check configuration values and restart.",
+                    per_second, burst_size
+                );
+            }
+        });
 
         // Spawn background task to clean up rate limiter state periodically
         let governor_limiter = governor_config.limiter().clone();
@@ -709,6 +704,12 @@ mod tests {
 
     /// Helper to create a valid test config with non-zero JWT secret
     fn create_test_config() -> GspConfig {
+        // CRIT-AUTH-1: Tests need a valid internal secret to pass PayNodeProxy validation
+        std::env::set_var(
+            "GHOST_PAY_INTERNAL_SECRET",
+            "xK9mN2pQ8rS5tY7vW1zA3bC6dE4fG0hJ2kL8mN5pQ9rS", // 40+ chars for entropy check
+        );
+
         let mut config = GspConfig::default();
         // Ensure we have a non-zero JWT secret for tests
         config.jwt_secret = vec![1u8; 32];

@@ -376,14 +376,16 @@ async fn require_api_auth(
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // M-16: API authentication is ALWAYS required, regardless of network
+    // HIGH-API-2: API authentication is ALWAYS required, regardless of network
     // There is no valid reason to allow unauthenticated access to payment APIs
-    // even on testnet/signet - this could mask bugs in auth integration
+    // even on testnet/signet - this could mask bugs in auth integration.
+    // This check is now redundant since we fail at startup if secret is not configured,
+    // but we keep it as defense-in-depth.
     if auth.secret.is_none() {
         error!(
             network = ?auth.network,
-            "M-16 SECURITY: API secret (api_secret) not configured - rejecting request. \
-             Configure api_secret in pool.toml for Ghost Pay API to function."
+            "HIGH-API-2 SECURITY: API secret (api_secret) not configured - rejecting request. \
+             This should never happen as startup validation should prevent this."
         );
         return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
@@ -757,22 +759,25 @@ async fn main() -> Result<()> {
     // H-2: Create API authentication state
     let api_auth = ApiAuth::new(state.config.api_secret.clone(), state.network);
 
-    // Log authentication status
-    if api_auth.secret.is_some() {
-        info!("H-2: API authentication enabled");
-    } else if state.network == Network::Bitcoin {
-        error!(
-            "H-2 SECURITY: API secret not configured for mainnet! \
-             Set GHOST_PAY_API_SECRET or --api-secret. \
-             Sensitive endpoints will return 503 Service Unavailable."
-        );
-    } else {
-        warn!(
-            "H-2: API authentication not configured. \
-             Sensitive endpoints are unprotected. \
-             Set GHOST_PAY_API_SECRET for production."
-        );
+    // HIGH-API-1: Fail startup if api_secret not configured on mainnet
+    if api_auth.secret.is_none() {
+        if state.network == Network::Bitcoin {
+            return Err(anyhow::anyhow!(
+                "HIGH-API-1 SECURITY: API secret REQUIRED for mainnet! \
+                 Set GHOST_PAY_API_SECRET environment variable or --api-secret flag. \
+                 Ghost Pay will NOT start without authentication on mainnet."
+            ));
+        } else {
+            // HIGH-API-2: Also require auth on all networks for consistency
+            return Err(anyhow::anyhow!(
+                "HIGH-API-2 SECURITY: API secret REQUIRED on all networks! \
+                 Set GHOST_PAY_API_SECRET environment variable or --api-secret flag. \
+                 This prevents bugs in auth integration from being masked on non-mainnet."
+            ));
+        }
     }
+
+    info!("H-2: API authentication enabled");
 
     // H-2: Build authenticated routes (require HMAC signature)
     let authenticated_routes = Router::new()

@@ -125,6 +125,12 @@ impl TokenCache {
 
     /// Check if a token has been used (without marking it)
     pub fn contains(&self, token_hash: &[u8; 32]) -> bool {
+        // LOW-WRAITH-1 FIX: Handle zero max_age edge case
+        if self.max_age.as_secs() == 0 {
+            // Zero max_age means tokens never expire - unusual but handle gracefully
+            return self.tokens.contains_key(token_hash);
+        }
+
         if let Some(ts) = self.tokens.get(token_hash) {
             // Check if still within max age
             ts.elapsed() < self.max_age

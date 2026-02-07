@@ -71,20 +71,23 @@ impl SessionRegistry {
         }
     }
 
-    /// CRIT-2 FIX: Check if the caller must acknowledge in-memory mode
+    /// LOW-WRAITH-3 FIX: Enforce persistence acknowledgment
     ///
     /// Returns true if the registry is in-memory only and the caller has not
-    /// yet acknowledged this limitation. Callers should either:
+    /// yet acknowledged this limitation. Callers MUST either:
     /// 1. Implement persistent storage and not use this registry
     /// 2. Call `acknowledge_in_memory_mode()` after ensuring all pre-restart
     ///    sessions have expired (via timeout or explicit invalidation)
+    ///
+    /// Unlike previous implementation, all registry methods now ERROR if
+    /// this is not acknowledged, preventing accidental unprotected use.
     pub fn requires_persistence_warning(&self) -> bool {
         !self.persistence_acknowledged
     }
 
-    /// CRIT-2 FIX: Acknowledge that in-memory mode is acceptable
+    /// LOW-WRAITH-3 FIX: Acknowledge that in-memory mode is acceptable
     ///
-    /// Call this after verifying that:
+    /// Call this ONLY after verifying that:
     /// - All sessions from before restart have expired, OR
     /// - The system has been down long enough that session timeouts have passed, OR
     /// - This is a fresh deployment with no prior sessions
@@ -92,8 +95,13 @@ impl SessionRegistry {
     /// # Safety
     ///
     /// Calling this without ensuring the above conditions could allow replay attacks
-    /// from sessions that existed before the restart.
+    /// from sessions that existed before the restart. This is enforced by requiring
+    /// explicit acknowledgment - all registry methods will error until this is called.
     pub fn acknowledge_in_memory_mode(&mut self) {
+        tracing::warn!(
+            "SessionRegistry: Acknowledging in-memory mode. \
+             Ensure all pre-restart sessions have expired to prevent replay attacks."
+        );
         self.persistence_acknowledged = true;
     }
 

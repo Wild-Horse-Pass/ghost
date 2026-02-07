@@ -119,9 +119,19 @@ impl PeerProvider for PeerProviderAdapter {
                 } else {
                     &p.public_address
                 };
+
+                // CRIT-VER-1: Extract IP address for Sybil resistance
+                let ip_address = Some(host.to_string());
+
+                // CRIT-VER-1: Uptime info for reputation weighting
+                // Default to None, will be filled by verification task from DB
+                let uptime = None;
+
                 VerifiablePeer {
                     node_id: p.node_id,
                     http_address: format!("{}:{}", host, self.http_port),
+                    uptime,
+                    ip_address,
                 }
             })
             .collect();
@@ -1209,10 +1219,12 @@ async fn main() -> Result<()> {
 
     // H-MINE-1: PayoutHandler uses the same QualifiedCapabilityProvider as health_handler
     // This ensures consistent verified capability lookups across the system
+    // CRIT-MINE-2: Pass RPC for block validation before payout proposals
     let payout_handler = Arc::new(PayoutHandler::new(
         Arc::clone(&identity),
         payout_config,
         Arc::clone(&db),
+        Some(Arc::clone(&rpc)),
         Arc::clone(&vote_handler),
         Arc::clone(&template_processor),
         Arc::clone(&qualification_provider_for_health), // Reuse provider from health_handler

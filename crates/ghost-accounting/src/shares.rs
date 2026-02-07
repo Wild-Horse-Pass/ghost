@@ -31,6 +31,22 @@ use ghost_common::types::{NodeCapabilities, NodeId, RoundId};
 /// Using 10^12 gives 12 decimal places of precision while fitting in u128
 pub const WORK_SCALE: u128 = 1_000_000_000_000;
 
+/// CRIT-MINE-3: Maximum total accumulated work (scaled) to prevent overflow
+///
+/// This is calculated as: u128::MAX / MAX_MINERS / SAFETY_MARGIN
+/// - u128::MAX = ~3.4e38
+/// - MAX_MINERS = 200 (from MAX_MINER_OUTPUTS)
+/// - WORK_SCALE = 1e12
+/// - SAFETY_MARGIN = 1000 (for headroom)
+///
+/// Result: (3.4e38 / 200 / 1000) = 1.7e35
+///
+/// In practice, this allows for:
+/// - ~1.7e23 work units (unscaled) total per round
+/// - At 10 EH/s pool hashrate, this is ~5e12 seconds (~170 million years) of mining
+/// - So this limit will never be hit in practice, but prevents overflow attacks
+pub const MAX_TOTAL_WORK_SCALED: u128 = u128::MAX / 200 / 1000;
+
 /// Share accounting for a round
 ///
 /// H7 security fix: Work values are stored as scaled u128 internally
@@ -135,12 +151,52 @@ impl RoundShares {
         // L-14: At this point work <= MAX_SAFE_WORK, so work * WORK_SCALE fits in f64 and u128
         let work_scaled = (work * WORK_SCALE as f64) as u128;
 
-        // Update scaled storage
-        *self
-            .miner_shares_scaled
-            .entry(miner_id.to_string())
-            .or_insert(0) += work_scaled;
-        self.total_miner_work_scaled += work_scaled;
+        // CRIT-MINE-3: Check for overflow BEFORE adding work
+        // Use checked_add to detect overflow instead of silently wrapping
+        let new_total = match self.total_miner_work_scaled.checked_add(work_scaled) {
+            Some(total) => total,
+            None => {
+                error!(
+                    miner = %miner_id,
+                    current_total = self.total_miner_work_scaled,
+                    adding = work_scaled,
+                    "CRIT-MINE-3 CRITICAL: Total work overflow - would exceed u128::MAX"
+                );
+                return false;
+            }
+        };
+
+        // CRIT-MINE-3: Enforce maximum total work limit
+        if new_total > MAX_TOTAL_WORK_SCALED {
+            error!(
+                miner = %miner_id,
+                current_total = self.total_miner_work_scaled,
+                adding = work_scaled,
+                new_total = new_total,
+                max_allowed = MAX_TOTAL_WORK_SCALED,
+                "CRIT-MINE-3 CRITICAL: Total work would exceed MAX_TOTAL_WORK_SCALED - rejecting work submission"
+            );
+            return false;
+        }
+
+        // Update scaled storage (using checked_add for miner's entry too)
+        let miner_entry = self.miner_shares_scaled.entry(miner_id.to_string()).or_insert(0);
+        match miner_entry.checked_add(work_scaled) {
+            Some(new_miner_work) => {
+                *miner_entry = new_miner_work;
+            }
+            None => {
+                error!(
+                    miner = %miner_id,
+                    current_work = *miner_entry,
+                    adding = work_scaled,
+                    "CRIT-MINE-3 CRITICAL: Miner's work overflow - rejecting"
+                );
+                return false;
+            }
+        }
+
+        self.total_miner_work_scaled = new_total;
 
         // Update f64 view from scaled values (ensures consistency)
         let miner_total_scaled = *self.miner_shares_scaled.get(miner_id).unwrap_or(&0);

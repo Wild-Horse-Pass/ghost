@@ -49,6 +49,12 @@ pub struct ServerConfig {
     pub request_timeout_secs: u64,
     /// Maximum request body size in bytes
     pub max_body_size: usize,
+    /// CRIT-API-1: TLS certificate file path (PEM format)
+    pub tls_cert_path: Option<PathBuf>,
+    /// CRIT-API-1: TLS private key file path (PEM format)
+    pub tls_key_path: Option<PathBuf>,
+    /// CRIT-API-1: Allowed CORS origins (comma-separated https:// URLs)
+    pub cors_allowed_origins: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -57,6 +63,9 @@ impl Default for ServerConfig {
             listen: "0.0.0.0:8333".to_string(),
             request_timeout_secs: 30,
             max_body_size: 1024 * 1024, // 1MB
+            tls_cert_path: None,
+            tls_key_path: None,
+            cors_allowed_origins: None,
         }
     }
 }
