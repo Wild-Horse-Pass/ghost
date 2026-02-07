@@ -262,7 +262,7 @@ impl KeyExtractor for NodeIdKeyExtractor {
                 if let Ok(xff_str) = xff.to_str() {
                     let s: &str = xff_str;
                     // L-15: Take the LAST IP (added by our trusted proxy), not the first (spoofable)
-                    if let Some(ip_str) = s.split(',').last() {
+                    if let Some(ip_str) = s.split(',').next_back() {
                         let ip_trimmed: &str = ip_str.trim();
                         if !ip_trimmed.is_empty() {
                             return Ok(NodeIdOrIpKey(format!("ip:{}", ip_trimmed)));

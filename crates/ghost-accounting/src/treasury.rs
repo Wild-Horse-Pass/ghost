@@ -298,19 +298,19 @@ impl Treasury {
         let was_below_threshold = !self.at_threshold();
 
         // SECURITY: Use checked arithmetic to prevent overflow - return error instead of panic
-        let new_balance = self.balance_sats.checked_add(amount).ok_or_else(|| {
+        let new_balance = self.balance_sats.checked_add(amount).ok_or(
             GhostError::TreasuryOverflow {
                 current_balance: self.balance_sats,
                 amount,
             }
-        })?;
+        )?;
 
-        let new_total = self.total_collected_sats.checked_add(amount).ok_or_else(|| {
+        let new_total = self.total_collected_sats.checked_add(amount).ok_or(
             GhostError::TreasuryOverflow {
                 current_balance: self.total_collected_sats,
                 amount,
             }
-        })?;
+        )?;
 
         // Only update state after all checks pass
         self.balance_sats = new_balance;

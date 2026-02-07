@@ -81,7 +81,6 @@ const HEALTH_RATE_LIMIT_REFILL_RATE: u32 = 1;
 /// The difficulty is adjusted based on recent ping rates to prevent
 /// Sybil attacks during high-traffic periods while maintaining usability
 /// during low-activity periods.
-
 /// Base PoW difficulty (minimum)
 const BASE_POW_DIFFICULTY: u32 = 16;
 
@@ -211,7 +210,7 @@ impl DynamicDifficultyAdjuster {
                 // Maximum practical increase is MAX_POW_DIFFICULTY - BASE_POW_DIFFICULTY = 8
                 // Cap at 8 to prevent any overflow issues
                 if log_value.is_finite() && log_value >= 0.0 {
-                    (log_value as u32).min(MAX_POW_DIFFICULTY - BASE_POW_DIFFICULTY).max(1)
+                    (log_value as u32).clamp(1, MAX_POW_DIFFICULTY - BASE_POW_DIFFICULTY)
                 } else {
                     1 // Minimum increase if log2 returns invalid value
                 }

@@ -296,7 +296,7 @@ fn resolve_jwt_secret(
     let secret = generate_random_secret()?;
 
     // Persist it
-    if let Err(e) = std::fs::write(&secret_path, &secret) {
+    if let Err(e) = std::fs::write(&secret_path, secret) {
         tracing::warn!("Failed to persist JWT secret: {}", e);
     }
 

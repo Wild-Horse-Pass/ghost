@@ -1738,7 +1738,7 @@ fn generate_instant_payment_id(lock_id: &str, amount: u64, height: u64) -> [u8; 
     hasher.update(lock_id.as_bytes());
     hasher.update(amount.to_le_bytes());
     hasher.update(height.to_le_bytes());
-    hasher.update(&random_bytes); // 32 bytes of cryptographic randomness
+    hasher.update(random_bytes); // 32 bytes of cryptographic randomness
     hasher.finalize().into()
 }
 

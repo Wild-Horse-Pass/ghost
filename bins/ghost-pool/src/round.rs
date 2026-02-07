@@ -119,12 +119,6 @@ struct MinerToleranceTracker {
 }
 
 impl MinerToleranceTracker {
-    fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-        }
-    }
-
     /// Record tolerance exploitation for a miner
     /// Returns Err if cumulative exploitation exceeds 1% of total work
     fn record_tolerance(
@@ -478,7 +472,7 @@ impl RoundManager {
             let mut tolerance_trackers = self.miner_tolerance_tracker.write();
             let tracker = tolerance_trackers
                 .entry(proof.round_id)
-                .or_insert_with(MinerToleranceTracker::new);
+                .or_default();
 
             if let Err(exploitation_percent) =
                 tracker.record_tolerance(&miner_id, calculated_work, work_difference)
@@ -1211,7 +1205,7 @@ mod tests {
     #[test]
     fn test_l7_miner_tolerance_tracker() {
         // L-7 SECURITY TEST: Verify cumulative tolerance tracking works
-        let mut tracker = MinerToleranceTracker::new();
+        let mut tracker = MinerToleranceTracker::default();
 
         // Record several shares with small tolerance exploitation
         let miner_id = "test_miner";

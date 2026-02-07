@@ -371,7 +371,7 @@ pub fn validate_multisig_witness_script(
 
     // HIGH-6: Use .get() for bounds-checked access instead of direct indexing
     // Check OP_M (0x51 = OP_1, 0x52 = OP_2, etc.)
-    let m_opcode = *script.get(0).ok_or_else(|| {
+    let m_opcode = *script.first().ok_or_else(|| {
         PayoutValidationError::InvalidScript("HIGH-6: script too short for OP_M".into())
     })?;
     if !(0x51..=0x60).contains(&m_opcode) {

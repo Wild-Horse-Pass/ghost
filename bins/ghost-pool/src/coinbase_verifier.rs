@@ -357,7 +357,7 @@ impl CoinbaseOutput {
 ///
 /// HIGH-9: Uses bounds-checked .get() for all array accesses
 fn read_varint(data: &[u8]) -> Option<(usize, usize)> {
-    let first = *data.get(0)?;
+    let first = *data.first()?;
 
     if first < 0xfd {
         Some((first as usize, 1))

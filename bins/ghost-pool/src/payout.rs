@@ -404,7 +404,7 @@ impl PayoutProposalCreator {
         // - P2TR: 34 bytes (OP_1 <32>)
         if !treasury_address.is_empty() {
             let addr_len = treasury_address.len();
-            if addr_len < 22 || addr_len > 34 {
+            if !(22..=34).contains(&addr_len) {
                 return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
                     "L-3: Treasury address script has invalid length: {} bytes (expected 22-34 for standard scripts)",
                     addr_len
@@ -613,7 +613,7 @@ impl PayoutProposalCreator {
                 // that is well below the representable range.
                 // A work value this high would be astronomically improbable.
                 const MAX_SAFE_SCALED: f64 = 1e36; // Well below u128::MAX (~3.4e38)
-                if scaled < 0.0 || scaled > MAX_SAFE_SCALED || !scaled.is_finite() {
+                if !(0.0..=MAX_SAFE_SCALED).contains(&scaled) || !scaled.is_finite() {
                     warn!(
                         miner_id = %id,
                         work = *w,

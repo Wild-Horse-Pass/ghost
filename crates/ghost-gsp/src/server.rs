@@ -251,7 +251,7 @@ impl KeyExtractor for IpKeyExtractor {
             // This matches the verification server's implementation.
             if let Some(xff) = req.headers().get("X-Forwarded-For") {
                 if let Ok(xff_str) = xff.to_str() {
-                    if let Some(ip_str) = xff_str.split(',').last() {
+                    if let Some(ip_str) = xff_str.split(',').next_back() {
                         let ip_trimmed = ip_str.trim();
                         if !ip_trimmed.is_empty() {
                             return Ok(IpKey(ip_trimmed.to_string()));

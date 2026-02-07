@@ -2055,7 +2055,7 @@ const WITNESS_COMMITMENT_MAGIC: [u8; 4] = [0xaa, 0x21, 0xa9, 0xed];
 /// HIGH-9: Uses bounds-checked .get() for all array accesses
 fn validate_witness_commitment_script(script: &[u8]) -> bool {
     // First byte must be OP_RETURN (0x6a)
-    let Some(&first_byte) = script.get(0) else {
+    let Some(&first_byte) = script.first() else {
         return false;
     };
     if first_byte != 0x6a {
