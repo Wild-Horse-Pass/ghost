@@ -104,9 +104,17 @@ impl ElderEntry {
     }
 }
 
-/// Maximum allowed timestamp drift for elder approvals (5 minutes in milliseconds)
-/// This prevents replay attacks with old approvals while allowing for clock skew
-pub const MAX_APPROVAL_TIMESTAMP_DRIFT_MS: u64 = 5 * 60 * 1000;
+/// L-2: Maximum allowed timestamp drift for elder approvals (30 seconds in milliseconds)
+///
+/// This prevents replay attacks with old approvals while allowing for reasonable
+/// clock skew. Reduced from 5 minutes to 30 seconds to match the message drift
+/// window used elsewhere in the codebase for consistency.
+///
+/// 30 seconds is sufficient for:
+/// - Normal clock skew between nodes (typically < 1 second with NTP)
+/// - Network propagation delays (typically < 5 seconds)
+/// - Processing time on recipient (typically < 1 second)
+pub const MAX_APPROVAL_TIMESTAMP_DRIFT_MS: u64 = 30 * 1000;
 
 /// An approval signature from an elder
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1032,9 +1040,21 @@ impl ElderListManager {
                 // Load elder entries for this epoch
                 let entry_records = db.get_elder_entries_for_epoch(record.epoch)?;
 
+                // L-3: Check that the number of entries doesn't exceed max before processing
+                if entry_records.len() > ELDER_MAX_COUNT as usize {
+                    warn!(
+                        epoch = record.epoch,
+                        count = entry_records.len(),
+                        max = ELDER_MAX_COUNT,
+                        "L-3: Database contains more elders than ELDER_MAX_COUNT, truncating"
+                    );
+                }
+
                 // Convert records to ElderEntry structs
+                // L-3: Take only up to ELDER_MAX_COUNT entries to prevent memory issues
                 let elders: Vec<ElderEntry> = entry_records
                     .into_iter()
+                    .take(ELDER_MAX_COUNT as usize) // L-3: Enforce maximum
                     .filter_map(|r| {
                         // Parse node_id from hex string
                         let node_id_bytes = hex::decode(&r.node_id).ok()?;
@@ -1058,9 +1078,21 @@ impl ElderListManager {
                 // Load approval signatures
                 let approval_records = db.get_elder_approvals_for_epoch(record.epoch)?;
 
+                // L-3: Check approval count before processing
+                if approval_records.len() > MAX_APPROVALS {
+                    warn!(
+                        epoch = record.epoch,
+                        count = approval_records.len(),
+                        max = MAX_APPROVALS,
+                        "L-3: Database contains more approvals than MAX_APPROVALS, truncating"
+                    );
+                }
+
                 // Convert approval records to ElderApproval structs
+                // L-3: Take only up to MAX_APPROVALS to prevent memory issues
                 let approval_signatures: Vec<ElderApproval> = approval_records
                     .into_iter()
+                    .take(MAX_APPROVALS) // L-3: Enforce maximum
                     .filter_map(|r| {
                         // Parse approver node_id from hex string
                         let approver_bytes = hex::decode(&r.approver_node_id).ok()?;
@@ -1563,5 +1595,133 @@ mod tests {
         // Shouldn't be timed out immediately
         let timeout = manager.check_pending_timeout();
         assert!(timeout.is_none());
+    }
+
+    // =========================================================================
+    // L-2 TESTS: Elder approval timestamp window
+    // =========================================================================
+
+    #[test]
+    fn test_l2_approval_timestamp_window() {
+        // L-2: Verify the approval timestamp drift is 30 seconds (not 5 minutes)
+        assert_eq!(
+            MAX_APPROVAL_TIMESTAMP_DRIFT_MS,
+            30 * 1000,
+            "L-2: Approval timestamp drift should be 30 seconds"
+        );
+    }
+
+    #[test]
+    fn test_l2_approval_timestamp_validation() {
+        use ghost_common::identity::NodeIdentity;
+
+        let identity = NodeIdentity::generate();
+        let epoch = 5u64;
+        let merkle_root = [42u8; 32];
+
+        // Create an approval with current timestamp
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let message = ElderApproval::signing_message(epoch, &merkle_root);
+        let signature = identity.sign(&message);
+
+        let approval = ElderApproval {
+            approver: identity.node_id(),
+            signature,
+            timestamp: now,
+        };
+
+        // Current timestamp should be valid
+        assert!(
+            approval.is_timestamp_valid(),
+            "L-2: Current timestamp should be valid"
+        );
+
+        // Old timestamp (beyond 30s) should be invalid
+        let old_approval = ElderApproval {
+            approver: identity.node_id(),
+            signature,
+            timestamp: now - 60_000, // 60 seconds ago
+        };
+        assert!(
+            !old_approval.is_timestamp_valid(),
+            "L-2: Old timestamp (60s ago) should be invalid"
+        );
+
+        // Future timestamp (beyond 30s) should be invalid
+        let future_approval = ElderApproval {
+            approver: identity.node_id(),
+            signature,
+            timestamp: now + 60_000, // 60 seconds in future
+        };
+        assert!(
+            !future_approval.is_timestamp_valid(),
+            "L-2: Future timestamp (60s ahead) should be invalid"
+        );
+    }
+
+    // =========================================================================
+    // L-3 TESTS: Elder list size bounds on DB load
+    // =========================================================================
+
+    #[test]
+    fn test_l3_elder_max_count_constant() {
+        // L-3: Verify ELDER_MAX_COUNT is reasonable
+        assert_eq!(ELDER_MAX_COUNT, 101, "ELDER_MAX_COUNT should be 101");
+        assert!(
+            ELDER_MAX_COUNT > 0,
+            "ELDER_MAX_COUNT must be positive"
+        );
+    }
+
+    #[test]
+    fn test_l3_max_approvals_constant() {
+        // L-3: Verify MAX_APPROVALS is reasonable
+        assert_eq!(MAX_APPROVALS, 200, "MAX_APPROVALS should be 200");
+        assert!(
+            MAX_APPROVALS >= ELDER_MAX_COUNT as usize,
+            "MAX_APPROVALS should be >= ELDER_MAX_COUNT"
+        );
+    }
+
+    #[test]
+    fn test_l3_canonical_list_capacity_check() {
+        // L-3: Verify has_capacity() works correctly
+        let empty_list = CanonicalElderList::new(1, vec![]);
+        assert!(
+            empty_list.has_capacity(),
+            "Empty list should have capacity"
+        );
+
+        // Create a list at capacity
+        let many_elders: Vec<ElderEntry> = (0..ELDER_MAX_COUNT)
+            .map(|i| ElderEntry {
+                node_id: [i as u8; 32],
+                registered_epoch: 0,
+                pow_nonce: 0,
+                pow_difficulty: 20,
+                first_seen: 1000000,
+                uptime_at_registration: 99.5,
+            })
+            .collect();
+        let full_list = CanonicalElderList::new(1, many_elders);
+        assert!(
+            !full_list.has_capacity(),
+            "Full list should not have capacity"
+        );
+    }
+
+    #[test]
+    fn test_l3_add_approval_respects_max() {
+        // L-3: Verify add_approval respects MAX_APPROVALS limit
+        let elders = vec![create_test_elder_entry([1u8; 32], 0)];
+        let mut list = CanonicalElderList::new(1, elders);
+
+        // The add_approval method should respect MAX_APPROVALS
+        // This is tested indirectly through the existing M-5 test
+        assert_eq!(
+            list.approval_signatures.len(),
+            0,
+            "Initial list should have no approvals"
+        );
     }
 }

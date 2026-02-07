@@ -37,9 +37,29 @@ const MAX_JSON_SIZE: usize = 10 * 1024 * 1024;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use tracing::{debug, error};
+use tracing::{debug, error, warn};
 
 use ghost_common::error::{GhostError, GhostResult};
+
+/// L-13 FIX: Parse JSON details with logging on failure
+///
+/// Instead of silently falling back to Null on parse errors, this logs a warning
+/// so operators can investigate potential data corruption or encoding issues.
+fn parse_details_json(details_str: &str, entry_id: i64) -> serde_json::Value {
+    match serde_json::from_str(details_str) {
+        Ok(value) => value,
+        Err(e) => {
+            // L-13 FIX: Log warning instead of silently using null
+            warn!(
+                entry_id = entry_id,
+                error = %e,
+                details_len = details_str.len(),
+                "L-13: Failed to parse audit log details JSON, using null fallback"
+            );
+            serde_json::Value::Null
+        }
+    }
+}
 
 use crate::Database;
 
@@ -410,6 +430,7 @@ impl AuditLog {
 
             let entries = stmt
                 .query_map(params![start_time, end_time, limit as i64], |row| {
+                    let entry_id: i64 = row.get(0)?;
                     let details_str: String = row.get(5)?;
                     // L-STOR-1: Check size before deserializing to prevent OOM
                     // 3.21: Reject oversized JSON instead of silently returning Null
@@ -420,10 +441,10 @@ impl AuditLog {
                             MAX_JSON_SIZE
                         )));
                     }
-                    let details =
-                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null);
+                    // L-13 FIX: Use helper that logs on parse failure
+                    let details = parse_details_json(&details_str, entry_id);
                     Ok(AuditEntry {
-                        id: row.get(0)?,
+                        id: entry_id,
                         timestamp: row.get(1)?,
                         event_type: serde_json::from_str(&format!(
                             "\"{}\"",
@@ -464,6 +485,7 @@ impl AuditLog {
 
             let entries = stmt
                 .query_map(params![event_type.to_string(), limit as i64], |row| {
+                    let entry_id: i64 = row.get(0)?;
                     let details_str: String = row.get(5)?;
                     // L-STOR-1: Check size before deserializing to prevent OOM
                     // 3.21: Reject oversized JSON instead of silently returning Null
@@ -474,10 +496,10 @@ impl AuditLog {
                             MAX_JSON_SIZE
                         )));
                     }
-                    let details =
-                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null);
+                    // L-13 FIX: Use helper that logs on parse failure
+                    let details = parse_details_json(&details_str, entry_id);
                     Ok(AuditEntry {
-                        id: row.get(0)?,
+                        id: entry_id,
                         timestamp: row.get(1)?,
                         event_type,
                         actor: row.get(3)?,
@@ -510,6 +532,7 @@ impl AuditLog {
 
             let entries = stmt
                 .query_map(params![actor, limit as i64], |row| {
+                    let entry_id: i64 = row.get(0)?;
                     let details_str: String = row.get(5)?;
                     // L-STOR-1: Check size before deserializing to prevent OOM
                     // 3.21: Reject oversized JSON instead of silently returning Null
@@ -520,10 +543,10 @@ impl AuditLog {
                             MAX_JSON_SIZE
                         )));
                     }
-                    let details =
-                        serde_json::from_str(&details_str).unwrap_or(serde_json::Value::Null);
+                    // L-13 FIX: Use helper that logs on parse failure
+                    let details = parse_details_json(&details_str, entry_id);
                     Ok(AuditEntry {
-                        id: row.get(0)?,
+                        id: entry_id,
                         timestamp: row.get(1)?,
                         event_type: serde_json::from_str(&format!(
                             "\"{}\"",
@@ -546,11 +569,21 @@ impl AuditLog {
     }
 
     /// Get the total number of audit log entries
+    ///
+    /// M-11 FIX: Uses safe i64 to u64 conversion with error handling for negative values.
+    /// SQLite returns COUNT(*) as i64, but count should never be negative.
     pub fn count(&self) -> GhostResult<u64> {
         self.db.with_connection(|conn| {
             let count: i64 = conn
                 .query_row("SELECT COUNT(*) FROM audit_log", [], |row| row.get(0))
                 .map_err(|e| GhostError::Database(e.to_string()))?;
+            // M-11 FIX: Safely convert i64 to u64, rejecting negative values
+            if count < 0 {
+                return Err(GhostError::Database(format!(
+                    "Invalid negative audit log count: {}",
+                    count
+                )));
+            }
             Ok(count as u64)
         })
     }

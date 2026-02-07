@@ -478,8 +478,10 @@ pub struct BitcoinRpc {
     client: reqwest::Client,
     /// RPC URL
     url: String,
-    /// Basic auth header value
-    auth: String,
+    /// L-14 FIX: Basic auth header value wrapped in Zeroizing for secure memory handling.
+    /// Ensures the Base64-encoded credentials are zeroed when the client is dropped,
+    /// preventing credential leakage through memory dumps or core files.
+    auth: Zeroizing<String>,
     /// Request ID counter
     id_counter: AtomicU64,
     /// Last known block height (for template validation)
@@ -549,7 +551,9 @@ impl BitcoinRpc {
             config.username,
             config.password.expose_secret()
         ));
-        let auth = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
+        // L-14 FIX: Wrap auth header in Zeroizing to ensure it's zeroed on drop
+        // The Base64-encoded credentials could leak through memory dumps if not zeroed
+        let auth = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes()));
 
         let mut client_builder =
             reqwest::Client::builder().timeout(std::time::Duration::from_secs(config.timeout_secs));
@@ -717,7 +721,7 @@ impl BitcoinRpc {
         let mut request_builder = self
             .client
             .post(&self.url)
-            .header("Authorization", format!("Basic {}", self.auth))
+            .header("Authorization", format!("Basic {}", self.auth.as_str()))
             .json(&request);
 
         // M-CFG-1 FIX: Apply per-operation timeout if specified
@@ -885,7 +889,7 @@ impl BitcoinRpc {
         let response = self
             .client
             .post(&self.url)
-            .header("Authorization", format!("Basic {}", self.auth))
+            .header("Authorization", format!("Basic {}", self.auth.as_str()))
             .json(&request)
             .send()
             .await

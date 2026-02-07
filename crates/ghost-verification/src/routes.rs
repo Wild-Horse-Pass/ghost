@@ -172,7 +172,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/mining/status", get(api_mining_status_handler))
         .route("/api/v1/mining/miners", get(api_miners_handler))
         .route("/api/v1/miners/search", get(api_miners_search_handler))
-        .route("/api/v1/miners/stats", get(api_miner_stats_handler))
+        // M-14: /api/v1/miners/stats moved to internal routes (requires HMAC auth)
+        // Exposes individual miner work values, hashrates, and share history
         .route("/api/v1/network/peers", get(peers_handler))
         .route("/api/v1/network/pool", get(api_pool_status_handler))
         .route("/api/v1/mesh/status", get(consensus_state_handler))
@@ -300,24 +301,9 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             "/api/v1/swarm/update-all",
             get(api_swarm_update_all_handler),
         )
-        // System endpoints
-        .route(
-            "/api/v1/system/update/status",
-            get(api_system_update_status_handler),
-        )
-        .route("/api/v1/system/updates", get(api_system_updates_handler))
-        .route("/api/v1/system/update", get(api_system_update_handler))
-        .route("/api/v1/system/rollback", get(api_system_rollback_handler))
-        // Watchdog endpoints
-        .route("/api/v1/watchdog/events", get(api_watchdog_events_handler))
-        .route(
-            "/api/v1/watchdog/clear-cache",
-            get(api_watchdog_clear_cache_handler),
-        )
-        // Backup endpoints
-        .route("/api/v1/backup/export", get(api_backup_export_handler))
-        .route("/api/v1/backup/import", get(api_backup_import_handler))
-        .route("/api/v1/backup/verify", get(api_backup_verify_handler))
+        // L-16: System, watchdog, and backup endpoints moved to internal routes
+        // These endpoints can expose sensitive system information or trigger
+        // destructive operations (updates, cache clearing, backup import).
         // Auth endpoint (returns empty token for dashboard compatibility)
         .route("/auth/token", get(api_auth_token_handler));
 
@@ -372,7 +358,36 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route(
             "/api/v1/config/prune_profile",
             post(api_config_prune_profile_post_handler),
-        );
+        )
+        // M-14: Miner stats endpoint moved here to require HMAC authentication
+        // Exposes individual miner work values, hashrates, and share history
+        .route("/api/v1/miners/stats", get(api_miner_stats_handler))
+        // M-14: Miner search with full details (internal use only)
+        .route(
+            "/api/internal/miners/search",
+            get(api_miners_search_internal_handler),
+        )
+        // L-16: System endpoints moved here to require HMAC authentication
+        // These can expose sensitive system state or trigger potentially destructive operations
+        .route(
+            "/api/v1/system/update/status",
+            get(api_system_update_status_handler),
+        )
+        .route("/api/v1/system/updates", get(api_system_updates_handler))
+        .route("/api/v1/system/update", get(api_system_update_handler))
+        .route("/api/v1/system/rollback", get(api_system_rollback_handler))
+        // L-16: Watchdog endpoints moved here to require HMAC authentication
+        // watchdog/events may expose operational details, clear-cache affects system state
+        .route("/api/v1/watchdog/events", get(api_watchdog_events_handler))
+        .route(
+            "/api/v1/watchdog/clear-cache",
+            get(api_watchdog_clear_cache_handler),
+        )
+        // L-16: Backup endpoints moved here to require HMAC authentication
+        // These can export/import potentially sensitive node configuration and data
+        .route("/api/v1/backup/export", get(api_backup_export_handler))
+        .route("/api/v1/backup/import", get(api_backup_import_handler))
+        .route("/api/v1/backup/verify", get(api_backup_verify_handler));
 
     // H-3: Apply authentication middleware - ALWAYS required for internal endpoints
     let internal_router = if let Some(ref auth) = state.internal_auth {
@@ -1245,6 +1260,7 @@ struct MinerStatsQuery {
 }
 
 /// API v1 miner search handler - search miners by worker name or address
+/// M-13: Returns only aggregate counts, not individual miner details (same pattern as M-11)
 async fn api_miners_search_handler(
     State(state): State<Arc<VerificationState>>,
     Query(params): Query<MinerSearchQuery>,
@@ -1255,6 +1271,66 @@ async fn api_miners_search_handler(
         return Json(serde_json::json!({
             "error": "Missing search query parameter 'q'",
             "example": "/api/v1/miners/search?q=worker_name"
+        }));
+    }
+
+    if query.len() < 3 {
+        return Json(serde_json::json!({
+            "error": "Search query must be at least 3 characters",
+            "query": query
+        }));
+    }
+
+    // M-13: Query miners but return only aggregate stats, not individual details
+    // Individual miner data (IDs, work values, hashrates) could enable:
+    // - Targeted attacks on high-value miners
+    // - Competitor analysis of mining operations
+    // - Enumeration of pool participants
+    let (match_count, total_work, active_count) = if let Some(ref db) = state.database {
+        match db.search_miners(&query) {
+            Ok(miners) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let count = miners.len();
+                let work: f64 = miners.iter().map(|m| m.total_work).sum();
+                let active = miners.iter().filter(|m| (now - m.last_seen) < 600).count();
+                (count, work, active)
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to search miners");
+                (0, 0.0, 0)
+            }
+        }
+    } else {
+        (0, 0.0, 0)
+    };
+
+    // M-13: Public endpoint shows only aggregate stats, not individual miner details
+    Json(serde_json::json!({
+        "query": query,
+        "match_count": match_count,
+        "active_matches": active_count,
+        "total_work": total_work,
+        // M-13: Individual miner list redacted from public endpoint
+        "miners_redacted": true,
+        "message": "Individual miner details require authentication. Use /api/internal/miners/search for full details."
+    }))
+}
+
+/// API internal miner search handler - returns full miner details (requires HMAC auth)
+/// M-14: This internal version provides complete miner data for authenticated admin access
+async fn api_miners_search_internal_handler(
+    State(state): State<Arc<VerificationState>>,
+    Query(params): Query<MinerSearchQuery>,
+) -> impl IntoResponse {
+    let query = params.q.unwrap_or_default();
+
+    if query.is_empty() {
+        return Json(serde_json::json!({
+            "error": "Missing search query parameter 'q'",
+            "example": "/api/internal/miners/search?q=worker_name"
         }));
     }
 
@@ -1283,7 +1359,7 @@ async fn api_miners_search_handler(
                         "first_seen": m.first_seen,
                         "last_seen": m.last_seen,
                         "estimated_hashrate_ths": format!("{:.4}", hashrate_ths),
-                        "active": (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64 - m.last_seen) < 600 // Active if seen in last 10 min
+                        "active": (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64 - m.last_seen) < 600
                     })
                 })
                 .collect::<Vec<_>>(),
@@ -3566,12 +3642,23 @@ async fn api_config_update_handler(
     }
 
     // Validate and apply private_mining_password
+    // L-17: Enforce minimum password length of 8 characters with an error, not just a warning
+    // Weak passwords expose private mining endpoints to brute-force attacks
     if let Some(ref password) = request.private_mining_password {
         if password.len() < 8 {
-            warnings.push(format!(
-                "Password is only {} characters. Minimum 8 recommended for security.",
-                password.len()
-            ));
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ConfigUpdateError {
+                    success: false,
+                    error: format!(
+                        "L-17: Password must be at least 8 characters (got {}). \
+                         Weak passwords expose private mining to brute-force attacks.",
+                        password.len()
+                    ),
+                    code: "PASSWORD_TOO_SHORT".to_string(),
+                }),
+            )
+                .into_response();
         }
         config.network.private_mining_password = Some(password.clone());
         updated_fields.push("private_mining_password".to_string());

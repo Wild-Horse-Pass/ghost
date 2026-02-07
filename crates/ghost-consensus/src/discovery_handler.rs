@@ -452,6 +452,53 @@ impl DiscoveryHandler {
             .is_some_and(|bm| bm.is_banned(node_id))
     }
 
+    /// M-3: Verify the signature on a message envelope (defense-in-depth)
+    ///
+    /// The mesh network already verifies signatures via validate_and_verify(),
+    /// but this provides an explicit check in the handler for defense-in-depth.
+    /// This protects against any code path that might bypass the normal validation.
+    ///
+    /// The message signed is: payload + sequence (as per mesh.rs create_envelope)
+    fn verify_envelope_signature(&self, envelope: &MessageEnvelope) -> bool {
+        // Reject zero signatures immediately
+        if envelope.signature == [0u8; 64] {
+            warn!(
+                sender = %hex::encode(&envelope.sender[..8]),
+                "M-3: Rejecting discovery message with zero signature"
+            );
+            return false;
+        }
+
+        // Reconstruct the message that was signed (matches mesh.rs create_envelope)
+        // Signed data is: payload_bytes + sequence.to_le_bytes()
+        let mut signed_data = envelope.payload.clone();
+        signed_data.extend_from_slice(&envelope.sequence.to_le_bytes());
+
+        // Verify using the sender's public key (which is their NodeId)
+        match ghost_common::identity::verify_signature(
+            &envelope.sender,
+            &signed_data,
+            &envelope.signature,
+        ) {
+            Ok(true) => true,
+            Ok(false) => {
+                warn!(
+                    sender = %hex::encode(&envelope.sender[..8]),
+                    "M-3: Discovery message signature verification failed"
+                );
+                false
+            }
+            Err(e) => {
+                warn!(
+                    sender = %hex::encode(&envelope.sender[..8]),
+                    error = %e,
+                    "M-3: Discovery message signature verification error"
+                );
+                false
+            }
+        }
+    }
+
     /// Add a known peer address
     ///
     /// H-P2P-4: Also updates the reverse mapping (address -> node_id).
@@ -508,6 +555,14 @@ impl DiscoveryHandler {
         // M-P2P-3: Silently ignore discovery messages from banned nodes
         if self.is_banned(&envelope.sender) {
             return Ok(()); // Silently ignore banned nodes
+        }
+
+        // M-3: Verify signature before any other processing (defense-in-depth)
+        // The mesh network should already verify, but we check again for safety
+        if !self.verify_envelope_signature(envelope) {
+            return Err(ghost_common::error::GhostError::SignatureVerification(
+                "M-3: Discovery message failed signature verification".to_string(),
+            ));
         }
 
         // M-16: Apply rate limiting to prevent discovery flooding
@@ -812,80 +867,108 @@ mod tests {
     }
 
     /// H-3-TEST: Verify that discovery messages with mismatched node_id are rejected
+    ///
+    /// M-3: Updated to use real signatures since zero signatures are now rejected
     #[test]
     fn test_discovery_rejects_mismatched_node_id() {
         use crate::message::{DiscoveryMessage, MessageEnvelope, MessageType};
+        use ghost_common::identity::NodeIdentity;
         use ghost_common::types::NodeCapabilities;
 
         let peers = Arc::new(PeerManager::new([1u8; 32], 100));
         let handler = DiscoveryHandler::new([1u8; 32], "tcp://8.8.8.8:8559".to_string(), peers);
 
-        // Create a discovery message claiming to be node [3u8; 32]
+        // Create a real identity for signing
+        let identity = NodeIdentity::generate();
+
+        // Create a discovery message claiming to be a DIFFERENT node [3u8; 32]
         let discovery_msg = DiscoveryMessage {
-            node_id: [3u8; 32], // Claims to be node 3
+            node_id: [3u8; 32], // Claims to be node 3 (NOT the signer)
             public_address: "tcp://8.8.8.9:8559".to_string(),
             capabilities: NodeCapabilities::default(),
             known_peers: vec![],
         };
 
-        // But the envelope says it's from node [2u8; 32] - MISMATCH!
+        let payload = serde_json::to_vec(&discovery_msg).unwrap();
+        let sequence = 1u64;
+
+        // Sign the message (but the discovery_msg.node_id doesn't match the signer)
+        let mut signed_data = payload.clone();
+        signed_data.extend_from_slice(&sequence.to_le_bytes());
+        let signature = identity.sign(&signed_data);
+
+        // Envelope says it's from identity's node_id - MISMATCH with discovery_msg.node_id!
         let envelope = MessageEnvelope {
-            sender: [2u8; 32], // Actually from node 2
+            sender: identity.node_id(),
             msg_type: MessageType::Discovery,
-            payload: serde_json::to_vec(&discovery_msg).unwrap(),
-            signature: [0u8; 64],
+            payload,
+            signature,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
-            sequence: 1,
+            sequence,
             ttl: 10,
         };
 
-        // The handler should reject this message (returns Ok but doesn't add the peer)
+        // The handler should reject this message because discovery_msg.node_id != envelope.sender
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             // Before: no known peers except potentially self
             let before_count = handler.known_peer_count();
 
-            // Process the spoofed message
+            // Process the message - signature is valid but node_id mismatch
             let result = handler.handle_message(envelope).await;
             assert!(
                 result.is_ok(),
-                "Should not error on spoofed message (just silently reject)"
+                "Should not error on mismatched node_id (just silently reject)"
             );
 
-            // After: should still have same count (message was rejected)
+            // After: should still have same count (message was rejected due to node_id mismatch)
             let after_count = handler.known_peer_count();
             assert_eq!(
                 before_count, after_count,
-                "Spoofed discovery message should not add any peers"
+                "Discovery message with mismatched node_id should not add any peers"
             );
         });
     }
 
     /// H-3-TEST: Verify that discovery messages with matching node_id are accepted
+    ///
+    /// M-3: Updated to use real signatures since zero signatures are now rejected
     #[test]
     fn test_discovery_accepts_matching_node_id() {
         use crate::message::{DiscoveryMessage, MessageEnvelope, MessageType};
+        use ghost_common::identity::NodeIdentity;
         use ghost_common::types::NodeCapabilities;
 
         let peers = Arc::new(PeerManager::new([1u8; 32], 100));
         let handler = DiscoveryHandler::new([1u8; 32], "tcp://8.8.8.8:8559".to_string(), peers);
 
-        // Create a discovery message from node [2u8; 32]
+        // Create a real identity for signing
+        let identity = NodeIdentity::generate();
+
+        // Create a discovery message from the same identity
         let discovery_msg = DiscoveryMessage {
-            node_id: [2u8; 32],
-            public_address: "tcp://8.8.8.9:8559".to_string(), // Valid public address
+            node_id: identity.node_id(), // Matches the signer
+            public_address: "8.8.8.9:8559".to_string(), // Valid public address (no tcp:// prefix)
             capabilities: NodeCapabilities::default(),
             known_peers: vec![],
         };
 
+        let payload = serde_json::to_vec(&discovery_msg).unwrap();
+        let sequence = 1u64;
+
+        // Sign the message properly
+        let mut signed_data = payload.clone();
+        signed_data.extend_from_slice(&sequence.to_le_bytes());
+        let signature = identity.sign(&signed_data);
+
         // Envelope sender matches the message node_id
         let envelope = MessageEnvelope {
-            sender: [2u8; 32], // Matches msg.node_id
+            sender: identity.node_id(),
             msg_type: MessageType::Discovery,
-            payload: serde_json::to_vec(&discovery_msg).unwrap(),
-            signature: [0u8; 64],
+            payload,
+            signature,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
-            sequence: 1,
+            sequence,
             ttl: 10,
         };
 
@@ -894,9 +977,9 @@ mod tests {
             let before_count = handler.known_peer_count();
 
             let result = handler.handle_message(envelope).await;
-            assert!(result.is_ok());
+            assert!(result.is_ok(), "Valid signed message should be accepted");
 
-            // The peer should be added since node_id matches envelope sender
+            // The peer should be added since signature is valid and node_id matches
             let after_count = handler.known_peer_count();
             assert_eq!(
                 after_count,
@@ -1173,5 +1256,87 @@ mod tests {
         assert!(validate_peer_address("1.1.1.1:8559"), "Cloudflare DNS should be accepted");
         // Random public IP
         assert!(validate_peer_address("93.184.216.34:8559"), "Public IP should be accepted");
+    }
+
+    // =========================================================================
+    // M-3 TESTS: Signature verification in discovery handler
+    // =========================================================================
+
+    /// M-3-TEST: Verify that zero signatures are rejected
+    #[test]
+    fn test_m3_zero_signature_rejected() {
+        let peers = Arc::new(PeerManager::new([1u8; 32], 100));
+        let handler = DiscoveryHandler::new([1u8; 32], "8.8.8.8:8559".to_string(), peers);
+
+        let envelope = MessageEnvelope {
+            sender: [2u8; 32],
+            msg_type: MessageType::Discovery,
+            payload: vec![1, 2, 3],
+            signature: [0u8; 64], // Zero signature
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            sequence: 1,
+            ttl: 10,
+        };
+
+        assert!(
+            !handler.verify_envelope_signature(&envelope),
+            "M-3: Zero signature should be rejected"
+        );
+    }
+
+    /// M-3-TEST: Verify that invalid signatures are rejected
+    #[test]
+    fn test_m3_invalid_signature_rejected() {
+        let peers = Arc::new(PeerManager::new([1u8; 32], 100));
+        let handler = DiscoveryHandler::new([1u8; 32], "8.8.8.8:8559".to_string(), peers);
+
+        let envelope = MessageEnvelope {
+            sender: [2u8; 32],
+            msg_type: MessageType::Discovery,
+            payload: vec![1, 2, 3],
+            signature: [0xFFu8; 64], // Invalid signature (not zeros but wrong)
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            sequence: 1,
+            ttl: 10,
+        };
+
+        assert!(
+            !handler.verify_envelope_signature(&envelope),
+            "M-3: Invalid signature should be rejected"
+        );
+    }
+
+    /// M-3-TEST: Verify that valid signatures are accepted
+    #[test]
+    fn test_m3_valid_signature_accepted() {
+        use ghost_common::identity::NodeIdentity;
+
+        let peers = Arc::new(PeerManager::new([1u8; 32], 100));
+        let handler = DiscoveryHandler::new([1u8; 32], "8.8.8.8:8559".to_string(), peers);
+
+        // Create a real identity and sign a message
+        let identity = NodeIdentity::generate();
+        let payload = vec![1, 2, 3, 4, 5];
+        let sequence = 42u64;
+
+        // Sign the message (payload + sequence, matching mesh.rs)
+        let mut signed_data = payload.clone();
+        signed_data.extend_from_slice(&sequence.to_le_bytes());
+        let signature = identity.sign(&signed_data);
+
+        let envelope = MessageEnvelope {
+            sender: identity.node_id(),
+            msg_type: MessageType::Discovery,
+            payload,
+            signature,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            sequence,
+            ttl: 10,
+        };
+
+        assert!(
+            handler.verify_envelope_signature(&envelope),
+            "M-3: Valid signature should be accepted"
+        );
     }
 }

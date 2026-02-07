@@ -2908,12 +2908,15 @@ impl Database {
 
     /// Get the rotation history for a node (follows the chain of rotations)
     ///
-    /// H-7: Limited to MAX_QUERY_RESULTS rows per direction to prevent OOM attacks
+    /// L-12 FIX: Limited to MAX_QUERY_RESULTS total rows (combined from both queries).
+    /// Previously each query had its own limit, allowing up to 2x MAX_QUERY_RESULTS total.
     pub fn get_rotation_chain(&self, node_id: &str) -> GhostResult<Vec<(String, String, i64)>> {
         self.with_connection(|conn| {
-            let mut chain = Vec::new();
+            // L-12 FIX: Pre-allocate with max capacity to enforce combined limit
+            let mut chain = Vec::with_capacity(Self::MAX_QUERY_RESULTS as usize);
 
             // First, find all rotations FROM this node
+            // L-12 FIX: Use full limit for first query
             let mut stmt = conn
                 .prepare(
                     "SELECT old_node_id, new_node_id, finalized_timestamp
@@ -2937,7 +2940,15 @@ impl Database {
 
             chain.extend(rotations);
 
+            // L-12 FIX: Calculate remaining capacity for second query
+            let remaining = (Self::MAX_QUERY_RESULTS as usize).saturating_sub(chain.len());
+            if remaining == 0 {
+                // Already at limit, skip second query
+                return Ok(chain);
+            }
+
             // Also find rotations TO this node (to build full chain)
+            // L-12 FIX: Only fetch up to remaining capacity
             let mut stmt = conn
                 .prepare(
                     "SELECT old_node_id, new_node_id, finalized_timestamp
@@ -2948,7 +2959,7 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let rotations = stmt
-                .query_map(params![node_id, Self::MAX_QUERY_RESULTS], |row| {
+                .query_map(params![node_id, remaining as u32], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,

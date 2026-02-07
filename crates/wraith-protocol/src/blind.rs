@@ -89,30 +89,30 @@ fn calculate_shannon_entropy(bytes: &[u8]) -> f64 {
         .sum()
 }
 
-/// SEC-WRAITH-1: Minimum Shannon entropy for cryptographic randomness (bits per byte)
+/// L-10 SEC-WRAITH-1: Minimum Shannon entropy for cryptographic randomness (bits per byte)
 ///
 /// Shannon entropy depends on the number of unique values observed. With 32
 /// samples from 256 possible values, valid randomness yields ~4.5-5.0 bits/byte
 /// due to expected collisions in small samples (birthday paradox).
 ///
-/// We use 4.0 bits/byte as our base threshold, complemented by additional
-/// statistical tests (runs test, chi-squared) to catch patterns that pass
-/// Shannon entropy but exhibit non-random structure.
-const MIN_ENTROPY_BITS_PER_BYTE: f64 = 4.0;
+/// L-10 FIX: Increased from 4.0 to 4.5 bits/byte for mainnet security.
+/// This threshold is complemented by runs test and unique byte count checks
+/// to catch patterns that pass Shannon entropy but exhibit non-random structure.
+const MIN_ENTROPY_BITS_PER_BYTE: f64 = 4.5;
 
-/// SEC-WRAITH-1: Minimum number of runs (bit transitions) expected in random data.
+/// L-10 SEC-WRAITH-1: Minimum number of runs (bit transitions) expected in random data.
 /// For 256 bits (32 bytes), random data should have ~128 runs (+/- ~11 std dev).
-/// We use a conservative lower bound of 85 runs (~4 std dev below mean).
-const MIN_RUNS_FOR_32_BYTES: usize = 85;
+/// L-10 FIX: Tightened from 85 to 95 runs (~3 std dev below mean instead of ~4).
+const MIN_RUNS_FOR_32_BYTES: usize = 95;
 
-/// SEC-WRAITH-1: Maximum runs test to catch oscillating patterns (0101010...).
-/// Upper bound is ~171 runs (~4 std dev above mean).
-const MAX_RUNS_FOR_32_BYTES: usize = 171;
+/// L-10 SEC-WRAITH-1: Maximum runs test to catch oscillating patterns (0101010...).
+/// L-10 FIX: Tightened from 171 to 161 runs (~3 std dev above mean instead of ~4).
+const MAX_RUNS_FOR_32_BYTES: usize = 161;
 
-/// SEC-WRAITH-1: Minimum unique byte count for 32 bytes.
+/// L-10 SEC-WRAITH-1: Minimum unique byte count for 32 bytes.
 /// With 32 samples from 256 values, birthday paradox gives ~30.4 expected unique values.
-/// We require at least 15 unique bytes to catch severe repetition patterns.
-const MIN_UNIQUE_BYTES: usize = 15;
+/// L-10 FIX: Increased from 15 to 18 unique bytes for stronger pattern detection.
+const MIN_UNIQUE_BYTES: usize = 18;
 
 /// SEC-WRAITH-1: Perform runs test on byte data
 ///

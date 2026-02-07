@@ -761,6 +761,7 @@ impl<T> VerificationRequest<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_nonce_cache_basic() {
@@ -794,6 +795,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_nonce_cache_cleanup() {
         // Use TTL of 1 second and wait for it to expire
         // Note: timestamps are in seconds, so we need to wait > TTL seconds

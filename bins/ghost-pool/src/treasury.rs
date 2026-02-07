@@ -96,11 +96,21 @@ impl TreasuryState {
     }
 
     /// Calculate years since threshold was reached
-    pub fn years_since_threshold(&self) -> u32 {
+    ///
+    /// M-5 SECURITY: Takes a reference timestamp instead of using Utc::now().
+    /// This ensures all nodes calculate the same decay year for a given block,
+    /// eliminating TOCTOU (time-of-check to time-of-use) vulnerabilities where
+    /// nodes might calculate different decay years due to clock drift or
+    /// processing time differences.
+    ///
+    /// # Arguments
+    /// * `reference_time` - The block timestamp to use for calculation. All nodes
+    ///   use the same block timestamp, ensuring deterministic decay calculation.
+    pub fn years_since_threshold(&self, reference_time: DateTime<Utc>) -> u32 {
         match self.threshold_reached_at {
             None => 0,
             Some(threshold_time) => {
-                let elapsed = Utc::now().signed_duration_since(threshold_time);
+                let elapsed = reference_time.signed_duration_since(threshold_time);
                 let days = elapsed.num_days().max(0) as u32;
                 days / 365 // Approximate years
             }
@@ -110,12 +120,14 @@ impl TreasuryState {
     /// Get current fee split rates (treasury_rate, node_rate)
     /// Both rates are fractions of the 1% pool fee
     /// DEPRECATED: Use get_fee_split_bps for integer arithmetic
-    pub fn get_fee_split(&self) -> (f64, f64) {
+    ///
+    /// M-5 SECURITY: Takes a reference timestamp for deterministic calculation.
+    pub fn get_fee_split(&self, reference_time: DateTime<Utc>) -> (f64, f64) {
         if self.threshold_reached_at.is_none() {
             return DECAY_SCHEDULE[0]; // Pre-threshold
         }
 
-        let years = self.years_since_threshold() as usize;
+        let years = self.years_since_threshold(reference_time) as usize;
         let index = (years + 1).min(DECAY_SCHEDULE.len() - 1);
         DECAY_SCHEDULE[index]
     }
@@ -124,22 +136,26 @@ impl TreasuryState {
     /// SECURITY: Use basis points to avoid floating point rounding errors.
     /// Returns (treasury_bps, node_bps) where each is a fraction of the pool fee.
     /// Example: (5000, 5000) means 50% to treasury, 50% to nodes
-    pub fn get_fee_split_bps(&self) -> (u64, u64) {
+    ///
+    /// M-5 SECURITY: Takes a reference timestamp for deterministic calculation.
+    pub fn get_fee_split_bps(&self, reference_time: DateTime<Utc>) -> (u64, u64) {
         if self.threshold_reached_at.is_none() {
             return DECAY_SCHEDULE_BPS[0]; // Pre-threshold
         }
 
-        let years = self.years_since_threshold() as usize;
+        let years = self.years_since_threshold(reference_time) as usize;
         let index = (years + 1).min(DECAY_SCHEDULE_BPS.len() - 1);
         DECAY_SCHEDULE_BPS[index]
     }
 
     /// Get the current decay year (0 = pre-threshold, 1-5 = decay years)
-    pub fn decay_year(&self) -> u32 {
+    ///
+    /// M-5 SECURITY: Takes a reference timestamp for deterministic calculation.
+    pub fn decay_year(&self, reference_time: DateTime<Utc>) -> u32 {
         if self.threshold_reached_at.is_none() {
             0
         } else {
-            (self.years_since_threshold() + 1).min(5)
+            (self.years_since_threshold(reference_time) + 1).min(5)
         }
     }
 }
@@ -173,7 +189,15 @@ impl FeeDistribution {
     /// SECURITY: Uses integer arithmetic with explicit remainder handling to ensure:
     /// 1. treasury_amount + node_reward_pool == pool_fee (no satoshis lost)
     /// 2. miner_pool + pool_fee == subsidy (no satoshis lost)
-    pub fn calculate(subsidy_sats: u64, tx_fees_sats: u64, treasury_state: &TreasuryState) -> Self {
+    ///
+    /// M-5 SECURITY: Takes a block_timestamp to ensure deterministic decay calculation.
+    /// All nodes use the same block timestamp, preventing TOCTOU vulnerabilities.
+    pub fn calculate(
+        subsidy_sats: u64,
+        tx_fees_sats: u64,
+        treasury_state: &TreasuryState,
+        block_timestamp: DateTime<Utc>,
+    ) -> Self {
         // TX fees go 100% to block finder
         let tx_fees_to_block_finder = tx_fees_sats;
 
@@ -184,7 +208,8 @@ impl FeeDistribution {
         // Split pool fee between treasury and nodes based on decay schedule
         // SECURITY: Use integer arithmetic with explicit remainder handling
         // The remainder from truncation goes to the node_reward_pool (benefits nodes)
-        let (treasury_rate_bps, node_rate_bps) = treasury_state.get_fee_split_bps();
+        // M-5: Use block_timestamp for deterministic calculation across all nodes
+        let (treasury_rate_bps, node_rate_bps) = treasury_state.get_fee_split_bps(block_timestamp);
         let treasury_amount = (pool_fee as u128 * treasury_rate_bps as u128 / 10000) as u64;
         // SECURITY: Explicit remainder handling - node pool gets everything not going to treasury
         // This ensures treasury_amount + node_reward_pool == pool_fee exactly
@@ -265,10 +290,11 @@ mod tests {
     #[test]
     fn test_pre_threshold_split() {
         let state = TreasuryState::new();
-        let (treasury, node) = state.get_fee_split();
+        let now = Utc::now();
+        let (treasury, node) = state.get_fee_split(now);
         assert_eq!(treasury, 0.5);
         assert_eq!(node, 0.5);
-        assert_eq!(state.decay_year(), 0);
+        assert_eq!(state.decay_year(now), 0);
     }
 
     #[test]
@@ -289,10 +315,12 @@ mod tests {
     #[test]
     fn test_fee_distribution_pre_threshold() {
         let state = TreasuryState::new();
+        let now = Utc::now();
         let dist = FeeDistribution::calculate(
             312_500_000, // 3.125 BTC subsidy
             10_000_000,  // 0.1 BTC fees
             &state,
+            now,
         );
 
         // TX fees go to block finder
@@ -317,10 +345,12 @@ mod tests {
     #[test]
     fn test_fee_distribution_no_tx_fees() {
         let state = TreasuryState::new();
+        let now = Utc::now();
         let dist = FeeDistribution::calculate(
             312_500_000, // 3.125 BTC subsidy
             0,           // No TX fees
             &state,
+            now,
         );
 
         assert_eq!(dist.tx_fees_to_block_finder, 0);
@@ -344,14 +374,15 @@ mod tests {
     #[test]
     fn test_year_5_full_decay() {
         // Simulate year 5+ after threshold
-        let threshold_time = Utc::now() - chrono::Duration::days(365 * 6); // 6 years ago
+        let now = Utc::now();
+        let threshold_time = now - chrono::Duration::days(365 * 6); // 6 years ago
         let state = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
 
-        let (treasury, node) = state.get_fee_split();
+        let (treasury, node) = state.get_fee_split(now);
         assert_eq!(treasury, 0.0);
         assert_eq!(node, 1.0);
 
-        let dist = FeeDistribution::calculate(312_500_000, 10_000_000, &state);
+        let dist = FeeDistribution::calculate(312_500_000, 10_000_000, &state, now);
 
         // Treasury gets nothing
         assert_eq!(dist.treasury_amount, 0);
@@ -363,14 +394,15 @@ mod tests {
     #[test]
     fn test_year_3_decay() {
         // Simulate year 3 after threshold (2-3 years)
-        let threshold_time = Utc::now() - chrono::Duration::days(365 * 2 + 100); // ~2.3 years ago
+        let now = Utc::now();
+        let threshold_time = now - chrono::Duration::days(365 * 2 + 100); // ~2.3 years ago
         let state = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
 
-        let (treasury, node) = state.get_fee_split();
+        let (treasury, node) = state.get_fee_split(now);
         assert_eq!(treasury, 0.2);
         assert_eq!(node, 0.8);
 
-        let dist = FeeDistribution::calculate(312_500_000, 10_000_000, &state);
+        let dist = FeeDistribution::calculate(312_500_000, 10_000_000, &state, now);
 
         // Pool fee is 3,125,000
         // Treasury gets 0.2 * 3,125,000 = 625,000
@@ -394,6 +426,7 @@ mod tests {
     fn test_integer_arithmetic_no_rounding_error() {
         // SECURITY TEST: Verify integer arithmetic produces exact results
         let state = TreasuryState::new();
+        let now = Utc::now();
 
         // Test with various subsidy values to ensure no rounding errors
         let test_subsidies = [
@@ -405,7 +438,7 @@ mod tests {
         ];
 
         for subsidy in test_subsidies {
-            let dist = FeeDistribution::calculate(subsidy, 0, &state);
+            let dist = FeeDistribution::calculate(subsidy, 0, &state, now);
 
             // Pool fee should be exactly 1% of subsidy
             let expected_pool_fee = subsidy / 100;
@@ -475,17 +508,18 @@ mod tests {
     #[test]
     fn test_get_fee_split_bps() {
         let state = TreasuryState::new();
+        let now = Utc::now();
 
         // Pre-threshold should return 50/50
-        let (treasury_bps, node_bps) = state.get_fee_split_bps();
+        let (treasury_bps, node_bps) = state.get_fee_split_bps(now);
         assert_eq!(treasury_bps, 5000);
         assert_eq!(node_bps, 5000);
 
         // Test year 5+ (full decay to nodes)
-        let threshold_time = Utc::now() - chrono::Duration::days(365 * 6);
+        let threshold_time = now - chrono::Duration::days(365 * 6);
         let decayed_state =
             TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
-        let (treasury_bps, node_bps) = decayed_state.get_fee_split_bps();
+        let (treasury_bps, node_bps) = decayed_state.get_fee_split_bps(now);
         assert_eq!(treasury_bps, 0);
         assert_eq!(node_bps, 10000);
     }
@@ -494,6 +528,7 @@ mod tests {
     fn test_treasury_rounding_exact_split() {
         // SECURITY TEST: Verify treasury + node pool == pool fee (no satoshis lost)
         let state = TreasuryState::new();
+        let now = Utc::now();
 
         // Test with various subsidy values including ones that could cause rounding issues
         let test_subsidies = [
@@ -506,7 +541,7 @@ mod tests {
         ];
 
         for subsidy in test_subsidies {
-            let dist = FeeDistribution::calculate(subsidy, 0, &state);
+            let dist = FeeDistribution::calculate(subsidy, 0, &state, now);
 
             // CRITICAL: Treasury + Node pool MUST equal pool fee
             assert_eq!(
@@ -536,32 +571,83 @@ mod tests {
     fn test_treasury_rounding_at_decay_years() {
         // Test rounding at each decay year to ensure exact splits
         let subsidy = 312_500_001u64; // Odd number to stress test rounding
+        let now = Utc::now();
 
         // Pre-threshold
         let state0 = TreasuryState::new();
-        let dist0 = FeeDistribution::calculate(subsidy, 0, &state0);
+        let dist0 = FeeDistribution::calculate(subsidy, 0, &state0, now);
         assert_eq!(
             dist0.treasury_amount + dist0.node_reward_pool,
             dist0.pool_fee
         );
 
         // Year 3 (20% treasury, 80% nodes)
-        let threshold_time = Utc::now() - chrono::Duration::days(365 * 2 + 100);
+        let threshold_time = now - chrono::Duration::days(365 * 2 + 100);
         let state3 = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
-        let dist3 = FeeDistribution::calculate(subsidy, 0, &state3);
+        let dist3 = FeeDistribution::calculate(subsidy, 0, &state3, now);
         assert_eq!(
             dist3.treasury_amount + dist3.node_reward_pool,
             dist3.pool_fee
         );
 
         // Year 5+ (0% treasury, 100% nodes)
-        let threshold_time = Utc::now() - chrono::Duration::days(365 * 6);
+        let threshold_time = now - chrono::Duration::days(365 * 6);
         let state5 = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
-        let dist5 = FeeDistribution::calculate(subsidy, 0, &state5);
+        let dist5 = FeeDistribution::calculate(subsidy, 0, &state5, now);
         assert_eq!(
             dist5.treasury_amount + dist5.node_reward_pool,
             dist5.pool_fee
         );
         assert_eq!(dist5.treasury_amount, 0); // Full decay
+    }
+
+    #[test]
+    fn test_m5_deterministic_decay_calculation() {
+        // M-5 SECURITY TEST: Verify that decay calculation is deterministic
+        // when using a fixed reference timestamp.
+        let threshold_time = Utc::now() - chrono::Duration::days(365 * 2 + 100);
+        let state = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
+
+        // Use a fixed reference timestamp (simulating a block timestamp)
+        let block_timestamp = Utc::now();
+
+        // Calculate 1000 times - should always be the same
+        let first_years = state.years_since_threshold(block_timestamp);
+        let first_split = state.get_fee_split_bps(block_timestamp);
+
+        for _ in 0..1000 {
+            assert_eq!(
+                state.years_since_threshold(block_timestamp),
+                first_years,
+                "years_since_threshold should be deterministic"
+            );
+            assert_eq!(
+                state.get_fee_split_bps(block_timestamp),
+                first_split,
+                "get_fee_split_bps should be deterministic"
+            );
+        }
+    }
+
+    #[test]
+    fn test_m5_different_timestamps_different_results() {
+        // M-5: Verify that different block timestamps can produce different results
+        // when they cross year boundaries
+        let threshold_time = Utc::now() - chrono::Duration::days(365 * 2); // Exactly 2 years ago
+        let state = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
+
+        // Just before 2 years: should be year 2 (index 2)
+        let before_2_years = threshold_time + chrono::Duration::days(364 * 2);
+        let years_before = state.years_since_threshold(before_2_years);
+
+        // Just after 2 years: should be year 3 (index 3)
+        let after_2_years = threshold_time + chrono::Duration::days(365 * 2 + 1);
+        let years_after = state.years_since_threshold(after_2_years);
+
+        assert!(
+            years_after > years_before,
+            "Crossing year boundary should change the year: {} vs {}",
+            years_before, years_after
+        );
     }
 }

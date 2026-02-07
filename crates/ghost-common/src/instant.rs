@@ -532,6 +532,20 @@ impl FundReservation {
     }
 }
 
+/// L-11 FIX: Result of a reservation attempt, including any expired reservations
+///
+/// This allows callers to be notified when reservations expire during cleanup,
+/// enabling merchants to log/alert about payments that were initiated but never settled.
+#[derive(Debug, Clone)]
+pub struct ReservationResult {
+    /// The newly created reservation (if successful)
+    pub reservation: FundReservation,
+    /// L-11 FIX: Reservations that expired and were cleaned up during this call.
+    /// Each represents a payment that was initiated but never settled within
+    /// the RESERVATION_EXPIRY_SECS window. Merchants should log/alert on these.
+    pub expired_reservations: Vec<FundReservation>,
+}
+
 /// Reservation tracker for a lock
 ///
 /// CRIT-1 FIX: Thread-safe tracker that prevents double-spending by atomically
@@ -562,16 +576,28 @@ impl ReservationTracker {
 
     /// Attempt to reserve funds for an instant payment
     ///
-    /// Returns Ok(reservation) if funds were successfully reserved,
-    /// Err if insufficient funds available after accounting for existing reservations.
+    /// Returns Ok(ReservationResult) if funds were successfully reserved.
+    /// The result includes the new reservation AND any expired reservations that were
+    /// cleaned up during this call (L-11 FIX: enables merchant notification).
+    ///
+    /// Returns Err if insufficient funds available after accounting for existing reservations.
     pub fn try_reserve(
         &self,
         payment_id: [u8; 32],
         amount_sats: u64,
         available_balance: u64,
         current_time_millis: u64,
-    ) -> Result<FundReservation, InstantPaymentError> {
+    ) -> Result<ReservationResult, InstantPaymentError> {
         let mut reservations = self.reservations.write();
+
+        // L-11 FIX: Collect expired reservations before removing them
+        // This allows callers to log/alert about payments that were initiated
+        // but never settled within the reservation window.
+        let expired_reservations: Vec<FundReservation> = reservations
+            .values()
+            .filter(|r| r.is_expired(current_time_millis))
+            .cloned()
+            .collect();
 
         // Clean up expired reservations
         reservations.retain(|_, r| !r.is_expired(current_time_millis));
@@ -608,7 +634,11 @@ impl ReservationTracker {
 
         reservations.insert(payment_id, reservation.clone());
 
-        Ok(reservation)
+        // L-11 FIX: Return both the new reservation and any expired ones
+        Ok(ReservationResult {
+            reservation,
+            expired_reservations,
+        })
     }
 
     /// Release a reservation (e.g., payment settled or cancelled)
@@ -794,16 +824,29 @@ impl InstantReceipt {
     /// M-8 FIX: Legacy receipts (with zero state hash) are now rejected after
     /// LEGACY_RECEIPT_CUTOFF_HEIGHT to prevent unbounded backwards compatibility attacks.
     ///
+    /// L-20 FIX: On mainnet, GHOST_LEGACY_RECEIPT_CUTOFF override is blocked.
+    ///
     /// Returns true if the current lock state matches the state at receipt creation.
     pub fn verify_lock_state(&self, current_snapshot: &LockSnapshot, current_height: u64) -> bool {
         // If lock_state_hash is all zeros, this is a legacy receipt without state binding
         if self.lock_state_hash == [0u8; 32] {
+            // L-20 FIX: Check if we're on mainnet - env override is blocked on mainnet
+            let is_mainnet = std::env::var("GHOST_NETWORK")
+                .map(|v| v.to_lowercase() == "mainnet" || v.to_lowercase() == "bitcoin")
+                .unwrap_or(false);
+
             // M-8 FIX: Check if we're past the legacy receipt cutoff
-            // Allow env var override for testing (must be explicitly set)
-            let cutoff = std::env::var("GHOST_LEGACY_RECEIPT_CUTOFF")
-                .ok()
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(LEGACY_RECEIPT_CUTOFF_HEIGHT);
+            // L-20 FIX: Only allow env var override on non-mainnet networks
+            let cutoff = if is_mainnet {
+                // On mainnet, ALWAYS use the hardcoded cutoff - no override allowed
+                LEGACY_RECEIPT_CUTOFF_HEIGHT
+            } else {
+                // Non-mainnet: allow env var override for testing
+                std::env::var("GHOST_LEGACY_RECEIPT_CUTOFF")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(LEGACY_RECEIPT_CUTOFF_HEIGHT)
+            };
 
             if current_height >= cutoff {
                 // Legacy receipt rejected - past cutoff
@@ -820,6 +863,8 @@ impl InstantReceipt {
     /// H-AUTH-3/M-8: Verify lock state with explicit cutoff check
     ///
     /// Returns a detailed result explaining why verification failed.
+    ///
+    /// L-20 FIX: On mainnet, GHOST_LEGACY_RECEIPT_CUTOFF override is blocked.
     pub fn verify_lock_state_detailed(
         &self,
         current_snapshot: &LockSnapshot,
@@ -827,10 +872,22 @@ impl InstantReceipt {
     ) -> LockStateVerificationResult {
         // Check for legacy receipt
         if self.lock_state_hash == [0u8; 32] {
-            let cutoff = std::env::var("GHOST_LEGACY_RECEIPT_CUTOFF")
-                .ok()
-                .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(LEGACY_RECEIPT_CUTOFF_HEIGHT);
+            // L-20 FIX: Check if we're on mainnet - env override is blocked on mainnet
+            let is_mainnet = std::env::var("GHOST_NETWORK")
+                .map(|v| v.to_lowercase() == "mainnet" || v.to_lowercase() == "bitcoin")
+                .unwrap_or(false);
+
+            // L-20 FIX: Only allow env var override on non-mainnet networks
+            let cutoff = if is_mainnet {
+                // On mainnet, ALWAYS use the hardcoded cutoff - no override allowed
+                LEGACY_RECEIPT_CUTOFF_HEIGHT
+            } else {
+                // Non-mainnet: allow env var override for testing
+                std::env::var("GHOST_LEGACY_RECEIPT_CUTOFF")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(LEGACY_RECEIPT_CUTOFF_HEIGHT)
+            };
 
             if current_height >= cutoff {
                 return LockStateVerificationResult::LegacyReceiptExpired {
@@ -1304,8 +1361,10 @@ mod tests {
         let result = tracker.try_reserve(payment_id, 50_000, 500_000, current_time);
         assert!(result.is_ok());
 
-        let reservation = result.unwrap();
-        assert_eq!(reservation.amount_sats, 50_000);
+        // L-11: Result now contains both reservation and expired_reservations
+        let res_result = result.unwrap();
+        assert_eq!(res_result.reservation.amount_sats, 50_000);
+        assert!(res_result.expired_reservations.is_empty()); // No expired reservations on first call
         assert_eq!(tracker.total_reserved(current_time), 50_000);
         assert_eq!(tracker.active_count(current_time), 1);
 
@@ -1375,6 +1434,56 @@ mod tests {
         let after_expiry = start_time + (RESERVATION_EXPIRY_SECS as u64 * 1000) + 1;
         assert_eq!(tracker.active_count(after_expiry), 0);
         assert_eq!(tracker.total_reserved(after_expiry), 0);
+    }
+
+    #[test]
+    fn test_l11_expired_reservations_returned() {
+        // L-11 FIX TEST: Verify expired reservations are returned when cleaned up
+        let tracker = ReservationTracker::new();
+        let start_time = 1700000000000u64;
+
+        // Create first reservation
+        let payment1 = [1u8; 32];
+        let result1 = tracker.try_reserve(payment1, 50_000, 500_000, start_time);
+        assert!(result1.is_ok());
+        let res1 = result1.unwrap();
+        assert!(res1.expired_reservations.is_empty()); // No expired yet
+
+        // Create second reservation at same time
+        let payment2 = [2u8; 32];
+        let result2 = tracker.try_reserve(payment2, 30_000, 500_000, start_time);
+        assert!(result2.is_ok());
+        let res2 = result2.unwrap();
+        assert!(res2.expired_reservations.is_empty()); // Still no expired
+
+        // Wait until after expiry (30 seconds + 1ms)
+        let after_expiry = start_time + (RESERVATION_EXPIRY_SECS as u64 * 1000) + 1;
+
+        // Create third reservation - this should clean up the first two and return them
+        let payment3 = [3u8; 32];
+        let result3 = tracker.try_reserve(payment3, 10_000, 500_000, after_expiry);
+        assert!(result3.is_ok());
+        let res3 = result3.unwrap();
+
+        // L-11 FIX: The two expired reservations should be returned
+        assert_eq!(res3.expired_reservations.len(), 2);
+
+        // Verify the expired reservations contain the correct payment IDs and amounts
+        let expired_ids: Vec<[u8; 32]> = res3.expired_reservations.iter()
+            .map(|r| r.payment_id)
+            .collect();
+        assert!(expired_ids.contains(&payment1));
+        assert!(expired_ids.contains(&payment2));
+
+        let expired_amounts: Vec<u64> = res3.expired_reservations.iter()
+            .map(|r| r.amount_sats)
+            .collect();
+        assert!(expired_amounts.contains(&50_000));
+        assert!(expired_amounts.contains(&30_000));
+
+        // The tracker should now only have the new reservation
+        assert_eq!(tracker.active_count(after_expiry), 1);
+        assert_eq!(tracker.total_reserved(after_expiry), 10_000);
     }
 
     #[test]

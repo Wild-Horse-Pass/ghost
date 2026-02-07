@@ -48,20 +48,126 @@ use tower_governor::{
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
+/// L-21 FIX: Validate that an IP address is acceptable as a trusted proxy.
+///
+/// Returns true if the IP is valid for use as a trusted proxy:
+/// - Localhost addresses (127.0.0.1, ::1) are always allowed
+/// - Private network addresses (10.x, 172.16-31.x, 192.168.x) are allowed
+/// - Link-local addresses are rejected (169.254.x.x, fe80::)
+/// - Multicast addresses are rejected
+/// - Unspecified addresses (0.0.0.0, ::) are rejected
+/// - Public IP addresses are allowed (for cloud proxy scenarios)
+///
+/// This prevents attackers from specifying reserved/special addresses.
+fn is_valid_trusted_proxy(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+
+    match ip {
+        IpAddr::V4(ipv4) => {
+            // Reject unspecified address (0.0.0.0)
+            if ipv4.is_unspecified() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting unspecified IPv4 address as trusted proxy");
+                return false;
+            }
+            // Reject link-local (169.254.x.x)
+            if ipv4.is_link_local() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting link-local IPv4 address as trusted proxy");
+                return false;
+            }
+            // Reject multicast (224.0.0.0 - 239.255.255.255)
+            if ipv4.is_multicast() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting multicast IPv4 address as trusted proxy");
+                return false;
+            }
+            // Reject broadcast (255.255.255.255)
+            if ipv4.is_broadcast() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting broadcast IPv4 address as trusted proxy");
+                return false;
+            }
+            // Reject documentation addresses (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24)
+            let octets = ipv4.octets();
+            if (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+                || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+                || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+            {
+                tracing::warn!(ip = %ip, "L-21: Rejecting documentation IPv4 address as trusted proxy");
+                return false;
+            }
+            true
+        }
+        IpAddr::V6(ipv6) => {
+            // Reject unspecified address (::)
+            if ipv6.is_unspecified() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting unspecified IPv6 address as trusted proxy");
+                return false;
+            }
+            // Reject multicast (ff00::/8)
+            if ipv6.is_multicast() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting multicast IPv6 address as trusted proxy");
+                return false;
+            }
+            // Note: is_unicast_link_local requires nightly or manual check
+            // Link-local: fe80::/10
+            let segments = ipv6.segments();
+            if (segments[0] & 0xffc0) == 0xfe80 {
+                tracing::warn!(ip = %ip, "L-21: Rejecting link-local IPv6 address as trusted proxy");
+                return false;
+            }
+            true
+        }
+    }
+}
+
 /// C-2: Trusted proxy configuration for secure IP extraction.
 ///
 /// Only requests from trusted proxy IPs will have X-Forwarded-For/X-Real-IP headers
 /// honored. This prevents IP spoofing attacks where attackers set fake headers.
 ///
 /// Load from GHOST_TRUSTED_PROXIES env var (comma-separated IPs) or use defaults.
+///
+/// L-21 FIX: Validates that configured proxy IPs are not reserved/special addresses.
 fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
     use std::net::IpAddr;
 
     if let Ok(proxies_str) = std::env::var("GHOST_TRUSTED_PROXIES") {
-        proxies_str
+        let proxies: Vec<IpAddr> = proxies_str
             .split(',')
-            .filter_map(|s| s.trim().parse::<IpAddr>().ok())
-            .collect()
+            .filter_map(|s| {
+                let trimmed = s.trim();
+                match trimmed.parse::<IpAddr>() {
+                    Ok(ip) => {
+                        // L-21 FIX: Validate the IP is acceptable
+                        if is_valid_trusted_proxy(&ip) {
+                            Some(ip)
+                        } else {
+                            None // Already logged in is_valid_trusted_proxy
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            ip = %trimmed,
+                            error = %e,
+                            "L-21: Failed to parse trusted proxy IP, skipping"
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        if proxies.is_empty() {
+            tracing::warn!(
+                "L-21: No valid trusted proxies configured, falling back to localhost only"
+            );
+            vec![
+                "127.0.0.1"
+                    .parse()
+                    .expect("L-1: Valid hardcoded IPv4 localhost"),
+                "::1".parse().expect("L-1: Valid hardcoded IPv6 localhost"),
+            ]
+        } else {
+            proxies
+        }
     } else {
         // Default: only trust localhost as proxy
         vec![
@@ -147,10 +253,16 @@ impl KeyExtractor for NodeIdKeyExtractor {
 
         if trust_proxy_headers {
             // Try X-Forwarded-For (standard for proxied requests)
+            // L-15: Use the LAST IP in the chain, not the first.
+            // X-Forwarded-For format: "client, proxy1, proxy2, ..."
+            // The first IP (client) can be spoofed by the client.
+            // Each proxy appends its peer's IP, so the last IP was added by our
+            // trusted proxy and represents the actual connecting peer.
             if let Some(xff) = req.headers().get("X-Forwarded-For") {
                 if let Ok(xff_str) = xff.to_str() {
                     let s: &str = xff_str;
-                    if let Some(ip_str) = s.split(',').next() {
+                    // L-15: Take the LAST IP (added by our trusted proxy), not the first (spoofable)
+                    if let Some(ip_str) = s.split(',').last() {
                         let ip_trimmed: &str = ip_str.trim();
                         if !ip_trimmed.is_empty() {
                             return Ok(NodeIdOrIpKey(format!("ip:{}", ip_trimmed)));
@@ -159,7 +271,8 @@ impl KeyExtractor for NodeIdKeyExtractor {
                 }
             }
 
-            // Try X-Real-IP (nginx convention)
+            // Try X-Real-IP (nginx convention) - this is typically set by the proxy
+            // to the actual client IP, so it's already trustworthy when from a trusted proxy
             if let Some(xri) = req.headers().get("X-Real-IP") {
                 if let Ok(ip_str) = xri.to_str() {
                     let s: &str = ip_str;
@@ -1400,13 +1513,19 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
     // - 50 requests per second burst capacity
     // - Refills at 10 requests per second
     // - Per NodeId (from X-Ghost-NodeId header) with IP fallback
+    // L-28: Use proper error handling instead of expect()
     let governor_conf = Arc::new(
         GovernorConfigBuilder::default()
             .per_second(10)
             .burst_size(50)
             .key_extractor(NodeIdKeyExtractor::new())
             .finish()
-            .expect("valid governor config"),
+            .ok_or_else(|| {
+                GhostError::Config(
+                    "L-28: Failed to initialize rate limiter: invalid configuration. \
+                     This is an internal configuration error.".to_string()
+                )
+            })?,
     );
 
     let governor_limiter = governor_conf.limiter().clone();

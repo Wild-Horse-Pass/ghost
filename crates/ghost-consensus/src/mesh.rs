@@ -771,8 +771,12 @@ impl SeenMessageCache {
 }
 
 impl MeshNetwork {
-    /// Create a new mesh network
-    pub fn new(identity: Arc<NodeIdentity>, config: MeshConfig) -> Self {
+    /// Create a new mesh network (fallible)
+    ///
+    /// M-2: When `noise_required=true` and Noise initialization fails, this
+    /// returns an error instead of silently falling back to plaintext mode.
+    /// This prevents running in an insecure configuration on mainnet.
+    pub fn try_new(identity: Arc<NodeIdentity>, config: MeshConfig) -> GhostResult<Self> {
         let our_node_id = identity.node_id();
         let peers = Arc::new(PeerManager::new(our_node_id, config.max_peers));
 
@@ -780,8 +784,8 @@ impl MeshNetwork {
         let (outbound_tx, outbound_rx) = mpsc::channel(1000);
         let (inbound_tx, inbound_rx) = mpsc::channel(1000);
 
-        // C-1/C-4: Initialize Noise connection pool if enabled
-        // C-4: Return error instead of panicking when noise is required but fails
+        // C-1/C-4/M-2: Initialize Noise connection pool if enabled
+        // M-2: When noise_required=true and initialization fails, return an error
         let noise_pool = if config.noise_enabled {
             match Self::init_noise_pool(&config) {
                 Ok(pool) => {
@@ -794,16 +798,15 @@ impl MeshNetwork {
                 Err(e) => {
                     error!(error = %e, "Failed to initialize Noise pool");
                     if config.noise_required {
-                        // C-4: Log critical error but don't panic - caller should handle
-                        error!(
-                            "C-4 CRITICAL: Noise is required but failed to initialize. \
-                             The node will operate without encrypted P2P. \
-                             Set noise_required=false to allow fallback, or fix Noise configuration."
-                        );
-                        // Instead of panicking, we return None and let the caller decide
-                        // The start() method will check and warn appropriately
+                        // M-2: Return error instead of continuing in plaintext mode
+                        return Err(GhostError::Config(format!(
+                            "M-2 SECURITY: Noise is required (noise_required=true) but failed to initialize: {}. \
+                             Cannot continue - would operate without encryption. \
+                             Fix Noise configuration or set noise_required=false to allow plaintext fallback.",
+                            e
+                        )));
                     }
-                    warn!("Falling back to plaintext P2P (Noise disabled)");
+                    warn!("Falling back to plaintext P2P (Noise disabled, noise_required=false)");
                     None
                 }
             }
@@ -811,7 +814,7 @@ impl MeshNetwork {
             None
         };
 
-        Self {
+        Ok(Self {
             identity,
             config: config.clone(),
             peers,
@@ -827,7 +830,17 @@ impl MeshNetwork {
             messages_received: AtomicU64::new(0),
             validation_stats: RwLock::new(ValidationStats::default()),
             noise_pool,
-        }
+        })
+    }
+
+    /// Create a new mesh network (infallible, panics on required Noise failure)
+    ///
+    /// For test compatibility. Production code should use `try_new()`.
+    ///
+    /// # Panics
+    /// Panics if `noise_required=true` and Noise initialization fails.
+    pub fn new(identity: Arc<NodeIdentity>, config: MeshConfig) -> Self {
+        Self::try_new(identity, config).expect("MeshNetwork initialization failed")
     }
 
     /// Initialize the Noise connection pool
@@ -2639,6 +2652,45 @@ mod tests {
             "Memory {} should be under max {}",
             mem,
             MAX_CACHE_MEMORY_BYTES
+        );
+    }
+
+    // ==========================================================================
+    // M-2: Noise required enforcement tests
+    // ==========================================================================
+
+    #[test]
+    fn test_m2_noise_not_required_allows_fallback() {
+        // M-2: When noise_required=false, Noise failure should allow fallback
+        let identity = Arc::new(NodeIdentity::generate());
+        let mut config = MeshConfig::default();
+        config.noise_enabled = true;
+        config.noise_required = false;
+        // Use a path that will cause Noise init to fail (non-existent directory)
+        config.noise_keypair_path = Some(std::path::PathBuf::from(
+            "/nonexistent/path/that/will/fail/noise.key",
+        ));
+
+        // Should succeed (fallback to plaintext allowed)
+        let result = MeshNetwork::try_new(identity, config);
+        assert!(
+            result.is_ok(),
+            "M-2: When noise_required=false, should allow plaintext fallback"
+        );
+    }
+
+    #[test]
+    fn test_m2_noise_disabled_succeeds() {
+        // When noise is completely disabled, should always succeed
+        let identity = Arc::new(NodeIdentity::generate());
+        let mut config = MeshConfig::default();
+        config.noise_enabled = false;
+        config.noise_required = false;
+
+        let result = MeshNetwork::try_new(identity, config);
+        assert!(
+            result.is_ok(),
+            "M-2: Disabled Noise should always succeed"
         );
     }
 }

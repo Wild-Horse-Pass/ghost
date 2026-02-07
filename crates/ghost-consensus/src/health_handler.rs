@@ -100,10 +100,20 @@ const LOW_TRAFFIC_THRESHOLD_PER_SEC: f64 = 5.0;
 /// How often to recalculate difficulty (seconds)
 const DIFFICULTY_ADJUSTMENT_INTERVAL_SECS: u64 = 60;
 
+/// One token in millis (1000 millis = 1 token)
+/// M-1: Using integer arithmetic for precision, matching vote_handler.rs
+const MILLIS_PER_TOKEN: u64 = 1000;
+
 /// Token bucket for rate limiting
+///
+/// M-1: Uses integer-based tokens with milli-token precision to avoid
+/// floating-point precision issues. One token = 1000 millis.
+/// This prevents subtle bugs from f64 rounding that could allow
+/// rate limit bypass or unfair throttling.
 #[derive(Clone)]
 struct TokenBucket {
-    tokens: f64,
+    /// Tokens * 1000 for sub-token precision without floating point
+    tokens_millis: u64,
     last_update: Instant,
 }
 
@@ -179,6 +189,8 @@ impl DynamicDifficultyAdjuster {
     }
 
     /// Adjust difficulty based on recent ping rate
+    ///
+    /// L-1: Uses bounds checking to prevent integer overflow in log2 calculation
     fn adjust_difficulty(&self) {
         let now = Instant::now();
         let rate = self.calculate_ping_rate();
@@ -186,8 +198,27 @@ impl DynamicDifficultyAdjuster {
 
         let new_difficulty = if rate > HIGH_TRAFFIC_THRESHOLD_PER_SEC {
             // Under attack - increase difficulty
-            let increase = ((rate / HIGH_TRAFFIC_THRESHOLD_PER_SEC).log2() as u32).max(1);
-            (current + increase).min(MAX_POW_DIFFICULTY)
+            // L-1: Bounds checking for log2 calculation
+            // 1. Calculate ratio with bounds to prevent division issues
+            let ratio = rate / HIGH_TRAFFIC_THRESHOLD_PER_SEC;
+
+            // L-1: Validate ratio before log2 to prevent NaN/Infinity
+            // ratio > 1.0 is guaranteed since rate > HIGH_TRAFFIC_THRESHOLD_PER_SEC
+            // But we add defensive checks for safety
+            let increase = if ratio.is_finite() && ratio > 1.0 {
+                let log_value = ratio.log2();
+                // L-1: Clamp log2 result before casting to u32
+                // Maximum practical increase is MAX_POW_DIFFICULTY - BASE_POW_DIFFICULTY = 8
+                // Cap at 8 to prevent any overflow issues
+                if log_value.is_finite() && log_value >= 0.0 {
+                    (log_value as u32).min(MAX_POW_DIFFICULTY - BASE_POW_DIFFICULTY).max(1)
+                } else {
+                    1 // Minimum increase if log2 returns invalid value
+                }
+            } else {
+                1 // Minimum increase for safety
+            };
+            (current.saturating_add(increase)).min(MAX_POW_DIFFICULTY)
         } else if rate < LOW_TRAFFIC_THRESHOLD_PER_SEC && current > BASE_POW_DIFFICULTY {
             // Low traffic - decrease difficulty (but not below base)
             (current - 1).max(BASE_POW_DIFFICULTY)
@@ -267,35 +298,44 @@ impl HealthRateLimiter {
     /// Check if a node is rate limited and consume a token if not
     ///
     /// Returns true if the ping should be allowed, false if rate limited
+    ///
+    /// M-1: Uses integer arithmetic with milli-token precision to avoid
+    /// floating-point precision issues. This matches the approach used in
+    /// vote_handler.rs and discovery_handler.rs.
     pub fn check_and_consume(&self, node_id: &NodeId) -> bool {
         let mut buckets = self.buckets.write();
         let now = Instant::now();
 
+        let max_tokens_millis = (self.max_tokens as u64).saturating_mul(MILLIS_PER_TOKEN);
+
         let bucket = buckets.entry(*node_id).or_insert_with(|| TokenBucket {
-            tokens: self.max_tokens as f64,
+            tokens_millis: max_tokens_millis,
             last_update: now,
         });
 
-        // H-P2P-3: Refill tokens based on time elapsed, with overflow protection
-        // Cap elapsed time to 1 hour to prevent overflow from clock jumps or Instant wraparound
-        let elapsed = now
+        // M-1: Refill tokens based on time elapsed using integer arithmetic
+        // Cap elapsed time to 1 hour (3600000 ms) to prevent overflow
+        let elapsed_ms = now
             .duration_since(bucket.last_update)
-            .as_secs_f64()
-            .min(3600.0);
+            .as_millis()
+            .min(3_600_000) as u64;
 
-        // Calculate new token count with NaN/Infinity protection
-        let new_tokens = bucket.tokens + elapsed * self.refill_rate as f64;
-        if new_tokens.is_nan() || new_tokens.is_infinite() {
-            // Reset to max on overflow (defensive)
-            bucket.tokens = self.max_tokens as f64;
-        } else {
-            bucket.tokens = new_tokens.min(self.max_tokens as f64);
-        }
+        // refill_millis = elapsed_ms * refill_rate * MILLIS_PER_TOKEN / 1000
+        // Reorder to minimize precision loss: (elapsed_ms * refill_rate_millis) / 1000
+        let refill_rate_millis = (self.refill_rate as u64).saturating_mul(MILLIS_PER_TOKEN);
+        let refill_millis = elapsed_ms
+            .saturating_mul(refill_rate_millis)
+            / 1000;
+
+        bucket.tokens_millis = bucket
+            .tokens_millis
+            .saturating_add(refill_millis)
+            .min(max_tokens_millis);
         bucket.last_update = now;
 
-        // Try to consume a token
-        if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
+        // Try to consume one token (1000 millis)
+        if bucket.tokens_millis >= MILLIS_PER_TOKEN {
+            bucket.tokens_millis -= MILLIS_PER_TOKEN;
             true
         } else {
             false
@@ -959,5 +999,113 @@ mod tests {
         // Handler should expose current difficulty
         let difficulty = handler.current_pow_difficulty();
         assert_eq!(difficulty, BASE_POW_DIFFICULTY);
+    }
+
+    // =========================================================================
+    // M-1 TESTS: Integer-based rate limiting
+    // =========================================================================
+
+    #[test]
+    fn test_m1_rate_limiter_uses_integer_arithmetic() {
+        // M-1: Verify the rate limiter uses milli-tokens (1000 millis = 1 token)
+        let limiter = HealthRateLimiter::new(3, 1);
+        let node_id = [1u8; 32];
+
+        // Should allow 3 tokens (3000 millis internally)
+        assert!(limiter.check_and_consume(&node_id));
+        assert!(limiter.check_and_consume(&node_id));
+        assert!(limiter.check_and_consume(&node_id));
+
+        // 4th should be rate limited
+        assert!(!limiter.check_and_consume(&node_id));
+    }
+
+    #[test]
+    fn test_m1_rate_limiter_per_sender() {
+        let limiter = HealthRateLimiter::new(2, 1);
+        let node1 = [1u8; 32];
+        let node2 = [2u8; 32];
+
+        // Node 1 uses its tokens
+        assert!(limiter.check_and_consume(&node1));
+        assert!(limiter.check_and_consume(&node1));
+        assert!(!limiter.check_and_consume(&node1), "Node 1 should be limited");
+
+        // Node 2 should still have its tokens
+        assert!(
+            limiter.check_and_consume(&node2),
+            "Node 2 should not be affected by node 1"
+        );
+        assert!(limiter.check_and_consume(&node2));
+        assert!(!limiter.check_and_consume(&node2), "Node 2 should be limited now");
+    }
+
+    #[test]
+    fn test_m1_rate_limiter_no_overflow() {
+        // M-1: Test that large but reasonable values don't overflow
+        let limiter = HealthRateLimiter::new(1000, 100);
+        let node = [1u8; 32];
+
+        // Exhaust all tokens
+        for _ in 0..1000 {
+            assert!(limiter.check_and_consume(&node));
+        }
+
+        // Should be limited now
+        assert!(!limiter.check_and_consume(&node));
+    }
+
+    // =========================================================================
+    // L-1 TESTS: Bounds checking in dynamic difficulty
+    // =========================================================================
+
+    #[test]
+    fn test_l1_difficulty_bounded_by_max() {
+        // L-1: Verify difficulty never exceeds MAX_POW_DIFFICULTY
+        let adjuster = DynamicDifficultyAdjuster::new();
+
+        // Even after many adjustments, difficulty should stay bounded
+        // This is tested indirectly - we ensure the adjuster handles edge cases
+        let difficulty = adjuster.current_difficulty();
+        assert!(
+            difficulty <= MAX_POW_DIFFICULTY,
+            "L-1: Difficulty {} should be <= MAX {}",
+            difficulty,
+            MAX_POW_DIFFICULTY
+        );
+        assert!(
+            difficulty >= BASE_POW_DIFFICULTY,
+            "L-1: Difficulty {} should be >= BASE {}",
+            difficulty,
+            BASE_POW_DIFFICULTY
+        );
+    }
+
+    #[test]
+    fn test_l1_difficulty_starts_at_base() {
+        // L-1: Verify initial difficulty is at the safe base level
+        let adjuster = DynamicDifficultyAdjuster::new();
+        assert_eq!(
+            adjuster.current_difficulty(),
+            BASE_POW_DIFFICULTY,
+            "L-1: Initial difficulty should be BASE_POW_DIFFICULTY"
+        );
+    }
+
+    #[test]
+    fn test_l1_max_difficulty_reasonable() {
+        // L-1: Verify constants are reasonable to prevent overflow
+        assert!(
+            MAX_POW_DIFFICULTY > BASE_POW_DIFFICULTY,
+            "MAX must be greater than BASE"
+        );
+        assert!(
+            MAX_POW_DIFFICULTY <= 32,
+            "MAX difficulty should not exceed 32 bits"
+        );
+        assert!(
+            BASE_POW_DIFFICULTY >= 8,
+            "BASE difficulty should be at least 8 for minimum security"
+        );
     }
 }

@@ -157,10 +157,9 @@ impl NoiseKeypair {
 
         let public_key: [u8; 32] = *public.as_bytes();
 
-        debug!(
-            public_key_short = %hex::encode(&public_key[..8]),
-            "CRIT-9: Derived X25519 public key from private key"
-        );
+        // M-6 FIX: Do not log any key material, even partial public key fragments.
+        // The existence of the derivation is sufficient for debugging purposes.
+        debug!("Derived X25519 public key from private key bytes");
 
         Ok(Self {
             private_key,
@@ -196,8 +195,11 @@ impl NoiseKeypair {
         hex::encode(self.public_key)
     }
 
-    /// Get private key bytes (be careful with this!)
-    pub fn private_key(&self) -> &[u8; 32] {
+    /// Get private key bytes for internal crate use only.
+    ///
+    /// M-7 SECURITY: This method is restricted to pub(crate) to prevent external
+    /// access to secret key material. Use only for keypair persistence operations.
+    pub(crate) fn private_key(&self) -> &[u8; 32] {
         &self.private_key
     }
 
@@ -502,8 +504,9 @@ impl NoiseManager {
                     warn!("Failed to load Noise keypair from {}: {}", path, e);
                     // Generate new keypair
                     let kp = NoiseKeypair::generate();
-                    // Try to save it
-                    if let Err(e) = std::fs::write(path, kp.public_key_hex()) {
+                    // M-8 FIX: Save the PRIVATE key hex, not public key hex.
+                    // from_hex() expects a private key to derive the keypair from.
+                    if let Err(e) = std::fs::write(path, hex::encode(kp.private_key())) {
                         warn!("Failed to save Noise keypair: {}", e);
                     }
                     kp

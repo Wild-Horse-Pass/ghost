@@ -435,6 +435,9 @@ impl Database {
     }
 
     /// Get database statistics
+    ///
+    /// M-12 FIX: Uses safe i64 to u64 conversion with error handling for negative values.
+    /// SQLite PRAGMA values should never be negative, but we validate to catch corruption.
     pub fn stats(&self) -> GhostResult<DatabaseStats> {
         self.with_connection(|conn| {
             let page_count: i64 = conn
@@ -448,6 +451,27 @@ impl Database {
             let freelist_count: i64 = conn
                 .query_row("PRAGMA freelist_count;", [], |row| row.get(0))
                 .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            // M-12 FIX: Safely convert i64 to u64, rejecting negative values
+            // Database page counts and sizes should never be negative
+            if page_count < 0 {
+                return Err(GhostError::Database(format!(
+                    "Invalid negative page_count: {}",
+                    page_count
+                )));
+            }
+            if page_size < 0 {
+                return Err(GhostError::Database(format!(
+                    "Invalid negative page_size: {}",
+                    page_size
+                )));
+            }
+            if freelist_count < 0 {
+                return Err(GhostError::Database(format!(
+                    "Invalid negative freelist_count: {}",
+                    freelist_count
+                )));
+            }
 
             Ok(DatabaseStats {
                 size_bytes: page_count * page_size,

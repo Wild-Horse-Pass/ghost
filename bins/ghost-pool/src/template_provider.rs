@@ -105,14 +105,21 @@ pub struct TdpConfig {
 
 impl TdpConfig {
     /// Create a new TDP config with the given secret key
-    pub fn new(secret_key: [u8; 32]) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the secret key is invalid (all zeros or outside valid range)
+    ///
+    /// # L-26 Security Fix
+    /// Uses proper error handling instead of expect() to prevent panics on invalid keys
+    pub fn new(secret_key: [u8; 32]) -> Result<Self, secp256k1::Error> {
         // Derive public key from secret key
+        // L-26: Return error instead of panicking on invalid key
         let secp = secp256k1::Secp256k1::new();
-        let secret = secp256k1::SecretKey::from_slice(&secret_key).expect("Invalid secret key");
+        let secret = secp256k1::SecretKey::from_slice(&secret_key)?;
         let (x_only, _parity) = secret.public_key(&secp).x_only_public_key();
         let public_key = x_only.serialize();
 
-        Self {
+        Ok(Self {
             listen_addr: "0.0.0.0".into(),
             port: 8442,
             max_connections: 10,
@@ -120,7 +127,7 @@ impl TdpConfig {
             cert_validity_secs: 86400, // 24 hours
             authority_secret_key: secret_key,
             authority_public_key: public_key,
-        }
+        })
     }
 
     /// Get the authority public key in base58 format (for SRI pool config)
@@ -139,7 +146,11 @@ impl Default for TdpConfig {
         // Generate a random key for default (SHOULD be replaced with persistent key)
         let mut secret_key = [0u8; 32];
         getrandom::getrandom(&mut secret_key).expect("Failed to generate random key");
-        Self::new(secret_key)
+        // L-26: Using expect here in Default impl is acceptable since:
+        // 1. getrandom succeeded, so we have valid random bytes
+        // 2. The only way new() fails is with an invalid secret key
+        // 3. Valid random bytes from getrandom will always produce a valid secp256k1 key
+        Self::new(secret_key).expect("Failed to create TdpConfig from random key")
     }
 }
 
@@ -1258,10 +1269,18 @@ mod tests {
     #[test]
     fn test_tdp_config_with_key() {
         let secret_key = [0x42u8; 32];
-        let config = TdpConfig::new(secret_key);
+        let config = TdpConfig::new(secret_key).expect("Valid test key");
         // Should generate consistent public key
         let pubkey = config.authority_pubkey_base58();
         assert!(pubkey.starts_with("9")); // Base58 encoding starts with specific chars
+    }
+
+    #[test]
+    fn test_tdp_config_rejects_zero_key() {
+        // L-26: Zero key should be rejected
+        let zero_key = [0u8; 32];
+        let result = TdpConfig::new(zero_key);
+        assert!(result.is_err(), "Zero key should be rejected");
     }
 
     #[test]

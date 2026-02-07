@@ -153,7 +153,24 @@ impl BlockVerifier {
             }
             #[cfg(not(test))]
             {
-                // In non-test builds, require explicit opt-in via environment variable.
+                // L-18 FIX: Check if we're on mainnet - simulated proofs NEVER allowed on mainnet
+                // GHOST_NETWORK env var is set by ghost-pool and other binaries
+                let is_mainnet = std::env::var("GHOST_NETWORK")
+                    .map(|v| v.to_lowercase() == "mainnet" || v.to_lowercase() == "bitcoin")
+                    .unwrap_or(false);
+
+                if is_mainnet {
+                    // L-18 SECURITY: On mainnet, simulated proofs are ALWAYS rejected
+                    // No environment variable can bypass this check
+                    error!(
+                        "L-18 SECURITY: Simulated proof REJECTED on mainnet. \
+                         Simulated proofs are NEVER allowed on mainnet, regardless of GHOST_ALLOW_SIMULATED_PROOFS setting. \
+                         A valid Groth16 proof with proper trusted setup is required."
+                    );
+                    return Err(ZkError::SimulatedProofRejected);
+                }
+
+                // Non-mainnet: require explicit opt-in via environment variable.
                 // This prevents accidental use in production while allowing development/staging.
                 // The env var must be set to "1" explicitly - any other value is rejected.
                 let allow_simulated = std::env::var("GHOST_ALLOW_SIMULATED_PROOFS")

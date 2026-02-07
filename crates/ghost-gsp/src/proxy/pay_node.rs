@@ -133,16 +133,28 @@ pub struct PayNodeProxy {
 
 impl PayNodeProxy {
     /// Create a new pay node proxy
-    pub fn new(base_url: &str) -> Self {
+    ///
+    /// # Errors
+    /// Returns an error if the HTTP client cannot be created (e.g., TLS initialization failure)
+    ///
+    /// # L-27 Security Fix
+    /// Uses proper error handling instead of expect() to prevent panics
+    pub fn new(base_url: &str) -> GspResult<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .expect("Failed to create HTTP client");
+            .map_err(|e| {
+                GspError::Config(format!(
+                    "L-27: Failed to create HTTP client for pay node proxy: {}. \
+                     This may indicate TLS library initialization failure.",
+                    e
+                ))
+            })?;
 
-        Self {
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
-        }
+        })
     }
 
     /// Create with custom HTTP client
@@ -1061,11 +1073,11 @@ mod tests {
 
     #[test]
     fn test_proxy_creation() {
-        let proxy = PayNodeProxy::new("http://localhost:8800");
+        let proxy = PayNodeProxy::new("http://localhost:8800").expect("valid proxy creation");
         assert_eq!(proxy.base_url, "http://localhost:8800");
 
         // Should strip trailing slash
-        let proxy2 = PayNodeProxy::new("http://localhost:8800/");
+        let proxy2 = PayNodeProxy::new("http://localhost:8800/").expect("valid proxy creation");
         assert_eq!(proxy2.base_url, "http://localhost:8800");
     }
 

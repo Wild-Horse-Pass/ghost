@@ -448,11 +448,14 @@ impl NodeConfig {
                         );
                     }
                     Some(password) => {
+                        // L-17: Enforce minimum password length with an error, not just a warning
+                        // Weak passwords expose private mining endpoints to brute-force attacks
                         if password.len() < 8 {
-                            result.add_warning(
+                            result.add_error(
                                 "network.private_mining_password",
                                 &format!(
-                                    "Password is only {} characters. Minimum 8 recommended for security.",
+                                    "L-17: Password must be at least 8 characters (got {}). \
+                                     Weak passwords expose private mining to brute-force attacks.",
                                     password.len()
                                 ),
                             );
@@ -470,11 +473,14 @@ impl NodeConfig {
                         );
                     }
                     Some(password) => {
+                        // L-17: Enforce minimum password length with an error, not just a warning
+                        // Weak passwords expose private mining endpoints to brute-force attacks
                         if password.len() < 8 {
-                            result.add_warning(
+                            result.add_error(
                                 "network.private_mining_password",
                                 &format!(
-                                    "Password is only {} characters. Minimum 8 recommended for security.",
+                                    "L-17: Password must be at least 8 characters (got {}). \
+                                     Weak passwords expose private mining to brute-force attacks.",
                                     password.len()
                                 ),
                             );
@@ -1299,16 +1305,17 @@ mod tests {
     }
 
     #[test]
-    fn test_mining_mode_private_pool_short_password_warning() {
+    fn test_mining_mode_private_pool_short_password_error() {
+        // L-17 FIX: Short passwords now produce errors, not warnings
+        // Weak passwords expose private mining endpoints to brute-force attacks
         let mut config = NodeConfig::default();
         config.network.mining_mode = MiningMode::PrivatePool;
         config.network.private_mining_password = Some("short".to_string()); // 5 chars
 
         let result = config.validate();
-        // Should have password warning (not error)
-        assert!(result.warnings.iter().any(
-            |e| e.field == "network.private_mining_password" && e.message.contains("Minimum 8")
-        ));
+        // L-17: Should now be an error instead of a warning
+        assert!(result.errors.iter().any(|e| e.field == "network.private_mining_password"
+            && e.message.contains("at least 8 characters")));
     }
 
     #[test]

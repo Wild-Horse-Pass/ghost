@@ -52,6 +52,7 @@ bitcoin = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
+getrandom = { workspace = true }
 
 # Networking
 axum = { workspace = true }

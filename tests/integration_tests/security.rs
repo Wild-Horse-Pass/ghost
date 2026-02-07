@@ -597,9 +597,10 @@ fn test_651_noise_keypair_generation() {
     let kp1 = NoiseKeypair::generate();
     let kp2 = NoiseKeypair::generate();
 
-    // Keys should be 32 bytes
+    // Public keys should be 32 bytes
+    // M-7: private_key() is now pub(crate), so we only test public key length
     assert_eq!(kp1.public_key().len(), 32);
-    assert_eq!(kp1.private_key().len(), 32);
+    assert_eq!(kp2.public_key().len(), 32);
 
     // Different keypairs should have different public keys
     assert_ne!(kp1.public_key(), kp2.public_key());

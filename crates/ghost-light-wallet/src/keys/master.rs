@@ -217,7 +217,11 @@ impl MasterKey {
 ///
 /// SECURITY: Implements ZeroizeOnDrop to securely erase secret key material
 /// from memory when the struct is dropped.
-#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
+///
+/// M-9 FIX: Clone is intentionally NOT derived to prevent accidental duplication
+/// of secret key material. If cloning is absolutely necessary, use `clone_with_warning()`
+/// which logs a security warning.
+#[derive(Debug, Zeroize, ZeroizeOnDrop)]
 pub struct MasterKeyExport {
     pub scan_secret: [u8; 32],
     pub spend_secret: [u8; 32],
@@ -228,6 +232,26 @@ pub struct MasterKeyExport {
 }
 
 impl MasterKeyExport {
+    /// Clone the export data with a security warning.
+    ///
+    /// M-9 SECURITY: Cloning secret key material creates another copy in memory
+    /// that must be securely erased. Only use when absolutely necessary (e.g., backup).
+    /// The cloned instance also implements ZeroizeOnDrop.
+    #[must_use]
+    pub fn clone_with_warning(&self) -> Self {
+        tracing::warn!(
+            "M-9: Cloning MasterKeyExport - secret key material duplicated in memory. \
+             Ensure the clone is properly dropped to trigger secure erasure."
+        );
+        Self {
+            scan_secret: self.scan_secret,
+            spend_secret: self.spend_secret,
+            auth_secret: self.auth_secret,
+            auth_pubkey: self.auth_pubkey,
+            network: self.network,
+        }
+    }
+
     /// Serialize to bytes
     /// Format: scan_secret(32) || spend_secret(32) || auth_secret(32) || auth_pubkey(32) || network(1)
     pub fn to_bytes(&self) -> Vec<u8> {

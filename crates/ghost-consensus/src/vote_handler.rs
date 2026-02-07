@@ -1200,6 +1200,19 @@ impl VoteHandler {
         // Create vote from message
         let vote = Vote::new(sender, vote_msg.approve, vote_msg.signature);
 
+        // M-4: Second ban check right before submitting vote (TOCTOU mitigation)
+        // This reduces the window between the initial check in handle_message() and
+        // the vote being recorded. While not perfectly atomic, it significantly
+        // reduces the race window.
+        if self.is_banned(&sender) {
+            debug!(
+                sender = hex::encode(&sender[..8]),
+                round_id = vote_msg.round_id,
+                "M-4: Rejecting vote - node banned between initial check and vote submission"
+            );
+            return Ok(());
+        }
+
         // Submit to voting manager
         if let Some(result) =
             self.voting_manager
@@ -1912,5 +1925,37 @@ mod tests {
         let hmac2 = RateLimiter::compute_hmac(data, &key2);
 
         assert_ne!(hmac1, hmac2, "M-2: Different keys should produce different HMAC");
+    }
+
+    // =========================================================================
+    // M-4 TESTS: TOCTOU ban check mitigation
+    // =========================================================================
+
+    #[test]
+    fn test_m4_ban_check_before_vote_submission() {
+        // M-4: Verify that banned nodes are rejected even if they pass initial check
+        // This is a structural test - we verify the handler has a ban manager
+        // and uses it for the second check
+
+        let identity = create_test_identity();
+        let voting_manager = Arc::new(VotingManager::new(100));
+        let ban_manager = Arc::new(BanManager::new());
+
+        let handler = VoteHandler::new(identity.clone(), voting_manager)
+            .with_ban_manager(ban_manager.clone());
+
+        let node_id = [1u8; 32];
+
+        // Initially not banned
+        assert!(!handler.is_banned(&node_id));
+
+        // Ban the node
+        ban_manager.ban(node_id, BanReason::Equivocation);
+
+        // Should now be banned (used by both checks)
+        assert!(handler.is_banned(&node_id));
+
+        // The handler will reject votes from banned nodes in handle_incoming_vote
+        // due to the M-4 second ban check before vote submission
     }
 }

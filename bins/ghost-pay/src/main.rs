@@ -386,16 +386,16 @@ async fn require_api_auth(
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // For mainnet, API authentication is REQUIRED
-    if auth.network == Network::Bitcoin && auth.secret.is_none() {
-        error!("H-2 SECURITY: API secret not configured for mainnet!");
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    }
-
-    // If no secret configured (non-mainnet), allow with warning
+    // M-16: API authentication is ALWAYS required, regardless of network
+    // There is no valid reason to allow unauthenticated access to payment APIs
+    // even on testnet/signet - this could mask bugs in auth integration
     if auth.secret.is_none() {
-        warn!("H-2: API authentication not configured - allowing request");
-        return Ok(next.run(request).await);
+        error!(
+            network = ?auth.network,
+            "M-16 SECURITY: API secret (api_secret) not configured - rejecting request. \
+             Configure api_secret in pool.toml for Ghost Pay API to function."
+        );
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
     }
 
     // Extract body for signature verification

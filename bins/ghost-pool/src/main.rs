@@ -698,7 +698,8 @@ async fn main() -> Result<()> {
         noise_required: false, // Allow fallback during migration
         ..Default::default()
     };
-    let mesh = Arc::new(MeshNetwork::new(Arc::clone(&identity), mesh_config));
+    // M-2: Use try_new() to properly handle Noise initialization failures
+    let mesh = Arc::new(MeshNetwork::try_new(Arc::clone(&identity), mesh_config)?);
 
     // Initialize consensus voting
     let voting_manager = Arc::new(VotingManager::new(100)); // 100 max sessions
@@ -995,21 +996,41 @@ async fn main() -> Result<()> {
 
         // Initialize block prover/verifier with Groth16 setup (for L2 blocks)
         // Using 100 max txs and depth 20 for the state tree
+        // L-25: Use proper error handling instead of expect()
         let block_prover = Arc::new(
-            BlockProver::new_with_setup_and_state_transitions(100, 20)
-                .expect("Failed to initialize block prover"),
+            BlockProver::new_with_setup_and_state_transitions(100, 20).map_err(|e| {
+                anyhow::anyhow!(
+                    "L-25: Failed to initialize ZK block prover with Groth16 setup: {}. \
+                     This may indicate insufficient memory or corrupted parameters.",
+                    e
+                )
+            })?,
         );
         let block_verifier = Arc::new(if let Some(vk) = block_prover.prepared_verifying_key() {
-            BlockVerifier::new_with_groth16_vk(&block_prover.verification_key(), vk)
-                .expect("Failed to create block verifier with VK")
+            BlockVerifier::new_with_groth16_vk(&block_prover.verification_key(), vk).map_err(
+                |e| {
+                    anyhow::anyhow!(
+                        "L-25: Failed to create ZK block verifier with prepared VK: {}",
+                        e
+                    )
+                },
+            )?
         } else {
-            BlockVerifier::new(&block_prover.verification_key())
-                .expect("Failed to create block verifier")
+            BlockVerifier::new(&block_prover.verification_key()).map_err(|e| {
+                anyhow::anyhow!("L-25: Failed to create ZK block verifier: {}", e)
+            })?
         });
 
         // Initialize payout prover/verifier with Groth16 setup
+        // L-25: Use proper error handling instead of expect()
         let payout_prover = Arc::new(
-            PayoutProver::default_params_with_setup().expect("Failed to initialize payout prover"),
+            PayoutProver::default_params_with_setup().map_err(|e| {
+                anyhow::anyhow!(
+                    "L-25: Failed to initialize ZK payout prover with Groth16 setup: {}. \
+                     This may indicate insufficient memory or corrupted parameters.",
+                    e
+                )
+            })?,
         );
         let payout_verifier = Arc::new(PayoutVerifier::for_prover(&payout_prover));
 
@@ -1468,6 +1489,7 @@ async fn main() -> Result<()> {
                 round_id,
                 block_hash: notification.block_hash,
                 block_height: height,
+                block_timestamp: chrono::Utc::now(),
                 solo_payout_address: solo_address,
                 subsidy_sats: subsidy,
                 treasury_address_snapshot,
@@ -1501,6 +1523,7 @@ async fn main() -> Result<()> {
                 round_id,
                 block_hash: notification.block_hash,
                 block_height: height,
+                block_timestamp: chrono::Utc::now(),
                 winning_miner_id: notification.miner_id.clone(),
                 winning_miner_payout_address: notification.payout_address.clone(),
                 treasury_address_snapshot,
@@ -1730,7 +1753,16 @@ async fn main() -> Result<()> {
             .try_into()
             .map_err(|_| anyhow::anyhow!("Node key slice conversion failed"))?;
 
-        let mut tdp_config = TdpConfig::new(tdp_secret_key);
+        // L-26: Use proper error handling instead of expect()
+        let mut tdp_config = TdpConfig::new(tdp_secret_key).map_err(|e| {
+            anyhow::anyhow!(
+                "L-26: Invalid TDP secret key from node key file '{}': {}. \
+                 The key may be all zeros or outside the valid secp256k1 scalar range. \
+                 Regenerate with: ghost-pool --generate-identity",
+                key_path.display(),
+                e
+            )
+        })?;
         tdp_config.port = args.tdp_port;
         tdp_config.max_connections = 10;
         tdp_config.timeout_secs = 30;
@@ -2213,6 +2245,7 @@ async fn main() -> Result<()> {
                             round_id,
                             block_hash,
                             block_height: height,
+                            block_timestamp: chrono::Utc::now(),
                             solo_payout_address: solo_address,
                             subsidy_sats: subsidy,
                             treasury_address_snapshot,
@@ -2248,6 +2281,7 @@ async fn main() -> Result<()> {
                             round_id,
                             block_hash,
                             block_height: height,
+                            block_timestamp: chrono::Utc::now(),
                             winning_miner_id: miner_id.clone(),
                             winning_miner_payout_address: None, // Address looked up from DB
                             treasury_address_snapshot,

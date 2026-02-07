@@ -528,6 +528,7 @@ mod urlencoding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_url_encoding() {
@@ -547,6 +548,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_insecure_tls_requires_env_var() {
         // M-7: Ensure insecure TLS is rejected without env var
         // First, ensure the env var is NOT set
@@ -570,6 +572,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_insecure_tls_allowed_with_env_var() {
         // M-7: Ensure insecure TLS works when env var is set
         std::env::set_var("GHOST_ALLOW_INSECURE_TLS", "1");
@@ -589,6 +592,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_secure_tls_does_not_require_env_var() {
         // M-7: Normal secure TLS should work without env var
         std::env::remove_var("GHOST_ALLOW_INSECURE_TLS");
@@ -598,5 +602,43 @@ mod tests {
 
         let result = VerificationClient::with_config(config);
         assert!(result.is_ok(), "Secure TLS should work without env var");
+    }
+
+    #[test]
+    #[serial]
+    fn test_l29_insecure_tls_blocked_on_mainnet() {
+        // L-29 FIX: Insecure TLS must be COMPLETELY blocked on mainnet
+        // Even with GHOST_ALLOW_INSECURE_TLS set, mainnet should reject
+        std::env::set_var("GHOST_ALLOW_INSECURE_TLS", "1");
+
+        let config = VerificationClientConfig {
+            use_https: true,
+            timeout: std::time::Duration::from_secs(10),
+            danger_accept_invalid_certs: true,
+            is_mainnet: true, // MAINNET
+        };
+
+        let result = VerificationClient::with_config(config);
+        assert!(result.is_err(), "Insecure TLS must be rejected on mainnet");
+
+        let err = result.unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("L-29") || err_str.contains("mainnet"),
+            "Error should mention L-29 or mainnet: {}",
+            err_str
+        );
+
+        // Clean up
+        std::env::remove_var("GHOST_ALLOW_INSECURE_TLS");
+    }
+
+    #[test]
+    fn test_l29_mainnet_config_rejects_insecure() {
+        // L-29 FIX: The mainnet() constructor should have is_mainnet=true
+        let config = VerificationClientConfig::mainnet();
+        assert!(config.is_mainnet, "mainnet() config should have is_mainnet=true");
+        assert!(config.use_https, "mainnet() config should require HTTPS");
+        assert!(!config.danger_accept_invalid_certs, "mainnet() config should not accept invalid certs");
     }
 }

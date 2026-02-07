@@ -246,12 +246,26 @@ pub trait Signer: Send + Sync + Debug {
 /// This is the default signer implementation that stores keys in a local file.
 /// The key file format is 32 bytes (private key) optionally followed by
 /// 12 bytes (PoW proof for Sybil resistance).
-#[derive(Debug)]
+///
+/// L-22 FIX: Custom Debug implementation to prevent accidental key exposure in logs.
 pub struct LocalSigner {
     /// Ed25519 signing key
     signing_key: SigningKey,
     /// Ed25519 verifying key (derived from signing key)
     verifying_key: VerifyingKey,
+}
+
+/// L-22 FIX: Custom Debug that redacts the signing key to prevent accidental exposure.
+///
+/// The signing key is sensitive material that should never appear in logs.
+/// Only the public key (verifying key) is shown for debugging purposes.
+impl std::fmt::Debug for LocalSigner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalSigner")
+            .field("signing_key", &"[REDACTED]")
+            .field("verifying_key", &hex::encode(self.verifying_key.as_bytes()))
+            .finish()
+    }
 }
 
 impl LocalSigner {
@@ -612,5 +626,52 @@ mod tests {
         let json = serde_json::to_string(&kms).unwrap();
         let parsed: SignerConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(kms, parsed);
+    }
+
+    #[test]
+    fn test_l22_local_signer_debug_redacts_key() {
+        // L-22 FIX: Verify that Debug output does not expose the signing key
+        let signer = LocalSigner::generate();
+
+        // Get the actual signing key bytes (to verify they're NOT in debug output)
+        let signing_key_bytes = signer.signing_key_bytes();
+        let signing_key_hex = hex::encode(signing_key_bytes);
+
+        // Get debug output
+        let debug_output = format!("{:?}", signer);
+
+        // Verify the signing key is redacted
+        assert!(
+            debug_output.contains("[REDACTED]"),
+            "Debug output should contain [REDACTED]: {}",
+            debug_output
+        );
+
+        // Verify the actual signing key bytes are NOT in the output
+        assert!(
+            !debug_output.contains(&signing_key_hex),
+            "Debug output must NOT contain the signing key: {}",
+            debug_output
+        );
+
+        // Verify the public key IS present (for debugging utility)
+        let public_key_hex = hex::encode(signer.public_key());
+        assert!(
+            debug_output.contains(&public_key_hex),
+            "Debug output should contain the public key for debugging: {}",
+            debug_output
+        );
+    }
+
+    #[test]
+    fn test_l22_local_signer_debug_format() {
+        // L-22 FIX: Verify the exact format of Debug output
+        let signer = LocalSigner::generate();
+        let debug_output = format!("{:?}", signer);
+
+        // Should be a proper debug struct format
+        assert!(debug_output.starts_with("LocalSigner {"));
+        assert!(debug_output.contains("signing_key: \"[REDACTED]\""));
+        assert!(debug_output.contains("verifying_key:"));
     }
 }

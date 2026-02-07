@@ -411,25 +411,20 @@ pub async fn ws_handler(
         let valid = if let Some(secret) = ws_state.auth_secret() {
             auth.validate_with_secret(secret)
         } else {
-            // L-30 FIX: On mainnet, REJECT format-only validation - never fall back
-            if ws_state.is_mainnet() {
-                error!("L-30 SECURITY: WebSocket auth secret not configured on mainnet - rejecting connection");
-                return ws.on_upgrade(|socket| async move {
-                    let (mut sender, _) = socket.split();
-                    let error = WsEvent::Error {
-                        message: "Server misconfigured: auth secret required on mainnet".to_string(),
-                    };
-                    if let Ok(json) = serde_json::to_string(&error) {
-                        let _ = sender.send(Message::Text(json)).await;
-                    }
-                    let _ = sender.send(Message::Close(None)).await;
-                });
-            }
-
-            // No secret configured - fall back to format-only validation (non-mainnet only)
-            // SECURITY: This is insecure! In production, always configure ws_auth_secret
-            warn!("WebSocket auth secret not configured - using insecure format-only validation (non-mainnet)");
-            auth.validate_format_only()
+            // M-15: ALWAYS require cryptographic validation - no format-only fallback on ANY network
+            // Format-only validation provides no security guarantees and must never be used.
+            // If auth is attempted without a configured secret, reject the connection.
+            error!("M-15 SECURITY: WebSocket auth secret not configured - rejecting authenticated connection");
+            return ws.on_upgrade(|socket| async move {
+                let (mut sender, _) = socket.split();
+                let error = WsEvent::Error {
+                    message: "Server misconfigured: ws_auth_secret must be configured for authenticated connections".to_string(),
+                };
+                if let Ok(json) = serde_json::to_string(&error) {
+                    let _ = sender.send(Message::Text(json)).await;
+                }
+                let _ = sender.send(Message::Close(None)).await;
+            });
         };
 
         if valid {

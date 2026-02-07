@@ -52,20 +52,126 @@ use crate::state::{ReorgBridge, ReorgBridgeConfig, ReorgNotifier, SubscriptionMa
 
 use ghost_consensus::reorg::{L1ChainMonitor, L2ForkDetector};
 
+/// L-21 FIX: Validate that an IP address is acceptable as a trusted proxy.
+///
+/// Returns true if the IP is valid for use as a trusted proxy:
+/// - Localhost addresses (127.0.0.1, ::1) are always allowed
+/// - Private network addresses (10.x, 172.16-31.x, 192.168.x) are allowed
+/// - Link-local addresses are rejected (169.254.x.x, fe80::)
+/// - Multicast addresses are rejected
+/// - Unspecified addresses (0.0.0.0, ::) are rejected
+/// - Public IP addresses are allowed (for cloud proxy scenarios)
+///
+/// This prevents attackers from specifying reserved/special addresses.
+fn is_valid_trusted_proxy(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+
+    match ip {
+        IpAddr::V4(ipv4) => {
+            // Reject unspecified address (0.0.0.0)
+            if ipv4.is_unspecified() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting unspecified IPv4 address as trusted proxy");
+                return false;
+            }
+            // Reject link-local (169.254.x.x)
+            if ipv4.is_link_local() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting link-local IPv4 address as trusted proxy");
+                return false;
+            }
+            // Reject multicast (224.0.0.0 - 239.255.255.255)
+            if ipv4.is_multicast() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting multicast IPv4 address as trusted proxy");
+                return false;
+            }
+            // Reject broadcast (255.255.255.255)
+            if ipv4.is_broadcast() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting broadcast IPv4 address as trusted proxy");
+                return false;
+            }
+            // Reject documentation addresses (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24)
+            let octets = ipv4.octets();
+            if (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+                || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+                || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+            {
+                tracing::warn!(ip = %ip, "L-21: Rejecting documentation IPv4 address as trusted proxy");
+                return false;
+            }
+            true
+        }
+        IpAddr::V6(ipv6) => {
+            // Reject unspecified address (::)
+            if ipv6.is_unspecified() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting unspecified IPv6 address as trusted proxy");
+                return false;
+            }
+            // Reject multicast (ff00::/8)
+            if ipv6.is_multicast() {
+                tracing::warn!(ip = %ip, "L-21: Rejecting multicast IPv6 address as trusted proxy");
+                return false;
+            }
+            // Note: is_unicast_link_local requires nightly or manual check
+            // Link-local: fe80::/10
+            let segments = ipv6.segments();
+            if (segments[0] & 0xffc0) == 0xfe80 {
+                tracing::warn!(ip = %ip, "L-21: Rejecting link-local IPv6 address as trusted proxy");
+                return false;
+            }
+            true
+        }
+    }
+}
+
 /// C-2: Trusted proxy configuration for secure IP extraction.
 ///
 /// Only requests from trusted proxy IPs will have X-Forwarded-For/X-Real-IP headers
 /// honored. This prevents IP spoofing attacks where attackers set fake headers.
 ///
 /// Load from GHOST_TRUSTED_PROXIES env var (comma-separated IPs) or use defaults.
+///
+/// L-21 FIX: Validates that configured proxy IPs are not reserved/special addresses.
 fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
     use std::net::IpAddr;
 
     if let Ok(proxies_str) = std::env::var("GHOST_TRUSTED_PROXIES") {
-        proxies_str
+        let proxies: Vec<IpAddr> = proxies_str
             .split(',')
-            .filter_map(|s| s.trim().parse::<IpAddr>().ok())
-            .collect()
+            .filter_map(|s| {
+                let trimmed = s.trim();
+                match trimmed.parse::<IpAddr>() {
+                    Ok(ip) => {
+                        // L-21 FIX: Validate the IP is acceptable
+                        if is_valid_trusted_proxy(&ip) {
+                            Some(ip)
+                        } else {
+                            None // Already logged in is_valid_trusted_proxy
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            ip = %trimmed,
+                            error = %e,
+                            "L-21: Failed to parse trusted proxy IP, skipping"
+                        );
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        if proxies.is_empty() {
+            tracing::warn!(
+                "L-21: No valid trusted proxies configured, falling back to localhost only"
+            );
+            vec![
+                "127.0.0.1"
+                    .parse()
+                    .expect("L-1: Valid hardcoded IPv4 localhost"),
+                "::1".parse().expect("L-1: Valid hardcoded IPv6 localhost"),
+            ]
+        } else {
+            proxies
+        }
     } else {
         // Default: only trust localhost as proxy
         vec![
@@ -352,7 +458,8 @@ impl GspState {
         let registry = WalletRegistry::open(&registry_path)?;
 
         // Initialize pay node proxy
-        let pay_node = PayNodeProxy::new(&config.pay_node_url);
+        // L-27: Use proper error handling instead of expect()
+        let pay_node = PayNodeProxy::new(&config.pay_node_url)?;
 
         // Initialize subscription manager
         let subscriptions = SubscriptionManager::new();

@@ -42,8 +42,10 @@ services:
       retries: 5
       start_period: 120s
     environment:
-      - BITCOIN_RPC_USER=${BITCOIN_RPC_USER:-ghostrpc}
-      - BITCOIN_RPC_PASSWORD=${BITCOIN_RPC_PASSWORD:-changeme}
+      # SECURITY: No default credentials - these MUST be set in .env or environment
+      # Docker Compose will fail to start if these are not defined
+      - BITCOIN_RPC_USER=${BITCOIN_RPC_USER:?BITCOIN_RPC_USER must be set}
+      - BITCOIN_RPC_PASSWORD=${BITCOIN_RPC_PASSWORD:?BITCOIN_RPC_PASSWORD must be set}
 
   # ============================================================================
   # Ghost Pool - Main Mining Pool Node
@@ -73,8 +75,9 @@ services:
     environment:
       - BITCOIN_RPC_HOST=bitcoind
       - BITCOIN_RPC_PORT=8332
-      - BITCOIN_RPC_USER=${BITCOIN_RPC_USER:-ghostrpc}
-      - BITCOIN_RPC_PASSWORD=${BITCOIN_RPC_PASSWORD:-changeme}
+      # SECURITY: No default credentials - these MUST be set in .env or environment
+      - BITCOIN_RPC_USER=${BITCOIN_RPC_USER:?BITCOIN_RPC_USER must be set}
+      - BITCOIN_RPC_PASSWORD=${BITCOIN_RPC_PASSWORD:?BITCOIN_RPC_PASSWORD must be set}
       - BITCOIN_NETWORK=${BITCOIN_NETWORK:-signet}
       - TREASURY_ADDRESS=${TREASURY_ADDRESS:-}
       - TREASURY_FEE_PERCENT=${TREASURY_FEE_PERCENT:-1.0}
@@ -213,8 +216,9 @@ services:
     networks:
       - ghost-network
     environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      # SECURITY: No default credentials - these MUST be set in .env or environment
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:?GRAFANA_USER must be set}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD must be set}
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-piechart-panel
     profiles:

@@ -1713,19 +1713,32 @@ async fn handle_accept_instant_payment(
 }
 
 /// Generate a unique payment ID for instant payments
+///
+/// M-10 FIX: Uses 32 bytes of cryptographically secure random data from getrandom
+/// instead of predictable timestamp. This prevents payment ID guessing attacks
+/// where an attacker could predict future payment IDs and exploit timing windows.
 fn generate_instant_payment_id(lock_id: &str, amount: u64, height: u64) -> [u8; 32] {
     use sha2::{Digest, Sha256};
+
+    // M-10 FIX: Use cryptographically secure random bytes instead of timestamp
+    let mut random_bytes = [0u8; 32];
+    if let Err(e) = getrandom::getrandom(&mut random_bytes) {
+        // getrandom should never fail on supported platforms, but if it does
+        // we must not proceed with a predictable fallback - that would defeat
+        // the entire security purpose of this fix
+        panic!(
+            "CRITICAL: Failed to get cryptographic randomness for payment ID: {}. \
+             Cannot generate secure payment IDs without CSPRNG.",
+            e
+        );
+    }
+
     let mut hasher = Sha256::new();
-    hasher.update(b"ghost-instant-payment-v1");
+    hasher.update(b"ghost-instant-payment-v2"); // Version bump indicates new format
     hasher.update(lock_id.as_bytes());
     hasher.update(amount.to_le_bytes());
     hasher.update(height.to_le_bytes());
-    hasher.update(
-        chrono::Utc::now()
-            .timestamp_nanos_opt()
-            .unwrap_or(0)
-            .to_le_bytes(),
-    );
+    hasher.update(&random_bytes); // 32 bytes of cryptographic randomness
     hasher.finalize().into()
 }
 

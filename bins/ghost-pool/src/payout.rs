@@ -111,6 +111,9 @@ pub struct BlockFoundData {
     pub block_hash: [u8; 32],
     /// Block height
     pub block_height: u64,
+    /// M-5 SECURITY: Block timestamp for deterministic decay calculation
+    /// All nodes use this same timestamp to ensure consensus on treasury decay.
+    pub block_timestamp: chrono::DateTime<chrono::Utc>,
     /// Miner ID that found the block
     pub winning_miner_id: String,
     /// Payout address of the winning miner (extracted from user_identity)
@@ -147,6 +150,9 @@ pub struct SoloBlockFoundData {
     pub block_hash: [u8; 32],
     /// Block height
     pub block_height: u64,
+    /// M-5 SECURITY: Block timestamp for deterministic decay calculation
+    /// All nodes use this same timestamp to ensure consensus on treasury decay.
+    pub block_timestamp: chrono::DateTime<chrono::Utc>,
     /// Solo payout address (configured in pool settings)
     pub solo_payout_address: String,
     /// Block subsidy (satoshis)
@@ -243,8 +249,13 @@ impl PayoutProposalCreator {
         let now = chrono::Utc::now().timestamp() as u64;
 
         // Calculate fee distribution using treasury decay schedule
-        let fee_dist =
-            FeeDistribution::calculate(data.subsidy_sats, data.tx_fees_sats, &data.treasury_state);
+        // M-5 SECURITY: Use block_timestamp for deterministic decay calculation
+        let fee_dist = FeeDistribution::calculate(
+            data.subsidy_sats,
+            data.tx_fees_sats,
+            &data.treasury_state,
+            data.block_timestamp,
+        );
 
         info!(
             subsidy = data.subsidy_sats,
@@ -254,7 +265,7 @@ impl PayoutProposalCreator {
             node_rate = fee_dist.node_rate,
             miner_pool = fee_dist.miner_pool,
             node_pool = fee_dist.node_reward_pool,
-            decay_year = data.treasury_state.decay_year(),
+            decay_year = data.treasury_state.decay_year(data.block_timestamp),
             "Calculating fee distribution"
         );
 
@@ -415,7 +426,7 @@ impl PayoutProposalCreator {
             miner_count = proposal.miner_payouts.len(),
             node_count = proposal.node_payouts.len(),
             treasury = final_treasury,
-            decay_year = data.treasury_state.decay_year(),
+            decay_year = data.treasury_state.decay_year(data.block_timestamp),
             "Created payout proposal"
         );
 
@@ -434,10 +445,12 @@ impl PayoutProposalCreator {
         // Calculate fee distribution using treasury decay schedule
         // Note: In solo mode, TX fees are NOT included in pool fee calculation
         // TX fees go 100% to solo miner, pool fee is only from subsidy
+        // M-5 SECURITY: Use block_timestamp for deterministic decay calculation
         let fee_dist = FeeDistribution::calculate(
             data.subsidy_sats,
             0, // TX fees not subject to pool fee in solo mode
             &data.treasury_state,
+            data.block_timestamp,
         );
 
         // Solo miner gets 99% of subsidy + ALL tx fees
@@ -450,7 +463,7 @@ impl PayoutProposalCreator {
             pool_fee = fee_dist.pool_fee,
             treasury = fee_dist.treasury_amount,
             node_pool = fee_dist.node_reward_pool,
-            decay_year = data.treasury_state.decay_year(),
+            decay_year = data.treasury_state.decay_year(data.block_timestamp),
             "Calculating solo mode fee distribution"
         );
 
@@ -545,7 +558,7 @@ impl PayoutProposalCreator {
             solo_miner = solo_miner_amount,
             node_count = proposal.node_payouts.len(),
             treasury = final_treasury,
-            decay_year = data.treasury_state.decay_year(),
+            decay_year = data.treasury_state.decay_year(data.block_timestamp),
             "Created solo mode payout proposal"
         );
 
@@ -571,10 +584,29 @@ impl PayoutProposalCreator {
 
         // 3.3 SECURITY: Convert float work values to scaled integers immediately
         // This prevents any floating point precision issues in subsequent calculations
+        // L-5 SECURITY: Add explicit bounds check before f64 to u128 conversion
+        // to prevent undefined behavior from out-of-range values.
         let scaled_work: Vec<(String, u128)> = miner_work
             .iter()
             .filter(|(_, w)| *w > 0.0 && w.is_finite())
-            .map(|(id, w)| (id.clone(), (*w * WORK_SCALE as f64) as u128))
+            .filter_map(|(id, w)| {
+                let scaled = *w * WORK_SCALE as f64;
+                // L-5: Check bounds before conversion
+                // u128::MAX is ~3.4e38, so we check against a safe maximum
+                // that is well below the representable range.
+                // A work value this high would be astronomically improbable.
+                const MAX_SAFE_SCALED: f64 = 1e36; // Well below u128::MAX (~3.4e38)
+                if scaled < 0.0 || scaled > MAX_SAFE_SCALED || !scaled.is_finite() {
+                    warn!(
+                        miner_id = %id,
+                        work = *w,
+                        scaled_work = scaled,
+                        "L-5: Rejecting miner work with out-of-bounds scaled value"
+                    );
+                    return None;
+                }
+                Some((id.clone(), scaled as u128))
+            })
             .collect();
 
         let total_work: u128 = scaled_work.iter().map(|(_, w)| w).sum();
@@ -700,12 +732,13 @@ impl PayoutProposalCreator {
             if shares <= 0 {
                 continue;
             }
-            // SECURITY: Use integer arithmetic with basis points to avoid floating point rounding errors
-            // Calculate share in basis points: (shares * 10000) / top_shares
-            let share_bps = (shares as u64 * 10000) / top_shares as u64;
-            // Calculate amount: (total_sats * share_bps) / 10000
-            // Use u128 to prevent overflow for large amounts
-            let amount = (total_sats as u128 * share_bps as u128 / 10000) as u64;
+            // L-4 SECURITY: Use direct integer arithmetic instead of basis points (10^4)
+            // Previous code calculated share_bps first, losing precision for small shares.
+            // New code: amount = (total_sats * shares) / top_shares
+            // This is mathematically equivalent but avoids the precision loss from
+            // the intermediate share_bps calculation which truncated to 4 decimal places.
+            // Using u128 to prevent overflow: max is ~21M BTC * 10^8 sats * 15 max shares
+            let amount = ((total_sats as u128 * shares as u128) / top_shares as u128) as u64;
 
             if amount < self.config.dust_threshold_sats {
                 // Track dust for redistribution to top node
@@ -774,6 +807,18 @@ impl PayoutProposalCreator {
                 .iter_mut()
                 .find(|p| p.address == payout.address)
             {
+                // L-6 SECURITY: Check if saturation would occur before adding
+                // This detects if the merged amount would exceed u64::MAX
+                let would_overflow = existing.amount.checked_add(payout.amount).is_none();
+                if would_overflow {
+                    warn!(
+                        address = %String::from_utf8_lossy(&payout.address[..20.min(payout.address.len())]),
+                        existing_amount = existing.amount,
+                        new_amount = payout.amount,
+                        max_u64 = u64::MAX,
+                        "L-6 CRITICAL: Payout merge would overflow u64::MAX - using saturating add"
+                    );
+                }
                 existing.amount = existing.amount.saturating_add(payout.amount);
                 debug!(
                     address = %String::from_utf8_lossy(&payout.address[..20.min(payout.address.len())]),
@@ -1148,6 +1193,7 @@ mod tests {
             round_id: 1,
             block_hash: [0u8; 32],
             block_height: 800_000,
+            block_timestamp: chrono::Utc::now(),
             winning_miner_id: "miner1".to_string(),
             winning_miner_payout_address: None,
             treasury_address_snapshot: Some(vec![1u8, 2u8, 3u8]),
@@ -1168,7 +1214,8 @@ mod tests {
 
     #[test]
     fn test_block_found_data_with_treasury_decay() {
-        let threshold_time = chrono::Utc::now() - chrono::Duration::days(365 * 3);
+        let now = chrono::Utc::now();
+        let threshold_time = now - chrono::Duration::days(365 * 3);
         let treasury_state = TreasuryState::from_stored(
             crate::treasury::TREASURY_THRESHOLD_SATS,
             Some(threshold_time),
@@ -1178,6 +1225,7 @@ mod tests {
             round_id: 1,
             block_hash: [0u8; 32],
             block_height: 800_000,
+            block_timestamp: now,
             winning_miner_id: "miner1".to_string(),
             winning_miner_payout_address: None,
             treasury_address_snapshot: Some(vec![0x51]), // P2TR witness program prefix
@@ -1190,7 +1238,8 @@ mod tests {
         };
 
         // After 3 years, should be in year 4 of decay (0.1 treasury, 0.9 nodes)
-        assert!(data.treasury_state.decay_year() >= 3);
+        // M-5: Use block_timestamp for deterministic decay calculation
+        assert!(data.treasury_state.decay_year(data.block_timestamp) >= 3);
     }
 
     #[test]

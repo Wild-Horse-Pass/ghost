@@ -225,6 +225,95 @@ fn parse_network(s: &str) -> Network {
     }
 }
 
+/// L-24: Generate 32-byte cryptographic random secret with proper error handling
+fn generate_random_secret() -> Result<[u8; 32]> {
+    let mut secret = [0u8; 32];
+    getrandom::getrandom(&mut secret).map_err(|e| {
+        anyhow::anyhow!(
+            "L-24: Failed to generate cryptographic random bytes for JWT secret: {}. \
+             This could indicate a system entropy issue or blocked /dev/urandom.",
+            e
+        )
+    })?;
+    Ok(secret)
+}
+
+/// M-18/L-24: Generate or load JWT secret with proper error handling
+fn resolve_jwt_secret(
+    configured_secret: Option<String>,
+    network: Network,
+    data_dir: &std::path::Path,
+) -> Result<Vec<u8>> {
+    // If explicitly configured, use it
+    if let Some(secret) = configured_secret {
+        info!("Using configured JWT secret");
+        return Ok(secret.into_bytes());
+    }
+
+    // On mainnet, secret MUST be explicitly configured
+    if network == Network::Bitcoin {
+        return Err(anyhow::anyhow!(
+            "M-18 SECURITY: jwt_secret MUST be explicitly configured on mainnet. \
+             Add 'jwt_secret' to your config file or use --jwt-secret argument. \
+             This is required to ensure JWT tokens remain valid across restarts."
+        ));
+    }
+
+    // Non-mainnet: Generate and persist to data directory
+    let secret_path = data_dir.join(".jwt_secret");
+
+    if secret_path.exists() {
+        // Load existing persisted secret
+        match std::fs::read(&secret_path) {
+            Ok(bytes) if bytes.len() == 32 => {
+                info!("Loaded persisted JWT secret from {}", secret_path.display());
+                return Ok(bytes);
+            }
+            Ok(bytes) => {
+                // Invalid length - regenerate
+                tracing::warn!(
+                    "Invalid JWT secret length {} in {}, regenerating",
+                    bytes.len(),
+                    secret_path.display()
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to read JWT secret from {}: {}",
+                    secret_path.display(),
+                    e
+                );
+            }
+        }
+    } else {
+        info!(
+            "Generating and persisting new JWT secret to {}",
+            secret_path.display()
+        );
+    }
+
+    // Generate new secret
+    let secret = generate_random_secret()?;
+
+    // Persist it
+    if let Err(e) = std::fs::write(&secret_path, &secret) {
+        tracing::warn!("Failed to persist JWT secret: {}", e);
+    }
+
+    // Set restrictive permissions on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) =
+            std::fs::set_permissions(&secret_path, std::fs::Permissions::from_mode(0o600))
+        {
+            tracing::warn!("Failed to set JWT secret file permissions: {}", e);
+        }
+    }
+
+    Ok(secret.to_vec())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -262,21 +351,21 @@ async fn main() -> Result<()> {
 
     // Build configuration (CLI args override config file)
     let listen_str = args.listen.unwrap_or(config_file.server.listen);
-    let listen_addr: SocketAddr = listen_str.parse().expect("Invalid listen address");
+    let listen_addr: SocketAddr = listen_str.parse().map_err(|e| {
+        anyhow::anyhow!(
+            "L-23: Invalid listen address '{}': {}. Expected format: 'IP:PORT' (e.g., '0.0.0.0:8900' or '[::]:8900')",
+            listen_str,
+            e
+        )
+    })?;
     let network_str = args.network.unwrap_or(config_file.server.network);
     let network = parse_network(&network_str);
     let data_dir = args.data_dir.unwrap_or(config_file.storage.data_dir);
     let pay_node_url = args.pay_node_url.unwrap_or(config_file.proxy.pay_node_url);
-    let jwt_secret: Vec<u8> = args
-        .jwt_secret
-        .or(config_file.security.jwt_secret)
-        .map(|s| s.into_bytes())
-        .unwrap_or_else(|| {
-            // Generate random secret if not provided
-            let mut secret = [0u8; 32];
-            getrandom::getrandom(&mut secret).expect("Failed to generate random secret");
-            secret.to_vec()
-        });
+
+    // M-18/L-24: JWT secret handling with proper error handling and persistence
+    let configured_secret = args.jwt_secret.or(config_file.security.jwt_secret);
+    let jwt_secret = resolve_jwt_secret(configured_secret, network, &data_dir)?;
 
     // Create data directory
     std::fs::create_dir_all(&data_dir)?;

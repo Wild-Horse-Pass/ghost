@@ -297,12 +297,25 @@ impl InstantPaymentChecker {
             available_balance,
             current_time,
         ) {
-            Ok(_reservation) => {
+            Ok(result) => {
                 debug!(
                     sender_lock_id = signed_payment.sender_lock_id,
                     amount = signed_payment.amount_sats,
                     "Funds reserved for instant payment"
                 );
+
+                // L-11 FIX: Log any expired reservations that were cleaned up.
+                // These represent payments that were initiated but never settled.
+                for expired in &result.expired_reservations {
+                    warn!(
+                        sender_lock_id = signed_payment.sender_lock_id,
+                        expired_payment_id = hex::encode(expired.payment_id),
+                        expired_amount_sats = expired.amount_sats,
+                        created_at = expired.created_at,
+                        expired_at = expired.expires_at,
+                        "Reservation expired without settlement - payment may have failed"
+                    );
+                }
             }
             Err(InstantPaymentError::InsufficientFunds {
                 requested,
