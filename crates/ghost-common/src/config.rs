@@ -150,6 +150,10 @@ impl NodeConfig {
     /// 2. **Internal API Authentication** (`internal_api_secret` configured)
     ///    - Admin endpoints must be protected to prevent unauthorized access
     ///
+    /// 3. **Seed Nodes Configured** (`seed_nodes` non-empty) [M-15]
+    ///    - At least one seed node required for P2P network discovery
+    ///    - Without seed nodes, the node will be isolated and unable to participate
+    ///
     /// These checks only apply when `bitcoin.network = "mainnet"`. Testnets allow
     /// relaxed security for development and testing purposes.
     fn validate_mainnet_security(&self, result: &mut ConfigValidationResult) {
@@ -195,6 +199,18 @@ impl NodeConfig {
                     );
                 }
             }
+        }
+
+        // MAINNET REQUIREMENT 3: Seed nodes must be configured
+        // M-15: Without seed nodes, a mainnet node cannot discover peers and will be isolated,
+        // making it unable to participate in the P2P mesh or consensus.
+        if self.network.seed_nodes.is_empty() {
+            result.add_error(
+                "network.seed_nodes",
+                "MAINNET SECURITY: At least one seed node is REQUIRED for mainnet. \
+                 Configure seed_nodes in [network] section with valid peer addresses. \
+                 Without seed nodes, this node cannot discover the P2P network and will be isolated.",
+            );
         }
     }
 
@@ -1373,5 +1389,56 @@ mod tests {
             .iter()
             .any(|e| e.field == "network.solo_payout_address"
                 && e.message.contains("Invalid address prefix")));
+    }
+
+    #[test]
+    fn test_mainnet_requires_seed_nodes() {
+        // M-15: Mainnet nodes must have seed_nodes configured to discover peers
+        let mut config = NodeConfig::default();
+        config.bitcoin.network = BitcoinNetwork::Mainnet;
+        config.network.noise_enabled = true;
+        config.network.internal_api_secret =
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
+        config.network.seed_nodes = vec![]; // Empty seed nodes
+
+        let result = config.validate();
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.seed_nodes"
+                && e.message.contains("MAINNET SECURITY")));
+    }
+
+    #[test]
+    fn test_mainnet_with_seed_nodes_valid() {
+        // M-15: Mainnet nodes with seed_nodes configured should not error
+        let mut config = NodeConfig::default();
+        config.bitcoin.network = BitcoinNetwork::Mainnet;
+        config.network.noise_enabled = true;
+        config.network.internal_api_secret =
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
+        config.network.seed_nodes = vec!["seed1.bitcoinghost.org:8559".to_string()];
+
+        let result = config.validate();
+        // Should not have seed_nodes error
+        assert!(!result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.seed_nodes"));
+    }
+
+    #[test]
+    fn test_signet_allows_empty_seed_nodes() {
+        // M-15: Signet (non-mainnet) nodes do not require seed nodes
+        let mut config = NodeConfig::default();
+        config.bitcoin.network = BitcoinNetwork::Signet;
+        config.network.seed_nodes = vec![]; // Empty is OK for signet
+
+        let result = config.validate();
+        // Should not have seed_nodes error on non-mainnet
+        assert!(!result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.seed_nodes"));
     }
 }

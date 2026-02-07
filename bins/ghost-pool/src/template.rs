@@ -750,6 +750,13 @@ impl TemplateProcessor {
             }
 
             coinbase2.extend_from_slice(&0u64.to_le_bytes()); // 0 value
+            // L-10: Validate commitment length before casting to u8
+            if commitment_bytes.len() > 255 {
+                return Err(TemplateError::BlockAssemblyError(format!(
+                    "L-10: Witness commitment script too long: {} bytes (max 255)",
+                    commitment_bytes.len()
+                )));
+            }
             coinbase2.push(commitment_bytes.len() as u8);
             coinbase2.extend_from_slice(&commitment_bytes);
             witness_data.commitment_script = Some(commitment_bytes.clone());
@@ -961,6 +968,13 @@ impl TemplateProcessor {
             }
 
             coinbase2.extend_from_slice(&0u64.to_le_bytes()); // 0 value
+            // L-10: Validate commitment length before casting to u8
+            if commitment_bytes.len() > 255 {
+                return Err(TemplateError::BlockAssemblyError(format!(
+                    "L-10: Witness commitment script too long: {} bytes (max 255)",
+                    commitment_bytes.len()
+                )));
+            }
             coinbase2.push(commitment_bytes.len() as u8);
             coinbase2.extend_from_slice(&commitment_bytes);
             witness_data.commitment_script = Some(commitment_bytes.clone());
@@ -1066,6 +1080,7 @@ impl TemplateProcessor {
     ///
     /// CRIT-10: Returns an error if the address is invalid.
     /// NEVER creates placeholder/all-zeros outputs that would be unspendable.
+    /// L-11: Validates script length before casting to u8.
     fn encode_address_script(
         &self,
         buf: &mut Vec<u8>,
@@ -1073,6 +1088,14 @@ impl TemplateProcessor {
         context: &str,
     ) -> Result<(), TemplateError> {
         let script_bytes = self.address_to_script(address, context)?;
+        // L-11: Validate script length before casting to u8
+        if script_bytes.len() > 255 {
+            return Err(TemplateError::BlockAssemblyError(format!(
+                "L-11: Script too long for coinbase: {} bytes (max 255) in {}",
+                script_bytes.len(),
+                context
+            )));
+        }
         buf.push(script_bytes.len() as u8);
         buf.extend_from_slice(&script_bytes);
         Ok(())

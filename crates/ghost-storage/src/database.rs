@@ -32,6 +32,36 @@ use tracing::{debug, info, warn};
 
 use ghost_common::error::{GhostError, GhostResult};
 
+// =============================================================================
+// L-14: RAII UMASK GUARD
+// =============================================================================
+
+/// L-14: RAII guard that restores the original umask on drop.
+/// Ensures umask is restored even if a panic occurs during file creation.
+#[cfg(unix)]
+struct UmaskGuard {
+    old_umask: libc::mode_t,
+}
+
+#[cfg(unix)]
+impl UmaskGuard {
+    /// Set a restrictive umask and return a guard that restores the original on drop.
+    /// umask 0o077 means: remove all permissions for group and others.
+    fn new_restrictive() -> Self {
+        let old_umask = unsafe { libc::umask(0o077) };
+        Self { old_umask }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for UmaskGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::umask(self.old_umask);
+        }
+    }
+}
+
 /// Configuration for database retry behavior
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
@@ -160,48 +190,42 @@ impl Database {
     ///
     /// H-DB-1/H-DB-2 FIX: Uses umask to create files with restricted permissions atomically,
     /// eliminating the race condition between file creation and chmod.
+    ///
+    /// L-14: Uses RAII UmaskGuard to ensure umask is restored even on panic.
     pub fn open<P: AsRef<Path>>(path: P) -> GhostResult<Self> {
         let path = path.as_ref();
         let path_str = path.to_string_lossy().to_string();
 
         info!(path = %path_str, "Opening database");
 
-        // H-DB-1 FIX: Set restrictive umask before creating any files
-        // This ensures directories are created with 0o700 and files with 0o600
-        // atomically, with no window where they could be world-readable.
+        // H-DB-1 FIX: Set restrictive umask before creating any files.
+        // L-14 FIX: Use RAII guard to ensure umask is restored even on panic.
+        // umask 0o077 means: remove all permissions for group and others
+        // Directory 0o777 & !0o077 = 0o700
+        // File 0o666 & !0o077 = 0o600
         #[cfg(unix)]
-        let old_umask = {
-            
-            // umask 0o077 means: remove all permissions for group and others
-            // Directory 0o777 & !0o077 = 0o700
-            // File 0o666 & !0o077 = 0o600
-            unsafe { libc::umask(0o077) }
-        };
+        let _umask_guard = UmaskGuard::new_restrictive();
 
         // Create parent directory if needed (now created with 0o700 due to umask)
-        let dir_result = if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-        } else {
-            Ok(())
-        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
 
         // Open database (file created with 0o600 due to umask)
-        let conn_result = Connection::open_with_flags(
+        let conn = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
-        );
+        )
+        .map_err(|e| GhostError::Database(e.to_string()))?;
 
-        // H-DB-1 FIX: Restore original umask IMMEDIATELY after file operations
+        // L-14: UmaskGuard is dropped here automatically when going out of scope,
+        // restoring original umask. This happens even if an error occurred above
+        // due to the RAII pattern. We explicitly drop it here to be clear about
+        // when the umask is restored.
         #[cfg(unix)]
-        unsafe {
-            libc::umask(old_umask);
-        }
-
-        // Now handle errors after umask is restored
-        dir_result?;
-        let conn = conn_result.map_err(|e| GhostError::Database(e.to_string()))?;
+        drop(_umask_guard);
 
         Self::initialize_connection(&conn)?;
 
@@ -424,6 +448,69 @@ impl Database {
     /// Check if this is an in-memory database
     pub fn is_in_memory(&self) -> bool {
         self.inner.in_memory
+    }
+
+    /// L-15: Verify and fix auxiliary file (WAL/SHM) permissions.
+    ///
+    /// SQLite may create WAL and SHM files after the initial database open,
+    /// potentially with weaker permissions than intended. This method should
+    /// be called periodically (e.g., during maintenance or after checkpoints)
+    /// to ensure these files maintain restrictive permissions.
+    ///
+    /// Note: There is an inherent race condition window between when SQLite
+    /// creates these files and when this check runs. For maximum security,
+    /// call this method frequently or use system-level protections like
+    /// restrictive directory permissions (which we already set to 0o700).
+    ///
+    /// Returns the number of files that had permissions fixed.
+    #[cfg(unix)]
+    pub fn verify_aux_permissions(&self) -> GhostResult<usize> {
+        use std::os::unix::fs::PermissionsExt;
+
+        if self.inner.in_memory {
+            return Ok(0);
+        }
+
+        let path = Path::new(&self.inner.path);
+        let mut fixed_count = 0;
+
+        for ext in ["db-wal", "db-shm"] {
+            let aux_path = path.with_extension(ext);
+            if aux_path.exists() {
+                if let Ok(metadata) = std::fs::metadata(&aux_path) {
+                    let perms = metadata.permissions();
+                    // Check if group or others have any permissions
+                    if perms.mode() & 0o077 != 0 {
+                        warn!(
+                            path = %aux_path.display(),
+                            mode = format!("{:o}", perms.mode()),
+                            "L-15: Auxiliary file has weak permissions, fixing..."
+                        );
+                        let mut new_perms = perms;
+                        new_perms.set_mode(0o600);
+                        std::fs::set_permissions(&aux_path, new_perms).map_err(|e| {
+                            GhostError::Database(format!(
+                                "Failed to secure auxiliary file permissions: {}",
+                                e
+                            ))
+                        })?;
+                        fixed_count += 1;
+                    }
+                }
+            }
+        }
+
+        if fixed_count > 0 {
+            info!(fixed_count, "L-15: Fixed auxiliary file permissions");
+        }
+
+        Ok(fixed_count)
+    }
+
+    /// L-15: Non-Unix stub for verify_aux_permissions
+    #[cfg(not(unix))]
+    pub fn verify_aux_permissions(&self) -> GhostResult<usize> {
+        Ok(0)
     }
 
     /// Checkpoint WAL (force writes to main database)

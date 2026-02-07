@@ -39,35 +39,112 @@ use crate::{
 /// Session registry for tracking seen session IDs (WR-L1)
 ///
 /// Prevents session ID collisions and replay attacks.
-#[derive(Debug, Default)]
+///
+/// CRIT-2 SECURITY: This registry is in-memory only. On process restart,
+/// all session tracking is lost, which could allow replay attacks if sessions
+/// from before the restart are still valid. Callers MUST:
+/// 1. Call `requires_persistence_warning()` on startup and handle accordingly
+/// 2. Either use persistent storage or ensure all pre-restart sessions are expired
+#[derive(Debug)]
 pub struct SessionRegistry {
     /// Set of session IDs that have been seen
     seen_sessions: HashSet<[u8; 32]>,
+    /// Whether the caller has acknowledged the in-memory limitation
+    persistence_acknowledged: bool,
+}
+
+impl Default for SessionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SessionRegistry {
     /// Create a new session registry
+    ///
+    /// CRIT-2: The registry starts in unacknowledged mode. Callers must call
+    /// `acknowledge_in_memory_mode()` before using the registry.
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            seen_sessions: HashSet::new(),
+            persistence_acknowledged: false,
+        }
+    }
+
+    /// CRIT-2 FIX: Check if the caller must acknowledge in-memory mode
+    ///
+    /// Returns true if the registry is in-memory only and the caller has not
+    /// yet acknowledged this limitation. Callers should either:
+    /// 1. Implement persistent storage and not use this registry
+    /// 2. Call `acknowledge_in_memory_mode()` after ensuring all pre-restart
+    ///    sessions have expired (via timeout or explicit invalidation)
+    pub fn requires_persistence_warning(&self) -> bool {
+        !self.persistence_acknowledged
+    }
+
+    /// CRIT-2 FIX: Acknowledge that in-memory mode is acceptable
+    ///
+    /// Call this after verifying that:
+    /// - All sessions from before restart have expired, OR
+    /// - The system has been down long enough that session timeouts have passed, OR
+    /// - This is a fresh deployment with no prior sessions
+    ///
+    /// # Safety
+    ///
+    /// Calling this without ensuring the above conditions could allow replay attacks
+    /// from sessions that existed before the restart.
+    pub fn acknowledge_in_memory_mode(&mut self) {
+        self.persistence_acknowledged = true;
+    }
+
+    /// CRIT-2 FIX: Clear registry and reset to fresh state
+    ///
+    /// Use this on restart after waiting for all previous sessions to expire.
+    /// This method also requires re-acknowledgment of in-memory mode.
+    pub fn reset_for_restart(&mut self) {
+        self.seen_sessions.clear();
+        self.persistence_acknowledged = false;
     }
 
     /// Check if a session ID has been seen before
-    pub fn is_seen(&self, session_id: &[u8; 32]) -> bool {
-        self.seen_sessions.contains(session_id)
+    ///
+    /// CRIT-2: Returns error if persistence has not been acknowledged
+    pub fn is_seen(&self, session_id: &[u8; 32]) -> Result<bool, crate::WraithError> {
+        if !self.persistence_acknowledged {
+            return Err(crate::WraithError::InvalidState {
+                expected: "persistence acknowledged".to_string(),
+                actual: "registry not initialized - call acknowledge_in_memory_mode()".to_string(),
+            });
+        }
+        Ok(self.seen_sessions.contains(session_id))
     }
 
     /// Register a session ID
     ///
-    /// Returns true if the session ID was new, false if it was already seen.
-    pub fn register(&mut self, session_id: [u8; 32]) -> bool {
-        self.seen_sessions.insert(session_id)
+    /// Returns Ok(true) if the session ID was new, Ok(false) if it was already seen.
+    /// Returns Err if persistence has not been acknowledged.
+    pub fn register(&mut self, session_id: [u8; 32]) -> Result<bool, crate::WraithError> {
+        if !self.persistence_acknowledged {
+            return Err(crate::WraithError::InvalidState {
+                expected: "persistence acknowledged".to_string(),
+                actual: "registry not initialized - call acknowledge_in_memory_mode()".to_string(),
+            });
+        }
+        Ok(self.seen_sessions.insert(session_id))
     }
 
     /// Check and register a session ID in one operation
     ///
     /// Returns Ok(()) if the session ID was new, Err if it was already seen.
+    /// Also returns Err if persistence has not been acknowledged.
     pub fn check_and_register(&mut self, session_id: [u8; 32]) -> Result<(), crate::WraithError> {
-        if !self.register(session_id) {
+        if !self.persistence_acknowledged {
+            return Err(crate::WraithError::InvalidState {
+                expected: "persistence acknowledged".to_string(),
+                actual: "registry not initialized - call acknowledge_in_memory_mode()".to_string(),
+            });
+        }
+        if !self.seen_sessions.insert(session_id) {
             return Err(crate::WraithError::InvalidInput(format!(
                 "Session ID {} already exists (collision or replay)",
                 hex::encode(session_id)
@@ -82,6 +159,8 @@ impl SessionRegistry {
     }
 
     /// Clear old sessions (call periodically to prevent unbounded growth)
+    ///
+    /// Note: This does not reset the persistence acknowledgment.
     pub fn clear(&mut self) {
         self.seen_sessions.clear();
     }
@@ -186,6 +265,8 @@ pub struct WraithSession {
     timeout_instant: Instant,
     /// Session timeout duration from creation
     timeout_duration_secs: u64,
+    /// M-6: Total extension time used (to enforce MAX_EXTENSION_SECS limit)
+    total_extensions_secs: u64,
 }
 
 impl WraithSession {
@@ -231,6 +312,7 @@ impl WraithSession {
             created_at: now_unix,
             timeout_instant,
             timeout_duration_secs: timeout_duration,
+            total_extensions_secs: 0,
         }
     }
 
@@ -327,12 +409,31 @@ impl WraithSession {
         self.timeout_duration_secs = new_duration;
     }
 
+    /// Maximum total extension allowed in seconds (24 hours)
+    /// M-6 FIX: Prevents unbounded timeout extension attacks
+    /// This limits how much ADDITIONAL time can be added beyond the initial timeout
+    pub const MAX_EXTENSION_SECS: u64 = 24 * 60 * 60;
+
     /// Extend timeout by a specific duration (e.g., for slow confirmations)
     ///
     /// Uses monotonic clock (Instant) to prevent NTP manipulation attacks (WR-L3).
+    ///
+    /// M-6 FIX: Total cumulative extensions cannot exceed MAX_EXTENSION_SECS.
+    /// This prevents attackers from keeping sessions alive indefinitely through
+    /// repeated extensions. Once the extension budget is exhausted, no further
+    /// extensions are allowed.
     pub fn extend_timeout(&mut self, additional_secs: u64) {
-        self.timeout_instant += std::time::Duration::from_secs(additional_secs);
-        self.timeout_duration_secs = self.timeout_duration_secs.saturating_add(additional_secs);
+        // M-6: Calculate remaining extension budget
+        let remaining_budget = Self::MAX_EXTENSION_SECS.saturating_sub(self.total_extensions_secs);
+
+        // Clamp to remaining budget
+        let actual_extension = additional_secs.min(remaining_budget);
+
+        if actual_extension > 0 {
+            self.timeout_instant += std::time::Duration::from_secs(actual_extension);
+            self.timeout_duration_secs = self.timeout_duration_secs.saturating_add(actual_extension);
+            self.total_extensions_secs = self.total_extensions_secs.saturating_add(actual_extension);
+        }
     }
 
     /// Get timeout deadline as approximate Unix timestamp
@@ -544,31 +645,37 @@ mod tests {
     fn test_session_registry() {
         let mut registry = SessionRegistry::new();
 
+        // CRIT-2: Must acknowledge in-memory mode before using registry
+        assert!(registry.requires_persistence_warning());
+        registry.acknowledge_in_memory_mode();
+        assert!(!registry.requires_persistence_warning());
+
         let session_id1 = [0x01u8; 32];
         let session_id2 = [0x02u8; 32];
 
         // First registration should succeed
-        assert!(registry.register(session_id1));
+        assert!(registry.register(session_id1).unwrap());
         assert_eq!(registry.session_count(), 1);
 
         // Same ID should fail (returns false)
-        assert!(!registry.register(session_id1));
+        assert!(!registry.register(session_id1).unwrap());
         assert_eq!(registry.session_count(), 1);
 
         // Different ID should succeed
-        assert!(registry.register(session_id2));
+        assert!(registry.register(session_id2).unwrap());
         assert_eq!(registry.session_count(), 2);
 
         // Check is_seen
-        assert!(registry.is_seen(&session_id1));
-        assert!(registry.is_seen(&session_id2));
-        assert!(!registry.is_seen(&[0x03u8; 32]));
+        assert!(registry.is_seen(&session_id1).unwrap());
+        assert!(registry.is_seen(&session_id2).unwrap());
+        assert!(!registry.is_seen(&[0x03u8; 32]).unwrap());
     }
 
     /// WR-L1 Test: check_and_register returns proper errors
     #[test]
     fn test_session_registry_check_and_register() {
         let mut registry = SessionRegistry::new();
+        registry.acknowledge_in_memory_mode();
 
         let session_id = [0x42u8; 32];
 
@@ -579,6 +686,56 @@ mod tests {
         let result = registry.check_and_register(session_id);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    /// CRIT-2 Test: Registry requires acknowledgment before use
+    #[test]
+    fn test_session_registry_requires_acknowledgment() {
+        let mut registry = SessionRegistry::new();
+
+        let session_id = [0x01u8; 32];
+
+        // Should fail before acknowledgment
+        let result = registry.is_seen(&session_id);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("registry not initialized"));
+
+        let result = registry.register(session_id);
+        assert!(result.is_err());
+
+        let result = registry.check_and_register(session_id);
+        assert!(result.is_err());
+
+        // After acknowledgment, should work
+        registry.acknowledge_in_memory_mode();
+        assert!(registry.is_seen(&session_id).is_ok());
+        assert!(registry.register(session_id).is_ok());
+    }
+
+    /// CRIT-2 Test: reset_for_restart clears state and requires re-acknowledgment
+    #[test]
+    fn test_session_registry_reset_for_restart() {
+        let mut registry = SessionRegistry::new();
+        registry.acknowledge_in_memory_mode();
+
+        let session_id = [0x01u8; 32];
+        registry.register(session_id).unwrap();
+        assert_eq!(registry.session_count(), 1);
+
+        // Reset for restart
+        registry.reset_for_restart();
+
+        // Should require re-acknowledgment
+        assert!(registry.requires_persistence_warning());
+        assert!(registry.is_seen(&session_id).is_err());
+
+        // After re-acknowledgment, should be empty
+        registry.acknowledge_in_memory_mode();
+        assert_eq!(registry.session_count(), 0);
+        assert!(!registry.is_seen(&session_id).unwrap());
     }
 
     /// WR-L3 Test: Monotonic clock for timeouts
@@ -604,13 +761,20 @@ mod tests {
     }
 
     /// WR-L3 Test: Timeout extension uses monotonic clock
+    /// M-6: Test that cumulative extensions are bounded to MAX_EXTENSION_SECS
     #[test]
     fn test_timeout_extension() {
-        let mut session = WraithSession::new(ParticipantTier::Micro, WraithDenomination::Small);
+        // Use a short custom timeout so we can test extensions properly
+        let config = SessionConfig::with_timeout(3600); // 1 hour initial
+        let mut session = WraithSession::with_config(
+            ParticipantTier::Micro,
+            WraithDenomination::Small,
+            config,
+        );
 
         let initial_remaining = session.remaining_secs();
 
-        // Extend by 1 hour
+        // Extend by 1 hour - should work (within 24-hour budget)
         session.extend_timeout(3600);
 
         let new_remaining = session.remaining_secs();
@@ -619,5 +783,38 @@ mod tests {
         // Allow some tolerance for execution time
         assert!(new_remaining > initial_remaining);
         assert!(new_remaining >= initial_remaining + 3590);
+
+        // Check that we've used 1 hour of extension budget
+        assert_eq!(session.total_extensions_secs, 3600);
+
+        // M-6 FIX Test: Cumulative extensions should be bounded
+        // Try to extend by more than remaining budget
+        let before_mega_extend = session.remaining_secs();
+        session.extend_timeout(100 * 24 * 60 * 60); // Try 100 days
+
+        let after_mega_extend = session.remaining_secs();
+
+        // Should only have extended by remaining budget (24 hours - 1 hour already used)
+        let expected_extension = WraithSession::MAX_EXTENSION_SECS - 3600;
+        assert!(
+            after_mega_extend <= before_mega_extend + expected_extension + 10,
+            "Extension should be bounded to remaining budget"
+        );
+
+        // Total extensions should be capped at MAX_EXTENSION_SECS
+        assert_eq!(session.total_extensions_secs, WraithSession::MAX_EXTENSION_SECS);
+
+        // Further extensions should have no effect
+        let before_exhausted = session.remaining_secs();
+        session.extend_timeout(3600); // Try another hour
+        let after_exhausted = session.remaining_secs();
+
+        // Should not have extended (budget exhausted)
+        // Allow small tolerance for timing
+        assert!(
+            after_exhausted <= before_exhausted + 1,
+            "No extension should occur after budget exhausted"
+        );
+        assert_eq!(session.total_extensions_secs, WraithSession::MAX_EXTENSION_SECS);
     }
 }

@@ -780,9 +780,19 @@ impl MeshNetwork {
         let our_node_id = identity.node_id();
         let peers = Arc::new(PeerManager::new(our_node_id, config.max_peers));
 
-        // Create message channels
-        let (outbound_tx, outbound_rx) = mpsc::channel(1000);
-        let (inbound_tx, inbound_rx) = mpsc::channel(1000);
+        // M-8: Create bounded message channels with explicit capacity
+        //
+        // Capacity of 10,000 is chosen based on:
+        // - At peak load, ~1000 messages/second from all peers combined
+        // - 10 second buffer gives time for processing spikes
+        // - Each message is ~1KB, so max memory usage is ~10MB per channel
+        // - Bounded to prevent memory exhaustion attacks
+        //
+        // If channels fill up, senders use try_send() with logging for backpressure.
+        // This is preferable to dropping messages silently or blocking indefinitely.
+        const CHANNEL_CAPACITY: usize = 10_000;
+        let (outbound_tx, outbound_rx) = mpsc::channel(CHANNEL_CAPACITY);
+        let (inbound_tx, inbound_rx) = mpsc::channel(CHANNEL_CAPACITY);
 
         // C-1/C-4/M-2: Initialize Noise connection pool if enabled
         // M-2: When noise_required=true and initialization fails, return an error
@@ -1297,14 +1307,29 @@ impl MeshNetwork {
             "Sending message to peer"
         );
 
-        // Queue for async send
-        self.outbound_tx
-            .send((endpoint, data))
-            .await
-            .map_err(|e| GhostError::P2PMessage(format!("Failed to queue message: {}", e)))?;
-
-        self.messages_sent.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        // M-8: Use try_send with explicit backpressure handling
+        // This prevents blocking indefinitely if the outbound channel is full
+        match self.outbound_tx.try_send((endpoint, data)) {
+            Ok(_) => {
+                self.messages_sent.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                // Channel is full - return an error so the caller can decide what to do
+                // (e.g., retry later, drop the message, or slow down)
+                warn!(
+                    peer = %peer.node_id_short(),
+                    msg_type = ?envelope.msg_type,
+                    "M-8: Outbound channel full (backpressure)"
+                );
+                Err(GhostError::P2PMessage(
+                    "M-8: Outbound channel full - apply backpressure".to_string(),
+                ))
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err(GhostError::NotRunning("Outbound channel closed".into()))
+            }
+        }
     }
 
     /// Get the endpoint for a message type
@@ -1839,8 +1864,22 @@ impl MeshNetwork {
 
                     self.messages_received.fetch_add(1, Ordering::Relaxed);
 
-                    if let Err(e) = self.inbound_tx.send(data).await {
-                        warn!(error = %e, "Failed to queue inbound message");
+                    // M-8: Use try_send with explicit backpressure handling
+                    // This prevents blocking if the inbound channel is full (e.g., during a flood attack)
+                    match self.inbound_tx.try_send(data) {
+                        Ok(_) => {}
+                        Err(mpsc::error::TrySendError::Full(_)) => {
+                            // Channel is full - log and drop the message
+                            // This is acceptable because:
+                            // 1. The sender will retry if important
+                            // 2. The message handler is backed up and needs to catch up
+                            // 3. Better to drop messages than block the receiver loop
+                            warn!("M-8: Inbound channel full, dropping message (backpressure)");
+                        }
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            warn!("M-8: Inbound channel closed, stopping subscriber");
+                            break;
+                        }
                     }
                 }
                 Ok(Some(Err(e))) => {

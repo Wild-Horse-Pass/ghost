@@ -72,6 +72,11 @@ pub enum ZkError {
     /// M-2: Simulated proof rejected in production mode
     #[error("Simulated proof rejected: simulated proofs are not allowed in production")]
     SimulatedProofRejected,
+
+    /// HIGH-5: Missing Groth16 verification key
+    /// Production deployments MUST provide a verification key from an MPC ceremony
+    #[error("Missing verification key: {0}")]
+    MissingVerificationKey(String),
 }
 
 /// Result type for ZK operations

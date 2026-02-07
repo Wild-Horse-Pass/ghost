@@ -130,11 +130,16 @@ fn json_depth(value: &Value) -> usize {
 }
 
 /// Validate a JSON value doesn't contain excessively long strings
+/// M-16: Uses InvalidParamValue with owned String instead of Box::leak to prevent memory leaks
 fn validate_string_lengths(value: &Value, path: &str) -> Result<(), RpcError> {
     match value {
-        Value::String(s) if s.len() > MAX_PARAM_STRING_LEN => Err(RpcError::ParamTooLong(
-            Box::leak(path.to_string().into_boxed_str()),
-        )),
+        Value::String(s) if s.len() > MAX_PARAM_STRING_LEN => {
+            // M-16: Return InvalidParamValue with an owned String instead of leaking memory
+            Err(RpcError::InvalidParamValue(format!(
+                "M-16: parameter at '{}' exceeds maximum string length ({})",
+                path, MAX_PARAM_STRING_LEN
+            )))
+        }
         Value::Array(arr) => {
             for (i, v) in arr.iter().enumerate() {
                 validate_string_lengths(v, &format!("{}[{}]", path, i))?;

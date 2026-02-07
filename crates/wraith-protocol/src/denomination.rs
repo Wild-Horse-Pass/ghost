@@ -78,6 +78,8 @@ impl WraithDenomination {
     /// amount fingerprinting. This makes it harder for chain analysis to
     /// correlate intermediate UTXOs based on their exact values.
     ///
+    /// M-5 FIX: Uses rejection sampling instead of modulo to eliminate bias.
+    ///
     /// # Returns
     /// The base intermediate amount plus a random offset in range [-5%, +5%]
     pub fn intermediate_sats_randomized(&self) -> u64 {
@@ -90,15 +92,28 @@ impl WraithDenomination {
             return base; // Too small for meaningful variance
         }
 
-        // Generate random offset in range [0, 2 * variance_range]
-        // Then subtract variance_range to get range [-variance_range, +variance_range]
-        let mut rng_bytes = [0u8; 8];
-        if getrandom::getrandom(&mut rng_bytes).is_err() {
-            return base; // Fallback to base on RNG failure
-        }
+        // Total range is [0, 2 * variance_range] inclusive
+        let range_size = 2 * variance_range + 1;
 
-        let random_value = u64::from_le_bytes(rng_bytes);
-        let offset_magnitude = random_value % (2 * variance_range + 1);
+        // M-5 FIX: Use rejection sampling to eliminate modulo bias
+        // We need an unbiased random number in [0, range_size)
+        // Compute the largest multiple of range_size that fits in u64
+        let max_valid = u64::MAX - (u64::MAX % range_size);
+
+        let offset_magnitude = loop {
+            let mut rng_bytes = [0u8; 8];
+            if getrandom::getrandom(&mut rng_bytes).is_err() {
+                return base; // Fallback to base on RNG failure
+            }
+
+            let random_value = u64::from_le_bytes(rng_bytes);
+
+            // Reject values that would cause bias
+            if random_value < max_valid {
+                break random_value % range_size;
+            }
+            // Otherwise, retry with fresh random bytes
+        };
 
         // Apply offset: base + offset - variance_range gives us [-variance_range, +variance_range]
         // Use saturating arithmetic to prevent underflow

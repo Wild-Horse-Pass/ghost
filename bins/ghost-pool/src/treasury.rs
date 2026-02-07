@@ -112,7 +112,14 @@ impl TreasuryState {
             Some(threshold_time) => {
                 let elapsed = reference_time.signed_duration_since(threshold_time);
                 let days = elapsed.num_days().max(0) as u32;
-                days / 365 // Approximate years
+                // L-2 DOCUMENTATION: Using 365-day years as intentional approximation.
+                // This is acceptable because:
+                // 1. Decay schedule granularity is yearly - a few days difference has no impact
+                // 2. Leap years would only shift transitions by ~1 day per 4 years
+                // 3. Determinism across nodes is ensured by using the same calculation
+                // 4. The decay schedule spans 5 years, so cumulative drift is <2 days
+                // Using chrono's precise calendar math would add complexity without benefit.
+                days / 365
             }
         }
     }

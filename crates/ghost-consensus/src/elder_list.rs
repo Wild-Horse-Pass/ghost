@@ -104,17 +104,19 @@ impl ElderEntry {
     }
 }
 
-/// L-2: Maximum allowed timestamp drift for elder approvals (30 seconds in milliseconds)
+/// L-6: Maximum allowed timestamp drift for elder approvals (15 seconds in milliseconds)
 ///
 /// This prevents replay attacks with old approvals while allowing for reasonable
-/// clock skew. Reduced from 5 minutes to 30 seconds to match the message drift
-/// window used elsewhere in the codebase for consistency.
+/// clock skew. Reduced from 30 seconds to 15 seconds to minimize the replay window.
 ///
-/// 30 seconds is sufficient for:
+/// 15 seconds is sufficient for:
 /// - Normal clock skew between nodes (typically < 1 second with NTP)
 /// - Network propagation delays (typically < 5 seconds)
 /// - Processing time on recipient (typically < 1 second)
-pub const MAX_APPROVAL_TIMESTAMP_DRIFT_MS: u64 = 30 * 1000;
+///
+/// The timestamp is included in the signed message, providing defense-in-depth
+/// against replay attacks.
+pub const MAX_APPROVAL_TIMESTAMP_DRIFT_MS: u64 = 15 * 1000;
 
 /// An approval signature from an elder
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +266,26 @@ impl CanonicalElderList {
     }
 
     /// Compute the merkle root for a list of elders
+    ///
+    /// Uses a standard binary merkle tree with power-of-2 padding.
+    ///
+    /// # L-5: Padding Behavior
+    ///
+    /// The tree requires a power-of-2 number of leaves for efficient computation.
+    /// When the number of elders is not a power of 2, we pad with zero hashes:
+    ///
+    /// - **len=0**: Returns all-zeros hash (empty tree)
+    /// - **len=1**: No padding needed (1 is 2^0, a power of 2). The single
+    ///   elder's hash IS the merkle root.
+    /// - **len=2**: No padding needed (2 is 2^1)
+    /// - **len=3**: Padded to 4 leaves (one zero hash added)
+    /// - **len=5-7**: Padded to 8 leaves
+    /// - etc.
+    ///
+    /// The condition `n & (n-1) == 0` checks if n is a power of 2:
+    /// - 1: 0b0001 & 0b0000 = 0 (power of 2)
+    /// - 2: 0b0010 & 0b0001 = 0 (power of 2)
+    /// - 3: 0b0011 & 0b0010 = 2 (not power of 2, needs padding)
     pub fn compute_merkle_root_static(elders: &[ElderEntry]) -> [u8; 32] {
         if elders.is_empty() {
             return [0u8; 32];
@@ -272,7 +294,11 @@ impl CanonicalElderList {
         // Get leaf hashes
         let mut hashes: Vec<[u8; 32]> = elders.iter().map(|e| e.hash()).collect();
 
-        // Pad to power of 2 if needed
+        // L-5: Pad to power of 2 if needed
+        // The bit trick `n & (n-1) == 0` is true only for powers of 2 (and 0).
+        // For len=1: 1 & 0 = 0, so no padding (1 is 2^0)
+        // For len=3: 3 & 2 = 2 != 0, so we pad to 4
+        // The `!hashes.is_empty()` guard prevents underflow when len=0.
         while hashes.len() & (hashes.len() - 1) != 0 && !hashes.is_empty() {
             hashes.push([0u8; 32]);
         }
@@ -433,7 +459,56 @@ impl CanonicalElderList {
     /// # Genesis Exception
     ///
     /// For epoch 0 (genesis), no approvals are required since there are no previous elders.
+    ///
+    /// # Note
+    ///
+    /// For epoch rollback protection, use `verify_canonical_with_min_epoch()` instead.
     pub fn verify_canonical(&self, previous_elders: &HashSet<NodeId>) -> GhostResult<()> {
+        self.verify_canonical_with_min_epoch(previous_elders, 0)
+    }
+
+    /// M-9: Verify elder list with epoch rollback protection
+    ///
+    /// This extends `verify_canonical()` with protection against epoch rollback attacks.
+    /// An attacker might try to replay an old, valid elder list from a previous epoch
+    /// to override the current elder set. This method rejects such attacks by requiring
+    /// the list's epoch to be at least `min_expected_epoch`.
+    ///
+    /// # Arguments
+    ///
+    /// * `previous_elders` - The set of node IDs from the previous epoch's elder list
+    /// * `min_expected_epoch` - Minimum epoch number to accept (typically current_epoch)
+    ///
+    /// # Security Properties
+    ///
+    /// - **Epoch Rollback Protection**: Rejects lists with epoch < min_expected_epoch
+    /// - All properties from `verify_canonical()`
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // When processing an elder list update, pass current epoch as minimum
+    /// let current_epoch = current_list.epoch;
+    /// new_list.verify_canonical_with_min_epoch(&previous_elders, current_epoch)?;
+    /// ```
+    pub fn verify_canonical_with_min_epoch(
+        &self,
+        previous_elders: &HashSet<NodeId>,
+        min_expected_epoch: u64,
+    ) -> GhostResult<()> {
+        // M-9: Check for epoch rollback attack
+        if self.epoch < min_expected_epoch {
+            warn!(
+                received_epoch = self.epoch,
+                min_expected_epoch,
+                "M-9 SECURITY: Rejecting elder list with epoch below minimum (possible rollback attack)"
+            );
+            return Err(GhostError::ConsensusFailed(format!(
+                "M-9: Elder list epoch {} is below minimum expected epoch {} (rollback attack prevented)",
+                self.epoch, min_expected_epoch
+            )));
+        }
+
         // CRIT-4: First verify merkle root integrity
         if !self.verify_merkle_root() {
             return Err(GhostError::ConsensusFailed(
@@ -1603,11 +1678,12 @@ mod tests {
 
     #[test]
     fn test_l2_approval_timestamp_window() {
-        // L-2: Verify the approval timestamp drift is 30 seconds (not 5 minutes)
+        // L-6: Verify the approval timestamp drift is 15 seconds (reduced from 30s)
+        // This reduces the replay attack window while still allowing for clock skew
         assert_eq!(
             MAX_APPROVAL_TIMESTAMP_DRIFT_MS,
-            30 * 1000,
-            "L-2: Approval timestamp drift should be 30 seconds"
+            15 * 1000,
+            "L-6: Approval timestamp drift should be 15 seconds"
         );
     }
 

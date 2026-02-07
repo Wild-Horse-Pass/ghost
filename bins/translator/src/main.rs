@@ -702,9 +702,34 @@ async fn handle_sv1_request(
                 (state_guard.channel_id, job_id, seq)
             };
 
-            // Parse nonce and ntime
-            let nonce = u32::from_str_radix(&submit.nonce, 16).unwrap_or(0);
-            let ntime = u32::from_str_radix(&submit.ntime, 16).unwrap_or(0);
+            // HIGH-7: Parse nonce and ntime with proper error handling
+            // Invalid hex values should be rejected, not silently defaulted to 0
+            let nonce = match u32::from_str_radix(&submit.nonce, 16) {
+                Ok(n) => n,
+                Err(_) => {
+                    let response = sv1::Response::error(
+                        request.id,
+                        -1,
+                        format!("HIGH-7: Invalid nonce hex value: {}", submit.nonce),
+                    );
+                    let json = serde_json::to_string(&response)?;
+                    sv1_tx.send(json).await?;
+                    return Ok(());
+                }
+            };
+            let ntime = match u32::from_str_radix(&submit.ntime, 16) {
+                Ok(t) => t,
+                Err(_) => {
+                    let response = sv1::Response::error(
+                        request.id,
+                        -1,
+                        format!("HIGH-7: Invalid ntime hex value: {}", submit.ntime),
+                    );
+                    let json = serde_json::to_string(&response)?;
+                    sv1_tx.send(json).await?;
+                    return Ok(());
+                }
+            };
 
             let share = sv2::SubmitSharesStandard {
                 channel_id,

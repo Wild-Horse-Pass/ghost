@@ -165,7 +165,24 @@ impl InternalAuth {
 }
 
 /// Constant-time byte comparison to prevent timing attacks
+///
+/// L-18 SECURITY NOTE: The length comparison on line 186 does leak timing information
+/// about whether the lengths match. However, this is acceptable here because:
+///
+/// 1. HMAC-SHA256 always produces exactly 32 bytes of output
+/// 2. Attackers already know the expected signature length is 32 bytes (it's public knowledge)
+/// 3. The length check only reveals "signature is/isn't 32 bytes" which provides no
+///    useful information about the actual signature value
+/// 4. The actual byte comparison in the loop below is constant-time and does not
+///    leak information about which bytes differ or how many match
+///
+/// To fully eliminate timing information, we could pad shorter inputs and always
+/// compare 32 bytes, but this would add complexity for zero security benefit since
+/// the HMAC output size is already public.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    // L-18: This length check leaks timing info about length mismatch, but HMAC-SHA256
+    // is always 32 bytes so attackers already know the expected length. No information
+    // about the actual signature value is revealed.
     if a.len() != b.len() {
         return false;
     }

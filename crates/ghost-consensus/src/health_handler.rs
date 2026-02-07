@@ -435,8 +435,38 @@ pub struct HealthPingHandler {
     /// Last registration time per node (C2 security fix - cooldown tracking)
     last_registration: RwLock<HashMap<NodeId, Instant>>,
     /// First seen time per node (C2 security fix - uptime tracking)
+    ///
+    /// M-11 SECURITY: Node-Local Uptime Tracking Limitation
+    ///
+    /// This uptime tracking is NODE-LOCAL only. Each node independently tracks when
+    /// it first saw each peer. This has important security implications:
+    ///
+    /// 1. Different nodes may have different first_seen times for the same peer
+    /// 2. Uptime calculations are NOT consensus-critical and should NOT be used for:
+    ///    - Voting eligibility (use CanonicalElderList instead)
+    ///    - Payout share calculations (use verified capabilities from ghost-verification)
+    ///    - Any decision requiring agreement across nodes
+    ///
+    /// 3. Uptime data here is used ONLY for:
+    ///    - Local DoS protection (rate limiting new nodes)
+    ///    - Peer quality heuristics (preferring long-running peers)
+    ///
+    /// For consensus-critical uptime verification, nodes must query distributed uptime
+    /// from peers via the verification system (see ghost-verification crate).
     first_seen_times: RwLock<HashMap<NodeId, Instant>>,
-    /// L-7 SECURITY: Dynamic PoW difficulty adjuster
+    /// L-7/L-9 SECURITY: Dynamic PoW difficulty adjuster
+    ///
+    /// L-9: This difficulty adjustment is NODE-LOCAL for DoS protection only.
+    ///
+    /// Each node independently adjusts its PoW difficulty based on local traffic.
+    /// This is intentionally NOT consensus-critical because:
+    ///
+    /// 1. Different nodes see different traffic levels based on network topology
+    /// 2. Difficulty adjustment is a DoS protection mechanism, not a consensus rule
+    /// 3. Nodes under attack can increase difficulty without affecting peers
+    ///
+    /// The base difficulty (NODE_ID_POW_DIFFICULTY) IS consensus-critical and is
+    /// enforced uniformly. Only the dynamic adjustment layer is node-local.
     difficulty_adjuster: DynamicDifficultyAdjuster,
 }
 

@@ -32,6 +32,7 @@ use std::collections::HashMap;
 /// L-STOR-1: Maximum allowed JSON size for deserialization from database (10 MB)
 /// Prevents OOM attacks from maliciously large data
 const MAX_JSON_SIZE: usize = 10 * 1024 * 1024;
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::params;
@@ -41,6 +42,23 @@ use tracing::{debug, info, warn};
 use ghost_common::error::{GhostError, GhostResult};
 
 use crate::Database;
+
+// =============================================================================
+// L-17: SAFE HEIGHT CONVERSION
+// =============================================================================
+
+/// L-17: Safely convert i64 height from SQLite to u64, rejecting negative values.
+/// Block heights should never be negative; a negative value indicates data corruption.
+fn i64_to_u64_height(value: i64, context: &str) -> Result<u64, GhostError> {
+    if value < 0 {
+        Err(GhostError::Database(format!(
+            "Invalid negative {} height: {}",
+            context, value
+        )))
+    } else {
+        Ok(value as u64)
+    }
+}
 
 /// State snapshot record
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,6 +232,9 @@ impl SnapshotManager {
 
             match result {
                 Ok((id, h, state_root, balances_json, nonces_json, created_at)) => {
+                    // L-17: Safely convert height, rejecting negative values
+                    let snapshot_height = i64_to_u64_height(h, "snapshot_at_or_before")?;
+
                     // L-STOR-1: Check size before deserializing to prevent OOM
                     if balances_json.len() > MAX_JSON_SIZE {
                         return Err(GhostError::Database(format!(
@@ -241,7 +262,7 @@ impl SnapshotManager {
 
                     Ok(Some(StateSnapshot {
                         id: Some(id),
-                        height: h as u64,
+                        height: snapshot_height,
                         state_root,
                         balances,
                         nonces,
@@ -276,6 +297,9 @@ impl SnapshotManager {
 
             match result {
                 Ok((id, h, state_root, balances_json, nonces_json, created_at)) => {
+                    // L-17: Safely convert height, rejecting negative values
+                    let snapshot_height = i64_to_u64_height(h, "snapshot_at")?;
+
                     // L-STOR-1: Check size before deserializing to prevent OOM
                     if balances_json.len() > MAX_JSON_SIZE {
                         return Err(GhostError::Database(format!(
@@ -303,7 +327,7 @@ impl SnapshotManager {
 
                     Ok(Some(StateSnapshot {
                         id: Some(id),
-                        height: h as u64,
+                        height: snapshot_height,
                         state_root,
                         balances,
                         nonces,
@@ -418,17 +442,21 @@ impl SnapshotManager {
                     let proposer_id: String = row.get(1)?;
                     let state_root: String = row.get(2)?;
                     let timestamp: i64 = row.get(3)?;
-                    Ok(BlockProposerRecord {
-                        height: h as u64,
-                        proposer_id,
-                        state_root,
-                        timestamp,
-                    })
+                    Ok((h, proposer_id, state_root, timestamp))
                 },
             );
 
             match result {
-                Ok(record) => Ok(Some(record)),
+                Ok((h, proposer_id, state_root, timestamp)) => {
+                    // L-17: Safely convert height, rejecting negative values
+                    let proposer_height = i64_to_u64_height(h, "proposer")?;
+                    Ok(Some(BlockProposerRecord {
+                        height: proposer_height,
+                        proposer_id,
+                        state_root,
+                        timestamp,
+                    }))
+                }
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(GhostError::Database(e.to_string())),
             }
@@ -444,7 +472,8 @@ impl SnapshotManager {
                 });
 
             match result {
-                Ok(Some(height)) => Ok(Some(height as u64)),
+                // L-17: Safely convert height, rejecting negative values
+                Ok(Some(h)) => Ok(Some(i64_to_u64_height(h, "latest_snapshot")?)),
                 Ok(None) => Ok(None),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(GhostError::Database(e.to_string())),

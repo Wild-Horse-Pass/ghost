@@ -39,6 +39,20 @@ type NodeRotationData = (
 );
 
 // =============================================================================
+// L-16: BLOB SIZE LIMITS FOR INSERT OPERATIONS
+// =============================================================================
+
+/// L-16: Maximum size for proof_data in equivocation_proofs table (100 KB)
+/// Equivocation proofs contain two conflicting vote signatures plus metadata.
+/// At most this should be ~2KB, so 100KB provides generous headroom.
+pub const MAX_EQUIVOCATION_PROOF_SIZE: usize = 100 * 1024;
+
+/// L-16: Maximum size for rotation_proof in retired_nodes table (10 KB)
+/// Rotation proofs contain two signatures and node IDs.
+/// At most this should be ~500 bytes, so 10KB provides generous headroom.
+pub const MAX_ROTATION_PROOF_SIZE: usize = 10 * 1024;
+
+// =============================================================================
 // SAFE TYPE CONVERSIONS
 // =============================================================================
 
@@ -2748,6 +2762,10 @@ impl Database {
     /// 5. The rotation proof is recent (not expired)
     ///
     /// Returns (success, elder_transferred)
+    ///
+    /// # L-16 Size Limit
+    /// The serialized rotation_proof must not exceed MAX_ROTATION_PROOF_SIZE (10 KB).
+    /// Returns an error if the proof is too large.
     pub fn transfer_elder_with_rotation(
         &self,
         rotation_proof: &ghost_common::key_rotation::KeyRotationProof,
@@ -2761,6 +2779,15 @@ impl Database {
         let new_node_id = hex::encode(rotation_proof.new_node_id);
         let now = chrono::Utc::now().timestamp();
         let proof_bytes = rotation_proof.to_bytes();
+
+        // L-16: Validate rotation proof size before INSERT to prevent storage DoS
+        if proof_bytes.len() > MAX_ROTATION_PROOF_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "Rotation proof too large: {} bytes (max {} bytes)",
+                proof_bytes.len(),
+                MAX_ROTATION_PROOF_SIZE
+            )));
+        }
 
         self.with_connection(|conn| {
             // Step 2: Check if old node is already retired
@@ -3640,6 +3667,10 @@ impl Database {
     /// * `proof_data` - Serialized equivocation proof (both conflicting votes)
     /// * `round_number` - Optional round number where equivocation occurred
     /// * `vote_type` - Optional description of the vote type (e.g., "payout", "block")
+    ///
+    /// # L-16 Size Limit
+    /// proof_data must not exceed MAX_EQUIVOCATION_PROOF_SIZE (100 KB).
+    /// Returns an error if the proof is too large.
     pub fn store_equivocation_proof(
         &self,
         node_id: &[u8; 32],
@@ -3647,6 +3678,15 @@ impl Database {
         round_number: Option<u64>,
         vote_type: Option<&str>,
     ) -> GhostResult<i64> {
+        // L-16: Validate proof size before INSERT to prevent storage DoS
+        if proof_data.len() > MAX_EQUIVOCATION_PROOF_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "Equivocation proof too large: {} bytes (max {} bytes)",
+                proof_data.len(),
+                MAX_EQUIVOCATION_PROOF_SIZE
+            )));
+        }
+
         self.with_connection(|conn| {
             let now = chrono::Utc::now().timestamp();
             conn.execute(

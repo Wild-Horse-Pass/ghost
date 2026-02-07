@@ -82,19 +82,35 @@ impl RateLimiter {
     /// Returns true if allowed, false if rate limited
     ///
     /// H-P2P-3: Uses integer arithmetic to avoid floating-point precision attacks
+    /// L-8: Uses minimum age eviction to prevent eviction attacks
     fn try_consume(&self, sender: &NodeId) -> bool {
         let now = Instant::now();
         let mut buckets = self.buckets.write();
 
-        // Evict oldest bucket if at capacity
+        // L-8: Use minimum age eviction strategy to prevent eviction attacks
+        // An attacker could rapidly create new senders to evict legitimate ones.
+        // By only evicting entries older than 60 seconds, we prevent this attack.
         if !buckets.contains_key(sender) && buckets.len() >= self.max_buckets {
-            // Find and remove the bucket with the oldest last_refill time
+            let min_age = Duration::from_secs(60);
+            let cutoff = now - min_age;
+
+            // Find oldest entry that's past the minimum age
             if let Some(oldest_key) = buckets
                 .iter()
+                .filter(|(_, (_, last_refill))| *last_refill < cutoff)
                 .min_by_key(|(_, (_, last_refill))| *last_refill)
                 .map(|(k, _)| *k)
             {
                 buckets.remove(&oldest_key);
+            } else {
+                // All entries are too new - reject this sender
+                // This is safe because it means we're under attack
+                tracing::debug!(
+                    sender = %hex::encode(&sender[..8]),
+                    bucket_count = buckets.len(),
+                    "L-8: Rate limiter at capacity with fresh entries (possible attack)"
+                );
+                return false;
             }
         }
 
@@ -137,6 +153,99 @@ impl RateLimiter {
         buckets.retain(|_, (_, last_refill)| *last_refill > cutoff);
     }
 }
+
+/// M-10: Address-based rate limiter to prevent address claim spam
+///
+/// Limits how often any address can be claimed/registered. This prevents
+/// attackers from repeatedly trying to claim ownership of addresses.
+struct AddressRateLimiter {
+    /// Tokens per address (address -> (tokens_millis, last_refill_ms))
+    buckets: RwLock<HashMap<String, (u64, Instant)>>,
+    /// Maximum tokens in milli-tokens
+    max_tokens_millis: u64,
+    /// Token refill rate in milli-tokens per second
+    refill_rate_millis: u64,
+    /// Maximum number of buckets to track
+    max_buckets: usize,
+}
+
+impl AddressRateLimiter {
+    /// Create a new address rate limiter
+    fn new(max_tokens: u64, refill_rate: u64, max_buckets: usize) -> Self {
+        Self {
+            buckets: RwLock::new(HashMap::new()),
+            max_tokens_millis: max_tokens.saturating_mul(MILLIS_PER_TOKEN),
+            refill_rate_millis: refill_rate.saturating_mul(MILLIS_PER_TOKEN),
+            max_buckets,
+        }
+    }
+
+    /// Try to consume a token for the given address
+    /// Returns true if allowed, false if rate limited
+    fn try_consume(&self, address: &str) -> bool {
+        let now = Instant::now();
+        let mut buckets = self.buckets.write();
+
+        // L-8: Use minimum age eviction strategy to prevent eviction attacks
+        // Only evict entries that are at least 60 seconds old
+        if !buckets.contains_key(address) && buckets.len() >= self.max_buckets {
+            let min_age = Duration::from_secs(60);
+            let cutoff = now - min_age;
+
+            // Find oldest entry that's past the minimum age
+            if let Some(oldest_key) = buckets
+                .iter()
+                .filter(|(_, (_, last_refill))| *last_refill < cutoff)
+                .min_by_key(|(_, (_, last_refill))| *last_refill)
+                .map(|(k, _)| k.clone())
+            {
+                buckets.remove(&oldest_key);
+            } else {
+                // All entries are too new - reject this address claim
+                // This is safe because it means we're under attack
+                tracing::warn!(
+                    address = %address,
+                    bucket_count = buckets.len(),
+                    "M-10: Address rate limiter at capacity with fresh entries (possible attack)"
+                );
+                return false;
+            }
+        }
+
+        let (tokens_millis, last_refill) = buckets
+            .entry(address.to_string())
+            .or_insert((self.max_tokens_millis, now));
+
+        // Refill tokens based on elapsed time
+        let elapsed_ms = now
+            .duration_since(*last_refill)
+            .as_millis()
+            .min(3_600_000) as u64;
+
+        let refill_millis = elapsed_ms.saturating_mul(self.refill_rate_millis) / 1000;
+
+        *tokens_millis = tokens_millis
+            .saturating_add(refill_millis)
+            .min(self.max_tokens_millis);
+        *last_refill = now;
+
+        // Try to consume one token
+        if *tokens_millis >= MILLIS_PER_TOKEN {
+            *tokens_millis -= MILLIS_PER_TOKEN;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// M-10: Rate limit for address registration attempts (per address)
+/// This prevents attackers from repeatedly trying to claim the same address
+const ADDRESS_RATE_LIMIT: u64 = 1; // 1 attempt per second
+/// M-10: Maximum tokens for address rate limiting (low to prevent spam)
+const ADDRESS_MAX_TOKENS: u64 = 3;
+/// M-10: Maximum address buckets to track
+const ADDRESS_MAX_BUCKETS: usize = 5000;
 
 /// Maximum peers to include in a discovery broadcast
 const MAX_PEERS_PER_BROADCAST: usize = 20;
@@ -408,8 +517,11 @@ pub struct DiscoveryHandler {
     connect_callback: Option<ConnectCallback>,
     /// M-P2P-3: Shared ban manager for cross-handler enforcement
     ban_manager: Option<Arc<BanManager>>,
-    /// M-16: Rate limiter for discovery messages
+    /// M-16: Rate limiter for discovery messages (per sender)
     rate_limiter: RateLimiter,
+    /// M-10: Rate limiter for address registration attempts (per address)
+    /// Prevents attackers from repeatedly claiming the same address
+    address_rate_limiter: AddressRateLimiter,
 }
 
 impl DiscoveryHandler {
@@ -427,6 +539,11 @@ impl DiscoveryHandler {
                 DISCOVERY_MAX_TOKENS,
                 DISCOVERY_RATE_LIMIT,
                 DISCOVERY_MAX_BUCKETS,
+            ),
+            address_rate_limiter: AddressRateLimiter::new(
+                ADDRESS_MAX_TOKENS,
+                ADDRESS_RATE_LIMIT,
+                ADDRESS_MAX_BUCKETS,
             ),
         }
     }
@@ -502,10 +619,35 @@ impl DiscoveryHandler {
     /// Add a known peer address
     ///
     /// H-P2P-4: Also updates the reverse mapping (address -> node_id).
-    /// If another node already owns this address, we update both mappings.
-    pub fn add_known_peer(&self, node_id: NodeId, address: String) {
+    /// L-7: Logs a warning if an address is being reassigned from one node to another,
+    /// which could indicate an attack or network misconfiguration.
+    ///
+    /// Returns true if the peer was added/updated, false if rate limited.
+    pub fn add_known_peer(&self, node_id: NodeId, address: String) -> bool {
+        // M-10: Apply address rate limiting
+        if !self.address_rate_limiter.try_consume(&address) {
+            tracing::debug!(
+                node_id = %hex::encode(&node_id[..8]),
+                address = %address,
+                "M-10: Address registration rate limited"
+            );
+            return false;
+        }
+
         let mut addresses = self.known_addresses.write();
         let mut owners = self.address_owners.write();
+
+        // L-7: Check for address reassignment (potential attack)
+        if let Some(&existing_owner) = owners.get(&address) {
+            if existing_owner != node_id {
+                tracing::warn!(
+                    address = %address,
+                    old_owner = %hex::encode(&existing_owner[..8]),
+                    new_owner = %hex::encode(&node_id[..8]),
+                    "L-7: Address being reassigned to different node - possible attack or migration"
+                );
+            }
+        }
 
         // If this node already has a different address, remove the old reverse mapping
         if let Some(old_addr) = addresses.get(&node_id) {
@@ -519,6 +661,7 @@ impl DiscoveryHandler {
 
         // Update reverse mapping
         owners.insert(address, node_id);
+        true
     }
 
     /// Get our discovery message to broadcast

@@ -44,12 +44,49 @@ pub struct BlockVerifier {
 }
 
 impl BlockVerifier {
-    /// Create a verifier from a verification key (simulated mode)
+    /// Create a verifier from a verification key
     ///
-    /// SECURITY WARNING: This constructor does NOT enable Groth16 verification.
-    /// In production, use `new_with_groth16_vk` instead. This method will
-    /// FAIL CLOSED (reject all proofs) when not in test mode.
-    pub fn new(vk: &VerificationKey) -> ZkResult<Self> {
+    /// HIGH-5 SECURITY: This constructor REQUIRES a Groth16 verification key for production use.
+    /// Without a Groth16 VK, this method returns an error. Use `new_development()` only for
+    /// development/testing environments where cryptographic verification is not required.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ZkError::MissingVerificationKey` if no Groth16 VK is provided. In production,
+    /// you MUST use `new_with_groth16_vk` instead to provide the prepared verifying key.
+    pub fn new(_vk: &VerificationKey) -> ZkResult<Self> {
+        // HIGH-5: Fail with error instead of warning when Groth16 VK is not provided.
+        // Production deployments MUST use new_with_groth16_vk() with a proper VK from MPC ceremony.
+        error!(
+            "HIGH-5 SECURITY: BlockVerifier::new() called without Groth16 VK. \
+             This is not allowed in production. Use new_with_groth16_vk() with a proper \
+             verification key from an MPC ceremony, or new_development() for testing only."
+        );
+        Err(ZkError::MissingVerificationKey(
+            "Groth16 verification key is required. Use new_with_groth16_vk() for production \
+             or new_development() for testing only."
+                .to_string(),
+        ))
+    }
+
+    /// Create a verifier for development/testing without Groth16 verification
+    ///
+    /// SECURITY WARNING: This constructor does NOT enable cryptographic Groth16 verification.
+    /// It should ONLY be used in development/testing environments. In production, the verifier
+    /// will FAIL CLOSED (reject all proofs) because no Groth16 VK is available.
+    ///
+    /// # Safety
+    ///
+    /// Proofs verified by a development verifier are NOT cryptographically secure.
+    /// An attacker could forge proofs that pass the simulated verification.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Only use in tests or development:
+    /// let verifier = BlockVerifier::new_development(&vk)?;
+    /// ```
+    pub fn new_development(vk: &VerificationKey) -> ZkResult<Self> {
         if vk.data.len() < 48 {
             return Err(ZkError::ParameterError(
                 "Verification key too short".to_string(),
@@ -68,9 +105,9 @@ impl BlockVerifier {
         })?);
 
         warn!(
-            "BlockVerifier created without Groth16 VK. \
-             Cryptographic verification will not be available. \
-             Use new_with_groth16_vk for production."
+            "HIGH-5: BlockVerifier created in DEVELOPMENT MODE without Groth16 VK. \
+             Cryptographic verification is NOT available. This verifier will FAIL CLOSED \
+             (reject all proofs) in production mode. Use new_with_groth16_vk() for production."
         );
 
         Ok(Self {
@@ -499,16 +536,35 @@ mod tests {
     }
 
     #[test]
-    fn test_verifier_creation() {
+    fn test_verifier_creation_production_requires_groth16_vk() {
+        // HIGH-5: new() should fail in production mode without Groth16 VK
         let prover = BlockProver::new(5, 10).unwrap();
         let vk = prover.verification_key();
 
         let verifier = BlockVerifier::new(&vk);
-        assert!(verifier.is_ok(), "Verifier should be created successfully");
+        assert!(verifier.is_err(), "new() should fail without Groth16 VK");
+        match verifier {
+            Err(ZkError::MissingVerificationKey(_)) => {} // Expected
+            _ => panic!("Expected MissingVerificationKey error"),
+        }
+    }
+
+    #[test]
+    fn test_verifier_creation_development() {
+        // HIGH-5: new_development() should work for testing
+        let prover = BlockProver::new(5, 10).unwrap();
+        let vk = prover.verification_key();
+
+        let verifier = BlockVerifier::new_development(&vk);
+        assert!(verifier.is_ok(), "new_development() should succeed");
 
         let verifier = verifier.unwrap();
         assert_eq!(verifier.max_txs(), 5);
         assert_eq!(verifier.tree_depth(), 10);
+        assert!(
+            !verifier.has_groth16_vk(),
+            "Development verifier should not have Groth16 VK"
+        );
     }
 
     #[test]
@@ -516,7 +572,7 @@ mod tests {
         // 2.3 HIGH: max_txs must match witness tx count to avoid padding issues
         let prover = BlockProver::new(2, 10).unwrap();
         let vk = prover.verification_key();
-        let verifier = BlockVerifier::new(&vk).unwrap();
+        let verifier = BlockVerifier::new_development(&vk).unwrap();
 
         let witness = create_test_witness(2, 10);
         let proof = prover.prove(&witness).unwrap();
@@ -531,7 +587,7 @@ mod tests {
         // 2.3 HIGH: max_txs must match witness tx count
         let prover = BlockProver::new(1, 10).unwrap();
         let vk = prover.verification_key();
-        let verifier = BlockVerifier::new(&vk).unwrap();
+        let verifier = BlockVerifier::new_development(&vk).unwrap();
 
         let witness = create_test_witness(1, 10);
         let proof = prover.prove(&witness).unwrap();
@@ -550,7 +606,7 @@ mod tests {
         // 2.3 HIGH: max_txs must match witness tx count
         let prover = BlockProver::new(1, 10).unwrap();
         let vk = prover.verification_key();
-        let verifier = BlockVerifier::new(&vk).unwrap();
+        let verifier = BlockVerifier::new_development(&vk).unwrap();
 
         let witness = create_test_witness(1, 10);
         let mut proof = prover.prove(&witness).unwrap();
@@ -570,7 +626,7 @@ mod tests {
         // 2.3 HIGH: max_txs must match witness tx count
         let prover = BlockProver::new(1, 10).unwrap();
         let vk = prover.verification_key();
-        let verifier = BlockVerifier::new(&vk).unwrap();
+        let verifier = BlockVerifier::new_development(&vk).unwrap();
 
         let proofs: Vec<BlockProof> = (0..3)
             .map(|i| {
@@ -586,8 +642,8 @@ mod tests {
     }
 
     #[test]
-    fn test_convenience_verify_function() {
-        // 2.3 HIGH: max_txs must match witness tx count
+    fn test_convenience_verify_function_requires_groth16() {
+        // HIGH-5: verify_proof uses new() internally, which now requires Groth16 VK
         let prover = BlockProver::new(1, 10).unwrap();
         let vk = prover.verification_key();
 
@@ -596,9 +652,13 @@ mod tests {
 
         let result = verify_proof(&vk, &proof);
         assert!(
-            result.is_ok() && result.unwrap(),
-            "Convenience function should work"
+            result.is_err(),
+            "Convenience function should fail without Groth16 VK"
         );
+        assert!(matches!(
+            result.unwrap_err(),
+            ZkError::MissingVerificationKey(_)
+        ));
     }
 
     #[test]
@@ -608,7 +668,7 @@ mod tests {
         // empty blocks (0 transactions) are handled by using 1 transaction
         let prover = BlockProver::new(1, 10).unwrap();
         let vk = prover.verification_key();
-        let verifier = BlockVerifier::new(&vk).unwrap();
+        let verifier = BlockVerifier::new_development(&vk).unwrap();
 
         let witness = create_test_witness(1, 10);
         let proof = prover.prove(&witness).unwrap();

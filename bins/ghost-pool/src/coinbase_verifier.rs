@@ -324,6 +324,15 @@ impl CoinbaseOutput {
                 })?;
             cursor += consumed;
 
+            // L-12: Add script length upper bound to prevent excessive memory allocation
+            // Maximum standard script is ~10KB; consensus limit is much higher but not needed here
+            if script_len > 10_000 {
+                return Err(CoinbaseVerificationError::ParseError(format!(
+                    "L-12: Script length {} exceeds maximum (10000) for output {}",
+                    script_len, i
+                )));
+            }
+
             if cursor + script_len > coinbase_bytes.len() {
                 return Err(CoinbaseVerificationError::ParseError(format!(
                     "Truncated output {} script",

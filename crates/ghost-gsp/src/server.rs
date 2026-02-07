@@ -244,9 +244,14 @@ impl KeyExtractor for IpKeyExtractor {
 
         if trust_proxy_headers {
             // Try X-Forwarded-For (standard for proxied requests)
+            // M-1 FIX: Use .last() instead of .next() to get the most trustworthy IP.
+            // The X-Forwarded-For header format is: "client, proxy1, proxy2, ..."
+            // The LAST entry is added by our trusted proxy (the direct peer), so it's the
+            // most trustworthy. Earlier entries can be spoofed by the client or untrusted proxies.
+            // This matches the verification server's implementation.
             if let Some(xff) = req.headers().get("X-Forwarded-For") {
                 if let Ok(xff_str) = xff.to_str() {
-                    if let Some(ip_str) = xff_str.split(',').next() {
+                    if let Some(ip_str) = xff_str.split(',').last() {
                         let ip_trimmed = ip_str.trim();
                         if !ip_trimmed.is_empty() {
                             return Ok(IpKey(ip_trimmed.to_string()));
@@ -601,13 +606,30 @@ impl GspServer {
         let per_second = (state.config.rate_limit_rpm.max(60) / 60).max(1);
         let burst_size = state.config.rate_limit_rpm.max(10);
 
+        // M-2 FIX: Use proper error handling instead of expect() for rate limiter builder.
+        // The finish() method returns Option, so we handle None gracefully with a sensible
+        // fallback configuration that is known to work.
         let governor_config = Arc::new(
             GovernorConfigBuilder::default()
                 .per_second(per_second as u64)
                 .burst_size(burst_size)
                 .key_extractor(IpKeyExtractor::new())
                 .finish()
-                .expect("Invalid rate limit config"),
+                .unwrap_or_else(|| {
+                    tracing::error!(
+                        per_second = per_second,
+                        burst_size = burst_size,
+                        "M-2: Failed to build rate limiter config, using safe defaults"
+                    );
+                    // Use safe fallback values that are guaranteed to work:
+                    // 1 request per second with burst of 10
+                    GovernorConfigBuilder::default()
+                        .per_second(1)
+                        .burst_size(10)
+                        .key_extractor(IpKeyExtractor::new())
+                        .finish()
+                        .expect("M-2: Fallback rate limit config with hardcoded safe values must succeed")
+                }),
         );
 
         // Spawn background task to clean up rate limiter state periodically

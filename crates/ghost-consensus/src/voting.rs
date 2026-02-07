@@ -559,11 +559,26 @@ impl VotingSession {
         result
     }
 
-    /// 3.2 SECURITY: Invalidate a voter and remove their vote
+    /// 3.2/HIGH-8 SECURITY: Invalidate a voter and remove their vote
     ///
     /// Called when a node is banned (e.g., for equivocation). This removes
     /// the node from eligible_voters and removes any vote they cast.
     /// This prevents banned nodes' votes from influencing consensus.
+    ///
+    /// HIGH-8: After removing a vote, we recalculate whether the existing
+    /// decision is still valid. If the removed vote was decisive (meaning
+    /// the decision was reached only because of that vote), we clear
+    /// the result so the session can continue collecting votes or timeout.
+    ///
+    /// # Threshold Behavior (L-4)
+    ///
+    /// When a voter is invalidated, the threshold is recalculated based on
+    /// the new (smaller) set of eligible voters. This is correct behavior:
+    /// - If we had 10 voters and threshold was 7, removing 1 voter gives us
+    ///   9 voters with threshold 7 (ceil(9 * 67 / 100) = 7)
+    /// - The decision might still stand if we had 7+ votes from remaining voters
+    /// - But if we only had exactly threshold votes and one was removed, the
+    ///   decision is invalidated
     ///
     /// Returns true if the voter had a vote that was removed.
     pub fn invalidate_voter(&mut self, node_id: &NodeId) -> bool {
@@ -579,6 +594,44 @@ impl VotingSession {
                 round_id = self.round_id,
                 "3.2 SECURITY: Invalidated vote from banned voter"
             );
+
+            // HIGH-8: Recalculate decision after vote removal
+            // If there was a previous decision, check if it's still valid
+            if self.result.is_some() {
+                // Get current counts and new threshold
+                let (approvals, rejections, total) = self.vote_counts();
+                let new_threshold = self.threshold();
+
+                // Check if the decision is still valid with the new threshold
+                let decision_still_valid = match &self.result {
+                    Some(ConsensusResult::Approved { .. }) => approvals >= new_threshold,
+                    Some(ConsensusResult::Rejected { .. }) => rejections >= new_threshold,
+                    Some(ConsensusResult::Timeout { .. }) => {
+                        // Timeout decisions remain valid - they indicate the session
+                        // timed out, which is still true
+                        true
+                    }
+                    Some(ConsensusResult::Error(_)) => {
+                        // Error decisions remain valid - they indicate an error occurred
+                        // which is still true regardless of voter changes
+                        true
+                    }
+                    None => true, // No decision to validate
+                };
+
+                if !decision_still_valid {
+                    tracing::warn!(
+                        round_id = self.round_id,
+                        voter = hex::encode(&node_id[..8]),
+                        approvals = approvals,
+                        rejections = rejections,
+                        total = total,
+                        new_threshold = new_threshold,
+                        "HIGH-8: Decision invalidated after removing decisive vote"
+                    );
+                    self.result = None;
+                }
+            }
         }
 
         had_vote

@@ -395,6 +395,23 @@ impl PayoutProposalCreator {
             self.config.treasury_address.clone().unwrap_or_default()
         });
 
+        // L-3: Validate treasury address script length
+        // Standard Bitcoin scripts are 22-34 bytes:
+        // - P2PKH: 25 bytes (OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG)
+        // - P2SH: 23 bytes (OP_HASH160 <20> OP_EQUAL)
+        // - P2WPKH: 22 bytes (OP_0 <20>)
+        // - P2WSH: 34 bytes (OP_0 <32>)
+        // - P2TR: 34 bytes (OP_1 <32>)
+        if !treasury_address.is_empty() {
+            let addr_len = treasury_address.len();
+            if addr_len < 22 || addr_len > 34 {
+                return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                    "L-3: Treasury address script has invalid length: {} bytes (expected 22-34 for standard scripts)",
+                    addr_len
+                )));
+            }
+        }
+
         let proposal = PayoutProposal {
             proposal_hash: [0u8; 32], // Will be computed by vote handler
             round_id: data.round_id,

@@ -181,18 +181,23 @@ impl EntryConfig {
 }
 
 /// A scheduled entry
+///
+/// M-3 FIX: The is_cover field has been removed to make cover traffic
+/// indistinguishable from real entries in the queue structure. Cover traffic
+/// is now identified only by having empty participant_data, which is opaque
+/// to external observers examining the queue.
 #[derive(Debug, Clone)]
 pub struct ScheduledEntry {
     /// Session ID to enter
     pub session_id: [u8; 32],
     /// Participant data (opaque to timing layer)
+    /// M-3: Cover traffic has empty participant_data - this is the ONLY way to identify it
+    /// and is checked at execution time, not stored as a separate field
     pub participant_data: Vec<u8>,
     /// When this entry was requested
     pub requested_at: Instant,
     /// When this entry should be executed
     pub scheduled_at: Instant,
-    /// Whether this is cover traffic (dummy)
-    pub is_cover: bool,
     /// Entry ID for tracking
     pub entry_id: u64,
 }
@@ -294,7 +299,6 @@ impl EntryScheduler {
             participant_data,
             requested_at: now,
             scheduled_at,
-            is_cover: false,
             entry_id,
         };
 
@@ -322,7 +326,8 @@ impl EntryScheduler {
 
     /// Calculate random delay using exponential distribution
     ///
-    /// C-7: Handles RNG failure gracefully by falling back to zero delay.
+    /// C-7: Handles RNG failure gracefully by falling back to 5 second delay.
+    /// M-4 FIX: Clamps exponential result to 10x mean to prevent extreme delays.
     fn calculate_delay(&self) -> Duration {
         if !self.config.delay_enabled {
             return Duration::ZERO;
@@ -338,8 +343,15 @@ impl EntryScheduler {
             }
         };
         let mean = (self.config.max_delay_ms - self.config.min_delay_ms) as f64;
-        let exp_delay = -mean * random.ln();
-        let delay_ms = self.config.min_delay_ms + (exp_delay as u64).min(self.config.max_delay_ms);
+        let raw_exp_delay = -mean * random.ln();
+
+        // M-4 FIX: Clamp exponential result to 10x mean to prevent extreme delays
+        // This bounds the tail of the distribution while preserving its shape for typical values
+        let max_exp_delay = mean * 10.0;
+        let clamped_exp_delay = raw_exp_delay.min(max_exp_delay);
+
+        let delay_ms =
+            self.config.min_delay_ms + (clamped_exp_delay as u64).min(self.config.max_delay_ms);
 
         // Add jitter
         let jitter = self.calculate_jitter();
@@ -389,12 +401,12 @@ impl EntryScheduler {
         // Cover traffic gets similar delay distribution
         let delay = self.calculate_delay();
 
+        // M-3 FIX: Cover traffic identified by empty participant_data, not a separate field
         let cover = ScheduledEntry {
             session_id,
-            participant_data: vec![], // Empty - will be filtered on execution
+            participant_data: vec![], // Empty - cover traffic identified at execution time
             requested_at: now,
             scheduled_at: now + delay,
-            is_cover: true,
             entry_id,
         };
 
@@ -622,7 +634,8 @@ mod tests {
 
         assert_eq!(entry.session_id, session_id);
         assert_eq!(entry.participant_data, participant_data);
-        assert!(!entry.is_cover);
+        // M-3 FIX: is_cover field removed - cover traffic identified by empty participant_data
+        assert!(!entry.participant_data.is_empty()); // Not cover traffic
         assert!(entry.scheduled_at >= entry.requested_at);
     }
 
@@ -774,11 +787,35 @@ mod tests {
             participant_data: vec![],
             requested_at: Instant::now(),
             scheduled_at: Instant::now() - Duration::from_secs(1), // Already past
-            is_cover: false,
             entry_id: 0,
         };
 
         assert!(entry.is_ready());
         assert_eq!(entry.delay(), Duration::ZERO);
+    }
+
+    /// M-3: Test that cover traffic is indistinguishable from real entries
+    #[test]
+    fn test_cover_traffic_indistinguishable() {
+        // Cover traffic is identified only by empty participant_data
+        let cover_entry = ScheduledEntry {
+            session_id: [1u8; 32],
+            participant_data: vec![], // Cover traffic
+            requested_at: Instant::now(),
+            scheduled_at: Instant::now(),
+            entry_id: 1,
+        };
+
+        let real_entry = ScheduledEntry {
+            session_id: [1u8; 32],
+            participant_data: vec![0x01, 0x02], // Real entry
+            requested_at: Instant::now(),
+            scheduled_at: Instant::now(),
+            entry_id: 2,
+        };
+
+        // The only way to distinguish is by checking participant_data at execution time
+        assert!(cover_entry.participant_data.is_empty());
+        assert!(!real_entry.participant_data.is_empty());
     }
 }

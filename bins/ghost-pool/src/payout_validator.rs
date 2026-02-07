@@ -345,16 +345,35 @@ pub fn validate_multisig_witness_script(
     expected_m: u8,
     expected_n: u8,
 ) -> Result<(), PayoutValidationError> {
+    // HIGH-6: Validate expected_n is within valid multi-sig bounds BEFORE multiplication
+    // This prevents overflow in the minimum length calculation below
+    if expected_n > 15 {
+        return Err(PayoutValidationError::InvalidScript(format!(
+            "HIGH-6: invalid N value: {} (maximum is 15 for standard multi-sig)",
+            expected_n
+        )));
+    }
+    if expected_m > expected_n || expected_m == 0 {
+        return Err(PayoutValidationError::InvalidScript(format!(
+            "HIGH-6: invalid M-of-N: {}-of-{} (M must be 1-N, N must be 1-15)",
+            expected_m, expected_n
+        )));
+    }
+
     // Minimum length: OP_M + N pubkeys + OP_N + OP_CHECKMULTISIG
     // For compressed pubkeys: 1 + (33+1)*N + 1 + 1 = 3 + 34*N
+    // HIGH-6: safe since expected_n <= 15, so 34 * 15 = 510 fits in usize
     if script.len() < 3 + (34 * expected_n as usize) {
         return Err(PayoutValidationError::InvalidScript(
             "multi-sig script too short".into(),
         ));
     }
 
+    // HIGH-6: Use .get() for bounds-checked access instead of direct indexing
     // Check OP_M (0x51 = OP_1, 0x52 = OP_2, etc.)
-    let m_opcode = script[0];
+    let m_opcode = *script.get(0).ok_or_else(|| {
+        PayoutValidationError::InvalidScript("HIGH-6: script too short for OP_M".into())
+    })?;
     if !(0x51..=0x60).contains(&m_opcode) {
         return Err(PayoutValidationError::InvalidScript(
             "invalid OP_M in multi-sig script".into(),
@@ -373,8 +392,15 @@ pub fn validate_multisig_witness_script(
     let mut pos = 1;
     let mut pubkey_count = 0;
 
-    while pos < script.len() - 2 {
-        let len = script[pos] as usize;
+    // HIGH-6: Prevent underflow by checking pos + 2 < len instead of pos < len - 2
+    while pos + 2 < script.len() {
+        // HIGH-6: Use .get() for bounds-checked access
+        let len = *script.get(pos).ok_or_else(|| {
+            PayoutValidationError::InvalidScript(format!(
+                "HIGH-6: script truncated at position {}",
+                pos
+            ))
+        })? as usize;
         if len == 33 || len == 65 {
             // Valid pubkey length (compressed or uncompressed)
             pos += 1 + len;
@@ -398,13 +424,17 @@ pub fn validate_multisig_witness_script(
     }
 
     // Check OP_N
-    if pos >= script.len() - 1 {
+    // HIGH-6: Use checked access to prevent out-of-bounds
+    if pos + 1 >= script.len() {
         return Err(PayoutValidationError::InvalidScript(
             "multi-sig script truncated before OP_N".into(),
         ));
     }
 
-    let n_opcode = script[pos];
+    // HIGH-6: Use .get() for bounds-checked access
+    let n_opcode = *script.get(pos).ok_or_else(|| {
+        PayoutValidationError::InvalidScript("HIGH-6: script truncated at OP_N position".into())
+    })?;
     if !(0x51..=0x60).contains(&n_opcode) {
         return Err(PayoutValidationError::InvalidScript(
             "invalid OP_N in multi-sig script".into(),
@@ -427,20 +457,21 @@ pub fn validate_multisig_witness_script(
         ));
     }
 
-    if script[pos] != 0xae {
+    // HIGH-6: Use .get() for bounds-checked access
+    let checkmultisig_opcode = *script.get(pos).ok_or_else(|| {
+        PayoutValidationError::InvalidScript(
+            "HIGH-6: script truncated at OP_CHECKMULTISIG position".into(),
+        )
+    })?;
+
+    if checkmultisig_opcode != 0xae {
         return Err(PayoutValidationError::InvalidScript(format!(
             "expected OP_CHECKMULTISIG (0xae), got 0x{:02x}",
-            script[pos]
+            checkmultisig_opcode
         )));
     }
 
-    // Verify M <= N
-    if expected_m > expected_n || expected_m == 0 || expected_n > 15 {
-        return Err(PayoutValidationError::InvalidScript(format!(
-            "invalid M-of-N: {}-of-{} (M must be 1-N, N must be 1-15)",
-            expected_m, expected_n
-        )));
-    }
+    // Note: M <= N validation is done at the start of the function (HIGH-6)
 
     Ok(())
 }
@@ -474,14 +505,24 @@ fn validate_timestamps(
     context: &BlockContext,
 ) -> Result<(), PayoutValidationError> {
     // Not too far in future (5 minutes)
+    // L-13: Use checked_add to prevent overflow on timestamp arithmetic
     const MAX_FUTURE_SECS: u64 = 300;
-    if proposal.timestamp > context.current_time + MAX_FUTURE_SECS {
+    let max_allowed_time = context
+        .current_time
+        .checked_add(MAX_FUTURE_SECS)
+        .ok_or(PayoutValidationError::Overflow("L-13: future timestamp calculation"))?;
+    if proposal.timestamp > max_allowed_time {
         return Err(PayoutValidationError::FutureTimestamp(proposal.timestamp));
     }
 
     // Not too old (1 hour)
+    // L-13: Use checked_add to prevent overflow on timestamp arithmetic
     const MAX_AGE_SECS: u64 = 3600;
-    if proposal.timestamp + MAX_AGE_SECS < context.current_time {
+    let min_allowed_time = proposal
+        .timestamp
+        .checked_add(MAX_AGE_SECS)
+        .ok_or(PayoutValidationError::Overflow("L-13: stale timestamp calculation"))?;
+    if min_allowed_time < context.current_time {
         return Err(PayoutValidationError::StaleTimestamp(proposal.timestamp));
     }
 
