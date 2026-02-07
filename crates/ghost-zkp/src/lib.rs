@@ -140,17 +140,16 @@ fn compute_params_file_hash(path: &std::path::Path) -> ZkResult<[u8; 32]> {
     use sha2::{Digest, Sha256};
     use std::io::Read;
 
-    let mut file = std::fs::File::open(path).map_err(|e| {
-        ZkError::InvalidParams(format!("Failed to open params file: {}", e))
-    })?;
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| ZkError::InvalidParams(format!("Failed to open params file: {}", e)))?;
 
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 8192];
 
     loop {
-        let bytes_read = file.read(&mut buffer).map_err(|e| {
-            ZkError::InvalidParams(format!("Failed to read params file: {}", e))
-        })?;
+        let bytes_read = file
+            .read(&mut buffer)
+            .map_err(|e| ZkError::InvalidParams(format!("Failed to read params file: {}", e)))?;
         if bytes_read == 0 {
             break;
         }

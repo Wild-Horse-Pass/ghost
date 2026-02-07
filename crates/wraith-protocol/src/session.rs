@@ -431,8 +431,10 @@ impl WraithSession {
 
         if actual_extension > 0 {
             self.timeout_instant += std::time::Duration::from_secs(actual_extension);
-            self.timeout_duration_secs = self.timeout_duration_secs.saturating_add(actual_extension);
-            self.total_extensions_secs = self.total_extensions_secs.saturating_add(actual_extension);
+            self.timeout_duration_secs =
+                self.timeout_duration_secs.saturating_add(actual_extension);
+            self.total_extensions_secs =
+                self.total_extensions_secs.saturating_add(actual_extension);
         }
     }
 
@@ -766,11 +768,8 @@ mod tests {
     fn test_timeout_extension() {
         // Use a short custom timeout so we can test extensions properly
         let config = SessionConfig::with_timeout(3600); // 1 hour initial
-        let mut session = WraithSession::with_config(
-            ParticipantTier::Micro,
-            WraithDenomination::Small,
-            config,
-        );
+        let mut session =
+            WraithSession::with_config(ParticipantTier::Micro, WraithDenomination::Small, config);
 
         let initial_remaining = session.remaining_secs();
 
@@ -802,7 +801,10 @@ mod tests {
         );
 
         // Total extensions should be capped at MAX_EXTENSION_SECS
-        assert_eq!(session.total_extensions_secs, WraithSession::MAX_EXTENSION_SECS);
+        assert_eq!(
+            session.total_extensions_secs,
+            WraithSession::MAX_EXTENSION_SECS
+        );
 
         // Further extensions should have no effect
         let before_exhausted = session.remaining_secs();
@@ -815,6 +817,9 @@ mod tests {
             after_exhausted <= before_exhausted + 1,
             "No extension should occur after budget exhausted"
         );
-        assert_eq!(session.total_extensions_secs, WraithSession::MAX_EXTENSION_SECS);
+        assert_eq!(
+            session.total_extensions_secs,
+            WraithSession::MAX_EXTENSION_SECS
+        );
     }
 }

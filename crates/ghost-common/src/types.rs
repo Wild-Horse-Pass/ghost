@@ -647,23 +647,27 @@ mod tests {
         // P2TR addresses should be rejected for quantum safety
 
         // Mainnet P2TR
-        let p2tr_mainnet =
-            TreasuryAddress::single("bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr");
+        let p2tr_mainnet = TreasuryAddress::single(
+            "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr",
+        );
         assert!(matches!(
             p2tr_mainnet.validate(),
             Err(TreasuryAddressError::QuantumUnsafe)
         ));
 
         // Testnet P2TR
-        let p2tr_testnet =
-            TreasuryAddress::single("tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c");
+        let p2tr_testnet = TreasuryAddress::single(
+            "tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c",
+        );
         assert!(matches!(
             p2tr_testnet.validate(),
             Err(TreasuryAddressError::QuantumUnsafe)
         ));
 
         // Regtest P2TR
-        let p2tr_regtest = TreasuryAddress::single("bcrt1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqc8gma6");
+        let p2tr_regtest = TreasuryAddress::single(
+            "bcrt1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqc8gma6",
+        );
         assert!(matches!(
             p2tr_regtest.validate(),
             Err(TreasuryAddressError::QuantumUnsafe)

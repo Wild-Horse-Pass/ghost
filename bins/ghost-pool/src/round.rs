@@ -127,7 +127,10 @@ impl MinerToleranceTracker {
         work_credited: f64,
         tolerance_exploited: f64,
     ) -> Result<(), f64> {
-        let entry = self.entries.entry(miner_id.to_string()).or_insert((0.0, 0.0));
+        let entry = self
+            .entries
+            .entry(miner_id.to_string())
+            .or_insert((0.0, 0.0));
         entry.0 += work_credited;
         entry.1 += tolerance_exploited;
 
@@ -141,7 +144,6 @@ impl MinerToleranceTracker {
         }
         Ok(())
     }
-
 }
 
 /// Manages mining rounds and share accounting
@@ -470,9 +472,7 @@ impl RoundManager {
         if work_difference > 0.0 {
             // Miner is claiming more work than calculated - this is tolerance exploitation
             let mut tolerance_trackers = self.miner_tolerance_tracker.write();
-            let tracker = tolerance_trackers
-                .entry(proof.round_id)
-                .or_default();
+            let tracker = tolerance_trackers.entry(proof.round_id).or_default();
 
             if let Err(exploitation_percent) =
                 tracker.record_tolerance(&miner_id, calculated_work, work_difference)
@@ -1226,7 +1226,11 @@ mod tests {
 
         // Verify the error contains the exploitation percentage
         if let Err(pct) = result {
-            assert!(pct > 1.0, "Exploitation percent should be > 1%, got {}", pct);
+            assert!(
+                pct > 1.0,
+                "Exploitation percent should be > 1%, got {}",
+                pct
+            );
         }
     }
 

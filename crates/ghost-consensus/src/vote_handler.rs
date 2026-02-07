@@ -26,8 +26,8 @@
 //! Integrates with VotingManager to track votes and determine outcomes.
 
 use async_trait::async_trait;
-use parking_lot::RwLock;
 use hmac::{Hmac, Mac};
+use parking_lot::RwLock;
 use sha2::{Digest, Sha256};
 
 /// Type alias for HMAC-SHA256
@@ -384,13 +384,15 @@ impl RateLimiter {
 
         // M-2: Verify HMAC before trusting the data
         if !Self::verify_hmac(&authenticated.data, &authenticated.hmac, key) {
-            warn!(
-                "M-2 SECURITY: Rate limiter state HMAC verification failed - possible tampering"
-            );
+            warn!("M-2 SECURITY: Rate limiter state HMAC verification failed - possible tampering");
             return None;
         }
 
-        Some(Self::from_persisted(max_tokens, refill_rate, &authenticated.data))
+        Some(Self::from_persisted(
+            max_tokens,
+            refill_rate,
+            &authenticated.data,
+        ))
     }
 
     /// M-2: Persist rate limiter state to a file with HMAC authentication
@@ -470,9 +472,10 @@ impl RateLimiter {
 impl Drop for VoteHandler {
     fn drop(&mut self) {
         // M-2: Use authenticated persistence on shutdown
-        if let (Some(ref path), Some(ref key)) =
-            (&self.rate_limiter_persist_path, &self.rate_limiter_persist_key)
-        {
+        if let (Some(ref path), Some(ref key)) = (
+            &self.rate_limiter_persist_path,
+            &self.rate_limiter_persist_key,
+        ) {
             if let Err(e) = self.rate_limiter.persist_to_file_authenticated(path, key) {
                 tracing::error!(
                     path = %path.display(),
@@ -723,9 +726,10 @@ impl VoteHandler {
     /// Call this after constructing the VoteHandler if persistence is enabled.
     /// The task will persist rate limiter state every 60 seconds with HMAC authentication.
     pub fn start_persistence_task(&self) {
-        if let (Some(ref persist_path), Some(ref persist_key)) =
-            (&self.rate_limiter_persist_path, &self.rate_limiter_persist_key)
-        {
+        if let (Some(ref persist_path), Some(ref persist_key)) = (
+            &self.rate_limiter_persist_path,
+            &self.rate_limiter_persist_key,
+        ) {
             let rate_limiter = Arc::clone(&self.rate_limiter);
             let path = persist_path.clone();
             let key = *persist_key;
@@ -779,7 +783,8 @@ impl VoteHandler {
 
         // 3.2 SECURITY: Invalidate the banned node's votes in all active sessions
         // This prevents their votes from counting toward consensus
-        self.voting_manager.invalidate_voter_in_all_sessions(&node_id);
+        self.voting_manager
+            .invalidate_voter_in_all_sessions(&node_id);
     }
 
     /// Check if a node is currently banned
@@ -1860,10 +1865,7 @@ mod tests {
 
         // Deserialize should fail due to HMAC mismatch
         let restored = RateLimiter::from_persisted_authenticated(100, 20, &tampered_json, &key);
-        assert!(
-            restored.is_none(),
-            "M-2: Should reject tampered state data"
-        );
+        assert!(restored.is_none(), "M-2: Should reject tampered state data");
     }
 
     #[test]
@@ -1912,7 +1914,10 @@ mod tests {
         let hmac1 = RateLimiter::compute_hmac("data1", &key);
         let hmac2 = RateLimiter::compute_hmac("data2", &key);
 
-        assert_ne!(hmac1, hmac2, "M-2: Different data should produce different HMAC");
+        assert_ne!(
+            hmac1, hmac2,
+            "M-2: Different data should produce different HMAC"
+        );
     }
 
     #[test]
@@ -1924,7 +1929,10 @@ mod tests {
         let hmac1 = RateLimiter::compute_hmac(data, &key1);
         let hmac2 = RateLimiter::compute_hmac(data, &key2);
 
-        assert_ne!(hmac1, hmac2, "M-2: Different keys should produce different HMAC");
+        assert_ne!(
+            hmac1, hmac2,
+            "M-2: Different keys should produce different HMAC"
+        );
     }
 
     // =========================================================================

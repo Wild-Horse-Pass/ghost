@@ -148,7 +148,10 @@ impl std::fmt::Debug for PreparePaymentRequest {
             .field("mode", &self.mode)
             .field("proof", &self.proof)
             .field("memo", &self.memo)
-            .field("encrypted_metadata", &self.encrypted_metadata.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "encrypted_metadata",
+                &self.encrypted_metadata.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -243,8 +246,14 @@ impl std::fmt::Debug for PreparedPayment {
             .field("inputs", &format!("[{} inputs]", self.inputs.len()))
             .field("outputs", &format!("[{} outputs]", self.outputs.len()))
             .field("memo", &self.memo)
-            .field("encrypted_metadata", &self.encrypted_metadata.as_ref().map(|_| "[REDACTED]"))
-            .field("ephemeral_pubkey", &self.ephemeral_pubkey.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "encrypted_metadata",
+                &self.encrypted_metadata.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "ephemeral_pubkey",
+                &self.ephemeral_pubkey.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -298,7 +307,10 @@ impl std::fmt::Debug for PaymentInput {
             .field("vout", &self.vout)
             .field("amount_sats", &self.amount_sats)
             .field("script_type", &self.script_type)
-            .field("derivation_path", &self.derivation_path.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "derivation_path",
+                &self.derivation_path.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }

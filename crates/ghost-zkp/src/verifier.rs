@@ -532,7 +532,14 @@ mod tests {
 
         let new_root = tree.root();
 
-        BlockWitnessV2::new_with_roots(1, prev_root, new_root, transitions, intermediate_roots, tree_depth)
+        BlockWitnessV2::new_with_roots(
+            1,
+            prev_root,
+            new_root,
+            transitions,
+            intermediate_roots,
+            tree_depth,
+        )
     }
 
     #[test]

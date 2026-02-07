@@ -914,8 +914,7 @@ mod tests {
         transport.send(b"crit9-test").await.unwrap();
         let received = responder_transport.recv().await.unwrap();
         assert_eq!(
-            received,
-            b"crit9-test",
+            received, b"crit9-test",
             "Encrypted communication should work after keypair restore"
         );
     }

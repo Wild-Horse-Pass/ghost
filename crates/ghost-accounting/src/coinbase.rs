@@ -219,7 +219,7 @@ impl CoinbaseBuilder {
         // P2TR: 34 bytes, starts with OP_1 (0x51) + PUSH32 (0x20)
         if address.len() == 34 && address[0] == 0x51 && address[1] == 0x20 {
             return Err(GhostError::QuantumUnsafe(
-                "P2TR script pubkeys are quantum-vulnerable. Use P2WSH instead.".into()
+                "P2TR script pubkeys are quantum-vulnerable. Use P2WSH instead.".into(),
             ));
         }
 

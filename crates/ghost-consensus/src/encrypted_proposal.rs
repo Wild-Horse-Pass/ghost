@@ -643,10 +643,7 @@ fn shamir_split(
         for coeff in coeffs.iter_mut().skip(1) {
             let mut rand = [0u8; 1];
             getrandom::getrandom(&mut rand).map_err(|e| {
-                ProposalError::EntropyError(format!(
-                    "Failed to generate random coefficient: {}",
-                    e
-                ))
+                ProposalError::EntropyError(format!("Failed to generate random coefficient: {}", e))
             })?;
             *coeff = rand[0];
         }

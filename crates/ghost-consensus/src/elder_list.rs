@@ -569,9 +569,7 @@ impl CanonicalElderList {
 
         info!(
             epoch = self.epoch,
-            valid_approvals,
-            threshold,
-            "CRIT-4: Elder list verified as canonical"
+            valid_approvals, threshold, "CRIT-4: Elder list verified as canonical"
         );
 
         Ok(())
@@ -1018,9 +1016,9 @@ impl ElderListManager {
     pub fn retry_approval_collection(&self) -> GhostResult<()> {
         let mut pending = self.pending_list.write();
 
-        let state = pending.as_mut().ok_or_else(|| {
-            GhostError::Config("L-12: No pending list to retry".to_string())
-        })?;
+        let state = pending
+            .as_mut()
+            .ok_or_else(|| GhostError::Config("L-12: No pending list to retry".to_string()))?;
 
         if !state.is_timed_out() {
             return Err(GhostError::Config(
@@ -1050,9 +1048,8 @@ impl ElderListManager {
     pub fn finalize_pending_list(&self, previous_elders: &HashSet<NodeId>) -> GhostResult<()> {
         let pending_state = self.pending_list.write().take();
 
-        let state = pending_state.ok_or_else(|| {
-            GhostError::Config("L-12: No pending list to finalize".to_string())
-        })?;
+        let state = pending_state
+            .ok_or_else(|| GhostError::Config("L-12: No pending list to finalize".to_string()))?;
 
         if !state.list.has_sufficient_approvals(previous_elders) {
             // Put it back and return error
@@ -1743,10 +1740,7 @@ mod tests {
     fn test_l3_elder_max_count_constant() {
         // L-3: Verify ELDER_MAX_COUNT is reasonable
         assert_eq!(ELDER_MAX_COUNT, 101, "ELDER_MAX_COUNT should be 101");
-        assert!(
-            ELDER_MAX_COUNT > 0,
-            "ELDER_MAX_COUNT must be positive"
-        );
+        assert!(ELDER_MAX_COUNT > 0, "ELDER_MAX_COUNT must be positive");
     }
 
     #[test]
@@ -1763,10 +1757,7 @@ mod tests {
     fn test_l3_canonical_list_capacity_check() {
         // L-3: Verify has_capacity() works correctly
         let empty_list = CanonicalElderList::new(1, vec![]);
-        assert!(
-            empty_list.has_capacity(),
-            "Empty list should have capacity"
-        );
+        assert!(empty_list.has_capacity(), "Empty list should have capacity");
 
         // Create a list at capacity
         let many_elders: Vec<ElderEntry> = (0..ELDER_MAX_COUNT)

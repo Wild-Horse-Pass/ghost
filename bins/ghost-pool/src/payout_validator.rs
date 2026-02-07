@@ -507,10 +507,9 @@ fn validate_timestamps(
     // Not too far in future (5 minutes)
     // L-13: Use checked_add to prevent overflow on timestamp arithmetic
     const MAX_FUTURE_SECS: u64 = 300;
-    let max_allowed_time = context
-        .current_time
-        .checked_add(MAX_FUTURE_SECS)
-        .ok_or(PayoutValidationError::Overflow("L-13: future timestamp calculation"))?;
+    let max_allowed_time = context.current_time.checked_add(MAX_FUTURE_SECS).ok_or(
+        PayoutValidationError::Overflow("L-13: future timestamp calculation"),
+    )?;
     if proposal.timestamp > max_allowed_time {
         return Err(PayoutValidationError::FutureTimestamp(proposal.timestamp));
     }
@@ -518,10 +517,13 @@ fn validate_timestamps(
     // Not too old (1 hour)
     // L-13: Use checked_add to prevent overflow on timestamp arithmetic
     const MAX_AGE_SECS: u64 = 3600;
-    let min_allowed_time = proposal
-        .timestamp
-        .checked_add(MAX_AGE_SECS)
-        .ok_or(PayoutValidationError::Overflow("L-13: stale timestamp calculation"))?;
+    let min_allowed_time =
+        proposal
+            .timestamp
+            .checked_add(MAX_AGE_SECS)
+            .ok_or(PayoutValidationError::Overflow(
+                "L-13: stale timestamp calculation",
+            ))?;
     if min_allowed_time < context.current_time {
         return Err(PayoutValidationError::StaleTimestamp(proposal.timestamp));
     }

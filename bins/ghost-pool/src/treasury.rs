@@ -654,7 +654,8 @@ mod tests {
         assert!(
             years_after > years_before,
             "Crossing year boundary should change the year: {} vs {}",
-            years_before, years_after
+            years_before,
+            years_after
         );
     }
 }

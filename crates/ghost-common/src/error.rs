@@ -191,7 +191,9 @@ pub enum GhostError {
     #[error("Amount below dust threshold: {amount} < {threshold}")]
     DustAmount { amount: u64, threshold: u64 },
 
-    #[error("Treasury balance overflow: adding {amount} to {current_balance} would exceed u64::MAX")]
+    #[error(
+        "Treasury balance overflow: adding {amount} to {current_balance} would exceed u64::MAX"
+    )]
     TreasuryOverflow { current_balance: u64, amount: u64 },
 
     #[error("L2 fee overflow: calculating total fees would exceed u64::MAX")]

@@ -553,7 +553,9 @@ impl BitcoinRpc {
         ));
         // L-14 FIX: Wrap auth header in Zeroizing to ensure it's zeroed on drop
         // The Base64-encoded credentials could leak through memory dumps if not zeroed
-        let auth = Zeroizing::new(base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes()));
+        let auth = Zeroizing::new(
+            base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes()),
+        );
 
         let mut client_builder =
             reqwest::Client::builder().timeout(std::time::Duration::from_secs(config.timeout_secs));
@@ -651,7 +653,10 @@ impl BitcoinRpc {
                 ));
             }
 
-            match self.call_inner_with_timeout(method, &params, operation_timeout).await {
+            match self
+                .call_inner_with_timeout(method, &params, operation_timeout)
+                .await
+            {
                 Ok(result) => {
                     self.circuit_breaker.record_success();
                     return Ok(result);
@@ -1059,8 +1064,7 @@ impl BitcoinRpc {
         // Legacy P2PKH addresses
         } else if address.starts_with('1') || address.starts_with('3') {
             BitcoinNetwork::Mainnet
-        } else if address.starts_with('m') || address.starts_with('n') || address.starts_with('2')
-        {
+        } else if address.starts_with('m') || address.starts_with('n') || address.starts_with('2') {
             // Testnet/signet legacy addresses
             BitcoinNetwork::Signet
         } else {
@@ -2082,7 +2086,9 @@ mod tests {
             BitcoinNetwork::Mainnet
         );
         assert_eq!(
-            detect_address_network("bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vq5zuyut"),
+            detect_address_network(
+                "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vq5zuyut"
+            ),
             BitcoinNetwork::Mainnet
         );
 

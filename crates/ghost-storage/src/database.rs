@@ -248,7 +248,8 @@ impl Database {
                     new_perms.set_mode(0o600);
                     if let Err(e) = std::fs::set_permissions(path, new_perms) {
                         return Err(GhostError::Database(format!(
-                            "Failed to secure database file permissions: {}", e
+                            "Failed to secure database file permissions: {}",
+                            e
                         )));
                     }
                 }
@@ -272,7 +273,8 @@ impl Database {
                             new_perms.set_mode(0o600);
                             if let Err(e) = std::fs::set_permissions(&aux_path, new_perms) {
                                 return Err(GhostError::Database(format!(
-                                    "Failed to secure auxiliary file permissions: {}", e
+                                    "Failed to secure auxiliary file permissions: {}",
+                                    e
                                 )));
                             }
                         }

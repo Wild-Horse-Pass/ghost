@@ -68,7 +68,12 @@ impl<F: PrimeField> BlockCircuit<F> {
         new_state_root: Option<F>,
         tree_depth: usize,
     ) -> Self {
-        Self::new(state_transitions, prev_state_root, new_state_root, tree_depth)
+        Self::new(
+            state_transitions,
+            prev_state_root,
+            new_state_root,
+            tree_depth,
+        )
     }
 
     /// Create a dummy circuit for parameter generation
@@ -342,7 +347,10 @@ mod tests {
         // Should have reasonable constraint count
         // Each state transition: ~128 (payment) + 4 * 3 * 20 (merkle) = ~368
         // 10 transactions: ~3680 constraints
-        assert!(cs.num_constraints() > 3000, "Circuit should have many constraints");
+        assert!(
+            cs.num_constraints() > 3000,
+            "Circuit should have many constraints"
+        );
     }
 
     #[test]

@@ -10,7 +10,6 @@ use crate::contribution::{
     generate_contribution, hash_parameters, verify_contribution, ContributionCommitment,
     MpcContribution,
 };
-use std::collections::HashMap;
 use crate::errors::{MpcError, MpcResult};
 use crate::params::{
     load_parameters, save_parameters, save_verifying_key, update_current_params, ParameterFiles,
@@ -20,6 +19,7 @@ use bellperson::groth16::{prepare_verifying_key, Parameters, PreparedVerifyingKe
 use blstrs::Bls12;
 use parking_lot::RwLock;
 use rand::rngs::OsRng;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -593,11 +593,7 @@ impl CeremonyManager {
             return Err(MpcError::CeremonyOssified(state.contribution_count));
         }
 
-        ContributionCommitment::new(
-            contributor_id,
-            state.current_params_hash,
-            state.ceremony_id,
-        )
+        ContributionCommitment::new(contributor_id, state.current_params_hash, state.ceremony_id)
     }
 
     /// Verify all commitments were honored before ossification
@@ -608,10 +604,7 @@ impl CeremonyManager {
     pub fn verify_all_commitments_honored(&self) -> MpcResult<()> {
         let pending = self.pending_commitments.read();
         if !pending.is_empty() {
-            let dropped: Vec<String> = pending
-                .values()
-                .map(|c| c.contributor.clone())
-                .collect();
+            let dropped: Vec<String> = pending.values().map(|c| c.contributor.clone()).collect();
             return Err(MpcError::Internal(format!(
                 "SECURITY ALERT: {} contributions were committed but not included: {:?}",
                 pending.len(),

@@ -155,11 +155,7 @@ impl DynamicDifficultyAdjuster {
 
             // Keep only recent pings (within 60 seconds)
             let cutoff = now - Duration::from_secs(60);
-            while timestamps
-                .front()
-                .map(|t| *t < cutoff)
-                .unwrap_or(false)
-            {
+            while timestamps.front().map(|t| *t < cutoff).unwrap_or(false) {
                 timestamps.pop_front();
             }
 
@@ -261,11 +257,7 @@ impl DynamicDifficultyAdjuster {
         let now = Instant::now();
         let cutoff = now - Duration::from_secs(60);
         let mut timestamps = self.ping_timestamps.write();
-        while timestamps
-            .front()
-            .map(|t| *t < cutoff)
-            .unwrap_or(false)
-        {
+        while timestamps.front().map(|t| *t < cutoff).unwrap_or(false) {
             timestamps.pop_front();
         }
     }
@@ -322,9 +314,7 @@ impl HealthRateLimiter {
         // refill_millis = elapsed_ms * refill_rate * MILLIS_PER_TOKEN / 1000
         // Reorder to minimize precision loss: (elapsed_ms * refill_rate_millis) / 1000
         let refill_rate_millis = (self.refill_rate as u64).saturating_mul(MILLIS_PER_TOKEN);
-        let refill_millis = elapsed_ms
-            .saturating_mul(refill_rate_millis)
-            / 1000;
+        let refill_millis = elapsed_ms.saturating_mul(refill_rate_millis) / 1000;
 
         bucket.tokens_millis = bucket
             .tokens_millis
@@ -1058,7 +1048,10 @@ mod tests {
         // Node 1 uses its tokens
         assert!(limiter.check_and_consume(&node1));
         assert!(limiter.check_and_consume(&node1));
-        assert!(!limiter.check_and_consume(&node1), "Node 1 should be limited");
+        assert!(
+            !limiter.check_and_consume(&node1),
+            "Node 1 should be limited"
+        );
 
         // Node 2 should still have its tokens
         assert!(
@@ -1066,7 +1059,10 @@ mod tests {
             "Node 2 should not be affected by node 1"
         );
         assert!(limiter.check_and_consume(&node2));
-        assert!(!limiter.check_and_consume(&node2), "Node 2 should be limited now");
+        assert!(
+            !limiter.check_and_consume(&node2),
+            "Node 2 should be limited now"
+        );
     }
 
     #[test]

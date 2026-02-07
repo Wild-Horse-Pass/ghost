@@ -551,15 +551,17 @@ mod tests {
 
         let node_addresses = vec![([1u8; 32], vec![3u8; 20]), ([2u8; 32], vec![4u8; 20])];
 
-        let result = calculator.calculate_payouts(
-            &shares,
-            312_500_000, // 3.125 BTC subsidy
-            1_000_000,   // 0.01 BTC fees
-            &miner_addresses,
-            &node_addresses,
-            [1u8; 32],     // Block builder
-            vec![5u8; 20], // Treasury
-        ).expect("calculate_payouts should succeed when all addresses are found");
+        let result = calculator
+            .calculate_payouts(
+                &shares,
+                312_500_000, // 3.125 BTC subsidy
+                1_000_000,   // 0.01 BTC fees
+                &miner_addresses,
+                &node_addresses,
+                [1u8; 32],     // Block builder
+                vec![5u8; 20], // Treasury
+            )
+            .expect("calculate_payouts should succeed when all addresses are found");
 
         assert!(result.treasury_amount > 0);
         assert_eq!(result.tx_fee_amount, 1_000_000);
@@ -610,15 +612,17 @@ mod tests {
             ([3u8; 32], vec![6u8; 20]),
         ];
 
-        let result = calculator.calculate_payouts(
-            &shares,
-            312_500_000,
-            1_000_000,
-            &miner_addresses,
-            &node_addresses,
-            [1u8; 32],
-            vec![7u8; 20],
-        ).expect("calculate_payouts should succeed when all addresses are found");
+        let result = calculator
+            .calculate_payouts(
+                &shares,
+                312_500_000,
+                1_000_000,
+                &miner_addresses,
+                &node_addresses,
+                [1u8; 32],
+                vec![7u8; 20],
+            )
+            .expect("calculate_payouts should succeed when all addresses are found");
 
         // Verify all miner payouts are reasonable
         let total_miner_payout: u64 = result.miner_payouts.iter().map(|p| p.amount).sum();
@@ -693,16 +697,16 @@ mod tests {
         match err {
             GhostError::TxFeeAllocationFailed { node_id, tx_fees } => {
                 // Verify the error contains the correct information
-                assert_eq!(tx_fees, 10_000_000, "Error should contain the TX fee amount");
+                assert_eq!(
+                    tx_fees, 10_000_000,
+                    "Error should contain the TX fee amount"
+                );
                 assert!(
                     !node_id.is_empty(),
                     "Error should contain the block builder node ID"
                 );
             }
-            _ => panic!(
-                "Expected TxFeeAllocationFailed error, got: {:?}",
-                err
-            ),
+            _ => panic!("Expected TxFeeAllocationFailed error, got: {:?}", err),
         }
     }
 
@@ -785,15 +789,17 @@ mod tests {
         let node_addresses = vec![([1u8; 32], vec![3u8; 20])];
 
         let subsidy = 312_500_000u64;
-        let result = calculator.calculate_payouts(
-            &shares,
-            subsidy,
-            0, // No TX fees for simplicity
-            &miner_addresses,
-            &node_addresses,
-            [1u8; 32],
-            vec![5u8; 20],
-        ).expect("calculate_payouts should succeed when all addresses are found");
+        let result = calculator
+            .calculate_payouts(
+                &shares,
+                subsidy,
+                0, // No TX fees for simplicity
+                &miner_addresses,
+                &node_addresses,
+                [1u8; 32],
+                vec![5u8; 20],
+            )
+            .expect("calculate_payouts should succeed when all addresses are found");
 
         // Pool fee should be 1% of subsidy
         let expected_pool_fee = subsidy / 100; // 3,125,000
@@ -848,15 +854,17 @@ mod tests {
         let miner_addresses = vec![(long_miner_id.to_string(), vec![1u8; 20])];
         let node_addresses = vec![([1u8; 32], vec![3u8; 20])];
 
-        let result = calculator.calculate_payouts(
-            &shares,
-            312_500_000,
-            0,
-            &miner_addresses,
-            &node_addresses,
-            [1u8; 32],
-            vec![5u8; 20],
-        ).expect("calculate_payouts should succeed when all addresses are found");
+        let result = calculator
+            .calculate_payouts(
+                &shares,
+                312_500_000,
+                0,
+                &miner_addresses,
+                &node_addresses,
+                [1u8; 32],
+                vec![5u8; 20],
+            )
+            .expect("calculate_payouts should succeed when all addresses are found");
 
         // Get the miner payout
         assert!(

@@ -141,8 +141,13 @@ impl BalanceTree {
         let recipient_merkle_proof = self.get_proof(recipient_index);
 
         // Update recipient balance
-        let recipient_balance_after = recipient_balance_before.checked_add(amount)
-            .ok_or(ZkError::BalanceOverflow { balance: recipient_balance_before, amount })?;
+        let recipient_balance_after =
+            recipient_balance_before
+                .checked_add(amount)
+                .ok_or(ZkError::BalanceOverflow {
+                    balance: recipient_balance_before,
+                    amount,
+                })?;
         self.set_balance(recipient_index, recipient_balance_after);
 
         Ok(PaymentTransitionWitness::new(

@@ -341,16 +341,16 @@ impl Translator {
 
             let current_count = connection_count.load(Ordering::SeqCst);
             if current_count >= self.max_connections {
-                warn!("Max connections reached ({}), rejecting {}", current_count, addr);
+                warn!(
+                    "Max connections reached ({}), rejecting {}",
+                    current_count, addr
+                );
                 continue;
             }
 
             connection_count.fetch_add(1, Ordering::SeqCst);
             let new_count = connection_count.load(Ordering::SeqCst);
-            info!(
-                "New SV1 connection from {} (total: {})",
-                addr, new_count
-            );
+            info!("New SV1 connection from {} (total: {})", addr, new_count);
 
             let sv2_upstream = self.sv2_upstream;
             let auth_config = Arc::clone(&self.auth_config);

@@ -69,7 +69,11 @@ impl ContributionCommitment {
     ///
     /// # Errors
     /// Returns `MpcError::RandomFailure` if secure random number generation fails
-    pub fn new(contributor: &str, prev_params_hash: [u8; 32], ceremony_id: [u8; 32]) -> MpcResult<Self> {
+    pub fn new(
+        contributor: &str,
+        prev_params_hash: [u8; 32],
+        ceremony_id: [u8; 32],
+    ) -> MpcResult<Self> {
         let mut nonce = [0u8; 32];
         getrandom::getrandom(&mut nonce)
             .map_err(|e| MpcError::RandomFailure(format!("Failed to generate nonce: {}", e)))?;

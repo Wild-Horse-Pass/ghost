@@ -1016,22 +1016,19 @@ async fn main() -> Result<()> {
                 },
             )?
         } else {
-            BlockVerifier::new(&block_prover.verification_key()).map_err(|e| {
-                anyhow::anyhow!("L-25: Failed to create ZK block verifier: {}", e)
-            })?
+            BlockVerifier::new(&block_prover.verification_key())
+                .map_err(|e| anyhow::anyhow!("L-25: Failed to create ZK block verifier: {}", e))?
         });
 
         // Initialize payout prover/verifier with Groth16 setup
         // L-25: Use proper error handling instead of expect()
-        let payout_prover = Arc::new(
-            PayoutProver::default_params_with_setup().map_err(|e| {
-                anyhow::anyhow!(
-                    "L-25: Failed to initialize ZK payout prover with Groth16 setup: {}. \
+        let payout_prover = Arc::new(PayoutProver::default_params_with_setup().map_err(|e| {
+            anyhow::anyhow!(
+                "L-25: Failed to initialize ZK payout prover with Groth16 setup: {}. \
                      This may indicate insufficient memory or corrupted parameters.",
-                    e
-                )
-            })?,
-        );
+                e
+            )
+        })?);
         let payout_verifier = Arc::new(PayoutVerifier::for_prover(&payout_prover));
 
         // Create broadcast callbacks for ZK handlers
@@ -2207,7 +2204,8 @@ async fn main() -> Result<()> {
                     // SEC-ERR-4: Log database errors instead of silently ignoring them
                     let treasury_state = match db_for_events.get_treasury_balance() {
                         Ok(balance) => {
-                            let threshold_ts = match db_for_events.get_treasury_threshold_reached() {
+                            let threshold_ts = match db_for_events.get_treasury_threshold_reached()
+                            {
                                 Ok(ts_opt) => ts_opt
                                     .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
                                     .map(|dt| dt.with_timezone(&chrono::Utc)),

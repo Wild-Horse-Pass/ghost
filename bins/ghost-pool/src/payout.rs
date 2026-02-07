@@ -207,7 +207,8 @@ impl PayoutProposalCreator {
     /// H-FUND-2: Get the total count of node pool treasury fallbacks
     /// This is useful for monitoring and alerting systems
     pub fn get_node_pool_treasury_fallback_count(&self) -> u64 {
-        self.node_pool_treasury_fallback_count.load(Ordering::Relaxed)
+        self.node_pool_treasury_fallback_count
+            .load(Ordering::Relaxed)
     }
 
     /// H-FUND-2: Get the current consecutive no-nodes count

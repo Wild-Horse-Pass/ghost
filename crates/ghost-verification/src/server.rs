@@ -747,7 +747,8 @@ impl VerificationState {
     ///
     /// Default is false (disabled) for security.
     pub fn with_debug_endpoints(self, enabled: bool) -> Self {
-        self.debug_endpoints_frozen.store(enabled, Ordering::Relaxed);
+        self.debug_endpoints_frozen
+            .store(enabled, Ordering::Relaxed);
         // Also update dashboard_config for consistency in responses
         {
             let mut config = self.dashboard_config.write();
@@ -1474,9 +1475,7 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
 
     // If no valid origins parsed, use secure defaults
     let cors = if origins.is_empty() {
-        tracing::warn!(
-            "C-1 SECURITY: No valid CORS origins configured, using secure defaults"
-        );
+        tracing::warn!("C-1 SECURITY: No valid CORS origins configured, using secure defaults");
         CorsLayer::new()
             .allow_origin(tower_http::cors::AllowOrigin::list([
                 "https://bitcoinghost.org"
@@ -1523,7 +1522,8 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
             .ok_or_else(|| {
                 GhostError::Config(
                     "L-28: Failed to initialize rate limiter: invalid configuration. \
-                     This is an internal configuration error.".to_string()
+                     This is an internal configuration error."
+                        .to_string(),
                 )
             })?,
     );

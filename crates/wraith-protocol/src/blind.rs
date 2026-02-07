@@ -1788,9 +1788,11 @@ mod tests {
         );
 
         // Test with two byte pattern
-        let two_bytes = [0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
+        let two_bytes = [
             0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
-            0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB];
+            0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
+            0xAA, 0xBB, 0xAA, 0xBB,
+        ];
         let two_count = count_unique_bytes(&two_bytes);
         assert_eq!(two_count, 2, "Two byte pattern should count 2");
         assert!(
@@ -1827,7 +1829,10 @@ mod tests {
         };
         let result =
             signer.sign_blinded_challenge_for_participant(&invalid_challenge, "test_ghost");
-        assert!(result.is_err(), "Invalid scalar should return error, not panic");
+        assert!(
+            result.is_err(),
+            "Invalid scalar should return error, not panic"
+        );
 
         // Test 3: Invalid nonce point in PublicNonce (when creating BlindingContext)
         let fake_nonce = PublicNonce {

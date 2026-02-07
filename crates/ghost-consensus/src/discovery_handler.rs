@@ -120,16 +120,11 @@ impl RateLimiter {
 
         // H-P2P-3: Refill tokens based on elapsed time using integer arithmetic
         // Cap elapsed time to 1 hour (3600000 ms) to prevent overflow
-        let elapsed_ms = now
-            .duration_since(*last_refill)
-            .as_millis()
-            .min(3_600_000) as u64;
+        let elapsed_ms = now.duration_since(*last_refill).as_millis().min(3_600_000) as u64;
 
         // refill_millis = elapsed_ms * refill_rate_millis / 1000
         // Reorder to minimize precision loss: (elapsed_ms * refill_rate_millis) / 1000
-        let refill_millis = elapsed_ms
-            .saturating_mul(self.refill_rate_millis)
-            / 1000;
+        let refill_millis = elapsed_ms.saturating_mul(self.refill_rate_millis) / 1000;
 
         *tokens_millis = tokens_millis
             .saturating_add(refill_millis)
@@ -217,10 +212,7 @@ impl AddressRateLimiter {
             .or_insert((self.max_tokens_millis, now));
 
         // Refill tokens based on elapsed time
-        let elapsed_ms = now
-            .duration_since(*last_refill)
-            .as_millis()
-            .min(3_600_000) as u64;
+        let elapsed_ms = now.duration_since(*last_refill).as_millis().min(3_600_000) as u64;
 
         let refill_millis = elapsed_ms.saturating_mul(self.refill_rate_millis) / 1000;
 
@@ -292,7 +284,8 @@ fn is_reserved_ipv4(ip: std::net::Ipv4Addr) -> bool {
         || ip.is_private()        // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
         || ip.is_link_local()     // 169.254.0.0/16
         || ip.is_unspecified()    // 0.0.0.0
-        || ip.is_broadcast()      // 255.255.255.255
+        || ip.is_broadcast()
+    // 255.255.255.255
     {
         return true;
     }
@@ -744,7 +737,11 @@ impl DiscoveryHandler {
                 );
             } else {
                 // H-P2P-4: Check for address hijacking (different node claiming same address)
-                let existing_owner = self.address_owners.read().get(&discovery_msg.public_address).copied();
+                let existing_owner = self
+                    .address_owners
+                    .read()
+                    .get(&discovery_msg.public_address)
+                    .copied();
                 if let Some(owner) = existing_owner {
                     if owner != envelope.sender {
                         warn!(
@@ -1090,7 +1087,7 @@ mod tests {
 
         // Create a discovery message from the same identity
         let discovery_msg = DiscoveryMessage {
-            node_id: identity.node_id(), // Matches the signer
+            node_id: identity.node_id(),                // Matches the signer
             public_address: "8.8.8.9:8559".to_string(), // Valid public address (no tcp:// prefix)
             capabilities: NodeCapabilities::default(),
             known_peers: vec![],
@@ -1395,11 +1392,20 @@ mod tests {
     #[test]
     fn test_l9_public_ips_accepted() {
         // Google DNS
-        assert!(validate_peer_address("8.8.8.8:8559"), "Google DNS should be accepted");
+        assert!(
+            validate_peer_address("8.8.8.8:8559"),
+            "Google DNS should be accepted"
+        );
         // Cloudflare DNS
-        assert!(validate_peer_address("1.1.1.1:8559"), "Cloudflare DNS should be accepted");
+        assert!(
+            validate_peer_address("1.1.1.1:8559"),
+            "Cloudflare DNS should be accepted"
+        );
         // Random public IP
-        assert!(validate_peer_address("93.184.216.34:8559"), "Public IP should be accepted");
+        assert!(
+            validate_peer_address("93.184.216.34:8559"),
+            "Public IP should be accepted"
+        );
     }
 
     // =========================================================================

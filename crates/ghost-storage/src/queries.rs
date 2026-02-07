@@ -2458,12 +2458,13 @@ impl Database {
     pub fn update_withdrawal_confirmed(&self, id: i64) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
         self.with_connection(|conn| {
-            let updated = conn.execute(
-                "UPDATE withdrawal_requests SET status = 'confirmed', updated_at = ?1
+            let updated = conn
+                .execute(
+                    "UPDATE withdrawal_requests SET status = 'confirmed', updated_at = ?1
                  WHERE id = ?2 AND status = 'submitted'",
-                params![now, id],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
+                    params![now, id],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
 
             if updated == 0 {
                 return Err(GhostError::InvalidState(format!(
@@ -2482,12 +2483,13 @@ impl Database {
     pub fn cancel_withdrawal(&self, id: i64) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
         self.with_connection(|conn| {
-            let updated = conn.execute(
-                "UPDATE withdrawal_requests SET status = 'cancelled', updated_at = ?1
+            let updated = conn
+                .execute(
+                    "UPDATE withdrawal_requests SET status = 'cancelled', updated_at = ?1
                  WHERE id = ?2 AND status = 'pending'",
-                params![now, id],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
+                    params![now, id],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
 
             if updated == 0 {
                 return Err(GhostError::InvalidState(format!(
@@ -4407,8 +4409,10 @@ impl Database {
                         current_params_hash: params_hash,
                         is_ossified: ossified != 0,
                         ossified_at: match ossified_at {
-                            Some(v) => Some(i64_to_u64(v, "ossified_at")
-                                .map_err(|e| GhostError::Database(e.to_string()))?),
+                            Some(v) => Some(
+                                i64_to_u64(v, "ossified_at")
+                                    .map_err(|e| GhostError::Database(e.to_string()))?,
+                            ),
                             None => None,
                         },
                         block_vk_hash,
@@ -4762,7 +4766,10 @@ impl Database {
     /// Save an instant payment reservation
     ///
     /// L-24 FIX: Persists reservations so they survive restarts
-    pub fn save_instant_reservation(&self, reservation: &InstantReservationRecord) -> GhostResult<()> {
+    pub fn save_instant_reservation(
+        &self,
+        reservation: &InstantReservationRecord,
+    ) -> GhostResult<()> {
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO instant_payment_reservations
@@ -5491,12 +5498,16 @@ mod tests {
         assert!(db.has_instant_reservation(&[1u8; 32]).unwrap());
 
         // Get active reservations
-        let active = db.get_active_reservations_for_lock("lock123", current_time).unwrap();
+        let active = db
+            .get_active_reservations_for_lock("lock123", current_time)
+            .unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].amount_sats, 50_000);
 
         // Get total reserved
-        let total = db.get_total_reserved_for_lock("lock123", current_time).unwrap();
+        let total = db
+            .get_total_reserved_for_lock("lock123", current_time)
+            .unwrap();
         assert_eq!(total, 50_000);
     }
 
@@ -5516,11 +5527,15 @@ mod tests {
         db.save_instant_reservation(&reservation).unwrap();
 
         // Before expiry - should be active
-        let active = db.get_active_reservations_for_lock("lock456", start_time + 15_000).unwrap();
+        let active = db
+            .get_active_reservations_for_lock("lock456", start_time + 15_000)
+            .unwrap();
         assert_eq!(active.len(), 1);
 
         // After expiry - should not be returned
-        let active = db.get_active_reservations_for_lock("lock456", start_time + 31_000).unwrap();
+        let active = db
+            .get_active_reservations_for_lock("lock456", start_time + 31_000)
+            .unwrap();
         assert_eq!(active.len(), 0);
 
         // Prune expired
@@ -5549,14 +5564,30 @@ mod tests {
         }
 
         // Verify each lock has correct total
-        assert_eq!(db.get_total_reserved_for_lock("lock0", current_time).unwrap(), 10_000);
-        assert_eq!(db.get_total_reserved_for_lock("lock1", current_time).unwrap(), 20_000);
-        assert_eq!(db.get_total_reserved_for_lock("lock2", current_time).unwrap(), 30_000);
+        assert_eq!(
+            db.get_total_reserved_for_lock("lock0", current_time)
+                .unwrap(),
+            10_000
+        );
+        assert_eq!(
+            db.get_total_reserved_for_lock("lock1", current_time)
+                .unwrap(),
+            20_000
+        );
+        assert_eq!(
+            db.get_total_reserved_for_lock("lock2", current_time)
+                .unwrap(),
+            30_000
+        );
 
         // Delete one reservation
         db.delete_instant_reservation(&[1u8; 32]).unwrap();
 
         // lock1 should now have 0 reserved
-        assert_eq!(db.get_total_reserved_for_lock("lock1", current_time).unwrap(), 0);
+        assert_eq!(
+            db.get_total_reserved_for_lock("lock1", current_time)
+                .unwrap(),
+            0
+        );
     }
 }

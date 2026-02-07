@@ -90,8 +90,8 @@ pub use lock::{GhostLock, GhostLockData};
 pub use script::{
     build_lock_script, build_normal_witness, build_p2wsh_script_pubkey, build_recovery_witness,
     build_wsh_witness_script, compute_wsh_script_hash, ghost_lock_id, is_p2tr, is_p2wsh,
-    is_quantum_safe_address, validate_no_p2tr, RecoveryInputParams, P2TR_REJECTION_MSG,
-    RECOVERY_NSEQUENCE, MAX_RECOVERY_BLOCKS, MIN_RECOMMENDED_RECOVERY_BLOCKS,
+    is_quantum_safe_address, validate_no_p2tr, RecoveryInputParams, MAX_RECOVERY_BLOCKS,
+    MIN_RECOMMENDED_RECOVERY_BLOCKS, P2TR_REJECTION_MSG, RECOVERY_NSEQUENCE,
 };
 pub use state::{LockState, StateTransition};
 pub use timelock::{TimelockTier, MAX_CREATION_HEIGHT, MIN_RECOVERY_BLOCKS};
@@ -191,9 +191,13 @@ mod tests {
     #[test]
     fn test_quantum_safe_address_validation() {
         // P2WPKH/P2WSH are quantum-safe
-        assert!(is_quantum_safe_address("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"));
+        assert!(is_quantum_safe_address(
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        ));
 
         // P2TR is NOT quantum-safe
-        assert!(!is_quantum_safe_address("bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr"));
+        assert!(!is_quantum_safe_address(
+            "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr"
+        ));
     }
 }

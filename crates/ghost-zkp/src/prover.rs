@@ -86,10 +86,7 @@ impl BlockProver {
     /// # 2.3 HIGH: All proofs now use full state transition proving
     #[instrument(skip_all, fields(max_txs, tree_depth))]
     pub fn new(max_txs: usize, tree_depth: usize) -> ZkResult<Self> {
-        info!(
-            "Creating prover for {} txs, depth {}",
-            max_txs, tree_depth
-        );
+        info!("Creating prover for {} txs, depth {}", max_txs, tree_depth);
         let start = Instant::now();
 
         // Generate a unique prover ID based on parameters
@@ -564,7 +561,14 @@ mod tests {
 
         let new_root = tree.root();
 
-        BlockWitnessV2::new_with_roots(1, prev_root, new_root, transitions, intermediate_roots, tree_depth)
+        BlockWitnessV2::new_with_roots(
+            1,
+            prev_root,
+            new_root,
+            transitions,
+            intermediate_roots,
+            tree_depth,
+        )
     }
 
     #[test]
@@ -636,13 +640,7 @@ mod tests {
             MerkleProof::new(1, vec![[0u8; 32]; 10]),
         )];
 
-        let witness = BlockWitnessV2::new(
-            1,
-            [1u8; 32],
-            [2u8; 32],
-            transitions,
-            10,
-        );
+        let witness = BlockWitnessV2::new(1, [1u8; 32], [2u8; 32], transitions, 10);
 
         let result = prover.prove(&witness);
         assert!(result.is_err(), "Invalid witness should be rejected");

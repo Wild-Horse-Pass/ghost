@@ -682,11 +682,7 @@ impl TemplateProcessor {
                 coinbase2.extend_from_slice(&prop.treasury_amount.to_le_bytes());
                 self.encode_address_script(&mut coinbase2, treasury_addr, "treasury")?;
                 outputs_serialized.extend_from_slice(&prop.treasury_amount.to_le_bytes());
-                self.encode_address_script(
-                    &mut outputs_serialized,
-                    treasury_addr,
-                    "treasury_tdp",
-                )?;
+                self.encode_address_script(&mut outputs_serialized, treasury_addr, "treasury_tdp")?;
             }
 
             info!(
@@ -735,10 +731,7 @@ impl TemplateProcessor {
         // This IS included in the txid serialization (it's a regular output)
         if let Some(commitment) = witness_commitment {
             let commitment_bytes = hex::decode(commitment).map_err(|e| {
-                TemplateError::BlockAssemblyError(format!(
-                    "Invalid witness commitment hex: {}",
-                    e
-                ))
+                TemplateError::BlockAssemblyError(format!("Invalid witness commitment hex: {}", e))
             })?;
 
             // Validate the commitment script structure
@@ -750,7 +743,7 @@ impl TemplateProcessor {
             }
 
             coinbase2.extend_from_slice(&0u64.to_le_bytes()); // 0 value
-            // L-10: Validate commitment length before casting to u8
+                                                              // L-10: Validate commitment length before casting to u8
             if commitment_bytes.len() > 255 {
                 return Err(TemplateError::BlockAssemblyError(format!(
                     "L-10: Witness commitment script too long: {} bytes (max 255)",
@@ -955,10 +948,7 @@ impl TemplateProcessor {
         // Output 3: Witness commitment (0-value OP_RETURN)
         if let Some(commitment) = witness_commitment {
             let commitment_bytes = hex::decode(commitment).map_err(|e| {
-                TemplateError::BlockAssemblyError(format!(
-                    "Invalid witness commitment hex: {}",
-                    e
-                ))
+                TemplateError::BlockAssemblyError(format!("Invalid witness commitment hex: {}", e))
             })?;
 
             if !validate_witness_commitment_script(&commitment_bytes) {
@@ -968,7 +958,7 @@ impl TemplateProcessor {
             }
 
             coinbase2.extend_from_slice(&0u64.to_le_bytes()); // 0 value
-            // L-10: Validate commitment length before casting to u8
+                                                              // L-10: Validate commitment length before casting to u8
             if commitment_bytes.len() > 255 {
                 return Err(TemplateError::BlockAssemblyError(format!(
                     "L-10: Witness commitment script too long: {} bytes (max 255)",
@@ -1534,10 +1524,7 @@ impl TemplateProcessor {
         let mut witness_data = WitnessData::default();
         if let Some(commitment) = witness_commitment {
             let commitment_bytes = hex::decode(commitment).map_err(|e| {
-                TemplateError::BlockAssemblyError(format!(
-                    "Invalid witness commitment hex: {}",
-                    e
-                ))
+                TemplateError::BlockAssemblyError(format!("Invalid witness commitment hex: {}", e))
             })?;
 
             if !validate_witness_commitment_script(&commitment_bytes) {
@@ -1601,9 +1588,8 @@ impl TemplateProcessor {
 
         let mut bytes = Vec::with_capacity(hex.len() / 2);
         for i in (0..hex.len()).step_by(2) {
-            let byte = u8::from_str_radix(&hex[i..i + 2], 16).map_err(|e| {
-                anyhow::anyhow!("Invalid hex character at position {}: {}", i, e)
-            })?;
+            let byte = u8::from_str_radix(&hex[i..i + 2], 16)
+                .map_err(|e| anyhow::anyhow!("Invalid hex character at position {}: {}", i, e))?;
             bytes.push(byte);
         }
 
@@ -2201,7 +2187,10 @@ mod tests {
         // Invalid hex characters should fail
         let result = processor.reverse_hex("gg");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid hex character"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid hex character"));
 
         // Empty string is valid (0 bytes)
         let result = processor.reverse_hex("");

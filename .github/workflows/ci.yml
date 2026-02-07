@@ -16,9 +16,8 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
+      # Don't checkout submodules for fmt - sv2-apps has nightly-only rustfmt.toml
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt

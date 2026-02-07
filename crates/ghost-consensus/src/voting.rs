@@ -1457,8 +1457,7 @@ mod tests {
         elder_list.merkle_root = [0xDE; 32]; // Invalid merkle root
 
         // Previous elders (required for validation of epoch > 0)
-        let previous_elders: HashSet<NodeId> =
-            (10u8..15).map(|i| [i; 32]).collect();
+        let previous_elders: HashSet<NodeId> = (10u8..15).map(|i| [i; 32]).collect();
 
         let result = VotingSession::from_elder_list_with_validation(
             1,
@@ -1469,7 +1468,10 @@ mod tests {
             5000,
         );
 
-        assert!(result.is_err(), "Should reject elder list with invalid merkle root");
+        assert!(
+            result.is_err(),
+            "Should reject elder list with invalid merkle root"
+        );
         let err = result.unwrap_err();
         assert!(
             err.to_string().contains("CRIT-4") && err.to_string().contains("merkle"),
@@ -1549,7 +1551,10 @@ mod tests {
             5000,
         );
 
-        assert!(result.is_err(), "Non-genesis epoch should require previous elders");
+        assert!(
+            result.is_err(),
+            "Non-genesis epoch should require previous elders"
+        );
         let err = result.unwrap_err();
         assert!(
             err.to_string().contains("CRIT-4"),
@@ -1581,8 +1586,7 @@ mod tests {
         // No approval signatures added - this should fail validation
 
         // Previous elders (10 elders, so threshold is ceil(10 * 67 / 100) = 7)
-        let previous_elders: HashSet<NodeId> =
-            (10u8..20).map(|i| [i; 32]).collect();
+        let previous_elders: HashSet<NodeId> = (10u8..20).map(|i| [i; 32]).collect();
 
         let result = VotingSession::from_elder_list_with_validation(
             1,
@@ -1593,7 +1597,10 @@ mod tests {
             5000,
         );
 
-        assert!(result.is_err(), "Should reject elder list without sufficient approvals");
+        assert!(
+            result.is_err(),
+            "Should reject elder list without sufficient approvals"
+        );
         let err = result.unwrap_err();
         assert!(
             err.to_string().contains("CRIT-4") && err.to_string().contains("approvals"),

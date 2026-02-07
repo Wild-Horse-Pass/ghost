@@ -1330,8 +1330,11 @@ mod tests {
 
         let result = config.validate();
         // L-17: Should now be an error instead of a warning
-        assert!(result.errors.iter().any(|e| e.field == "network.private_mining_password"
-            && e.message.contains("at least 8 characters")));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.field == "network.private_mining_password"
+                && e.message.contains("at least 8 characters")));
     }
 
     #[test]
@@ -1405,8 +1408,7 @@ mod tests {
         assert!(result
             .errors
             .iter()
-            .any(|e| e.field == "network.seed_nodes"
-                && e.message.contains("MAINNET SECURITY")));
+            .any(|e| e.field == "network.seed_nodes" && e.message.contains("MAINNET SECURITY")));
     }
 
     #[test]

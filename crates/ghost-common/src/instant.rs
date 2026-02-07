@@ -766,7 +766,10 @@ impl std::fmt::Display for LockStateVerificationResult {
                 )
             }
             Self::StateMismatch { .. } => {
-                write!(f, "Lock state mismatch: state changed since receipt creation")
+                write!(
+                    f,
+                    "Lock state mismatch: state changed since receipt creation"
+                )
             }
         }
     }
@@ -1131,8 +1134,11 @@ mod tests {
         let mut lock2 = create_healthy_lock();
         lock2.balance_sats = 600_000;
 
-        assert_ne!(lock1.state_hash(), lock2.state_hash(),
-            "State hash should change when balance changes");
+        assert_ne!(
+            lock1.state_hash(),
+            lock2.state_hash(),
+            "State hash should change when balance changes"
+        );
     }
 
     #[test]
@@ -1141,8 +1147,11 @@ mod tests {
         let mut lock2 = create_healthy_lock();
         lock2.state = "Frozen".to_string();
 
-        assert_ne!(lock1.state_hash(), lock2.state_hash(),
-            "State hash should change when state changes");
+        assert_ne!(
+            lock1.state_hash(),
+            lock2.state_hash(),
+            "State hash should change when state changes"
+        );
     }
 
     #[test]
@@ -1151,8 +1160,11 @@ mod tests {
         let mut lock2 = create_healthy_lock();
         lock2.pending_instant_sats = 10_000;
 
-        assert_ne!(lock1.state_hash(), lock2.state_hash(),
-            "State hash should change when pending_instant_sats changes");
+        assert_ne!(
+            lock1.state_hash(),
+            lock2.state_hash(),
+            "State hash should change when pending_instant_sats changes"
+        );
     }
 
     #[test]
@@ -1174,8 +1186,10 @@ mod tests {
         };
 
         // Same lock should verify (using height before cutoff)
-        assert!(receipt.verify_lock_state(&lock, 200),
-            "Receipt should verify against unchanged lock");
+        assert!(
+            receipt.verify_lock_state(&lock, 200),
+            "Receipt should verify against unchanged lock"
+        );
     }
 
     #[test]
@@ -1200,8 +1214,10 @@ mod tests {
         let mut modified_lock = create_healthy_lock();
         modified_lock.balance_sats = 400_000; // Balance changed!
 
-        assert!(!receipt.verify_lock_state(&modified_lock, 200),
-            "Receipt should NOT verify against modified lock");
+        assert!(
+            !receipt.verify_lock_state(&modified_lock, 200),
+            "Receipt should NOT verify against modified lock"
+        );
     }
 
     #[test]
@@ -1263,8 +1279,10 @@ mod tests {
         };
 
         // Before cutoff, should be accepted
-        assert!(legacy_receipt.verify_lock_state(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT - 1),
-            "Legacy receipt should be accepted before cutoff");
+        assert!(
+            legacy_receipt.verify_lock_state(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT - 1),
+            "Legacy receipt should be accepted before cutoff"
+        );
     }
 
     #[test]
@@ -1285,12 +1303,16 @@ mod tests {
         };
 
         // At cutoff, should be rejected
-        assert!(!legacy_receipt.verify_lock_state(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT),
-            "Legacy receipt should be rejected at cutoff");
+        assert!(
+            !legacy_receipt.verify_lock_state(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT),
+            "Legacy receipt should be rejected at cutoff"
+        );
 
         // After cutoff, should be rejected
-        assert!(!legacy_receipt.verify_lock_state(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT + 1000),
-            "Legacy receipt should be rejected after cutoff");
+        assert!(
+            !legacy_receipt.verify_lock_state(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT + 1000),
+            "Legacy receipt should be rejected after cutoff"
+        );
     }
 
     #[test]
@@ -1334,10 +1356,14 @@ mod tests {
         assert_eq!(result, LockStateVerificationResult::LegacyReceiptAccepted);
 
         // Legacy receipt after cutoff
-        let result = legacy_receipt.verify_lock_state_detailed(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT + 100);
+        let result =
+            legacy_receipt.verify_lock_state_detailed(&lock, LEGACY_RECEIPT_CUTOFF_HEIGHT + 100);
         assert!(!result.is_valid());
         match result {
-            LockStateVerificationResult::LegacyReceiptExpired { current_height, cutoff_height } => {
+            LockStateVerificationResult::LegacyReceiptExpired {
+                current_height,
+                cutoff_height,
+            } => {
                 assert_eq!(current_height, LEGACY_RECEIPT_CUTOFF_HEIGHT + 100);
                 assert_eq!(cutoff_height, LEGACY_RECEIPT_CUTOFF_HEIGHT);
             }
@@ -1469,13 +1495,17 @@ mod tests {
         assert_eq!(res3.expired_reservations.len(), 2);
 
         // Verify the expired reservations contain the correct payment IDs and amounts
-        let expired_ids: Vec<[u8; 32]> = res3.expired_reservations.iter()
+        let expired_ids: Vec<[u8; 32]> = res3
+            .expired_reservations
+            .iter()
             .map(|r| r.payment_id)
             .collect();
         assert!(expired_ids.contains(&payment1));
         assert!(expired_ids.contains(&payment2));
 
-        let expired_amounts: Vec<u64> = res3.expired_reservations.iter()
+        let expired_amounts: Vec<u64> = res3
+            .expired_reservations
+            .iter()
             .map(|r| r.amount_sats)
             .collect();
         assert!(expired_amounts.contains(&50_000));

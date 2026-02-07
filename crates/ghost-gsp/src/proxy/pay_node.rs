@@ -409,10 +409,7 @@ impl PayNodeProxy {
             creation_height: Option<u64>,
         }
 
-        let locks: Vec<LockWithHeight> = response
-            .json()
-            .await
-            .unwrap_or_default();
+        let locks: Vec<LockWithHeight> = response.json().await.unwrap_or_default();
 
         // Filter locks that were confirmed at or after min_height
         // If creation_height is not available, we can't determine if affected
@@ -1023,7 +1020,11 @@ impl PayNodeProxy {
                 // Derive mempool status from lock status
                 in_mempool: lock.status == GhostLockStatus::Pending,
                 // Cannot determine confirmations without the endpoint
-                confirmations: if lock.status == GhostLockStatus::Pending { 0 } else { 1 },
+                confirmations: if lock.status == GhostLockStatus::Pending {
+                    0
+                } else {
+                    1
+                },
                 amount_sats: lock.balance_sats,
             });
         }

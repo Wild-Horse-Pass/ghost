@@ -233,11 +233,7 @@ mod tests {
         assert!(matches!(result, Err(ReconciliationError::QuantumUnsafe)));
 
         // Regtest P2TR
-        let result = validate_settlement(
-            "ghost1abc",
-            "bcrt1ptest",
-            100_000,
-        );
+        let result = validate_settlement("ghost1abc", "bcrt1ptest", 100_000);
         assert!(matches!(result, Err(ReconciliationError::QuantumUnsafe)));
 
         // P2WPKH should still work

@@ -523,36 +523,41 @@ mod tests {
     fn test_zmq_subscriber_rejects_all_remote_endpoints() {
         // Test each endpoint type
         let test_cases = [
-            ("hashblock", ZmqConfig {
-                hashblock_endpoint: Some("tcp://10.0.0.1:28332".to_string()),
-                hashtx_endpoint: None,
-                rawblock_endpoint: None,
-                rawtx_endpoint: None,
-                sequence_endpoint: None,
-            }),
-            ("hashtx", ZmqConfig {
-                hashblock_endpoint: None,
-                hashtx_endpoint: Some("tcp://10.0.0.1:28333".to_string()),
-                rawblock_endpoint: None,
-                rawtx_endpoint: None,
-                sequence_endpoint: None,
-            }),
-            ("sequence", ZmqConfig {
-                hashblock_endpoint: None,
-                hashtx_endpoint: None,
-                rawblock_endpoint: None,
-                rawtx_endpoint: None,
-                sequence_endpoint: Some("tcp://10.0.0.1:28334".to_string()),
-            }),
+            (
+                "hashblock",
+                ZmqConfig {
+                    hashblock_endpoint: Some("tcp://10.0.0.1:28332".to_string()),
+                    hashtx_endpoint: None,
+                    rawblock_endpoint: None,
+                    rawtx_endpoint: None,
+                    sequence_endpoint: None,
+                },
+            ),
+            (
+                "hashtx",
+                ZmqConfig {
+                    hashblock_endpoint: None,
+                    hashtx_endpoint: Some("tcp://10.0.0.1:28333".to_string()),
+                    rawblock_endpoint: None,
+                    rawtx_endpoint: None,
+                    sequence_endpoint: None,
+                },
+            ),
+            (
+                "sequence",
+                ZmqConfig {
+                    hashblock_endpoint: None,
+                    hashtx_endpoint: None,
+                    rawblock_endpoint: None,
+                    rawtx_endpoint: None,
+                    sequence_endpoint: Some("tcp://10.0.0.1:28334".to_string()),
+                },
+            ),
         ];
 
         for (name, config) in test_cases {
             let result = ZmqSubscriber::new(config);
-            assert!(
-                result.is_err(),
-                "Expected {} endpoint to be rejected",
-                name
-            );
+            assert!(result.is_err(), "Expected {} endpoint to be rejected", name);
         }
     }
 
@@ -561,10 +566,8 @@ mod tests {
         let result = BlockWatcher::new("tcp://192.168.1.100:28332");
         assert!(result.is_err());
 
-        let result = BlockWatcher::with_sequence(
-            "tcp://127.0.0.1:28332",
-            Some("tcp://192.168.1.100:28334"),
-        );
+        let result =
+            BlockWatcher::with_sequence("tcp://127.0.0.1:28332", Some("tcp://192.168.1.100:28334"));
         assert!(result.is_err());
     }
 

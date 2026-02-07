@@ -687,9 +687,7 @@ mod tests {
         // Valid input
         let valid_txid = "abcd".repeat(16); // 64 hex chars
         let result = ReconciliationInputData::new(
-            valid_txid,
-            0,
-            10_000, // Above dust
+            valid_txid, 0, 10_000, // Above dust
             [1u8; 32],
         );
         assert!(result.is_ok());
@@ -712,12 +710,7 @@ mod tests {
     fn test_input_data_validation_invalid_txid_hex() {
         // Invalid hex in txid
         let invalid_txid = "gggg".repeat(16); // 64 chars but not valid hex
-        let result = ReconciliationInputData::new(
-            invalid_txid,
-            0,
-            10_000,
-            [1u8; 32],
-        );
+        let result = ReconciliationInputData::new(invalid_txid, 0, 10_000, [1u8; 32]);
         assert!(result.is_err());
     }
 
@@ -726,10 +719,8 @@ mod tests {
         // Excessive vout
         let valid_txid = "abcd".repeat(16);
         let result = ReconciliationInputData::new(
-            valid_txid,
-            100_000, // Exceeds MAX_REASONABLE_VOUT (65535)
-            10_000,
-            [1u8; 32],
+            valid_txid, 100_000, // Exceeds MAX_REASONABLE_VOUT (65535)
+            10_000, [1u8; 32],
         );
         assert!(result.is_err());
     }
@@ -752,9 +743,7 @@ mod tests {
         // Dust amount
         let valid_txid = "abcd".repeat(16);
         let result = ReconciliationInputData::new(
-            valid_txid,
-            0,
-            100, // Below MIN_DUST_AMOUNT (546)
+            valid_txid, 0, 100, // Below MIN_DUST_AMOUNT (546)
             [1u8; 32],
         );
         assert!(result.is_err());
@@ -765,10 +754,7 @@ mod tests {
         // Zero lock_id
         let valid_txid = "abcd".repeat(16);
         let result = ReconciliationInputData::new(
-            valid_txid,
-            0,
-            10_000,
-            [0u8; 32], // All zeros
+            valid_txid, 0, 10_000, [0u8; 32], // All zeros
         );
         assert!(result.is_err());
     }

@@ -133,10 +133,7 @@ impl TokenBucket {
 /// P2TR addresses (bc1p...) are quantum-vulnerable because they expose
 /// the public key on-chain. This function rejects P2TR addresses.
 fn validate_quantum_safe_address(address: &str) -> Result<(), GspError> {
-    if address.starts_with("bc1p")
-        || address.starts_with("tb1p")
-        || address.starts_with("bcrt1p")
-    {
+    if address.starts_with("bc1p") || address.starts_with("tb1p") || address.starts_with("bcrt1p") {
         return Err(GspError::QuantumUnsafe);
     }
     Ok(())
@@ -212,10 +209,7 @@ impl Default for ConnectionState {
             subscriptions: Vec::new(),
             lock_state_subscriptions: Vec::new(),
             last_activity: None,
-            rate_limiter: TokenBucket::new(
-                RATE_LIMIT_BUCKET_CAPACITY,
-                RATE_LIMIT_MESSAGES_PER_SEC,
-            ),
+            rate_limiter: TokenBucket::new(RATE_LIMIT_BUCKET_CAPACITY, RATE_LIMIT_MESSAGES_PER_SEC),
         }
     }
 }
@@ -331,7 +325,9 @@ fn cleanup_connection_state(state: &Arc<GspState>, conn_state: &ConnectionState)
     // M-8: Clean up lock state subscriptions
     if let Some(wallet_id) = &conn_state.wallet_id {
         for lock_id in &conn_state.lock_state_subscriptions {
-            state.subscriptions.unsubscribe_lock_state(wallet_id, lock_id);
+            state
+                .subscriptions
+                .unsubscribe_lock_state(wallet_id, lock_id);
         }
     }
 
@@ -391,12 +387,11 @@ fn sanitize_websocket_error(error: GspError) -> ServerMessage {
         GspError::InsecureJwtSecret(_) => ("INTERNAL_ERROR", "Internal server error"),
         GspError::InvalidCredentials(_) => ("INVALID_CREDENTIALS", "Invalid credentials"),
         GspError::InvalidToken(_) => ("INVALID_TOKEN", "Invalid or expired token"),
-        GspError::SignatureVerification(_) => {
-            ("SIGNATURE_FAILED", "Signature verification failed")
-        }
-        GspError::PayNodeUnavailable(_) => {
-            ("SERVICE_UNAVAILABLE", "Payment service temporarily unavailable")
-        }
+        GspError::SignatureVerification(_) => ("SIGNATURE_FAILED", "Signature verification failed"),
+        GspError::PayNodeUnavailable(_) => (
+            "SERVICE_UNAVAILABLE",
+            "Payment service temporarily unavailable",
+        ),
         GspError::PayNodeError(_) => ("SERVICE_ERROR", "Payment service error"),
         GspError::Database(_) => ("INTERNAL_ERROR", "Internal server error"),
         GspError::Internal(_) => ("INTERNAL_ERROR", "Internal server error"),

@@ -217,8 +217,8 @@ pub fn build_lock_script(
 /// Witness: `<signature> <1> <witness_script>`
 pub fn build_normal_witness(signature: &[u8], witness_script: &ScriptBuf) -> Vec<Vec<u8>> {
     vec![
-        signature.to_vec(),       // Signature
-        vec![0x01],               // OP_TRUE (take IF branch)
+        signature.to_vec(),        // Signature
+        vec![0x01],                // OP_TRUE (take IF branch)
         witness_script.to_bytes(), // The witness script
     ]
 }
@@ -231,8 +231,8 @@ pub fn build_normal_witness(signature: &[u8], witness_script: &ScriptBuf) -> Vec
 /// for CSV to validate properly.
 pub fn build_recovery_witness(signature: &[u8], witness_script: &ScriptBuf) -> Vec<Vec<u8>> {
     vec![
-        signature.to_vec(),       // Signature
-        vec![],                   // Empty (OP_FALSE, take ELSE branch)
+        signature.to_vec(),        // Signature
+        vec![],                    // Empty (OP_FALSE, take ELSE branch)
         witness_script.to_bytes(), // The witness script
     ]
 }
@@ -346,7 +346,8 @@ pub fn is_quantum_safe_address(addr: &str) -> bool {
         || addr.starts_with("3")  // Legacy P2SH - safe (hash-based)
         || addr.starts_with("m")  // Testnet P2PKH
         || addr.starts_with("n")  // Testnet P2PKH
-        || addr.starts_with("2")  // Testnet P2SH
+        || addr.starts_with("2")
+    // Testnet P2SH
     {
         return true; // Hash-based - quantum safe
     }
@@ -504,8 +505,16 @@ mod tests {
 
         assert_eq!(witness.len(), 3, "Normal witness should have 3 elements");
         assert_eq!(witness[0], signature, "First element should be signature");
-        assert_eq!(witness[1], vec![0x01], "Second element should be 0x01 (IF branch)");
-        assert_eq!(witness[2], witness_script.to_bytes(), "Third element should be witness script");
+        assert_eq!(
+            witness[1],
+            vec![0x01],
+            "Second element should be 0x01 (IF branch)"
+        );
+        assert_eq!(
+            witness[2],
+            witness_script.to_bytes(),
+            "Third element should be witness script"
+        );
     }
 
     #[test]
@@ -521,8 +530,15 @@ mod tests {
 
         assert_eq!(witness.len(), 3, "Recovery witness should have 3 elements");
         assert_eq!(witness[0], signature, "First element should be signature");
-        assert!(witness[1].is_empty(), "Second element should be empty (ELSE branch)");
-        assert_eq!(witness[2], witness_script.to_bytes(), "Third element should be witness script");
+        assert!(
+            witness[1].is_empty(),
+            "Second element should be empty (ELSE branch)"
+        );
+        assert_eq!(
+            witness[2],
+            witness_script.to_bytes(),
+            "Third element should be witness script"
+        );
     }
 
     #[test]
@@ -563,17 +579,31 @@ mod tests {
     #[test]
     fn test_quantum_safe_address_detection() {
         // P2WPKH and P2WSH are safe
-        assert!(is_quantum_safe_address("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"));
-        assert!(is_quantum_safe_address("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"));
-        assert!(is_quantum_safe_address("bcrt1qw508d6qejxtdg4y5r3zarvaryvg6kdaj"));
+        assert!(is_quantum_safe_address(
+            "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+        ));
+        assert!(is_quantum_safe_address(
+            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
+        ));
+        assert!(is_quantum_safe_address(
+            "bcrt1qw508d6qejxtdg4y5r3zarvaryvg6kdaj"
+        ));
 
         // P2TR is NOT safe
-        assert!(!is_quantum_safe_address("bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr"));
-        assert!(!is_quantum_safe_address("tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c"));
+        assert!(!is_quantum_safe_address(
+            "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr"
+        ));
+        assert!(!is_quantum_safe_address(
+            "tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c"
+        ));
 
         // Legacy addresses are safe (hash-based)
-        assert!(is_quantum_safe_address("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"));
-        assert!(is_quantum_safe_address("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"));
+        assert!(is_quantum_safe_address(
+            "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+        ));
+        assert!(is_quantum_safe_address(
+            "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"
+        ));
     }
 
     #[test]
@@ -583,7 +613,8 @@ mod tests {
 
         // P2WSH should pass
         // H-BTC-3: Now returns Result
-        let witness_script = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560).unwrap();
+        let witness_script =
+            build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560).unwrap();
         let p2wsh = build_p2wsh_script_pubkey(&witness_script);
         assert!(validate_no_p2tr(&p2wsh).is_ok());
 

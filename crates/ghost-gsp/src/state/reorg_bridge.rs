@@ -215,27 +215,24 @@ impl ReorgBridge {
                 // M-11: Query affected locks from pay node
                 // Locks confirmed at or after the reorg height may have been affected
                 let affected_locks = match &self.pay_node {
-                    Some(pay_node) => {
-                        match pay_node.get_locks_confirmed_after(from_height).await {
-                            Ok(locks) => {
-                                if !locks.is_empty() {
-                                    info!(
-                                        count = locks.len(),
-                                        from_height,
-                                        "Found locks potentially affected by L1 reorg"
-                                    );
-                                }
-                                locks
-                            }
-                            Err(e) => {
-                                warn!(
-                                    error = %e,
-                                    "Failed to query affected locks for reorg notification"
+                    Some(pay_node) => match pay_node.get_locks_confirmed_after(from_height).await {
+                        Ok(locks) => {
+                            if !locks.is_empty() {
+                                info!(
+                                    count = locks.len(),
+                                    from_height, "Found locks potentially affected by L1 reorg"
                                 );
-                                vec![]
                             }
+                            locks
                         }
-                    }
+                        Err(e) => {
+                            warn!(
+                                error = %e,
+                                "Failed to query affected locks for reorg notification"
+                            );
+                            vec![]
+                        }
+                    },
                     None => {
                         debug!("No pay node configured - cannot query affected locks");
                         vec![]

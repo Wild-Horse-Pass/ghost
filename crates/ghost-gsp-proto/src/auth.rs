@@ -435,7 +435,7 @@ mod tests {
         assert!(debug_output.contains("[REDACTED]"));
         assert!(!debug_output.contains(&hex::encode([1u8; 32]))); // public_key
         assert!(!debug_output.contains(&hex::encode([2u8; 64]))); // signature
-        // Message should still be visible (not sensitive)
+                                                                  // Message should still be visible (not sensitive)
         assert!(debug_output.contains("ghost-register"));
     }
 

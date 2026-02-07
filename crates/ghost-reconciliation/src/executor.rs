@@ -663,11 +663,8 @@ impl BatchExecutor {
             .unwrap_or_default()
             .as_secs();
         let batch_id_hex = batch.id_hex();
-        self.global_reservations.reserve_batch(
-            &batch_id_hex,
-            &input_outpoints,
-            current_time,
-        )?;
+        self.global_reservations
+            .reserve_batch(&batch_id_hex, &input_outpoints, current_time)?;
 
         tracing::info!(
             batch_id = %batch_id_hex,
@@ -803,7 +800,8 @@ impl BatchExecutor {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.global_reservations.cleanup_stale(max_age_secs, current_time)
+        self.global_reservations
+            .cleanup_stale(max_age_secs, current_time)
     }
 
     /// Get current batch

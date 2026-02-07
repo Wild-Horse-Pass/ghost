@@ -530,7 +530,9 @@ pub struct ValidationStats {
 
 /// L-13 SECURITY: Error type for aggregate memory limit exceeded
 #[derive(Debug, Clone, Error)]
-#[error("Aggregate pending message memory limit exceeded: {current_bytes} bytes (limit: {limit_bytes})")]
+#[error(
+    "Aggregate pending message memory limit exceeded: {current_bytes} bytes (limit: {limit_bytes})"
+)]
 pub struct AggregateMemoryLimitExceeded {
     pub current_bytes: usize,
     pub limit_bytes: usize,
@@ -604,16 +606,13 @@ impl AggregateMemoryTracker {
     pub fn release(&self, size_bytes: usize) {
         use std::sync::atomic::Ordering;
 
-        let previous = self
-            .current_bytes
-            .fetch_sub(size_bytes, Ordering::Release);
+        let previous = self.current_bytes.fetch_sub(size_bytes, Ordering::Release);
 
         // Sanity check: we should never go negative
         if previous < size_bytes {
             warn!(
                 size_bytes,
-                previous,
-                "L-13: Released more memory than was reserved (underflow)"
+                previous, "L-13: Released more memory than was reserved (underflow)"
             );
             // Reset to 0 to recover from inconsistent state
             self.current_bytes.store(0, Ordering::Release);
@@ -622,7 +621,8 @@ impl AggregateMemoryTracker {
 
     /// Get the current total bytes of pending messages
     pub fn current_bytes(&self) -> usize {
-        self.current_bytes.load(std::sync::atomic::Ordering::Acquire)
+        self.current_bytes
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Get the memory limit in bytes

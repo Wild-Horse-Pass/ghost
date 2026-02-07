@@ -603,7 +603,10 @@ mod tests {
         };
         let result = validate_message(&msg);
         assert!(!result.valid, "Should reject payment ID with invalid chars");
-        assert!(result.errors.iter().any(|e| e.contains("invalid characters")));
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.contains("invalid characters")));
 
         // Payment ID at exactly 128 chars (boundary - should pass)
         let msg = ClientMessage::GetPaymentStatus {
@@ -611,7 +614,10 @@ mod tests {
             proof: test_wallet_proof(),
         };
         let result = validate_message(&msg);
-        assert!(result.valid, "Should accept payment ID at exactly 128 chars");
+        assert!(
+            result.valid,
+            "Should accept payment ID at exactly 128 chars"
+        );
 
         // Valid payment ID with all allowed characters
         let msg = ClientMessage::GetPaymentStatus {
@@ -619,6 +625,9 @@ mod tests {
             proof: test_wallet_proof(),
         };
         let result = validate_message(&msg);
-        assert!(result.valid, "Should accept alphanumeric, hyphen, underscore");
+        assert!(
+            result.valid,
+            "Should accept alphanumeric, hyphen, underscore"
+        );
     }
 }

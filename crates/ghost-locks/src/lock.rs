@@ -610,9 +610,6 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            GhostLockError::InvalidKey(_)
-        ));
+        assert!(matches!(result.unwrap_err(), GhostLockError::InvalidKey(_)));
     }
 }

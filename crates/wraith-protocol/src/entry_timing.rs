@@ -571,8 +571,7 @@ pub enum RandomError {
 /// C-7: Returns Result instead of panicking on RNG failure.
 fn random_f64() -> Result<f64, RandomError> {
     let mut bytes = [0u8; 8];
-    getrandom::getrandom(&mut bytes)
-        .map_err(|e| RandomError::GenerationFailed(e.to_string()))?;
+    getrandom::getrandom(&mut bytes).map_err(|e| RandomError::GenerationFailed(e.to_string()))?;
     let raw = u64::from_le_bytes(bytes);
     // Convert to [0, 1) range
     Ok((raw >> 11) as f64 / (1u64 << 53) as f64)

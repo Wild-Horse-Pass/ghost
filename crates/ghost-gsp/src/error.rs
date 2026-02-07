@@ -226,7 +226,11 @@ impl IntoResponse for GspError {
             ),
             GspError::InvalidCredentials(_) => {
                 // M-1: Don't expose credential details
-                (StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid credentials".to_string())
+                (
+                    StatusCode::UNAUTHORIZED,
+                    "INVALID_CREDENTIALS",
+                    "Invalid credentials".to_string(),
+                )
             }
             GspError::SessionExpired => (
                 StatusCode::UNAUTHORIZED,
@@ -235,7 +239,11 @@ impl IntoResponse for GspError {
             ),
             GspError::InvalidToken(_) => {
                 // M-1: Don't expose token validation details
-                (StatusCode::UNAUTHORIZED, "INVALID_TOKEN", "Invalid or expired token".to_string())
+                (
+                    StatusCode::UNAUTHORIZED,
+                    "INVALID_TOKEN",
+                    "Invalid or expired token".to_string(),
+                )
             }
             GspError::WalletNotRegistered => (
                 StatusCode::NOT_FOUND,
@@ -249,7 +257,11 @@ impl IntoResponse for GspError {
             ),
             GspError::SignatureVerification(_) => {
                 // M-1: Don't expose signature details that could help attackers
-                (StatusCode::UNAUTHORIZED, "SIGNATURE_VERIFICATION_FAILED", "Signature verification failed".to_string())
+                (
+                    StatusCode::UNAUTHORIZED,
+                    "SIGNATURE_VERIFICATION_FAILED",
+                    "Signature verification failed".to_string(),
+                )
             }
             GspError::WalletIdMismatch => (
                 StatusCode::UNAUTHORIZED,

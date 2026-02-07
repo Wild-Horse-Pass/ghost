@@ -637,8 +637,14 @@ mod tests {
     fn test_l29_mainnet_config_rejects_insecure() {
         // L-29 FIX: The mainnet() constructor should have is_mainnet=true
         let config = VerificationClientConfig::mainnet();
-        assert!(config.is_mainnet, "mainnet() config should have is_mainnet=true");
+        assert!(
+            config.is_mainnet,
+            "mainnet() config should have is_mainnet=true"
+        );
         assert!(config.use_https, "mainnet() config should require HTTPS");
-        assert!(!config.danger_accept_invalid_certs, "mainnet() config should not accept invalid certs");
+        assert!(
+            !config.danger_accept_invalid_certs,
+            "mainnet() config should not accept invalid certs"
+        );
     }
 }

@@ -92,10 +92,8 @@ impl JwtManager {
     /// - After rotation window, previous key is no longer accepted
     pub fn rotate_key(&mut self, new_secret: &[u8]) {
         // Move current key to previous
-        let current_decoding_key = std::mem::replace(
-            &mut self.decoding_key,
-            DecodingKey::from_secret(new_secret),
-        );
+        let current_decoding_key =
+            std::mem::replace(&mut self.decoding_key, DecodingKey::from_secret(new_secret));
         self.previous_decoding_key = Some(current_decoding_key);
         self.previous_key_rotated_at = Some(chrono::Utc::now().timestamp());
 
@@ -240,7 +238,10 @@ mod tests {
 
         // Old token should still validate (within rotation window)
         let result = manager.validate_token(&old_token.token);
-        assert!(result.is_ok(), "Old token should be valid during rotation window");
+        assert!(
+            result.is_ok(),
+            "Old token should be valid during rotation window"
+        );
         assert_eq!(result.unwrap(), wallet_id);
 
         // New token should also validate

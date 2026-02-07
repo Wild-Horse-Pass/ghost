@@ -866,12 +866,9 @@ impl WraithCoordinator {
             .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
         // CRIT-7: Return error instead of panicking on internal inconsistency
-        let participant = self
-            .participants
-            .get_mut(&session_id)
-            .ok_or_else(|| {
-                WraithError::MissingData("Internal error: participant mapping inconsistent".into())
-            })?;
+        let participant = self.participants.get_mut(&session_id).ok_or_else(|| {
+            WraithError::MissingData("Internal error: participant mapping inconsistent".into())
+        })?;
 
         // Validate input amount
         let expected = self.session.denomination().input_sats();
@@ -928,12 +925,9 @@ impl WraithCoordinator {
         }
 
         // CRIT-7: Return error instead of panicking on internal inconsistency
-        let participant = self
-            .participants
-            .get_mut(&session_id)
-            .ok_or_else(|| {
-                WraithError::MissingData("Internal error: participant mapping inconsistent".into())
-            })?;
+        let participant = self.participants.get_mut(&session_id).ok_or_else(|| {
+            WraithError::MissingData("Internal error: participant mapping inconsistent".into())
+        })?;
         participant.issued_nonces = nonces.clone();
         Ok(nonces)
     }
@@ -973,12 +967,9 @@ impl WraithCoordinator {
         }
 
         // CRIT-7: Return error instead of panicking on internal inconsistency
-        let participant = self
-            .participants
-            .get_mut(&session_id)
-            .ok_or_else(|| {
-                WraithError::MissingData("Internal error: participant mapping inconsistent".into())
-            })?;
+        let participant = self.participants.get_mut(&session_id).ok_or_else(|| {
+            WraithError::MissingData("Internal error: participant mapping inconsistent".into())
+        })?;
 
         participant.blinded_challenges = challenges;
         participant.signature_responses = responses.clone();
@@ -1318,9 +1309,9 @@ impl WraithCoordinator {
         self.clear_sensitive_data_post_build();
 
         // CRIT-7: Return error instead of panicking (though this should never fail)
-        self.phase1_tx.as_ref().ok_or_else(|| {
-            WraithError::MissingData("Internal error: phase1_tx was not set".into())
-        })
+        self.phase1_tx
+            .as_ref()
+            .ok_or_else(|| WraithError::MissingData("Internal error: phase1_tx was not set".into()))
     }
 
     // CRIT-1 FIX: shuffle_anonymous_tokens removed - legacy anonymous_tokens path is disabled
@@ -1358,8 +1349,8 @@ impl WraithCoordinator {
     /// This is called after each batch submission to prevent timing correlation.
     /// Uses OsRng directly for maximum security instead of seeded ChaCha20Rng.
     fn shuffle_anonymous_token_batches_immediate(&mut self) -> Result<(), WraithError> {
-        use rand::seq::SliceRandom;
         use rand::rngs::OsRng;
+        use rand::seq::SliceRandom;
 
         // HIGH-2: Use OsRng for immediate, unpredictable shuffling
         // Fisher-Yates shuffle is built into SliceRandom::shuffle
@@ -1397,12 +1388,9 @@ impl WraithCoordinator {
             .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
         // CRIT-7: Return error instead of panicking on internal inconsistency
-        let participant = self
-            .participants
-            .get_mut(&session_id)
-            .ok_or_else(|| {
-                WraithError::MissingData("Internal error: participant mapping inconsistent".into())
-            })?;
+        let participant = self.participants.get_mut(&session_id).ok_or_else(|| {
+            WraithError::MissingData("Internal error: participant mapping inconsistent".into())
+        })?;
 
         participant.phase1_signed = true;
 
@@ -1560,8 +1548,7 @@ impl WraithCoordinator {
         // CRIT-1 FIX: Collect final addresses from ANONYMOUS batches (not linked to participants)
         // This eliminates the privacy leak where submit_final_address(ghost_id, addr) linked
         // participant identity to output address.
-        let use_anonymous_addresses =
-            self.anonymous_token_batches.len() >= self.participants.len();
+        let use_anonymous_addresses = self.anonymous_token_batches.len() >= self.participants.len();
 
         let final_addresses: Vec<String> = if use_anonymous_addresses {
             // New secure path: addresses come from anonymous batches (shuffled during Phase 1)
@@ -1576,10 +1563,7 @@ impl WraithCoordinator {
             let mut addrs = Vec::with_capacity(self.participant_order.len());
             for session_id in &self.participant_order {
                 let participant = self.participants.get(session_id).ok_or_else(|| {
-                    WraithError::PhaseError(format!(
-                        "Missing participant in order: {}",
-                        session_id
-                    ))
+                    WraithError::PhaseError(format!("Missing participant in order: {}", session_id))
                 })?;
 
                 let address = participant.final_address.as_ref().ok_or_else(|| {
@@ -1614,9 +1598,9 @@ impl WraithCoordinator {
         self.phase2_tx = Some(tx);
 
         // CRIT-7: Return error instead of panicking (though this should never fail)
-        self.phase2_tx.as_ref().ok_or_else(|| {
-            WraithError::MissingData("Internal error: phase2_tx was not set".into())
-        })
+        self.phase2_tx
+            .as_ref()
+            .ok_or_else(|| WraithError::MissingData("Internal error: phase2_tx was not set".into()))
     }
 
     /// Record Phase 2 signature from participant
@@ -1626,12 +1610,9 @@ impl WraithCoordinator {
             .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
         // CRIT-7: Return error instead of panicking on internal inconsistency
-        let participant = self
-            .participants
-            .get_mut(&session_id)
-            .ok_or_else(|| {
-                WraithError::MissingData("Internal error: participant mapping inconsistent".into())
-            })?;
+        let participant = self.participants.get_mut(&session_id).ok_or_else(|| {
+            WraithError::MissingData("Internal error: participant mapping inconsistent".into())
+        })?;
 
         participant.phase2_signed = true;
 

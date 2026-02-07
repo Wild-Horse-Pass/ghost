@@ -339,11 +339,7 @@ impl LightWallet {
         // Clone the Arc to release locks before await (Arc clone, not key clone)
         let master_key = {
             let key_guard = self.master_key.read();
-            Arc::clone(
-                key_guard
-                    .as_ref()
-                    .ok_or(LightWalletError::NotInitialized)?,
-            )
+            Arc::clone(key_guard.as_ref().ok_or(LightWalletError::NotInitialized)?)
         };
 
         let client = {
@@ -371,11 +367,7 @@ impl LightWallet {
         // Clone the Arc to release locks before await (Arc clone, not key clone)
         let master_key = {
             let key_guard = self.master_key.read();
-            Arc::clone(
-                key_guard
-                    .as_ref()
-                    .ok_or(LightWalletError::NotInitialized)?,
-            )
+            Arc::clone(key_guard.as_ref().ok_or(LightWalletError::NotInitialized)?)
         };
 
         let client = {

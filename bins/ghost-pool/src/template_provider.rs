@@ -55,7 +55,7 @@ use tracing::{debug, error, info, warn};
 // Use types from stratum-apps (stratum-core) consistently to avoid version conflicts
 use stratum_apps::network_helpers::noise_stream::NoiseTcpStream;
 use stratum_apps::stratum_core::{
-    binary_sv2::{B016M, B064K, Seq064K, Seq0255},
+    binary_sv2::{Seq0255, Seq064K, B016M, B064K},
     codec_sv2::{HandshakeRole, StandardSv2Frame},
     common_messages_sv2::SetupConnectionSuccess,
     framing_sv2::framing::Frame,
@@ -549,13 +549,14 @@ async fn handle_template_distribution_message(
             // Get the client's frame sender for responding
             let frame_tx = {
                 let clients_guard = clients.read();
-                clients_guard
-                    .get(&client_id)
-                    .map(|c| c.frame_tx.clone())
+                clients_guard.get(&client_id).map(|c| c.frame_tx.clone())
             };
 
             let Some(frame_tx) = frame_tx else {
-                warn!("Client {} not found when handling RequestTransactionData", client_id);
+                warn!(
+                    "Client {} not found when handling RequestTransactionData",
+                    client_id
+                );
                 return Ok(());
             };
 
@@ -564,9 +565,8 @@ async fn handle_template_distribution_message(
                 Some(work_state) => {
                     // Convert template transactions to SV2 format
                     // Each transaction is serialized as B016M (max 16MB per transaction)
-                    let mut tx_list: Vec<B016M<'static>> = Vec::with_capacity(
-                        work_state.template.transactions.len()
-                    );
+                    let mut tx_list: Vec<B016M<'static>> =
+                        Vec::with_capacity(work_state.template.transactions.len());
 
                     for tx in &work_state.template.transactions {
                         match hex::decode(&tx.data) {
@@ -583,16 +583,15 @@ async fn handle_template_distribution_message(
                                 }
                             }
                             Err(e) => {
-                                warn!(
-                                    "Failed to decode transaction {} hex: {}",
-                                    tx.txid, e
-                                );
+                                warn!("Failed to decode transaction {} hex: {}", tx.txid, e);
                             }
                         }
                     }
 
                     // Create the success response
-                    let transaction_list: Seq064K<'static, B016M<'static>> = match Seq064K::new(tx_list) {
+                    let transaction_list: Seq064K<'static, B016M<'static>> = match Seq064K::new(
+                        tx_list,
+                    ) {
                         Ok(seq) => seq,
                         Err(_) => {
                             // Too many transactions (shouldn't happen with valid blocks)
@@ -607,11 +606,14 @@ async fn handle_template_distribution_message(
                                     .to_string()
                                     .try_into()
                                     .unwrap_or_else(|_| {
-                                        vec![].try_into().expect("L-1: Empty vec should always convert")
+                                        vec![]
+                                            .try_into()
+                                            .expect("L-1: Empty vec should always convert")
                                     }),
                             };
                             let error_frame: Sv2Frame = AnyMessage::TemplateDistribution(
-                                TemplateDistribution::RequestTransactionDataError(error).into_static(),
+                                TemplateDistribution::RequestTransactionDataError(error)
+                                    .into_static(),
                             )
                             .try_into()
                             .map_err(|_| anyhow::anyhow!("Failed to create error frame"))?;
@@ -665,7 +667,9 @@ async fn handle_template_distribution_message(
                             .to_string()
                             .try_into()
                             .unwrap_or_else(|_| {
-                                vec![].try_into().expect("L-1: Empty vec should always convert")
+                                vec![]
+                                    .try_into()
+                                    .expect("L-1: Empty vec should always convert")
                             }),
                     };
 

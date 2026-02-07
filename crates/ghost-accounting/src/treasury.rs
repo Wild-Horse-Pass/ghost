@@ -290,27 +290,25 @@ impl Treasury {
     /// Returns `GhostError::TreasuryOverflow` if the deposit would cause overflow.
     /// This is practically impossible (u64::MAX exceeds Bitcoin's total supply by orders
     /// of magnitude) but must be handled gracefully for mainnet code.
-    pub fn deposit(
-        &mut self,
-        amount: u64,
-        current_height: TrustedBlockHeight,
-    ) -> GhostResult<()> {
+    pub fn deposit(&mut self, amount: u64, current_height: TrustedBlockHeight) -> GhostResult<()> {
         let was_below_threshold = !self.at_threshold();
 
         // SECURITY: Use checked arithmetic to prevent overflow - return error instead of panic
-        let new_balance = self.balance_sats.checked_add(amount).ok_or(
-            GhostError::TreasuryOverflow {
-                current_balance: self.balance_sats,
-                amount,
-            }
-        )?;
+        let new_balance =
+            self.balance_sats
+                .checked_add(amount)
+                .ok_or(GhostError::TreasuryOverflow {
+                    current_balance: self.balance_sats,
+                    amount,
+                })?;
 
-        let new_total = self.total_collected_sats.checked_add(amount).ok_or(
-            GhostError::TreasuryOverflow {
-                current_balance: self.total_collected_sats,
-                amount,
-            }
-        )?;
+        let new_total =
+            self.total_collected_sats
+                .checked_add(amount)
+                .ok_or(GhostError::TreasuryOverflow {
+                    current_balance: self.total_collected_sats,
+                    amount,
+                })?;
 
         // Only update state after all checks pass
         self.balance_sats = new_balance;
@@ -838,7 +836,10 @@ mod tests {
         )
         .expect("L2FeeAllocation should succeed");
 
-        assert_eq!(allocation.total_fees().expect("total_fees should succeed"), 16_000);
+        assert_eq!(
+            allocation.total_fees().expect("total_fees should succeed"),
+            16_000
+        );
         assert_eq!(allocation.to_ghostpay_nodes_sats, 8_000);
         assert_eq!(allocation.to_treasury_sats, 8_000);
     }

@@ -2616,7 +2616,10 @@ mod tests {
         // Fill the cache
         for i in 0u64..50 {
             let sender = [(i % 10) as u8; 32];
-            let id = MessageId { sender, sequence: i };
+            let id = MessageId {
+                sender,
+                sequence: i,
+            };
             cache.insert(id, 1000 + i);
         }
 
@@ -2648,7 +2651,10 @@ mod tests {
 
         let old_timestamp = now - 600; // 10 minutes ago
         let sender = [1u8; 32];
-        let id = MessageId { sender, sequence: 1 };
+        let id = MessageId {
+            sender,
+            sequence: 1,
+        };
         cache.insert(id, old_timestamp);
 
         assert!(cache.contains(&id), "Message should be inserted");
@@ -2672,7 +2678,10 @@ mod tests {
             let mut sender = [0u8; 32];
             sender[0..4].copy_from_slice(&sender_idx.to_le_bytes());
 
-            let id = MessageId { sender, sequence: 1 };
+            let id = MessageId {
+                sender,
+                sequence: 1,
+            };
             cache.insert(id, 1000);
         }
 
@@ -2727,9 +2736,6 @@ mod tests {
         config.noise_required = false;
 
         let result = MeshNetwork::try_new(identity, config);
-        assert!(
-            result.is_ok(),
-            "M-2: Disabled Noise should always succeed"
-        );
+        assert!(result.is_ok(), "M-2: Disabled Noise should always succeed");
     }
 }

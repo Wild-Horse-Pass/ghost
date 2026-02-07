@@ -240,10 +240,7 @@ fn get_encryption_password(args: &Args, network: Network) -> Result<String> {
     if let Ok(password) = std::fs::read_to_string(&password_path) {
         let password = password.trim().to_string();
         if password.len() >= 32 {
-            info!(
-                "Using stored key password from {}",
-                password_path.display()
-            );
+            info!("Using stored key password from {}", password_path.display());
             return Ok(password);
         }
         // Password file exists but is too short - regenerate
@@ -299,13 +296,7 @@ fn get_encryption_password(args: &Args, network: Network) -> Result<String> {
 // H-2: API AUTHENTICATION MIDDLEWARE
 // =============================================================================
 
-use axum::{
-    body::Body,
-    extract::Request,
-    http::HeaderMap,
-    middleware::Next,
-    response::Response,
-};
+use axum::{body::Body, extract::Request, http::HeaderMap, middleware::Next, response::Response};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -357,11 +348,10 @@ impl ApiAuth {
         }
 
         // Compute expected HMAC: HMAC-SHA256(secret, timestamp + body)
-        let mut mac: Hmac<Sha256> =
-            match <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes()) {
-                Ok(m) => m,
-                Err(_) => return false,
-            };
+        let mut mac: Hmac<Sha256> = match <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes()) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
         mac.update(timestamp.to_string().as_bytes());
         mac.update(body);
 
@@ -569,7 +559,12 @@ async fn main() -> Result<()> {
     // Parse Bitcoin RPC URL and create client
     let rpc_url = &args.bitcoin_rpc;
     let (rpc_host, rpc_port) = parse_rpc_url(rpc_url, network);
-    let rpc = Arc::new(BitcoinRpc::new(&rpc_host, rpc_port, rpc_user, rpc_password)?);
+    let rpc = Arc::new(BitcoinRpc::new(
+        &rpc_host,
+        rpc_port,
+        rpc_user,
+        rpc_password,
+    )?);
     info!("Bitcoin RPC configured: {}:{}", rpc_host, rpc_port);
 
     // Check treasury address configuration before args is moved
@@ -832,11 +827,7 @@ async fn main() -> Result<()> {
                         .parse()
                         .expect("L-1: Valid hardcoded origin URL"),
                 ]))
-                .allow_methods([
-                    http::Method::GET,
-                    http::Method::POST,
-                    http::Method::OPTIONS,
-                ])
+                .allow_methods([http::Method::GET, http::Method::POST, http::Method::OPTIONS])
                 .allow_headers([
                     http::header::CONTENT_TYPE,
                     http::header::AUTHORIZATION,

@@ -351,10 +351,7 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             "/api/v1/config/ghost_pay",
             post(api_config_ghost_pay_post_handler),
         )
-        .route(
-            "/api/v1/config/elder",
-            post(api_config_elder_post_handler),
-        )
+        .route("/api/v1/config/elder", post(api_config_elder_post_handler))
         .route(
             "/api/v1/config/prune_profile",
             post(api_config_prune_profile_post_handler),
@@ -4068,7 +4065,8 @@ mod tests {
             let app = super::create_router(Arc::clone(&state));
 
             let body = match endpoint {
-                "/api/v1/config/mempool_profile" | "/api/v1/config/template_profile"
+                "/api/v1/config/mempool_profile"
+                | "/api/v1/config/template_profile"
                 | "/api/v1/config/prune_profile" => r#"{"profile": "standard"}"#,
                 "/api/v1/config/elder" => r#"{"enabled": true, "slot": 1}"#,
                 _ => r#"{"enabled": true}"#,
