@@ -1029,7 +1029,8 @@ mod tests {
     #[test]
     fn test_rate_limiter_no_overflow() {
         // Large but reasonable values
-        let limiter = RateLimiter::new(1000, 100, 1000);
+        // Use zero refill rate to ensure no tokens are added during test execution
+        let limiter = RateLimiter::new(1000, 0, 1000);
         let node = [1u8; 32];
 
         // Exhaust all tokens
@@ -1037,7 +1038,7 @@ mod tests {
             assert!(limiter.try_consume(&node));
         }
 
-        // Should be limited now
+        // Should be limited now (no refill during test)
         assert!(!limiter.try_consume(&node));
     }
 
