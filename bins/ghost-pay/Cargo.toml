@@ -74,7 +74,9 @@ chrono = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
 
-# Cryptography (H-PAY-2: encrypted key storage)
+# Cryptography (H-PAY-2: encrypted key storage, H-2: HMAC auth)
 aes-gcm = { workspace = true }
 scrypt = "0.11"
 getrandom = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }

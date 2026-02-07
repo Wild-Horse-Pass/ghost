@@ -40,6 +40,7 @@ use tower_governor::{
     GovernorLayer,
 };
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -51,12 +52,69 @@ use crate::state::{ReorgBridge, ReorgBridgeConfig, ReorgNotifier, SubscriptionMa
 
 use ghost_consensus::reorg::{L1ChainMonitor, L2ForkDetector};
 
-/// H-3: IP-based key extractor for rate limiting
+/// C-2: Trusted proxy configuration for secure IP extraction.
+///
+/// Only requests from trusted proxy IPs will have X-Forwarded-For/X-Real-IP headers
+/// honored. This prevents IP spoofing attacks where attackers set fake headers.
+///
+/// Load from GHOST_TRUSTED_PROXIES env var (comma-separated IPs) or use defaults.
+fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
+    use std::net::IpAddr;
+
+    if let Ok(proxies_str) = std::env::var("GHOST_TRUSTED_PROXIES") {
+        proxies_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<IpAddr>().ok())
+            .collect()
+    } else {
+        // Default: only trust localhost as proxy
+        vec![
+            "127.0.0.1"
+                .parse()
+                .expect("L-1: Valid hardcoded IPv4 localhost"),
+            "::1".parse().expect("L-1: Valid hardcoded IPv6 localhost"),
+        ]
+    }
+}
+
+/// C-2: Check if an IP address is a trusted proxy.
+fn is_trusted_proxy(ip: &std::net::IpAddr, trusted: &[std::net::IpAddr]) -> bool {
+    trusted.contains(ip)
+}
+
+/// H-3/C-2: IP-based key extractor for rate limiting with trusted proxy validation.
 ///
 /// Extracts client IP from X-Forwarded-For, X-Real-IP, or connection info.
 /// Used to rate limit requests per client IP address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IpKeyExtractor;
+///
+/// C-2: X-Forwarded-For and X-Real-IP headers are ONLY trusted when the direct
+/// peer IP is in the trusted proxy list. This prevents IP spoofing attacks where
+/// attackers send fake X-Forwarded-For headers to bypass rate limiting.
+#[derive(Debug, Clone)]
+pub struct IpKeyExtractor {
+    trusted_proxies: Vec<std::net::IpAddr>,
+}
+
+impl Default for IpKeyExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IpKeyExtractor {
+    /// Create a new IpKeyExtractor with trusted proxies from environment.
+    pub fn new() -> Self {
+        Self {
+            trusted_proxies: get_trusted_proxies(),
+        }
+    }
+
+    /// Create with explicit trusted proxy list (for testing).
+    #[cfg(test)]
+    pub fn with_trusted_proxies(trusted_proxies: Vec<std::net::IpAddr>) -> Self {
+        Self { trusted_proxies }
+    }
+}
 
 /// Key type for IP-based rate limiting
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -66,31 +124,42 @@ impl KeyExtractor for IpKeyExtractor {
     type Key = IpKey;
 
     fn extract<T>(&self, req: &axum::http::Request<T>) -> Result<Self::Key, GovernorError> {
-        // Try X-Forwarded-For first (standard for proxied requests)
-        if let Some(xff) = req.headers().get("X-Forwarded-For") {
-            if let Ok(xff_str) = xff.to_str() {
-                if let Some(ip_str) = xff_str.split(',').next() {
-                    let ip_trimmed = ip_str.trim();
-                    if !ip_trimmed.is_empty() {
-                        return Ok(IpKey(ip_trimmed.to_string()));
+        // C-2: Get actual peer IP from connection info FIRST
+        let peer_ip = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip());
+
+        // C-2: Only trust proxy headers if peer is a trusted proxy
+        let trust_proxy_headers = peer_ip
+            .as_ref()
+            .map(|ip| is_trusted_proxy(ip, &self.trusted_proxies))
+            .unwrap_or(false);
+
+        if trust_proxy_headers {
+            // Try X-Forwarded-For (standard for proxied requests)
+            if let Some(xff) = req.headers().get("X-Forwarded-For") {
+                if let Ok(xff_str) = xff.to_str() {
+                    if let Some(ip_str) = xff_str.split(',').next() {
+                        let ip_trimmed = ip_str.trim();
+                        if !ip_trimmed.is_empty() {
+                            return Ok(IpKey(ip_trimmed.to_string()));
+                        }
                     }
+                }
+            }
+
+            // Try X-Real-IP (nginx convention)
+            if let Some(xri) = req.headers().get("X-Real-IP") {
+                if let Ok(ip_str) = xri.to_str() {
+                    return Ok(IpKey(ip_str.to_string()));
                 }
             }
         }
 
-        // Try X-Real-IP (nginx convention)
-        if let Some(xri) = req.headers().get("X-Real-IP") {
-            if let Ok(ip_str) = xri.to_str() {
-                return Ok(IpKey(ip_str.to_string()));
-            }
-        }
-
-        // Fall back to peer IP from ConnectInfo
-        if let Some(connect_info) = req
-            .extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        {
-            return Ok(IpKey(connect_info.0.ip().to_string()));
+        // Fall back to actual peer IP
+        if let Some(ip) = peer_ip {
+            return Ok(IpKey(ip.to_string()));
         }
 
         // Last resort: return error (no IP could be extracted)
@@ -124,13 +193,19 @@ pub struct GspConfig {
 
     /// Maximum concurrent WebSocket connections
     pub max_ws_connections: usize,
+
+    /// M-4: Maximum request body size in bytes (default: 1MB)
+    pub max_body_size: usize,
 }
 
 impl Default for GspConfig {
     fn default() -> Self {
-        // Generate a random JWT secret by default using cryptographically secure RNG
+        // H-9: Generate JWT secret using OsRng (cryptographically secure)
+        // thread_rng is NOT cryptographically secure on all platforms
+        use rand::rngs::OsRng;
+
         let mut jwt_secret = vec![0u8; 32];
-        rand::thread_rng().fill_bytes(&mut jwt_secret);
+        OsRng.fill_bytes(&mut jwt_secret);
 
         Self {
             listen_addr: "0.0.0.0:8900".parse().unwrap(),
@@ -141,18 +216,20 @@ impl Default for GspConfig {
             session_expiry_secs: 86400, // 24 hours
             rate_limit_rpm: 60,
             max_ws_connections: 1000,
+            max_body_size: 1024 * 1024, // M-4: 1MB default body limit
         }
     }
 }
 
 impl GspConfig {
-    /// H-10: Validate configuration to ensure security requirements are met.
+    /// H-10/M-15: Validate configuration to ensure security and correctness requirements are met.
     ///
-    /// This MUST be called before starting the server to prevent insecure configurations.
+    /// This MUST be called before starting the server to prevent insecure or invalid configurations.
     ///
     /// # Errors
     /// - Returns `InsecureJwtSecret` if JWT secret is all zeros (default/unset)
     /// - Returns `InsecureJwtSecret` if JWT secret is less than 32 bytes
+    /// - Returns `Config` if any configuration value is out of valid range
     pub fn validate(&self) -> crate::error::GspResult<()> {
         // H-10: Fail if JWT secret is all zeros (indicates it was never properly configured)
         if self.jwt_secret.iter().all(|&b| b == 0) {
@@ -166,6 +243,70 @@ impl GspConfig {
             return Err(crate::error::GspError::InsecureJwtSecret(format!(
                 "JWT secret must be at least 32 bytes, got {} bytes",
                 self.jwt_secret.len()
+            )));
+        }
+
+        // M-15: Validate session expiry range
+        const MIN_SESSION_EXPIRY_SECS: u64 = 60; // 1 minute
+        const MAX_SESSION_EXPIRY_SECS: u64 = 86400 * 30; // 30 days
+        if self.session_expiry_secs < MIN_SESSION_EXPIRY_SECS {
+            return Err(crate::error::GspError::Config(format!(
+                "session_expiry_secs too low: {} < {} (minimum 1 minute)",
+                self.session_expiry_secs, MIN_SESSION_EXPIRY_SECS
+            )));
+        }
+        if self.session_expiry_secs > MAX_SESSION_EXPIRY_SECS {
+            return Err(crate::error::GspError::Config(format!(
+                "session_expiry_secs too high: {} > {} (maximum 30 days)",
+                self.session_expiry_secs, MAX_SESSION_EXPIRY_SECS
+            )));
+        }
+
+        // M-15: Validate rate limit range
+        const MIN_RATE_LIMIT_RPM: u32 = 1;
+        const MAX_RATE_LIMIT_RPM: u32 = 10000;
+        if self.rate_limit_rpm < MIN_RATE_LIMIT_RPM {
+            return Err(crate::error::GspError::Config(format!(
+                "rate_limit_rpm too low: {} < {}",
+                self.rate_limit_rpm, MIN_RATE_LIMIT_RPM
+            )));
+        }
+        if self.rate_limit_rpm > MAX_RATE_LIMIT_RPM {
+            return Err(crate::error::GspError::Config(format!(
+                "rate_limit_rpm too high: {} > {} (maximum 10000 RPM)",
+                self.rate_limit_rpm, MAX_RATE_LIMIT_RPM
+            )));
+        }
+
+        // M-15: Validate WebSocket connection limit
+        const MIN_WS_CONNECTIONS: usize = 1;
+        const MAX_WS_CONNECTIONS: usize = 100000;
+        if self.max_ws_connections < MIN_WS_CONNECTIONS {
+            return Err(crate::error::GspError::Config(format!(
+                "max_ws_connections too low: {} < {}",
+                self.max_ws_connections, MIN_WS_CONNECTIONS
+            )));
+        }
+        if self.max_ws_connections > MAX_WS_CONNECTIONS {
+            return Err(crate::error::GspError::Config(format!(
+                "max_ws_connections too high: {} > {} (maximum 100,000)",
+                self.max_ws_connections, MAX_WS_CONNECTIONS
+            )));
+        }
+
+        // M-15: Validate body size limit
+        const MIN_BODY_SIZE: usize = 1024; // 1KB minimum
+        const MAX_BODY_SIZE: usize = 50 * 1024 * 1024; // 50MB maximum
+        if self.max_body_size < MIN_BODY_SIZE {
+            return Err(crate::error::GspError::Config(format!(
+                "max_body_size too low: {} < {} (minimum 1KB)",
+                self.max_body_size, MIN_BODY_SIZE
+            )));
+        }
+        if self.max_body_size > MAX_BODY_SIZE {
+            return Err(crate::error::GspError::Config(format!(
+                "max_body_size too high: {} > {} (maximum 50MB)",
+                self.max_body_size, MAX_BODY_SIZE
             )));
         }
 
@@ -357,7 +498,7 @@ impl GspServer {
             GovernorConfigBuilder::default()
                 .per_second(per_second as u64)
                 .burst_size(burst_size)
-                .key_extractor(IpKeyExtractor)
+                .key_extractor(IpKeyExtractor::new())
                 .finish()
                 .expect("Invalid rate limit config"),
         );
@@ -374,8 +515,12 @@ impl GspServer {
         // H-4: Restrictive CORS - only allow trusted Ghost origins
         let cors = CorsLayer::new()
             .allow_origin(AllowOrigin::list([
-                "https://bitcoinghost.org".parse().unwrap(),
-                "https://wallet.bitcoinghost.org".parse().unwrap(),
+                "https://bitcoinghost.org"
+                    .parse()
+                    .expect("L-1: Valid hardcoded origin URL"),
+                "https://wallet.bitcoinghost.org"
+                    .parse()
+                    .expect("L-1: Valid hardcoded origin URL"),
             ]))
             .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
             .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
@@ -398,6 +543,8 @@ impl GspServer {
             })
             // H-4: Restrictive CORS layer
             .layer(cors)
+            // M-4: Request body size limit (prevents memory exhaustion attacks)
+            .layer(RequestBodyLimitLayer::new(state.config.max_body_size))
             .layer(TraceLayer::new_for_http())
             .with_state(state)
     }

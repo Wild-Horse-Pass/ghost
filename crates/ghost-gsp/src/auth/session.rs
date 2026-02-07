@@ -54,10 +54,17 @@ struct Claims {
     aud: String,
 }
 
-/// JWT session manager
+/// M-2: Duration during which the previous key remains valid (graceful rotation window)
+const KEY_ROTATION_WINDOW_SECS: i64 = 3600; // 1 hour
+
+/// JWT session manager with M-2 key rotation support
 pub struct JwtManager {
     encoding_key: EncodingKey,
     decoding_key: DecodingKey,
+    /// M-2: Previous key for graceful rotation (if any)
+    previous_decoding_key: Option<DecodingKey>,
+    /// M-2: When the previous key was rotated out (None if no previous key)
+    previous_key_rotated_at: Option<i64>,
     expiry_secs: u64,
 }
 
@@ -67,7 +74,42 @@ impl JwtManager {
         Self {
             encoding_key: EncodingKey::from_secret(secret),
             decoding_key: DecodingKey::from_secret(secret),
+            previous_decoding_key: None,
+            previous_key_rotated_at: None,
             expiry_secs,
+        }
+    }
+
+    /// M-2: Rotate to a new secret key
+    ///
+    /// The previous key will remain valid for verification during the rotation window
+    /// (1 hour by default). This allows existing tokens to continue working during
+    /// key rotation while all new tokens use the new key.
+    ///
+    /// # Security
+    /// - Always sign new tokens with the current (new) key
+    /// - Accept tokens signed with either current or previous key during rotation window
+    /// - After rotation window, previous key is no longer accepted
+    pub fn rotate_key(&mut self, new_secret: &[u8]) {
+        // Move current key to previous
+        let current_decoding_key = std::mem::replace(
+            &mut self.decoding_key,
+            DecodingKey::from_secret(new_secret),
+        );
+        self.previous_decoding_key = Some(current_decoding_key);
+        self.previous_key_rotated_at = Some(chrono::Utc::now().timestamp());
+
+        // Update encoding key to new secret
+        self.encoding_key = EncodingKey::from_secret(new_secret);
+    }
+
+    /// M-2: Check if the previous key is still within the rotation window
+    fn is_previous_key_valid(&self) -> bool {
+        if let Some(rotated_at) = self.previous_key_rotated_at {
+            let now = chrono::Utc::now().timestamp();
+            now - rotated_at < KEY_ROTATION_WINDOW_SECS
+        } else {
+            false
         }
     }
 
@@ -97,6 +139,7 @@ impl JwtManager {
     /// Validate a token and return the wallet ID
     ///
     /// M-14: Validates issuer and audience claims to prevent token misuse
+    /// M-2: During key rotation, accepts tokens signed with either current or previous key
     pub fn validate_token(&self, token: &str) -> GspResult<WalletId> {
         let mut validation = Validation::default();
         // M-14: Require correct issuer
@@ -104,20 +147,32 @@ impl JwtManager {
         // M-14: Require correct audience
         validation.set_audience(&[JWT_AUDIENCE]);
 
-        let token_data = decode::<Claims>(token, &self.decoding_key, &validation).map_err(|e| {
-            match e.kind() {
-                jsonwebtoken::errors::ErrorKind::ExpiredSignature => GspError::SessionExpired,
-                jsonwebtoken::errors::ErrorKind::InvalidIssuer => {
-                    GspError::InvalidToken("Invalid token issuer".to_string())
+        // Try current key first
+        match decode::<Claims>(token, &self.decoding_key, &validation) {
+            Ok(token_data) => Ok(WalletId::from(token_data.claims.sub)),
+            Err(e) => {
+                // M-2: If current key fails and we have a previous key in rotation window, try it
+                if self.is_previous_key_valid() {
+                    if let Some(ref prev_key) = self.previous_decoding_key {
+                        if let Ok(token_data) = decode::<Claims>(token, prev_key, &validation) {
+                            return Ok(WalletId::from(token_data.claims.sub));
+                        }
+                    }
                 }
-                jsonwebtoken::errors::ErrorKind::InvalidAudience => {
-                    GspError::InvalidToken("Invalid token audience".to_string())
-                }
-                _ => GspError::InvalidToken(e.to_string()),
-            }
-        })?;
 
-        Ok(WalletId::from(token_data.claims.sub))
+                // Neither key worked, return the error from the current key attempt
+                Err(match e.kind() {
+                    jsonwebtoken::errors::ErrorKind::ExpiredSignature => GspError::SessionExpired,
+                    jsonwebtoken::errors::ErrorKind::InvalidIssuer => {
+                        GspError::InvalidToken("Invalid token issuer".to_string())
+                    }
+                    jsonwebtoken::errors::ErrorKind::InvalidAudience => {
+                        GspError::InvalidToken("Invalid token audience".to_string())
+                    }
+                    _ => GspError::InvalidToken(e.to_string()),
+                })
+            }
+        }
     }
 }
 
@@ -165,5 +220,59 @@ mod tests {
         // Token created with secret1 should not validate with secret2
         let result = manager2.validate_token(&token.token);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_m2_key_rotation() {
+        // M-2: Test key rotation with graceful window
+        let secret1 = b"test_secret_key_32_bytes_long!!!";
+        let secret2 = b"new_rotated_secret_32_bytes!!!!!";
+
+        let mut manager = JwtManager::new(secret1, 3600);
+
+        let wallet_id = WalletId::from("test_wallet".to_string());
+
+        // Create token with old key
+        let old_token = manager.create_token(&wallet_id).unwrap();
+
+        // Rotate to new key
+        manager.rotate_key(secret2);
+
+        // Old token should still validate (within rotation window)
+        let result = manager.validate_token(&old_token.token);
+        assert!(result.is_ok(), "Old token should be valid during rotation window");
+        assert_eq!(result.unwrap(), wallet_id);
+
+        // New token should also validate
+        let new_token = manager.create_token(&wallet_id).unwrap();
+        let result = manager.validate_token(&new_token.token);
+        assert!(result.is_ok(), "New token should be valid");
+        assert_eq!(result.unwrap(), wallet_id);
+    }
+
+    #[test]
+    fn test_m2_new_tokens_use_new_key() {
+        // M-2: Ensure new tokens are signed with the new key
+        let secret1 = b"test_secret_key_32_bytes_long!!!";
+        let secret2 = b"new_rotated_secret_32_bytes!!!!!";
+
+        let mut manager = JwtManager::new(secret1, 3600);
+        let wallet_id = WalletId::from("test_wallet".to_string());
+
+        // Rotate to new key
+        manager.rotate_key(secret2);
+
+        // Create a token (should use new key)
+        let new_token = manager.create_token(&wallet_id).unwrap();
+
+        // Verify with a fresh manager using ONLY the new key
+        let fresh_manager = JwtManager::new(secret2, 3600);
+        let result = fresh_manager.validate_token(&new_token.token);
+        assert!(result.is_ok(), "Token should be signed with new key");
+
+        // Old key should NOT work for new tokens
+        let old_only_manager = JwtManager::new(secret1, 3600);
+        let result = old_only_manager.validate_token(&new_token.token);
+        assert!(result.is_err(), "Token should NOT validate with old key");
     }
 }

@@ -595,7 +595,9 @@ async fn handle_template_distribution_message(
                                 error_code: "transaction-list-overflow"
                                     .to_string()
                                     .try_into()
-                                    .unwrap_or_else(|_| vec![].try_into().unwrap()),
+                                    .unwrap_or_else(|_| {
+                                        vec![].try_into().expect("L-1: Empty vec should always convert")
+                                    }),
                             };
                             let error_frame: Sv2Frame = AnyMessage::TemplateDistribution(
                                 TemplateDistribution::RequestTransactionDataError(error).into_static(),
@@ -648,7 +650,9 @@ async fn handle_template_distribution_message(
                         error_code: "template-id-not-found"
                             .to_string()
                             .try_into()
-                            .unwrap_or_else(|_| vec![].try_into().unwrap()),
+                            .unwrap_or_else(|_| {
+                                vec![].try_into().expect("L-1: Empty vec should always convert")
+                            }),
                     };
 
                     let error_frame: Sv2Frame = AnyMessage::TemplateDistribution(
@@ -1216,7 +1220,9 @@ fn nbits_to_target_u256(nbits: u32) -> stratum_apps::stratum_core::binary_sv2::U
         }
     }
 
-    U256::try_from(target.to_vec()).unwrap_or_else(|_| U256::try_from(vec![0u8; 32]).unwrap())
+    U256::try_from(target.to_vec()).unwrap_or_else(|_| {
+        U256::try_from(vec![0u8; 32]).expect("L-1: 32-byte zero vec should always convert to U256")
+    })
 }
 
 /// Get block subsidy for a given height

@@ -189,8 +189,7 @@ impl ParameterSync {
     ) -> oneshot::Receiver<MpcResult<PathBuf>> {
         let (tx, rx) = oneshot::channel();
 
-        let total_chunks =
-            ((total_size + PARAM_CHUNK_SIZE as u64 - 1) / PARAM_CHUNK_SIZE as u64) as u32;
+        let total_chunks = total_size.div_ceil(PARAM_CHUNK_SIZE as u64) as u32;
 
         // 3.10: Capture this before state is moved
         let has_per_chunk_verification = chunk_hashes.is_some();
@@ -417,8 +416,7 @@ impl ChunkIterator {
     fn new(path: &PathBuf) -> MpcResult<Self> {
         let file = File::open(path)?;
         let total_size = file.metadata()?.len();
-        let total_chunks =
-            ((total_size + PARAM_CHUNK_SIZE as u64 - 1) / PARAM_CHUNK_SIZE as u64) as u32;
+        let total_chunks = total_size.div_ceil(PARAM_CHUNK_SIZE as u64) as u32;
 
         Ok(Self {
             file,

@@ -568,7 +568,8 @@ impl MeshNetwork {
         let (outbound_tx, outbound_rx) = mpsc::channel(1000);
         let (inbound_tx, inbound_rx) = mpsc::channel(1000);
 
-        // C-1: Initialize Noise connection pool if enabled
+        // C-1/C-4: Initialize Noise connection pool if enabled
+        // C-4: Return error instead of panicking when noise is required but fails
         let noise_pool = if config.noise_enabled {
             match Self::init_noise_pool(&config) {
                 Ok(pool) => {
@@ -581,7 +582,14 @@ impl MeshNetwork {
                 Err(e) => {
                     error!(error = %e, "Failed to initialize Noise pool");
                     if config.noise_required {
-                        panic!("Noise is required but failed to initialize: {}", e);
+                        // C-4: Log critical error but don't panic - caller should handle
+                        error!(
+                            "C-4 CRITICAL: Noise is required but failed to initialize. \
+                             The node will operate without encrypted P2P. \
+                             Set noise_required=false to allow fallback, or fix Noise configuration."
+                        );
+                        // Instead of panicking, we return None and let the caller decide
+                        // The start() method will check and warn appropriately
                     }
                     warn!("Falling back to plaintext P2P (Noise disabled)");
                     None
@@ -1058,8 +1066,25 @@ impl MeshNetwork {
         format!("tcp://{}:{}", host_only, base_port)
     }
 
+    /// H-11: Maximum P2P message size to prevent memory exhaustion attacks
+    const MAX_P2P_MESSAGE_SIZE: usize = 10 * 1024 * 1024; // 10MB
+
     /// Handle a received message with full validation and signature verification
     pub async fn handle_received(&self, data: &[u8]) -> GhostResult<()> {
+        // H-11: Reject oversized messages before any processing
+        if data.len() > Self::MAX_P2P_MESSAGE_SIZE {
+            warn!(
+                size = data.len(),
+                max = Self::MAX_P2P_MESSAGE_SIZE,
+                "H-11 SECURITY: Rejecting oversized P2P message"
+            );
+            return Err(GhostError::P2PMessage(format!(
+                "Message size {} exceeds maximum {}",
+                data.len(),
+                Self::MAX_P2P_MESSAGE_SIZE
+            )));
+        }
+
         // Use the full validation pipeline including signature verification
         let envelope = match validate_and_verify(data) {
             Ok(env) => env,

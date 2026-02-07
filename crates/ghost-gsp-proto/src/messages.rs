@@ -107,9 +107,13 @@ pub enum ClientMessage {
     },
 
     /// Get payment status
+    ///
+    /// H-1: Requires wallet proof for authorization to prevent information leakage
     GetPaymentStatus {
         /// Payment ID to query
         payment_id: String,
+        /// H-1: Authentication proof to verify wallet ownership
+        proof: WalletProof,
     },
 
     /// Cancel a pending payment

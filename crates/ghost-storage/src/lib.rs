@@ -35,6 +35,7 @@
 
 pub mod audit_log;
 pub mod database;
+pub mod encryption;
 pub mod migrations;
 pub mod models;
 pub mod queries;
@@ -42,6 +43,7 @@ pub mod snapshot;
 
 pub use audit_log::*;
 pub use database::*;
+pub use encryption::*;
 pub use models::*;
 pub use snapshot::*;
 // Note: queries module adds methods to Database via impl blocks

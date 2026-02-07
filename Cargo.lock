@@ -2237,11 +2237,13 @@ dependencies = [
  "ghost-reconciliation",
  "ghost-storage",
  "hex",
+ "hmac",
  "http",
  "parking_lot",
  "scrypt",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 1.0.69",
  "tokio",
  "tower 0.4.13",
@@ -2370,7 +2372,10 @@ dependencies = [
 name = "ghost-storage"
 version = "1.6.0"
 dependencies = [
+ "base64 0.22.1",
+ "chacha20poly1305",
  "chrono",
+ "getrandom 0.2.17",
  "ghost-common",
  "hex",
  "parking_lot",

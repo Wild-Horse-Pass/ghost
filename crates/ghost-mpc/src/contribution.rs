@@ -92,11 +92,11 @@ impl ContributionCommitment {
     pub fn hash(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"mpc/commitment/v1");
-        hasher.update(&self.ceremony_id);
+        hasher.update(self.ceremony_id);
         hasher.update(self.contributor.as_bytes());
-        hasher.update(&self.prev_params_hash);
-        hasher.update(&self.nonce);
-        hasher.update(&self.timestamp.to_le_bytes());
+        hasher.update(self.prev_params_hash);
+        hasher.update(self.nonce);
+        hasher.update(self.timestamp.to_le_bytes());
         hasher.finalize().into()
     }
 
@@ -415,11 +415,7 @@ pub fn verify_contribution(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let timestamp_diff = if now > contribution.timestamp {
-        now - contribution.timestamp
-    } else {
-        contribution.timestamp - now
-    };
+    let timestamp_diff = now.abs_diff(contribution.timestamp);
     const MAX_TIMESTAMP_SKEW_SECS: u64 = 3600; // 1 hour
     if timestamp_diff > MAX_TIMESTAMP_SKEW_SECS {
         return Err(MpcError::InvalidProof(format!(
@@ -597,13 +593,13 @@ pub fn hash_parameters(params: &Parameters<Bls12>) -> MpcResult<[u8; 32]> {
 
     // SECURITY: Hash ALL h values to detect any tampering
     // Using streaming hash to handle large parameter sets efficiently
-    hasher.update(&(params.h.len() as u64).to_le_bytes());
+    hasher.update((params.h.len() as u64).to_le_bytes());
     for h in params.h.iter() {
         hasher.update(&serialize_g1(h)?);
     }
 
     // Also hash l values (Lagrange basis)
-    hasher.update(&(params.l.len() as u64).to_le_bytes());
+    hasher.update((params.l.len() as u64).to_le_bytes());
     for l in params.l.iter() {
         hasher.update(&serialize_g1(l)?);
     }

@@ -337,7 +337,7 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             post(api_config_update_handler),
         );
 
-    // Apply authentication middleware if internal_auth is configured
+    // H-3: Apply authentication middleware - ALWAYS required for internal endpoints
     let internal_router = if let Some(ref auth) = state.internal_auth {
         tracing::info!("Internal API authentication enabled for /api/internal/* and /admin/*");
         let auth_clone = Arc::clone(auth);
@@ -346,13 +346,30 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             internal_auth_middleware(auth, request, next)
         }))
     } else {
-        // SECURITY WARNING: Internal endpoints are unprotected without authentication
-        tracing::warn!(
-            "AUTH4-1 WARNING: Internal API authentication NOT configured! \
-             /api/internal/* and /admin/* endpoints are UNPROTECTED. \
-             Configure internal_api_secret in pool.toml for production deployments."
+        // H-3 SECURITY: Internal endpoints REQUIRE authentication in production.
+        // Without internal_api_secret configured, all internal endpoints will return 401.
+        // This fail-closed approach prevents accidental exposure of admin functionality.
+        tracing::error!(
+            "H-3 SECURITY: Internal API authentication NOT configured! \
+             /api/internal/* and /admin/* endpoints will REJECT all requests. \
+             Configure internal_api_secret in pool.toml for these endpoints to function."
         );
-        internal_router
+        // Return a router that rejects all requests to internal endpoints
+        internal_router.layer(middleware::from_fn(
+            |request: axum::extract::Request, _next: axum::middleware::Next| async move {
+                tracing::warn!(
+                    path = %request.uri().path(),
+                    "H-3: Rejecting unauthenticated internal API request"
+                );
+                axum::response::Response::builder()
+                    .status(axum::http::StatusCode::UNAUTHORIZED)
+                    .header("Content-Type", "application/json")
+                    .body(axum::body::Body::from(
+                        r#"{"error":"Internal API authentication not configured"}"#,
+                    ))
+                    .unwrap()
+            },
+        ))
     };
 
     // Merge routers

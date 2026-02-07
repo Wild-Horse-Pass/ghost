@@ -321,13 +321,21 @@ impl EntryScheduler {
     }
 
     /// Calculate random delay using exponential distribution
+    ///
+    /// C-7: Handles RNG failure gracefully by falling back to zero delay.
     fn calculate_delay(&self) -> Duration {
         if !self.config.delay_enabled {
             return Duration::ZERO;
         }
 
         // Exponential distribution: delay = -mean * ln(random)
-        let random = random_f64();
+        let random = match random_f64() {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "C-7: RNG failed in calculate_delay, using zero delay");
+                return Duration::ZERO;
+            }
+        };
         let mean = (self.config.max_delay_ms - self.config.min_delay_ms) as f64;
         let exp_delay = -mean * random.ln();
         let delay_ms = self.config.min_delay_ms + (exp_delay as u64).min(self.config.max_delay_ms);
@@ -339,12 +347,20 @@ impl EntryScheduler {
     }
 
     /// Calculate random jitter
+    ///
+    /// C-7: Handles RNG failure gracefully by returning zero jitter.
     fn calculate_jitter(&self) -> Duration {
         if self.config.jitter_ms == 0 {
             return Duration::ZERO;
         }
 
-        let random = random_f64();
+        let random = match random_f64() {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "C-7: RNG failed in calculate_jitter, using zero jitter");
+                return Duration::ZERO;
+            }
+        };
         let jitter_ms = (random * (self.config.jitter_ms * 2) as f64) as u64;
         let centered_jitter = jitter_ms.saturating_sub(self.config.jitter_ms);
 
@@ -352,8 +368,16 @@ impl EntryScheduler {
     }
 
     /// Check if cover traffic should be generated
+    ///
+    /// C-7: Handles RNG failure gracefully by returning false (no cover traffic).
     fn should_generate_cover(&self) -> bool {
-        random_f64() < self.config.cover_traffic_ratio
+        match random_f64() {
+            Ok(r) => r < self.config.cover_traffic_ratio,
+            Err(e) => {
+                tracing::warn!(error = %e, "C-7: RNG failed in should_generate_cover, skipping cover traffic");
+                false
+            }
+        }
     }
 
     /// Schedule cover traffic (dummy entry)
@@ -522,13 +546,23 @@ pub struct EntryStats {
     pub queue_length: usize,
 }
 
+/// C-7: Error type for RNG failure
+#[derive(Debug, thiserror::Error)]
+pub enum RandomError {
+    #[error("Random generation failed: {0}")]
+    GenerationFailed(String),
+}
+
 /// Generate random f64 in [0, 1)
-fn random_f64() -> f64 {
+///
+/// C-7: Returns Result instead of panicking on RNG failure.
+fn random_f64() -> Result<f64, RandomError> {
     let mut bytes = [0u8; 8];
-    getrandom::getrandom(&mut bytes).expect("Random generation failed");
+    getrandom::getrandom(&mut bytes)
+        .map_err(|e| RandomError::GenerationFailed(e.to_string()))?;
     let raw = u64::from_le_bytes(bytes);
     // Convert to [0, 1) range
-    (raw >> 11) as f64 / (1u64 << 53) as f64
+    Ok((raw >> 11) as f64 / (1u64 << 53) as f64)
 }
 
 #[cfg(test)]
@@ -727,7 +761,7 @@ mod tests {
     fn test_random_f64() {
         // Test that random values are in valid range
         for _ in 0..100 {
-            let r = random_f64();
+            let r = random_f64().expect("RNG should succeed in test");
             assert!((0.0..1.0).contains(&r));
         }
     }

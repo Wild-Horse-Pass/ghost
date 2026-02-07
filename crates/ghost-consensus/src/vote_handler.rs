@@ -462,7 +462,7 @@ impl VoteHandler {
     pub fn update_block_height(&self, height: u64) {
         let mut known = self.known_best_height.write();
         // Only update if new height is greater (prevent rollback attacks via stale data)
-        if known.map_or(true, |h| height > h) {
+        if known.is_none_or(|h| height > h) {
             *known = Some(height);
         }
     }

@@ -208,8 +208,13 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             }
         }
 
-        ClientMessage::GetPaymentStatus { payment_id } => {
+        ClientMessage::GetPaymentStatus { payment_id, proof } => {
             validate_payment_id(payment_id, &mut result);
+
+            // H-1: Validate proof structure for GetPaymentStatus
+            if let Err(e) = proof.validate_structure() {
+                result.add_error(format!("Invalid proof: {}", e));
+            }
         }
 
         ClientMessage::CancelPayment { payment_id, proof } => {
@@ -415,6 +420,7 @@ fn is_valid_bitcoin_address(address: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::WalletProof;
 
     #[test]
     fn test_validation_result_ok() {
@@ -533,6 +539,14 @@ mod tests {
         assert!(!result2.valid);
     }
 
+    /// Helper to create a valid test WalletProof
+    fn test_wallet_proof() -> WalletProof {
+        let pubkey = [1u8; 32];
+        let mut proof = WalletProof::new("get_payment_status", &pubkey);
+        proof.signature = hex::encode([2u8; 64]); // Valid signature format
+        proof
+    }
+
     #[test]
     fn test_l11_payment_id_validation() {
         // L-11: Test payment ID validation
@@ -540,6 +554,7 @@ mod tests {
         // Valid payment IDs
         let msg = ClientMessage::GetPaymentStatus {
             payment_id: "valid-payment_123".to_string(),
+            proof: test_wallet_proof(),
         };
         let result = validate_message(&msg);
         assert!(result.valid, "Should accept valid payment ID");
@@ -547,6 +562,7 @@ mod tests {
         // Empty payment ID
         let msg = ClientMessage::GetPaymentStatus {
             payment_id: "".to_string(),
+            proof: test_wallet_proof(),
         };
         let result = validate_message(&msg);
         assert!(!result.valid, "Should reject empty payment ID");
@@ -555,6 +571,7 @@ mod tests {
         // Payment ID too long (>128 chars)
         let msg = ClientMessage::GetPaymentStatus {
             payment_id: "a".repeat(129),
+            proof: test_wallet_proof(),
         };
         let result = validate_message(&msg);
         assert!(!result.valid, "Should reject payment ID over 128 chars");
@@ -563,6 +580,7 @@ mod tests {
         // Payment ID with invalid characters
         let msg = ClientMessage::GetPaymentStatus {
             payment_id: "payment@id!with#invalid$chars".to_string(),
+            proof: test_wallet_proof(),
         };
         let result = validate_message(&msg);
         assert!(!result.valid, "Should reject payment ID with invalid chars");
@@ -571,6 +589,7 @@ mod tests {
         // Payment ID at exactly 128 chars (boundary - should pass)
         let msg = ClientMessage::GetPaymentStatus {
             payment_id: "a".repeat(128),
+            proof: test_wallet_proof(),
         };
         let result = validate_message(&msg);
         assert!(result.valid, "Should accept payment ID at exactly 128 chars");
@@ -578,6 +597,7 @@ mod tests {
         // Valid payment ID with all allowed characters
         let msg = ClientMessage::GetPaymentStatus {
             payment_id: "abc-XYZ_123-payment_ID".to_string(),
+            proof: test_wallet_proof(),
         };
         let result = validate_message(&msg);
         assert!(result.valid, "Should accept alphanumeric, hyphen, underscore");

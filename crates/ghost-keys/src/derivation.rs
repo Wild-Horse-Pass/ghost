@@ -150,7 +150,7 @@ fn constant_time_sub_if_gte(result: &mut [u8; 32], n: &[u8; 32]) -> u8 {
 
     // Constant-time select: result = (use_temp) ? temp : result
     for i in 0..32 {
-        let mask = (use_temp.wrapping_neg()) as u8; // 0xFF if use_temp==1, 0x00 if use_temp==0
+        let mask = use_temp.wrapping_neg(); // 0xFF if use_temp==1, 0x00 if use_temp==0
         result[i] = (temp[i] & mask) | (result[i] & !mask);
     }
 

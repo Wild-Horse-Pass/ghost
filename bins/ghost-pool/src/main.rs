@@ -1905,20 +1905,28 @@ async fn main() -> Result<()> {
     let (verification_tx, mut verification_rx) =
         ghost_verification::task::verification_broadcast_channel(100);
 
-    let verification_task = VerificationTask::new(
+    // C-3: Handle Result from VerificationTask::new() instead of panicking
+    match VerificationTask::new(
         Arc::clone(&db),
         identity.node_id(),
         peer_provider as Arc<dyn PeerProvider>,
-    )
-    .with_rpc(Arc::clone(&rpc))
-    .with_broadcast(verification_tx);
+    ) {
+        Ok(verification_task) => {
+            let verification_task = verification_task
+                .with_rpc(Arc::clone(&rpc))
+                .with_broadcast(verification_tx);
 
-    tokio::spawn(async move {
-        // Wait for mesh to establish connections before starting verification
-        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-        verification_task.run().await;
-    });
-    info!("Verification task started (5 minute interval)");
+            tokio::spawn(async move {
+                // Wait for mesh to establish connections before starting verification
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                verification_task.run().await;
+            });
+            info!("Verification task started (5 minute interval)");
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to create verification task - verification disabled");
+        }
+    }
 
     // Start verification result broadcaster (sends results to other nodes via P2P)
     let mesh_for_verification = Arc::clone(&mesh);

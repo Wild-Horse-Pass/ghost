@@ -323,7 +323,7 @@ impl Settlement {
 
         let mut hasher = Sha256::new();
         hasher.update(b"GhostSettlement/v2");
-        hasher.update(&nonce);
+        hasher.update(nonce);
         hasher.update(&source_ghost_id);
         hasher.update(source_lock_id);
         hasher.update(&destination_address);

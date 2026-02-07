@@ -512,24 +512,27 @@ impl CoordinatorSigner {
 
     /// Create a new signing nonce (unbound - DISABLED FOR SECURITY)
     ///
-    /// SEC-WRAITH-2: This function has been disabled because unbound nonces are
+    /// SEC-WRAITH-2/C-6: This function has been disabled because unbound nonces are
     /// a security vulnerability. Use `create_nonce_for_participant()` instead.
     ///
-    /// # Panics
+    /// # Returns
     ///
-    /// Always panics. This is intentional to prevent use of insecure unbound nonces.
+    /// Always returns an error. This is intentional to prevent use of insecure unbound nonces.
+    /// C-6: Changed from panic to Result to prevent process crash.
     #[deprecated(
         since = "0.2.0",
         note = "DISABLED: Use create_nonce_for_participant() to bind nonces to participants"
     )]
     #[allow(unused_variables)]
-    pub fn create_nonce(&mut self) -> PublicNonce {
-        // SEC-WRAITH-2: Deliberately disabled - unbound nonces are insecure
-        panic!(
+    pub fn create_nonce(&mut self) -> Result<PublicNonce, WraithError> {
+        // SEC-WRAITH-2/C-6: Deliberately disabled - unbound nonces are insecure
+        // C-6: Return error instead of panicking
+        Err(WraithError::SecurityError(
             "create_nonce() is disabled for security. \
              Use create_nonce_for_participant() to bind nonces to participants. \
              Unbound nonces allow nonce hijacking attacks."
-        );
+                .to_string(),
+        ))
     }
 
     /// Step 2: Sign a blinded challenge with participant verification
@@ -1512,37 +1515,32 @@ mod tests {
         );
     }
 
-    /// SEC-WRAITH-TEST-1: Verify deprecated create_nonce() panics
+    /// SEC-WRAITH-TEST-1/C-6: Verify deprecated create_nonce() returns error
     ///
     /// The unbound nonce function is disabled for security - it allows nonce
-    /// hijacking attacks. This test verifies it properly panics.
+    /// hijacking attacks. C-6: Changed from panic to error return.
     #[test]
     #[allow(deprecated)]
-    fn test_deprecated_nonce_panics() {
-        use std::panic;
+    fn test_deprecated_nonce_returns_error() {
+        let session_id = [9u8; 32];
+        let mut signer = CoordinatorSigner::new(&session_id);
 
-        let result = panic::catch_unwind(|| {
-            let session_id = [9u8; 32];
-            let mut signer = CoordinatorSigner::new(&session_id);
-            // This should panic - deprecated and disabled for security
-            let _ = signer.create_nonce();
-        });
+        // C-6: This should return an error, not panic
+        let result = signer.create_nonce();
 
-        assert!(result.is_err(), "create_nonce() should panic");
+        assert!(
+            result.is_err(),
+            "create_nonce() should return error, not succeed"
+        );
 
-        // Verify the panic message is correct
-        if let Err(panic_info) = result {
-            let msg = panic_info
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| panic_info.downcast_ref::<String>().cloned())
-                .unwrap_or_default();
-            assert!(
-                msg.contains("disabled for security"),
-                "Panic message should mention security: {}",
-                msg
-            );
-        }
+        // Verify the error message is correct
+        let err = result.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("disabled for security"),
+            "Error message should mention security: {}",
+            msg
+        );
     }
 
     /// SEC-WRAITH-TEST-2: Verify deprecated sign_blinded_challenge() returns error

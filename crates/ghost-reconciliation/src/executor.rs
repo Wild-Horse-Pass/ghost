@@ -439,26 +439,26 @@ impl BatchExecutor {
 
         let mut recon_tx = ReconciliationTx::new(batch_id, state_root, mining_fee);
 
-        // Add inputs
+        // Add inputs (H-8: handle overflow)
         for (lock_id, amount) in input_lock_ids.iter().zip(input_amounts.iter()) {
-            recon_tx.add_input(*lock_id, *amount);
+            recon_tx.add_input(*lock_id, *amount)?;
         }
 
-        // Add settlement outputs
+        // Add settlement outputs (H-8: handle overflow)
         for settlement in &self.current_batch_settlements {
             recon_tx.add_output(TxOutput::Payment {
                 address: settlement.destination_address().to_string(),
                 amount: settlement.net_amount_sats(),
                 from_lock: *settlement.source_lock_id(),
-            });
+            })?;
         }
 
-        // Add treasury fee output
+        // Add treasury fee output (H-8: handle overflow)
         if treasury_amount > 0 {
             recon_tx.add_output(TxOutput::TreasuryFee {
                 address: self.treasury_address.clone(),
                 amount: treasury_amount,
-            });
+            })?;
         }
 
         // Add OP_RETURN

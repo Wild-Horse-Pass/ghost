@@ -219,7 +219,7 @@ impl RegistryClient {
     fn now_timestamp() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .expect("L-1: System clock is before UNIX epoch - check system time")
             .as_secs()
     }
 

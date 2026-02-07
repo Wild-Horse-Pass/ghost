@@ -117,6 +117,11 @@ struct Args {
     /// If not provided, keys will be stored encrypted with a derived password
     #[arg(long, env = "GHOST_PAY_PASSWORD")]
     key_password: Option<String>,
+
+    /// H-2: API secret for HMAC authentication (required for mainnet)
+    /// All authenticated endpoints require X-Ghost-Signature header with HMAC-SHA256
+    #[arg(long, env = "GHOST_PAY_API_SECRET")]
+    api_secret: Option<String>,
 }
 
 // =============================================================================
@@ -231,6 +236,130 @@ fn get_encryption_password(args: &Args, network: Network) -> Result<String> {
         .unwrap_or_else(|_| "ghost-pay-node".to_string());
 
     Ok(format!("ghost-pay:{}:{}", hostname, args.data_dir))
+}
+
+// =============================================================================
+// H-2: API AUTHENTICATION MIDDLEWARE
+// =============================================================================
+
+use axum::{
+    body::Body,
+    extract::Request,
+    http::HeaderMap,
+    middleware::Next,
+    response::Response,
+};
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+
+/// H-2: API secret holder for authentication middleware
+#[derive(Clone)]
+struct ApiAuth {
+    secret: Option<String>,
+    network: Network,
+}
+
+impl ApiAuth {
+    fn new(secret: Option<String>, network: Network) -> Self {
+        Self { secret, network }
+    }
+
+    /// Verify HMAC signature from request headers
+    fn verify_signature(&self, headers: &HeaderMap, body: &[u8]) -> bool {
+        let secret = match &self.secret {
+            Some(s) => s,
+            None => return false, // No secret configured
+        };
+
+        // Get signature from X-Ghost-Signature header
+        let signature_header = match headers.get("X-Ghost-Signature") {
+            Some(h) => match h.to_str() {
+                Ok(s) => s,
+                Err(_) => return false,
+            },
+            None => return false,
+        };
+
+        // Get timestamp from X-Ghost-Timestamp header (replay protection)
+        let timestamp = match headers.get("X-Ghost-Timestamp") {
+            Some(h) => match h.to_str() {
+                Ok(s) => match s.parse::<i64>() {
+                    Ok(ts) => ts,
+                    Err(_) => return false,
+                },
+                Err(_) => return false,
+            },
+            None => return false,
+        };
+
+        // Check timestamp is within 5 minutes
+        let now = chrono::Utc::now().timestamp();
+        if (now - timestamp).abs() > 300 {
+            warn!("H-2: Request timestamp too old or in future: {}", timestamp);
+            return false;
+        }
+
+        // Compute expected HMAC: HMAC-SHA256(secret, timestamp + body)
+        let mut mac: Hmac<Sha256> =
+            match <Hmac<Sha256> as Mac>::new_from_slice(secret.as_bytes()) {
+                Ok(m) => m,
+                Err(_) => return false,
+            };
+        mac.update(timestamp.to_string().as_bytes());
+        mac.update(body);
+
+        let expected = hex::encode(mac.finalize().into_bytes());
+
+        // Constant-time comparison
+        if signature_header.len() != expected.len() {
+            return false;
+        }
+
+        let mut diff = 0u8;
+        for (a, b) in signature_header.bytes().zip(expected.bytes()) {
+            diff |= a ^ b;
+        }
+        diff == 0
+    }
+}
+
+/// H-2: Authentication middleware for sensitive endpoints
+async fn require_api_auth(
+    axum::extract::State(auth): axum::extract::State<ApiAuth>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // For mainnet, API authentication is REQUIRED
+    if auth.network == Network::Bitcoin && auth.secret.is_none() {
+        error!("H-2 SECURITY: API secret not configured for mainnet!");
+        return Err(StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    // If no secret configured (non-mainnet), allow with warning
+    if auth.secret.is_none() {
+        warn!("H-2: API authentication not configured - allowing request");
+        return Ok(next.run(request).await);
+    }
+
+    // Extract body for signature verification
+    let (parts, body) = request.into_parts();
+    let body_bytes = match axum::body::to_bytes(body, 1024 * 1024).await {
+        Ok(b) => b,
+        Err(_) => return Err(StatusCode::BAD_REQUEST),
+    };
+
+    // Verify signature
+    if !auth.verify_signature(&parts.headers, &body_bytes) {
+        warn!(
+            path = %parts.uri.path(),
+            "H-2: Authentication failed - invalid signature"
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    // Reconstruct request with body
+    let request = Request::from_parts(parts, Body::from(body_bytes));
+    Ok(next.run(request).await)
 }
 
 /// Application state
@@ -566,48 +695,97 @@ async fn main() -> Result<()> {
         info!("L1 settlement loop enabled");
     }
 
-    // Build router
-    let app = Router::new()
-        // Key management
+    // H-2: Create API authentication state
+    let api_auth = ApiAuth::new(state.config.api_secret.clone(), state.network);
+
+    // Log authentication status
+    if api_auth.secret.is_some() {
+        info!("H-2: API authentication enabled");
+    } else if state.network == Network::Bitcoin {
+        error!(
+            "H-2 SECURITY: API secret not configured for mainnet! \
+             Set GHOST_PAY_API_SECRET or --api-secret. \
+             Sensitive endpoints will return 503 Service Unavailable."
+        );
+    } else {
+        warn!(
+            "H-2: API authentication not configured. \
+             Sensitive endpoints are unprotected. \
+             Set GHOST_PAY_API_SECRET for production."
+        );
+    }
+
+    // H-2: Build authenticated routes (require HMAC signature)
+    let authenticated_routes = Router::new()
+        // Key management (SENSITIVE - can export private keys)
         .route("/api/v1/keys/generate", post(generate_keys))
         .route("/api/v1/keys/export", get(export_keys))
-        .route("/api/v1/keys/ghost-id", get(get_ghost_id))
-        // Lock management
-        .route("/api/v1/locks", get(list_locks))
+        // Lock management (SENSITIVE - controls funds)
         .route("/api/v1/locks/create", post(create_lock))
-        .route("/api/v1/locks/:id", get(get_lock))
         .route("/api/v1/locks/:id/jump", post(initiate_jump))
-        // Wraith sessions
-        .route("/api/v1/wraith/sessions", get(list_sessions))
+        // Wraith sessions (SENSITIVE - privacy operations)
         .route("/api/v1/wraith/join", post(join_session))
+        // Withdrawals (SENSITIVE - moves funds)
+        .route("/api/v1/withdrawals/request", post(request_withdrawal))
+        .route("/api/v1/withdrawals/:id/cancel", post(cancel_withdrawal))
+        .layer(axum::middleware::from_fn_with_state(
+            api_auth.clone(),
+            require_api_auth,
+        ))
+        .with_state(state.clone());
+
+    // Public routes (read-only, no authentication required)
+    let public_routes = Router::new()
+        // Read-only key info
+        .route("/api/v1/keys/ghost-id", get(get_ghost_id))
+        // Read-only lock info
+        .route("/api/v1/locks", get(list_locks))
+        .route("/api/v1/locks/:id", get(get_lock))
+        // Read-only session info
+        .route("/api/v1/wraith/sessions", get(list_sessions))
         .route("/api/v1/wraith/sessions/:id", get(get_session))
-        // Payments
+        // Payments (derive address is safe, scan is read-only)
         .route("/api/v1/payments/address", post(derive_payment_address))
         .route("/api/v1/payments/scan", post(scan_transaction))
-        // Withdrawals
+        // Read-only withdrawal info
         .route("/api/v1/withdrawals", get(list_withdrawals))
-        .route("/api/v1/withdrawals/request", post(request_withdrawal))
         .route("/api/v1/withdrawals/:id", get(get_withdrawal))
-        .route("/api/v1/withdrawals/:id/cancel", post(cancel_withdrawal))
-        // Status
+        // Status endpoints
         .route("/api/v1/status", get(get_status))
         .route("/health", get(health_check))
+        .with_state(state.clone());
+
+    // Merge routes and apply common layers
+    let app = public_routes
+        .merge(authenticated_routes)
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list([
-                    "https://bitcoinghost.org".parse().unwrap(),
-                    "https://wallet.bitcoinghost.org".parse().unwrap(),
+                    "https://bitcoinghost.org"
+                        .parse()
+                        .expect("L-1: Valid hardcoded origin URL"),
+                    "https://wallet.bitcoinghost.org"
+                        .parse()
+                        .expect("L-1: Valid hardcoded origin URL"),
                 ]))
                 .allow_methods([
                     http::Method::GET,
                     http::Method::POST,
                     http::Method::OPTIONS,
                 ])
-                .allow_headers([http::header::CONTENT_TYPE, http::header::AUTHORIZATION])
+                .allow_headers([
+                    http::header::CONTENT_TYPE,
+                    http::header::AUTHORIZATION,
+                    "X-Ghost-Signature"
+                        .parse()
+                        .expect("L-1: Valid hardcoded header name"),
+                    "X-Ghost-Timestamp"
+                        .parse()
+                        .expect("L-1: Valid hardcoded header name"),
+                ])
                 .max_age(std::time::Duration::from_secs(3600)),
         )
-        .layer(TraceLayer::new_for_http())
-        .with_state(state.clone());
+        .layer(TraceLayer::new_for_http());
 
     // Parse listen address
     let addr: SocketAddr = state.config.api_listen.parse()?;

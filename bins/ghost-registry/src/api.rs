@@ -149,7 +149,7 @@ async fn handle_register(
     // Validate timestamp (prevent replay attacks)
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("L-1: System clock is before UNIX epoch - check system time")
         .as_secs();
 
     let drift = now.abs_diff(req.timestamp);

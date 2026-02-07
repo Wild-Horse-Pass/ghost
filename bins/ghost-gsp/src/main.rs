@@ -136,6 +136,10 @@ struct ServerConfig {
 
     #[serde(default = "default_max_ws_connections")]
     max_ws_connections: usize,
+
+    /// M-4: Maximum request body size in bytes
+    #[serde(default = "default_max_body_size")]
+    max_body_size: usize,
 }
 
 impl Default for ServerConfig {
@@ -145,6 +149,7 @@ impl Default for ServerConfig {
             network: default_network(),
             rate_limit_rpm: default_rate_limit(),
             max_ws_connections: default_max_ws_connections(),
+            max_body_size: default_max_body_size(),
         }
     }
 }
@@ -192,6 +197,11 @@ fn default_rate_limit() -> u32 {
 
 fn default_max_ws_connections() -> usize {
     100
+}
+
+/// M-4: Default max body size (1MB)
+fn default_max_body_size() -> usize {
+    1024 * 1024
 }
 
 fn default_data_dir() -> PathBuf {
@@ -286,6 +296,7 @@ async fn main() -> Result<()> {
         session_expiry_secs: config_file.security.session_expiry_secs,
         rate_limit_rpm: config_file.server.rate_limit_rpm,
         max_ws_connections: config_file.server.max_ws_connections,
+        max_body_size: config_file.server.max_body_size,
     };
 
     // Create and run GSP server

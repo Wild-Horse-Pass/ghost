@@ -30,7 +30,7 @@ use tracing::{info, warn};
 const MAX_CEREMONY_DURATION_SECS: u64 = 30 * 24 * 60 * 60; // 30 days
 
 /// State of the MPC ceremony
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CeremonyState {
     /// Number of contributions applied (0 = genesis, 101 = ossified)
     pub contribution_count: u32,
@@ -53,25 +53,6 @@ pub struct CeremonyState {
     pub ceremony_id: [u8; 32],
     /// CRIT-2 FIX: Number of pending commitments (not yet fulfilled)
     pub pending_commitment_count: u32,
-}
-
-impl Default for CeremonyState {
-    fn default() -> Self {
-        Self {
-            contribution_count: 0,
-            current_params_hash: [0u8; 32],
-            is_ossified: false,
-            ossified_at: None,
-            block_vk_hash: None,
-            payout_vk_hash: None,
-            updated_at: 0,
-            genesis_timestamp: None,
-            // Default ceremony_id is all zeros - must be set at initialization
-            ceremony_id: [0u8; 32],
-            // CRIT-2 FIX: No pending commitments initially
-            pending_commitment_count: 0,
-        }
-    }
 }
 
 impl CeremonyState {

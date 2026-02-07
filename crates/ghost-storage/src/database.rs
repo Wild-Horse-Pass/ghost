@@ -166,6 +166,23 @@ impl Database {
         // Create parent directory if needed
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+
+            // H-4: Set directory permissions to 0o700 (owner only) on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(metadata) = std::fs::metadata(parent) {
+                    let mut perms = metadata.permissions();
+                    perms.set_mode(0o700);
+                    if let Err(e) = std::fs::set_permissions(parent, perms) {
+                        warn!(
+                            path = %parent.display(),
+                            error = %e,
+                            "H-4: Failed to set directory permissions to 0o700"
+                        );
+                    }
+                }
+            }
         }
 
         let conn = Connection::open_with_flags(
@@ -177,6 +194,43 @@ impl Database {
         .map_err(|e| GhostError::Database(e.to_string()))?;
 
         Self::initialize_connection(&conn)?;
+
+        // H-4: Set database file permissions to 0o600 (owner read/write only) on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            // Set main database file
+            if let Ok(metadata) = std::fs::metadata(path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o600);
+                if let Err(e) = std::fs::set_permissions(path, perms) {
+                    warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "H-4: Failed to set database file permissions to 0o600"
+                    );
+                }
+            }
+
+            // Also set WAL and SHM files if they exist
+            for ext in ["db-wal", "db-shm"] {
+                let aux_path = path.with_extension(ext);
+                if aux_path.exists() {
+                    if let Ok(metadata) = std::fs::metadata(&aux_path) {
+                        let mut perms = metadata.permissions();
+                        perms.set_mode(0o600);
+                        if let Err(e) = std::fs::set_permissions(&aux_path, perms) {
+                            warn!(
+                                path = %aux_path.display(),
+                                error = %e,
+                                "H-4: Failed to set auxiliary file permissions to 0o600"
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         let db = Self {
             inner: Arc::new(DatabaseInner {
@@ -218,14 +272,19 @@ impl Database {
     fn initialize_connection(conn: &Connection) -> GhostResult<()> {
         // Enable WAL mode for better concurrency
         // Auto-checkpoint when WAL reaches 1000 pages (~4MB with 4KB pages)
+        //
+        // H-5: Security hardening:
+        // - synchronous = FULL: Ensures durability even on power loss (vs NORMAL)
+        // - secure_delete = ON: Overwrites deleted data to prevent forensic recovery
         conn.execute_batch(
             "
             PRAGMA journal_mode = WAL;
-            PRAGMA synchronous = NORMAL;
+            PRAGMA synchronous = FULL;
             PRAGMA foreign_keys = ON;
             PRAGMA busy_timeout = 5000;
             PRAGMA cache_size = -64000;
             PRAGMA wal_autocheckpoint = 1000;
+            PRAGMA secure_delete = ON;
             ",
         )
         .map_err(|e| GhostError::Database(format!("Failed to initialize connection: {}", e)))?;

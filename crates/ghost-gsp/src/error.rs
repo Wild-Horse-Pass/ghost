@@ -164,9 +164,46 @@ impl From<std::io::Error> for GspError {
     }
 }
 
+/// M-1: Sanitize error messages to prevent internal state leakage
+///
+/// This function removes potentially sensitive internal details from error messages
+/// while preserving enough information for debugging. Internal errors are logged
+/// with full details but only a generic message is returned to clients.
+fn sanitize_error_message(error_code: &str, internal_msg: &str) -> String {
+    // Log full error internally for debugging
+    tracing::error!(
+        code = error_code,
+        internal = internal_msg,
+        "M-1: API error (sanitized for client)"
+    );
+
+    // Return sanitized message based on error type
+    match error_code {
+        // Internal errors - never expose implementation details
+        "CONFIG_ERROR" | "INVALID_BIND_ADDRESS" | "INSECURE_JWT_SECRET" => {
+            "Internal configuration error".to_string()
+        }
+        "DATABASE_ERROR" => "Database operation failed".to_string(),
+        "INTERNAL_ERROR" => "An internal error occurred".to_string(),
+        "PAY_NODE_UNAVAILABLE" => "Payment service temporarily unavailable".to_string(),
+        "PAY_NODE_ERROR" => "Payment service error".to_string(),
+        // Protocol errors - limit detail exposure
+        "PROTOCOL_ERROR" => {
+            // Only include safe portions of protocol errors
+            if internal_msg.len() > 100 {
+                "Invalid protocol message".to_string()
+            } else {
+                internal_msg.to_string()
+            }
+        }
+        // User-facing errors - these are safe to expose (they don't leak internal state)
+        _ => internal_msg.to_string(),
+    }
+}
+
 impl IntoResponse for GspError {
     fn into_response(self) -> Response {
-        let (status, error_code, message) = match &self {
+        let (status, error_code, raw_message) = match &self {
             GspError::Config(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "CONFIG_ERROR",
@@ -187,15 +224,19 @@ impl IntoResponse for GspError {
                 "UNAUTHORIZED",
                 "Authentication required".to_string(),
             ),
-            GspError::InvalidCredentials(msg) => {
-                (StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS", msg.clone())
+            GspError::InvalidCredentials(_) => {
+                // M-1: Don't expose credential details
+                (StatusCode::UNAUTHORIZED, "INVALID_CREDENTIALS", "Invalid credentials".to_string())
             }
             GspError::SessionExpired => (
                 StatusCode::UNAUTHORIZED,
                 "SESSION_EXPIRED",
                 "Session has expired".to_string(),
             ),
-            GspError::InvalidToken(msg) => (StatusCode::UNAUTHORIZED, "INVALID_TOKEN", msg.clone()),
+            GspError::InvalidToken(_) => {
+                // M-1: Don't expose token validation details
+                (StatusCode::UNAUTHORIZED, "INVALID_TOKEN", "Invalid or expired token".to_string())
+            }
             GspError::WalletNotRegistered => (
                 StatusCode::NOT_FOUND,
                 "WALLET_NOT_REGISTERED",
@@ -206,11 +247,10 @@ impl IntoResponse for GspError {
                 "WALLET_ALREADY_REGISTERED",
                 "Wallet already registered".to_string(),
             ),
-            GspError::SignatureVerification(msg) => (
-                StatusCode::UNAUTHORIZED,
-                "SIGNATURE_VERIFICATION_FAILED",
-                msg.clone(),
-            ),
+            GspError::SignatureVerification(_) => {
+                // M-1: Don't expose signature details that could help attackers
+                (StatusCode::UNAUTHORIZED, "SIGNATURE_VERIFICATION_FAILED", "Signature verification failed".to_string())
+            }
             GspError::WalletIdMismatch => (
                 StatusCode::UNAUTHORIZED,
                 "WALLET_ID_MISMATCH",
@@ -252,10 +292,11 @@ impl IntoResponse for GspError {
                 "Payment does not belong to this wallet".to_string(),
             ),
             // H-11: Instant payment verification errors
-            GspError::LockNotFound(lock_id) => (
+            GspError::LockNotFound(_) => (
+                // M-1: Don't expose lock_id in error response
                 StatusCode::NOT_FOUND,
                 "LOCK_NOT_FOUND",
-                format!("Lock not found on L1: {}", lock_id),
+                "Lock not found".to_string(),
             ),
             GspError::LockPending => (
                 StatusCode::CONFLICT,
@@ -274,6 +315,9 @@ impl IntoResponse for GspError {
                 "P2TR addresses are quantum-vulnerable. Use P2WPKH (bc1q...) instead.".to_string(),
             ),
         };
+
+        // M-1: Sanitize the message before sending to client
+        let message = sanitize_error_message(error_code, &raw_message);
 
         let body = serde_json::json!({
             "success": false,

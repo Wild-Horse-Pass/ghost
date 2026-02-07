@@ -252,10 +252,19 @@ impl DifficultyAdjuster {
 ///
 /// This differs from Bitcoin network difficulty which uses nbits compact format.
 /// Pool difficulty is typically much lower and doesn't need the compact encoding.
+/// M-11: Validate difficulty value before conversion
+///
+/// Returns true if the difficulty is valid (finite, positive, not NaN).
+#[inline]
+fn is_valid_difficulty(difficulty: f64) -> bool {
+    difficulty.is_finite() && difficulty > 0.0
+}
+
 pub fn difficulty_to_target(difficulty: f64) -> [u8; 32] {
     let mut bytes = [0u8; 32];
 
-    if difficulty <= 0.0 {
+    // M-11: Validate difficulty - reject NaN, Infinity, negative, and zero
+    if !is_valid_difficulty(difficulty) {
         // Invalid difficulty, return max target (easiest)
         bytes.fill(0xFF);
         bytes[0..4].fill(0);
@@ -438,5 +447,38 @@ mod tests {
         small[31] = 1; // Just the least significant byte
         let diff = target_to_difficulty(&small);
         assert!(diff > 1_000_000.0);
+    }
+
+    #[test]
+    fn test_m11_difficulty_nan_infinity_validation() {
+        // M-11: Test NaN handling
+        let target_nan = difficulty_to_target(f64::NAN);
+        // Should return max target (same as invalid difficulty)
+        let expected_max = difficulty_to_target(-1.0);
+        assert_eq!(target_nan, expected_max, "NaN should be treated as invalid");
+
+        // M-11: Test positive infinity handling
+        let target_inf = difficulty_to_target(f64::INFINITY);
+        assert_eq!(target_inf, expected_max, "Infinity should be treated as invalid");
+
+        // M-11: Test negative infinity handling
+        let target_neg_inf = difficulty_to_target(f64::NEG_INFINITY);
+        assert_eq!(target_neg_inf, expected_max, "Negative infinity should be treated as invalid");
+
+        // Valid finite difficulties should still work
+        let target_valid = difficulty_to_target(1.0);
+        assert_ne!(target_valid, expected_max, "Valid difficulty should produce valid target");
+    }
+
+    #[test]
+    fn test_m11_is_valid_difficulty() {
+        assert!(is_valid_difficulty(1.0));
+        assert!(is_valid_difficulty(0.001));
+        assert!(is_valid_difficulty(1_000_000.0));
+        assert!(!is_valid_difficulty(0.0));
+        assert!(!is_valid_difficulty(-1.0));
+        assert!(!is_valid_difficulty(f64::NAN));
+        assert!(!is_valid_difficulty(f64::INFINITY));
+        assert!(!is_valid_difficulty(f64::NEG_INFINITY));
     }
 }

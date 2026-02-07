@@ -267,40 +267,55 @@ pub struct VerificationTask {
     rpc: Option<Arc<BitcoinRpc>>,
 }
 
+/// C-3: Error type for verification task creation
+#[derive(Debug, thiserror::Error)]
+pub enum VerificationTaskError {
+    #[error("Failed to create verification client: {0}")]
+    ClientInit(String),
+}
+
 impl VerificationTask {
     /// Create a new verification task
+    ///
+    /// C-3: Returns Result instead of panicking on client creation failure.
     pub fn new(
         db: Arc<Database>,
         our_node_id: NodeId,
         peer_provider: Arc<dyn PeerProvider>,
-    ) -> Self {
-        Self {
-            client: VerificationClient::new().expect("Failed to create verification client"),
+    ) -> Result<Self, VerificationTaskError> {
+        let client = VerificationClient::new()
+            .map_err(|e| VerificationTaskError::ClientInit(e.to_string()))?;
+        Ok(Self {
+            client,
             db,
             our_node_id,
             peer_provider,
             config: VerificationTaskConfig::default(),
             broadcast_tx: None,
             rpc: None,
-        }
+        })
     }
 
     /// Create with custom configuration
+    ///
+    /// C-3: Returns Result instead of panicking on client creation failure.
     pub fn with_config(
         db: Arc<Database>,
         our_node_id: NodeId,
         peer_provider: Arc<dyn PeerProvider>,
         config: VerificationTaskConfig,
-    ) -> Self {
-        Self {
-            client: VerificationClient::new().expect("Failed to create verification client"),
+    ) -> Result<Self, VerificationTaskError> {
+        let client = VerificationClient::new()
+            .map_err(|e| VerificationTaskError::ClientInit(e.to_string()))?;
+        Ok(Self {
+            client,
             db,
             our_node_id,
             peer_provider,
             config,
             broadcast_tx: None,
             rpc: None,
-        }
+        })
     }
 
     /// Set the broadcast channel for verification results

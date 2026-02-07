@@ -227,15 +227,29 @@ impl ReconciliationTx {
     }
 
     /// Add an input
-    pub fn add_input(&mut self, lock_id: [u8; 32], amount: u64) {
+    ///
+    /// H-8: Uses checked arithmetic to prevent overflow.
+    /// Returns error if total_input would overflow.
+    pub fn add_input(&mut self, lock_id: [u8; 32], amount: u64) -> Result<(), ReconciliationError> {
+        self.total_input = self
+            .total_input
+            .checked_add(amount)
+            .ok_or(ReconciliationError::Overflow("total_input overflow"))?;
         self.inputs.push(lock_id);
-        self.total_input += amount;
+        Ok(())
     }
 
     /// Add an output
-    pub fn add_output(&mut self, output: TxOutput) {
-        self.total_output += output.amount();
+    ///
+    /// H-8: Uses checked arithmetic to prevent overflow.
+    /// Returns error if total_output would overflow.
+    pub fn add_output(&mut self, output: TxOutput) -> Result<(), ReconciliationError> {
+        self.total_output = self
+            .total_output
+            .checked_add(output.amount())
+            .ok_or(ReconciliationError::Overflow("total_output overflow"))?;
         self.outputs.push(output);
+        Ok(())
     }
 
     /// Add OP_RETURN output
@@ -427,11 +441,24 @@ mod tests {
         let state_root = [1u8; 32];
         let mut tx = ReconciliationTx::new(100, state_root, 1000);
 
-        tx.add_input([1u8; 32], 1_000_000);
-        tx.add_input([2u8; 32], 2_000_000);
+        tx.add_input([1u8; 32], 1_000_000).unwrap();
+        tx.add_input([2u8; 32], 2_000_000).unwrap();
 
         assert_eq!(tx.inputs().len(), 2);
         assert_eq!(tx.total_input(), 3_000_000);
+    }
+
+    #[test]
+    fn test_add_input_overflow() {
+        let state_root = [1u8; 32];
+        let mut tx = ReconciliationTx::new(100, state_root, 1000);
+
+        // Add near-max value
+        tx.add_input([1u8; 32], u64::MAX - 1000).unwrap();
+
+        // H-8: This should fail due to overflow
+        let result = tx.add_input([2u8; 32], 2000);
+        assert!(result.is_err());
     }
 
     #[test]

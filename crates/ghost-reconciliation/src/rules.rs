@@ -91,9 +91,9 @@ pub fn validate_settlement(
 ///
 /// Additionally, we enforce a minimum fee of 1 satoshi.
 pub fn calculate_fee(amount_sats: u64) -> u64 {
-    // H-9: Ceiling division: (a + b - 1) / b
+    // H-9: Ceiling division
     let divisor = crate::SETTLEMENT_FEE_DIVISOR;
-    let fee = (amount_sats + divisor - 1) / divisor;
+    let fee = amount_sats.div_ceil(divisor);
     // H-9: Ensure minimum fee of 1 sat
     fee.max(1)
 }

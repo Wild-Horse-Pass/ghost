@@ -333,7 +333,7 @@ impl ApiClient {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
-                .unwrap(),
+                .expect("L-1: Failed to build HTTP client - check TLS/SSL configuration"),
         }
     }
 

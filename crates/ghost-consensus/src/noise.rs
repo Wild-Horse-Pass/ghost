@@ -119,8 +119,14 @@ pub struct NoiseKeypair {
 impl NoiseKeypair {
     /// Generate a new random keypair
     pub fn generate() -> Self {
-        let builder = Builder::new(NOISE_PATTERN.parse().unwrap());
-        let keypair = builder.generate_keypair().unwrap();
+        let builder = Builder::new(
+            NOISE_PATTERN
+                .parse()
+                .expect("L-1: NOISE_PATTERN constant is valid"),
+        );
+        let keypair = builder
+            .generate_keypair()
+            .expect("L-1: Noise keypair generation should not fail");
 
         let mut private_key = [0u8; 32];
         let mut public_key = [0u8; 32];

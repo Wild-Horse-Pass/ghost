@@ -380,6 +380,8 @@ impl PayoutCalculator {
     }
 
     /// Calculate credits for nodes outside top 100 (for ledger)
+    ///
+    /// M-12: Uses integer arithmetic with basis points to avoid floating point errors.
     pub fn calculate_ledger_credits(
         &self,
         shares: &RoundShares,
@@ -393,7 +395,7 @@ impl PayoutCalculator {
         // Calculate what percentage of pool they would get
         let total_outside_shares: i32 = outside_nodes.iter().map(|n| n.shares).sum();
 
-        if total_outside_shares == 0 {
+        if total_outside_shares <= 0 {
             return credits;
         }
 
@@ -402,13 +404,16 @@ impl PayoutCalculator {
         // and the rest just accumulate in ledger for future inclusion
 
         for node_info in outside_nodes {
-            if node_info.shares == 0 {
+            if node_info.shares <= 0 {
                 continue;
             }
 
-            // Calculate their theoretical share
-            let share_percent = node_info.shares as f64 / shares.total_node_shares as f64;
-            let amount = (node_pool as f64 * share_percent) as u64;
+            // M-12: Use integer arithmetic with basis points instead of floating point
+            // Calculate share in basis points: (shares * 10000) / total_shares
+            let share_bps = (node_info.shares as u64 * 10000) / total_outside_shares as u64;
+            // Calculate amount: (pool * share_bps) / 10000
+            // Use u128 to prevent overflow
+            let amount = (node_pool as u128 * share_bps as u128 / 10000) as u64;
 
             if amount > 0 {
                 credits.push((node_info.node_id, amount));

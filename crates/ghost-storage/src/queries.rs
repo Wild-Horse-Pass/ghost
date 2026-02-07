@@ -4213,6 +4213,7 @@ impl Database {
     /// Get the MPC ceremony state
     ///
     /// Returns None if the ceremony hasn't been initialized yet.
+    #[allow(clippy::type_complexity)]
     pub fn get_mpc_ceremony_state(&self) -> GhostResult<Option<MpcCeremonyState>> {
         self.with_connection(|conn| {
             let result: Option<(
@@ -4339,6 +4340,7 @@ impl Database {
     }
 
     /// Get an MPC contribution by position
+    #[allow(clippy::type_complexity)]
     pub fn get_mpc_contribution(
         &self,
         position: u32,

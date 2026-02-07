@@ -23,6 +23,7 @@
 //! WebSocket API handler
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::{
@@ -33,6 +34,14 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use tracing::{debug, error, info, warn};
+
+/// M-3: Ping timeout in seconds (30 seconds default)
+/// Connections that don't respond to pings within this time will be closed.
+const PING_TIMEOUT_SECS: u64 = 30;
+
+/// M-3: Ping interval in seconds
+/// How often to send pings to check client liveness.
+const PING_INTERVAL_SECS: u64 = 15;
 
 use ghost_gsp_proto::{
     validate_message, ClientMessage, PaymentMode, PaymentStatus, PreparedPayment, ServerMessage,
@@ -112,6 +121,9 @@ struct ConnectionState {
 
     /// Lock state subscriptions (lock_id)
     lock_state_subscriptions: Vec<String>,
+
+    /// M-3: Last time we received any message from the client
+    last_activity: Option<Instant>,
 }
 
 /// Handle a WebSocket connection (connection already counted via try_add_connection)
@@ -120,50 +132,107 @@ async fn handle_socket_with_connection(socket: WebSocket, state: Arc<GspState>) 
     debug!("WebSocket connection established");
 
     let (mut sender, mut receiver) = socket.split();
-    let mut conn_state = ConnectionState::default();
+    let mut conn_state = ConnectionState {
+        last_activity: Some(Instant::now()),
+        ..Default::default()
+    };
 
-    // Main message loop
-    while let Some(msg) = receiver.next().await {
-        let msg = match msg {
-            Ok(m) => m,
-            Err(e) => {
-                error!("WebSocket receive error: {}", e);
-                break;
+    // M-3: Ping interval timer
+    let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // Main message loop with M-3 ping/timeout
+    loop {
+        tokio::select! {
+            // Handle incoming messages
+            msg_result = receiver.next() => {
+                let msg = match msg_result {
+                    Some(Ok(m)) => m,
+                    Some(Err(e)) => {
+                        error!("WebSocket receive error: {}", e);
+                        break;
+                    }
+                    None => break, // Connection closed
+                };
+
+                // M-3: Update last activity time on any message
+                conn_state.last_activity = Some(Instant::now());
+
+                // Handle message
+                let response = match handle_message(&state, &mut conn_state, msg).await {
+                    Ok(Some(resp)) => resp,
+                    Ok(None) => continue, // No response needed (ping/pong handled by axum)
+                    Err(e) => ServerMessage::Error {
+                        code: "ERROR".to_string(),
+                        message: e.to_string(),
+                        request_id: None,
+                    },
+                };
+
+                // Send response
+                let json = match serde_json::to_string(&response) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        error!("Failed to serialize response: {}", e);
+                        continue;
+                    }
+                };
+
+                if let Err(e) = sender.send(Message::Text(json)).await {
+                    error!("WebSocket send error: {}", e);
+                    break;
+                }
             }
-        };
 
-        // Handle message
-        let response = match handle_message(&state, &mut conn_state, msg).await {
-            Ok(Some(resp)) => resp,
-            Ok(None) => continue, // No response needed
-            Err(e) => ServerMessage::Error {
-                code: "ERROR".to_string(),
-                message: e.to_string(),
-                request_id: None,
-            },
-        };
+            // M-3: Periodic ping check and timeout enforcement
+            _ = ping_interval.tick() => {
+                // Check if connection has timed out
+                if let Some(last_activity) = conn_state.last_activity {
+                    if last_activity.elapsed() > Duration::from_secs(PING_TIMEOUT_SECS) {
+                        warn!("M-3: WebSocket connection timed out (no activity for {}s)", PING_TIMEOUT_SECS);
+                        break;
+                    }
+                }
 
-        // Send response
-        let json = match serde_json::to_string(&response) {
-            Ok(j) => j,
-            Err(e) => {
-                error!("Failed to serialize response: {}", e);
-                continue;
+                // Send a ping to check client liveness
+                // Note: axum's WebSocket handles ping/pong automatically at the protocol level,
+                // but we send an explicit ping to trigger activity
+                if let Err(e) = sender.send(Message::Ping(vec![])).await {
+                    debug!("Failed to send ping, connection likely closed: {}", e);
+                    break;
+                }
             }
-        };
-
-        if let Err(e) = sender.send(Message::Text(json)).await {
-            error!("WebSocket send error: {}", e);
-            break;
         }
     }
 
-    // Cleanup
+    // M-8: Full cleanup on disconnect
+    cleanup_connection_state(&state, &conn_state);
+    state.remove_connection();
+    debug!("WebSocket connection closed");
+}
+
+/// M-8: Clean up all connection state on disconnect
+///
+/// Ensures all subscriptions and resources are properly cleaned up
+/// when a connection terminates (normally or abnormally).
+fn cleanup_connection_state(state: &Arc<GspState>, conn_state: &ConnectionState) {
+    // Clean up wallet-level subscriptions
     if let Some(wallet_id) = &conn_state.wallet_id {
         state.subscriptions.unsubscribe_all(wallet_id);
     }
-    state.remove_connection();
-    debug!("WebSocket connection closed");
+
+    // M-8: Clean up lock state subscriptions
+    if let Some(wallet_id) = &conn_state.wallet_id {
+        for lock_id in &conn_state.lock_state_subscriptions {
+            state.subscriptions.unsubscribe_lock_state(wallet_id, lock_id);
+        }
+    }
+
+    debug!(
+        "Cleaned up connection state: {} subscriptions, {} lock subscriptions",
+        conn_state.subscriptions.len(),
+        conn_state.lock_state_subscriptions.len()
+    );
 }
 
 /// Handle a single WebSocket message
@@ -266,8 +335,8 @@ async fn handle_message(
                 .await
         }
 
-        ClientMessage::GetPaymentStatus { payment_id } => {
-            handle_get_payment_status(state, conn_state, &payment_id).await
+        ClientMessage::GetPaymentStatus { payment_id, proof } => {
+            handle_get_payment_status(state, conn_state, &payment_id, &proof).await
         }
 
         ClientMessage::CancelPayment { payment_id, proof } => {
@@ -791,15 +860,27 @@ async fn handle_submit_signed_payment(
 }
 
 /// Handle get payment status
+///
+/// H-1: Requires wallet proof for authorization to prevent information leakage.
 async fn handle_get_payment_status(
     state: &Arc<GspState>,
     conn_state: &ConnectionState,
     payment_id: &str,
+    proof: &WalletProof,
 ) -> Result<Option<ServerMessage>, GspError> {
     let wallet_id = conn_state
         .wallet_id
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
+
+    // H-1: Verify wallet proof before returning payment information
+    if let Err(_e) = verify_websocket_proof(state, proof, wallet_id) {
+        return Ok(Some(ServerMessage::PaymentStatus {
+            payment_id: payment_id.to_string(),
+            status: PaymentStatus::Failed,
+            confirmations: None,
+        }));
+    }
 
     debug!(
         wallet_id = %wallet_id,

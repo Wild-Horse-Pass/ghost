@@ -48,14 +48,70 @@ use tower_governor::{
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
+/// C-2: Trusted proxy configuration for secure IP extraction.
+///
+/// Only requests from trusted proxy IPs will have X-Forwarded-For/X-Real-IP headers
+/// honored. This prevents IP spoofing attacks where attackers set fake headers.
+///
+/// Load from GHOST_TRUSTED_PROXIES env var (comma-separated IPs) or use defaults.
+fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
+    use std::net::IpAddr;
+
+    if let Ok(proxies_str) = std::env::var("GHOST_TRUSTED_PROXIES") {
+        proxies_str
+            .split(',')
+            .filter_map(|s| s.trim().parse::<IpAddr>().ok())
+            .collect()
+    } else {
+        // Default: only trust localhost as proxy
+        vec![
+            "127.0.0.1"
+                .parse()
+                .expect("L-1: Valid hardcoded IPv4 localhost"),
+            "::1".parse().expect("L-1: Valid hardcoded IPv6 localhost"),
+        ]
+    }
+}
+
+/// C-2: Check if an IP address is a trusted proxy.
+fn is_trusted_proxy(ip: &std::net::IpAddr, trusted: &[std::net::IpAddr]) -> bool {
+    trusted.contains(ip)
+}
+
 /// AUTH4-M1: Custom key extractor that uses NodeId from X-Ghost-NodeId header
-/// with fallback to IP address
+/// with fallback to IP address.
 ///
 /// This provides better rate limiting by identifying nodes by their cryptographic
 /// identity rather than just IP, preventing attackers from bypassing limits by
 /// changing IPs while still providing a fallback for anonymous requests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NodeIdKeyExtractor;
+///
+/// C-2: X-Forwarded-For and X-Real-IP headers are ONLY trusted when the direct
+/// peer IP is in the trusted proxy list. This prevents IP spoofing attacks.
+#[derive(Debug, Clone)]
+pub struct NodeIdKeyExtractor {
+    trusted_proxies: Vec<std::net::IpAddr>,
+}
+
+impl Default for NodeIdKeyExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NodeIdKeyExtractor {
+    /// Create a new NodeIdKeyExtractor with trusted proxies from environment.
+    pub fn new() -> Self {
+        Self {
+            trusted_proxies: get_trusted_proxies(),
+        }
+    }
+
+    /// Create with explicit trusted proxy list (for testing).
+    #[cfg(test)]
+    pub fn with_trusted_proxies(trusted_proxies: Vec<std::net::IpAddr>) -> Self {
+        Self { trusted_proxies }
+    }
+}
 
 /// Key type for NodeId-based rate limiting
 /// Either a 32-byte NodeId or an IP address (encoded as string for simplicity)
@@ -77,35 +133,44 @@ impl KeyExtractor for NodeIdKeyExtractor {
             }
         }
 
-        // Fall back to IP address extraction
-        // Try X-Forwarded-For first
-        if let Some(xff) = req.headers().get("X-Forwarded-For") {
-            if let Ok(xff_str) = xff.to_str() {
-                let s: &str = xff_str;
-                if let Some(ip_str) = s.split(',').next() {
-                    let ip_trimmed: &str = ip_str.trim();
-                    if !ip_trimmed.is_empty() {
-                        return Ok(NodeIdOrIpKey(format!("ip:{}", ip_trimmed)));
+        // C-2: Get actual peer IP from connection info FIRST
+        let peer_ip = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip());
+
+        // C-2: Only trust proxy headers if peer is a trusted proxy
+        let trust_proxy_headers = peer_ip
+            .as_ref()
+            .map(|ip| is_trusted_proxy(ip, &self.trusted_proxies))
+            .unwrap_or(false);
+
+        if trust_proxy_headers {
+            // Try X-Forwarded-For (standard for proxied requests)
+            if let Some(xff) = req.headers().get("X-Forwarded-For") {
+                if let Ok(xff_str) = xff.to_str() {
+                    let s: &str = xff_str;
+                    if let Some(ip_str) = s.split(',').next() {
+                        let ip_trimmed: &str = ip_str.trim();
+                        if !ip_trimmed.is_empty() {
+                            return Ok(NodeIdOrIpKey(format!("ip:{}", ip_trimmed)));
+                        }
                     }
+                }
+            }
+
+            // Try X-Real-IP (nginx convention)
+            if let Some(xri) = req.headers().get("X-Real-IP") {
+                if let Ok(ip_str) = xri.to_str() {
+                    let s: &str = ip_str;
+                    return Ok(NodeIdOrIpKey(format!("ip:{}", s)));
                 }
             }
         }
 
-        // Try X-Real-IP
-        if let Some(xri) = req.headers().get("X-Real-IP") {
-            if let Ok(ip_str) = xri.to_str() {
-                let s: &str = ip_str;
-                return Ok(NodeIdOrIpKey(format!("ip:{}", s)));
-            }
-        }
-
-        // Fall back to peer IP from ConnectInfo
-        if let Some(connect_info) = req
-            .extensions()
-            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        {
-            let addr: &std::net::SocketAddr = &connect_info.0;
-            return Ok(NodeIdOrIpKey(format!("ip:{}", addr.ip())));
+        // Fall back to actual peer IP
+        if let Some(ip) = peer_ip {
+            return Ok(NodeIdOrIpKey(format!("ip:{}", ip)));
         }
 
         // Last resort: unknown source
@@ -1169,19 +1234,53 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
         );
     }
 
-    // CORS configuration - permissive for node dashboard access
-    // The dashboard runs on port 3000 on the same machine and needs to access the API on 8080.
-    // Since nodes may have various IP addresses, we allow any origin for API access.
-    // The API itself is protected by rate limiting and authentication where needed.
-    let cors = CorsLayer::new()
-        .allow_origin(tower_http::cors::Any)
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-        .allow_headers([
-            axum::http::header::CONTENT_TYPE,
-            axum::http::header::AUTHORIZATION,
-            axum::http::header::ACCEPT,
-        ])
-        .max_age(Duration::from_secs(3600));
+    // C-1: CORS configuration - restricted to trusted origins
+    // Environment variable allows deployment-specific configuration
+    // Default: bitcoinghost.org domains only
+    let allowed_origins = std::env::var("GHOST_VERIFICATION_ALLOWED_ORIGINS")
+        .unwrap_or_else(|_| "https://bitcoinghost.org,https://wallet.bitcoinghost.org".to_string());
+
+    let origins: Vec<axum::http::HeaderValue> = allowed_origins
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+
+    // If no valid origins parsed, use secure defaults
+    let cors = if origins.is_empty() {
+        tracing::warn!(
+            "C-1 SECURITY: No valid CORS origins configured, using secure defaults"
+        );
+        CorsLayer::new()
+            .allow_origin(tower_http::cors::AllowOrigin::list([
+                "https://bitcoinghost.org"
+                    .parse()
+                    .expect("L-1: Valid hardcoded origin URL"),
+                "https://wallet.bitcoinghost.org"
+                    .parse()
+                    .expect("L-1: Valid hardcoded origin URL"),
+            ]))
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::ACCEPT,
+            ])
+            .max_age(Duration::from_secs(3600))
+    } else {
+        info!(
+            origins = ?origins.iter().map(|h| h.to_str().unwrap_or("?")).collect::<Vec<_>>(),
+            "C-1: CORS configured with allowed origins"
+        );
+        CorsLayer::new()
+            .allow_origin(tower_http::cors::AllowOrigin::list(origins))
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::ACCEPT,
+            ])
+            .max_age(Duration::from_secs(3600))
+    };
 
     // Rate limiting configuration - AUTH4-M1: NodeId-based rate limiting
     // - 50 requests per second burst capacity
@@ -1191,7 +1290,7 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
         GovernorConfigBuilder::default()
             .per_second(10)
             .burst_size(50)
-            .key_extractor(NodeIdKeyExtractor)
+            .key_extractor(NodeIdKeyExtractor::new())
             .finish()
             .expect("valid governor config"),
     );

@@ -15,6 +15,7 @@ use tracing::{debug, info};
 /// Container for both block and payout parameters
 /// Note: Not Clone because PreparedVerifyingKey doesn't implement Clone.
 /// Use Arc<MpcParameters> for shared ownership.
+#[derive(Default)]
 pub struct MpcParameters {
     /// Parameters for block proofs
     pub block_params: Option<Parameters<Bls12>>,
@@ -24,17 +25,6 @@ pub struct MpcParameters {
     pub block_vk: Option<PreparedVerifyingKey<Bls12>>,
     /// Prepared verifying key for payout proofs
     pub payout_vk: Option<PreparedVerifyingKey<Bls12>>,
-}
-
-impl Default for MpcParameters {
-    fn default() -> Self {
-        Self {
-            block_params: None,
-            payout_params: None,
-            block_vk: None,
-            payout_vk: None,
-        }
-    }
 }
 
 /// File paths for parameter storage

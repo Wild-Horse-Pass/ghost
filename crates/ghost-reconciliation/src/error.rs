@@ -104,6 +104,10 @@ pub enum ReconciliationError {
     /// QUANTUM SAFETY: P2TR addresses are rejected
     #[error("Quantum-unsafe: P2TR addresses (bc1p...) are quantum-vulnerable. Use P2WPKH (bc1q...) instead.")]
     QuantumUnsafe,
+
+    /// H-8: Arithmetic overflow in transaction building
+    #[error("Arithmetic overflow: {0}")]
+    Overflow(&'static str),
 }
 
 // Simplified BatchNotFound that takes a String directly

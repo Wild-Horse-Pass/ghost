@@ -398,6 +398,17 @@ async fn handle_connection(
                 }
             };
 
+            // C-5: Validate payload size before allocation to prevent memory exhaustion
+            const MAX_SV2_PAYLOAD_SIZE: usize = 16 * 1024 * 1024; // 16MB max
+            if header.msg_length as usize > MAX_SV2_PAYLOAD_SIZE {
+                warn!(
+                    size = header.msg_length,
+                    max = MAX_SV2_PAYLOAD_SIZE,
+                    "C-5 SECURITY: SV2 payload exceeds maximum size, dropping connection"
+                );
+                break;
+            }
+
             // Read payload
             let mut payload = vec![0u8; header.msg_length as usize];
             if let Err(e) = tokio::io::AsyncReadExt::read_exact(&mut reader, &mut payload).await {
