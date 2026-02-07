@@ -89,6 +89,15 @@ pub enum ReconciliationError {
     #[error("UTXO not found for lock: {lock_id}")]
     UtxoNotFound { lock_id: String },
 
+    /// H-CRYPTO-3: UTXO has insufficient confirmations for finality
+    #[error("Insufficient confirmations for UTXO {txid}:{vout}: {confirmations} < {required}")]
+    InsufficientConfirmations {
+        txid: String,
+        vout: u32,
+        confirmations: u32,
+        required: u32,
+    },
+
     /// H-8: Bitcoin RPC error during UTXO verification
     #[error("Bitcoin RPC error: {0}")]
     BitcoinRpcError(String),
@@ -101,6 +110,14 @@ pub enum ReconciliationError {
     #[error("Double-spend in batch: input {outpoint} already consumed")]
     DoubleSpendInBatch { outpoint: String },
 
+    /// H-FUND-3: Cross-batch double-spend attempt
+    #[error("Cross-batch double-spend: input {outpoint} already reserved for batch {existing_batch}, cannot use for {new_batch}")]
+    CrossBatchDoubleSpend {
+        outpoint: String,
+        existing_batch: String,
+        new_batch: String,
+    },
+
     /// QUANTUM SAFETY: P2TR addresses are rejected
     #[error("Quantum-unsafe: P2TR addresses (bc1p...) are quantum-vulnerable. Use P2WPKH (bc1q...) instead.")]
     QuantumUnsafe,
@@ -108,6 +125,10 @@ pub enum ReconciliationError {
     /// H-8: Arithmetic overflow in transaction building
     #[error("Arithmetic overflow: {0}")]
     Overflow(&'static str),
+
+    /// M-VAL-1: Invalid input data
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
 }
 
 // Simplified BatchNotFound that takes a String directly

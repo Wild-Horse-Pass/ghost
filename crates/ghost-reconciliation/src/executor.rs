@@ -32,13 +32,19 @@
 //! the lock being spent. Use `add_settlement_request()` which verifies the
 //! ownership proof before accepting the settlement.
 //!
-//! ## C-2: Double-Spend Prevention
+//! ## C-2: Double-Spend Prevention (Within-Batch)
 //! The batch executor tracks consumed inputs within a batch to prevent the
 //! same UTXO from being spent multiple times in the same transaction.
+//!
+//! ## H-FUND-3: Cross-Batch Double-Spend Prevention
+//! Additionally, the executor maintains a global reservation system that tracks
+//! inputs reserved for pending (unconfirmed) batches. This prevents overlapping
+//! settlements from referencing the same inputs across different batches.
 
 use std::collections::{HashMap, HashSet};
 
 use bitcoin::{Network, OutPoint, Txid};
+use parking_lot::RwLock;
 
 use crate::batch::{Batch, BatchState};
 use crate::commitment::L1Commitment;
@@ -61,6 +67,152 @@ pub struct ReconciliationInput {
     pub ghost_id: String,
     /// Lock ID (if from Ghost Lock)
     pub lock_id: Option<[u8; 32]>,
+}
+
+/// H-FUND-3: Reservation for a pending batch's input
+///
+/// Tracks inputs that are reserved for batches that have been submitted
+/// but not yet finalized. This prevents cross-batch double-spend attacks.
+#[derive(Debug, Clone)]
+pub struct InputReservation {
+    /// The batch ID that reserved this input
+    pub batch_id: String,
+    /// When the reservation was created
+    pub reserved_at: u64,
+    /// Block height when batch was submitted (None if not submitted yet)
+    pub submitted_height: Option<u32>,
+}
+
+/// H-FUND-3: Global input reservation tracker
+///
+/// Thread-safe tracker for inputs reserved across all pending batches.
+/// Inputs are reserved when a batch transaction is built, and released
+/// when the batch is finalized or fails.
+#[derive(Debug, Default)]
+pub struct GlobalInputReservations {
+    /// Mapping from outpoint to reservation info
+    reservations: RwLock<HashMap<OutPoint, InputReservation>>,
+}
+
+impl GlobalInputReservations {
+    /// Create a new empty reservation tracker
+    pub fn new() -> Self {
+        Self {
+            reservations: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Check if an outpoint is reserved
+    pub fn is_reserved(&self, outpoint: &OutPoint) -> bool {
+        self.reservations.read().contains_key(outpoint)
+    }
+
+    /// Get reservation info for an outpoint
+    pub fn get_reservation(&self, outpoint: &OutPoint) -> Option<InputReservation> {
+        self.reservations.read().get(outpoint).cloned()
+    }
+
+    /// Reserve inputs for a batch (called when transaction is built)
+    ///
+    /// Returns error if any input is already reserved for another batch.
+    pub fn reserve_batch(
+        &self,
+        batch_id: &str,
+        outpoints: &[OutPoint],
+        current_time: u64,
+    ) -> Result<(), ReconciliationError> {
+        let mut reservations = self.reservations.write();
+
+        // First, check for conflicts
+        for outpoint in outpoints {
+            if let Some(existing) = reservations.get(outpoint) {
+                return Err(ReconciliationError::CrossBatchDoubleSpend {
+                    outpoint: format!("{}:{}", outpoint.txid, outpoint.vout),
+                    existing_batch: existing.batch_id.clone(),
+                    new_batch: batch_id.to_string(),
+                });
+            }
+        }
+
+        // All clear, reserve all inputs
+        for outpoint in outpoints {
+            reservations.insert(
+                *outpoint,
+                InputReservation {
+                    batch_id: batch_id.to_string(),
+                    reserved_at: current_time,
+                    submitted_height: None,
+                },
+            );
+        }
+
+        tracing::debug!(
+            batch_id = batch_id,
+            input_count = outpoints.len(),
+            "H-FUND-3: Reserved {} inputs for batch",
+            outpoints.len()
+        );
+
+        Ok(())
+    }
+
+    /// Update reservation to mark batch as submitted
+    pub fn mark_submitted(&self, batch_id: &str, block_height: u32) {
+        let mut reservations = self.reservations.write();
+        for reservation in reservations.values_mut() {
+            if reservation.batch_id == batch_id {
+                reservation.submitted_height = Some(block_height);
+            }
+        }
+    }
+
+    /// Release all reservations for a batch (on finalization or failure)
+    pub fn release_batch(&self, batch_id: &str) -> usize {
+        let mut reservations = self.reservations.write();
+        let before_count = reservations.len();
+        reservations.retain(|_, r| r.batch_id != batch_id);
+        let released = before_count - reservations.len();
+
+        if released > 0 {
+            tracing::debug!(
+                batch_id = batch_id,
+                released_count = released,
+                "H-FUND-3: Released {} input reservations for batch",
+                released
+            );
+        }
+
+        released
+    }
+
+    /// Clean up stale reservations (older than max_age_secs)
+    ///
+    /// This is a safety mechanism - normally reservations should be released
+    /// when batches complete. Stale reservations indicate a bug or crash.
+    pub fn cleanup_stale(&self, max_age_secs: u64, current_time: u64) -> usize {
+        let mut reservations = self.reservations.write();
+        let before_count = reservations.len();
+        reservations.retain(|outpoint, r| {
+            let age = current_time.saturating_sub(r.reserved_at);
+            if age > max_age_secs {
+                tracing::warn!(
+                    outpoint = %format!("{}:{}", outpoint.txid, outpoint.vout),
+                    batch_id = r.batch_id,
+                    age_secs = age,
+                    "H-FUND-3: Cleaning up stale reservation (possible leak)"
+                );
+                false
+            } else {
+                true
+            }
+        });
+        before_count - reservations.len()
+    }
+
+    /// Get total count of active reservations
+    pub fn count(&self) -> usize {
+        self.reservations.read().len()
+    }
 }
 
 /// Batch executor state
@@ -88,6 +240,8 @@ pub struct BatchExecutor {
     pending_total_sats: u64,
     /// Next batch ID
     next_batch_id: u32,
+    /// H-FUND-3: Global input reservations for cross-batch double-spend prevention
+    global_reservations: GlobalInputReservations,
 }
 
 impl BatchExecutor {
@@ -105,7 +259,13 @@ impl BatchExecutor {
             oldest_pending_timestamp: None,
             pending_total_sats: 0,
             next_batch_id: 1,
+            global_reservations: GlobalInputReservations::new(),
         }
+    }
+
+    /// H-FUND-3: Get reference to global reservations for external monitoring
+    pub fn global_reservations(&self) -> &GlobalInputReservations {
+        &self.global_reservations
     }
 
     /// Set batch rules
@@ -296,10 +456,11 @@ impl BatchExecutor {
 
     /// Build the L1 reconciliation transaction for a batch
     ///
-    /// # Security (C-2)
+    /// # Security (C-2 and H-FUND-3)
     ///
-    /// This function tracks inputs consumed within the batch to prevent
-    /// double-spending the same UTXO for multiple settlements.
+    /// This function tracks inputs consumed within the batch (C-2) AND checks
+    /// against global reservations from pending batches (H-FUND-3) to prevent
+    /// double-spending the same UTXO.
     pub fn build_transaction(
         &mut self,
         batch: &Batch,
@@ -312,6 +473,7 @@ impl BatchExecutor {
             )));
         }
 
+        let batch_id = batch.id_hex();
         let mut input_outpoints = Vec::new();
         let mut total_input_sats: u64 = 0;
         let mut total_output_sats: u64 = 0;
@@ -362,6 +524,25 @@ impl BatchExecutor {
                     return Err(ReconciliationError::DoubleSpendInBatch {
                         outpoint: format!("{}:{}", input.txid, input.vout),
                     });
+                }
+
+                // H-FUND-3: Check if this input is reserved by another pending batch
+                if let Some(reservation) = self.global_reservations.get_reservation(&outpoint) {
+                    if reservation.batch_id != batch_id {
+                        tracing::error!(
+                            txid = %input.txid,
+                            vout = input.vout,
+                            settlement_id = %hex::encode(settlement.id()),
+                            existing_batch = %reservation.batch_id,
+                            new_batch = %batch_id,
+                            "H-FUND-3 SECURITY: Cross-batch double-spend attempt"
+                        );
+                        return Err(ReconciliationError::CrossBatchDoubleSpend {
+                            outpoint: format!("{}:{}", input.txid, input.vout),
+                            existing_batch: reservation.batch_id,
+                            new_batch: batch_id.clone(),
+                        });
+                    }
                 }
 
                 // C-2: Mark input as consumed BEFORE adding to the batch
@@ -475,8 +656,28 @@ impl BatchExecutor {
             batch.total_amount_sats(),
         );
 
+        // H-FUND-3: Reserve all inputs in the global tracker to prevent cross-batch double-spend
+        // This must happen AFTER successful transaction building to avoid reserving on failure
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let batch_id_hex = batch.id_hex();
+        self.global_reservations.reserve_batch(
+            &batch_id_hex,
+            &input_outpoints,
+            current_time,
+        )?;
+
+        tracing::info!(
+            batch_id = %batch_id_hex,
+            input_count = input_outpoints.len(),
+            total_reserved = self.global_reservations.count(),
+            "H-FUND-3: Batch inputs reserved for cross-batch double-spend prevention"
+        );
+
         Ok(BatchTransaction {
-            batch_id: batch.id_hex(),
+            batch_id: batch_id_hex,
             transaction: bitcoin_tx,
             commitment,
             total_input_sats,
@@ -490,6 +691,8 @@ impl BatchExecutor {
     }
 
     /// Mark batch as submitted to L1
+    ///
+    /// H-FUND-3: Also updates global reservations to track submission height
     pub fn mark_submitted(
         &mut self,
         batch_id: &str,
@@ -498,6 +701,9 @@ impl BatchExecutor {
         if let Some(ref mut batch) = self.current_batch {
             if batch.id_hex() == batch_id {
                 batch.mark_submitted(txid.to_string())?;
+                // H-FUND-3: Update reservation with submission height
+                self.global_reservations
+                    .mark_submitted(batch_id, self.current_height);
                 return Ok(());
             }
         }
@@ -524,6 +730,8 @@ impl BatchExecutor {
     }
 
     /// Finalize batch after dispute window
+    ///
+    /// H-FUND-3: Releases all input reservations for this batch
     pub fn finalize_batch(&mut self, batch_id: &str) -> Result<(), ReconciliationError> {
         if let Some(ref mut batch) = self.current_batch {
             if batch.id_hex() == batch_id {
@@ -540,6 +748,15 @@ impl BatchExecutor {
 
                 batch.mark_finalized()?;
 
+                // H-FUND-3: Release all input reservations for this batch
+                let released = self.global_reservations.release_batch(batch_id);
+                tracing::info!(
+                    batch_id = batch_id,
+                    released_count = released,
+                    remaining = self.global_reservations.count(),
+                    "H-FUND-3: Batch finalized, input reservations released"
+                );
+
                 // Clear current batch
                 self.current_batch = None;
                 self.current_batch_settlements.clear();
@@ -549,6 +766,44 @@ impl BatchExecutor {
         Err(ReconciliationError::BatchNotFound {
             id: batch_id.to_string(),
         })
+    }
+
+    /// Cancel a batch (e.g., on failure or rejection)
+    ///
+    /// H-FUND-3: Releases all input reservations for this batch
+    pub fn cancel_batch(&mut self, batch_id: &str) -> Result<(), ReconciliationError> {
+        if let Some(ref batch) = self.current_batch {
+            if batch.id_hex() == batch_id {
+                // H-FUND-3: Release all input reservations for this batch
+                let released = self.global_reservations.release_batch(batch_id);
+                tracing::warn!(
+                    batch_id = batch_id,
+                    released_count = released,
+                    remaining = self.global_reservations.count(),
+                    "H-FUND-3: Batch cancelled, input reservations released"
+                );
+
+                // Clear current batch
+                self.current_batch = None;
+                self.current_batch_settlements.clear();
+                return Ok(());
+            }
+        }
+        Err(ReconciliationError::BatchNotFound {
+            id: batch_id.to_string(),
+        })
+    }
+
+    /// Cleanup stale reservations
+    ///
+    /// H-FUND-3: Should be called periodically to clean up reservations from
+    /// crashed or stuck batches. Default max age is 1 hour (3600 seconds).
+    pub fn cleanup_stale_reservations(&self, max_age_secs: u64) -> usize {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.global_reservations.cleanup_stale(max_age_secs, current_time)
     }
 
     /// Get current batch
@@ -887,6 +1142,194 @@ mod tests {
             unique_outpoints.len(),
             tx.input_outpoints.len(),
             "All outpoints should be unique"
+        );
+    }
+
+    // ========================================================================
+    // H-FUND-3: Cross-Batch Double-Spend Prevention Tests
+    // ========================================================================
+
+    #[test]
+    fn test_h_fund3_global_reservation_basic() {
+        let reservations = GlobalInputReservations::new();
+        let current_time = 1700000000u64;
+
+        let outpoint = OutPoint {
+            txid: test_txid(),
+            vout: 0,
+        };
+
+        assert!(!reservations.is_reserved(&outpoint));
+        assert_eq!(reservations.count(), 0);
+
+        // Reserve one input
+        reservations
+            .reserve_batch("batch1", &[outpoint], current_time)
+            .unwrap();
+
+        assert!(reservations.is_reserved(&outpoint));
+        assert_eq!(reservations.count(), 1);
+
+        // Release it
+        let released = reservations.release_batch("batch1");
+        assert_eq!(released, 1);
+        assert!(!reservations.is_reserved(&outpoint));
+        assert_eq!(reservations.count(), 0);
+    }
+
+    #[test]
+    fn test_h_fund3_cross_batch_double_spend_rejected() {
+        let reservations = GlobalInputReservations::new();
+        let current_time = 1700000000u64;
+
+        let outpoint = OutPoint {
+            txid: test_txid(),
+            vout: 0,
+        };
+
+        // Reserve for batch1
+        reservations
+            .reserve_batch("batch1", &[outpoint], current_time)
+            .unwrap();
+
+        // Attempt to reserve same input for batch2 should FAIL
+        let result = reservations.reserve_batch("batch2", &[outpoint], current_time);
+        assert!(result.is_err());
+
+        match result {
+            Err(ReconciliationError::CrossBatchDoubleSpend {
+                existing_batch,
+                new_batch,
+                ..
+            }) => {
+                assert_eq!(existing_batch, "batch1");
+                assert_eq!(new_batch, "batch2");
+            }
+            _ => panic!("Expected CrossBatchDoubleSpend error"),
+        }
+    }
+
+    #[test]
+    fn test_h_fund3_different_outpoints_allowed() {
+        let reservations = GlobalInputReservations::new();
+        let current_time = 1700000000u64;
+
+        let outpoint1 = OutPoint {
+            txid: test_txid(),
+            vout: 0,
+        };
+        let outpoint2 = OutPoint {
+            txid: test_txid(),
+            vout: 1,
+        };
+
+        // Reserve different outpoints for different batches should succeed
+        reservations
+            .reserve_batch("batch1", &[outpoint1], current_time)
+            .unwrap();
+        reservations
+            .reserve_batch("batch2", &[outpoint2], current_time)
+            .unwrap();
+
+        assert_eq!(reservations.count(), 2);
+        assert!(reservations.is_reserved(&outpoint1));
+        assert!(reservations.is_reserved(&outpoint2));
+    }
+
+    #[test]
+    fn test_h_fund3_stale_cleanup() {
+        let reservations = GlobalInputReservations::new();
+        let start_time = 1700000000u64;
+        let max_age = 3600u64; // 1 hour
+
+        let outpoint = OutPoint {
+            txid: test_txid(),
+            vout: 0,
+        };
+
+        reservations
+            .reserve_batch("batch1", &[outpoint], start_time)
+            .unwrap();
+        assert_eq!(reservations.count(), 1);
+
+        // Cleanup with time still within window should not remove
+        let cleaned = reservations.cleanup_stale(max_age, start_time + 1800); // 30 minutes later
+        assert_eq!(cleaned, 0);
+        assert_eq!(reservations.count(), 1);
+
+        // Cleanup with time past window should remove
+        let cleaned = reservations.cleanup_stale(max_age, start_time + 7200); // 2 hours later
+        assert_eq!(cleaned, 1);
+        assert_eq!(reservations.count(), 0);
+    }
+
+    #[test]
+    fn test_h_fund3_release_wrong_batch() {
+        let reservations = GlobalInputReservations::new();
+        let current_time = 1700000000u64;
+
+        let outpoint = OutPoint {
+            txid: test_txid(),
+            vout: 0,
+        };
+
+        reservations
+            .reserve_batch("batch1", &[outpoint], current_time)
+            .unwrap();
+
+        // Releasing wrong batch should not affect reservation
+        let released = reservations.release_batch("batch2");
+        assert_eq!(released, 0);
+        assert!(reservations.is_reserved(&outpoint));
+        assert_eq!(reservations.count(), 1);
+
+        // Releasing correct batch should work
+        let released = reservations.release_batch("batch1");
+        assert_eq!(released, 1);
+        assert!(!reservations.is_reserved(&outpoint));
+    }
+
+    #[test]
+    fn test_h_fund3_mark_submitted() {
+        let reservations = GlobalInputReservations::new();
+        let current_time = 1700000000u64;
+
+        let outpoint = OutPoint {
+            txid: test_txid(),
+            vout: 0,
+        };
+
+        reservations
+            .reserve_batch("batch1", &[outpoint], current_time)
+            .unwrap();
+
+        // Initially no submission height
+        let info = reservations.get_reservation(&outpoint).unwrap();
+        assert!(info.submitted_height.is_none());
+
+        // Mark submitted
+        reservations.mark_submitted("batch1", 100);
+
+        let info = reservations.get_reservation(&outpoint).unwrap();
+        assert_eq!(info.submitted_height, Some(100));
+    }
+
+    #[test]
+    fn test_h_fund3_error_message_format() {
+        // Verify the error message contains all needed information for debugging
+        let err = ReconciliationError::CrossBatchDoubleSpend {
+            outpoint: "abc123:0".to_string(),
+            existing_batch: "batch1".to_string(),
+            new_batch: "batch2".to_string(),
+        };
+
+        let msg = format!("{}", err);
+        assert!(msg.contains("abc123:0"), "Must contain outpoint");
+        assert!(msg.contains("batch1"), "Must contain existing batch");
+        assert!(msg.contains("batch2"), "Must contain new batch");
+        assert!(
+            msg.to_lowercase().contains("double-spend"),
+            "Must mention double-spend"
         );
     }
 }

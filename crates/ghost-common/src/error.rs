@@ -142,6 +142,12 @@ pub enum GhostError {
     InvalidTimestamp(String),
 
     // =========================================================================
+    // State Transition Errors
+    // =========================================================================
+    #[error("Invalid state transition: {0}")]
+    InvalidState(String),
+
+    // =========================================================================
     // Share Errors
     // =========================================================================
     #[error("Invalid share: {0}")]
@@ -172,6 +178,9 @@ pub enum GhostError {
 
     #[error("Block finder address not found - cannot distribute TX fees")]
     BlockFinderAddressNotFound { node_id: String, tx_fees: u64 },
+
+    #[error("TX fee allocation failed: block builder {node_id} not found, {tx_fees} sats unallocated - block production MUST be halted")]
+    TxFeeAllocationFailed { node_id: String, tx_fees: u64 },
 
     #[error("Coinbase construction failed: {0}")]
     CoinbaseConstruction(String),
@@ -238,6 +247,12 @@ pub enum GhostError {
 
     #[error("Invalid ZK proof: {0}")]
     InvalidZkProof(String),
+
+    // =========================================================================
+    // Address Errors
+    // =========================================================================
+    #[error("Invalid Bitcoin address: {0}")]
+    InvalidAddress(String),
 
     // =========================================================================
     // Quantum Safety Errors

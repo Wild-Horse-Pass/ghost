@@ -229,7 +229,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             "/api/v1/rewards/node-history",
             get(api_rewards_node_history_handler),
         )
-        // Config endpoints (GET for reading, POST for updating)
+        // Config endpoints (GET only - reading is public, POST requires auth via internal router)
+        // CRIT-6: POST handlers moved to internal_router to require authentication
         .route("/api/v1/config/full", get(api_config_full_handler))
         .route(
             "/api/v1/config/profiles/mempool",
@@ -241,39 +242,36 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         )
         .route(
             "/api/v1/config/archive_mode",
-            get(api_config_archive_mode_handler).post(api_config_archive_mode_post_handler),
+            get(api_config_archive_mode_handler),
         )
         .route(
             "/api/v1/config/ghost_mode",
-            get(api_config_ghost_mode_handler).post(api_config_ghost_mode_post_handler),
+            get(api_config_ghost_mode_handler),
         )
         .route(
             "/api/v1/config/mempool_profile",
-            get(api_config_mempool_profile_handler).post(api_config_mempool_profile_post_handler),
+            get(api_config_mempool_profile_handler),
         )
         .route(
             "/api/v1/config/public_mining",
-            get(api_config_public_mining_handler).post(api_config_public_mining_post_handler),
+            get(api_config_public_mining_handler),
         )
         .route(
             "/api/v1/config/template_profile",
-            get(api_config_template_profile_handler).post(api_config_template_profile_post_handler),
+            get(api_config_template_profile_handler),
         )
         .route(
             "/api/v1/config/bitcoin_pure",
-            get(api_config_bitcoin_pure_handler).post(api_config_bitcoin_pure_post_handler),
+            get(api_config_bitcoin_pure_handler),
         )
         .route(
             "/api/v1/config/ghost_pay",
-            get(api_config_ghost_pay_handler).post(api_config_ghost_pay_post_handler),
+            get(api_config_ghost_pay_handler),
         )
-        .route(
-            "/api/v1/config/elder",
-            get(api_config_elder_handler).post(api_config_elder_post_handler),
-        )
+        .route("/api/v1/config/elder", get(api_config_elder_handler))
         .route(
             "/api/v1/config/prune_profile",
-            get(api_config_prune_profile_handler).post(api_config_prune_profile_post_handler),
+            get(api_config_prune_profile_handler),
         )
         .route(
             "/api/v1/config/operator_window",
@@ -323,7 +321,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // Auth endpoint (returns empty token for dashboard compatibility)
         .route("/auth/token", get(api_auth_token_handler));
 
-    // Internal/admin endpoints with optional HMAC authentication (AUTH4-1 fix)
+    // Internal/admin endpoints with HMAC authentication (AUTH4-1 fix)
+    // CRIT-6: All config POST endpoints moved here to require authentication
     let internal_router = Router::new()
         // Admin endpoints for testing
         .route("/admin/test-consensus", post(admin_test_consensus_handler))
@@ -335,6 +334,44 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route(
             "/api/internal/config/update",
             post(api_config_update_handler),
+        )
+        // CRIT-6: Config POST endpoints require authentication
+        // These modify node configuration and must be protected from unauthorized access
+        .route(
+            "/api/v1/config/archive_mode",
+            post(api_config_archive_mode_post_handler),
+        )
+        .route(
+            "/api/v1/config/ghost_mode",
+            post(api_config_ghost_mode_post_handler),
+        )
+        .route(
+            "/api/v1/config/mempool_profile",
+            post(api_config_mempool_profile_post_handler),
+        )
+        .route(
+            "/api/v1/config/public_mining",
+            post(api_config_public_mining_post_handler),
+        )
+        .route(
+            "/api/v1/config/template_profile",
+            post(api_config_template_profile_post_handler),
+        )
+        .route(
+            "/api/v1/config/bitcoin_pure",
+            post(api_config_bitcoin_pure_post_handler),
+        )
+        .route(
+            "/api/v1/config/ghost_pay",
+            post(api_config_ghost_pay_post_handler),
+        )
+        .route(
+            "/api/v1/config/elder",
+            post(api_config_elder_post_handler),
+        )
+        .route(
+            "/api/v1/config/prune_profile",
+            post(api_config_prune_profile_post_handler),
         );
 
     // H-3: Apply authentication middleware - ALWAYS required for internal endpoints
@@ -3762,5 +3799,246 @@ mod tests {
 
         let should_sign = !query.unsigned.unwrap_or(false);
         assert!(!should_sign);
+    }
+
+    // ===========================================================================
+    // CRIT-6: Config POST Authentication Tests
+    // ===========================================================================
+    //
+    // These tests verify that config POST endpoints require authentication.
+    // Without proper auth, all POST requests to config endpoints must return 401.
+
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    fn test_secret() -> [u8; 32] {
+        let mut secret = [0u8; 32];
+        for (i, b) in secret.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_add(0x42);
+        }
+        secret
+    }
+
+    fn create_test_state_with_auth() -> Arc<crate::server::VerificationState> {
+        use ghost_common::types::NodeCapabilities;
+        use ghost_policy::PolicyProfile;
+
+        let auth = crate::auth::InternalAuth::new(&test_secret()).unwrap();
+        let state = crate::server::VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        )
+        .with_internal_auth(auth);
+
+        Arc::new(state)
+    }
+
+    fn create_test_state_without_auth() -> Arc<crate::server::VerificationState> {
+        use ghost_common::types::NodeCapabilities;
+        use ghost_policy::PolicyProfile;
+
+        let mut state = crate::server::VerificationState::new(
+            "test_node".to_string(),
+            "1.0.0".to_string(),
+            PolicyProfile::default(),
+            NodeCapabilities::default(),
+        );
+
+        // Set require_internal_auth to false so we can test the reject-all fallback
+        state.require_internal_auth = false;
+
+        Arc::new(state)
+    }
+
+    /// Test that config GET endpoints are publicly accessible (no auth required)
+    #[tokio::test]
+    async fn test_config_get_is_public() {
+        let state = create_test_state_with_auth();
+        let app = super::create_router(state);
+
+        // GET requests should succeed without auth
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/config/archive_mode")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    /// CRIT-6: Test that config POST without auth returns 401
+    #[tokio::test]
+    async fn test_config_post_without_auth_returns_401() {
+        let state = create_test_state_with_auth();
+        let app = super::create_router(state);
+
+        // POST without auth should fail with 401 Unauthorized
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/archive_mode")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"enabled": true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "CRIT-6: Config POST without auth must return 401"
+        );
+    }
+
+    /// CRIT-6: Test that config POST with valid auth succeeds
+    #[tokio::test]
+    async fn test_config_post_with_valid_auth_succeeds() {
+        let state = create_test_state_with_auth();
+        let auth = crate::auth::InternalAuth::new(&test_secret()).unwrap();
+        let app = super::create_router(state);
+
+        let body = r#"{"enabled": true}"#;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let signature = auth.sign(timestamp, body.as_bytes());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/archive_mode")
+                    .header("Content-Type", "application/json")
+                    .header("X-Ghost-Signature", signature)
+                    .header("X-Ghost-Timestamp", timestamp.to_string())
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "Config POST with valid auth should succeed"
+        );
+    }
+
+    /// CRIT-6: Test that all config POST endpoints require auth
+    #[tokio::test]
+    async fn test_all_config_post_endpoints_require_auth() {
+        let state = create_test_state_with_auth();
+
+        // List of all config POST endpoints that must require auth
+        let config_endpoints = [
+            "/api/v1/config/archive_mode",
+            "/api/v1/config/ghost_mode",
+            "/api/v1/config/mempool_profile",
+            "/api/v1/config/public_mining",
+            "/api/v1/config/template_profile",
+            "/api/v1/config/bitcoin_pure",
+            "/api/v1/config/ghost_pay",
+            "/api/v1/config/elder",
+            "/api/v1/config/prune_profile",
+        ];
+
+        for endpoint in config_endpoints {
+            let app = super::create_router(Arc::clone(&state));
+
+            let body = match endpoint {
+                "/api/v1/config/mempool_profile" | "/api/v1/config/template_profile"
+                | "/api/v1/config/prune_profile" => r#"{"profile": "standard"}"#,
+                "/api/v1/config/elder" => r#"{"enabled": true, "slot": 1}"#,
+                _ => r#"{"enabled": true}"#,
+            };
+
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(endpoint)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "CRIT-6: {} POST without auth must return 401",
+                endpoint
+            );
+        }
+    }
+
+    /// CRIT-6: Test that invalid signature is rejected
+    #[tokio::test]
+    async fn test_config_post_with_invalid_signature_returns_401() {
+        let state = create_test_state_with_auth();
+        let app = super::create_router(state);
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // Use a wrong signature (all zeros)
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/archive_mode")
+                    .header("Content-Type", "application/json")
+                    .header("X-Ghost-Signature", "00".repeat(32))
+                    .header("X-Ghost-Timestamp", timestamp.to_string())
+                    .body(Body::from(r#"{"enabled": true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "CRIT-6: Config POST with invalid signature must return 401"
+        );
+    }
+
+    /// CRIT-6: Test that when no auth is configured, POST endpoints fail-closed
+    #[tokio::test]
+    async fn test_config_post_without_auth_config_fails_closed() {
+        let state = create_test_state_without_auth();
+        let app = super::create_router(state);
+
+        // Even without auth configured, internal endpoints should reject all requests
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/archive_mode")
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"enabled": true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "CRIT-6: Config POST must fail-closed when auth not configured"
+        );
     }
 }

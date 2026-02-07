@@ -80,7 +80,12 @@ impl From<String> for WalletId {
 ///
 /// Used for both registration and sensitive operations.
 /// The message format is: "ghost-{action}:{timestamp}:{nonce_hex}"
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// # Security: Redacted Debug
+///
+/// The Debug implementation redacts sensitive fields (signature, public_key, nonce)
+/// to prevent accidental exposure in logs or error messages.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WalletProof {
     /// Unix timestamp in seconds
     pub timestamp: i64,
@@ -96,6 +101,18 @@ pub struct WalletProof {
 
     /// X-only public key (32 bytes as hex)
     pub public_key: String,
+}
+
+impl std::fmt::Debug for WalletProof {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WalletProof")
+            .field("timestamp", &self.timestamp)
+            .field("nonce", &"[REDACTED]")
+            .field("message", &self.message)
+            .field("signature", &"[REDACTED]")
+            .field("public_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl WalletProof {
@@ -306,7 +323,11 @@ pub struct SessionResponse {
 }
 
 /// Session token (JWT)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// # Security: Redacted Debug
+///
+/// The Debug implementation redacts the token field to prevent exposure in logs.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SessionToken {
     /// The JWT string
     pub token: String,
@@ -319,6 +340,17 @@ pub struct SessionToken {
 
     /// Session expiry timestamp
     pub expires_at: i64,
+}
+
+impl std::fmt::Debug for SessionToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionToken")
+            .field("token", &"[REDACTED]")
+            .field("wallet_id", &self.wallet_id)
+            .field("created_at", &self.created_at)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 impl SessionToken {
@@ -396,5 +428,41 @@ mod tests {
         };
         assert!(expired_token.is_expired());
         assert_eq!(expired_token.remaining_secs(), 0);
+    }
+
+    #[test]
+    fn test_wallet_proof_debug_redacts_sensitive_fields() {
+        // M-INFO-1 TEST: Verify Debug implementation redacts sensitive data
+        let pubkey = [1u8; 32];
+        let mut proof = WalletProof::new("register", &pubkey);
+        proof.signature = hex::encode([2u8; 64]);
+
+        let debug_output = format!("{:?}", proof);
+
+        // Ensure sensitive fields are redacted
+        assert!(debug_output.contains("[REDACTED]"));
+        assert!(!debug_output.contains(&hex::encode([1u8; 32]))); // public_key
+        assert!(!debug_output.contains(&hex::encode([2u8; 64]))); // signature
+        // Message should still be visible (not sensitive)
+        assert!(debug_output.contains("ghost-register"));
+    }
+
+    #[test]
+    fn test_session_token_debug_redacts_token() {
+        // M-INFO-1 TEST: Verify Debug implementation redacts session token
+        let token = SessionToken {
+            token: "super_secret_jwt_token".to_string(),
+            wallet_id: WalletId("abc123".to_string()),
+            created_at: chrono::Utc::now().timestamp(),
+            expires_at: chrono::Utc::now().timestamp() + 3600,
+        };
+
+        let debug_output = format!("{:?}", token);
+
+        // Ensure token is redacted
+        assert!(debug_output.contains("[REDACTED]"));
+        assert!(!debug_output.contains("super_secret_jwt_token"));
+        // wallet_id is not sensitive (it's derived from public key hash)
+        assert!(debug_output.contains("abc123"));
     }
 }

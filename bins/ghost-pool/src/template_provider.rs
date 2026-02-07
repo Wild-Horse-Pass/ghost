@@ -604,7 +604,10 @@ async fn handle_template_distribution_message(
                             )
                             .try_into()
                             .map_err(|_| anyhow::anyhow!("Failed to create error frame"))?;
-                            frame_tx.send(error_frame).await.ok();
+                            // SEC-ERR-2: Log channel send failures
+                            if let Err(e) = frame_tx.send(error_frame).await {
+                                warn!(error = %e, "Failed to send transaction data error frame to client");
+                            }
                             return Ok(());
                         }
                     };

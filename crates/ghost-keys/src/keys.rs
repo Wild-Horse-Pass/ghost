@@ -434,29 +434,34 @@ pub struct GhostKeysPublicExport {
 ///
 /// 4.8 SECURITY: Secrets are stored as hex strings and zeroized on drop
 /// to prevent sensitive data from lingering in memory after use.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// M-SAFE-1: Uses zeroize crate's safe implementation instead of unsafe
+/// as_bytes_mut(). The Zeroize trait for String safely overwrites the
+/// string's bytes using compiler barriers to prevent optimization.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct GhostKeysExport {
     pub scan_secret: String,
     pub spend_secret: String,
 }
 
+/// Custom Debug that redacts secrets
+impl std::fmt::Debug for GhostKeysExport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GhostKeysExport")
+            .field("scan_secret", &"[REDACTED]")
+            .field("spend_secret", &"[REDACTED]")
+            .finish()
+    }
+}
+
 /// 4.8 SECURITY: Zeroize secret strings when export is dropped
+/// M-SAFE-1 FIX: Use zeroize crate's safe Zeroize trait implementation
 impl Drop for GhostKeysExport {
     fn drop(&mut self) {
-        // Overwrite the string contents with zeros before deallocation
-        // SAFETY: We're modifying the string's bytes in place
-        unsafe {
-            let scan_bytes = self.scan_secret.as_bytes_mut();
-            for byte in scan_bytes.iter_mut() {
-                std::ptr::write_volatile(byte, 0);
-            }
-            let spend_bytes = self.spend_secret.as_bytes_mut();
-            for byte in spend_bytes.iter_mut() {
-                std::ptr::write_volatile(byte, 0);
-            }
-        }
-        // Compiler barrier to prevent optimization
-        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+        // Use zeroize crate's safe implementation for String
+        // This uses volatile writes with compiler barriers internally
+        self.scan_secret.zeroize();
+        self.spend_secret.zeroize();
     }
 }
 

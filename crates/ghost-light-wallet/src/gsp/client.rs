@@ -522,6 +522,9 @@ impl GspClient {
             recovery_window_total: 52560,
             in_mempool: snapshot.in_mempool,
             pending_l2_sats: snapshot.pending_l2_sats,
+            // CRIT-1/CRIT-2 fields
+            pending_instant_sats: 0, // Not tracked in GSP snapshot yet
+            owner_pubkey: None,      // Not provided in GSP snapshot
         }
     }
 

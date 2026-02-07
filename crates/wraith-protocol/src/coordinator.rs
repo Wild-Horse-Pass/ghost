@@ -865,10 +865,13 @@ impl WraithCoordinator {
             .get_session_participant_id(ghost_id)
             .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
+        // CRIT-7: Return error instead of panicking on internal inconsistency
         let participant = self
             .participants
             .get_mut(&session_id)
-            .expect("session_id must exist if ghost_id mapping exists");
+            .ok_or_else(|| {
+                WraithError::MissingData("Internal error: participant mapping inconsistent".into())
+            })?;
 
         // Validate input amount
         let expected = self.session.denomination().input_sats();
@@ -924,10 +927,13 @@ impl WraithCoordinator {
             nonces.push(nonce);
         }
 
+        // CRIT-7: Return error instead of panicking on internal inconsistency
         let participant = self
             .participants
             .get_mut(&session_id)
-            .expect("session_id must exist if ghost_id mapping exists");
+            .ok_or_else(|| {
+                WraithError::MissingData("Internal error: participant mapping inconsistent".into())
+            })?;
         participant.issued_nonces = nonces.clone();
         Ok(nonces)
     }
@@ -966,10 +972,13 @@ impl WraithCoordinator {
             responses.push(response);
         }
 
+        // CRIT-7: Return error instead of panicking on internal inconsistency
         let participant = self
             .participants
             .get_mut(&session_id)
-            .expect("session_id must exist if ghost_id mapping exists");
+            .ok_or_else(|| {
+                WraithError::MissingData("Internal error: participant mapping inconsistent".into())
+            })?;
 
         participant.blinded_challenges = challenges;
         participant.signature_responses = responses.clone();
@@ -1016,10 +1025,13 @@ impl WraithCoordinator {
             .get_session_participant_id(ghost_id)
             .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
+        // CRIT-7: Return error instead of panicking on internal inconsistency
         let participant = self
             .participants
             .get_mut(&session_id)
-            .expect("session_id must exist if ghost_id mapping exists");
+            .ok_or_else(|| {
+                WraithError::MissingData("Internal error: participant mapping inconsistent".into())
+            })?;
 
         // If this participant previously submitted an address, remove it from the set
         if let Some(ref old_addr) = participant.final_address {
@@ -1172,16 +1184,24 @@ impl WraithCoordinator {
         Ok(())
     }
 
-    /// Compute a session-bound hash of a token for replay prevention
+    /// Compute a session-and-key-bound hash of a token for replay prevention
     ///
-    /// WR-C4: Token hash is now bound to the session_id to prevent cross-session replay.
+    /// WR-C4: Token hash is bound to session_id to prevent cross-session replay.
+    /// H-CRYPTO-2: Token hash also includes coordinator's current key_id to prevent
+    /// cross-rotation replay attacks. After key rotation, tokens signed with the old
+    /// key will produce different hashes and cannot be replayed with the new key.
+    ///
     /// Even if a token is valid (signed by coordinator), it can only be used in the
-    /// session it was issued for.
+    /// session it was issued for AND with the same signing key it was issued under.
     fn compute_token_hash(&self, token: &UnblindedToken) -> [u8; 32] {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(b"wraith/token-hash/v2");
+        // H-CRYPTO-2: Version bump to v3 to indicate key binding
+        hasher.update(b"wraith/token-hash/v3");
         hasher.update(self.session.session_id());
+        // H-CRYPTO-2: Include coordinator's CURRENT key_id to bind token to this key rotation epoch
+        // This prevents replaying tokens across key rotations
+        hasher.update(self.signer.key_id());
         hasher.update(token.session_key_id);
         hasher.update(token.nonce_point);
         hasher.update(token.signature_scalar);
@@ -1359,11 +1379,10 @@ impl WraithCoordinator {
         // Immediately clear sensitive data after building transaction (WR-H3)
         self.clear_sensitive_data_post_build();
 
-        // Safe: we just assigned Some(tx) above
-        Ok(self
-            .phase1_tx
-            .as_ref()
-            .expect("phase1_tx was just assigned"))
+        // CRIT-7: Return error instead of panicking (though this should never fail)
+        self.phase1_tx.as_ref().ok_or_else(|| {
+            WraithError::MissingData("Internal error: phase1_tx was not set".into())
+        })
     }
 
     /// WR-C1: Cryptographically shuffle anonymous tokens to break submission order correlation
@@ -1452,10 +1471,13 @@ impl WraithCoordinator {
             .get_session_participant_id(ghost_id)
             .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
+        // CRIT-7: Return error instead of panicking on internal inconsistency
         let participant = self
             .participants
             .get_mut(&session_id)
-            .expect("session_id must exist if ghost_id mapping exists");
+            .ok_or_else(|| {
+                WraithError::MissingData("Internal error: participant mapping inconsistent".into())
+            })?;
 
         participant.phase1_signed = true;
 
@@ -1666,11 +1688,10 @@ impl WraithCoordinator {
         let tx = builder.build_merge_transaction(&intermediate_inputs, &final_addresses)?;
         self.phase2_tx = Some(tx);
 
-        // Safe: we just assigned Some(tx) above
-        Ok(self
-            .phase2_tx
-            .as_ref()
-            .expect("phase2_tx was just assigned"))
+        // CRIT-7: Return error instead of panicking (though this should never fail)
+        self.phase2_tx.as_ref().ok_or_else(|| {
+            WraithError::MissingData("Internal error: phase2_tx was not set".into())
+        })
     }
 
     /// Record Phase 2 signature from participant
@@ -1679,10 +1700,13 @@ impl WraithCoordinator {
             .get_session_participant_id(ghost_id)
             .ok_or_else(|| WraithError::InvalidInput("Unknown participant".to_string()))?
             .clone();
+        // CRIT-7: Return error instead of panicking on internal inconsistency
         let participant = self
             .participants
             .get_mut(&session_id)
-            .expect("session_id must exist if ghost_id mapping exists");
+            .ok_or_else(|| {
+                WraithError::MissingData("Internal error: participant mapping inconsistent".into())
+            })?;
 
         participant.phase2_signed = true;
 
@@ -2767,6 +2791,60 @@ mod tests {
         assert_eq!(
             hash1, hash1_again,
             "Same token in same session should have same hash"
+        );
+    }
+
+    /// H-CRYPTO-2 Test: Token hash is bound to coordinator key_id
+    ///
+    /// After key rotation, the same token should produce a different hash,
+    /// preventing cross-rotation replay attacks.
+    #[test]
+    fn test_token_hash_key_bound() {
+        // Create a coordinator
+        let mut coord = create_test_coordinator(
+            ParticipantTier::Micro,
+            WraithDenomination::Small,
+            Network::Regtest,
+        );
+
+        // Create a fake token
+        let token = crate::blind::UnblindedToken {
+            message: vec![0u8; 32],
+            nonce_point: [0u8; 33],
+            signature_scalar: [0u8; 32],
+            session_key_id: [0u8; 32],
+        };
+
+        // Compute hash before key rotation
+        let hash_before = coord.compute_token_hash(&token);
+
+        // Store the old key_id for comparison
+        let old_key_id = *coord.signer.key_id();
+
+        // Rotate the coordinator's signing key
+        let new_key = coord.signer.rotate_key();
+        let new_key_id = *coord.signer.key_id();
+
+        // Verify key actually changed
+        assert_ne!(
+            old_key_id, new_key_id,
+            "Key rotation should produce new key_id"
+        );
+
+        // rotate_key returns the NEW public key, so it should match current public_key
+        assert_eq!(
+            new_key,
+            *coord.signer.public_key(),
+            "rotate_key should return the new public key"
+        );
+
+        // Compute hash after key rotation
+        let hash_after = coord.compute_token_hash(&token);
+
+        // H-CRYPTO-2: Same token should produce DIFFERENT hash after key rotation
+        assert_ne!(
+            hash_before, hash_after,
+            "Token hash should change after key rotation to prevent cross-rotation replay"
         );
     }
 }

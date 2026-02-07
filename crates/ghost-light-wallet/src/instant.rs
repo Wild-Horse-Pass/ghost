@@ -22,40 +22,42 @@
 
 //! Instant Payment Support for Light Wallets
 //!
-//! Enables merchants to show "Confirmed ✓" immediately for small payments,
+//! Enables merchants to show "Confirmed" immediately for small payments,
 //! with actual settlement happening on the next virtual block (~10 seconds).
+//!
+//! ## Security Fixes
+//!
+//! - CRIT-1: Fund reservation prevents double-spending the same balance
+//! - CRIT-2: Signature verification ensures sender owns the lock
 //!
 //! # Usage
 //!
 //! ```ignore
 //! use ghost_light_wallet::instant::InstantPaymentChecker;
 //!
-//! // Create checker with GSP client
-//! let checker = InstantPaymentChecker::new(gsp_client);
+//! // Create checker with GSP client and merchant ID
+//! let checker = InstantPaymentChecker::new(gsp_client, "merchant123".to_string());
 //!
-//! // Check if payment can be instant
-//! let capability = checker.check_instant("lock123", 50_000, 200).await?;
-//!
-//! if capability.capable {
-//!     // Show "Confirmed ✓" immediately
-//!     display_confirmed();
-//! } else {
-//!     // Wait for block confirmation
-//!     wait_for_confirmation();
-//! }
+//! // Accept a signed instant payment (CRIT-2: requires signature)
+//! let receipt = checker.accept_signed_instant_payment(&signed_payment).await?;
 //! ```
 
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
-use ghost_common::instant::{InstantCapability, InstantReceipt, LockSnapshot};
+use ghost_common::instant::{
+    InstantCapability, InstantPaymentError, InstantReceipt, LockSnapshot, ReservationTracker,
+    SignedInstantPayment,
+};
 
 #[cfg(test)]
 use ghost_common::instant::InstantCondition;
 
 use crate::error::{LightWalletError, WalletResult};
 use crate::gsp::GspClient;
+use crate::signing::verify_signature;
 
 /// Cached instant capability for a lock
 #[derive(Debug, Clone)]
@@ -72,6 +74,10 @@ impl CachedCapability {
 }
 
 /// Instant payment checker for light wallets
+///
+/// SECURITY: This struct implements CRIT-1 and CRIT-2 fixes:
+/// - CRIT-1: Tracks fund reservations per lock to prevent double-spend
+/// - CRIT-2: Requires signature verification for payment acceptance
 pub struct InstantPaymentChecker {
     /// GSP client for lock queries
     gsp: Arc<GspClient>,
@@ -81,17 +87,36 @@ pub struct InstantPaymentChecker {
     max_cache_size: usize,
     /// Current block height (updated externally)
     current_height: RwLock<u64>,
+    /// CRIT-1 FIX: Per-lock reservation trackers to prevent double-spend
+    reservations: RwLock<HashMap<String, Arc<ReservationTracker>>>,
+    /// Merchant's recipient identifier (for signature verification)
+    merchant_id: String,
 }
 
 impl InstantPaymentChecker {
     /// Create a new instant payment checker
-    pub fn new(gsp: Arc<GspClient>) -> Self {
+    ///
+    /// # Arguments
+    /// * `gsp` - GSP client for querying lock state
+    /// * `merchant_id` - This merchant's identifier (for signature verification)
+    pub fn new(gsp: Arc<GspClient>, merchant_id: String) -> Self {
         Self {
             gsp,
             cache: RwLock::new(Vec::new()),
             max_cache_size: 100,
             current_height: RwLock::new(0),
+            reservations: RwLock::new(HashMap::new()),
+            merchant_id,
         }
+    }
+
+    /// Get or create a reservation tracker for a lock
+    fn get_reservation_tracker(&self, lock_id: &str) -> Arc<ReservationTracker> {
+        let mut reservations = self.reservations.write();
+        reservations
+            .entry(lock_id.to_string())
+            .or_insert_with(|| Arc::new(ReservationTracker::new()))
+            .clone()
     }
 
     /// Update current block height
@@ -120,7 +145,6 @@ impl InstantPaymentChecker {
         // Check cache first
         if let Some(cached) = self.get_cached(lock_id, current_height) {
             debug!(lock_id, "Using cached instant capability");
-            // Re-evaluate for the specific amount
             if cached.max_instant_sats >= amount_sats && cached.capable {
                 return Ok(cached);
             }
@@ -150,16 +174,13 @@ impl InstantPaymentChecker {
     /// Quick check - is this lock generally instant-capable?
     ///
     /// Returns the maximum instant amount without specifying a payment amount.
-    /// Useful for displaying "⚡ Instant: up to X sats" in wallet UI.
     pub async fn get_instant_limit(&self, lock_id: &str) -> WalletResult<u64> {
         let current_height = self.height();
 
-        // Check cache
         if let Some(cached) = self.get_cached(lock_id, current_height) {
             return Ok(cached.max_instant_sats);
         }
 
-        // Query and check with max possible amount
         let snapshot = self.fetch_lock_snapshot(lock_id).await?;
         let capability = snapshot.check_instant(u64::MAX, current_height);
 
@@ -168,19 +189,86 @@ impl InstantPaymentChecker {
         Ok(capability.max_instant_sats)
     }
 
-    /// Accept an instant payment (merchant side)
+    /// Accept a signed instant payment (merchant side)
+    ///
+    /// SECURITY FIXES:
+    /// - CRIT-1: Atomically reserves funds before confirming to prevent double-spend
+    /// - CRIT-2: Verifies sender's signature to prove lock ownership
     ///
     /// Returns a receipt that can be shown to the customer as "Confirmed".
     /// The actual settlement will happen on the next virtual block.
-    pub async fn accept_instant_payment(
+    ///
+    /// # Arguments
+    /// * `signed_payment` - The signed payment request from the sender
+    ///
+    /// # Errors
+    /// * `InvalidPayment` - If signature verification fails or lock is not instant-capable
+    /// * `InsufficientBalance` - If funds are already reserved for another payment
+    pub async fn accept_signed_instant_payment(
         &self,
-        sender_lock_id: &str,
-        amount_sats: u64,
+        signed_payment: &SignedInstantPayment,
     ) -> WalletResult<InstantReceipt> {
         let current_height = self.height();
+        let current_time = chrono::Utc::now().timestamp_millis() as u64;
 
-        // Verify instant capability
-        let capability = self.check_instant(sender_lock_id, amount_sats).await?;
+        // CRIT-2 FIX STEP 1: Verify the signature proves ownership of the lock
+        let message = signed_payment.signing_message();
+        if !verify_signature(
+            &signed_payment.sender_pubkey,
+            &message,
+            &signed_payment.signature,
+        ) {
+            warn!(
+                sender_lock_id = signed_payment.sender_lock_id,
+                "Instant payment rejected: invalid signature"
+            );
+            return Err(LightWalletError::InvalidPayment(
+                "Signature verification failed - sender does not own the lock".to_string(),
+            ));
+        }
+
+        // Verify the payment is addressed to this merchant
+        if signed_payment.recipient != self.merchant_id {
+            warn!(
+                sender_lock_id = signed_payment.sender_lock_id,
+                expected = self.merchant_id,
+                got = signed_payment.recipient,
+                "Instant payment rejected: wrong recipient"
+            );
+            return Err(LightWalletError::InvalidPayment(format!(
+                "Payment addressed to '{}', not this merchant '{}'",
+                signed_payment.recipient, self.merchant_id
+            )));
+        }
+
+        // Query lock state to verify capability and get owner pubkey
+        let snapshot = self
+            .fetch_lock_snapshot(&signed_payment.sender_lock_id)
+            .await?;
+
+        // CRIT-2 FIX STEP 2: Verify the signer's pubkey matches the lock owner
+        if let Some(owner_pubkey) = snapshot.owner_pubkey {
+            if owner_pubkey != signed_payment.sender_pubkey {
+                warn!(
+                    sender_lock_id = signed_payment.sender_lock_id,
+                    "Instant payment rejected: signer pubkey does not match lock owner"
+                );
+                return Err(LightWalletError::InvalidPayment(
+                    "Signer public key does not match lock owner".to_string(),
+                ));
+            }
+        } else {
+            warn!(
+                sender_lock_id = signed_payment.sender_lock_id,
+                "Instant payment rejected: lock has no owner pubkey"
+            );
+            return Err(LightWalletError::InvalidPayment(
+                "Lock does not have owner public key set".to_string(),
+            ));
+        }
+
+        // Check instant capability
+        let capability = snapshot.check_instant(signed_payment.amount_sats, current_height);
 
         if !capability.capable {
             return Err(LightWalletError::InvalidPayment(format!(
@@ -189,32 +277,116 @@ impl InstantPaymentChecker {
             )));
         }
 
-        if amount_sats > capability.max_instant_sats {
+        if signed_payment.amount_sats > capability.max_instant_sats {
             return Err(LightWalletError::InvalidPayment(format!(
                 "Amount {} exceeds instant limit {}",
-                amount_sats, capability.max_instant_sats
+                signed_payment.amount_sats, capability.max_instant_sats
             )));
         }
 
-        // Create receipt
-        let payment_id = self.generate_payment_id(sender_lock_id, amount_sats, current_height);
-        let settlement_block = current_height + 1; // Next virtual block
+        // CRIT-1 FIX: Atomically reserve funds to prevent double-spend
+        let tracker = self.get_reservation_tracker(&signed_payment.sender_lock_id);
+        let available_balance = snapshot
+            .balance_sats
+            .saturating_sub(snapshot.pending_l2_sats)
+            .saturating_sub(snapshot.pending_instant_sats);
+
+        match tracker.try_reserve(
+            signed_payment.payment_id,
+            signed_payment.amount_sats,
+            available_balance,
+            current_time,
+        ) {
+            Ok(_reservation) => {
+                debug!(
+                    sender_lock_id = signed_payment.sender_lock_id,
+                    amount = signed_payment.amount_sats,
+                    "Funds reserved for instant payment"
+                );
+            }
+            Err(InstantPaymentError::InsufficientFunds {
+                requested,
+                available,
+                reserved: _,
+            }) => {
+                warn!(
+                    sender_lock_id = signed_payment.sender_lock_id,
+                    requested,
+                    available,
+                    "Instant payment rejected: insufficient funds after reservations"
+                );
+                return Err(LightWalletError::InsufficientBalance {
+                    required: requested,
+                    available,
+                });
+            }
+            Err(InstantPaymentError::DuplicatePayment) => {
+                warn!(
+                    sender_lock_id = signed_payment.sender_lock_id,
+                    "Instant payment rejected: duplicate payment ID"
+                );
+                return Err(LightWalletError::InvalidPayment(
+                    "Duplicate payment ID".to_string(),
+                ));
+            }
+            Err(e) => {
+                return Err(LightWalletError::InvalidPayment(format!(
+                    "Reservation failed: {}",
+                    e
+                )));
+            }
+        }
+
+        // Create receipt with signature proof
+        let settlement_block = current_height + 1;
+
+        // H-AUTH-3 FIX: Capture lock state hash for settlement verification
+        let lock_state_hash = snapshot.state_hash();
 
         let receipt = InstantReceipt {
-            payment_id,
-            sender_lock_id: sender_lock_id.to_string(),
-            amount_sats,
+            payment_id: signed_payment.payment_id,
+            sender_lock_id: signed_payment.sender_lock_id.clone(),
+            recipient: signed_payment.recipient.clone(),
+            amount_sats: signed_payment.amount_sats,
             capability,
-            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            timestamp: current_time,
             settlement_block,
+            sender_pubkey: signed_payment.sender_pubkey,
+            signature: signed_payment.signature,
+            lock_state_hash,
         };
 
         info!(
-            sender_lock_id,
-            amount_sats, settlement_block, "Instant payment accepted"
+            sender_lock_id = signed_payment.sender_lock_id,
+            amount_sats = signed_payment.amount_sats,
+            settlement_block,
+            "Signed instant payment accepted with reservation"
         );
 
         Ok(receipt)
+    }
+
+    /// Release a reservation (e.g., after settlement or cancellation)
+    pub fn release_reservation(&self, lock_id: &str, payment_id: &[u8; 32]) {
+        let tracker = self.get_reservation_tracker(lock_id);
+        tracker.release(payment_id);
+        debug!(lock_id, "Released instant payment reservation");
+    }
+
+    /// Get total reserved amount for a lock
+    pub fn get_reserved_amount(&self, lock_id: &str) -> u64 {
+        let current_time = chrono::Utc::now().timestamp_millis() as u64;
+        let tracker = self.get_reservation_tracker(lock_id);
+        tracker.total_reserved(current_time)
+    }
+
+    /// Prune expired reservations across all locks
+    pub fn prune_reservations(&self) {
+        let current_time = chrono::Utc::now().timestamp_millis() as u64;
+        let reservations = self.reservations.read();
+        for tracker in reservations.values() {
+            tracker.prune_expired(current_time);
+        }
     }
 
     /// Verify a receipt is still valid
@@ -247,19 +419,15 @@ impl InstantPaymentChecker {
     fn cache_capability(&self, lock_id: &str, capability: &InstantCapability, height: u64) {
         let mut cache = self.cache.write();
 
-        // Remove old entry for this lock
         cache.retain(|c| c.lock_id != lock_id);
 
-        // Add new entry
         cache.push(CachedCapability {
             lock_id: lock_id.to_string(),
             capability: capability.clone(),
             cached_at_height: height,
         });
 
-        // Prune if over limit
         if cache.len() > self.max_cache_size {
-            // Remove oldest entries
             cache.sort_by(|a, b| b.cached_at_height.cmp(&a.cached_at_height));
             cache.truncate(self.max_cache_size);
         }
@@ -275,23 +443,6 @@ impl InstantPaymentChecker {
         if pruned > 0 {
             debug!(pruned, "Pruned expired instant capability cache entries");
         }
-    }
-
-    /// Generate a unique payment ID
-    fn generate_payment_id(&self, lock_id: &str, amount: u64, height: u64) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(b"ghost-instant-payment-v1");
-        hasher.update(lock_id.as_bytes());
-        hasher.update(amount.to_le_bytes());
-        hasher.update(height.to_le_bytes());
-        hasher.update(
-            chrono::Utc::now()
-                .timestamp_nanos_opt()
-                .unwrap_or(0)
-                .to_le_bytes(),
-        );
-        hasher.finalize().into()
     }
 }
 
@@ -315,7 +466,7 @@ impl InstantStatus {
             Self {
                 available: true,
                 max_sats: cap.max_instant_sats,
-                display: format!("⚡ Instant: up to {} sats", cap.max_instant_sats),
+                display: format!("Instant: up to {} sats", cap.max_instant_sats),
                 confidence: cap.confidence,
             }
         } else {
@@ -327,7 +478,7 @@ impl InstantStatus {
             Self {
                 available: false,
                 max_sats: 0,
-                display: format!("⏳ Requires confirmation ({})", reason),
+                display: format!("Requires confirmation ({})", reason),
                 confidence: 0.0,
             }
         }
@@ -336,9 +487,9 @@ impl InstantStatus {
     /// Format for display with amount
     pub fn format_for_amount(&self, amount_sats: u64) -> String {
         if self.available && amount_sats <= self.max_sats {
-            "⚡ Instant".to_string()
+            "Instant".to_string()
         } else if self.available {
-            format!("⏳ Amount exceeds instant limit ({} sats)", self.max_sats)
+            format!("Amount exceeds instant limit ({} sats)", self.max_sats)
         } else {
             self.display.clone()
         }
@@ -374,13 +525,9 @@ mod tests {
         let cap = InstantCapability::capable(100_000, 0.95, 300);
         let status = InstantStatus::from_capability(&cap);
 
-        // Under limit
-        assert_eq!(status.format_for_amount(50_000), "⚡ Instant");
+        assert_eq!(status.format_for_amount(50_000), "Instant");
+        assert_eq!(status.format_for_amount(100_000), "Instant");
 
-        // At limit
-        assert_eq!(status.format_for_amount(100_000), "⚡ Instant");
-
-        // Over limit
         let over = status.format_for_amount(150_000);
         assert!(over.contains("exceeds"));
     }

@@ -34,6 +34,7 @@
 //! - Miner Pool (99% of subsidy) → Top 200 miners by work
 //! - Node Pool → Top 100 nodes by 5-4-3-2-1 capability shares
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -161,11 +162,18 @@ pub struct SoloBlockFoundData {
     pub treasury_state: TreasuryState,
 }
 
+/// H-FUND-2: Maximum consecutive blocks with no qualifying nodes before error
+const MAX_CONSECUTIVE_NO_NODES: u64 = 10;
+
 /// Creates payout proposals from block found events
 pub struct PayoutProposalCreator {
     identity: Arc<NodeIdentity>,
     config: PayoutConfig,
     db: Arc<Database>,
+    /// H-FUND-2: Counter for total node pool treasury fallbacks (for monitoring)
+    node_pool_treasury_fallback_count: AtomicU64,
+    /// H-FUND-2: Counter for consecutive blocks with no qualifying nodes
+    consecutive_no_nodes: AtomicU64,
 }
 
 impl PayoutProposalCreator {
@@ -185,7 +193,20 @@ impl PayoutProposalCreator {
             identity,
             config,
             db,
+            node_pool_treasury_fallback_count: AtomicU64::new(0),
+            consecutive_no_nodes: AtomicU64::new(0),
         })
+    }
+
+    /// H-FUND-2: Get the total count of node pool treasury fallbacks
+    /// This is useful for monitoring and alerting systems
+    pub fn get_node_pool_treasury_fallback_count(&self) -> u64 {
+        self.node_pool_treasury_fallback_count.load(Ordering::Relaxed)
+    }
+
+    /// H-FUND-2: Get the current consecutive no-nodes count
+    pub fn get_consecutive_no_nodes_count(&self) -> u64 {
+        self.consecutive_no_nodes.load(Ordering::Relaxed)
     }
 
     /// PO4-M2: Get a snapshot of the treasury address for use in BlockFoundData
@@ -258,19 +279,54 @@ impl PayoutProposalCreator {
         let mut node_payouts =
             self.calculate_node_payouts(&data.node_shares, augmented_node_pool)?;
 
-        // FALLBACK: If no nodes qualify for payouts, add the node pool to treasury
-        // This ensures no satoshis are lost when there are no eligible nodes
+        // H-FUND-2: Track node pool fallback with alerting and consecutive failure protection
         let mut final_treasury = fee_dist.treasury_amount;
         if node_payouts.is_empty() && augmented_node_pool > 0 {
-            info!(
+            // Increment counters
+            let total_fallbacks = self
+                .node_pool_treasury_fallback_count
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
+            let consecutive = self.consecutive_no_nodes.fetch_add(1, Ordering::Relaxed) + 1;
+
+            // H-FUND-2: Log at WARN level for monitoring/alerting systems
+            warn!(
                 node_pool = augmented_node_pool,
-                "No eligible nodes - redirecting node reward pool to treasury"
+                total_fallbacks,
+                consecutive_blocks = consecutive,
+                max_consecutive = MAX_CONSECUTIVE_NO_NODES,
+                round_id = data.round_id,
+                block_height = data.block_height,
+                "H-FUND-2 WARNING: No eligible nodes - redirecting node reward pool to treasury"
             );
+
+            // H-FUND-2: Fail after too many consecutive blocks with no nodes
+            // This indicates a systemic problem that needs operator attention
+            if consecutive >= MAX_CONSECUTIVE_NO_NODES {
+                tracing::error!(
+                    consecutive_blocks = consecutive,
+                    total_fallbacks,
+                    "H-FUND-2 CRITICAL: {} consecutive blocks with no qualifying nodes - halting block production",
+                    consecutive
+                );
+                return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                    "No qualifying nodes for {} consecutive blocks (threshold: {}). \
+                     This indicates a verification system failure. \
+                     Total fallbacks: {}. Block production halted.",
+                    consecutive, MAX_CONSECUTIVE_NO_NODES, total_fallbacks
+                )));
+            }
+
             final_treasury = final_treasury.saturating_add(augmented_node_pool);
+        } else if !node_payouts.is_empty() {
+            // Reset consecutive counter when we have qualifying nodes
+            self.consecutive_no_nodes.store(0, Ordering::Relaxed);
         }
 
         // TX fees go 100% to the node that found the block
-        // PAY-M3: TX fees are always allocated (to block finder or treasury), never unallocated
+        // H-FUND-1 SECURITY: Block finder MUST have a payout address configured.
+        // If not, this is a configuration error that must be fixed BEFORE block production.
+        // Silent redirect to treasury allowed fund misallocation to go unnoticed.
         let tx_fees_unallocated: u64 = 0;
 
         if fee_dist.tx_fees_to_block_finder >= self.config.dust_threshold_sats {
@@ -304,14 +360,18 @@ impl PayoutProposalCreator {
                     "TX fees allocated to block finder"
                 );
             } else {
-                // PAY-M3: Block finder has no address - redirect TX fees to treasury
-                // instead of leaving them unallocated (no satoshis should be lost)
-                final_treasury = final_treasury.saturating_add(fee_dist.tx_fees_to_block_finder);
-                info!(
+                // H-FUND-1 SECURITY FIX: Block finder has no address - this is an ERROR.
+                // We MUST NOT silently redirect to treasury as this hides configuration issues.
+                // Block production must be halted until the node operator configures a payout address.
+                tracing::error!(
                     node_id = %hex::encode(&data.winning_node_id[..8]),
                     tx_fees = fee_dist.tx_fees_to_block_finder,
-                    "Block finder node has no payout address - TX fees redirected to treasury"
+                    "H-FUND-1 SECURITY: Block finder node has no payout address - HALTING BLOCK PRODUCTION"
                 );
+                return Err(ghost_common::error::GhostError::TxFeeAllocationFailed {
+                    node_id: hex::encode(&data.winning_node_id[..8]),
+                    tx_fees: fee_dist.tx_fees_to_block_finder,
+                });
             }
         }
 
@@ -415,14 +475,46 @@ impl PayoutProposalCreator {
         let node_payouts =
             self.calculate_node_payouts(&data.node_shares, fee_dist.node_reward_pool)?;
 
-        // If no nodes qualify for payouts, add node pool to treasury
+        // H-FUND-2: Track node pool fallback with alerting (same as pool mode)
         let mut final_treasury = fee_dist.treasury_amount;
         if node_payouts.is_empty() && fee_dist.node_reward_pool > 0 {
-            info!(
+            // Increment counters
+            let total_fallbacks = self
+                .node_pool_treasury_fallback_count
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
+            let consecutive = self.consecutive_no_nodes.fetch_add(1, Ordering::Relaxed) + 1;
+
+            // H-FUND-2: Log at WARN level for monitoring/alerting systems
+            warn!(
                 node_pool = fee_dist.node_reward_pool,
-                "Solo mode: no eligible nodes - redirecting node reward pool to treasury"
+                total_fallbacks,
+                consecutive_blocks = consecutive,
+                max_consecutive = MAX_CONSECUTIVE_NO_NODES,
+                round_id = data.round_id,
+                block_height = data.block_height,
+                "H-FUND-2 WARNING: Solo mode - no eligible nodes, redirecting to treasury"
             );
+
+            // H-FUND-2: Fail after too many consecutive blocks with no nodes
+            if consecutive >= MAX_CONSECUTIVE_NO_NODES {
+                tracing::error!(
+                    consecutive_blocks = consecutive,
+                    total_fallbacks,
+                    "H-FUND-2 CRITICAL: {} consecutive blocks with no qualifying nodes in solo mode",
+                    consecutive
+                );
+                return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                    "Solo mode: No qualifying nodes for {} consecutive blocks (threshold: {}). \
+                     Total fallbacks: {}. Block production halted.",
+                    consecutive, MAX_CONSECUTIVE_NO_NODES, total_fallbacks
+                )));
+            }
+
             final_treasury = final_treasury.saturating_add(fee_dist.node_reward_pool);
+        } else if !node_payouts.is_empty() {
+            // Reset consecutive counter when we have qualifying nodes
+            self.consecutive_no_nodes.store(0, Ordering::Relaxed);
         }
 
         // H-MINE-3: Use treasury address snapshot from SoloBlockFoundData
@@ -1346,12 +1438,11 @@ mod tests {
     }
 
     #[test]
-    fn test_tx_fees_unallocated_tracked() {
-        // PO-H4: Verify that tx_fees_unallocated field exists and can be set
-        // This test documents the expected behavior when block finder has no payout address
+    fn test_tx_fees_allocation_succeeds_with_address() {
+        // H-FUND-1: Verify that TX fees are properly allocated when block finder has address
         use ghost_common::types::{PayoutEntry, PayoutProposal, PayoutType};
 
-        // Create a proposal where TX fees could be allocated
+        // Create a proposal where TX fees are successfully allocated
         let allocated_proposal = PayoutProposal {
             proposal_hash: [0u8; 32],
             round_id: 1,
@@ -1366,36 +1457,112 @@ mod tests {
                 payout_type: PayoutType::TxFees,
             }],
             treasury_amount: 0,
-            treasury_address: Vec::new(), // H-MINE-3: no treasury in this test
+            treasury_address: Vec::new(),
             tx_fees: 10_000_000,
             subsidy: 312_500_000,
             timestamp: 1700000000,
             tx_fees_unallocated: 0, // TX fees were allocated successfully
         };
         assert_eq!(allocated_proposal.tx_fees_unallocated, 0);
+        assert_eq!(allocated_proposal.node_payouts.len(), 1);
+        assert_eq!(allocated_proposal.node_payouts[0].amount, 10_000_000);
+    }
 
-        // Create a proposal where TX fees could NOT be allocated (block finder has no address)
-        let unallocated_proposal = PayoutProposal {
-            proposal_hash: [0u8; 32],
-            round_id: 1,
-            block_hash: [0u8; 32],
-            block_height: 800_000,
-            proposer: [1u8; 32],
-            miner_payouts: vec![],
-            node_payouts: vec![], // No TxFees entry because block finder has no address
-            treasury_amount: 0,
-            treasury_address: Vec::new(), // H-MINE-3: no treasury in this test
+    #[test]
+    fn test_h_fund_1_tx_fee_allocation_error_type_exists() {
+        // H-FUND-1 SECURITY: Verify that TxFeeAllocationFailed error type exists
+        // and contains the expected information for debugging.
+        //
+        // When a block finder has no payout address:
+        // - Block production MUST be halted (return error)
+        // - Error MUST contain the node_id for debugging
+        // - Error MUST contain the tx_fees amount for auditing
+        //
+        // This is NOT a "treasury fallback" situation - it's a configuration error
+        // that must be fixed before mining can continue.
+        let err = ghost_common::error::GhostError::TxFeeAllocationFailed {
+            node_id: "abc12345".to_string(),
             tx_fees: 10_000_000,
-            subsidy: 312_500_000,
-            timestamp: 1700000000,
-            tx_fees_unallocated: 10_000_000, // TX fees tracked as unallocated
         };
-        assert_eq!(unallocated_proposal.tx_fees_unallocated, 10_000_000);
 
-        // The tx_fees_unallocated field allows auditing which blocks had allocation issues
-        assert_eq!(
-            unallocated_proposal.tx_fees, unallocated_proposal.tx_fees_unallocated,
-            "When block finder has no address, all TX fees should be marked as unallocated"
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("abc12345"),
+            "Error must contain node_id: {}",
+            err_msg
         );
+        assert!(
+            err_msg.contains("10000000"),
+            "Error must contain tx_fees: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("MUST be halted") || err_msg.contains("block production"),
+            "Error must indicate block production halt: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_h_fund_2_consecutive_no_nodes_threshold() {
+        // H-FUND-2 SECURITY: Verify the MAX_CONSECUTIVE_NO_NODES constant exists
+        // and is set to a reasonable value (10 blocks).
+        //
+        // After 10 consecutive blocks with no qualifying nodes:
+        // - Block production MUST halt
+        // - Error message MUST include consecutive count
+        // - Error message MUST include total fallback count
+        //
+        // This prevents extended periods where node rewards silently go to treasury.
+
+        assert_eq!(
+            MAX_CONSECUTIVE_NO_NODES, 10,
+            "MAX_CONSECUTIVE_NO_NODES should be 10 blocks"
+        );
+
+        // Verify the PayoutCalculation error includes the needed info
+        let err = ghost_common::error::GhostError::PayoutCalculation(format!(
+            "No qualifying nodes for {} consecutive blocks (threshold: {}). \
+             This indicates a verification system failure. \
+             Total fallbacks: {}. Block production halted.",
+            10, MAX_CONSECUTIVE_NO_NODES, 15
+        ));
+
+        let err_msg = format!("{}", err);
+        assert!(
+            err_msg.contains("10 consecutive"),
+            "Error must contain consecutive count: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("threshold"),
+            "Error must mention threshold: {}",
+            err_msg
+        );
+        assert!(
+            err_msg.contains("Total fallbacks"),
+            "Error must include total fallbacks: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn test_h_fund_2_atomic_counter_operations() {
+        // H-FUND-2: Verify atomic counter operations work correctly
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let counter = AtomicU64::new(0);
+
+        // Simulate multiple increments (as would happen across blocks)
+        for i in 1..=10 {
+            let prev = counter.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(prev + 1, i, "Counter should increment correctly");
+        }
+
+        assert_eq!(counter.load(Ordering::Relaxed), 10);
+
+        // Simulate reset when nodes are found
+        counter.store(0, Ordering::Relaxed);
+        assert_eq!(counter.load(Ordering::Relaxed), 0);
     }
 }

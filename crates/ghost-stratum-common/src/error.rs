@@ -78,6 +78,27 @@ pub enum StratumError {
     /// Shutdown requested.
     #[error("Shutdown requested")]
     Shutdown,
+
+    /// Unexpected message type received (CRIT-8: replaces panic in message dispatch).
+    ///
+    /// This error is returned when a message of an unexpected type is received.
+    /// For example, receiving a Notification when a StandardRequest was expected.
+    /// The miner connection should be closed gracefully when this occurs.
+    #[error("Unexpected message type: expected {expected}, got {got}")]
+    UnexpectedMessageType {
+        /// The expected message type (e.g., "StandardRequest", "Notification").
+        expected: &'static str,
+        /// The actual message type received.
+        got: String,
+    },
+
+    /// Protocol violation by remote peer (CRIT-8: graceful handling of malformed messages).
+    ///
+    /// Returned when the remote peer sends malformed or unexpected data
+    /// that violates the protocol. The connection should be closed gracefully
+    /// and the error logged for debugging.
+    #[error("Protocol violation: {0}")]
+    ProtocolViolation(String),
 }
 
 /// Result type for stratum operations.
@@ -119,5 +140,43 @@ mod tests {
         let io_err = std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset");
         let stratum_err: StratumError = io_err.into();
         assert!(matches!(stratum_err, StratumError::Io(_)));
+    }
+
+    // =========================================================================
+    // CRIT-8: Tests for new error types
+    // =========================================================================
+
+    #[test]
+    fn test_unexpected_message_type_display() {
+        let err = StratumError::UnexpectedMessageType {
+            expected: "StandardRequest",
+            got: "Notification".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("Unexpected message type"));
+        assert!(msg.contains("StandardRequest"));
+        assert!(msg.contains("Notification"));
+    }
+
+    #[test]
+    fn test_protocol_violation_display() {
+        let err = StratumError::ProtocolViolation("miner sent garbage data".to_string());
+        assert_eq!(err.to_string(), "Protocol violation: miner sent garbage data");
+    }
+
+    #[test]
+    fn test_unexpected_message_type_pattern_matching() {
+        let err = StratumError::UnexpectedMessageType {
+            expected: "Response",
+            got: "Notification".to_string(),
+        };
+        // Verify pattern matching works correctly
+        match err {
+            StratumError::UnexpectedMessageType { expected, got } => {
+                assert_eq!(expected, "Response");
+                assert_eq!(got, "Notification");
+            }
+            _ => panic!("Wrong error variant"),
+        }
     }
 }

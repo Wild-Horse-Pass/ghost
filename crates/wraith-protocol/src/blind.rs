@@ -89,33 +89,74 @@ fn calculate_shannon_entropy(bytes: &[u8]) -> f64 {
         .sum()
 }
 
-/// M-3: Minimum Shannon entropy required for cryptographic randomness (bits per byte)
-///
-/// SEC-WRAITH-1: Minimum Shannon entropy for cryptographic randomness.
+/// SEC-WRAITH-1: Minimum Shannon entropy for cryptographic randomness (bits per byte)
 ///
 /// Shannon entropy depends on the number of unique values observed. With 32
 /// samples from 256 possible values, valid randomness yields ~4.5-5.0 bits/byte
 /// due to expected collisions in small samples (birthday paradox).
 ///
-/// IMPORTANT: The theoretical max is 8.0 bits/byte, but this is unachievable
-/// with only 32 samples. A threshold of 6.0+ would reject valid random data.
-///
-/// 4.23 SECURITY: We use 3.5 bits/byte as our threshold:
-/// - 3.5 bits/byte = ~44% of theoretical maximum, catches severely broken RNG
-/// - This threshold is more tolerant of natural variance in small samples
-/// - Still catches all-zeros, all-ones, and simple repeating patterns
-/// - Reduces false positive rate for legitimate random data from secure RNGs
-///
-/// NOTE: If higher entropy verification is required for security audit compliance,
-/// the solution is to accumulate more samples before checking, not to raise
-/// the threshold on a 32-byte sample (which is mathematically unsound).
-const MIN_ENTROPY_BITS_PER_BYTE: f64 = 3.5;
+/// We use 4.0 bits/byte as our base threshold, complemented by additional
+/// statistical tests (runs test, chi-squared) to catch patterns that pass
+/// Shannon entropy but exhibit non-random structure.
+const MIN_ENTROPY_BITS_PER_BYTE: f64 = 4.0;
 
-/// Generate random 32 bytes for key material (WR4-L3, M-CRYPTO-1)
+/// SEC-WRAITH-1: Minimum number of runs (bit transitions) expected in random data.
+/// For 256 bits (32 bytes), random data should have ~128 runs (+/- ~11 std dev).
+/// We use a conservative lower bound of 85 runs (~4 std dev below mean).
+const MIN_RUNS_FOR_32_BYTES: usize = 85;
+
+/// SEC-WRAITH-1: Maximum runs test to catch oscillating patterns (0101010...).
+/// Upper bound is ~171 runs (~4 std dev above mean).
+const MAX_RUNS_FOR_32_BYTES: usize = 171;
+
+/// SEC-WRAITH-1: Minimum unique byte count for 32 bytes.
+/// With 32 samples from 256 values, birthday paradox gives ~30.4 expected unique values.
+/// We require at least 15 unique bytes to catch severe repetition patterns.
+const MIN_UNIQUE_BYTES: usize = 15;
+
+/// SEC-WRAITH-1: Perform runs test on byte data
+///
+/// Counts the number of bit transitions (runs) in the data.
+/// Random data should have roughly n/2 runs where n is the number of bits.
+fn count_bit_runs(bytes: &[u8]) -> usize {
+    if bytes.is_empty() {
+        return 0;
+    }
+
+    let mut runs = 1;
+    let mut prev_bit = bytes[0] >> 7;
+
+    for &byte in bytes {
+        for bit_pos in (0..8).rev() {
+            let current_bit = (byte >> bit_pos) & 1;
+            if current_bit != prev_bit {
+                runs += 1;
+                prev_bit = current_bit;
+            }
+        }
+    }
+
+    runs
+}
+
+/// SEC-WRAITH-1: Count unique bytes in the data
+fn count_unique_bytes(bytes: &[u8]) -> usize {
+    let mut seen = [false; 256];
+    for &b in bytes {
+        seen[b as usize] = true;
+    }
+    seen.iter().filter(|&&x| x).count()
+}
+
+/// Generate random 32 bytes for key material (WR4-L3, H-CRYPTO-1)
 ///
 /// Validates entropy quality after generation to detect RNG failures.
-/// Uses Shannon entropy estimation to detect weak randomness.
-/// Returns an error if entropy is insufficient.
+/// Uses multiple statistical tests to detect weak randomness:
+/// 1. Shannon entropy estimation (4.0 bits/byte minimum)
+/// 2. Runs test (bit transitions should be ~128 for 256 bits)
+/// 3. Unique byte count (birthday paradox expects ~30 unique)
+///
+/// Returns an error if any test indicates non-random data.
 fn random_bytes_32() -> Result<[u8; 32], WraithError> {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
@@ -133,13 +174,36 @@ fn random_bytes_32() -> Result<[u8; 32], WraithError> {
         ));
     }
 
-    // M-CRYPTO-1: Shannon entropy validation
-    // Require at least 7.0 bits per byte for cryptographic randomness
+    // H-CRYPTO-1: Shannon entropy validation
     let entropy = calculate_shannon_entropy(&bytes);
     if entropy < MIN_ENTROPY_BITS_PER_BYTE {
         return Err(WraithError::MissingData(format!(
             "Entropy error: insufficient Shannon entropy ({:.2} bits/byte, minimum {:.1}) - RNG failure detected",
             entropy, MIN_ENTROPY_BITS_PER_BYTE
+        )));
+    }
+
+    // H-CRYPTO-1: Runs test - detect patterns like 00001111 or 01010101
+    let runs = count_bit_runs(&bytes);
+    if runs < MIN_RUNS_FOR_32_BYTES {
+        return Err(WraithError::MissingData(format!(
+            "Entropy error: insufficient bit runs ({} runs, minimum {}) - possible stuck bits or low-frequency pattern",
+            runs, MIN_RUNS_FOR_32_BYTES
+        )));
+    }
+    if runs > MAX_RUNS_FOR_32_BYTES {
+        return Err(WraithError::MissingData(format!(
+            "Entropy error: excessive bit runs ({} runs, maximum {}) - possible oscillating pattern",
+            runs, MAX_RUNS_FOR_32_BYTES
+        )));
+    }
+
+    // H-CRYPTO-1: Unique byte count - catch severe repetition
+    let unique = count_unique_bytes(&bytes);
+    if unique < MIN_UNIQUE_BYTES {
+        return Err(WraithError::MissingData(format!(
+            "Entropy error: insufficient unique bytes ({} unique, minimum {}) - possible repetition pattern",
+            unique, MIN_UNIQUE_BYTES
         )));
     }
 
@@ -581,10 +645,14 @@ impl CoordinatorSigner {
         // Note: If nonce is unbound (from deprecated create_nonce), we allow it for backwards compat
 
         // C-WRAITH-1 FIX: NOW remove the nonce - verification has passed
+        // CRIT-7: Return error instead of panicking if nonce was removed between check and removal
+        // This handles race conditions or internal inconsistencies gracefully
         let nonce = self
             .active_nonces
             .remove(&challenge.session_id)
-            .expect("Nonce exists - we just verified it above");
+            .ok_or_else(|| {
+                WraithError::InvalidSignature("Signature verification failed".to_string())
+            })?;
 
         // Update per-participant count
         if let Some(ref ghost_id) = nonce.bound_ghost_id {
@@ -1579,7 +1647,7 @@ mod tests {
         );
     }
 
-    /// M-CRYPTO-1: Test Shannon entropy validation
+    /// H-CRYPTO-1: Test Shannon entropy validation
     #[test]
     fn test_shannon_entropy_validation() {
         // Test with high entropy data (random)
@@ -1626,5 +1694,240 @@ mod tests {
                 "random_bytes_32 should succeed with valid RNG"
             );
         }
+    }
+
+    /// H-CRYPTO-1: Test runs test for bit pattern detection
+    #[test]
+    fn test_bit_runs_validation() {
+        // Test with good random-like data - should have ~128 runs for 256 bits
+        let good_data = [
+            0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f, 0x70, 0x81, 0x92, 0xa3, 0xb4, 0xc5, 0xd6, 0xe7,
+            0xf8, 0x09, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+            0xdd, 0xee, 0xff, 0x00,
+        ];
+        let good_runs = count_bit_runs(&good_data);
+        assert!(
+            good_runs >= MIN_RUNS_FOR_32_BYTES && good_runs <= MAX_RUNS_FOR_32_BYTES,
+            "Good data should have acceptable run count: {} (expected {}-{})",
+            good_runs,
+            MIN_RUNS_FOR_32_BYTES,
+            MAX_RUNS_FOR_32_BYTES
+        );
+
+        // Test with all zeros - should have exactly 1 run (all 0s)
+        let zero_runs = count_bit_runs(&[0u8; 32]);
+        assert_eq!(zero_runs, 1, "All zeros should have 1 run");
+        assert!(
+            zero_runs < MIN_RUNS_FOR_32_BYTES,
+            "All zeros should fail runs test"
+        );
+
+        // Test with all ones - should have exactly 1 run (all 1s)
+        let ones_runs = count_bit_runs(&[0xff; 32]);
+        assert_eq!(ones_runs, 1, "All ones should have 1 run");
+        assert!(
+            ones_runs < MIN_RUNS_FOR_32_BYTES,
+            "All ones should fail runs test"
+        );
+
+        // Test with alternating bits (0101...) - should have 256 runs (maximum)
+        let alternating = [0x55u8; 32]; // 01010101 repeated
+        let alt_runs = count_bit_runs(&alternating);
+        assert!(
+            alt_runs > MAX_RUNS_FOR_32_BYTES,
+            "Alternating pattern should exceed max runs: {} > {}",
+            alt_runs,
+            MAX_RUNS_FOR_32_BYTES
+        );
+
+        // Test with 0xAA pattern (10101010) - also should have high runs
+        let aa_pattern = [0xAA; 32];
+        let aa_runs = count_bit_runs(&aa_pattern);
+        assert!(
+            aa_runs > MAX_RUNS_FOR_32_BYTES,
+            "0xAA pattern should exceed max runs: {} > {}",
+            aa_runs,
+            MAX_RUNS_FOR_32_BYTES
+        );
+    }
+
+    /// H-CRYPTO-1: Test unique byte count validation
+    #[test]
+    fn test_unique_bytes_validation() {
+        // Test with all unique bytes
+        let all_unique: [u8; 32] = [
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+            24, 25, 26, 27, 28, 29, 30, 31,
+        ];
+        let unique_count = count_unique_bytes(&all_unique);
+        assert_eq!(unique_count, 32, "All unique bytes should count 32");
+
+        // Test with all same bytes
+        let all_same = [0x42u8; 32];
+        let same_count = count_unique_bytes(&all_same);
+        assert_eq!(same_count, 1, "All same bytes should count 1");
+        assert!(
+            same_count < MIN_UNIQUE_BYTES,
+            "All same bytes should fail unique test"
+        );
+
+        // Test with two byte pattern
+        let two_bytes = [0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
+            0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB,
+            0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB];
+        let two_count = count_unique_bytes(&two_bytes);
+        assert_eq!(two_count, 2, "Two byte pattern should count 2");
+        assert!(
+            two_count < MIN_UNIQUE_BYTES,
+            "Two byte pattern should fail unique test"
+        );
+    }
+
+    /// CRIT-7: Verify that malformed inputs return errors instead of panicking
+    ///
+    /// This test ensures the coordinator doesn't crash when receiving malformed
+    /// blinding requests from potentially malicious participants.
+    #[test]
+    fn test_malformed_inputs_return_errors_not_panic() {
+        let session_id = [42u8; 32];
+        let mut signer = CoordinatorSigner::new(&session_id);
+
+        // Test 1: Invalid session_id in BlindedChallenge (nonce doesn't exist)
+        let fake_challenge = BlindedChallenge {
+            challenge: [0u8; 32],   // Valid scalar (all zeros)
+            session_id: [0xff; 32], // Non-existent session
+        };
+        let result = signer.sign_blinded_challenge_for_participant(&fake_challenge, "test_ghost");
+        assert!(
+            result.is_err(),
+            "Non-existent nonce should return error, not panic"
+        );
+
+        // Test 2: Invalid challenge scalar (not a valid secp256k1 scalar - all 0xff is > curve order)
+        let nonce = signer.create_nonce_for_participant("test_ghost").unwrap();
+        let invalid_challenge = BlindedChallenge {
+            challenge: [0xff; 32], // Invalid scalar (exceeds curve order)
+            session_id: nonce.session_id,
+        };
+        let result =
+            signer.sign_blinded_challenge_for_participant(&invalid_challenge, "test_ghost");
+        assert!(result.is_err(), "Invalid scalar should return error, not panic");
+
+        // Test 3: Invalid nonce point in PublicNonce (when creating BlindingContext)
+        let fake_nonce = PublicNonce {
+            nonce_point: [0u8; 33], // Invalid point (not on curve)
+            session_id: [1u8; 32],
+        };
+        let secp = Secp256k1::new();
+        let sk = random_secret_key();
+        let pubkey = PublicKey::from_secret_key(&secp, &sk);
+        let result = BlindingContext::new(vec![0u8; 32], &pubkey, &fake_nonce);
+        assert!(
+            result.is_err(),
+            "Invalid nonce point should return error, not panic"
+        );
+
+        // Test 4: Verify signature on token with invalid nonce_point
+        let session_id2 = [43u8; 32];
+        let signer2 = CoordinatorSigner::new(&session_id2);
+        let token_with_bad_nonce = UnblindedToken {
+            message: vec![1, 2, 3],
+            nonce_point: [0u8; 33], // Invalid point
+            signature_scalar: [0u8; 32],
+            session_key_id: *signer2.key_id(),
+        };
+        let result = signer2.verify_signature(&token_with_bad_nonce);
+        assert!(
+            result.is_err(),
+            "Invalid nonce point in token should return error, not panic"
+        );
+
+        // Test 5: Verify signature on token with invalid signature scalar
+        let token_with_bad_scalar = UnblindedToken {
+            message: vec![1, 2, 3],
+            nonce_point: pubkey.serialize(), // Valid point
+            signature_scalar: [0xff; 32],    // Invalid scalar (exceeds curve order)
+            session_key_id: *signer2.key_id(),
+        };
+        let result = signer2.verify_signature(&token_with_bad_scalar);
+        assert!(
+            result.is_err(),
+            "Invalid signature scalar should return error, not panic"
+        );
+    }
+
+    /// CRIT-7: Verify TokenVerifier handles malformed tokens gracefully
+    #[test]
+    fn test_token_verifier_malformed_input() {
+        let session_id = [44u8; 32];
+        let secp = Secp256k1::new();
+        let sk = random_secret_key();
+        let pubkey = PublicKey::from_secret_key(&secp, &sk);
+
+        let verifier = TokenVerifier::new(pubkey, &session_id);
+
+        // Compute the correct key_id so tokens pass the early check
+        use bitcoin::hashes::{sha256, Hash, HashEngine};
+        let mut engine = sha256::Hash::engine();
+        engine.input(b"wraith/key-id/v1");
+        engine.input(&session_id);
+        engine.input(&pubkey.serialize());
+        let key_id: [u8; 32] = sha256::Hash::from_engine(engine).to_byte_array();
+
+        // Test with invalid nonce point
+        let bad_token = UnblindedToken {
+            message: vec![1, 2, 3],
+            nonce_point: [0u8; 33], // Invalid point (not on curve)
+            signature_scalar: [0u8; 32],
+            session_key_id: key_id, // Use correct key_id to pass early check
+        };
+        let result = verifier.verify(&bad_token);
+        assert!(
+            result.is_err(),
+            "Invalid nonce point should return error, not panic"
+        );
+
+        // Test with invalid scalar (0xff repeated exceeds curve order)
+        let bad_token2 = UnblindedToken {
+            message: vec![1, 2, 3],
+            nonce_point: pubkey.serialize(),
+            signature_scalar: [0xff; 32], // Invalid scalar (exceeds curve order)
+            session_key_id: key_id,       // Use correct key_id to pass early check
+        };
+        let result = verifier.verify(&bad_token2);
+        assert!(
+            result.is_err(),
+            "Invalid signature scalar should return error, not panic"
+        );
+    }
+
+    /// CRIT-7: Verify BlindingContext handles edge cases gracefully
+    #[test]
+    fn test_blinding_context_edge_cases() {
+        let secp = Secp256k1::new();
+        let sk = random_secret_key();
+        let pubkey = PublicKey::from_secret_key(&secp, &sk);
+
+        // Test with valid nonce - should succeed
+        let mut signer = CoordinatorSigner::new(&[45u8; 32]);
+        let valid_nonce = signer.create_nonce_for_participant("test").unwrap();
+        let result = BlindingContext::new(vec![0u8; 32], &pubkey, &valid_nonce);
+        assert!(result.is_ok(), "Valid inputs should succeed");
+
+        // Test to_schnorr_bytes with invalid nonce point
+        let context = result.unwrap();
+        let challenge = context.create_blinded_challenge().unwrap();
+        let response = signer
+            .sign_blinded_challenge_for_participant(&challenge, "test")
+            .unwrap();
+        let mut token = context.unblind(&response, *signer.key_id()).unwrap();
+
+        // Corrupt the nonce_point
+        token.nonce_point = [0u8; 33];
+        let result = token.to_schnorr_bytes();
+        assert!(
+            result.is_err(),
+            "Invalid nonce point in to_schnorr_bytes should return error"
+        );
     }
 }

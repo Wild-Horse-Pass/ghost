@@ -245,6 +245,90 @@ pub fn build_sv1_set_difficulty(difficulty: f64) -> json_rpc::Message {
 }
 
 // ============================================================================
+// Message Type Extraction Helpers (CRIT-8: Safe Message Dispatch)
+// ============================================================================
+//
+// These helpers provide safe extraction of message types without panicking.
+// Use these instead of if-let/else patterns with panic!() to ensure
+// graceful handling of protocol violations.
+
+/// Get the message type name for error reporting.
+fn message_type_name(msg: &json_rpc::Message) -> &'static str {
+    match msg {
+        json_rpc::Message::StandardRequest(_) => "StandardRequest",
+        json_rpc::Message::Notification(_) => "Notification",
+        json_rpc::Message::OkResponse(_) => "OkResponse",
+        json_rpc::Message::ErrorResponse(_) => "ErrorResponse",
+    }
+}
+
+/// Extract a StandardRequest from a message, returning an error on type mismatch.
+///
+/// Use this instead of `if let Message::StandardRequest(req) = msg { ... } else { panic!() }`.
+///
+/// # Example
+/// ```ignore
+/// let msg: json_rpc::Message = receive_message().await?;
+/// let request = extract_standard_request(msg)?;
+/// // Handle request...
+/// ```
+pub fn extract_standard_request(msg: json_rpc::Message) -> Result<json_rpc::StandardRequest> {
+    match msg {
+        json_rpc::Message::StandardRequest(req) => Ok(req),
+        other => Err(StratumError::UnexpectedMessageType {
+            expected: "StandardRequest",
+            got: message_type_name(&other).to_string(),
+        }),
+    }
+}
+
+/// Extract a Notification from a message, returning an error on type mismatch.
+///
+/// Use this instead of `if let Message::Notification(n) = msg { ... } else { panic!() }`.
+pub fn extract_notification(msg: json_rpc::Message) -> Result<json_rpc::Notification> {
+    match msg {
+        json_rpc::Message::Notification(notif) => Ok(notif),
+        other => Err(StratumError::UnexpectedMessageType {
+            expected: "Notification",
+            got: message_type_name(&other).to_string(),
+        }),
+    }
+}
+
+/// Extract an OkResponse from a message, returning an error on type mismatch.
+pub fn extract_ok_response(msg: json_rpc::Message) -> Result<json_rpc::Response> {
+    match msg {
+        json_rpc::Message::OkResponse(resp) => Ok(resp),
+        other => Err(StratumError::UnexpectedMessageType {
+            expected: "OkResponse",
+            got: message_type_name(&other).to_string(),
+        }),
+    }
+}
+
+/// Extract an ErrorResponse from a message, returning an error on type mismatch.
+pub fn extract_error_response(msg: json_rpc::Message) -> Result<json_rpc::Response> {
+    match msg {
+        json_rpc::Message::ErrorResponse(resp) => Ok(resp),
+        other => Err(StratumError::UnexpectedMessageType {
+            expected: "ErrorResponse",
+            got: message_type_name(&other).to_string(),
+        }),
+    }
+}
+
+/// Extract any response (Ok or Error) from a message.
+pub fn extract_response(msg: json_rpc::Message) -> Result<json_rpc::Response> {
+    match msg {
+        json_rpc::Message::OkResponse(resp) | json_rpc::Message::ErrorResponse(resp) => Ok(resp),
+        other => Err(StratumError::UnexpectedMessageType {
+            expected: "Response (OkResponse or ErrorResponse)",
+            got: message_type_name(&other).to_string(),
+        }),
+    }
+}
+
+// ============================================================================
 // Stratum V2 Connection (placeholder - full implementation needs noise_sv2)
 // ============================================================================
 
@@ -297,46 +381,97 @@ pub fn validate_sv2_config(config: &Sv2ConnectionConfig) -> Result<()> {
 mod tests {
     use super::*;
 
+    // =========================================================================
+    // CRIT-8: Tests now use extract_* helpers instead of panic!()
+    // This demonstrates proper error handling patterns for production code
+    // =========================================================================
+
     #[test]
     fn test_build_sv1_subscribe() {
         let msg = build_sv1_subscribe(1, "ghost-miner/1.0", None);
-        if let json_rpc::Message::StandardRequest(req) = msg {
-            assert_eq!(req.id, 1);
-            assert_eq!(req.method, "mining.subscribe");
-        } else {
-            panic!("Expected StandardRequest");
-        }
+        // Use extract_standard_request for safe extraction
+        let req = extract_standard_request(msg).expect("should be StandardRequest");
+        assert_eq!(req.id, 1);
+        assert_eq!(req.method, "mining.subscribe");
     }
 
     #[test]
     fn test_build_sv1_authorize() {
         let msg = build_sv1_authorize(2, "bc1qtest", "x");
-        if let json_rpc::Message::StandardRequest(req) = msg {
-            assert_eq!(req.id, 2);
-            assert_eq!(req.method, "mining.authorize");
-        } else {
-            panic!("Expected StandardRequest");
-        }
+        // Use extract_standard_request for safe extraction
+        let req = extract_standard_request(msg).expect("should be StandardRequest");
+        assert_eq!(req.id, 2);
+        assert_eq!(req.method, "mining.authorize");
     }
 
     #[test]
     fn test_build_sv1_reconnect() {
         let msg = build_sv1_reconnect("pool2.example.com", 3334, 0);
-        if let json_rpc::Message::Notification(notif) = msg {
-            assert_eq!(notif.method, "client.reconnect");
-        } else {
-            panic!("Expected Notification");
-        }
+        // Use extract_notification for safe extraction
+        let notif = extract_notification(msg).expect("should be Notification");
+        assert_eq!(notif.method, "client.reconnect");
     }
 
     #[test]
     fn test_build_sv1_set_difficulty() {
         let msg = build_sv1_set_difficulty(65536.0);
-        if let json_rpc::Message::Notification(notif) = msg {
-            assert_eq!(notif.method, "mining.set_difficulty");
-        } else {
-            panic!("Expected Notification");
+        // Use extract_notification for safe extraction
+        let notif = extract_notification(msg).expect("should be Notification");
+        assert_eq!(notif.method, "mining.set_difficulty");
+    }
+
+    // =========================================================================
+    // CRIT-8: Tests proving malformed messages return errors, not panics
+    // =========================================================================
+
+    #[test]
+    fn test_extract_request_from_notification_returns_error() {
+        // Create a Notification
+        let msg = build_sv1_set_difficulty(1.0);
+        // Try to extract as StandardRequest - should error, not panic
+        let result = extract_standard_request(msg);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, StratumError::UnexpectedMessageType { .. }));
+    }
+
+    #[test]
+    fn test_extract_notification_from_request_returns_error() {
+        // Create a StandardRequest
+        let msg = build_sv1_subscribe(1, "test", None);
+        // Try to extract as Notification - should error, not panic
+        let result = extract_notification(msg);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, StratumError::UnexpectedMessageType { .. }));
+    }
+
+    #[test]
+    fn test_extract_response_from_request_returns_error() {
+        // Create a StandardRequest
+        let msg = build_sv1_authorize(1, "user", "pass");
+        // Try to extract as Response - should error, not panic
+        let result = extract_response(msg);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            StratumError::UnexpectedMessageType { expected, got } => {
+                assert!(expected.contains("Response"));
+                assert_eq!(got, "StandardRequest");
+            }
+            _ => panic!("Expected UnexpectedMessageType error"),
         }
+    }
+
+    #[test]
+    fn test_unexpected_message_type_error_message() {
+        let msg = build_sv1_reconnect("host", 3333, 0);
+        let err = extract_standard_request(msg).unwrap_err();
+        let error_string = err.to_string();
+        // Verify error message is informative
+        assert!(error_string.contains("Unexpected message type"));
+        assert!(error_string.contains("StandardRequest"));
+        assert!(error_string.contains("Notification"));
     }
 
     #[test]

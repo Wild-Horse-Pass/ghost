@@ -27,6 +27,7 @@ use tracing::{debug, error, info, warn};
 use ghost_common::constants::{
     DUST_THRESHOLD_SATS, MAX_MINER_OUTPUTS, MAX_NODE_OUTPUTS, POOL_FEE_BASIS_POINTS,
 };
+use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::types::{PayoutEntry, PayoutType};
 
 use crate::shares::RoundShares;
@@ -73,6 +74,21 @@ impl PayoutCalculator {
     }
 
     /// Calculate payouts for a round
+    ///
+    /// # SECURITY: TX Fee Allocation Enforcement (CRIT-3)
+    ///
+    /// This function returns `Err(GhostError::TxFeeAllocationFailed)` if the block builder's
+    /// payout address cannot be found. This is a CRITICAL security measure:
+    ///
+    /// - TX fees (~5-50M sats per block) MUST go to the block builder node
+    /// - If the builder address is not found, we CANNOT proceed with block production
+    /// - The caller MUST NOT produce a block when this error is returned
+    /// - Silently redirecting TX fees to treasury would be theft from the block finder
+    ///
+    /// # Returns
+    ///
+    /// - `Ok(PayoutResult)` - All payouts calculated successfully, safe to produce block
+    /// - `Err(TxFeeAllocationFailed)` - Block builder address not found, MUST NOT produce block
     #[allow(clippy::too_many_arguments)]
     pub fn calculate_payouts(
         &self,
@@ -83,7 +99,7 @@ impl PayoutCalculator {
         node_addresses: &[([u8; 32], Vec<u8>)], // (node_id, address)
         block_builder_node: [u8; 32],
         treasury_address: Vec<u8>,
-    ) -> PayoutResult {
+    ) -> GhostResult<PayoutResult> {
         info!(
             round_id = shares.round_id,
             subsidy = subsidy_sats,
@@ -197,20 +213,23 @@ impl PayoutCalculator {
                     }
                 }
             } else {
-                // SECURITY: Block builder address not found - this is a critical error.
-                // We must NOT silently redirect TX fees to treasury as this would steal
-                // from the block finder. Instead, we log the error and continue without
-                // the TX fees in the payout (they will remain unallocated).
-                // The caller should handle this by failing the block production.
+                // SECURITY (CRIT-3): Block builder address not found - CRITICAL ERROR.
+                // We MUST NOT:
+                // 1. Silently redirect TX fees to treasury (that would steal from block finder)
+                // 2. Continue with block production (TX fees would be permanently lost)
+                // 3. Just log and continue (the flag was ignored by callers)
+                //
+                // We MUST return an error to FORCE the caller to halt block production.
+                // TX fees can be 5-50M sats per block - this is not acceptable to lose.
                 error!(
                     builder_id = hex::encode(builder),
                     tx_fees = tx_fees_sats,
-                    "CRITICAL: Block builder address not found! TX fees NOT allocated - block should not be produced"
+                    "CRITICAL: Block builder address not found! Failing payout calculation to prevent fund loss"
                 );
-                // DO NOT add to treasury - this would steal from the block finder
-                // Mark that we failed to allocate TX fees
-                result.tx_fee_recipient = None;
-                result.tx_fee_allocation_failed = true;
+                return Err(GhostError::TxFeeAllocationFailed {
+                    node_id: hex::encode(builder),
+                    tx_fees: tx_fees_sats,
+                });
             }
         }
 
@@ -222,7 +241,7 @@ impl PayoutCalculator {
             "Payout calculation complete"
         );
 
-        result
+        Ok(result)
     }
 
     /// Calculate miner payouts proportional to work
@@ -444,9 +463,9 @@ pub struct PayoutResult {
     pub tx_fee_recipient: Option<NodeId>,
     /// TX fee payout entry
     pub tx_fee_entry: Option<PayoutEntry>,
-    /// SECURITY: Set to true if TX fee allocation failed due to missing block finder address.
-    /// When true, the block should NOT be produced as TX fees would be lost.
-    pub tx_fee_allocation_failed: bool,
+    // NOTE: tx_fee_allocation_failed field was REMOVED as part of CRIT-3 fix.
+    // Instead of setting a flag that callers could ignore, calculate_payouts()
+    // now returns Err(TxFeeAllocationFailed) which FORCES callers to handle it.
 }
 
 impl PayoutResult {
@@ -540,7 +559,7 @@ mod tests {
             &node_addresses,
             [1u8; 32],     // Block builder
             vec![5u8; 20], // Treasury
-        );
+        ).expect("calculate_payouts should succeed when all addresses are found");
 
         assert!(result.treasury_amount > 0);
         assert_eq!(result.tx_fee_amount, 1_000_000);
@@ -599,7 +618,7 @@ mod tests {
             &node_addresses,
             [1u8; 32],
             vec![7u8; 20],
-        );
+        ).expect("calculate_payouts should succeed when all addresses are found");
 
         // Verify all miner payouts are reasonable
         let total_miner_payout: u64 = result.miner_payouts.iter().map(|p| p.amount).sum();
@@ -631,9 +650,10 @@ mod tests {
     }
 
     #[test]
-    fn test_tx_fees_not_lost() {
-        // SECURITY TEST: Verify TX fees are not silently redirected to treasury
-        // when block finder address is not found
+    fn test_tx_fee_allocation_failure_prevents_block_production() {
+        // SECURITY TEST (CRIT-3): Verify that when block finder address is not found,
+        // calculate_payouts returns an ERROR, not just a flag. This ensures the caller
+        // CANNOT proceed with block production when TX fees are unallocated.
 
         let mut shares = RoundShares::new(1, 100);
         shares.add_miner_work("miner1", 100.0);
@@ -655,32 +675,93 @@ mod tests {
         let result = calculator.calculate_payouts(
             &shares,
             312_500_000,
-            10_000_000, // 0.1 BTC in TX fees
+            10_000_000, // 0.1 BTC in TX fees - WOULD BE LOST if we continued
             &miner_addresses,
             &node_addresses,
-            [2u8; 32], // Block builder NOT in node_addresses
+            [2u8; 32], // Block builder NOT in node_addresses - THIS IS THE PROBLEM
             vec![5u8; 20],
         );
 
-        // SECURITY: TX fee allocation should fail, not silently redirect to treasury
+        // SECURITY (CRIT-3): Function MUST return an error, not Ok with a flag
         assert!(
-            result.tx_fee_allocation_failed,
-            "tx_fee_allocation_failed should be true when block finder address not found"
+            result.is_err(),
+            "calculate_payouts MUST return Err when block builder address not found"
         );
 
-        // TX fee entry should be None (not allocated)
-        assert!(
-            result.tx_fee_entry.is_none(),
-            "TX fee entry should be None when address not found"
+        // Verify it's the correct error type
+        let err = result.unwrap_err();
+        match err {
+            GhostError::TxFeeAllocationFailed { node_id, tx_fees } => {
+                // Verify the error contains the correct information
+                assert_eq!(tx_fees, 10_000_000, "Error should contain the TX fee amount");
+                assert!(
+                    !node_id.is_empty(),
+                    "Error should contain the block builder node ID"
+                );
+            }
+            _ => panic!(
+                "Expected TxFeeAllocationFailed error, got: {:?}",
+                err
+            ),
+        }
+    }
+
+    #[test]
+    fn test_valid_block_production_proceeds_normally() {
+        // SECURITY TEST (CRIT-3): Verify that when all addresses are found,
+        // calculate_payouts returns Ok with proper TX fee allocation.
+
+        let mut shares = RoundShares::new(1, 100);
+        shares.add_miner_work("miner1", 100.0);
+
+        let mut caps = NodeCapabilities::default();
+        caps.archive_mode = true;
+        shares.register_node([1u8; 32], caps);
+        shares.increment_node_shares(&[1u8; 32]);
+        shares.calculate_top_100_nodes();
+
+        let calculator = PayoutCalculator::default();
+
+        let miner_addresses = vec![("miner1".to_string(), vec![1u8; 20])];
+
+        // Node addresses INCLUDES the block builder [1u8; 32]
+        let node_addresses = vec![([1u8; 32], vec![3u8; 20])];
+
+        let result = calculator.calculate_payouts(
+            &shares,
+            312_500_000,
+            10_000_000, // 0.1 BTC in TX fees
+            &miner_addresses,
+            &node_addresses,
+            [1u8; 32], // Block builder IS in node_addresses
+            vec![5u8; 20],
         );
 
-        // CRITICAL: Treasury should NOT have the TX fees added
-        // Treasury should only be ~1,562,500 (0.5% of subsidy), not +10,000,000
+        // SECURITY (CRIT-3): Function MUST return Ok when all addresses are found
+        assert!(
+            result.is_ok(),
+            "calculate_payouts should return Ok when all addresses are found"
+        );
+
+        let payout = result.unwrap();
+
+        // TX fee entry should be present with correct amount
+        assert!(
+            payout.tx_fee_entry.is_some(),
+            "TX fee entry should be present when address is found"
+        );
+        assert_eq!(
+            payout.tx_fee_entry.as_ref().unwrap().amount,
+            10_000_000,
+            "TX fee amount should be fully allocated"
+        );
+
+        // Treasury should NOT have TX fees added (only pool fee portion)
         let expected_treasury = 312_500_000 / 100 / 2; // 0.5% of subsidy
         assert_eq!(
-            result.treasury_amount, expected_treasury,
-            "Treasury amount should be {} but was {} - TX fees may have been stolen!",
-            expected_treasury, result.treasury_amount
+            payout.treasury_amount, expected_treasury,
+            "Treasury amount should be {} (pool fee only), not include TX fees",
+            expected_treasury
         );
     }
 
@@ -712,7 +793,7 @@ mod tests {
             &node_addresses,
             [1u8; 32],
             vec![5u8; 20],
-        );
+        ).expect("calculate_payouts should succeed when all addresses are found");
 
         // Pool fee should be 1% of subsidy
         let expected_pool_fee = subsidy / 100; // 3,125,000
@@ -775,7 +856,7 @@ mod tests {
             &node_addresses,
             [1u8; 32],
             vec![5u8; 20],
-        );
+        ).expect("calculate_payouts should succeed when all addresses are found");
 
         // Get the miner payout
         assert!(

@@ -794,6 +794,33 @@ impl WithdrawalStatus {
             _ => None,
         }
     }
+
+    /// Check if a status transition is valid
+    ///
+    /// Valid transitions:
+    /// - pending -> batched, cancelled, failed
+    /// - batched -> submitted, failed
+    /// - submitted -> confirmed, failed
+    /// - confirmed -> (terminal state)
+    /// - failed -> (terminal state)
+    /// - cancelled -> (terminal state)
+    pub fn can_transition_to(&self, new_status: Self) -> bool {
+        match self {
+            Self::Pending => matches!(
+                new_status,
+                Self::Batched | Self::Cancelled | Self::Failed
+            ),
+            Self::Batched => matches!(new_status, Self::Submitted | Self::Failed),
+            Self::Submitted => matches!(new_status, Self::Confirmed | Self::Failed),
+            // Terminal states cannot transition
+            Self::Confirmed | Self::Failed | Self::Cancelled => false,
+        }
+    }
+
+    /// Check if this is a terminal state (no further transitions allowed)
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Confirmed | Self::Failed | Self::Cancelled)
+    }
 }
 
 // =============================================================================

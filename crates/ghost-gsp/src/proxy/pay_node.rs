@@ -897,6 +897,9 @@ impl PayNodeProxy {
             recovery_window_total: 52560, // ~1 year
             in_mempool,
             pending_l2_sats,
+            // CRIT-1/CRIT-2 fields
+            pending_instant_sats: 0, // Would come from instant payment tracker
+            owner_pubkey: None,      // Would need wallet/key lookup
         })
     }
 

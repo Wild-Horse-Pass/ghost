@@ -1422,14 +1422,18 @@ async fn main() -> Result<()> {
         let (subsidy, fees, height) = tp_for_block.get_current_block_info();
 
         // Load treasury state from database
+        // SEC-ERR-4: Log database errors instead of silently ignoring them
         let treasury_state = match db_for_block.get_treasury_balance() {
             Ok(balance) => {
-                let threshold_ts = db_for_block
-                    .get_treasury_threshold_reached()
-                    .ok()
-                    .flatten()
-                    .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
-                    .map(|dt| dt.with_timezone(&chrono::Utc));
+                let threshold_ts = match db_for_block.get_treasury_threshold_reached() {
+                    Ok(ts_opt) => ts_opt
+                        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+                        .map(|dt| dt.with_timezone(&chrono::Utc)),
+                    Err(e) => {
+                        warn!(error = %e, "Failed to load treasury threshold timestamp, using None");
+                        None
+                    }
+                };
                 TreasuryState::from_stored(balance, threshold_ts)
             }
             Err(e) => {
@@ -2151,14 +2155,18 @@ async fn main() -> Result<()> {
                     let (subsidy, fees, height) = tp_for_events.get_current_block_info();
 
                     // Load treasury state from database for decay calculation
+                    // SEC-ERR-4: Log database errors instead of silently ignoring them
                     let treasury_state = match db_for_events.get_treasury_balance() {
                         Ok(balance) => {
-                            let threshold_ts = db_for_events
-                                .get_treasury_threshold_reached()
-                                .ok()
-                                .flatten()
-                                .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
-                                .map(|dt| dt.with_timezone(&chrono::Utc));
+                            let threshold_ts = match db_for_events.get_treasury_threshold_reached() {
+                                Ok(ts_opt) => ts_opt
+                                    .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+                                    .map(|dt| dt.with_timezone(&chrono::Utc)),
+                                Err(e) => {
+                                    warn!(error = %e, "Failed to load treasury threshold timestamp, using None");
+                                    None
+                                }
+                            };
                             TreasuryState::from_stored(balance, threshold_ts)
                         }
                         Err(e) => {

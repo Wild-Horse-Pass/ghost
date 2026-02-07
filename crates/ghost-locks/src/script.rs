@@ -92,28 +92,65 @@ pub const RECOVERY_NSEQUENCE: u32 = 0xFFFFFFFE;
 ///     <recovery_pubkey> OP_CHECKSIG
 /// OP_ENDIF
 /// ```
+/// H-BTC-3: Minimum recommended recovery_blocks (1 day = ~144 blocks)
+///
+/// This is the minimum recommended value for production use to ensure
+/// meaningful timelock protection. Using shorter timelocks increases
+/// the risk window where an attacker could recover stolen keys and
+/// sweep funds before the legitimate owner can act.
+pub const MIN_RECOMMENDED_RECOVERY_BLOCKS: u32 = 144; // ~1 day
+
+/// BIP-68 maximum relative timelock in blocks (~455 days)
+pub const MAX_RECOVERY_BLOCKS: u32 = 65535;
+
 ///
 /// # Arguments
 /// * `lock_pubkey` - The lock public key (33-byte compressed)
 /// * `recovery_pubkey` - The recovery public key (33-byte compressed)
 /// * `recovery_blocks` - Relative timelock in blocks (NOT absolute height)
 ///
-/// # Panics
-/// Panics if recovery_blocks exceeds BIP-68 maximum (65535 blocks, ~455 days).
+/// # Errors
+/// Returns an error if:
+/// - H-BTC-3: recovery_blocks is 0 (defeats the purpose of timelock)
+/// - recovery_blocks exceeds BIP-68 maximum (65535 blocks, ~455 days)
+///
+/// # Security Recommendations
+/// Use at least `MIN_RECOMMENDED_RECOVERY_BLOCKS` (144, ~1 day) for production.
+/// Shorter timelocks reduce the security window for recovery.
 pub fn build_wsh_witness_script(
     lock_pubkey: &PublicKey,
     recovery_pubkey: &PublicKey,
     recovery_blocks: u32,
-) -> ScriptBuf {
+) -> Result<ScriptBuf, GhostLockError> {
+    // H-BTC-3: Zero recovery_blocks enables immediate recovery, defeating timelock
+    if recovery_blocks == 0 {
+        return Err(GhostLockError::TimelockTooShort {
+            blocks: 0,
+            minimum: 1,
+        });
+    }
+
+    // H-BTC-3: Warn if using very short timelock (but allow it)
+    if recovery_blocks < MIN_RECOMMENDED_RECOVERY_BLOCKS {
+        tracing::warn!(
+            recovery_blocks = recovery_blocks,
+            recommended = MIN_RECOMMENDED_RECOVERY_BLOCKS,
+            "H-BTC-3: recovery_blocks is below recommended minimum. \
+             Short timelocks reduce security. Consider using at least {} blocks (~1 day)",
+            MIN_RECOMMENDED_RECOVERY_BLOCKS
+        );
+    }
+
     // SECURITY: Validate recovery_blocks is within BIP-68 limits
     // BIP-68 uses 16 bits for block count, max is 65535 (~455 days)
-    assert!(
-        recovery_blocks <= 65535,
-        "recovery_blocks {} exceeds BIP-68 maximum of 65535",
-        recovery_blocks
-    );
+    if recovery_blocks > MAX_RECOVERY_BLOCKS {
+        return Err(GhostLockError::ScriptError(format!(
+            "recovery_blocks {} exceeds BIP-68 maximum of {}",
+            recovery_blocks, MAX_RECOVERY_BLOCKS
+        )));
+    }
 
-    Builder::new()
+    Ok(Builder::new()
         // IF branch: Normal spending with lock key
         .push_opcode(OP_IF)
         .push_slice(lock_pubkey.serialize())
@@ -126,7 +163,7 @@ pub fn build_wsh_witness_script(
         .push_slice(recovery_pubkey.serialize())
         .push_opcode(OP_CHECKSIG)
         .push_opcode(OP_ENDIF)
-        .into_script()
+        .into_script())
 }
 
 /// Compute the SHA256 hash of a witness script (for P2WSH)
@@ -166,8 +203,8 @@ pub fn build_lock_script(
     // Get relative block count for CSV (NOT absolute height)
     let recovery_blocks = timelock_tier.recovery_blocks();
 
-    // Build the witness script
-    let witness_script = build_wsh_witness_script(lock_pubkey, recovery_pubkey, recovery_blocks);
+    // Build the witness script (H-BTC-3: now returns Result)
+    let witness_script = build_wsh_witness_script(lock_pubkey, recovery_pubkey, recovery_blocks)?;
 
     // Build the P2WSH scriptPubKey
     let script_pubkey = build_p2wsh_script_pubkey(&witness_script);
@@ -341,7 +378,9 @@ mod tests {
         let recovery_pubkey = generate_pubkey();
         let recovery_blocks = 52_560u32; // ~1 year
 
-        let script = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, recovery_blocks);
+        // H-BTC-3: Now returns Result
+        let script = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, recovery_blocks)
+            .expect("valid recovery_blocks should succeed");
         let asm = script.to_asm_string();
 
         // Should contain IF/ELSE/ENDIF structure
@@ -369,8 +408,9 @@ mod tests {
         let lock_pubkey = generate_pubkey();
         let recovery_pubkey = generate_pubkey();
 
+        // H-BTC-3: Now returns Result
         let witness_script =
-            build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560);
+            build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560).unwrap();
         let script_pubkey = build_p2wsh_script_pubkey(&witness_script);
 
         // P2WSH: OP_0 <32-byte hash>
@@ -389,8 +429,9 @@ mod tests {
         let lock_pubkey = generate_pubkey();
         let recovery_pubkey = generate_pubkey();
 
-        let script1 = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560);
-        let script2 = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560);
+        // H-BTC-3: Now returns Result
+        let script1 = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560).unwrap();
+        let script2 = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560).unwrap();
 
         assert_eq!(script1, script2, "Same inputs must produce same script");
 
@@ -455,8 +496,9 @@ mod tests {
         let signature = vec![0x30; 64]; // Mock signature
         let lock_pubkey = generate_pubkey();
         let recovery_pubkey = generate_pubkey();
+        // H-BTC-3: Now returns Result
         let witness_script =
-            build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560);
+            build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560).unwrap();
 
         let witness = build_normal_witness(&signature, &witness_script);
 
@@ -471,8 +513,9 @@ mod tests {
         let signature = vec![0x30; 64]; // Mock signature
         let lock_pubkey = generate_pubkey();
         let recovery_pubkey = generate_pubkey();
+        // H-BTC-3: Now returns Result
         let witness_script =
-            build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560);
+            build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560).unwrap();
 
         let witness = build_recovery_witness(&signature, &witness_script);
 
@@ -539,7 +582,8 @@ mod tests {
         let recovery_pubkey = generate_pubkey();
 
         // P2WSH should pass
-        let witness_script = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560);
+        // H-BTC-3: Now returns Result
+        let witness_script = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 52_560).unwrap();
         let p2wsh = build_p2wsh_script_pubkey(&witness_script);
         assert!(validate_no_p2tr(&p2wsh).is_ok());
 
@@ -549,5 +593,39 @@ mod tests {
             .push_slice(&[0u8; 32])
             .into_script();
         assert!(validate_no_p2tr(&fake_p2tr).is_err());
+    }
+
+    /// H-BTC-3: Test that zero recovery_blocks is rejected
+    #[test]
+    fn test_zero_recovery_blocks_rejected() {
+        let lock_pubkey = generate_pubkey();
+        let recovery_pubkey = generate_pubkey();
+
+        // Zero recovery_blocks should fail
+        let result = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 0);
+        assert!(result.is_err(), "Zero recovery_blocks should be rejected");
+
+        match result {
+            Err(GhostLockError::TimelockTooShort { blocks, minimum }) => {
+                assert_eq!(blocks, 0);
+                assert_eq!(minimum, 1);
+            }
+            _ => panic!("Expected TimelockTooShort error"),
+        }
+    }
+
+    /// H-BTC-3: Test that exceeding BIP-68 max is rejected
+    #[test]
+    fn test_recovery_blocks_max_exceeded() {
+        let lock_pubkey = generate_pubkey();
+        let recovery_pubkey = generate_pubkey();
+
+        // Exceeding BIP-68 max should fail
+        let result = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 65536);
+        assert!(result.is_err(), "Exceeding BIP-68 max should be rejected");
+
+        // At max should succeed
+        let result = build_wsh_witness_script(&lock_pubkey, &recovery_pubkey, 65535);
+        assert!(result.is_ok(), "BIP-68 max should be accepted");
     }
 }

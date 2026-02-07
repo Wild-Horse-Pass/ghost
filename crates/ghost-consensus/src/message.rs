@@ -60,6 +60,12 @@ pub mod topics {
     pub const MPC: &[u8] = b"mpc";
 }
 
+/// Default TTL for gossip messages (number of hops before message is dropped)
+pub const DEFAULT_MESSAGE_TTL: u8 = 8;
+
+/// Minimum TTL for messages to be forwarded (messages with TTL 0 are not forwarded)
+pub const MIN_FORWARD_TTL: u8 = 1;
+
 /// Consensus message envelope
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageEnvelope {
@@ -77,10 +83,20 @@ pub struct MessageEnvelope {
     pub signature: [u8; 64],
     /// Message payload (JSON)
     pub payload: Vec<u8>,
+    /// Time-to-live: number of hops remaining before message is dropped.
+    /// Decremented on each forward. Messages with TTL 0 are processed locally but not forwarded.
+    /// Defaults to DEFAULT_MESSAGE_TTL for backwards compatibility with older messages.
+    #[serde(default = "default_ttl")]
+    pub ttl: u8,
+}
+
+/// Default TTL value for deserialization of messages without TTL field
+fn default_ttl() -> u8 {
+    DEFAULT_MESSAGE_TTL
 }
 
 impl MessageEnvelope {
-    /// Create a new message envelope
+    /// Create a new message envelope with default TTL
     pub fn new(
         msg_type: MessageType,
         sender: NodeId,
@@ -95,7 +111,46 @@ impl MessageEnvelope {
             sequence,
             signature,
             payload,
+            ttl: DEFAULT_MESSAGE_TTL,
         }
+    }
+
+    /// Create a new message envelope with custom TTL
+    pub fn with_ttl(
+        msg_type: MessageType,
+        sender: NodeId,
+        payload: Vec<u8>,
+        sequence: u64,
+        signature: [u8; 64],
+        ttl: u8,
+    ) -> Self {
+        Self {
+            msg_type,
+            sender,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            sequence,
+            signature,
+            payload,
+            ttl,
+        }
+    }
+
+    /// Decrement TTL and return whether the message should be forwarded
+    ///
+    /// Returns true if the message should be forwarded (TTL was > 0 before decrement)
+    /// Returns false if the message should not be forwarded (TTL was already 0)
+    pub fn decrement_ttl(&mut self) -> bool {
+        if self.ttl > 0 {
+            self.ttl = self.ttl.saturating_sub(1);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Check if this message should be forwarded to other peers
+    pub fn should_forward(&self) -> bool {
+        self.ttl >= MIN_FORWARD_TTL
     }
 
     /// Get the topic for this message

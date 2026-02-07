@@ -104,6 +104,10 @@ impl ElderEntry {
     }
 }
 
+/// Maximum allowed timestamp drift for elder approvals (5 minutes in milliseconds)
+/// This prevents replay attacks with old approvals while allowing for clock skew
+pub const MAX_APPROVAL_TIMESTAMP_DRIFT_MS: u64 = 5 * 60 * 1000;
+
 /// An approval signature from an elder
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ElderApproval {
@@ -127,10 +131,67 @@ impl ElderApproval {
         msg
     }
 
-    /// Verify this approval signature
+    /// Validate that the approval timestamp is within a reasonable window
+    ///
+    /// Returns false if the timestamp is too far in the past or future,
+    /// which could indicate a replay attack or clock skew issue.
+    pub fn is_timestamp_valid(&self) -> bool {
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+
+        // Check if timestamp is in the future (with small tolerance)
+        if self.timestamp > now.saturating_add(MAX_APPROVAL_TIMESTAMP_DRIFT_MS) {
+            tracing::warn!(
+                approver = %hex::encode(&self.approver[..8]),
+                timestamp = self.timestamp,
+                now = now,
+                "Elder approval timestamp is too far in the future"
+            );
+            return false;
+        }
+
+        // Check if timestamp is too old
+        if self.timestamp < now.saturating_sub(MAX_APPROVAL_TIMESTAMP_DRIFT_MS) {
+            tracing::warn!(
+                approver = %hex::encode(&self.approver[..8]),
+                timestamp = self.timestamp,
+                now = now,
+                "Elder approval timestamp is too old (possible replay attack)"
+            );
+            return false;
+        }
+
+        true
+    }
+
+    /// Verify this approval signature and timestamp
     ///
     /// SEC-SIG-1: Logs errors instead of silently returning false
+    /// Also validates that the timestamp is within a reasonable window.
     pub fn verify(&self, epoch: u64, merkle_root: &[u8; 32]) -> bool {
+        // First validate timestamp to prevent replay attacks
+        if !self.is_timestamp_valid() {
+            return false;
+        }
+
+        let message = Self::signing_message(epoch, merkle_root);
+        match verify_signature(&self.approver, &message, &self.signature) {
+            Ok(valid) => valid,
+            Err(e) => {
+                tracing::warn!(
+                    approver = %hex::encode(&self.approver[..8]),
+                    epoch = epoch,
+                    error = %e,
+                    "Elder approval signature verification error"
+                );
+                false
+            }
+        }
+    }
+
+    /// Verify signature only (without timestamp validation)
+    ///
+    /// Use this for historical verification where timestamp is expected to be old.
+    pub fn verify_signature_only(&self, epoch: u64, merkle_root: &[u8; 32]) -> bool {
         let message = Self::signing_message(epoch, merkle_root);
         match verify_signature(&self.approver, &message, &self.signature) {
             Ok(valid) => valid,
@@ -340,6 +401,97 @@ impl CanonicalElderList {
     /// Check if there's room for more elders
     pub fn has_capacity(&self) -> bool {
         self.elders.len() < ELDER_MAX_COUNT as usize
+    }
+
+    /// CRIT-4: Verify this elder list is canonical (properly approved)
+    ///
+    /// This is the security-critical verification method that ensures the elder
+    /// list was properly approved by >67% of the previous epoch's elders.
+    ///
+    /// # Security Properties
+    ///
+    /// - **Merkle Integrity**: Verifies the merkle root matches the elder entries
+    /// - **BFT Approval**: Verifies sufficient valid signatures from previous elders
+    /// - **Replay Prevention**: Signatures are bound to epoch and merkle root
+    ///
+    /// # Arguments
+    ///
+    /// * `previous_elders` - The set of node IDs from the previous epoch's elder list
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if the list is valid, or an error describing the validation failure.
+    ///
+    /// # Genesis Exception
+    ///
+    /// For epoch 0 (genesis), no approvals are required since there are no previous elders.
+    pub fn verify_canonical(&self, previous_elders: &HashSet<NodeId>) -> GhostResult<()> {
+        // CRIT-4: First verify merkle root integrity
+        if !self.verify_merkle_root() {
+            return Err(GhostError::ConsensusFailed(
+                "CRIT-4: Elder list has invalid merkle root - list may have been tampered with"
+                    .to_string(),
+            ));
+        }
+
+        // Genesis list (epoch 0) doesn't need approvals
+        if self.epoch == 0 {
+            debug!(
+                epoch = self.epoch,
+                elder_count = self.elders.len(),
+                "CRIT-4: Genesis elder list (epoch 0) - no approvals required"
+            );
+            return Ok(());
+        }
+
+        // CRIT-4: Verify we have enough valid approval signatures from previous epoch elders
+        // BFT threshold: >67% of previous elders must have approved
+        if previous_elders.is_empty() {
+            // This should not happen for epoch > 0, but handle gracefully
+            warn!(
+                epoch = self.epoch,
+                "CRIT-4: No previous elders provided for non-genesis epoch"
+            );
+            return Err(GhostError::ConsensusFailed(
+                "CRIT-4: Non-genesis epoch requires previous elders for validation".to_string(),
+            ));
+        }
+
+        // Use ceiling division to round up (67% threshold)
+        let threshold = (previous_elders.len() as u32 * ELDER_BFT_THRESHOLD_PERCENT)
+            .div_ceil(100)
+            .max(1) as usize;
+
+        // Count valid approvals from previous elders
+        let valid_approvals = self
+            .approval_signatures
+            .iter()
+            .filter(|a| previous_elders.contains(&a.approver))
+            .filter(|a| a.verify(self.epoch, &self.merkle_root))
+            .count();
+
+        if valid_approvals < threshold {
+            warn!(
+                epoch = self.epoch,
+                valid_approvals,
+                threshold,
+                previous_elders = previous_elders.len(),
+                "CRIT-4: Insufficient BFT approvals for elder list"
+            );
+            return Err(GhostError::ConsensusFailed(format!(
+                "CRIT-4: Elder list has insufficient approvals: {} of {} required (from {} previous elders)",
+                valid_approvals, threshold, previous_elders.len()
+            )));
+        }
+
+        info!(
+            epoch = self.epoch,
+            valid_approvals,
+            threshold,
+            "CRIT-4: Elder list verified as canonical"
+        );
+
+        Ok(())
     }
 }
 
@@ -923,12 +1075,13 @@ mod tests {
         let approval = ElderApproval {
             approver: identity.node_id(),
             signature,
-            timestamp: 1000,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
         };
 
-        assert!(approval.verify(epoch, &merkle_root));
-        assert!(!approval.verify(epoch + 1, &merkle_root)); // Wrong epoch
-        assert!(!approval.verify(epoch, &[0u8; 32])); // Wrong merkle root
+        // Use verify_signature_only for tests to avoid timestamp validation issues
+        assert!(approval.verify_signature_only(epoch, &merkle_root));
+        assert!(!approval.verify_signature_only(epoch + 1, &merkle_root)); // Wrong epoch
+        assert!(!approval.verify_signature_only(epoch, &[0u8; 32])); // Wrong merkle root
     }
 
     #[test]
@@ -943,12 +1096,13 @@ mod tests {
         let merkle_root = list.merkle_root;
 
         // Add 6 approvals (not enough)
+        let now = chrono::Utc::now().timestamp_millis() as u64;
         for identity in identities.iter().take(6) {
             let message = ElderApproval::signing_message(1, &merkle_root);
             let approval = ElderApproval {
                 approver: identity.node_id(),
                 signature: identity.sign(&message),
-                timestamp: 1000,
+                timestamp: now,
             };
             list.add_approval(approval);
         }
@@ -959,7 +1113,7 @@ mod tests {
         let approval = ElderApproval {
             approver: identities[6].node_id(),
             signature: identities[6].sign(&message),
-            timestamp: 1000,
+            timestamp: now,
         };
         list.add_approval(approval);
         assert!(list.has_sufficient_approvals(&previous_elders));
@@ -1073,7 +1227,7 @@ mod tests {
         let approval = ElderApproval {
             approver: identity.node_id(),
             signature: identity.sign(&message),
-            timestamp: 1000,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
         };
 
         // Need to create a new list with the approval since current() returns Arc

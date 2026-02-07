@@ -57,6 +57,86 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
+/// CRIT-11: Safe payload parsing helpers to prevent panics on malformed network data.
+/// All functions return Result to handle short/malformed payloads gracefully.
+mod payload_parser {
+    use anyhow::{anyhow, Result};
+
+    /// Safely read a u32 from a payload at the given offset (little-endian).
+    /// Returns error if payload is too short.
+    #[inline]
+    pub fn read_u32_le(payload: &[u8], offset: usize) -> Result<u32> {
+        if offset + 4 > payload.len() {
+            return Err(anyhow!(
+                "payload too short: need {} bytes at offset {}, have {} total",
+                4,
+                offset,
+                payload.len()
+            ));
+        }
+        Ok(u32::from_le_bytes([
+            payload[offset],
+            payload[offset + 1],
+            payload[offset + 2],
+            payload[offset + 3],
+        ]))
+    }
+
+    /// Safely read a u16 from a payload at the given offset (little-endian).
+    #[inline]
+    pub fn read_u16_le(payload: &[u8], offset: usize) -> Result<u16> {
+        if offset + 2 > payload.len() {
+            return Err(anyhow!(
+                "payload too short: need {} bytes at offset {}, have {} total",
+                2,
+                offset,
+                payload.len()
+            ));
+        }
+        Ok(u16::from_le_bytes([payload[offset], payload[offset + 1]]))
+    }
+
+    /// Safely read a byte from payload at the given offset.
+    #[inline]
+    pub fn read_u8(payload: &[u8], offset: usize) -> Result<u8> {
+        payload.get(offset).copied().ok_or_else(|| {
+            anyhow!(
+                "payload too short: need byte at offset {}, have {} total",
+                offset,
+                payload.len()
+            )
+        })
+    }
+
+    /// Safely read a slice from payload.
+    #[inline]
+    pub fn read_slice(payload: &[u8], offset: usize, len: usize) -> Result<&[u8]> {
+        if offset + len > payload.len() {
+            return Err(anyhow!(
+                "payload too short: need {} bytes at offset {}, have {} total",
+                len,
+                offset,
+                payload.len()
+            ));
+        }
+        Ok(&payload[offset..offset + len])
+    }
+
+    /// Validate minimum payload length for a message type.
+    #[inline]
+    pub fn validate_min_length(payload: &[u8], min_len: usize, msg_name: &str) -> Result<()> {
+        if payload.len() < min_len {
+            return Err(anyhow!(
+                "{} payload too short: expected >= {} bytes, got {}",
+                msg_name,
+                min_len,
+                payload.len()
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Mining mode for authorization
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MiningMode {
@@ -689,6 +769,8 @@ async fn handle_sv2_message(
     state: &Arc<RwLock<ConnectionState>>,
     sv1_tx: &mpsc::Sender<String>,
 ) -> Result<()> {
+    use payload_parser::*;
+
     match msg_type {
         x if x == sv2::MessageType::SetupConnectionSuccess as u8 => {
             debug!("SV2 connection setup successful");
@@ -699,30 +781,32 @@ async fn handle_sv2_message(
         }
 
         x if x == sv2::MessageType::OpenStandardMiningChannelSuccess as u8 => {
-            // Parse channel ID and difficulty
-            if payload.len() >= 8 {
-                let _request_id =
-                    u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
-                let channel_id =
-                    u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
-
-                // Update state and extract difficulty before awaiting
-                let difficulty = {
-                    let mut state_guard = state.write();
-                    state_guard.channel_id = channel_id;
-                    state_guard.difficulty
-                };
-
-                info!(channel_id = channel_id, "SV2 mining channel opened");
-
-                // Send initial difficulty
-                let difficulty_notification = sv1::Notification {
-                    method: "mining.set_difficulty".to_string(),
-                    params: vec![serde_json::json!(difficulty)],
-                };
-                let json = serde_json::to_string(&difficulty_notification)?;
-                sv1_tx.send(json).await?;
+            // CRIT-11: Validate payload length before any access
+            // Layout: request_id (4) + channel_id (4) = 8 bytes minimum
+            if let Err(e) = validate_min_length(payload, 8, "OpenStandardMiningChannelSuccess") {
+                warn!("CRIT-11: Malformed SV2 message: {}", e);
+                return Ok(()); // Don't propagate error, just log and continue
             }
+
+            let _request_id = read_u32_le(payload, 0)?;
+            let channel_id = read_u32_le(payload, 4)?;
+
+            // Update state and extract difficulty before awaiting
+            let difficulty = {
+                let mut state_guard = state.write();
+                state_guard.channel_id = channel_id;
+                state_guard.difficulty
+            };
+
+            info!(channel_id = channel_id, "SV2 mining channel opened");
+
+            // Send initial difficulty
+            let difficulty_notification = sv1::Notification {
+                method: "mining.set_difficulty".to_string(),
+                params: vec![serde_json::json!(difficulty)],
+            };
+            let json = serde_json::to_string(&difficulty_notification)?;
+            sv1_tx.send(json).await?;
         }
 
         x if x == sv2::MessageType::NewMiningJob as u8
@@ -733,245 +817,265 @@ async fn handle_sv2_message(
             //   channel_id (4) + job_id (4) + future_job (1) + version (4) +
             //   version_rolling_allowed (1) + merkle_path (variable) +
             //   coinbase_tx_prefix (variable) + coinbase_tx_suffix (variable)
-            if payload.len() >= 14 {
-                let sv2_job_id =
-                    u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
-                let future_job = payload[8] != 0;
-                let version =
-                    u32::from_le_bytes([payload[9], payload[10], payload[11], payload[12]]);
+            //
+            // CRIT-11: Minimum fixed-length portion is 14 bytes
+            if let Err(e) = validate_min_length(payload, 14, "NewExtendedMiningJob") {
+                warn!("CRIT-11: Malformed SV2 message: {}", e);
+                return Ok(());
+            }
 
-                // Parse variable-length fields (simplified - real impl needs proper SV2 parsing)
-                let mut offset = 14; // Skip version_rolling_allowed byte
+            let sv2_job_id = read_u32_le(payload, 4)?;
+            let future_job = read_u8(payload, 8)? != 0;
+            let version = read_u32_le(payload, 9)?;
 
-                // Parse merkle_path - SEQ0_255 format: length byte + N*32 bytes
-                let mut merkle_branches: Vec<String> = Vec::new();
-                if offset < payload.len() {
-                    let merkle_count = payload[offset] as usize;
-                    offset += 1;
-                    for _ in 0..merkle_count {
-                        if offset + 32 <= payload.len() {
-                            let branch = &payload[offset..offset + 32];
-                            // SV1 merkle branches are hex-encoded, byte-reversed
-                            let reversed: Vec<u8> = branch.iter().rev().cloned().collect();
-                            merkle_branches.push(hex::encode(&reversed));
-                            offset += 32;
+            // Parse variable-length fields (simplified - real impl needs proper SV2 parsing)
+            let mut offset = 14; // Skip version_rolling_allowed byte
+
+            // Parse merkle_path - SEQ0_255 format: length byte + N*32 bytes
+            let mut merkle_branches: Vec<String> = Vec::new();
+            if let Ok(merkle_count) = read_u8(payload, offset) {
+                offset += 1;
+                let merkle_count = merkle_count as usize;
+                for _ in 0..merkle_count {
+                    if let Ok(branch) = read_slice(payload, offset, 32) {
+                        // SV1 merkle branches are hex-encoded, byte-reversed
+                        let reversed: Vec<u8> = branch.iter().rev().cloned().collect();
+                        merkle_branches.push(hex::encode(&reversed));
+                        offset += 32;
+                    } else {
+                        warn!("CRIT-11: Truncated merkle path in NewExtendedMiningJob");
+                        break;
+                    }
+                }
+            }
+
+            // Parse coinbase_tx_prefix - B0_64K format: 2-byte length + data
+            let coinbase_prefix = if let Ok(len) = read_u16_le(payload, offset) {
+                offset += 2;
+                let len = len as usize;
+                if let Ok(data) = read_slice(payload, offset, len) {
+                    offset += len;
+                    data.to_vec()
+                } else {
+                    warn!("CRIT-11: Truncated coinbase prefix in NewExtendedMiningJob");
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            // Parse coinbase_tx_suffix - B0_64K format: 2-byte length + data
+            let coinbase_suffix = if let Ok(len) = read_u16_le(payload, offset) {
+                offset += 2;
+                let len = len as usize;
+                if let Ok(data) = read_slice(payload, offset, len) {
+                    data.to_vec()
+                } else {
+                    warn!("CRIT-11: Truncated coinbase suffix in NewExtendedMiningJob");
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
+            // Get state data and generate job ID
+            let (sv1_job_id, _extranonce1, prev_hash, nbits, min_ntime) = {
+                let mut state_guard = state.write();
+                let id = state_guard.next_job_id.fetch_add(1, Ordering::SeqCst);
+                let job_str = format!("{:x}", id);
+                state_guard.job_map.insert(job_str.clone(), sv2_job_id);
+                state_guard
+                    .reverse_job_map
+                    .insert(sv2_job_id, job_str.clone());
+
+                // M-17: Bound job map size to prevent memory exhaustion
+                const MAX_JOBS: usize = 1000;
+                while state_guard.job_map.len() > MAX_JOBS {
+                    // Remove oldest job (lowest numeric ID)
+                    if let Some(oldest) = state_guard
+                        .job_map
+                        .keys()
+                        .filter_map(|k| k.parse::<u64>().ok().map(|n| (k.clone(), n)))
+                        .min_by_key(|(_, n)| *n)
+                        .map(|(k, _)| k)
+                    {
+                        if let Some(sv2_id) = state_guard.job_map.remove(&oldest) {
+                            state_guard.reverse_job_map.remove(&sv2_id);
                         }
+                    } else {
+                        break;
                     }
                 }
 
-                // Parse coinbase_tx_prefix - B0_64K format: 2-byte length + data
-                let coinbase_prefix = if offset + 2 <= payload.len() {
-                    let len = u16::from_le_bytes([payload[offset], payload[offset + 1]]) as usize;
-                    offset += 2;
-                    if offset + len <= payload.len() {
-                        let data = payload[offset..offset + len].to_vec();
-                        offset += len;
-                        data
-                    } else {
-                        Vec::new()
-                    }
-                } else {
-                    Vec::new()
-                };
-
-                // Parse coinbase_tx_suffix - B0_64K format: 2-byte length + data
-                let coinbase_suffix = if offset + 2 <= payload.len() {
-                    let len = u16::from_le_bytes([payload[offset], payload[offset + 1]]) as usize;
-                    offset += 2;
-                    if offset + len <= payload.len() {
-                        payload[offset..offset + len].to_vec()
-                    } else {
-                        Vec::new()
-                    }
-                } else {
-                    Vec::new()
-                };
-
-                // Get state data and generate job ID
-                let (sv1_job_id, _extranonce1, prev_hash, nbits, min_ntime) = {
-                    let mut state_guard = state.write();
-                    let id = state_guard.next_job_id.fetch_add(1, Ordering::SeqCst);
-                    let job_str = format!("{:x}", id);
-                    state_guard.job_map.insert(job_str.clone(), sv2_job_id);
-                    state_guard
-                        .reverse_job_map
-                        .insert(sv2_job_id, job_str.clone());
-
-                    // M-17: Bound job map size to prevent memory exhaustion
-                    const MAX_JOBS: usize = 1000;
-                    while state_guard.job_map.len() > MAX_JOBS {
-                        // Remove oldest job (lowest numeric ID)
-                        if let Some(oldest) = state_guard
-                            .job_map
-                            .keys()
-                            .filter_map(|k| k.parse::<u64>().ok().map(|n| (k.clone(), n)))
-                            .min_by_key(|(_, n)| *n)
-                            .map(|(k, _)| k)
-                        {
-                            if let Some(sv2_id) = state_guard.job_map.remove(&oldest) {
-                                state_guard.reverse_job_map.remove(&sv2_id);
-                            }
+                state_guard.coinbase_prefix = coinbase_prefix.clone();
+                state_guard.coinbase_suffix = coinbase_suffix.clone();
+                state_guard.merkle_path = merkle_branches
+                    .iter()
+                    .filter_map(|h| {
+                        let bytes = hex::decode(h).ok()?;
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            Some(arr)
                         } else {
-                            break;
+                            None
                         }
-                    }
+                    })
+                    .collect();
+                (
+                    job_str,
+                    state_guard.extranonce1.clone(),
+                    state_guard.prev_hash.clone(),
+                    state_guard.nbits,
+                    state_guard.min_ntime,
+                )
+            };
 
-                    state_guard.coinbase_prefix = coinbase_prefix.clone();
-                    state_guard.coinbase_suffix = coinbase_suffix.clone();
-                    state_guard.merkle_path = merkle_branches
-                        .iter()
-                        .filter_map(|h| {
-                            let bytes = hex::decode(h).ok()?;
-                            if bytes.len() == 32 {
-                                let mut arr = [0u8; 32];
-                                arr.copy_from_slice(&bytes);
-                                Some(arr)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    (
-                        job_str,
-                        state_guard.extranonce1.clone(),
-                        state_guard.prev_hash.clone(),
-                        state_guard.nbits,
-                        state_guard.min_ntime,
-                    )
-                };
+            // Build coinbase1: prefix + extranonce1 placeholder position
+            // SV1 miners will insert: extranonce1 (from subscribe) + extranonce2 (from miner)
+            let coinbase1_hex = hex::encode(&coinbase_prefix);
 
-                // Build coinbase1: prefix + extranonce1 placeholder position
-                // SV1 miners will insert: extranonce1 (from subscribe) + extranonce2 (from miner)
-                let coinbase1_hex = hex::encode(&coinbase_prefix);
+            // Build coinbase2: suffix (after extranonce space)
+            let coinbase2_hex = hex::encode(&coinbase_suffix);
 
-                // Build coinbase2: suffix (after extranonce space)
-                let coinbase2_hex = hex::encode(&coinbase_suffix);
+            // Determine ntime - use min_ntime for future jobs, current time otherwise
+            let ntime = if future_job {
+                min_ntime
+            } else {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as u32
+            };
 
-                // Determine ntime - use min_ntime for future jobs, current time otherwise
-                let ntime = if future_job {
-                    min_ntime
-                } else {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs() as u32
-                };
+            let notify = sv1::NotifyParams {
+                job_id: sv1_job_id.clone(),
+                prev_hash,
+                coinbase1: coinbase1_hex,
+                coinbase2: coinbase2_hex,
+                merkle_branches,
+                version: format!("{:08x}", version),
+                nbits: format!("{:08x}", nbits),
+                ntime: format!("{:08x}", ntime),
+                clean_jobs: !future_job, // Clean jobs on new block, not future jobs
+            };
 
-                let notify = sv1::NotifyParams {
-                    job_id: sv1_job_id.clone(),
-                    prev_hash,
-                    coinbase1: coinbase1_hex,
-                    coinbase2: coinbase2_hex,
-                    merkle_branches,
-                    version: format!("{:08x}", version),
-                    nbits: format!("{:08x}", nbits),
-                    ntime: format!("{:08x}", ntime),
-                    clean_jobs: !future_job, // Clean jobs on new block, not future jobs
-                };
+            let notification = sv1::Notification {
+                method: "mining.notify".to_string(),
+                params: notify.to_params(),
+            };
+            let json = serde_json::to_string(&notification)?;
+            sv1_tx.send(json).await?;
 
-                let notification = sv1::Notification {
-                    method: "mining.notify".to_string(),
-                    params: notify.to_params(),
-                };
-                let json = serde_json::to_string(&notification)?;
-                sv1_tx.send(json).await?;
-
-                debug!(
-                    sv1_job = %sv1_job_id,
-                    sv2_job = sv2_job_id,
-                    merkle_count = notify.merkle_branches.len(),
-                    "Sent mining.notify"
-                );
-            }
+            debug!(
+                sv1_job = %sv1_job_id,
+                sv2_job = sv2_job_id,
+                merkle_count = notify.merkle_branches.len(),
+                "Sent mining.notify"
+            );
         }
 
         x if x == sv2::MessageType::SetNewPrevHash as u8 => {
             // New block - update state with new prev_hash and nbits
             // SetNewPrevHash layout: channel_id (4) + job_id (4) + prev_hash (32) + min_ntime (4) + nbits (4)
-            if payload.len() >= 48 {
-                let prev_hash_bytes = &payload[8..40];
-                let min_ntime =
-                    u32::from_le_bytes([payload[40], payload[41], payload[42], payload[43]]);
-                let nbits =
-                    u32::from_le_bytes([payload[44], payload[45], payload[46], payload[47]]);
-
-                // Convert prev_hash to SV1 format (reversed byte order, hex-encoded)
-                let prev_hash_reversed: Vec<u8> = prev_hash_bytes.iter().rev().cloned().collect();
-                let prev_hash_hex = hex::encode(&prev_hash_reversed);
-
-                // Update state
-                {
-                    let mut state_guard = state.write();
-                    state_guard.prev_hash = prev_hash_hex.clone();
-                    state_guard.nbits = nbits;
-                    state_guard.min_ntime = min_ntime;
-                }
-
-                debug!(
-                    prev_hash = %prev_hash_hex,
-                    nbits = format!("{:08x}", nbits),
-                    min_ntime,
-                    "Updated prev_hash from SV2"
-                );
+            // CRIT-11: Total = 48 bytes
+            if let Err(e) = validate_min_length(payload, 48, "SetNewPrevHash") {
+                warn!("CRIT-11: Malformed SV2 message: {}", e);
+                return Ok(());
             }
+
+            let prev_hash_bytes = read_slice(payload, 8, 32)?;
+            let min_ntime = read_u32_le(payload, 40)?;
+            let nbits = read_u32_le(payload, 44)?;
+
+            // Convert prev_hash to SV1 format (reversed byte order, hex-encoded)
+            let prev_hash_reversed: Vec<u8> = prev_hash_bytes.iter().rev().cloned().collect();
+            let prev_hash_hex = hex::encode(&prev_hash_reversed);
+
+            // Update state
+            {
+                let mut state_guard = state.write();
+                state_guard.prev_hash = prev_hash_hex.clone();
+                state_guard.nbits = nbits;
+                state_guard.min_ntime = min_ntime;
+            }
+
+            debug!(
+                prev_hash = %prev_hash_hex,
+                nbits = format!("{:08x}", nbits),
+                min_ntime,
+                "Updated prev_hash from SV2"
+            );
         }
 
         x if x == sv2::MessageType::SetTarget as u8 => {
             // Difficulty adjustment
             // SetTarget layout: channel_id (4) + max_target (32)
-            if payload.len() >= 36 {
-                // Parse 256-bit target (little-endian)
-                let target_bytes = &payload[4..36];
-
-                // Convert target to difficulty
-                // difficulty = pool_target_1 / current_target
-                // pool_target_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
-                let difficulty = target_to_difficulty(target_bytes);
-
-                // Update state
-                {
-                    let mut state_guard = state.write();
-                    state_guard.difficulty = difficulty;
-                }
-
-                let difficulty_notification = sv1::Notification {
-                    method: "mining.set_difficulty".to_string(),
-                    params: vec![serde_json::json!(difficulty)],
-                };
-                let json = serde_json::to_string(&difficulty_notification)?;
-                sv1_tx.send(json).await?;
-
-                debug!(
-                    difficulty = difficulty,
-                    "Set new difficulty from SV2 target"
-                );
+            // CRIT-11: Total = 36 bytes
+            if let Err(e) = validate_min_length(payload, 36, "SetTarget") {
+                warn!("CRIT-11: Malformed SV2 message: {}", e);
+                return Ok(());
             }
+
+            // Parse 256-bit target (little-endian)
+            let target_bytes = read_slice(payload, 4, 32)?;
+
+            // Convert target to difficulty
+            // difficulty = pool_target_1 / current_target
+            // pool_target_1 = 0x00000000ffff0000000000000000000000000000000000000000000000000000
+            let difficulty = target_to_difficulty(target_bytes);
+
+            // Update state
+            {
+                let mut state_guard = state.write();
+                state_guard.difficulty = difficulty;
+            }
+
+            let difficulty_notification = sv1::Notification {
+                method: "mining.set_difficulty".to_string(),
+                params: vec![serde_json::json!(difficulty)],
+            };
+            let json = serde_json::to_string(&difficulty_notification)?;
+            sv1_tx.send(json).await?;
+
+            debug!(
+                difficulty = difficulty,
+                "Set new difficulty from SV2 target"
+            );
         }
 
         x if x == sv2::MessageType::SubmitSharesSuccess as u8 => {
             // SubmitSharesSuccess layout: channel_id (4) + last_seq_num (4) + new_submits_accepted (4) + new_shares_sum (8)
-            if payload.len() >= 20 {
-                let new_submits =
-                    u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
-                debug!(accepted = new_submits, "Shares accepted");
+            // CRIT-11: We need at least 12 bytes to read new_submits at offset 8
+            if let Err(e) = validate_min_length(payload, 12, "SubmitSharesSuccess") {
+                warn!("CRIT-11: Malformed SV2 message: {}", e);
+                return Ok(());
             }
+
+            let new_submits = read_u32_le(payload, 8)?;
+            debug!(accepted = new_submits, "Shares accepted");
         }
 
         x if x == sv2::MessageType::SubmitSharesError as u8 => {
             // SubmitSharesError layout: channel_id (4) + seq_num (4) + error_code (variable string)
-            if payload.len() >= 9 {
-                let seq_num = u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]);
-                let error_len = payload[8] as usize;
-                let error_msg = if payload.len() >= 9 + error_len {
-                    String::from_utf8_lossy(&payload[9..9 + error_len]).to_string()
-                } else {
-                    "Unknown error".to_string()
-                };
-
-                warn!(seq = seq_num, error = %error_msg, "Share rejected by pool");
-                // Note: SV1 doesn't have a standard way to notify of share rejection
-                // after initial acceptance. The share was already accepted in handle_sv1_request.
+            // CRIT-11: Minimum is 9 bytes (8 bytes fixed + 1 byte length prefix)
+            if let Err(e) = validate_min_length(payload, 9, "SubmitSharesError") {
+                warn!("CRIT-11: Malformed SV2 message: {}", e);
+                return Ok(());
             }
+
+            let seq_num = read_u32_le(payload, 4)?;
+            let error_len = read_u8(payload, 8)? as usize;
+            let error_msg = if let Ok(msg_bytes) = read_slice(payload, 9, error_len) {
+                String::from_utf8_lossy(msg_bytes).to_string()
+            } else {
+                warn!("CRIT-11: Truncated error message in SubmitSharesError");
+                "Unknown error (truncated)".to_string()
+            };
+
+            warn!(seq = seq_num, error = %error_msg, "Share rejected by pool");
+            // Note: SV1 doesn't have a standard way to notify of share rejection
+            // after initial acceptance. The share was already accepted in handle_sv1_request.
         }
 
         _ => {
@@ -1365,4 +1469,145 @@ struct ConnectionState {
     coinbase_suffix: Vec<u8>,
     /// Merkle path (from NewExtendedMiningJob)
     merkle_path: Vec<[u8; 32]>,
+}
+
+// =============================================================================
+// CRIT-11: Unit tests for safe payload parsing
+// =============================================================================
+#[cfg(test)]
+mod tests {
+    use super::payload_parser::*;
+
+    /// Test that read_u32_le returns error for short payload (CRIT-11)
+    #[test]
+    fn test_read_u32_le_short_payload() {
+        let payload = vec![0x01, 0x02, 0x03]; // 3 bytes, need 4
+        let result = read_u32_le(&payload, 0);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("payload too short"));
+    }
+
+    /// Test that read_u32_le works for valid payload
+    #[test]
+    fn test_read_u32_le_valid() {
+        let payload = vec![0x01, 0x02, 0x03, 0x04];
+        let result = read_u32_le(&payload, 0);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 0x04030201); // Little-endian
+    }
+
+    /// Test that read_u32_le with offset returns error for short payload
+    #[test]
+    fn test_read_u32_le_offset_short() {
+        let payload = vec![0x00, 0x01, 0x02, 0x03, 0x04]; // 5 bytes
+        let result = read_u32_le(&payload, 2); // Need offset 2 + 4 = 6 bytes
+        assert!(result.is_err());
+    }
+
+    /// Test that read_u16_le returns error for short payload
+    #[test]
+    fn test_read_u16_le_short_payload() {
+        let payload = vec![0x01]; // 1 byte, need 2
+        let result = read_u16_le(&payload, 0);
+        assert!(result.is_err());
+    }
+
+    /// Test that read_u8 returns error for empty payload
+    #[test]
+    fn test_read_u8_empty_payload() {
+        let payload: Vec<u8> = vec![];
+        let result = read_u8(&payload, 0);
+        assert!(result.is_err());
+    }
+
+    /// Test that read_slice returns error for short payload
+    #[test]
+    fn test_read_slice_short_payload() {
+        let payload = vec![0x01, 0x02, 0x03]; // 3 bytes
+        let result = read_slice(&payload, 0, 10); // Want 10 bytes
+        assert!(result.is_err());
+    }
+
+    /// Test that read_slice works for valid payload
+    #[test]
+    fn test_read_slice_valid() {
+        let payload = vec![0x01, 0x02, 0x03, 0x04, 0x05];
+        let result = read_slice(&payload, 1, 3);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), &[0x02, 0x03, 0x04]);
+    }
+
+    /// Test validate_min_length returns error for short payload
+    #[test]
+    fn test_validate_min_length_short() {
+        let payload = vec![0x01, 0x02, 0x03, 0x04]; // 4 bytes
+        let result = validate_min_length(&payload, 8, "TestMessage");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("TestMessage"));
+        assert!(err_msg.contains("too short"));
+    }
+
+    /// Test validate_min_length passes for adequate payload
+    #[test]
+    fn test_validate_min_length_adequate() {
+        let payload = vec![0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let result = validate_min_length(&payload, 8, "TestMessage");
+        assert!(result.is_ok());
+    }
+
+    /// Test OpenStandardMiningChannelSuccess with short payload (CRIT-11)
+    #[test]
+    fn test_short_open_channel_success_payload() {
+        // OpenStandardMiningChannelSuccess needs at least 8 bytes
+        let short_payload = vec![0x01, 0x02, 0x03]; // Only 3 bytes
+        let result = validate_min_length(&short_payload, 8, "OpenStandardMiningChannelSuccess");
+        assert!(result.is_err());
+    }
+
+    /// Test SetNewPrevHash with short payload (CRIT-11)
+    #[test]
+    fn test_short_set_new_prev_hash_payload() {
+        // SetNewPrevHash needs 48 bytes
+        let short_payload = vec![0x00; 10]; // Only 10 bytes
+        let result = validate_min_length(&short_payload, 48, "SetNewPrevHash");
+        assert!(result.is_err());
+    }
+
+    /// Test SetTarget with short payload (CRIT-11)
+    #[test]
+    fn test_short_set_target_payload() {
+        // SetTarget needs 36 bytes
+        let short_payload = vec![0x00; 4]; // Only 4 bytes
+        let result = validate_min_length(&short_payload, 36, "SetTarget");
+        assert!(result.is_err());
+    }
+
+    /// Test SubmitSharesSuccess with short payload (CRIT-11)
+    #[test]
+    fn test_short_submit_shares_success_payload() {
+        // SubmitSharesSuccess needs at least 12 bytes to read new_submits at offset 8
+        let short_payload = vec![0x00; 8]; // Only 8 bytes
+        let result = validate_min_length(&short_payload, 12, "SubmitSharesSuccess");
+        assert!(result.is_err());
+    }
+
+    /// Test SubmitSharesError with short payload (CRIT-11)
+    #[test]
+    fn test_short_submit_shares_error_payload() {
+        // SubmitSharesError needs at least 9 bytes
+        let short_payload = vec![0x00; 5]; // Only 5 bytes
+        let result = validate_min_length(&short_payload, 9, "SubmitSharesError");
+        assert!(result.is_err());
+    }
+
+    /// Test NewExtendedMiningJob with short payload (CRIT-11)
+    #[test]
+    fn test_short_new_extended_mining_job_payload() {
+        // NewExtendedMiningJob needs at least 14 bytes for fixed fields
+        let short_payload = vec![0x00; 10]; // Only 10 bytes
+        let result = validate_min_length(&short_payload, 14, "NewExtendedMiningJob");
+        assert!(result.is_err());
+    }
 }

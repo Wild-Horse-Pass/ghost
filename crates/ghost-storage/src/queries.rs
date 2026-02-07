@@ -1239,27 +1239,25 @@ impl Database {
     }
 
     /// Update miner's payout address
+    ///
+    /// Uses INSERT OR REPLACE (UPSERT) to atomically insert or update the miner,
+    /// preventing TOCTOU race conditions that could occur with separate
+    /// UPDATE-then-INSERT logic.
     pub fn update_miner_address(&self, miner_id: &str, payout_address: &str) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
 
         self.with_connection(|conn| {
-            // Try update first
-            let updated = conn
-                .execute(
-                    "UPDATE miners SET payout_address = ?1, last_seen = ?2 WHERE miner_id = ?3",
-                    params![payout_address, now, miner_id],
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // If no row updated, insert new miner
-            if updated == 0 {
-                conn.execute(
-                    "INSERT INTO miners (miner_id, payout_address, first_seen, last_seen)
-                     VALUES (?1, ?2, ?3, ?3)",
-                    params![miner_id, payout_address, now],
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-            }
+            // Use INSERT ... ON CONFLICT for atomic upsert (SQLite 3.24+)
+            // This prevents TOCTOU race between checking if row exists and inserting
+            conn.execute(
+                "INSERT INTO miners (miner_id, payout_address, first_seen, last_seen)
+                 VALUES (?1, ?2, ?3, ?3)
+                 ON CONFLICT(miner_id) DO UPDATE SET
+                     payout_address = excluded.payout_address,
+                     last_seen = excluded.last_seen",
+                params![miner_id, payout_address, now],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
 
             Ok(())
         })
@@ -1406,44 +1404,38 @@ impl Database {
     /// Credit node reward
     ///
     /// DB-H2: Uses explicit transaction for atomicity and validates the node exists.
+    /// H-DB-3 FIX: Uses transaction_retry for automatic retry on transient errors
+    /// (e.g., SQLITE_BUSY), while still properly failing on "node not found".
+    ///
     /// Returns error if the node doesn't exist in node_rewards table.
     pub fn credit_node_reward(&self, node_id: &str, amount: u64, round_id: u64) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
+        let node_id_owned = node_id.to_string();
 
-        self.with_connection(|conn| {
-            // DB-H2: Use transaction for atomic credit operation
-            conn.execute("BEGIN IMMEDIATE", [])
-                .map_err(|e| GhostError::Database(format!("Failed to begin transaction: {}", e)))?;
+        // H-DB-3 FIX: Use transaction_retry for automatic retry on transient errors
+        self.transaction_retry("credit_node_reward", |tx| {
+            let rows_affected = tx
+                .execute(
+                    "UPDATE node_rewards SET
+                        balance_sats = balance_sats + ?1,
+                        last_credited_round = ?2,
+                        total_credits_sats = total_credits_sats + ?1,
+                        updated_at = ?3
+                     WHERE node_id = ?4",
+                    params![amount, round_id, now, &node_id_owned],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            let result = conn.execute(
-                "UPDATE node_rewards SET
-                    balance_sats = balance_sats + ?1,
-                    last_credited_round = ?2,
-                    total_credits_sats = total_credits_sats + ?1,
-                    updated_at = ?3
-                 WHERE node_id = ?4",
-                params![amount, round_id, now, node_id],
-            );
-
-            match result {
-                Ok(rows_affected) => {
-                    if rows_affected == 0 {
-                        // Node doesn't exist - rollback and return error
-                        let _ = conn.execute("ROLLBACK", []);
-                        return Err(GhostError::Database(format!(
-                            "Node {} not found in node_rewards table",
-                            node_id
-                        )));
-                    }
-                    conn.execute("COMMIT", [])
-                        .map_err(|e| GhostError::Database(format!("Failed to commit: {}", e)))?;
-                    Ok(())
-                }
-                Err(e) => {
-                    let _ = conn.execute("ROLLBACK", []);
-                    Err(GhostError::Database(e.to_string()))
-                }
+            if rows_affected == 0 {
+                // Node doesn't exist - this is a non-retryable error
+                // The transaction will be rolled back by the Drop impl
+                return Err(GhostError::RecordNotFound {
+                    table: "node_rewards".to_string(),
+                    key: node_id_owned.clone(),
+                });
             }
+
+            Ok(())
         })
     }
 
@@ -2398,53 +2390,97 @@ impl Database {
     }
 
     /// Update withdrawal request with batch info
+    ///
+    /// Validates status transition: only pending withdrawals can be batched.
+    /// Returns error if the withdrawal is not in 'pending' status.
     pub fn update_withdrawal_batched(&self, id: i64, batch_id: &str) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
         self.with_connection(|conn| {
-            conn.execute(
-                "UPDATE withdrawal_requests SET status = 'batched', batch_id = ?1, updated_at = ?2 WHERE id = ?3",
+            let updated = conn.execute(
+                "UPDATE withdrawal_requests SET status = 'batched', batch_id = ?1, updated_at = ?2
+                 WHERE id = ?3 AND status = 'pending'",
                 params![batch_id, now, id],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if updated == 0 {
+                return Err(GhostError::InvalidState(format!(
+                    "Cannot batch withdrawal {}: not in 'pending' status or does not exist",
+                    id
+                )));
+            }
             Ok(())
         })
     }
 
     /// Update withdrawal request with L1 txid
+    ///
+    /// Validates status transition: only batched withdrawals can be submitted.
+    /// Returns error if the withdrawal is not in 'batched' status.
     pub fn update_withdrawal_submitted(&self, id: i64, l1_txid: &str) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
         self.with_connection(|conn| {
-            conn.execute(
-                "UPDATE withdrawal_requests SET status = 'submitted', l1_txid = ?1, updated_at = ?2 WHERE id = ?3",
+            let updated = conn.execute(
+                "UPDATE withdrawal_requests SET status = 'submitted', l1_txid = ?1, updated_at = ?2
+                 WHERE id = ?3 AND status = 'batched'",
                 params![l1_txid, now, id],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if updated == 0 {
+                return Err(GhostError::InvalidState(format!(
+                    "Cannot submit withdrawal {}: not in 'batched' status or does not exist",
+                    id
+                )));
+            }
             Ok(())
         })
     }
 
     /// Mark withdrawal as confirmed
+    ///
+    /// Validates status transition: only submitted withdrawals can be confirmed.
+    /// Returns error if the withdrawal is not in 'submitted' status.
     pub fn update_withdrawal_confirmed(&self, id: i64) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
         self.with_connection(|conn| {
-            conn.execute(
-                "UPDATE withdrawal_requests SET status = 'confirmed', updated_at = ?1 WHERE id = ?2",
+            let updated = conn.execute(
+                "UPDATE withdrawal_requests SET status = 'confirmed', updated_at = ?1
+                 WHERE id = ?2 AND status = 'submitted'",
                 params![now, id],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if updated == 0 {
+                return Err(GhostError::InvalidState(format!(
+                    "Cannot confirm withdrawal {}: not in 'submitted' status or does not exist",
+                    id
+                )));
+            }
             Ok(())
         })
     }
 
     /// Cancel a pending withdrawal
+    ///
+    /// Validates status transition: only pending withdrawals can be cancelled.
+    /// Returns error if the withdrawal is not in 'pending' status.
     pub fn cancel_withdrawal(&self, id: i64) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
         self.with_connection(|conn| {
-            conn.execute(
-                "UPDATE withdrawal_requests SET status = 'cancelled', updated_at = ?1 WHERE id = ?2 AND status = 'pending'",
+            let updated = conn.execute(
+                "UPDATE withdrawal_requests SET status = 'cancelled', updated_at = ?1
+                 WHERE id = ?2 AND status = 'pending'",
                 params![now, id],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if updated == 0 {
+                return Err(GhostError::InvalidState(format!(
+                    "Cannot cancel withdrawal {}: not in 'pending' status or does not exist",
+                    id
+                )));
+            }
             Ok(())
         })
     }

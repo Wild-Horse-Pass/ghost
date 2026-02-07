@@ -112,7 +112,11 @@ impl std::fmt::Display for PaymentStatus {
 }
 
 /// Request to prepare a payment (REST API)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// # Security: Redacted Debug
+///
+/// The Debug implementation redacts sensitive fields (recipient, proof, encrypted_metadata).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PreparePaymentRequest {
     /// Recipient Ghost ID or Bitcoin address
     pub recipient: String,
@@ -136,6 +140,19 @@ pub struct PreparePaymentRequest {
     pub encrypted_metadata: Option<String>,
 }
 
+impl std::fmt::Debug for PreparePaymentRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparePaymentRequest")
+            .field("recipient", &"[REDACTED]")
+            .field("amount_sats", &self.amount_sats)
+            .field("mode", &self.mode)
+            .field("proof", &self.proof)
+            .field("memo", &self.memo)
+            .field("encrypted_metadata", &self.encrypted_metadata.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
 /// Response for payment preparation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreparePaymentResponse {
@@ -150,7 +167,11 @@ pub struct PreparePaymentResponse {
 }
 
 /// A prepared payment ready for signing
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// # Security: Redacted Debug
+///
+/// The Debug implementation redacts sensitive fields (addresses, sighash, keys, metadata).
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PreparedPayment {
     /// Unique payment ID
     pub payment_id: String,
@@ -205,6 +226,29 @@ pub struct PreparedPayment {
     pub ephemeral_pubkey: Option<String>,
 }
 
+impl std::fmt::Debug for PreparedPayment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedPayment")
+            .field("payment_id", &self.payment_id)
+            .field("mode", &self.mode)
+            .field("recipient_address", &"[REDACTED]")
+            .field("original_recipient", &"[REDACTED]")
+            .field("amount_sats", &self.amount_sats)
+            .field("fee_sats", &self.fee_sats)
+            .field("total_sats", &self.total_sats)
+            .field("sighash", &"[REDACTED]")
+            .field("signing_method", &self.signing_method)
+            .field("expires_at", &self.expires_at)
+            .field("status", &self.status)
+            .field("inputs", &format!("[{} inputs]", self.inputs.len()))
+            .field("outputs", &format!("[{} outputs]", self.outputs.len()))
+            .field("memo", &self.memo)
+            .field("encrypted_metadata", &self.encrypted_metadata.as_ref().map(|_| "[REDACTED]"))
+            .field("ephemeral_pubkey", &self.ephemeral_pubkey.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
+}
+
 impl PreparedPayment {
     /// Check if payment has expired
     pub fn is_expired(&self) -> bool {
@@ -225,7 +269,11 @@ impl PreparedPayment {
 }
 
 /// Input UTXO for a payment
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// # Security: Redacted Debug
+///
+/// The Debug implementation redacts the derivation_path field.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PaymentInput {
     /// Transaction ID
     pub txid: String,
@@ -241,6 +289,18 @@ pub struct PaymentInput {
 
     /// Derivation path for signing (if applicable)
     pub derivation_path: Option<String>,
+}
+
+impl std::fmt::Debug for PaymentInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaymentInput")
+            .field("txid", &self.txid)
+            .field("vout", &self.vout)
+            .field("amount_sats", &self.amount_sats)
+            .field("script_type", &self.script_type)
+            .field("derivation_path", &self.derivation_path.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 /// Output for a payment
@@ -260,7 +320,11 @@ pub struct PaymentOutput {
 }
 
 /// Request to submit a signed payment
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// # Security: Redacted Debug
+///
+/// The Debug implementation redacts the signature and public_key fields.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SubmitPaymentRequest {
     /// Payment ID from prepare_payment
     pub payment_id: String,
@@ -270,6 +334,16 @@ pub struct SubmitPaymentRequest {
 
     /// Public key used for signing (32 bytes hex)
     pub public_key: String,
+}
+
+impl std::fmt::Debug for SubmitPaymentRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SubmitPaymentRequest")
+            .field("payment_id", &self.payment_id)
+            .field("signature", &"[REDACTED]")
+            .field("public_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// Response for payment submission
@@ -375,5 +449,78 @@ mod tests {
 
         assert!(!payment.is_expired());
         assert!(payment.remaining_secs() > 0);
+    }
+
+    #[test]
+    fn test_prepared_payment_debug_redacts_sensitive_fields() {
+        // M-INFO-1 TEST: Verify Debug implementation redacts sensitive data
+        let payment = PreparedPayment {
+            payment_id: "test_payment_id".to_string(),
+            mode: PaymentMode::GhostPay,
+            recipient_address: "bc1qsecretaddress".to_string(),
+            original_recipient: "ghost1secretrecipient".to_string(),
+            amount_sats: 100000,
+            fee_sats: 1000,
+            total_sats: 101000,
+            sighash: "deadbeef1234567890".to_string(),
+            signing_method: "schnorr".to_string(),
+            expires_at: chrono::Utc::now().timestamp() + 600,
+            status: PaymentStatus::PendingSignature,
+            inputs: vec![],
+            outputs: vec![],
+            memo: Some("test memo".to_string()),
+            encrypted_metadata: Some("encrypted_secret_data".to_string()),
+            ephemeral_pubkey: Some("ephemeral_key_hex".to_string()),
+        };
+
+        let debug_output = format!("{:?}", payment);
+
+        // Ensure sensitive fields are redacted
+        assert!(debug_output.contains("[REDACTED]"));
+        assert!(!debug_output.contains("bc1qsecretaddress"));
+        assert!(!debug_output.contains("ghost1secretrecipient"));
+        assert!(!debug_output.contains("deadbeef1234567890"));
+        assert!(!debug_output.contains("encrypted_secret_data"));
+        assert!(!debug_output.contains("ephemeral_key_hex"));
+        // Non-sensitive fields should be visible
+        assert!(debug_output.contains("test_payment_id"));
+        assert!(debug_output.contains("100000"));
+    }
+
+    #[test]
+    fn test_submit_payment_request_debug_redacts_signature() {
+        // M-INFO-1 TEST: Verify Debug implementation redacts signature and public key
+        let request = SubmitPaymentRequest {
+            payment_id: "payment_123".to_string(),
+            signature: "secret_signature_hex".to_string(),
+            public_key: "secret_pubkey_hex".to_string(),
+        };
+
+        let debug_output = format!("{:?}", request);
+
+        assert!(debug_output.contains("[REDACTED]"));
+        assert!(!debug_output.contains("secret_signature_hex"));
+        assert!(!debug_output.contains("secret_pubkey_hex"));
+        assert!(debug_output.contains("payment_123"));
+    }
+
+    #[test]
+    fn test_payment_input_debug_redacts_derivation_path() {
+        // M-INFO-1 TEST: Verify Debug implementation redacts derivation path
+        let input = PaymentInput {
+            txid: "abc123".to_string(),
+            vout: 0,
+            amount_sats: 50000,
+            script_type: "p2tr".to_string(),
+            derivation_path: Some("m/352'/0'/0'/0/5".to_string()),
+        };
+
+        let debug_output = format!("{:?}", input);
+
+        assert!(debug_output.contains("[REDACTED]"));
+        assert!(!debug_output.contains("m/352'/0'/0'/0/5"));
+        // Non-sensitive fields should be visible
+        assert!(debug_output.contains("abc123"));
+        assert!(debug_output.contains("50000"));
     }
 }

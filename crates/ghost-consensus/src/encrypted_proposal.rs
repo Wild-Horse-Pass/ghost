@@ -90,6 +90,10 @@ pub enum ProposalError {
 
     #[error("Serialization error: {0}")]
     Serialization(String),
+
+    /// H-CRYPTO-4: Random number generation failed
+    #[error("Entropy generation failed: {0}")]
+    EntropyError(String),
 }
 
 /// Shamir share for secret reconstruction
@@ -232,14 +236,15 @@ impl ProposalCrypto {
         let k = ((n as f64) * (threshold_percent as f64) / 100.0).ceil() as usize;
         let k = k.max(MIN_SHARES).min(n);
 
-        // Generate random 256-bit key
-        let key = generate_random_key();
+        // H-CRYPTO-4: Generate random 256-bit key (no panic on RNG failure)
+        let key = generate_random_key()?;
 
         // Encrypt content with AES-256-GCM
         let plaintext =
             serde_json::to_vec(content).map_err(|e| ProposalError::Serialization(e.to_string()))?;
 
-        let nonce = generate_random_nonce();
+        // H-CRYPTO-4: Generate random nonce (no panic on RNG failure)
+        let nonce = generate_random_nonce()?;
         let ciphertext = aes_gcm_encrypt(&key, &nonce, &plaintext)?;
 
         // Split key using Shamir's Secret Sharing
@@ -471,18 +476,28 @@ impl Default for ProposalCrypto {
 // Cryptographic primitives
 // ============================================================================
 
-/// Generate a random 256-bit key
-fn generate_random_key() -> [u8; 32] {
+/// H-CRYPTO-4: Generate a random 256-bit key (no panic)
+///
+/// Returns an error if the system's random number generator fails,
+/// instead of panicking which could crash the consensus process.
+fn generate_random_key() -> Result<[u8; 32], ProposalError> {
     let mut key = [0u8; 32];
-    getrandom::getrandom(&mut key).expect("Failed to generate random key");
-    key
+    getrandom::getrandom(&mut key).map_err(|e| {
+        ProposalError::EntropyError(format!("Failed to generate random key: {}", e))
+    })?;
+    Ok(key)
 }
 
-/// Generate a random 96-bit nonce for AES-GCM
-fn generate_random_nonce() -> [u8; 12] {
+/// H-CRYPTO-4: Generate a random 96-bit nonce for AES-GCM (no panic)
+///
+/// Returns an error if the system's random number generator fails,
+/// instead of panicking which could crash the consensus process.
+fn generate_random_nonce() -> Result<[u8; 12], ProposalError> {
     let mut nonce = [0u8; 12];
-    getrandom::getrandom(&mut nonce).expect("Failed to generate random nonce");
-    nonce
+    getrandom::getrandom(&mut nonce).map_err(|e| {
+        ProposalError::EntropyError(format!("Failed to generate random nonce: {}", e))
+    })?;
+    Ok(nonce)
 }
 
 /// AES-256-GCM encryption
@@ -624,10 +639,15 @@ fn shamir_split(
         let mut coeffs = vec![0u8; k];
         coeffs[0] = secret_byte;
 
-        // Generate random coefficients for higher degrees
+        // H-CRYPTO-4: Generate random coefficients for higher degrees (no panic)
         for coeff in coeffs.iter_mut().skip(1) {
             let mut rand = [0u8; 1];
-            getrandom::getrandom(&mut rand).expect("Random generation failed");
+            getrandom::getrandom(&mut rand).map_err(|e| {
+                ProposalError::EntropyError(format!(
+                    "Failed to generate random coefficient: {}",
+                    e
+                ))
+            })?;
             *coeff = rand[0];
         }
 
@@ -723,8 +743,9 @@ mod tests {
 
     #[test]
     fn test_aes_gcm_roundtrip() {
-        let key = generate_random_key();
-        let nonce = generate_random_nonce();
+        // H-CRYPTO-4: Tests can unwrap - they're allowed to panic on failure
+        let key = generate_random_key().unwrap();
+        let nonce = generate_random_nonce().unwrap();
         let plaintext = b"Hello, encrypted world!";
 
         let ciphertext = aes_gcm_encrypt(&key, &nonce, plaintext).unwrap();
@@ -735,9 +756,10 @@ mod tests {
 
     #[test]
     fn test_aes_gcm_wrong_key() {
-        let key = generate_random_key();
-        let wrong_key = generate_random_key();
-        let nonce = generate_random_nonce();
+        // H-CRYPTO-4: Tests can unwrap - they're allowed to panic on failure
+        let key = generate_random_key().unwrap();
+        let wrong_key = generate_random_key().unwrap();
+        let nonce = generate_random_nonce().unwrap();
         let plaintext = b"Secret data";
 
         let ciphertext = aes_gcm_encrypt(&key, &nonce, plaintext).unwrap();

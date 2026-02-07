@@ -118,6 +118,9 @@ hex = "0.4"
 # Database
 rusqlite = { version = "0.31", features = ["bundled"] }
 
+# Caching
+lru = "0.12"
+
 # Networking
 tmq = "0.5"
 axum = { version = "0.7", features = ["ws"] }
@@ -175,10 +178,14 @@ chacha20poly1305 = "0.10"
 zeroize = { version = "1.7", features = ["derive"] }
 subtle = "2.5"
 ripemd = "0.1"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 secrecy = "0.8"
 
 # HTTP
 hyper = { version = "1.0", features = ["full"] }
+
+# Unix-specific
+libc = "0.2"
 
 # Dev dependencies
 tokio-test = "0.4"

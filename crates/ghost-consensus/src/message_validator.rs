@@ -73,15 +73,28 @@ pub const MAX_MPC_PARAMS_REQUEST_SIZE: usize = 5_000;
 /// MPC-C4: MPC parameters response (chunked data ~1MB)
 pub const MAX_MPC_PARAMS_RESPONSE_SIZE: usize = 1_100_000;
 
-/// SEC-TIME-1: Maximum allowed timestamp drift from current time (30 seconds in milliseconds)
+/// SEC-TIME-1: Default timestamp drift window (60 seconds in milliseconds)
 ///
-/// Reduced to 30 seconds to provide tighter replay attack protection while still
-/// allowing for reasonable clock synchronization variance. This balances:
-/// - Security: Smaller window limits the time window for replay attacks
-/// - Usability: 30 seconds allows for minor clock drift between nodes
+/// This is the default value used when no explicit drift is configured.
+/// 60 seconds provides a good balance between:
+/// - Security: Limits the window for replay attacks
+/// - Usability: Allows for clock drift across geographically distributed nodes
+/// - Network: Accounts for message propagation delays
 ///
 /// Nodes should run NTP to maintain clock synchronization within this window.
-pub const MAX_TIMESTAMP_DRIFT_MS: u64 = 30 * 1000;
+pub const DEFAULT_TIMESTAMP_DRIFT_MS: u64 = 60 * 1000;
+
+/// SEC-TIME-1: Legacy constant for backwards compatibility
+/// Use DEFAULT_TIMESTAMP_DRIFT_MS for new code.
+pub const MAX_TIMESTAMP_DRIFT_MS: u64 = DEFAULT_TIMESTAMP_DRIFT_MS;
+
+/// Minimum allowed timestamp drift (1 second)
+/// Setting drift below this is dangerous as it may cause legitimate message rejection
+pub const MIN_TIMESTAMP_DRIFT_MS: u64 = 1000;
+
+/// Maximum allowed timestamp drift (5 minutes)
+/// Higher values increase replay attack window
+pub const MAX_TIMESTAMP_DRIFT_LIMIT_MS: u64 = 5 * 60 * 1000;
 
 /// Message validation errors
 #[derive(Debug, Clone, Error)]
@@ -367,33 +380,55 @@ pub fn validate_envelope(envelope: &MessageEnvelope) -> Result<(), MessageValida
     Ok(())
 }
 
-/// Validate that a timestamp is within acceptable range
+/// Validate that a timestamp is within acceptable range using default drift window
 ///
 /// Rejects messages with timestamps that are:
-/// - More than MAX_TIMESTAMP_DRIFT_MS in the future (prevents replay attacks with future timestamps)
-/// - More than MAX_TIMESTAMP_DRIFT_MS in the past (prevents replay of old messages)
+/// - More than DEFAULT_TIMESTAMP_DRIFT_MS in the future (prevents replay attacks with future timestamps)
+/// - More than DEFAULT_TIMESTAMP_DRIFT_MS in the past (prevents replay of old messages)
 pub fn validate_timestamp(timestamp_ms: u64) -> Result<(), MessageValidationError> {
+    validate_timestamp_with_drift(timestamp_ms, DEFAULT_TIMESTAMP_DRIFT_MS)
+}
+
+/// Validate that a timestamp is within a configurable drift window
+///
+/// # Arguments
+/// * `timestamp_ms` - The timestamp to validate (Unix milliseconds)
+/// * `drift_ms` - Maximum allowed drift in milliseconds (clamped to MIN..MAX range)
+///
+/// # Returns
+/// * `Ok(())` if timestamp is within the acceptable window
+/// * `Err(TimestampInFuture)` if timestamp is too far in the future
+/// * `Err(TimestampInPast)` if timestamp is too far in the past
+pub fn validate_timestamp_with_drift(
+    timestamp_ms: u64,
+    drift_ms: u64,
+) -> Result<(), MessageValidationError> {
+    // Clamp drift to safe bounds
+    let drift_ms = drift_ms.clamp(MIN_TIMESTAMP_DRIFT_MS, MAX_TIMESTAMP_DRIFT_LIMIT_MS);
+
     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
 
     // Check if timestamp is too far in the future
-    if timestamp_ms > now_ms + MAX_TIMESTAMP_DRIFT_MS {
+    if timestamp_ms > now_ms.saturating_add(drift_ms) {
         let drift = timestamp_ms - now_ms;
         warn!(
             timestamp_ms,
             now_ms,
             drift_ms = drift,
+            allowed_drift_ms = drift_ms,
             "Message timestamp too far in the future"
         );
         return Err(MessageValidationError::TimestampInFuture(drift));
     }
 
     // Check if timestamp is too far in the past
-    if now_ms > timestamp_ms + MAX_TIMESTAMP_DRIFT_MS {
+    if now_ms > timestamp_ms.saturating_add(drift_ms) {
         let drift = now_ms - timestamp_ms;
         warn!(
             timestamp_ms,
             now_ms,
             drift_ms = drift,
+            allowed_drift_ms = drift_ms,
             "Message timestamp too far in the past"
         );
         return Err(MessageValidationError::TimestampInPast(drift));
@@ -644,6 +679,7 @@ mod tests {
             sequence: 1,
             signature: [0u8; 64], // Zero signature
             payload: vec![1, 2, 3],
+            ttl: 10,
         };
 
         let result = validate_envelope(&envelope);
@@ -660,6 +696,7 @@ mod tests {
             sequence: 1,
             signature: [1u8; 64], // Non-zero signature (but invalid - that's ok for this test)
             payload: vec![1, 2, 3],
+            ttl: 10,
         };
 
         // Should pass validate_envelope (signature validity check is separate)

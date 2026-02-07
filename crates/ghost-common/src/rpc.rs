@@ -29,6 +29,7 @@
 //! - Block template validation before use
 //! - Bounded fields to prevent DoS
 
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -37,8 +38,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 use tracing::warn;
+use zeroize::Zeroizing;
 
 use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+use crate::config::BitcoinNetwork;
 use crate::error::{GhostError, GhostResult};
 
 // ============================================================
@@ -168,12 +171,85 @@ pub enum TemplateValidationError {
     CoinbaseAuxValueTooLong(usize),
     #[error("Coinbase value exceeds max supply: {0}")]
     InvalidCoinbaseValue(u64),
+    #[error("Coinbase value mismatch: expected subsidy({0}) + fees({1}) = {2}, got {3}")]
+    CoinbaseValueMismatch(u64, u64, u64, u64),
     #[error("Height out of range: template={0}, expected near {1}")]
     HeightOutOfRange(u64, u64),
     #[error("Invalid target format: expected 64 hex chars")]
     InvalidTarget,
+    #[error("Target is zero (invalid difficulty)")]
+    ZeroTarget,
+    #[error("Target value out of range: too easy or too hard")]
+    TargetOutOfRange,
+    #[error("Bits does not match target: bits={0}, target={1}")]
+    BitsTargetMismatch(String, String),
     #[error("Invalid hex in field {0}")]
     InvalidHex(String),
+}
+
+/// Maximum valid target (minimum difficulty - bits = 0x1d00ffff on mainnet)
+/// This represents the easiest possible difficulty
+const MAX_TARGET_HEX: &str = "00000000ffff0000000000000000000000000000000000000000000000000000";
+
+/// Calculate block subsidy for a given height (halving schedule)
+fn calculate_block_subsidy(height: u64, network: Option<&BitcoinNetwork>) -> u64 {
+    let halvings = match network {
+        // Regtest and testnet have different halving intervals
+        Some(BitcoinNetwork::Regtest) => height / 150,
+        _ => height / 210_000,
+    };
+
+    if halvings >= 64 {
+        return 0;
+    }
+
+    // Initial subsidy is 50 BTC = 5_000_000_000 satoshis
+    let initial_subsidy: u64 = 50 * 100_000_000;
+    initial_subsidy >> halvings
+}
+
+/// Convert compact bits to target
+fn bits_to_target(bits_hex: &str) -> Option<[u8; 32]> {
+    let bits = u32::from_str_radix(bits_hex, 16).ok()?;
+
+    // Extract exponent and mantissa
+    let exponent = ((bits >> 24) & 0xff) as usize;
+    let mantissa = bits & 0x007fffff;
+
+    // Handle negative flag (should not be set for valid targets)
+    if bits & 0x00800000 != 0 {
+        return None;
+    }
+
+    // Construct target
+    let mut target = [0u8; 32];
+
+    if exponent == 0 {
+        return Some(target);
+    }
+
+    // Calculate position and store mantissa bytes
+    if exponent <= 3 {
+        // Mantissa fits in the bytes
+        let shift = 8 * (3 - exponent);
+        let value = mantissa >> shift;
+        target[31] = (value & 0xff) as u8;
+        if exponent >= 2 {
+            target[30] = ((value >> 8) & 0xff) as u8;
+        }
+        if exponent >= 3 {
+            target[29] = ((value >> 16) & 0xff) as u8;
+        }
+    } else {
+        let offset = exponent - 3;
+        if offset < 29 {
+            target[31 - offset] = (mantissa & 0xff) as u8;
+            target[30 - offset] = ((mantissa >> 8) & 0xff) as u8;
+            target[29 - offset] = ((mantissa >> 16) & 0xff) as u8;
+        }
+    }
+
+    Some(target)
 }
 
 /// Validate a block template before use
@@ -253,6 +329,51 @@ pub fn validate_block_template(
         return Err(TemplateValidationError::InvalidTarget);
     }
 
+    // Validate target is not zero
+    if template.target.chars().all(|c| c == '0') {
+        return Err(TemplateValidationError::ZeroTarget);
+    }
+
+    // Validate target is not above maximum (minimum difficulty)
+    if template.target.as_str() > MAX_TARGET_HEX {
+        return Err(TemplateValidationError::TargetOutOfRange);
+    }
+
+    // Validate bits matches target (consistency check)
+    if let Some(computed_target) = bits_to_target(&template.bits) {
+        let computed_hex = hex::encode(computed_target);
+        // Compare first 16 chars (most significant) for rough match
+        // Bits encoding has limited precision, so we can't expect exact match
+        if computed_hex[..16] != template.target[..16] {
+            warn!(
+                bits = %template.bits,
+                computed_target = %computed_hex,
+                template_target = %template.target,
+                "Bits and target mismatch detected"
+            );
+            // Note: This is a warning rather than error because Bitcoin Core
+            // may have rounding differences in bits encoding
+        }
+    }
+
+    // Validate coinbase value matches expected subsidy + fees
+    let total_fees: u64 = template.transactions.iter().map(|tx| tx.fee).sum();
+    let expected_subsidy = calculate_block_subsidy(template.height, None);
+    let expected_coinbase = expected_subsidy.saturating_add(total_fees);
+
+    // Allow some tolerance for signet/testnet where subsidy may differ
+    // Log warning but don't fail - Bitcoin Core is authoritative
+    if template.coinbasevalue != expected_coinbase {
+        warn!(
+            height = template.height,
+            expected_subsidy = expected_subsidy,
+            total_fees = total_fees,
+            expected_coinbase = expected_coinbase,
+            actual_coinbase = template.coinbasevalue,
+            "Coinbase value differs from expected subsidy + fees (may be normal for signet/testnet)"
+        );
+    }
+
     Ok(())
 }
 
@@ -261,7 +382,11 @@ pub fn validate_block_template(
 // ============================================================
 
 /// RPC client configuration
-#[derive(Debug, Clone)]
+///
+/// H-AUTH-2 FIX: Password is stored using SecretString which:
+/// - Does not implement Debug (redacts in output)
+/// - Zeros memory on drop
+/// - Requires explicit .expose_secret() to access
 pub struct RpcConfig {
     /// Host address
     pub host: String,
@@ -269,8 +394,8 @@ pub struct RpcConfig {
     pub port: u16,
     /// RPC username
     pub username: String,
-    /// RPC password
-    pub password: String,
+    /// RPC password (H-AUTH-2: uses SecretString for secure storage)
+    pub password: SecretString,
     /// Connection timeout in seconds
     pub timeout_secs: u64,
     /// Enable TLS (required for remote connections)
@@ -279,13 +404,43 @@ pub struct RpcConfig {
     pub tls_cert_path: Option<PathBuf>,
 }
 
+impl std::fmt::Debug for RpcConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // H-AUTH-2: Redact password in Debug output
+        f.debug_struct("RpcConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .field("timeout_secs", &self.timeout_secs)
+            .field("tls_enabled", &self.tls_enabled)
+            .field("tls_cert_path", &self.tls_cert_path)
+            .finish()
+    }
+}
+
+impl Clone for RpcConfig {
+    fn clone(&self) -> Self {
+        Self {
+            host: self.host.clone(),
+            port: self.port,
+            username: self.username.clone(),
+            // H-AUTH-2: Clone via expose_secret to maintain security
+            password: SecretString::new(self.password.expose_secret().to_string()),
+            timeout_secs: self.timeout_secs,
+            tls_enabled: self.tls_enabled,
+            tls_cert_path: self.tls_cert_path.clone(),
+        }
+    }
+}
+
 impl Default for RpcConfig {
     fn default() -> Self {
         Self {
             host: "127.0.0.1".into(),
             port: 8332,
             username: String::new(),
-            password: String::new(),
+            password: SecretString::new(String::new()),
             timeout_secs: 30,
             tls_enabled: false,
             tls_cert_path: None,
@@ -348,6 +503,8 @@ impl std::fmt::Debug for BitcoinRpc {
 impl BitcoinRpc {
     /// Create a new RPC client (legacy constructor for localhost)
     ///
+    /// H-AUTH-2: Password is immediately wrapped in SecretString for secure handling
+    ///
     /// # Errors
     /// Returns an error if the HTTP client cannot be created
     pub fn new(host: &str, port: u16, user: &str, password: &str) -> GhostResult<Self> {
@@ -355,7 +512,7 @@ impl BitcoinRpc {
             host: host.to_string(),
             port,
             username: user.to_string(),
-            password: password.to_string(),
+            password: SecretString::new(password.to_string()),
             ..Default::default()
         };
         Self::with_config(config)
@@ -386,8 +543,13 @@ impl BitcoinRpc {
 
         let scheme = if config.tls_enabled { "https" } else { "http" };
         let url = format!("{}://{}:{}", scheme, config.host, config.port);
-        let auth = base64::engine::general_purpose::STANDARD
-            .encode(format!("{}:{}", config.username, config.password));
+        // H-AUTH-2: Use Zeroizing to ensure credentials string is zeroed after encoding
+        let credentials = Zeroizing::new(format!(
+            "{}:{}",
+            config.username,
+            config.password.expose_secret()
+        ));
+        let auth = base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes());
 
         let mut client_builder =
             reqwest::Client::builder().timeout(std::time::Duration::from_secs(config.timeout_secs));
@@ -434,16 +596,45 @@ impl BitcoinRpc {
         method: &str,
         params: Vec<Value>,
     ) -> GhostResult<T> {
-        self.call_with_retry(method, params, &self.retry_config)
+        self.call_with_options(method, params, &self.retry_config, None)
+            .await
+    }
+
+    /// Make an RPC call with per-operation timeout
+    ///
+    /// M-CFG-1 FIX: Allows specifying a custom timeout for operations that may take
+    /// longer than the default (e.g., getblocktemplate during high mempool activity).
+    async fn call_with_timeout<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: Vec<Value>,
+        timeout: Duration,
+    ) -> GhostResult<T> {
+        self.call_with_options(method, params, &self.retry_config, Some(timeout))
             .await
     }
 
     /// Make an RPC call with custom retry configuration
+    #[allow(dead_code)]
     async fn call_with_retry<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: Vec<Value>,
         retry_config: &RpcRetryConfig,
+    ) -> GhostResult<T> {
+        self.call_with_options(method, params, retry_config, None)
+            .await
+    }
+
+    /// Make an RPC call with full options (retry config and per-operation timeout)
+    ///
+    /// M-CFG-1 FIX: Per-operation timeout configuration for different RPC operations
+    async fn call_with_options<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: Vec<Value>,
+        retry_config: &RpcRetryConfig,
+        operation_timeout: Option<Duration>,
     ) -> GhostResult<T> {
         let mut attempt = 0;
         let mut backoff = retry_config.initial_backoff;
@@ -456,7 +647,7 @@ impl BitcoinRpc {
                 ));
             }
 
-            match self.call_inner(method, &params).await {
+            match self.call_inner_with_timeout(method, &params, operation_timeout).await {
                 Ok(result) => {
                     self.circuit_breaker.record_success();
                     return Ok(result);
@@ -496,10 +687,23 @@ impl BitcoinRpc {
     }
 
     /// Internal call without retry logic
+    #[allow(dead_code)]
     async fn call_inner<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
         params: &[Value],
+    ) -> GhostResult<T> {
+        self.call_inner_with_timeout(method, params, None).await
+    }
+
+    /// Internal call with optional per-operation timeout
+    ///
+    /// M-CFG-1 FIX: Supports per-operation timeout override
+    async fn call_inner_with_timeout<T: for<'de> Deserialize<'de>>(
+        &self,
+        method: &str,
+        params: &[Value],
+        timeout: Option<Duration>,
     ) -> GhostResult<T> {
         let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
 
@@ -510,11 +714,18 @@ impl BitcoinRpc {
             "params": params,
         });
 
-        let response = self
+        let mut request_builder = self
             .client
             .post(&self.url)
             .header("Authorization", format!("Basic {}", self.auth))
-            .json(&request)
+            .json(&request);
+
+        // M-CFG-1 FIX: Apply per-operation timeout if specified
+        if let Some(op_timeout) = timeout {
+            request_builder = request_builder.timeout(op_timeout);
+        }
+
+        let response = request_builder
             .send()
             .await
             .map_err(|e| GhostError::Rpc(format!("Request failed: {}", e)))?;
@@ -585,12 +796,18 @@ impl BitcoinRpc {
     /// Get block template for mining (with validation)
     ///
     /// Validates the template before returning to prevent malicious/malformed templates.
+    ///
+    /// M-CFG-1 FIX: Uses a longer timeout (60s) for getblocktemplate since this operation
+    /// can take significant time during high mempool activity.
     pub async fn get_block_template(&self, rules: Vec<&str>) -> GhostResult<BlockTemplate> {
         let params = json!({
             "rules": rules,
             "capabilities": ["coinbasetxn", "workid", "coinbase/append"],
         });
-        let template: BlockTemplate = self.call("getblocktemplate", vec![params]).await?;
+        // M-CFG-1 FIX: Use 60 second timeout for getblocktemplate
+        let template: BlockTemplate = self
+            .call_with_timeout("getblocktemplate", vec![params], Duration::from_secs(60))
+            .await?;
 
         // Validate template before returning
         let current_height = {
@@ -616,6 +833,8 @@ impl BitcoinRpc {
     /// Get block template without validation (use with caution)
     ///
     /// Only use this if you're doing your own validation.
+    ///
+    /// M-CFG-1 FIX: Uses a longer timeout (60s) for getblocktemplate.
     pub async fn get_block_template_unchecked(
         &self,
         rules: Vec<&str>,
@@ -624,7 +843,9 @@ impl BitcoinRpc {
             "rules": rules,
             "capabilities": ["coinbasetxn", "workid", "coinbase/append"],
         });
-        self.call("getblocktemplate", vec![params]).await
+        // M-CFG-1 FIX: Use 60 second timeout for getblocktemplate
+        self.call_with_timeout("getblocktemplate", vec![params], Duration::from_secs(60))
+            .await
     }
 
     /// Submit a block
@@ -760,9 +981,88 @@ impl BitcoinRpc {
         .await
     }
 
-    /// Validate an address
+    /// Validate an address (LEGACY - does not check network)
+    ///
+    /// WARNING: This only validates address format, not network compatibility.
+    /// For production use, prefer `validate_address_for_network()` which also
+    /// verifies the address matches the expected Bitcoin network (H-BTC-2).
     pub async fn validate_address(&self, address: &str) -> GhostResult<AddressValidation> {
         self.call("validateaddress", vec![json!(address)]).await
+    }
+
+    /// H-BTC-2: Validate an address for a specific Bitcoin network
+    ///
+    /// This method validates that an address:
+    /// 1. Has valid format (calls Bitcoin Core validateaddress)
+    /// 2. Matches the expected network (mainnet, testnet, signet, regtest)
+    ///
+    /// This prevents accidentally using testnet addresses on mainnet or vice versa,
+    /// which would result in unspendable outputs and permanent fund loss.
+    ///
+    /// # Arguments
+    /// * `address` - The Bitcoin address to validate
+    /// * `expected_network` - The network the address should belong to
+    ///
+    /// # Returns
+    /// * `Ok(AddressValidation)` if the address is valid for the expected network
+    /// * `Err(GhostError::InvalidAddress)` if the address is invalid or wrong network
+    pub async fn validate_address_for_network(
+        &self,
+        address: &str,
+        expected_network: BitcoinNetwork,
+    ) -> GhostResult<AddressValidation> {
+        // First validate the address format via Bitcoin Core
+        let validation = self.validate_address(address).await?;
+
+        if !validation.isvalid {
+            return Err(GhostError::InvalidAddress(format!(
+                "Address '{}' is not a valid Bitcoin address",
+                address
+            )));
+        }
+
+        // H-BTC-2: Check network prefix matches expected network
+        // Bech32 prefixes: bc1 (mainnet), tb1 (testnet/signet), bcrt1 (regtest)
+        // Legacy prefixes: 1/3 (mainnet), m/n/2 (testnet/signet/regtest)
+        let address_network = Self::detect_address_network(address);
+
+        if address_network != expected_network {
+            return Err(GhostError::InvalidAddress(format!(
+                "H-BTC-2 SECURITY: Address '{}' is for {:?} but expected {:?}. \
+                 Using wrong-network addresses would create unspendable outputs!",
+                address, address_network, expected_network
+            )));
+        }
+
+        Ok(validation)
+    }
+
+    /// H-BTC-2: Detect network from address prefix
+    ///
+    /// Determines which Bitcoin network an address belongs to based on its prefix:
+    /// - bc1/1/3 = Mainnet
+    /// - tb1/m/n/2 = Testnet/Signet
+    /// - bcrt1 = Regtest
+    fn detect_address_network(address: &str) -> BitcoinNetwork {
+        // Bech32 addresses (most common)
+        if address.starts_with("bc1") {
+            BitcoinNetwork::Mainnet
+        } else if address.starts_with("bcrt1") {
+            BitcoinNetwork::Regtest
+        } else if address.starts_with("tb1") {
+            // Could be testnet or signet - default to Signet as it's more commonly used
+            BitcoinNetwork::Signet
+        // Legacy P2PKH addresses
+        } else if address.starts_with('1') || address.starts_with('3') {
+            BitcoinNetwork::Mainnet
+        } else if address.starts_with('m') || address.starts_with('n') || address.starts_with('2')
+        {
+            // Testnet/signet legacy addresses
+            BitcoinNetwork::Signet
+        } else {
+            // Unknown prefix - assume mainnet to be safe (will fail validation)
+            BitcoinNetwork::Mainnet
+        }
     }
 
     /// Get address info (for wallet addresses)
@@ -1255,6 +1555,49 @@ pub struct AddressValidation {
     pub witness_program: Option<String>,
 }
 
+/// H-BTC-2: Detect which Bitcoin network an address belongs to based on its prefix
+///
+/// Address prefixes:
+/// - Mainnet Bech32: bc1 (native segwit)
+/// - Mainnet Legacy: 1 (P2PKH), 3 (P2SH)
+/// - Testnet/Signet Bech32: tb1
+/// - Testnet/Signet Legacy: m, n (P2PKH), 2 (P2SH)
+/// - Regtest Bech32: bcrt1
+/// - Regtest Legacy: m, n (P2PKH), 2 (P2SH)
+///
+/// Note: Testnet and Signet share the same address formats, so we return Testnet
+/// for tb1/m/n/2 prefixes. For regtest-specific detection, we look for bcrt1.
+pub fn detect_address_network(address: &str) -> BitcoinNetwork {
+    // Bech32 addresses (native segwit)
+    if address.starts_with("bc1") {
+        return BitcoinNetwork::Mainnet;
+    }
+    if address.starts_with("bcrt1") {
+        return BitcoinNetwork::Regtest;
+    }
+    if address.starts_with("tb1") {
+        // Note: tb1 is used by both testnet and signet
+        // We default to Testnet; caller should handle signet explicitly if needed
+        return BitcoinNetwork::Testnet;
+    }
+
+    // Legacy addresses (P2PKH and P2SH)
+    if let Some(first_char) = address.chars().next() {
+        match first_char {
+            // Mainnet
+            '1' | '3' => return BitcoinNetwork::Mainnet,
+            // Testnet/Signet/Regtest P2PKH (these share prefixes)
+            'm' | 'n' => return BitcoinNetwork::Testnet,
+            // Testnet/Signet/Regtest P2SH
+            '2' => return BitcoinNetwork::Testnet,
+            _ => {}
+        }
+    }
+
+    // Default to Mainnet for unknown prefixes (will fail validation anyway)
+    BitcoinNetwork::Mainnet
+}
+
 /// Unspent output
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnspentOutput {
@@ -1511,6 +1854,7 @@ mod tests {
 
     #[test]
     fn test_template_validation_valid() {
+        // Use a valid non-zero target within acceptable range
         let template = BlockTemplate {
             version: 0x20000000,
             rules: vec!["segwit".into()],
@@ -1521,7 +1865,8 @@ mod tests {
             coinbaseaux: Default::default(),
             coinbasevalue: 312_500_000,
             longpollid: None,
-            target: "0".repeat(64),
+            // Valid target (not zero, within range)
+            target: "00000000ffff0000000000000000000000000000000000000000000000000000".to_string(),
             mintime: 0,
             mutable: vec![],
             noncerange: "00000000ffffffff".into(),
@@ -1529,7 +1874,7 @@ mod tests {
             sizelimit: 4000000,
             weightlimit: 4000000,
             curtime: 1700000000,
-            bits: "1a0377ae".into(),
+            bits: "1d00ffff".into(), // Matches the target
             height: 800000,
             default_witness_commitment: None,
         };
@@ -1722,5 +2067,59 @@ mod tests {
         let client = BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap();
         // Circuit breaker should be initialized and closed
         assert!(client.circuit_breaker().is_allowed());
+    }
+
+    /// H-BTC-2: Test address network detection
+    #[test]
+    fn test_detect_address_network() {
+        // Mainnet bech32 (native segwit)
+        assert_eq!(
+            detect_address_network("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"),
+            BitcoinNetwork::Mainnet
+        );
+        assert_eq!(
+            detect_address_network("bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vq5zuyut"),
+            BitcoinNetwork::Mainnet
+        );
+
+        // Mainnet legacy P2PKH (starts with 1)
+        assert_eq!(
+            detect_address_network("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"),
+            BitcoinNetwork::Mainnet
+        );
+
+        // Mainnet legacy P2SH (starts with 3)
+        assert_eq!(
+            detect_address_network("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"),
+            BitcoinNetwork::Mainnet
+        );
+
+        // Testnet/Signet bech32
+        assert_eq!(
+            detect_address_network("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"),
+            BitcoinNetwork::Testnet
+        );
+
+        // Testnet/Signet legacy P2PKH (starts with m or n)
+        assert_eq!(
+            detect_address_network("mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn"),
+            BitcoinNetwork::Testnet
+        );
+        assert_eq!(
+            detect_address_network("n3zWAo2eBnxLr3ueohXnuAa8mTVBhxmPhq"),
+            BitcoinNetwork::Testnet
+        );
+
+        // Testnet/Signet legacy P2SH (starts with 2)
+        assert_eq!(
+            detect_address_network("2N4Q5FhU2497BryFfUgbqkAJE87aKHUhXMp"),
+            BitcoinNetwork::Testnet
+        );
+
+        // Regtest bech32
+        assert_eq!(
+            detect_address_network("bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"),
+            BitcoinNetwork::Regtest
+        );
     }
 }

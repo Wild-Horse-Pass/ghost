@@ -233,27 +233,34 @@ pub fn verify_internal_auth(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<(), (StatusCode, String)> {
+    // SEC-ERR-3: Distinguish between missing and malformed headers
     // Extract signature header
-    let signature = headers
-        .get("X-Ghost-Signature")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Missing X-Ghost-Signature header".to_string(),
-            )
-        })?;
+    let signature_header = headers.get("X-Ghost-Signature").ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "Missing X-Ghost-Signature header".to_string(),
+        )
+    })?;
+    let signature = signature_header.to_str().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Malformed X-Ghost-Signature header: contains non-ASCII characters".to_string(),
+        )
+    })?;
 
     // Extract timestamp header
-    let timestamp_str = headers
-        .get("X-Ghost-Timestamp")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "Missing X-Ghost-Timestamp header".to_string(),
-            )
-        })?;
+    let timestamp_header = headers.get("X-Ghost-Timestamp").ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "Missing X-Ghost-Timestamp header".to_string(),
+        )
+    })?;
+    let timestamp_str = timestamp_header.to_str().map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Malformed X-Ghost-Timestamp header: contains non-ASCII characters".to_string(),
+        )
+    })?;
 
     let timestamp: u64 = timestamp_str.parse().map_err(|_| {
         (

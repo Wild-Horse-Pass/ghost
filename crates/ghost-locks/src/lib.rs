@@ -91,7 +91,7 @@ pub use script::{
     build_lock_script, build_normal_witness, build_p2wsh_script_pubkey, build_recovery_witness,
     build_wsh_witness_script, compute_wsh_script_hash, ghost_lock_id, is_p2tr, is_p2wsh,
     is_quantum_safe_address, validate_no_p2tr, RecoveryInputParams, P2TR_REJECTION_MSG,
-    RECOVERY_NSEQUENCE,
+    RECOVERY_NSEQUENCE, MAX_RECOVERY_BLOCKS, MIN_RECOMMENDED_RECOVERY_BLOCKS,
 };
 pub use state::{LockState, StateTransition};
 pub use timelock::{TimelockTier, MAX_CREATION_HEIGHT, MIN_RECOVERY_BLOCKS};

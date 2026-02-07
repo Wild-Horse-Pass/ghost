@@ -608,7 +608,10 @@ impl CoordinatorPool {
 
         // Promote new active
         let epoch = *self.current_epoch.read();
-        let coord = coordinators.get_mut(id).unwrap(); // Safe: we already checked it exists
+        // CRIT-7: Return error instead of panicking even though we just checked existence
+        let coord = coordinators
+            .get_mut(id)
+            .ok_or_else(|| PoolError::CoordinatorNotFound(hex::encode(&id[..8])))?;
         coord.status = CoordinatorStatus::Active;
         coord.active_since_epoch = Some(epoch);
 

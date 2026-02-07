@@ -164,7 +164,11 @@ impl GhostLockInfo {
 }
 
 /// Request to create a new ghost lock
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// # Security: Redacted Debug
+///
+/// The Debug implementation redacts the owner_pubkey and proof fields.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LockRequest {
     /// Owner's public key (32 bytes hex)
     pub owner_pubkey: String,
@@ -180,6 +184,18 @@ pub struct LockRequest {
 
     /// Authentication proof
     pub proof: WalletProof,
+}
+
+impl std::fmt::Debug for LockRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LockRequest")
+            .field("owner_pubkey", &"[REDACTED]")
+            .field("capacity_sats", &self.capacity_sats)
+            .field("denomination", &self.denomination)
+            .field("timelock_tier", &self.timelock_tier)
+            .field("proof", &self.proof)
+            .finish()
+    }
 }
 
 /// Response for lock creation
@@ -220,7 +236,11 @@ impl std::fmt::Display for JumpPriority {
 }
 
 /// Request to jump a lock
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// # Security: Redacted Debug
+///
+/// The Debug implementation redacts the target_address and proof fields.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct JumpRequest {
     /// Lock ID to jump
     pub lock_id: String,
@@ -234,6 +254,17 @@ pub struct JumpRequest {
 
     /// Authentication proof
     pub proof: WalletProof,
+}
+
+impl std::fmt::Debug for JumpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JumpRequest")
+            .field("lock_id", &self.lock_id)
+            .field("priority", &self.priority)
+            .field("target_address", &"[REDACTED]")
+            .field("proof", &self.proof)
+            .finish()
+    }
 }
 
 /// Response for jump request

@@ -140,30 +140,27 @@ impl NoiseKeypair {
     }
 
     /// Create from existing private key bytes
+    ///
+    /// CRIT-9: Properly derives the X25519 public key from the private key
+    /// using scalar multiplication. The keypair is deterministic from the
+    /// private key, ensuring peer authentication works after restart.
     pub fn from_private_key(private_key: [u8; 32]) -> Result<Self, NoiseError> {
-        // Derive public key from private using X25519
-        use snow::params::NoiseParams;
-        let params: NoiseParams = NOISE_PATTERN.parse()?;
-        let builder = Builder::new(params);
+        // CRIT-9: Use x25519-dalek for proper public key derivation
+        // This ensures the keypair is deterministic from the private key
+        use x25519_dalek::{PublicKey, StaticSecret};
 
-        // Create a temporary handshake to get the keypair
-        let keypair = builder.generate_keypair()?;
+        // Create the static secret from the private key bytes
+        let secret = StaticSecret::from(private_key);
 
-        // For now, just use the provided private key directly
-        // In production, you'd derive the public key properly
-        let mut public_key = [0u8; 32];
+        // Derive the public key through scalar multiplication
+        let public = PublicKey::from(&secret);
 
-        // X25519 public key derivation: clamp and scalar multiply
-        let mut clamped = private_key;
-        clamped[0] &= 248;
-        clamped[31] &= 127;
-        clamped[31] |= 64;
-        // `clamped` is now ready for X25519 scalar multiplication
-        let _ = clamped; // Mark as intentionally unused (keypair.public used directly below)
+        let public_key: [u8; 32] = *public.as_bytes();
 
-        // Use curve25519-dalek or similar for proper derivation
-        // For now, we'll just store both from generation
-        public_key.copy_from_slice(&keypair.public);
+        debug!(
+            public_key_short = %hex::encode(&public_key[..8]),
+            "CRIT-9: Derived X25519 public key from private key"
+        );
 
         Ok(Self {
             private_key,
@@ -765,6 +762,158 @@ mod tests {
         assert_eq!(
             MAX_PAYLOAD_SIZE + NOISE_OVERHEAD,
             MAX_MESSAGE_SIZE - NOISE_OVERHEAD + NOISE_OVERHEAD
+        );
+    }
+
+    // ==========================================================================
+    // CRIT-9: Key Derivation Tests
+    // ==========================================================================
+
+    /// CRIT-9-TEST-1: Verify keypair is deterministic from private key
+    #[test]
+    fn test_crit9_keypair_deterministic_from_private_key() {
+        // Generate a random private key
+        let mut private_key = [0u8; 32];
+        getrandom::getrandom(&mut private_key).unwrap();
+
+        // Create keypair twice from the same private key
+        let kp1 = NoiseKeypair::from_private_key(private_key).unwrap();
+        let kp2 = NoiseKeypair::from_private_key(private_key).unwrap();
+
+        // Public keys MUST be identical (deterministic derivation)
+        assert_eq!(
+            kp1.public_key(),
+            kp2.public_key(),
+            "CRIT-9: Same private key MUST produce same public key"
+        );
+
+        // Private keys should match what we provided
+        assert_eq!(
+            kp1.private_key(),
+            &private_key,
+            "Private key should be preserved"
+        );
+    }
+
+    /// CRIT-9-TEST-2: Verify different private keys produce different public keys
+    #[test]
+    fn test_crit9_different_private_keys_produce_different_public_keys() {
+        let private_key1 = [1u8; 32];
+        let private_key2 = [2u8; 32];
+
+        let kp1 = NoiseKeypair::from_private_key(private_key1).unwrap();
+        let kp2 = NoiseKeypair::from_private_key(private_key2).unwrap();
+
+        assert_ne!(
+            kp1.public_key(),
+            kp2.public_key(),
+            "Different private keys must produce different public keys"
+        );
+    }
+
+    /// CRIT-9-TEST-3: Verify from_hex uses the actual provided key
+    #[test]
+    fn test_crit9_from_hex_uses_provided_key() {
+        // Create a known private key
+        let private_key = [42u8; 32];
+        let hex_key = hex::encode(private_key);
+
+        // Load from hex
+        let kp1 = NoiseKeypair::from_hex(&hex_key).unwrap();
+
+        // Create directly from bytes
+        let kp2 = NoiseKeypair::from_private_key(private_key).unwrap();
+
+        // They must match
+        assert_eq!(
+            kp1.public_key(),
+            kp2.public_key(),
+            "CRIT-9: from_hex and from_private_key must produce same result"
+        );
+        assert_eq!(
+            kp1.private_key(),
+            kp2.private_key(),
+            "CRIT-9: Private keys must match"
+        );
+    }
+
+    /// CRIT-9-TEST-4: Verify keypair can be saved and restored with same identity
+    #[test]
+    fn test_crit9_keypair_persistence_identity() {
+        // Simulate saving and loading a keypair
+        let original = NoiseKeypair::generate();
+        let saved_private_hex = hex::encode(original.private_key());
+
+        // Simulate restart - load from saved hex
+        let restored = NoiseKeypair::from_hex(&saved_private_hex).unwrap();
+
+        // The restored keypair MUST have the same identity
+        assert_eq!(
+            original.public_key(),
+            restored.public_key(),
+            "CRIT-9: Restored keypair must have same public key (identity)"
+        );
+        assert_eq!(
+            original.private_key(),
+            restored.private_key(),
+            "CRIT-9: Restored keypair must have same private key"
+        );
+    }
+
+    /// CRIT-9-TEST-5: Verify handshake works with restored keypair
+    #[tokio::test]
+    async fn test_crit9_handshake_with_restored_keypair() {
+        // Simulate a node that saves its keypair and restarts
+        let original_initiator = NoiseKeypair::generate();
+        let original_responder = NoiseKeypair::generate();
+
+        // Save the keypairs (simulate persistence)
+        let initiator_private_hex = hex::encode(original_initiator.private_key());
+        let responder_private_hex = hex::encode(original_responder.private_key());
+
+        // Simulate restart - restore keypairs
+        let restored_initiator = NoiseKeypair::from_hex(&initiator_private_hex).unwrap();
+        let restored_responder = NoiseKeypair::from_hex(&responder_private_hex).unwrap();
+
+        // Verify public keys match (this is the CRIT-9 fix)
+        assert_eq!(
+            original_initiator.public_key(),
+            restored_initiator.public_key(),
+            "Restored initiator must have same identity"
+        );
+        assert_eq!(
+            original_responder.public_key(),
+            restored_responder.public_key(),
+            "Restored responder must have same identity"
+        );
+
+        // Now verify handshake works with restored keypairs
+        let (stream1, stream2) = duplex(65536);
+
+        let expected_responder_key = *restored_responder.public_key();
+
+        let responder_handle = tokio::spawn(async move {
+            let session = NoiseSession::responder(&restored_responder).unwrap();
+            session.handshake(stream2).await
+        });
+
+        let session = NoiseSession::initiator(&restored_initiator).unwrap();
+        let (mut transport, peer_key) = session.handshake(stream1).await.unwrap();
+        let (mut responder_transport, _) = responder_handle.await.unwrap().unwrap();
+
+        // Verify we got the correct peer identity
+        assert_eq!(
+            peer_key, expected_responder_key,
+            "CRIT-9: Handshake should identify peer correctly after restore"
+        );
+
+        // Verify encrypted communication works
+        transport.send(b"crit9-test").await.unwrap();
+        let received = responder_transport.recv().await.unwrap();
+        assert_eq!(
+            received,
+            b"crit9-test",
+            "Encrypted communication should work after keypair restore"
         );
     }
 }

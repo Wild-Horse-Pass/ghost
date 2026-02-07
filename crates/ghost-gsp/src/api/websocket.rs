@@ -873,12 +873,19 @@ async fn handle_get_payment_status(
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
-    // H-1: Verify wallet proof before returning payment information
-    if let Err(_e) = verify_websocket_proof(state, proof, wallet_id) {
-        return Ok(Some(ServerMessage::PaymentStatus {
-            payment_id: payment_id.to_string(),
-            status: PaymentStatus::Failed,
-            confirmations: None,
+    // H-AUTH-1 FIX: Verify wallet proof before returning payment information
+    // Return proper auth error, not a fake payment status that could confuse clients
+    if let Err(e) = verify_websocket_proof(state, proof, wallet_id) {
+        warn!(
+            wallet_id = %wallet_id,
+            payment_id = %payment_id,
+            error = %e,
+            "H-AUTH-1: Payment status request rejected due to proof verification failure"
+        );
+        return Ok(Some(ServerMessage::Error {
+            code: "UNAUTHORIZED".to_string(),
+            message: format!("Wallet proof verification failed: {}", e),
+            request_id: None,
         }));
     }
 

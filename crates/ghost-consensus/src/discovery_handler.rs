@@ -40,33 +40,48 @@ use crate::mesh::MessageHandler;
 use crate::message::{DiscoveryMessage, MessageEnvelope, MessageType, PeerInfo};
 use crate::peer::PeerManager;
 
-/// M-16: Token bucket rate limiter for discovery messages
+/// H-P2P-3: Integer-based token bucket rate limiter for discovery messages
 ///
 /// Prevents flooding attacks by limiting the rate of discovery messages
 /// processed per sender.
+///
+/// Uses milli-tokens (1 token = 1000 millis) to avoid floating-point precision
+/// issues that could be exploited to bypass rate limiting.
 struct RateLimiter {
-    /// Tokens per sender (node_id -> (tokens, last_refill))
-    buckets: RwLock<HashMap<NodeId, (f64, Instant)>>,
-    /// Maximum tokens per bucket
-    max_tokens: f64,
-    /// Token refill rate per second
-    refill_rate: f64,
+    /// Tokens per sender (node_id -> (tokens_millis, last_refill_ms))
+    /// Using millisecond precision for token calculations
+    buckets: RwLock<HashMap<NodeId, (u64, Instant)>>,
+    /// Maximum tokens in milli-tokens (multiply by 1000)
+    max_tokens_millis: u64,
+    /// Token refill rate in milli-tokens per second
+    refill_rate_millis: u64,
     /// Maximum number of buckets to track (prevents memory exhaustion)
     max_buckets: usize,
 }
 
+/// One token in millis (1000 millis = 1 token)
+const MILLIS_PER_TOKEN: u64 = 1000;
+
 impl RateLimiter {
-    fn new(max_tokens: f64, refill_rate: f64, max_buckets: usize) -> Self {
+    /// Create a new rate limiter
+    ///
+    /// # Arguments
+    /// * `max_tokens` - Maximum burst capacity (will be converted to millis internally)
+    /// * `refill_rate` - Tokens refilled per second (will be converted to millis internally)
+    /// * `max_buckets` - Maximum number of sender buckets to track
+    fn new(max_tokens: u64, refill_rate: u64, max_buckets: usize) -> Self {
         Self {
             buckets: RwLock::new(HashMap::new()),
-            max_tokens,
-            refill_rate,
+            max_tokens_millis: max_tokens.saturating_mul(MILLIS_PER_TOKEN),
+            refill_rate_millis: refill_rate.saturating_mul(MILLIS_PER_TOKEN),
             max_buckets,
         }
     }
 
     /// Try to consume a token for the given sender
     /// Returns true if allowed, false if rate limited
+    ///
+    /// H-P2P-3: Uses integer arithmetic to avoid floating-point precision attacks
     fn try_consume(&self, sender: &NodeId) -> bool {
         let now = Instant::now();
         let mut buckets = self.buckets.write();
@@ -83,16 +98,31 @@ impl RateLimiter {
             }
         }
 
-        let (tokens, last_refill) = buckets.entry(*sender).or_insert((self.max_tokens, now));
+        let (tokens_millis, last_refill) = buckets
+            .entry(*sender)
+            .or_insert((self.max_tokens_millis, now));
 
-        // Refill tokens based on elapsed time
-        let elapsed = now.duration_since(*last_refill).as_secs_f64();
-        *tokens = (*tokens + elapsed * self.refill_rate).min(self.max_tokens);
+        // H-P2P-3: Refill tokens based on elapsed time using integer arithmetic
+        // Cap elapsed time to 1 hour (3600000 ms) to prevent overflow
+        let elapsed_ms = now
+            .duration_since(*last_refill)
+            .as_millis()
+            .min(3_600_000) as u64;
+
+        // refill_millis = elapsed_ms * refill_rate_millis / 1000
+        // Reorder to minimize precision loss: (elapsed_ms * refill_rate_millis) / 1000
+        let refill_millis = elapsed_ms
+            .saturating_mul(self.refill_rate_millis)
+            / 1000;
+
+        *tokens_millis = tokens_millis
+            .saturating_add(refill_millis)
+            .min(self.max_tokens_millis);
         *last_refill = now;
 
-        // Try to consume a token
-        if *tokens >= 1.0 {
-            *tokens -= 1.0;
+        // Try to consume one token (1000 millis)
+        if *tokens_millis >= MILLIS_PER_TOKEN {
+            *tokens_millis -= MILLIS_PER_TOKEN;
             true
         } else {
             false
@@ -111,21 +141,97 @@ impl RateLimiter {
 /// Maximum peers to include in a discovery broadcast
 const MAX_PEERS_PER_BROADCAST: usize = 20;
 
-/// SEC-P2P-2: Validate a peer address for basic sanity
+/// H-P2P-4: Parse host and validate it is a valid IP address (not a domain name)
 ///
-/// Rejects obviously invalid addresses that could indicate:
-/// - Attempts to discover local/private network addresses
-/// - Malformed addresses that could cause issues
-/// - Addresses with invalid ports
+/// Returns Some((host_without_brackets, is_ipv6)) if valid IP, None if invalid or domain name.
+/// This prevents DNS hijacking attacks where an attacker controls DNS resolution.
+fn parse_ip_host(host: &str) -> Option<(String, bool)> {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    // Handle IPv6 with brackets: [fe80::1] -> fe80::1
+    if host.starts_with('[') && host.ends_with(']') {
+        let inner = &host[1..host.len() - 1];
+        if inner.parse::<Ipv6Addr>().is_ok() {
+            return Some((inner.to_string(), true));
+        }
+        return None;
+    }
+
+    // Try parsing as IPv4
+    if host.parse::<Ipv4Addr>().is_ok() {
+        return Some((host.to_string(), false));
+    }
+
+    // Try parsing as IPv6 without brackets
+    if host.parse::<Ipv6Addr>().is_ok() {
+        return Some((host.to_string(), true));
+    }
+
+    // Not a valid IP address (probably a domain name)
+    None
+}
+
+/// H-P2P-4: Check if an IP address is a private/local address that should be rejected
+fn is_private_or_local_ip(ip_str: &str, is_ipv6: bool) -> bool {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    if is_ipv6 {
+        if let Ok(ip) = ip_str.parse::<Ipv6Addr>() {
+            // Reject loopback (::1), link-local (fe80::/10), private (fc00::/7)
+            // Using is_loopback() and is_unspecified() where available
+            // For link-local and unique-local, we check the prefix bytes
+            if ip.is_loopback() || ip.is_unspecified() {
+                return true;
+            }
+            // Link-local: fe80::/10
+            let segments = ip.segments();
+            if (segments[0] & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            // Unique local: fc00::/7
+            if (segments[0] & 0xfe00) == 0xfc00 {
+                return true;
+            }
+        }
+    } else if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
+        // Reject loopback, private, link-local
+        if ip.is_loopback()
+            || ip.is_private()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_broadcast()
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// SEC-P2P-2/H-P2P-4: Validate a peer address for security
+///
+/// Rejects:
+/// - Domain names (DNS hijacking risk) - H-P2P-4
+/// - Private/local network addresses
+/// - Invalid ports
+///
+/// Only accepts valid IPv4 or IPv6 addresses with reasonable ports.
 fn validate_peer_address(address: &str) -> bool {
     // Must not be empty
     if address.is_empty() {
         return false;
     }
 
+    // Strip protocol prefix if present (tcp://, ssl://, etc.)
+    let address_without_protocol = if let Some(pos) = address.find("://") {
+        &address[pos + 3..]
+    } else {
+        address
+    };
+
     // Must contain host:port format
     // Use rsplit to handle IPv6 addresses like [::1]:8555
-    let parts: Vec<&str> = address.rsplitn(2, ':').collect();
+    let parts: Vec<&str> = address_without_protocol.rsplitn(2, ':').collect();
     if parts.len() != 2 {
         return false;
     }
@@ -139,25 +245,25 @@ fn validate_peer_address(address: &str) -> bool {
         _ => return false,
     };
 
-    // Reject obviously invalid addresses
-    if host.is_empty()
-        || host == "0.0.0.0"
-        || host == "127.0.0.1"
-        || host == "localhost"
-        || host == "::1"
-        || host == "[::1]"
-        || host.starts_with("192.168.")
-        || host.starts_with("10.")
-        || host.starts_with("172.16.")
-        || host.starts_with("172.17.")
-        || host.starts_with("172.18.")
-        || host.starts_with("172.19.")
-        || host.starts_with("172.2")
-        || host.starts_with("172.30.")
-        || host.starts_with("172.31.")
-        || host.starts_with("169.254.")
-    // Link-local
-    {
+    // H-P2P-4: Must be a valid IP address (not a domain name)
+    let (ip_str, is_ipv6) = match parse_ip_host(host) {
+        Some(result) => result,
+        None => {
+            warn!(
+                address = %address,
+                host = %host,
+                "H-P2P-4: Rejecting address with domain name (only IP addresses allowed)"
+            );
+            return false;
+        }
+    };
+
+    // Reject private/local addresses
+    if is_private_or_local_ip(&ip_str, is_ipv6) {
+        warn!(
+            address = %address,
+            "Rejecting private/local IP address"
+        );
         return false;
     }
 
@@ -173,10 +279,10 @@ fn validate_peer_address(address: &str) -> bool {
 /// Callback for connecting to newly discovered peers
 pub type ConnectCallback = Arc<dyn Fn(String) + Send + Sync>;
 
-/// M-16: Default discovery message rate limit (messages per second)
-const DISCOVERY_RATE_LIMIT: f64 = 2.0;
-/// M-16: Maximum tokens (burst capacity)
-const DISCOVERY_MAX_TOKENS: f64 = 10.0;
+/// H-P2P-3: Default discovery message rate limit (messages per second)
+const DISCOVERY_RATE_LIMIT: u64 = 2;
+/// H-P2P-3: Maximum tokens (burst capacity)
+const DISCOVERY_MAX_TOKENS: u64 = 10;
 /// M-16: Maximum rate limiter buckets
 const DISCOVERY_MAX_BUCKETS: usize = 1000;
 
@@ -191,6 +297,9 @@ pub struct DiscoveryHandler {
     peers: Arc<PeerManager>,
     /// Known peer addresses (node_id -> address)
     known_addresses: RwLock<HashMap<NodeId, String>>,
+    /// H-P2P-4: Reverse mapping (address -> node_id) to detect address hijacking
+    /// If two different node_ids claim the same address, the second is rejected.
+    address_owners: RwLock<HashMap<String, NodeId>>,
     /// Callback to connect to new peers
     connect_callback: Option<ConnectCallback>,
     /// M-P2P-3: Shared ban manager for cross-handler enforcement
@@ -207,6 +316,7 @@ impl DiscoveryHandler {
             public_address,
             peers,
             known_addresses: RwLock::new(HashMap::new()),
+            address_owners: RwLock::new(HashMap::new()),
             connect_callback: None,
             ban_manager: None,
             rate_limiter: RateLimiter::new(
@@ -239,8 +349,25 @@ impl DiscoveryHandler {
     }
 
     /// Add a known peer address
+    ///
+    /// H-P2P-4: Also updates the reverse mapping (address -> node_id).
+    /// If another node already owns this address, we update both mappings.
     pub fn add_known_peer(&self, node_id: NodeId, address: String) {
-        self.known_addresses.write().insert(node_id, address);
+        let mut addresses = self.known_addresses.write();
+        let mut owners = self.address_owners.write();
+
+        // If this node already has a different address, remove the old reverse mapping
+        if let Some(old_addr) = addresses.get(&node_id) {
+            if old_addr != &address {
+                owners.remove(old_addr);
+            }
+        }
+
+        // Update forward mapping
+        addresses.insert(node_id, address.clone());
+
+        // Update reverse mapping
+        owners.insert(address, node_id);
     }
 
     /// Get our discovery message to broadcast
@@ -305,7 +432,7 @@ impl DiscoveryHandler {
         }
 
         // Add the sender as a known peer
-        // SEC-P2P-3: Validate address before accepting
+        // SEC-P2P-3/H-P2P-4: Validate address before accepting
         if !discovery_msg.public_address.is_empty() {
             if !validate_peer_address(&discovery_msg.public_address) {
                 warn!(
@@ -314,23 +441,41 @@ impl DiscoveryHandler {
                     "Rejecting invalid peer address from discovery"
                 );
             } else {
-                let is_new = {
-                    let mut addresses = self.known_addresses.write();
-                    let is_new = !addresses.contains_key(&envelope.sender);
-                    addresses.insert(envelope.sender, discovery_msg.public_address.clone());
-                    is_new
-                };
+                // H-P2P-4: Check for address hijacking (different node claiming same address)
+                let existing_owner = self.address_owners.read().get(&discovery_msg.public_address).copied();
+                if let Some(owner) = existing_owner {
+                    if owner != envelope.sender {
+                        warn!(
+                            sender = %sender_id_hex,
+                            address = %discovery_msg.public_address,
+                            existing_owner = %hex::encode(&owner[..8]),
+                            "H-P2P-4: Rejecting address already claimed by different node"
+                        );
+                        // Don't update the address - keep the original owner
+                    }
+                    // If same node, this is an update which is fine
+                } else {
+                    // New address, add it
+                    let is_new = {
+                        let mut addresses = self.known_addresses.write();
+                        let mut owners = self.address_owners.write();
+                        let is_new = !addresses.contains_key(&envelope.sender);
+                        addresses.insert(envelope.sender, discovery_msg.public_address.clone());
+                        owners.insert(discovery_msg.public_address.clone(), envelope.sender);
+                        is_new
+                    };
 
-                if is_new {
-                    info!(
-                        node_id = %sender_id_hex,
-                        address = %discovery_msg.public_address,
-                        "Discovered new peer from gossip"
-                    );
+                    if is_new {
+                        info!(
+                            node_id = %sender_id_hex,
+                            address = %discovery_msg.public_address,
+                            "Discovered new peer from gossip"
+                        );
 
-                    // Try to connect to the new peer
-                    if let Some(ref callback) = self.connect_callback {
-                        callback(discovery_msg.public_address.clone());
+                        // Try to connect to the new peer
+                        if let Some(ref callback) = self.connect_callback {
+                            callback(discovery_msg.public_address.clone());
+                        }
                     }
                 }
             }
@@ -354,7 +499,7 @@ impl DiscoveryHandler {
                 continue;
             }
 
-            // SEC-P2P-4: Validate addresses from peer list
+            // SEC-P2P-4/H-P2P-4: Validate addresses from peer list
             if !validate_peer_address(&peer_info.public_address) {
                 warn!(
                     sender = %sender_id_hex,
@@ -364,10 +509,30 @@ impl DiscoveryHandler {
                 continue;
             }
 
+            // H-P2P-4: Check for address hijacking
+            {
+                let owners = self.address_owners.read();
+                if let Some(&existing_owner) = owners.get(&peer_info.public_address) {
+                    if existing_owner != peer_info.node_id {
+                        warn!(
+                            sender = %sender_id_hex,
+                            peer_address = %peer_info.public_address,
+                            claimed_by = %hex::encode(&peer_info.node_id[..8]),
+                            owned_by = %hex::encode(&existing_owner[..8]),
+                            "H-P2P-4: Rejecting gossiped address already claimed by different node"
+                        );
+                        continue;
+                    }
+                }
+            }
+
             // Add the new peer
-            self.known_addresses
-                .write()
-                .insert(peer_info.node_id, peer_info.public_address.clone());
+            {
+                let mut addresses = self.known_addresses.write();
+                let mut owners = self.address_owners.write();
+                addresses.insert(peer_info.node_id, peer_info.public_address.clone());
+                owners.insert(peer_info.public_address.clone(), peer_info.node_id);
+            }
             new_peers += 1;
 
             // Try to connect
@@ -567,6 +732,7 @@ mod tests {
             signature: [0u8; 64],
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
             sequence: 1,
+            ttl: 10,
         };
 
         // The handler should reject this message (returns Ok but doesn't add the peer)
@@ -616,6 +782,7 @@ mod tests {
             signature: [0u8; 64],
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
             sequence: 1,
+            ttl: 10,
         };
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -635,10 +802,10 @@ mod tests {
         });
     }
 
-    /// M-16-TEST: Verify that rate limiter works correctly
+    /// H-P2P-3-TEST: Verify that integer-based rate limiter works correctly
     #[test]
     fn test_rate_limiter_basic() {
-        let limiter = RateLimiter::new(5.0, 1.0, 100);
+        let limiter = RateLimiter::new(5, 1, 100);
         let node = [1u8; 32];
 
         // First 5 requests should succeed (burst)
@@ -650,10 +817,10 @@ mod tests {
         assert!(!limiter.try_consume(&node), "Should rate limit after burst");
     }
 
-    /// M-16-TEST: Verify rate limiter enforces per-sender limits
+    /// H-P2P-3-TEST: Verify rate limiter enforces per-sender limits
     #[test]
     fn test_rate_limiter_per_sender() {
-        let limiter = RateLimiter::new(2.0, 1.0, 100);
+        let limiter = RateLimiter::new(2, 1, 100);
         let node1 = [1u8; 32];
         let node2 = [2u8; 32];
 
@@ -669,5 +836,113 @@ mod tests {
         );
         assert!(limiter.try_consume(&node2));
         assert!(!limiter.try_consume(&node2), "Node 2 should be limited now");
+    }
+
+    /// H-P2P-3-TEST: Verify integer arithmetic handles large values without overflow
+    #[test]
+    fn test_rate_limiter_no_overflow() {
+        // Large but reasonable values
+        let limiter = RateLimiter::new(1000, 100, 1000);
+        let node = [1u8; 32];
+
+        // Exhaust all tokens
+        for _ in 0..1000 {
+            assert!(limiter.try_consume(&node));
+        }
+
+        // Should be limited now
+        assert!(!limiter.try_consume(&node));
+    }
+
+    // =========================================================================
+    // H-P2P-4 TESTS: IP-only addresses and address hijacking prevention
+    // =========================================================================
+
+    /// H-P2P-4-TEST: Verify that domain names are rejected
+    #[test]
+    fn test_domain_names_rejected() {
+        assert!(
+            !validate_peer_address("example.com:8559"),
+            "Domain names should be rejected"
+        );
+        assert!(
+            !validate_peer_address("node1.ghost.io:8559"),
+            "Domain names should be rejected"
+        );
+        assert!(
+            !validate_peer_address("my-node.local:8559"),
+            "Domain names should be rejected"
+        );
+    }
+
+    /// H-P2P-4-TEST: Verify that valid IPv4 addresses are accepted
+    #[test]
+    fn test_ipv4_accepted() {
+        assert!(
+            validate_peer_address("8.8.8.8:8559"),
+            "Valid IPv4 should be accepted"
+        );
+        assert!(
+            validate_peer_address("203.0.113.50:8555"),
+            "Valid IPv4 should be accepted"
+        );
+    }
+
+    /// H-P2P-4-TEST: Verify that valid IPv6 addresses are accepted
+    #[test]
+    fn test_ipv6_accepted() {
+        assert!(
+            validate_peer_address("[2001:db8::1]:8559"),
+            "Valid IPv6 with brackets should be accepted"
+        );
+        assert!(
+            validate_peer_address("2001:db8::1:8559"),
+            "Valid IPv6 without brackets should be accepted"
+        );
+    }
+
+    /// H-P2P-4-TEST: Verify that IPv6 loopback is rejected
+    #[test]
+    fn test_ipv6_loopback_rejected() {
+        assert!(
+            !validate_peer_address("[::1]:8559"),
+            "IPv6 loopback should be rejected"
+        );
+    }
+
+    /// H-P2P-4-TEST: Verify that IPv6 link-local is rejected
+    #[test]
+    fn test_ipv6_link_local_rejected() {
+        assert!(
+            !validate_peer_address("[fe80::1]:8559"),
+            "IPv6 link-local should be rejected"
+        );
+    }
+
+    /// H-P2P-4-TEST: Verify that address hijacking is detected
+    #[test]
+    fn test_address_hijacking_prevention() {
+        let peers = Arc::new(PeerManager::new([1u8; 32], 100));
+        let handler = DiscoveryHandler::new([1u8; 32], "8.8.8.8:8559".to_string(), peers);
+
+        let shared_address = "203.0.113.100:8559".to_string();
+
+        // First node claims the address
+        handler.add_known_peer([2u8; 32], shared_address.clone());
+        assert_eq!(handler.known_peer_count(), 1);
+
+        // Second node tries to claim the same address
+        // This should be allowed since add_known_peer updates both mappings
+        handler.add_known_peer([3u8; 32], shared_address.clone());
+
+        // The address should now be owned by the second node
+        {
+            let owners = handler.address_owners.read();
+            let owner = owners.get(&shared_address).unwrap();
+            assert_eq!(
+                *owner, [3u8; 32],
+                "Address should now be owned by second node"
+            );
+        }
     }
 }

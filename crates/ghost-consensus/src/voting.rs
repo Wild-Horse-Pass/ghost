@@ -41,6 +41,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
@@ -49,6 +50,7 @@ use ghost_common::error::GhostError;
 use ghost_common::identity::verify_signature;
 use ghost_common::types::{ConsensusResult, NodeId, RoundId, VoteType};
 
+use crate::ban_manager::{BanManager, BanReason};
 use crate::elder_list::CanonicalElderList;
 
 /// Proof of equivocation - a voter signing conflicting votes
@@ -163,8 +165,13 @@ impl VoteEquivocationProof {
     }
 }
 
+/// H-P2P-1: Minimum timeout for voting sessions (1 second)
+/// Prevents DoS via zero timeout causing immediate timeout of all votes.
+pub const MIN_TIMEOUT_MS: u64 = 1000;
+
 /// Voting session for a specific proposal
-#[derive(Debug)]
+///
+/// Note: Debug is manually implemented to skip the ban_manager field.
 pub struct VotingSession {
     /// Round ID
     pub round_id: RoundId,
@@ -184,6 +191,25 @@ pub struct VotingSession {
     pub result: Option<ConsensusResult>,
     /// Detected equivocations
     pub equivocations: Vec<VoteEquivocationProof>,
+    /// H-P2P-1: Optional ban manager for automatic equivocation banning
+    ban_manager: Option<Arc<BanManager>>,
+}
+
+impl std::fmt::Debug for VotingSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VotingSession")
+            .field("round_id", &self.round_id)
+            .field("proposal_hash", &hex::encode(&self.proposal_hash[..8]))
+            .field("vote_type", &self.vote_type)
+            .field("started", &self.started)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("eligible_voters", &self.eligible_voters.len())
+            .field("votes", &self.votes.len())
+            .field("result", &self.result)
+            .field("equivocations", &self.equivocations.len())
+            .field("has_ban_manager", &self.ban_manager.is_some())
+            .finish()
+    }
 }
 
 impl VotingSession {
@@ -195,6 +221,9 @@ impl VotingSession {
     ///
     /// Within the crate, this can be used during the transition period while
     /// vote_handler.rs is being migrated to use CanonicalElderList.
+    ///
+    /// H-P2P-2: Timeout is enforced to be at least MIN_TIMEOUT_MS (1 second).
+    /// Values below this are clamped up to prevent DoS via zero timeout.
     pub(crate) fn new(
         round_id: RoundId,
         proposal_hash: [u8; 32],
@@ -202,17 +231,36 @@ impl VotingSession {
         eligible_voters: HashSet<NodeId>,
         timeout_ms: u64,
     ) -> Self {
+        // H-P2P-2: Enforce minimum timeout to prevent DoS
+        let effective_timeout = timeout_ms.max(MIN_TIMEOUT_MS);
+        if timeout_ms < MIN_TIMEOUT_MS {
+            warn!(
+                requested = timeout_ms,
+                enforced = effective_timeout,
+                "H-P2P-2: Timeout below minimum, clamping to MIN_TIMEOUT_MS"
+            );
+        }
+
         Self {
             round_id,
             proposal_hash,
             vote_type,
             started: Instant::now(),
-            timeout_ms,
+            timeout_ms: effective_timeout,
             eligible_voters,
             votes: HashMap::new(),
             result: None,
             equivocations: Vec::new(),
+            ban_manager: None,
         }
+    }
+
+    /// H-P2P-1: Set the ban manager for automatic equivocation banning
+    ///
+    /// When set, nodes that equivocate are immediately banned via this manager.
+    pub fn with_ban_manager(mut self, ban_manager: Arc<BanManager>) -> Self {
+        self.ban_manager = Some(ban_manager);
+        self
     }
 
     /// Create a new voting session using a canonical elder list
@@ -221,6 +269,9 @@ impl VotingSession {
     /// eligible voters, ensuring all nodes agree on who can vote.
     ///
     /// SEC-VOTE-4: This is the ONLY public constructor for production use.
+    ///
+    /// H-P2P-2: Timeout must be at least MIN_TIMEOUT_MS (1 second). Values below
+    /// this are clamped up to prevent DoS via zero timeout.
     ///
     /// # Errors
     ///
@@ -249,6 +300,7 @@ impl VotingSession {
             });
         }
 
+        // H-P2P-2: Timeout validation is handled in new()
         info!(
             round_id,
             epoch = elder_list.epoch,
@@ -264,10 +316,52 @@ impl VotingSession {
         ))
     }
 
+    /// CRIT-4: Create a voting session with full elder list validation
+    ///
+    /// This is the security-hardened constructor that verifies the elder list
+    /// is properly approved by the previous epoch's elders before using it.
+    ///
+    /// # Security Properties
+    ///
+    /// - **Merkle Integrity**: Verifies the merkle root of the elder list
+    /// - **BFT Approval**: Verifies >67% of previous elders approved this list
+    /// - **Minimum Voters**: Requires at least 4 voters for BFT security
+    ///
+    /// # Arguments
+    ///
+    /// * `round_id` - The voting round ID
+    /// * `proposal_hash` - The hash of the proposal being voted on
+    /// * `vote_type` - The type of vote
+    /// * `elder_list` - The elder list to use for determining eligible voters
+    /// * `previous_elders` - The set of node IDs from the previous epoch
+    /// * `timeout_ms` - Timeout for the voting session in milliseconds
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The elder list fails `verify_canonical` validation
+    /// - Fewer than 4 eligible voters are available
+    pub fn from_elder_list_with_validation(
+        round_id: RoundId,
+        proposal_hash: [u8; 32],
+        vote_type: VoteType,
+        elder_list: &CanonicalElderList,
+        previous_elders: &HashSet<NodeId>,
+        timeout_ms: u64,
+    ) -> Result<Self, GhostError> {
+        // CRIT-4: Verify the elder list is properly approved before using it
+        elder_list.verify_canonical(previous_elders)?;
+
+        // Delegate to the standard constructor for remaining validation
+        Self::from_elder_list(round_id, proposal_hash, vote_type, elder_list, timeout_ms)
+    }
+
     /// Test-only constructor for creating voting sessions with arbitrary voters
     ///
     /// SEC-VOTE-6: This is intentionally only available in test builds.
     /// Production code MUST use from_elder_list() to ensure BFT security.
+    ///
+    /// H-P2P-2: Timeout is clamped to MIN_TIMEOUT_MS if below.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn new_for_testing(
         round_id: RoundId,
@@ -283,6 +377,13 @@ impl VotingSession {
             eligible_voters,
             timeout_ms,
         )
+    }
+
+    /// H-P2P-1: Set the ban manager after construction
+    ///
+    /// This is useful when the ban manager isn't available at construction time.
+    pub fn set_ban_manager(&mut self, ban_manager: Arc<BanManager>) {
+        self.ban_manager = Some(ban_manager);
     }
 
     /// Add a vote to the session
@@ -323,6 +424,16 @@ impl VotingSession {
                 round_id = self.round_id,
                 "EQUIVOCATION DETECTED: voter signed both approve and reject"
             );
+
+            // H-P2P-1: Immediately ban the equivocating node if ban manager is available
+            if let Some(ref ban_manager) = self.ban_manager {
+                ban_manager.ban(vote.voter, BanReason::Equivocation);
+                info!(
+                    voter = %hex::encode(&vote.voter[..8]),
+                    round_id = self.round_id,
+                    "H-P2P-1: Equivocating node automatically banned"
+                );
+            }
 
             self.equivocations.push(proof.clone());
 
@@ -1246,6 +1357,332 @@ mod tests {
             ),
             "Expected InsufficientVoters error with available=0, got {:?}",
             err
+        );
+    }
+
+    // =========================================================================
+    // CRIT-4 TESTS: Elder list validation in voting session creation
+    // =========================================================================
+
+    /// CRIT-4-TEST: Verify that from_elder_list_with_validation rejects invalid merkle root
+    #[test]
+    fn test_crit4_rejects_invalid_merkle_root() {
+        use crate::elder_list::{CanonicalElderList, ElderEntry};
+        use ghost_common::identity::NodeIdProof;
+
+        // Create a helper to make elder entries
+        fn make_elder(i: u8) -> ElderEntry {
+            ElderEntry {
+                node_id: [i; 32],
+                registered_epoch: 1,
+                pow_nonce: 12345 + i as u64,
+                pow_difficulty: 16,
+                first_seen: 1000000,
+                uptime_at_registration: 99.5,
+            }
+        }
+
+        // Create an elder list with 5 voters
+        let elders: Vec<ElderEntry> = (0u8..5).map(make_elder).collect();
+        let mut elder_list = CanonicalElderList::new(1, elders);
+
+        // Tamper with the merkle root
+        elder_list.merkle_root = [0xDE; 32]; // Invalid merkle root
+
+        // Previous elders (required for validation of epoch > 0)
+        let previous_elders: HashSet<NodeId> =
+            (10u8..15).map(|i| [i; 32]).collect();
+
+        let result = VotingSession::from_elder_list_with_validation(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            &elder_list,
+            &previous_elders,
+            5000,
+        );
+
+        assert!(result.is_err(), "Should reject elder list with invalid merkle root");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("CRIT-4") && err.to_string().contains("merkle"),
+            "Error should mention CRIT-4 and merkle root: {:?}",
+            err
+        );
+    }
+
+    /// CRIT-4-TEST: Verify that from_elder_list_with_validation accepts genesis list without approvals
+    #[test]
+    fn test_crit4_accepts_genesis_without_approvals() {
+        use crate::elder_list::{CanonicalElderList, ElderEntry};
+
+        // Create a helper to make elder entries
+        fn make_elder(i: u8) -> ElderEntry {
+            ElderEntry {
+                node_id: [i; 32],
+                registered_epoch: 0, // Genesis epoch
+                pow_nonce: 12345 + i as u64,
+                pow_difficulty: 16,
+                first_seen: 1000000,
+                uptime_at_registration: 99.5,
+            }
+        }
+
+        // Create a genesis elder list (epoch 0) with 5 voters
+        let elders: Vec<ElderEntry> = (0u8..5).map(make_elder).collect();
+        let genesis_list = CanonicalElderList::genesis(elders);
+
+        // Empty previous elders (appropriate for genesis)
+        let previous_elders: HashSet<NodeId> = HashSet::new();
+
+        let result = VotingSession::from_elder_list_with_validation(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            &genesis_list,
+            &previous_elders,
+            5000,
+        );
+
+        assert!(result.is_ok(), "Genesis list should not require approvals");
+        let session = result.unwrap();
+        assert_eq!(session.eligible_voters.len(), 5);
+    }
+
+    /// CRIT-4-TEST: Verify that from_elder_list_with_validation rejects non-genesis without previous elders
+    #[test]
+    fn test_crit4_rejects_non_genesis_without_previous_elders() {
+        use crate::elder_list::{CanonicalElderList, ElderEntry};
+
+        // Create a helper to make elder entries
+        fn make_elder(i: u8) -> ElderEntry {
+            ElderEntry {
+                node_id: [i; 32],
+                registered_epoch: 1, // Non-genesis
+                pow_nonce: 12345 + i as u64,
+                pow_difficulty: 16,
+                first_seen: 1000000,
+                uptime_at_registration: 99.5,
+            }
+        }
+
+        // Create a non-genesis elder list (epoch 1) with 5 voters
+        let elders: Vec<ElderEntry> = (0u8..5).map(make_elder).collect();
+        let elder_list = CanonicalElderList::new(1, elders);
+
+        // Empty previous elders - this should cause validation to fail for epoch > 0
+        let previous_elders: HashSet<NodeId> = HashSet::new();
+
+        let result = VotingSession::from_elder_list_with_validation(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            &elder_list,
+            &previous_elders,
+            5000,
+        );
+
+        assert!(result.is_err(), "Non-genesis epoch should require previous elders");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("CRIT-4"),
+            "Error should mention CRIT-4: {:?}",
+            err
+        );
+    }
+
+    /// CRIT-4-TEST: Verify that from_elder_list_with_validation rejects insufficient approvals
+    #[test]
+    fn test_crit4_rejects_insufficient_approvals() {
+        use crate::elder_list::{CanonicalElderList, ElderEntry};
+
+        // Create a helper to make elder entries
+        fn make_elder(i: u8) -> ElderEntry {
+            ElderEntry {
+                node_id: [i; 32],
+                registered_epoch: 1,
+                pow_nonce: 12345 + i as u64,
+                pow_difficulty: 16,
+                first_seen: 1000000,
+                uptime_at_registration: 99.5,
+            }
+        }
+
+        // Create an elder list with 5 voters
+        let elders: Vec<ElderEntry> = (0u8..5).map(make_elder).collect();
+        let elder_list = CanonicalElderList::new(1, elders);
+        // No approval signatures added - this should fail validation
+
+        // Previous elders (10 elders, so threshold is ceil(10 * 67 / 100) = 7)
+        let previous_elders: HashSet<NodeId> =
+            (10u8..20).map(|i| [i; 32]).collect();
+
+        let result = VotingSession::from_elder_list_with_validation(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            &elder_list,
+            &previous_elders,
+            5000,
+        );
+
+        assert!(result.is_err(), "Should reject elder list without sufficient approvals");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("CRIT-4") && err.to_string().contains("approvals"),
+            "Error should mention CRIT-4 and approvals: {:?}",
+            err
+        );
+    }
+
+    // =========================================================================
+    // H-P2P-1 TESTS: Automatic ban on equivocation
+    // =========================================================================
+
+    /// H-P2P-1-TEST: Verify that equivocation triggers automatic ban when ban_manager is set
+    #[test]
+    fn test_equivocation_auto_ban() {
+        use crate::ban_manager::BanManager;
+
+        let proposal_hash = [0u8; 32];
+        let round_id = 100;
+        let identity = NodeIdentity::generate();
+        let voter_id = identity.node_id();
+
+        // Use multiple eligible voters so threshold isn't immediately met
+        let mut eligible = HashSet::new();
+        eligible.insert(voter_id);
+        for i in 0..5 {
+            eligible.insert([i as u8 + 100; 32]);
+        }
+
+        let ban_manager = Arc::new(BanManager::new());
+        let mut session = VotingSession::new(
+            round_id,
+            proposal_hash,
+            VoteType::PayoutApproval,
+            eligible,
+            5000,
+        );
+        session.set_ban_manager(ban_manager.clone());
+
+        // Initially not banned
+        assert!(!ban_manager.is_banned(&voter_id));
+
+        // First vote: approve
+        let msg1 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
+        let sig1 = identity.sign(&msg1);
+        let vote1 = Vote::new(voter_id, true, sig1);
+
+        let result1 = session.add_vote(vote1);
+        assert!(matches!(result1, VoteResult::ApprovalRecorded));
+
+        // Still not banned
+        assert!(!ban_manager.is_banned(&voter_id));
+
+        // Second vote: reject (equivocation!)
+        let msg2 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, false);
+        let sig2 = identity.sign(&msg2);
+        let vote2 = Vote::new(voter_id, false, sig2);
+
+        let result2 = session.add_vote(vote2);
+        assert!(matches!(result2, VoteResult::Equivocation(_)));
+
+        // NOW the voter should be banned automatically
+        assert!(
+            ban_manager.is_banned(&voter_id),
+            "H-P2P-1: Equivocating voter should be automatically banned"
+        );
+    }
+
+    /// H-P2P-1-TEST: Verify that without ban_manager, equivocation is still detected but no auto-ban
+    #[test]
+    fn test_equivocation_without_ban_manager() {
+        let proposal_hash = [0u8; 32];
+        let round_id = 100;
+        let identity = NodeIdentity::generate();
+        let voter_id = identity.node_id();
+
+        let mut eligible = HashSet::new();
+        eligible.insert(voter_id);
+        for i in 0..5 {
+            eligible.insert([i as u8 + 100; 32]);
+        }
+
+        // No ban manager set
+        let mut session = VotingSession::new(
+            round_id,
+            proposal_hash,
+            VoteType::PayoutApproval,
+            eligible,
+            5000,
+        );
+
+        // First vote
+        let msg1 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
+        let vote1 = Vote::new(voter_id, true, identity.sign(&msg1));
+        session.add_vote(vote1);
+
+        // Second conflicting vote
+        let msg2 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, false);
+        let vote2 = Vote::new(voter_id, false, identity.sign(&msg2));
+
+        let result = session.add_vote(vote2);
+        assert!(
+            matches!(result, VoteResult::Equivocation(_)),
+            "Should still detect equivocation even without ban manager"
+        );
+    }
+
+    // =========================================================================
+    // H-P2P-2 TESTS: Timeout validation
+    // =========================================================================
+
+    /// H-P2P-2-TEST: Verify that timeout_ms=0 is clamped to MIN_TIMEOUT_MS
+    #[test]
+    fn test_zero_timeout_clamped() {
+        let mut eligible = HashSet::new();
+        for i in 0..5 {
+            eligible.insert([i as u8; 32]);
+        }
+
+        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 0);
+
+        assert_eq!(
+            session.timeout_ms, MIN_TIMEOUT_MS,
+            "H-P2P-2: Zero timeout should be clamped to MIN_TIMEOUT_MS"
+        );
+    }
+
+    /// H-P2P-2-TEST: Verify that timeout below minimum is clamped
+    #[test]
+    fn test_low_timeout_clamped() {
+        let mut eligible = HashSet::new();
+        for i in 0..5 {
+            eligible.insert([i as u8; 32]);
+        }
+
+        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 500);
+
+        assert_eq!(
+            session.timeout_ms, MIN_TIMEOUT_MS,
+            "H-P2P-2: Timeout below MIN_TIMEOUT_MS should be clamped"
+        );
+    }
+
+    /// H-P2P-2-TEST: Verify that valid timeout is preserved
+    #[test]
+    fn test_valid_timeout_preserved() {
+        let mut eligible = HashSet::new();
+        for i in 0..5 {
+            eligible.insert([i as u8; 32]);
+        }
+
+        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000);
+
+        assert_eq!(
+            session.timeout_ms, 5000,
+            "H-P2P-2: Valid timeout should be preserved"
         );
     }
 }

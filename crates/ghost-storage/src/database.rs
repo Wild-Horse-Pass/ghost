@@ -157,75 +157,100 @@ struct DatabaseInner {
 
 impl Database {
     /// Open a database at the given path
+    ///
+    /// H-DB-1/H-DB-2 FIX: Uses umask to create files with restricted permissions atomically,
+    /// eliminating the race condition between file creation and chmod.
     pub fn open<P: AsRef<Path>>(path: P) -> GhostResult<Self> {
         let path = path.as_ref();
         let path_str = path.to_string_lossy().to_string();
 
         info!(path = %path_str, "Opening database");
 
-        // Create parent directory if needed
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+        // H-DB-1 FIX: Set restrictive umask before creating any files
+        // This ensures directories are created with 0o700 and files with 0o600
+        // atomically, with no window where they could be world-readable.
+        #[cfg(unix)]
+        let old_umask = {
+            
+            // umask 0o077 means: remove all permissions for group and others
+            // Directory 0o777 & !0o077 = 0o700
+            // File 0o666 & !0o077 = 0o600
+            unsafe { libc::umask(0o077) }
+        };
 
-            // H-4: Set directory permissions to 0o700 (owner only) on Unix
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(metadata) = std::fs::metadata(parent) {
-                    let mut perms = metadata.permissions();
-                    perms.set_mode(0o700);
-                    if let Err(e) = std::fs::set_permissions(parent, perms) {
-                        warn!(
-                            path = %parent.display(),
-                            error = %e,
-                            "H-4: Failed to set directory permissions to 0o700"
-                        );
-                    }
-                }
-            }
-        }
+        // Create parent directory if needed (now created with 0o700 due to umask)
+        let dir_result = if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+        } else {
+            Ok(())
+        };
 
-        let conn = Connection::open_with_flags(
+        // Open database (file created with 0o600 due to umask)
+        let conn_result = Connection::open_with_flags(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
                 | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
-        )
-        .map_err(|e| GhostError::Database(e.to_string()))?;
+        );
+
+        // H-DB-1 FIX: Restore original umask IMMEDIATELY after file operations
+        #[cfg(unix)]
+        unsafe {
+            libc::umask(old_umask);
+        }
+
+        // Now handle errors after umask is restored
+        dir_result?;
+        let conn = conn_result.map_err(|e| GhostError::Database(e.to_string()))?;
 
         Self::initialize_connection(&conn)?;
 
-        // H-4: Set database file permissions to 0o600 (owner read/write only) on Unix
+        // H-DB-2 FIX: Verify permissions are correct and fix if needed
+        // This handles cases where the file existed before with wrong permissions
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
 
-            // Set main database file
+            // Verify/fix main database file permissions
             if let Ok(metadata) = std::fs::metadata(path) {
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o600);
-                if let Err(e) = std::fs::set_permissions(path, perms) {
+                let perms = metadata.permissions();
+                if perms.mode() & 0o077 != 0 {
                     warn!(
                         path = %path.display(),
-                        error = %e,
-                        "H-4: Failed to set database file permissions to 0o600"
+                        mode = format!("{:o}", perms.mode()),
+                        "H-DB-2: Database file has weak permissions, fixing..."
                     );
+                    let mut new_perms = perms;
+                    new_perms.set_mode(0o600);
+                    if let Err(e) = std::fs::set_permissions(path, new_perms) {
+                        return Err(GhostError::Database(format!(
+                            "Failed to secure database file permissions: {}", e
+                        )));
+                    }
                 }
             }
 
-            // Also set WAL and SHM files if they exist
+            // H-DB-2 FIX: Also secure WAL and SHM files if they exist
+            // These may be created by SQLite after our umask was restored,
+            // so we verify and fix their permissions as well.
             for ext in ["db-wal", "db-shm"] {
                 let aux_path = path.with_extension(ext);
                 if aux_path.exists() {
                     if let Ok(metadata) = std::fs::metadata(&aux_path) {
-                        let mut perms = metadata.permissions();
-                        perms.set_mode(0o600);
-                        if let Err(e) = std::fs::set_permissions(&aux_path, perms) {
+                        let perms = metadata.permissions();
+                        if perms.mode() & 0o077 != 0 {
                             warn!(
                                 path = %aux_path.display(),
-                                error = %e,
-                                "H-4: Failed to set auxiliary file permissions to 0o600"
+                                mode = format!("{:o}", perms.mode()),
+                                "H-DB-2: WAL/SHM file has weak permissions, fixing..."
                             );
+                            let mut new_perms = perms;
+                            new_perms.set_mode(0o600);
+                            if let Err(e) = std::fs::set_permissions(&aux_path, new_perms) {
+                                return Err(GhostError::Database(format!(
+                                    "Failed to secure auxiliary file permissions: {}", e
+                                )));
+                            }
                         }
                     }
                 }
