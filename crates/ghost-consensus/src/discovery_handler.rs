@@ -82,22 +82,39 @@ impl RateLimiter {
     /// Returns true if allowed, false if rate limited
     ///
     /// H-P2P-3: Uses integer arithmetic to avoid floating-point precision attacks
-    /// L-8: Uses minimum age eviction to prevent eviction attacks
+    /// L-8/M-8: Uses minimum age eviction with jitter to prevent coordinated eviction attacks
     fn try_consume(&self, sender: &NodeId) -> bool {
         let now = Instant::now();
         let mut buckets = self.buckets.write();
 
-        // L-8: Use minimum age eviction strategy to prevent eviction attacks
-        // An attacker could rapidly create new senders to evict legitimate ones.
-        // By only evicting entries older than 60 seconds, we prevent this attack.
+        // L-8/M-8 SECURITY: Use minimum age eviction with jitter to prevent eviction attacks
+        //
+        // M-8 FIX: Previous 60-second minimum was too short. A Sybil attacker could:
+        // 1. Create many identities that all become "eligible for eviction" at once
+        // 2. Flood with new identities to evict all legitimate entries simultaneously
+        //
+        // 300 seconds (5 minutes) provides:
+        // - More time for legitimate nodes to send follow-up messages
+        // - Higher cost for attackers (must sustain attack for longer)
+        // - Better alignment with discovery broadcast interval (30 seconds)
+        //
+        // The jitter (0-60 seconds) prevents coordinated eviction by ensuring
+        // entries don't all become evictable at the same time.
         if !buckets.contains_key(sender) && buckets.len() >= self.max_buckets {
-            let min_age = Duration::from_secs(60);
-            let cutoff = now - min_age;
+            // M-8: 300 seconds base + up to 60 seconds random jitter
+            // Jitter derived from sender ID to be deterministic but unpredictable
+            let sender_jitter = sender[0] as u64 % 60;
+            let _min_age = Duration::from_secs(300 + sender_jitter);
 
-            // Find oldest entry that's past the minimum age
+            // Find oldest entry that's past the minimum age (with its jitter)
             if let Some(oldest_key) = buckets
                 .iter()
-                .filter(|(_, (_, last_refill))| *last_refill < cutoff)
+                .filter(|(k, (_, last_refill))| {
+                    // Each entry has its own jitter based on its key
+                    let entry_jitter = k[0] as u64 % 60;
+                    let entry_min_age = Duration::from_secs(300 + entry_jitter);
+                    *last_refill < now - entry_min_age
+                })
                 .min_by_key(|(_, (_, last_refill))| *last_refill)
                 .map(|(k, _)| *k)
             {
@@ -108,7 +125,7 @@ impl RateLimiter {
                 tracing::debug!(
                     sender = %hex::encode(&sender[..8]),
                     bucket_count = buckets.len(),
-                    "L-8: Rate limiter at capacity with fresh entries (possible attack)"
+                    "M-8: Rate limiter at capacity with fresh entries (possible Sybil attack)"
                 );
                 return false;
             }
@@ -177,20 +194,27 @@ impl AddressRateLimiter {
 
     /// Try to consume a token for the given address
     /// Returns true if allowed, false if rate limited
+    ///
+    /// M-8 SECURITY: Uses 300-second minimum age with jitter to prevent coordinated eviction
     fn try_consume(&self, address: &str) -> bool {
         let now = Instant::now();
         let mut buckets = self.buckets.write();
 
-        // L-8: Use minimum age eviction strategy to prevent eviction attacks
-        // Only evict entries that are at least 60 seconds old
+        // L-8/M-8: Use minimum age eviction strategy with jitter to prevent eviction attacks
+        // Only evict entries that are at least 300 seconds old (increased from 60)
         if !buckets.contains_key(address) && buckets.len() >= self.max_buckets {
-            let min_age = Duration::from_secs(60);
-            let cutoff = now - min_age;
+            // M-8: 300 seconds base + jitter derived from address hash
+            let address_jitter = address.as_bytes().first().copied().unwrap_or(0) as u64 % 60;
+            let _min_age = Duration::from_secs(300 + address_jitter);
 
-            // Find oldest entry that's past the minimum age
+            // Find oldest entry that's past the minimum age (with its jitter)
             if let Some(oldest_key) = buckets
                 .iter()
-                .filter(|(_, (_, last_refill))| *last_refill < cutoff)
+                .filter(|(k, (_, last_refill))| {
+                    let entry_jitter = k.as_bytes().first().copied().unwrap_or(0) as u64 % 60;
+                    let entry_min_age = Duration::from_secs(300 + entry_jitter);
+                    *last_refill < now - entry_min_age
+                })
                 .min_by_key(|(_, (_, last_refill))| *last_refill)
                 .map(|(k, _)| k.clone())
             {
@@ -201,7 +225,7 @@ impl AddressRateLimiter {
                 tracing::warn!(
                     address = %address,
                     bucket_count = buckets.len(),
-                    "M-10: Address rate limiter at capacity with fresh entries (possible attack)"
+                    "M-8/M-10: Address rate limiter at capacity with fresh entries (possible attack)"
                 );
                 return false;
             }
@@ -736,45 +760,53 @@ impl DiscoveryHandler {
                     "Rejecting invalid peer address from discovery"
                 );
             } else {
-                // H-P2P-4: Check for address hijacking (different node claiming same address)
-                let existing_owner = self
-                    .address_owners
-                    .read()
-                    .get(&discovery_msg.public_address)
-                    .copied();
-                if let Some(owner) = existing_owner {
-                    if owner != envelope.sender {
-                        warn!(
-                            sender = %sender_id_hex,
-                            address = %discovery_msg.public_address,
-                            existing_owner = %hex::encode(&owner[..8]),
-                            "H-P2P-4: Rejecting address already claimed by different node"
-                        );
-                        // Don't update the address - keep the original owner
-                    }
-                    // If same node, this is an update which is fine
-                } else {
-                    // New address, add it
-                    let is_new = {
-                        let mut addresses = self.known_addresses.write();
-                        let mut owners = self.address_owners.write();
+                // H-6 SECURITY FIX: Acquire write locks ONCE and do both check and update atomically
+                // Previous code had a TOCTOU race condition:
+                // 1. Read lock to check ownership
+                // 2. Release read lock
+                // 3. Write lock to update
+                // Between steps 2 and 3, another thread could claim the address.
+                // Now we hold write locks for the entire check+update operation.
+                let (is_new, should_connect) = {
+                    let mut addresses = self.known_addresses.write();
+                    let mut owners = self.address_owners.write();
+
+                    // H-P2P-4: Check for address hijacking (different node claiming same address)
+                    if let Some(&existing_owner) = owners.get(&discovery_msg.public_address) {
+                        if existing_owner != envelope.sender {
+                            warn!(
+                                sender = %sender_id_hex,
+                                address = %discovery_msg.public_address,
+                                existing_owner = %hex::encode(&existing_owner[..8]),
+                                "H-P2P-4: Rejecting address already claimed by different node"
+                            );
+                            // Don't update the address - keep the original owner
+                            (false, false)
+                        } else {
+                            // Same node, this is an update which is fine
+                            (false, false)
+                        }
+                    } else {
+                        // New address, add it atomically
                         let is_new = !addresses.contains_key(&envelope.sender);
                         addresses.insert(envelope.sender, discovery_msg.public_address.clone());
                         owners.insert(discovery_msg.public_address.clone(), envelope.sender);
-                        is_new
-                    };
+                        (is_new, is_new)
+                    }
+                };
 
-                    if is_new {
-                        info!(
-                            node_id = %sender_id_hex,
-                            address = %discovery_msg.public_address,
-                            "Discovered new peer from gossip"
-                        );
+                if is_new {
+                    info!(
+                        node_id = %sender_id_hex,
+                        address = %discovery_msg.public_address,
+                        "Discovered new peer from gossip"
+                    );
+                }
 
-                        // Try to connect to the new peer
-                        if let Some(ref callback) = self.connect_callback {
-                            callback(discovery_msg.public_address.clone());
-                        }
+                // Connect callback outside the lock to avoid holding locks during I/O
+                if should_connect {
+                    if let Some(ref callback) = self.connect_callback {
+                        callback(discovery_msg.public_address.clone());
                     }
                 }
             }

@@ -459,7 +459,14 @@ impl AuditLog {
                     })
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?
-                .filter_map(|r| r.ok())
+                // M-3 FIX: Log errors instead of silently dropping them
+                .filter_map(|r| match r {
+                    Ok(entry) => Some(entry),
+                    Err(e) => {
+                        warn!("M-3: Failed to parse audit log entry: {}", e);
+                        None
+                    }
+                })
                 .collect();
 
             Ok(entries)
@@ -510,7 +517,14 @@ impl AuditLog {
                     })
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?
-                .filter_map(|r| r.ok())
+                // M-3 FIX: Log errors instead of silently dropping them
+                .filter_map(|r| match r {
+                    Ok(entry) => Some(entry),
+                    Err(e) => {
+                        warn!("M-3: Failed to parse audit log entry by type: {}", e);
+                        None
+                    }
+                })
                 .collect();
 
             Ok(entries)
@@ -561,7 +575,14 @@ impl AuditLog {
                     })
                 })
                 .map_err(|e| GhostError::Database(e.to_string()))?
-                .filter_map(|r| r.ok())
+                // M-3 FIX: Log errors instead of silently dropping them
+                .filter_map(|r| match r {
+                    Ok(entry) => Some(entry),
+                    Err(e) => {
+                        warn!("M-3: Failed to parse audit log entry by actor: {}", e);
+                        None
+                    }
+                })
                 .collect();
 
             Ok(entries)

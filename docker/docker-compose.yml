@@ -220,7 +220,8 @@ services:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:?GRAFANA_USER must be set}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?GRAFANA_PASSWORD must be set}
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_INSTALL_PLUGINS=grafana-clock-panel,grafana-piechart-panel
+      # L-12: Pin Grafana plugin versions for reproducible builds
+      - GF_INSTALL_PLUGINS=grafana-clock-panel 2.1.7,grafana-piechart-panel 1.6.4
     profiles:
       - monitoring
 

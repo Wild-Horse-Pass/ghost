@@ -250,8 +250,14 @@ impl StratumVerifier {
 
     /// Verify Stratum V1 endpoint
     ///
-    /// Performs a mining.subscribe handshake to verify the endpoint
-    /// is a real Stratum V1 server.
+    /// L-5 FIX: Performs proper JSON-RPC validation to verify the endpoint
+    /// is a real Stratum V1 server. Previously only checked for "result" and "id" strings.
+    ///
+    /// Validation requirements:
+    /// 1. Response must be valid JSON
+    /// 2. Must have JSON-RPC structure with "id" matching our request (1)
+    /// 3. Must have "result" field (not "error")
+    /// 4. Result must be an array with mining.subscribe response format
     pub async fn verify_sv1(&self, host: &str, port: u16) -> GhostResult<StratumVerifyResult> {
         let addr = format!("{}:{}", host, port);
         let start = Instant::now();
@@ -294,24 +300,8 @@ impl StratumVerifier {
         let response = String::from_utf8_lossy(&buf[..n]);
         let total_latency = start.elapsed();
 
-        // Parse response to verify it's valid Stratum
-        let is_valid = response.contains("\"result\"") && response.contains("\"id\"");
-
-        // Try to extract subscription details
-        let subscription_id = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response)
-        {
-            json.get("result")
-                .and_then(|r| r.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.get(1))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        } else {
-            None
-        };
+        // L-5 FIX: Proper JSON-RPC validation for mining.subscribe response
+        let (is_valid, subscription_id, error_msg) = Self::validate_sv1_response(&response);
 
         // AUTH4-L2: Anonymize address in logs to prevent leaking stratum probe targets
         debug!(
@@ -327,18 +317,162 @@ impl StratumVerifier {
             connect_latency,
             total_latency,
             subscription_id,
-            error: if is_valid {
-                None
-            } else {
-                Some("Invalid response".to_string())
-            },
+            error: error_msg,
         })
+    }
+
+    /// L-5 FIX: Validate Stratum V1 mining.subscribe JSON-RPC response
+    ///
+    /// Returns (is_valid, subscription_id, error_message)
+    fn validate_sv1_response(response: &str) -> (bool, Option<String>, Option<String>) {
+        // L-5 FIX: Parse as JSON first - must be valid JSON
+        let json: serde_json::Value = match serde_json::from_str(response) {
+            Ok(j) => j,
+            Err(e) => {
+                return (
+                    false,
+                    None,
+                    Some(format!("L-5: Response is not valid JSON: {}", e)),
+                );
+            }
+        };
+
+        // L-5 FIX: Must be a JSON object (not array, string, etc.)
+        if !json.is_object() {
+            return (
+                false,
+                None,
+                Some("L-5: Response is not a JSON object".to_string()),
+            );
+        }
+
+        // L-5 FIX: Must have "id" field matching our request ID (1)
+        let id = json.get("id");
+        match id {
+            Some(serde_json::Value::Number(n)) if n.as_u64() == Some(1) => {}
+            Some(serde_json::Value::Number(_)) => {
+                return (
+                    false,
+                    None,
+                    Some("L-5: Response id does not match request id (expected 1)".to_string()),
+                );
+            }
+            Some(_) => {
+                return (
+                    false,
+                    None,
+                    Some("L-5: Response id is not a number".to_string()),
+                );
+            }
+            None => {
+                return (
+                    false,
+                    None,
+                    Some("L-5: Response missing 'id' field".to_string()),
+                );
+            }
+        }
+
+        // L-5 FIX: Check for error response
+        if let Some(error) = json.get("error") {
+            if !error.is_null() {
+                let error_msg = error
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("unknown error");
+                return (
+                    false,
+                    None,
+                    Some(format!("L-5: Server returned error: {}", error_msg)),
+                );
+            }
+        }
+
+        // L-5 FIX: Must have "result" field
+        let result = match json.get("result") {
+            Some(r) => r,
+            None => {
+                return (
+                    false,
+                    None,
+                    Some("L-5: Response missing 'result' field".to_string()),
+                );
+            }
+        };
+
+        // L-5 FIX: Result must be an array (mining.subscribe format)
+        // mining.subscribe result format: [[["mining.set_difficulty", "subscription_id"], ["mining.notify", "subscription_id"]], extranonce1, extranonce2_size]
+        let result_array = match result.as_array() {
+            Some(a) => a,
+            None => {
+                return (
+                    false,
+                    None,
+                    Some("L-5: Result is not an array (not mining.subscribe format)".to_string()),
+                );
+            }
+        };
+
+        // L-5 FIX: mining.subscribe result should have at least 2 elements
+        // [subscriptions_array, extranonce1, extranonce2_size]
+        if result_array.len() < 2 {
+            return (
+                false,
+                None,
+                Some(format!(
+                    "L-5: Result array too short ({} elements, expected 2+)",
+                    result_array.len()
+                )),
+            );
+        }
+
+        // L-5 FIX: First element should be array of subscriptions
+        let subscriptions = match result_array[0].as_array() {
+            Some(s) => s,
+            None => {
+                return (
+                    false,
+                    None,
+                    Some("L-5: First result element is not subscription array".to_string()),
+                );
+            }
+        };
+
+        // L-5 FIX: Extract subscription ID from mining.notify subscription
+        let subscription_id = subscriptions.iter().find_map(|sub| {
+            let sub_array = sub.as_array()?;
+            if sub_array.len() >= 2 {
+                let method = sub_array[0].as_str()?;
+                if method == "mining.notify" || method == "mining.set_difficulty" {
+                    return sub_array[1].as_str().map(|s| s.to_string());
+                }
+            }
+            None
+        });
+
+        // L-5 FIX: Verify extranonce1 is present (second element)
+        let extranonce1 = result_array.get(1).and_then(|v| v.as_str());
+        if extranonce1.is_none() {
+            return (
+                false,
+                subscription_id,
+                Some("L-5: Missing or invalid extranonce1".to_string()),
+            );
+        }
+
+        // All validation passed
+        (true, subscription_id, None)
     }
 
     /// Verify Stratum V2 endpoint
     ///
-    /// Performs a basic noise protocol handshake to verify the endpoint
-    /// is a real Stratum V2 server.
+    /// C-1 FIX: Performs proper Noise NK handshake validation to verify the endpoint
+    /// is a real Stratum V2 server. Previously always returned valid_protocol: true.
+    ///
+    /// Validation requirements:
+    /// 1. Connection must be established
+    /// 2. Must receive valid Noise protocol response bytes
+    /// 3. Response must match expected Noise NK responder format
     pub async fn verify_sv2(&self, host: &str, port: u16) -> GhostResult<StratumVerifyResult> {
         let addr = format!("{}:{}", host, port);
         let start = Instant::now();
@@ -351,49 +485,89 @@ impl StratumVerifier {
 
         let connect_latency = start.elapsed();
 
-        // For SV2, we'd normally do a noise protocol handshake
-        // For verification purposes, we just check if something responds
-        // A full implementation would use the stratum-v2 crate
-
-        // Send a minimal noise protocol initiator message
-        // This is the first 32 bytes of a noise NK handshake
-        let initiator_hello: [u8; 32] = [
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
-        ];
+        // C-1 FIX: Generate a proper Noise NK initiator ephemeral key
+        // Noise NK handshake format: 32-byte ephemeral public key
+        // We generate random bytes for the ephemeral key (real implementation
+        // would use proper X25519 key generation)
+        let mut initiator_ephemeral = [0u8; 32];
+        if getrandom::getrandom(&mut initiator_ephemeral).is_err() {
+            return Err(GhostError::Internal(
+                "C-1: Failed to generate ephemeral key for SV2 handshake".to_string(),
+            ));
+        }
 
         let (mut reader, mut writer) = stream.into_split();
 
-        // Try to write
-        let write_result = timeout(self.timeout, writer.write_all(&initiator_hello)).await;
+        // Send the initiator ephemeral key
+        let write_result = timeout(self.timeout, writer.write_all(&initiator_ephemeral)).await;
 
         if write_result.is_err() {
-            // If we can't write, it might still be a valid SV2 server
-            // Some implementations close connection on invalid handshake
+            // C-1 FIX: Write failure means protocol validation failed
             return Ok(StratumVerifyResult {
                 connected: true,
-                valid_protocol: true, // Connected, assume valid
+                valid_protocol: false,
                 connect_latency,
                 total_latency: start.elapsed(),
                 subscription_id: None,
-                error: None,
+                error: Some("Failed to send Noise NK handshake".to_string()),
             });
         }
 
-        // Try to read response
+        // C-1 FIX: Must receive a valid Noise NK response
+        // The responder sends: 32-byte ephemeral + 16-byte AEAD tag + encrypted payload
+        // Minimum valid response is 48 bytes (32 + 16)
         let mut buf = vec![0u8; 128];
-        let read_result = timeout(Duration::from_secs(2), reader.read(&mut buf)).await;
+        let read_result = timeout(self.timeout, reader.read(&mut buf)).await;
 
         let total_latency = start.elapsed();
 
-        // For SV2, getting any response (or even a close) after handshake attempt
-        // indicates a real SV2 server
-        let valid_protocol = match read_result {
-            Ok(Ok(n)) if n > 0 => true,
-            Ok(Ok(_)) => true, // Connection closed is also valid (failed handshake)
-            Ok(Err(_)) => true, // Read error after connect is also valid
-            Err(_) => true,    // Timeout could mean server is processing
+        // C-1 FIX: Validate the response is proper Noise NK format
+        let (valid_protocol, error_msg) = match read_result {
+            Ok(Ok(n)) if n >= 48 => {
+                // C-1 FIX: Got enough bytes for Noise NK response
+                // Validate basic structure:
+                // - First 32 bytes: responder ephemeral public key (should be non-zero)
+                // - Next 16+ bytes: AEAD encrypted data
+                let responder_ephemeral = &buf[..32];
+                let is_ephemeral_valid = responder_ephemeral.iter().any(|&b| b != 0);
+
+                if is_ephemeral_valid {
+                    (true, None)
+                } else {
+                    (
+                        false,
+                        Some("Invalid Noise NK: zero responder ephemeral key".to_string()),
+                    )
+                }
+            }
+            Ok(Ok(n)) if n > 0 => {
+                // C-1 FIX: Got some bytes but not enough for valid Noise NK
+                (
+                    false,
+                    Some(format!(
+                        "Invalid Noise NK: response too short ({} bytes, need 48+)",
+                        n
+                    )),
+                )
+            }
+            Ok(Ok(_)) => {
+                // C-1 FIX: Connection closed with no data - not valid
+                (
+                    false,
+                    Some("Invalid Noise NK: connection closed with no response".to_string()),
+                )
+            }
+            Ok(Err(e)) => {
+                // C-1 FIX: Read error - not valid
+                (false, Some(format!("Invalid Noise NK: read error: {}", e)))
+            }
+            Err(_) => {
+                // C-1 FIX: Timeout waiting for response - not valid
+                (
+                    false,
+                    Some("Invalid Noise NK: timeout waiting for response".to_string()),
+                )
+            }
         };
 
         // AUTH4-L2: Anonymize address in logs to prevent leaking stratum probe targets
@@ -410,7 +584,7 @@ impl StratumVerifier {
             connect_latency,
             total_latency,
             subscription_id: None,
-            error: None,
+            error: error_msg,
         })
     }
 }

@@ -379,6 +379,10 @@ impl SnapshotManager {
     }
 
     /// Prune old snapshots beyond retention limit
+    ///
+    /// M-1 FIX: Uses saturating_sub and validates count to prevent integer underflow.
+    /// Even though COUNT(*) should never be negative in SQLite, we defensively
+    /// reject negative values to catch database corruption.
     pub fn prune_old_snapshots(&self) -> GhostResult<usize> {
         self.db.with_connection(|conn| {
             // Count current snapshots
@@ -386,11 +390,24 @@ impl SnapshotManager {
                 .query_row("SELECT COUNT(*) FROM state_snapshots", [], |row| row.get(0))
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            if count as usize <= self.max_snapshots {
+            // M-1 FIX: Validate count is non-negative (catches database corruption)
+            if count < 0 {
+                return Err(GhostError::Database(format!(
+                    "M-1: Invalid negative snapshot count: {}",
+                    count
+                )));
+            }
+
+            let count_usize = count as usize;
+            if count_usize <= self.max_snapshots {
                 return Ok(0);
             }
 
-            let to_delete = count as usize - self.max_snapshots;
+            // M-1 FIX: Use saturating_sub for defense in depth
+            let to_delete = count_usize.saturating_sub(self.max_snapshots);
+            if to_delete == 0 {
+                return Ok(0);
+            }
 
             // Delete oldest snapshots
             conn.execute(

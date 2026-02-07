@@ -25,11 +25,53 @@
 //! All node and pool configuration is defined here.
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::constants::*;
 use crate::signer::SignerConfig;
 use crate::types::TreasuryAddress;
+
+/// H-11: Validate config file permissions on Unix systems
+///
+/// Config files should not be group or world readable as they may contain
+/// sensitive information like RPC passwords, signing keys, and API secrets.
+///
+/// This function logs a warning if the config file has overly permissive
+/// permissions. It does not fail because operators may have legitimate
+/// reasons for their permission choices, but it alerts them to the risk.
+#[cfg(unix)]
+pub fn validate_config_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    match std::fs::metadata(path) {
+        Ok(metadata) => {
+            let mode = metadata.permissions().mode();
+            // Check if group or world readable/writable (0o077 mask)
+            if mode & 0o077 != 0 {
+                tracing::warn!(
+                    "H-11 SECURITY: Config file {} has overly permissive mode {:o}. \
+                     Recommended: chmod 600 {}",
+                    path.display(),
+                    mode & 0o777,
+                    path.display()
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                "H-11: Could not check permissions on config file {}: {}",
+                path.display(),
+                e
+            );
+        }
+    }
+}
+
+/// H-11: No-op on non-Unix platforms
+#[cfg(not(unix))]
+pub fn validate_config_permissions(_path: &Path) {
+    // Config permission validation is only applicable on Unix systems
+}
 
 /// Main node configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -290,10 +332,18 @@ impl NodeConfig {
             result.add_error("bitcoin.rpc_password", "RPC password not configured");
         }
         if self.bitcoin.rpc_user == "bitcoin" && self.bitcoin.rpc_password == "bitcoin" {
-            result.add_warning(
-                "bitcoin.rpc_user/rpc_password",
-                "Using default credentials - change in production",
-            );
+            // M-18: Default credentials are an ERROR on mainnet, not just a warning
+            if self.bitcoin.network == BitcoinNetwork::Mainnet {
+                result.add_error(
+                    "bitcoin.rpc_user/rpc_password",
+                    "M-18: Default credentials not allowed on mainnet",
+                );
+            } else {
+                result.add_warning(
+                    "bitcoin.rpc_user/rpc_password",
+                    "Using default credentials - change in production",
+                );
+            }
         }
 
         // Port validation
@@ -617,12 +667,27 @@ impl NodeConfig {
 
         // Create temp file in same directory (ensures same filesystem for atomic rename)
         let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        // L-8: Use random suffix instead of predictable PID to prevent temp file attacks
+        let random_suffix = {
+            let mut random_bytes = [0u8; 8];
+            if getrandom::getrandom(&mut random_bytes).is_err() {
+                // Fallback to PID + timestamp if getrandom fails
+                let pid_bytes = std::process::id().to_le_bytes();
+                let time_bytes = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u32;
+                random_bytes[..4].copy_from_slice(&pid_bytes);
+                random_bytes[4..8].copy_from_slice(&time_bytes.to_le_bytes());
+            }
+            hex::encode(&random_bytes[..4])
+        };
         let temp_path = parent.join(format!(
             ".{}.tmp.{}",
             path.file_name()
                 .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "config".to_string()),
-            std::process::id()
+            random_suffix
         ));
 
         // Write to temp file

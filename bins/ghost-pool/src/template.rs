@@ -24,6 +24,19 @@
 //!
 //! Fetches templates from Bitcoin Core, applies BUDS filtering,
 //! and manages coinbase construction for the pool.
+//!
+//! # Lock Ordering (M-16)
+//!
+//! This module uses multiple RwLocks. To prevent deadlocks, always acquire
+//! locks in this order:
+//!
+//! 1. `approved_payout` (RwLock<Option<[u8; 32]>>)
+//! 2. `current_work` (RwLock<Option<WorkState>>)
+//! 3. `work_states` (RwLock<HashMap<...>>)
+//! 4. `payout_proposals` (RwLock<HashMap<...>>)
+//!
+//! Never acquire a lock that comes earlier in this list while holding
+//! a lock that comes later.
 
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};

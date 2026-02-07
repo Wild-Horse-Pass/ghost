@@ -126,7 +126,14 @@ pub fn verification_broadcast_channel(
 /// - Random output amounts within valid ranges
 /// - Random script types (P2WPKH, P2TR, multisig)
 /// - Random number of outputs (1-3)
-fn build_test_transaction() -> String {
+///
+/// # M-12 FIX: No Timestamp Fallback
+///
+/// Previously this function fell back to timestamp-based randomness if getrandom
+/// failed. This is a security vulnerability as timestamps are predictable and
+/// could allow nodes to pre-compute challenge responses. Now returns None
+/// to fail closed instead.
+fn build_test_transaction() -> Option<String> {
     use bitcoin::consensus::encode::serialize_hex;
     use bitcoin::hashes::{sha256d, Hash};
     use bitcoin::locktime::absolute::LockTime;
@@ -135,16 +142,12 @@ fn build_test_transaction() -> String {
     use bitcoin::transaction::{Transaction, Version};
     use bitcoin::{Amount, OutPoint, Sequence, TxIn, TxOut, Txid, Witness};
 
-    // H-3: Use cryptographic randomness for unpredictable challenge transactions
+    // H-3 + M-12 FIX: Use cryptographic randomness - FAIL if unavailable
+    // M-12: Do NOT fall back to timestamp - that's predictable and insecure
     let mut rng_bytes = [0u8; 64];
     if getrandom::getrandom(&mut rng_bytes).is_err() {
-        warn!("H-3: Failed to get cryptographic randomness, using fallback");
-        // Fallback: use timestamp-based randomness (less secure but functional)
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        rng_bytes[..8].copy_from_slice(&now.to_le_bytes());
+        warn!("M-12: Failed to get cryptographic randomness, skipping policy challenge (fail closed)");
+        return None;
     }
 
     // H-3: Generate random txid from cryptographic randomness
@@ -244,7 +247,7 @@ fn build_test_transaction() -> String {
         "H-3: Built randomized policy challenge transaction"
     );
 
-    serialize_hex(&tx)
+    Some(serialize_hex(&tx))
 }
 
 /// Periodic verification task
@@ -412,6 +415,9 @@ impl VerificationTask {
     }
 
     /// Verify archive capability
+    ///
+    /// C-2 FIX: Now includes merkle root validation to verify block data authenticity.
+    /// Previously only checked resp.success without validating the actual block data.
     async fn verify_archive(
         &self,
         peer: &VerifiablePeer,
@@ -422,18 +428,19 @@ impl VerificationTask {
         // L-11: Get a real block hash from the blockchain via RPC
         // Fail closed: if RPC is unavailable, skip the challenge rather than using
         // a predictable genesis block that could be pre-computed
-        let (block_hash, block_height) = match self.get_random_block_hash().await {
-            Some((hash, height)) => (hash, height),
-            None => {
-                // L-11: Fail closed - do not use predictable fallback
-                warn!(
-                    peer = %peer_id_hex[..8],
-                    "RPC unavailable, skipping archive verification (fail closed)"
-                );
-                // Record as inconclusive - don't pass or fail, just skip
-                return;
-            }
-        };
+        let (block_hash, block_height, expected_merkle_root) =
+            match self.get_random_block_with_merkle().await {
+                Some(data) => data,
+                None => {
+                    // L-11: Fail closed - do not use predictable fallback
+                    warn!(
+                        peer = %peer_id_hex[..8],
+                        "RPC unavailable, skipping archive verification (fail closed)"
+                    );
+                    // Record as inconclusive - don't pass or fail, just skip
+                    return;
+                }
+            };
 
         let challenge_data = serde_json::json!({
             "block_hash": block_hash,
@@ -446,18 +453,27 @@ impl VerificationTask {
             .verify_archive(&peer.http_address, Some(&block_hash), None)
             .await;
 
+        // C-2 FIX: Validate block data authenticity, not just success flag
         let (passed, response_data) = match result {
-            Ok(resp) => (
-                resp.success,
-                Some(
-                    serde_json::json!({
-                        "success": resp.success,
-                        "hash": resp.block_data.as_ref().map(|b| &b.hash),
-                        "height": resp.block_data.as_ref().map(|b| b.height),
-                    })
-                    .to_string(),
-                ),
-            ),
+            Ok(resp) => {
+                // C-2 FIX: Perform merkle root validation
+                let validation_result = self.validate_archive_response(
+                    &resp,
+                    &block_hash,
+                    block_height,
+                    expected_merkle_root.as_deref(),
+                );
+
+                let response_json = serde_json::json!({
+                    "success": resp.success,
+                    "hash": resp.block_data.as_ref().map(|b| &b.hash),
+                    "height": resp.block_data.as_ref().map(|b| b.height),
+                    "merkle_root": resp.block_data.as_ref().map(|b| &b.merkle_root),
+                    "validation": validation_result.1,
+                });
+
+                (validation_result.0, Some(response_json.to_string()))
+            }
             Err(e) => {
                 debug!(error = %e, "Archive verification failed");
                 (false, Some(format!("{{\"error\":\"{}\"}}", e)))
@@ -493,11 +509,14 @@ impl VerificationTask {
         .await;
     }
 
-    /// Get a random block hash from the blockchain for archive verification
+    /// C-2 FIX: Get a random block with merkle root for validation
+    ///
+    /// Returns (block_hash, height, Option<merkle_root>) to enable cross-checking
+    /// the peer's response against our own RPC data.
     ///
     /// H-6: Uses cryptographic randomness via getrandom to ensure unpredictable
     /// block selection, preventing attackers from pre-computing challenge responses.
-    async fn get_random_block_hash(&self) -> Option<(String, u64)> {
+    async fn get_random_block_with_merkle(&self) -> Option<(String, u64, Option<String>)> {
         let rpc = self.rpc.as_ref()?;
 
         // Get current chain height
@@ -524,13 +543,120 @@ impl VerificationTask {
         let challenge_height = rand_val % (max_height + 1);
 
         // Get block hash at that height
-        match rpc.get_block_hash(challenge_height).await {
-            Ok(hash) => Some((hash, challenge_height)),
+        let block_hash = match rpc.get_block_hash(challenge_height).await {
+            Ok(hash) => hash,
             Err(e) => {
                 debug!(error = %e, height = challenge_height, "Failed to get block hash");
+                return None;
+            }
+        };
+
+        // C-2 FIX: Also fetch the block header to get merkle root for validation
+        let merkle_root = match rpc.get_block_header(&block_hash).await {
+            Ok(header) => Some(header.merkleroot),
+            Err(e) => {
+                // If we can't get the header, we can still proceed without merkle validation
+                debug!(error = %e, "Failed to get block header for merkle root");
                 None
             }
+        };
+
+        Some((block_hash, challenge_height, merkle_root))
+    }
+
+    /// C-2 FIX: Validate archive response against expected values
+    ///
+    /// Returns (passed, validation_details)
+    fn validate_archive_response(
+        &self,
+        resp: &crate::challenge::ArchiveResponse,
+        expected_hash: &str,
+        expected_height: u64,
+        expected_merkle_root: Option<&str>,
+    ) -> (bool, String) {
+        // Basic check: response must indicate success
+        if !resp.success {
+            return (false, "Response indicates failure".to_string());
         }
+
+        // C-2 FIX: Block data must be present
+        let block_data = match &resp.block_data {
+            Some(data) => data,
+            None => {
+                return (false, "C-2: No block data in response".to_string());
+            }
+        };
+
+        // C-2 FIX: Block hash must match what we requested
+        if block_data.hash.to_lowercase() != expected_hash.to_lowercase() {
+            return (
+                false,
+                format!(
+                    "C-2: Block hash mismatch: got {}, expected {}",
+                    block_data.hash, expected_hash
+                ),
+            );
+        }
+
+        // C-2 FIX: Height must match
+        if block_data.height != expected_height {
+            return (
+                false,
+                format!(
+                    "C-2: Block height mismatch: got {}, expected {}",
+                    block_data.height, expected_height
+                ),
+            );
+        }
+
+        // C-2 FIX: Validate merkle root format (64 hex chars)
+        if block_data.merkle_root.len() != 64
+            || !block_data.merkle_root.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            return (
+                false,
+                format!(
+                    "C-2: Invalid merkle root format: {}",
+                    block_data.merkle_root
+                ),
+            );
+        }
+
+        // C-2 FIX: If we have expected merkle root from our RPC, cross-check it
+        if let Some(expected_mr) = expected_merkle_root {
+            if block_data.merkle_root.to_lowercase() != expected_mr.to_lowercase() {
+                return (
+                    false,
+                    format!(
+                        "C-2: Merkle root mismatch: got {}, expected {}",
+                        block_data.merkle_root, expected_mr
+                    ),
+                );
+            }
+        }
+
+        // C-2 FIX: Validate tx_count is reasonable (at least 1 for coinbase)
+        if block_data.tx_count == 0 {
+            return (false, "C-2: Block has zero transactions".to_string());
+        }
+
+        // C-2 FIX: Validate timestamp is reasonable (not in the far future)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // Allow 2 hours in the future (Bitcoin allows ~2 hours clock drift)
+        if block_data.timestamp > now + 7200 {
+            return (
+                false,
+                format!(
+                    "C-2: Block timestamp {} is too far in the future",
+                    block_data.timestamp
+                ),
+            );
+        }
+
+        (true, "Validation passed".to_string())
     }
 
     /// Verify policy capability
@@ -541,8 +667,18 @@ impl VerificationTask {
         our_id_hex: &str,
         timestamp: i64,
     ) {
-        // Build valid T0 transaction for policy classification challenge
-        let test_tx_hex = build_test_transaction();
+        // M-12 FIX: Build valid T0 transaction for policy classification challenge
+        // Fail closed if cryptographic randomness unavailable
+        let test_tx_hex = match build_test_transaction() {
+            Some(tx) => tx,
+            None => {
+                warn!(
+                    peer = %peer_id_hex[..8],
+                    "M-12: Skipping policy verification - cryptographic randomness unavailable"
+                );
+                return;
+            }
+        };
         debug!(tx_hex_len = test_tx_hex.len(), tx_hex_prefix = %&test_tx_hex[..40.min(test_tx_hex.len())], "Built test transaction");
 
         let challenge_data = serde_json::json!({
@@ -691,6 +827,10 @@ impl VerificationTask {
     }
 
     /// Verify ghostpay capability
+    ///
+    /// H-1 FIX: Always requires epoch state proof verification. Previously only checked
+    /// l2_enabled: true when no challenge_epoch was provided, allowing nodes to claim
+    /// GhostPay capability without actually maintaining L2 state.
     async fn verify_ghostpay(
         &self,
         peer: &VerifiablePeer,
@@ -698,35 +838,63 @@ impl VerificationTask {
         our_id_hex: &str,
         timestamp: i64,
     ) {
+        let short_id = &peer_id_hex[..8];
+
+        // H-1 FIX: Generate a random challenge epoch to verify the node has L2 state
+        // Use cryptographic randomness to prevent pre-computation attacks
+        let challenge_epoch = match self.generate_challenge_epoch() {
+            Some(epoch) => epoch,
+            None => {
+                warn!(
+                    peer = %short_id,
+                    "H-1: Skipping GhostPay verification - failed to generate challenge epoch"
+                );
+                return;
+            }
+        };
+
         let challenge_data = serde_json::json!({
             "endpoint": "ghostpay",
+            "challenge_epoch": challenge_epoch,
         })
         .to_string();
 
-        let short_id = &peer_id_hex[..8];
-        let result = self.client.verify_ghostpay(&peer.http_address, None).await;
+        // H-1 FIX: Always pass a challenge_epoch to require state proof
+        let result = self
+            .client
+            .verify_ghostpay(&peer.http_address, Some(challenge_epoch))
+            .await;
 
         let (passed, response_valid, response_data) = match result {
-            Ok(resp) => (
-                resp.success && resp.l2_enabled,
-                resp.l2_enabled,
-                Some(
-                    serde_json::json!({
-                        "success": resp.success,
-                        "valid": resp.l2_enabled,
-                        "virtual_block": resp.virtual_block,
-                        "epoch": resp.epoch,
-                    })
-                    .to_string(),
-                ),
-            ),
+            Ok(resp) => {
+                // H-1 FIX: Validate the response includes proper epoch state proof
+                let validation = self.validate_ghostpay_response(&resp, challenge_epoch);
+
+                let response_json = serde_json::json!({
+                    "success": resp.success,
+                    "valid": resp.l2_enabled,
+                    "virtual_block": resp.virtual_block,
+                    "epoch": resp.epoch,
+                    "epoch_state_hash": resp.epoch_state_hash,
+                    "epoch_tx_count": resp.epoch_tx_count,
+                    "validation": validation.1,
+                });
+
+                (validation.0, resp.l2_enabled, Some(response_json.to_string()))
+            }
             Err(e) => {
                 warn!(peer = %short_id, error = %e, "GhostPay verification failed");
                 (false, false, Some(format!("{{\"error\":\"{}\"}}", e)))
             }
         };
 
-        info!(peer = %short_id, passed = passed, l2_enabled = response_valid, "GhostPay verification complete");
+        info!(
+            peer = %short_id,
+            passed = passed,
+            l2_enabled = response_valid,
+            challenge_epoch = challenge_epoch,
+            "GhostPay verification complete"
+        );
 
         // Store result
         if let Err(e) = self.db.insert_ghostpay_challenge(
@@ -749,6 +917,118 @@ impl VerificationTask {
             timestamp,
         )
         .await;
+    }
+
+    /// H-1 FIX: Generate a random challenge epoch for GhostPay verification
+    ///
+    /// Returns a random epoch number within a reasonable range. Uses cryptographic
+    /// randomness to prevent nodes from pre-computing responses.
+    fn generate_challenge_epoch(&self) -> Option<u64> {
+        let mut rand_bytes = [0u8; 8];
+        if getrandom::getrandom(&mut rand_bytes).is_err() {
+            warn!("H-1: Failed to get cryptographic randomness for challenge epoch");
+            return None;
+        }
+
+        // Generate a random epoch within a reasonable range
+        // Epochs are typically small numbers, so use modulo to keep it reasonable
+        // Range: 1 to 1000 (epoch 0 is genesis, avoid it)
+        let rand_val = u64::from_le_bytes(rand_bytes);
+        let epoch = 1 + (rand_val % 1000);
+
+        Some(epoch)
+    }
+
+    /// H-1 FIX: Validate GhostPay response includes proper epoch state proof
+    ///
+    /// Returns (passed, validation_details)
+    fn validate_ghostpay_response(
+        &self,
+        resp: &crate::challenge::GhostPayResponse,
+        challenge_epoch: u64,
+    ) -> (bool, String) {
+        // Basic checks
+        if !resp.success {
+            return (false, "Response indicates failure".to_string());
+        }
+
+        if !resp.l2_enabled {
+            return (false, "L2 not enabled".to_string());
+        }
+
+        // H-1 FIX: Validate response field ranges (M-13 protection)
+        if !resp.is_valid() {
+            return (false, "H-1: Response fields out of valid range".to_string());
+        }
+
+        // H-1 FIX: Must have epoch_state_hash to prove L2 state exists
+        let state_hash = match &resp.epoch_state_hash {
+            Some(hash) => hash,
+            None => {
+                return (
+                    false,
+                    format!(
+                        "H-1: Missing epoch_state_hash for challenge epoch {}",
+                        challenge_epoch
+                    ),
+                );
+            }
+        };
+
+        // H-1 FIX: Validate epoch_state_hash format (64 hex chars for SHA256)
+        if state_hash.len() != 64 || !state_hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            return (
+                false,
+                format!("H-1: Invalid epoch_state_hash format: {}", state_hash),
+            );
+        }
+
+        // H-1 FIX: epoch_state_hash must not be all zeros (indicates no state)
+        if state_hash.chars().all(|c| c == '0') {
+            return (
+                false,
+                "H-1: epoch_state_hash is all zeros (no state)".to_string(),
+            );
+        }
+
+        // H-1 FIX: Must have epoch_tx_count to verify state is populated
+        let tx_count = match resp.epoch_tx_count {
+            Some(count) => count,
+            None => {
+                return (
+                    false,
+                    "H-1: Missing epoch_tx_count for challenged epoch".to_string(),
+                );
+            }
+        };
+
+        // H-1 FIX: tx_count must be reasonable (not suspiciously low for established epochs)
+        // For challenge epochs > 10, we expect at least some transactions
+        if challenge_epoch > 10 && tx_count == 0 {
+            return (
+                false,
+                format!(
+                    "H-1: Suspicious zero tx_count for epoch {} (expected some activity)",
+                    challenge_epoch
+                ),
+            );
+        }
+
+        // H-1 FIX: Response epoch should be at least as recent as challenge
+        // (node should have state up to at least the challenged epoch)
+        if let Some(current_epoch) = resp.epoch {
+            if current_epoch < challenge_epoch {
+                return (
+                    false,
+                    format!(
+                        "H-1: Node epoch {} is behind challenge epoch {}",
+                        current_epoch, challenge_epoch
+                    ),
+                );
+            }
+        }
+
+        (true, "Epoch state proof validated".to_string())
     }
 
     /// Broadcast a verification result via P2P

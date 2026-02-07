@@ -4,7 +4,8 @@
 # ============================================================================
 # Build Stage
 # ============================================================================
-FROM rust:1.75-bookworm AS builder
+# L-11: Use latest stable Rust version for security patches
+FROM rust:1.83-bookworm AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \

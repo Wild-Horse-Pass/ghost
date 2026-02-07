@@ -272,6 +272,10 @@ impl PayoutCalculator {
             // SECURITY: Use integer arithmetic with basis points
             // Calculate share in basis points: (work * 10000) / total_work
             let share_bps = ((*work * 10000.0) / total_work) as u64;
+            // M-4 SECURITY: Basis point truncation is intentional and safe.
+            // The truncation from f64->u64 rounds down, losing at most 0.01% per miner.
+            // Any remainder (dust) is captured below and redistributed to the node reward pool.
+            // This ensures no satoshis are lost - they flow to node operators.
             // Calculate amount: (pool_amount * share_bps) / 10000
             // Use u128 to prevent overflow
             let amount = (pool_amount as u128 * share_bps as u128 / 10000) as u64;

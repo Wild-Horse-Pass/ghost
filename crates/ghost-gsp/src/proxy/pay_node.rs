@@ -125,10 +125,17 @@ struct ConfirmFundingRequest {
     funding_vout: u32,
 }
 
+/// M-15 FIX: Internal authentication header name
+/// Used to authenticate GSP requests to the ghost-pay backend.
+const INTERNAL_AUTH_HEADER: &str = "X-Internal-Auth";
+
 /// Proxy to ghost-pay-node REST API
 pub struct PayNodeProxy {
     base_url: String,
     client: Client,
+    /// M-15 FIX: Shared secret for internal authentication
+    /// Read from GHOST_PAY_INTERNAL_SECRET env var or config
+    internal_secret: Option<String>,
 }
 
 impl PayNodeProxy {
@@ -139,6 +146,9 @@ impl PayNodeProxy {
     ///
     /// # L-27 Security Fix
     /// Uses proper error handling instead of expect() to prevent panics
+    ///
+    /// # M-15 Security Fix
+    /// Reads GHOST_PAY_INTERNAL_SECRET from environment for internal authentication
     pub fn new(base_url: &str) -> GspResult<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
@@ -151,17 +161,53 @@ impl PayNodeProxy {
                 ))
             })?;
 
+        // M-15: Read internal auth secret from environment
+        let internal_secret = std::env::var("GHOST_PAY_INTERNAL_SECRET").ok();
+        if internal_secret.is_none() {
+            tracing::warn!(
+                "M-15: GHOST_PAY_INTERNAL_SECRET not set - pay node requests will be unauthenticated. \
+                 Set this environment variable in production to enable authenticated internal communication."
+            );
+        }
+
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
+            internal_secret,
         })
     }
 
     /// Create with custom HTTP client
+    ///
+    /// # M-15 Security Fix
+    /// Reads GHOST_PAY_INTERNAL_SECRET from environment for internal authentication
     pub fn with_client(base_url: &str, client: Client) -> Self {
+        let internal_secret = std::env::var("GHOST_PAY_INTERNAL_SECRET").ok();
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
+            internal_secret,
+        }
+    }
+
+    /// Create with explicit internal secret (for testing)
+    ///
+    /// # M-15 Security Fix
+    /// Allows setting the internal auth secret directly
+    #[cfg(test)]
+    pub fn with_secret(base_url: &str, client: Client, secret: Option<String>) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client,
+            internal_secret: secret,
+        }
+    }
+
+    /// M-15: Add internal authentication header to a request builder
+    fn add_internal_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.internal_secret {
+            Some(secret) => request.header(INTERNAL_AUTH_HEADER, secret),
+            None => request,
         }
     }
 
@@ -170,9 +216,9 @@ impl PayNodeProxy {
         let url = format!("{}/health", self.base_url);
         debug!(url = %url, "Health check");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -185,9 +231,9 @@ impl PayNodeProxy {
         let url = format!("{}/api/v1/status", self.base_url);
         debug!(url = %url, "Getting status");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -213,9 +259,9 @@ impl PayNodeProxy {
         let url = format!("{}/api/v1/status", self.base_url);
         debug!(url = %url, ghost_id = %ghost_id, "Getting balance");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -267,9 +313,9 @@ impl PayNodeProxy {
         );
         debug!(url = %url, "Getting UTXOs");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -295,9 +341,9 @@ impl PayNodeProxy {
         let url = format!("{}/api/v1/locks", self.base_url);
         debug!(url = %url, ghost_id = %ghost_id, "Getting ghost locks");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -353,9 +399,9 @@ impl PayNodeProxy {
         );
         debug!(url = %url, min_height, "Getting locks confirmed after height");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -387,9 +433,9 @@ impl PayNodeProxy {
         let url = format!("{}/api/v1/locks", self.base_url);
         debug!(url = %url, min_height, "Getting locks (fallback for reorg)");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -431,9 +477,9 @@ impl PayNodeProxy {
         let url = format!("{}/api/v1/locks/{}", self.base_url, lock_id);
         debug!(url = %url, "Getting lock");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -475,6 +521,28 @@ impl PayNodeProxy {
         })
     }
 
+    /// H-3/H-4 FIX: Check if a wallet owns a specific lock
+    ///
+    /// Verifies ownership by checking if the lock exists in the wallet's lock list.
+    /// This is used to ensure that lock state subscriptions and capability checks
+    /// can only be performed by the lock owner.
+    ///
+    /// # Arguments
+    /// * `wallet_id` - The wallet ID to check ownership for
+    /// * `lock_id` - The lock ID to verify ownership of
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Wallet owns the lock
+    /// * `Ok(false)` - Wallet does not own the lock
+    /// * `Err(_)` - Error checking ownership
+    pub async fn is_lock_owner(&self, wallet_id: &str, lock_id: &str) -> GspResult<bool> {
+        // Get all locks for this wallet
+        let locks = self.get_ghost_locks(wallet_id).await?;
+
+        // Check if the requested lock is in the wallet's list
+        Ok(locks.iter().any(|lock| lock.lock_id == lock_id))
+    }
+
     /// Get transaction history
     pub async fn get_transactions(
         &self,
@@ -488,9 +556,9 @@ impl PayNodeProxy {
         );
         debug!(url = %url, "Getting transactions");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -534,10 +602,9 @@ impl PayNodeProxy {
             amount_sats,
         };
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .post(&url)
-            .json(&request)
+            .add_internal_auth(self.client.post(&url).json(&request))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -572,10 +639,9 @@ impl PayNodeProxy {
             public_key: public_key.to_string(),
         };
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .post(&url)
-            .json(&request)
+            .add_internal_auth(self.client.post(&url).json(&request))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -609,10 +675,9 @@ impl PayNodeProxy {
             timelock_tier: timelock_tier.map(|s| s.to_string()),
         };
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .post(&url)
-            .json(&request)
+            .add_internal_auth(self.client.post(&url).json(&request))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -674,10 +739,9 @@ impl PayNodeProxy {
             priority: priority.to_string(),
         };
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .post(&url)
-            .json(&request)
+            .add_internal_auth(self.client.post(&url).json(&request))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -701,9 +765,9 @@ impl PayNodeProxy {
         let url = format!("{}/api/v1/payments/{}", self.base_url, payment_id);
         debug!(url = %url, "Getting payment status");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -733,9 +797,9 @@ impl PayNodeProxy {
         let url = format!("{}/api/v1/payments/{}/cancel", self.base_url, payment_id);
         debug!(url = %url, "Cancelling payment");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .post(&url)
+            .add_internal_auth(self.client.post(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -773,10 +837,9 @@ impl PayNodeProxy {
             funding_vout,
         };
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .post(&url)
-            .json(&request)
+            .add_internal_auth(self.client.post(&url).json(&request))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -804,9 +867,9 @@ impl PayNodeProxy {
         let url = format!("{}/api/v1/status", self.base_url);
         debug!(url = %url, "Getting current height");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -951,9 +1014,9 @@ impl PayNodeProxy {
         let url = format!("{}/api/v1/payments/{}", self.base_url, payment_id);
         debug!(url = %url, payment_id = %payment_id, "Getting payment for ownership verification");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
@@ -993,9 +1056,9 @@ impl PayNodeProxy {
         let url = format!("{}/api/v1/locks/{}/utxo-state", self.base_url, lock_id);
         debug!(url = %url, lock_id = %lock_id, "Getting L1 UTXO state for lock");
 
+        // M-15: Add internal auth header
         let response = self
-            .client
-            .get(&url)
+            .add_internal_auth(self.client.get(&url))
             .send()
             .await
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;

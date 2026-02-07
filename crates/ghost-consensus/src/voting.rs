@@ -222,15 +222,41 @@ impl VotingSession {
     /// Within the crate, this can be used during the transition period while
     /// vote_handler.rs is being migrated to use CanonicalElderList.
     ///
+    /// H-5 SECURITY: Enforces MIN_VOTERS_FOR_BFT (7) to ensure proper BFT guarantees.
+    /// BFT requires n >= 3f+1, so for f=2 Byzantine nodes, we need n >= 7.
+    /// Creating a voting session with fewer voters would allow Byzantine nodes to
+    /// control the outcome (e.g., with 4 voters and 2 Byzantine, they have 50% control).
+    ///
     /// H-P2P-2: Timeout is enforced to be at least MIN_TIMEOUT_MS (1 second).
     /// Values below this are clamped up to prevent DoS via zero timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns `GhostError::InsufficientVoters` if fewer than MIN_VOTERS_FOR_BFT (7)
+    /// eligible voters are provided.
     pub(crate) fn new(
         round_id: RoundId,
         proposal_hash: [u8; 32],
         vote_type: VoteType,
         eligible_voters: HashSet<NodeId>,
         timeout_ms: u64,
-    ) -> Self {
+    ) -> Result<Self, GhostError> {
+        // H-5 SECURITY: Enforce minimum voter count for BFT guarantees
+        // This check MUST be present in ALL constructors, not just from_elder_list()
+        if eligible_voters.len() < Self::MIN_VOTERS_FOR_BFT {
+            error!(
+                round_id,
+                voters = eligible_voters.len(),
+                required = Self::MIN_VOTERS_FOR_BFT,
+                "H-5: Cannot create voting session: BFT requires at least {} eligible voters",
+                Self::MIN_VOTERS_FOR_BFT
+            );
+            return Err(GhostError::InsufficientVoters {
+                required: Self::MIN_VOTERS_FOR_BFT,
+                available: eligible_voters.len(),
+            });
+        }
+
         // H-P2P-2: Enforce minimum timeout to prevent DoS
         let effective_timeout = timeout_ms.max(MIN_TIMEOUT_MS);
         if timeout_ms < MIN_TIMEOUT_MS {
@@ -241,7 +267,7 @@ impl VotingSession {
             );
         }
 
-        Self {
+        Ok(Self {
             round_id,
             proposal_hash,
             vote_type,
@@ -252,7 +278,7 @@ impl VotingSession {
             result: None,
             equivocations: Vec::new(),
             ban_manager: None,
-        }
+        })
     }
 
     /// H-P2P-1: Set the ban manager for automatic equivocation banning
@@ -315,19 +341,20 @@ impl VotingSession {
         }
 
         // H-P2P-2: Timeout validation is handled in new()
+        // H-5: Minimum voter validation is also handled in new()
         info!(
             round_id,
             epoch = elder_list.epoch,
             eligible_count = eligible_voters.len(),
             "Created voting session from canonical elder list"
         );
-        Ok(Self::new(
+        Self::new(
             round_id,
             proposal_hash,
             vote_type,
             eligible_voters,
             timeout_ms,
-        ))
+        )
     }
 
     /// CRIT-4: Create a voting session with full elder list validation
@@ -376,6 +403,7 @@ impl VotingSession {
     /// Production code MUST use from_elder_list() to ensure BFT security.
     ///
     /// H-P2P-2: Timeout is clamped to MIN_TIMEOUT_MS if below.
+    /// H-5: Returns Result - tests must provide at least MIN_VOTERS_FOR_BFT (7) voters.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn new_for_testing(
         round_id: RoundId,
@@ -383,7 +411,7 @@ impl VotingSession {
         vote_type: VoteType,
         eligible_voters: HashSet<NodeId>,
         timeout_ms: u64,
-    ) -> Self {
+    ) -> Result<Self, GhostError> {
         Self::new(
             round_id,
             proposal_hash,
@@ -1014,6 +1042,7 @@ mod tests {
         }
 
         VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000)
+            .expect("Test session should have enough voters")
     }
 
     #[test]
@@ -1086,15 +1115,15 @@ mod tests {
     #[test]
     fn test_vote_replay_rejected_different_round() {
         // Create two sessions with different round_ids
-        // Use multiple eligible voters so threshold isn't immediately met
+        // H-5: Use at least MIN_VOTERS_FOR_BFT (7) eligible voters
         let proposal_hash = [0u8; 32];
         let identity = NodeIdentity::generate();
         let voter_id = identity.node_id();
 
         let mut eligible = HashSet::new();
         eligible.insert(voter_id);
-        // Add some dummy voters so threshold isn't 1
-        for i in 0..5 {
+        // Add enough dummy voters to meet MIN_VOTERS_FOR_BFT requirement (7 total)
+        for i in 0..8 {
             eligible.insert([i as u8 + 100; 32]);
         }
 
@@ -1104,9 +1133,11 @@ mod tests {
             VoteType::PayoutApproval,
             eligible.clone(),
             5000,
-        );
+        )
+        .expect("Session should have enough voters");
         let mut session2 =
-            VotingSession::new(200, proposal_hash, VoteType::PayoutApproval, eligible, 5000);
+            VotingSession::new(200, proposal_hash, VoteType::PayoutApproval, eligible, 5000)
+                .expect("Session should have enough voters");
 
         // Sign vote for round 100
         let msg = compute_vote_signing_message(100, &proposal_hash, &voter_id, true);
@@ -1137,10 +1168,10 @@ mod tests {
         let identity = NodeIdentity::generate();
         let voter_id = identity.node_id();
 
-        // Use multiple eligible voters so threshold isn't immediately met
+        // H-5: Use at least MIN_VOTERS_FOR_BFT (7) eligible voters
         let mut eligible = HashSet::new();
         eligible.insert(voter_id);
-        for i in 0..5 {
+        for i in 0..8 {
             eligible.insert([i as u8 + 100; 32]);
         }
 
@@ -1150,7 +1181,8 @@ mod tests {
             VoteType::PayoutApproval,
             eligible,
             5000,
-        );
+        )
+        .expect("Session should have enough voters");
 
         // First vote: approve
         let msg1 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
@@ -1190,10 +1222,10 @@ mod tests {
         let identity = NodeIdentity::generate();
         let voter_id = identity.node_id();
 
-        // Use multiple eligible voters so threshold isn't immediately met
+        // H-5: Use at least MIN_VOTERS_FOR_BFT (7) eligible voters
         let mut eligible = HashSet::new();
         eligible.insert(voter_id);
-        for i in 0..5 {
+        for i in 0..8 {
             eligible.insert([i as u8 + 100; 32]);
         }
 
@@ -1203,7 +1235,8 @@ mod tests {
             VoteType::PayoutApproval,
             eligible,
             5000,
-        );
+        )
+        .expect("Session should have enough voters");
 
         // First vote: approve
         let msg = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
@@ -1263,10 +1296,11 @@ mod tests {
         let proposal_hash = [0u8; 32];
         let round_id = 100;
 
+        // H-5: Use at least MIN_VOTERS_FOR_BFT (7) eligible voters
         let mut eligible = HashSet::new();
         let voter_id = [1u8; 32];
         eligible.insert(voter_id);
-        for i in 0..5 {
+        for i in 0..8 {
             eligible.insert([i as u8 + 100; 32]);
         }
 
@@ -1276,7 +1310,8 @@ mod tests {
             VoteType::PayoutApproval,
             eligible,
             5000,
-        );
+        )
+        .expect("Session should have enough voters");
 
         // Create a vote with garbage signature (not a valid ed25519 signature)
         let bad_vote = Vote::new(voter_id, true, [0xDE; 64]);
@@ -1302,7 +1337,8 @@ mod tests {
             eligible.insert(id);
         }
 
-        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000);
+        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000)
+            .expect("Session should have enough voters");
 
         // 67% of 10,000 = 6,700
         let threshold = session.threshold();
@@ -1310,19 +1346,24 @@ mod tests {
             threshold, 6700,
             "Threshold for 10,000 voters should be 6,700"
         );
+    }
 
-        // Also test exact boundary: 3 voters
-        // 67% of 3 = 2.01, ceiling = 3 (need >2/3 for BFT, so all 3 must agree)
+    /// H-5-TEST: Verify that VotingSession::new rejects fewer than MIN_VOTERS_FOR_BFT voters
+    #[test]
+    fn test_new_rejects_insufficient_voters() {
+        // Try to create a session with only 3 voters (below MIN_VOTERS_FOR_BFT = 7)
         let mut small_eligible = HashSet::new();
         for i in 0..3 {
             small_eligible.insert([i as u8; 32]);
         }
-        let small_session =
+        let result =
             VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, small_eligible, 5000);
-        assert_eq!(
-            small_session.threshold(),
-            3,
-            "Threshold for 3 voters should be 3 (all must agree)"
+
+        // H-5: Should reject with InsufficientVoters error
+        assert!(
+            matches!(result, Err(GhostError::InsufficientVoters { required: 7, available: 3 })),
+            "Should reject session with fewer than 7 voters, got {:?}",
+            result
         );
     }
 
@@ -1623,10 +1664,10 @@ mod tests {
         let identity = NodeIdentity::generate();
         let voter_id = identity.node_id();
 
-        // Use multiple eligible voters so threshold isn't immediately met
+        // H-5: Use at least MIN_VOTERS_FOR_BFT (7) eligible voters
         let mut eligible = HashSet::new();
         eligible.insert(voter_id);
-        for i in 0..5 {
+        for i in 0..8 {
             eligible.insert([i as u8 + 100; 32]);
         }
 
@@ -1637,7 +1678,8 @@ mod tests {
             VoteType::PayoutApproval,
             eligible,
             5000,
-        );
+        )
+        .expect("Session should have enough voters");
         session.set_ban_manager(ban_manager.clone());
 
         // Initially not banned
@@ -1677,9 +1719,10 @@ mod tests {
         let identity = NodeIdentity::generate();
         let voter_id = identity.node_id();
 
+        // H-5: Use at least MIN_VOTERS_FOR_BFT (7) eligible voters
         let mut eligible = HashSet::new();
         eligible.insert(voter_id);
-        for i in 0..5 {
+        for i in 0..8 {
             eligible.insert([i as u8 + 100; 32]);
         }
 
@@ -1690,7 +1733,8 @@ mod tests {
             VoteType::PayoutApproval,
             eligible,
             5000,
-        );
+        )
+        .expect("Session should have enough voters");
 
         // First vote
         let msg1 = compute_vote_signing_message(round_id, &proposal_hash, &voter_id, true);
@@ -1715,12 +1759,14 @@ mod tests {
     /// H-P2P-2-TEST: Verify that timeout_ms=0 is clamped to MIN_TIMEOUT_MS
     #[test]
     fn test_zero_timeout_clamped() {
+        // H-5: Use at least MIN_VOTERS_FOR_BFT (7) eligible voters
         let mut eligible = HashSet::new();
-        for i in 0..5 {
+        for i in 0..10 {
             eligible.insert([i as u8; 32]);
         }
 
-        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 0);
+        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 0)
+            .expect("Session should have enough voters");
 
         assert_eq!(
             session.timeout_ms, MIN_TIMEOUT_MS,
@@ -1731,12 +1777,14 @@ mod tests {
     /// H-P2P-2-TEST: Verify that timeout below minimum is clamped
     #[test]
     fn test_low_timeout_clamped() {
+        // H-5: Use at least MIN_VOTERS_FOR_BFT (7) eligible voters
         let mut eligible = HashSet::new();
-        for i in 0..5 {
+        for i in 0..10 {
             eligible.insert([i as u8; 32]);
         }
 
-        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 500);
+        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 500)
+            .expect("Session should have enough voters");
 
         assert_eq!(
             session.timeout_ms, MIN_TIMEOUT_MS,
@@ -1747,12 +1795,14 @@ mod tests {
     /// H-P2P-2-TEST: Verify that valid timeout is preserved
     #[test]
     fn test_valid_timeout_preserved() {
+        // H-5: Use at least MIN_VOTERS_FOR_BFT (7) eligible voters
         let mut eligible = HashSet::new();
-        for i in 0..5 {
+        for i in 0..10 {
             eligible.insert([i as u8; 32]);
         }
 
-        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000);
+        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000)
+            .expect("Session should have enough voters");
 
         assert_eq!(
             session.timeout_ms, 5000,

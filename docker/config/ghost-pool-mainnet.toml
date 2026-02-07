@@ -27,6 +27,12 @@ http_port = 8080
 max_miners = 1000
 public_mining = true
 
+# H-13: REQUIRED for mainnet - generate with: openssl rand -hex 32
+internal_api_secret = "${INTERNAL_API_SECRET}"
+
+# H-13: REQUIRED for mainnet - must be true for encrypted P2P communication
+noise_enabled = true
+
 [network.p2p]
 share_propagation = 8555
 block_announcement = 8556
@@ -57,8 +63,10 @@ archive_mode = true
 prune_height = 0
 
 [pool]
-# IMPORTANT: Set your mainnet treasury address (bc1p...)
-treasury_address = "${TREASURY_ADDRESS}"  # REQUIRED - must be bc1p... address
+# IMPORTANT: Set your mainnet treasury address (bc1q...)
+# L-10: Must be a SegWit (bc1q...) address you control.
+# NOTE: P2TR (bc1p...) addresses are NOT supported for quantum safety.
+treasury_address = "${TREASURY_ADDRESS}"  # REQUIRED - must be bc1q... address
 treasury_fee_percent = 1.0
 min_payout_sats = 10000
 

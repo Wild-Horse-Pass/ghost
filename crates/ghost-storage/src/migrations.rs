@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 14;
+const SCHEMA_VERSION: u32 = 15;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -100,6 +100,10 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
 
     if current_version < 14 {
         migrate_v14(conn)?;
+    }
+
+    if current_version < 15 {
+        migrate_v15(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -1154,6 +1158,43 @@ fn migrate_v14(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("L-24 FIX: Added instant payment reservations table");
+    Ok(())
+}
+
+/// Migration v15: Add rate limiting indexes for challenge tables (L-3 fix)
+///
+/// Creates unique indexes on (node_id, challenger_id, date(timestamp)) for each challenge
+/// table to prevent spam attacks where the same challenger floods the database with
+/// challenges for the same node on the same day.
+fn migrate_v15(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v15: Adding rate limiting indexes for challenge tables");
+
+    conn.execute_batch(
+        r#"
+        -- L-3 FIX: Rate limiting indexes for challenge tables
+        -- Prevents the same challenger from inserting multiple challenges for the same
+        -- node on the same day. Uses date(timestamp, 'unixepoch') to extract the date.
+
+        -- Archive challenges: one challenge per (node, challenger) pair per day
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_archive_challenges_daily
+        ON archive_challenges(node_id, challenger_id, date(timestamp, 'unixepoch'));
+
+        -- Policy challenges: one challenge per (node, challenger) pair per day
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_challenges_daily
+        ON policy_challenges(node_id, challenger_id, date(timestamp, 'unixepoch'));
+
+        -- Stratum challenges: one challenge per (node, challenger) pair per day
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_stratum_challenges_daily
+        ON stratum_challenges(node_id, challenger_id, date(timestamp, 'unixepoch'));
+
+        -- GhostPay challenges: one challenge per (node, challenger) pair per day
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ghostpay_challenges_daily
+        ON ghostpay_challenges(node_id, challenger_id, date(timestamp, 'unixepoch'));
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("L-3 FIX: Added rate limiting indexes for challenge tables");
     Ok(())
 }
 

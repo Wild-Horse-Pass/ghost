@@ -523,6 +523,21 @@ impl Database {
         })
     }
 
+    /// L-13 FIX: Check database health by executing a simple query
+    ///
+    /// This verifies that the database connection is operational and can
+    /// execute queries. Used by health check endpoints to provide accurate
+    /// service status.
+    pub fn health_check(&self) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            // Execute a simple query to verify the connection is working
+            let _: i64 = conn
+                .query_row("SELECT 1", [], |row| row.get(0))
+                .map_err(|e| GhostError::Database(format!("Health check failed: {}", e)))?;
+            Ok(())
+        })
+    }
+
     /// Get database statistics
     ///
     /// M-12 FIX: Uses safe i64 to u64 conversion with error handling for negative values.
@@ -670,11 +685,14 @@ impl Database {
     /// Prune old health pings
     ///
     /// Deletes health pings older than the specified number of days.
+    ///
+    /// L-2 FIX: Uses transaction for atomicity and consistent read visibility.
+    /// Ensures the DELETE is rolled back on any failure.
     pub fn prune_old_health_pings(&self, keep_days: u32) -> GhostResult<usize> {
-        self.with_connection(|conn| {
+        self.transaction(|tx| {
             let cutoff = chrono::Utc::now().timestamp() - (keep_days as i64 * 86400);
 
-            let deleted = conn
+            let deleted = tx
                 .execute("DELETE FROM health_pings WHERE timestamp < ?1", [cutoff])
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
@@ -689,9 +707,13 @@ impl Database {
     /// Prune old vote records
     ///
     /// Deletes vote records for rounds older than the specified number.
+    ///
+    /// L-2 FIX: Uses transaction to ensure atomicity between reading the max round
+    /// and deleting votes. This prevents race conditions where votes could be
+    /// incorrectly pruned if a new round is created between the SELECT and DELETE.
     pub fn prune_old_votes(&self, keep_rounds: u64) -> GhostResult<usize> {
-        self.with_connection(|conn| {
-            let current_round: Option<u64> = conn
+        self.transaction(|tx| {
+            let current_round: Option<u64> = tx
                 .query_row("SELECT MAX(round_id) FROM rounds", [], |row| row.get(0))
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
@@ -701,7 +723,7 @@ impl Database {
 
             let min_round_to_keep = current.saturating_sub(keep_rounds);
 
-            let deleted = conn
+            let deleted = tx
                 .execute("DELETE FROM votes WHERE round_id < ?1", [min_round_to_keep])
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 

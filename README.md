@@ -6,7 +6,7 @@
 
 ## What is Bitcoin Ghost?
 
-**Bitcoin Ghost** is a **full-stack Bitcoin node derivative** that extends Bitcoin Core with privacy-preserving features, decentralized mining pool infrastructure, and instant payment capabilities. It's not just a mining pool - it's a complete ecosystem for running, incentivizing, and monetizing Bitcoin infrastructure.
+**Bitcoin Ghost** is a **Bitcoin node derivative** that incentivises running a node, implements a decentralised network of mining pools, and adds L2 private and fast payments.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐

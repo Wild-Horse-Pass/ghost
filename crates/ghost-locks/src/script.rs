@@ -92,13 +92,27 @@ pub const RECOVERY_NSEQUENCE: u32 = 0xFFFFFFFE;
 ///     <recovery_pubkey> OP_CHECKSIG
 /// OP_ENDIF
 /// ```
-/// H-BTC-3: Minimum recommended recovery_blocks (1 day = ~144 blocks)
+/// L-7 FIX: Minimum recommended recovery_blocks (1 week = ~1008 blocks)
 ///
-/// This is the minimum recommended value for production use to ensure
-/// meaningful timelock protection. Using shorter timelocks increases
-/// the risk window where an attacker could recover stolen keys and
-/// sweep funds before the legitimate owner can act.
-pub const MIN_RECOMMENDED_RECOVERY_BLOCKS: u32 = 144; // ~1 day
+/// This is the minimum recommended value for production/mainnet use.
+/// Extended from 1 day (144) to 1 week (1008) to provide adequate time for:
+///
+/// 1. **Key Compromise Detection**: Users need time to notice suspicious activity
+///    and realize their keys may be compromised.
+///
+/// 2. **Recovery Key Preparation**: Users need time to locate and use their
+///    recovery keys, which may be stored in secure locations.
+///
+/// 3. **Network Propagation**: Recovery transactions need time to propagate
+///    and be confirmed, especially during network congestion.
+///
+/// 4. **Human Response Time**: A week provides realistic time for users to
+///    respond to security incidents, including weekends and holidays.
+///
+/// Using shorter timelocks significantly increases the risk window where
+/// an attacker could recover stolen keys and sweep funds before the
+/// legitimate owner can act.
+pub const MIN_RECOMMENDED_RECOVERY_BLOCKS: u32 = 1008; // ~1 week
 
 /// BIP-68 maximum relative timelock in blocks (~455 days)
 pub const MAX_RECOVERY_BLOCKS: u32 = 65535;
@@ -115,7 +129,7 @@ pub const MAX_RECOVERY_BLOCKS: u32 = 65535;
 /// - recovery_blocks exceeds BIP-68 maximum (65535 blocks, ~455 days)
 ///
 /// # Security Recommendations
-/// Use at least `MIN_RECOMMENDED_RECOVERY_BLOCKS` (144, ~1 day) for production.
+/// Use at least `MIN_RECOMMENDED_RECOVERY_BLOCKS` (1008, ~1 week) for production.
 /// Shorter timelocks reduce the security window for recovery.
 pub fn build_wsh_witness_script(
     lock_pubkey: &PublicKey,
@@ -130,13 +144,13 @@ pub fn build_wsh_witness_script(
         });
     }
 
-    // H-BTC-3: Warn if using very short timelock (but allow it)
+    // L-7: Warn if using very short timelock (but allow it)
     if recovery_blocks < MIN_RECOMMENDED_RECOVERY_BLOCKS {
         tracing::warn!(
             recovery_blocks = recovery_blocks,
             recommended = MIN_RECOMMENDED_RECOVERY_BLOCKS,
-            "H-BTC-3: recovery_blocks is below recommended minimum. \
-             Short timelocks reduce security. Consider using at least {} blocks (~1 day)",
+            "L-7: recovery_blocks is below recommended minimum. \
+             Short timelocks reduce security. Consider using at least {} blocks (~1 week)",
             MIN_RECOMMENDED_RECOVERY_BLOCKS
         );
     }

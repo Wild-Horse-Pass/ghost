@@ -814,19 +814,40 @@ async fn main() -> Result<()> {
         .route("/health", get(health_check))
         .with_state(state.clone());
 
+    // L-14 SECURITY: Read CORS origins from environment variable with secure defaults.
+    // Format: comma-separated list of origins (e.g., "https://example.com,https://app.example.com")
+    let cors_origins_str = std::env::var("GHOST_PAY_CORS_ORIGINS")
+        .unwrap_or_else(|_| "https://bitcoinghost.org,https://wallet.bitcoinghost.org".to_string());
+
+    let cors_origins: Vec<_> = cors_origins_str
+        .split(',')
+        .filter_map(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            match trimmed.parse::<http::HeaderValue>() {
+                Ok(hv) => Some(hv),
+                Err(e) => {
+                    warn!(origin = trimmed, error = %e, "Invalid CORS origin in GHOST_PAY_CORS_ORIGINS - skipping");
+                    None
+                }
+            }
+        })
+        .collect();
+
+    if cors_origins.is_empty() {
+        error!("No valid CORS origins configured - API will reject all cross-origin requests");
+    } else {
+        info!(origins = ?cors_origins_str, "CORS origins configured");
+    }
+
     // Merge routes and apply common layers
     let app = public_routes
         .merge(authenticated_routes)
         .layer(
             CorsLayer::new()
-                .allow_origin(AllowOrigin::list([
-                    "https://bitcoinghost.org"
-                        .parse()
-                        .expect("L-1: Valid hardcoded origin URL"),
-                    "https://wallet.bitcoinghost.org"
-                        .parse()
-                        .expect("L-1: Valid hardcoded origin URL"),
-                ]))
+                .allow_origin(AllowOrigin::list(cors_origins))
                 .allow_methods([http::Method::GET, http::Method::POST, http::Method::OPTIONS])
                 .allow_headers([
                     http::header::CONTENT_TYPE,
@@ -1570,9 +1591,30 @@ async fn get_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Valu
     }))
 }
 
-/// Health check
-async fn health_check() -> &'static str {
-    "OK"
+/// L-13 FIX: Dynamic health check that verifies actual system health
+///
+/// Checks database connectivity and RPC health before returning OK.
+/// Returns 503 Service Unavailable if any component is unhealthy.
+async fn health_check(State(state): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
+    // Check database connectivity
+    if let Err(e) = state.db.health_check() {
+        error!("L-13: Database health check failed: {}", e);
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "database unhealthy".to_string(),
+        );
+    }
+
+    // Check Bitcoin RPC connectivity (async call)
+    if let Err(e) = state.rpc.get_block_count().await {
+        error!("L-13: Bitcoin RPC health check failed: {}", e);
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rpc unhealthy".to_string(),
+        );
+    }
+
+    (StatusCode::OK, "OK".to_string())
 }
 
 // ============================================================================

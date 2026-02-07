@@ -176,10 +176,25 @@ impl WalletRegistry {
         Ok(())
     }
 
-    /// Cleanup old nonces (older than 1 hour)
+    /// M-14 FIX: Cleanup old nonces with safe buffer to prevent replay attacks
+    ///
+    /// Nonces must be kept for at least PROOF_TIMESTAMP_TOLERANCE_SECS + buffer to prevent
+    /// a race condition where:
+    /// 1. User creates proof at T
+    /// 2. Cleanup runs at T + tolerance, deleting the nonce
+    /// 3. Attacker replays the proof at T + tolerance (still within tolerance window)
+    ///
+    /// The cleanup cutoff is now PROOF_TIMESTAMP_TOLERANCE_SECS + 300 seconds (5 min buffer)
+    /// to ensure nonces are never deleted while the corresponding proof could still be valid.
     pub fn cleanup_old_nonces(&self) -> GspResult<usize> {
+        use ghost_gsp_proto::PROOF_TIMESTAMP_TOLERANCE_SECS;
+
         let conn = self.conn.lock();
-        let cutoff = chrono::Utc::now().timestamp() - 3600;
+        // M-14: Ensure cleanup cutoff is at least PROOF_TIMESTAMP_TOLERANCE_SECS + 300 second buffer
+        // This prevents the race condition where a nonce is cleaned up while its proof is still valid.
+        // PROOF_TIMESTAMP_TOLERANCE_SECS = 300 (5 min), buffer = 300 (5 min), total = 600 seconds
+        let safe_retention_secs = PROOF_TIMESTAMP_TOLERANCE_SECS + 300;
+        let cutoff = chrono::Utc::now().timestamp() - safe_retention_secs;
 
         let deleted = conn.execute("DELETE FROM used_nonces WHERE used_at < ?", [cutoff])?;
 

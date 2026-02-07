@@ -33,8 +33,15 @@ use std::time::{Duration, Instant};
 const MAX_STRIKES: u32 = 3;
 
 /// Maximum number of used tokens to track in the LRU cache
-/// Prevents unbounded memory growth in long-running coordinators
-const MAX_USED_TOKENS: usize = 100_000;
+///
+/// H-12 FIX: Increased from 100,000 to 1,000,000 tokens.
+/// At typical Wraith session rates (100 sessions/day with 50 participants each),
+/// this provides ~200 days of headroom before any eviction occurs.
+/// Combined with TOKEN_MAX_AGE_SECS (14 days), tokens are rejected by age
+/// long before capacity-based eviction would occur in normal operation.
+///
+/// Worst case: 1M tokens * 40 bytes = ~40MB memory - acceptable for a coordinator.
+const MAX_USED_TOKENS: usize = 1_000_000;
 
 /// Maximum age for tokens in the cache (14 days)
 /// SECURITY: Must exceed 2x maximum session duration (7 days) to prevent replay attacks.

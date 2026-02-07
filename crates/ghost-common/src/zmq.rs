@@ -110,10 +110,26 @@ pub struct ZmqSubscriber {
 }
 
 /// Check if a ZMQ endpoint is localhost (safe to use without authentication)
+///
+/// L-9: Parse URL properly and check only the host part to prevent DNS bypass attacks.
+/// An attacker could craft a hostname like "127.0.0.1.evil.com" that would match
+/// a naive substring check but resolve to the attacker's server.
 fn is_localhost_endpoint(endpoint: &str) -> bool {
-    endpoint.contains("://127.0.0.1")
-        || endpoint.contains("://localhost")
-        || endpoint.contains("://[::1]")
+    // Extract host from endpoint like "tcp://host:port" or "tcp://host"
+    if let Some(rest) = endpoint.strip_prefix("tcp://") {
+        // Handle IPv6 addresses in brackets like [::1]:port
+        if rest.starts_with('[') {
+            if let Some(bracket_end) = rest.find(']') {
+                let host = &rest[1..bracket_end];
+                return host == "::1";
+            }
+            return false;
+        }
+        // Handle regular host:port or just host
+        let host = rest.split(':').next().unwrap_or("");
+        return matches!(host, "127.0.0.1" | "localhost" | "::1");
+    }
+    false
 }
 
 /// ZMQ security error

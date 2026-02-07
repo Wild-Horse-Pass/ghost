@@ -51,6 +51,8 @@ bytes = { workspace = true }
 # H-AUTH-2: Secret management for RPC credentials
 secrecy = { workspace = true }
 zeroize = { workspace = true }
+# L-8: Random temp file suffix to prevent temp file attacks
+getrandom = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -179,14 +179,150 @@ impl VerificationClient {
         }
     }
 
-    /// Build a URL with the configured scheme
-    fn build_url(&self, host: &str, path: &str) -> String {
-        format!("{}://{}{}", self.scheme(), host, path)
+    /// M-11 FIX: Validate that an IP address is not a private/internal address
+    ///
+    /// Rejects:
+    /// - Private ranges: 10.x.x.x, 172.16-31.x.x, 192.168.x.x
+    /// - Link-local: 169.254.x.x
+    /// - Localhost: 127.x.x.x
+    /// - Cloud metadata: 169.254.169.254
+    /// - IPv6 equivalents
+    fn is_internal_address(host: &str) -> bool {
+        // Extract the host part (handle IPv6 with brackets and port)
+        // IPv6 with port: [::1]:8080 -> ::1
+        // IPv6 without port: ::1 -> ::1
+        // IPv4 with port: 127.0.0.1:8080 -> 127.0.0.1
+        let host_part = if host.starts_with('[') {
+            // IPv6 address with brackets, possibly with port
+            host.trim_start_matches('[')
+                .split(']')
+                .next()
+                .unwrap_or(host)
+        } else if host.contains("::") {
+            // IPv6 address without brackets (like ::1)
+            // IPv6 addresses have multiple colons, so we can't just split on ':'
+            host
+        } else {
+            // IPv4 or hostname, split on ':' to remove port
+            host.split(':').next().unwrap_or(host)
+        };
+
+        // Check for IPv4 addresses
+        if let Ok(ip) = host_part.parse::<std::net::Ipv4Addr>() {
+            // Localhost: 127.0.0.0/8
+            if ip.octets()[0] == 127 {
+                return true;
+            }
+            // Private: 10.0.0.0/8
+            if ip.octets()[0] == 10 {
+                return true;
+            }
+            // Private: 172.16.0.0/12
+            if ip.octets()[0] == 172 && ip.octets()[1] >= 16 && ip.octets()[1] <= 31 {
+                return true;
+            }
+            // Private: 192.168.0.0/16
+            if ip.octets()[0] == 192 && ip.octets()[1] == 168 {
+                return true;
+            }
+            // Link-local: 169.254.0.0/16
+            if ip.octets()[0] == 169 && ip.octets()[1] == 254 {
+                return true;
+            }
+            // Broadcast: 255.255.255.255
+            if ip.octets() == [255, 255, 255, 255] {
+                return true;
+            }
+            // Current network: 0.0.0.0/8
+            if ip.octets()[0] == 0 {
+                return true;
+            }
+            return false;
+        }
+
+        // Check for IPv6 addresses
+        if let Ok(ip) = host_part.parse::<std::net::Ipv6Addr>() {
+            // Loopback: ::1
+            if ip.is_loopback() {
+                return true;
+            }
+            // Unspecified: ::
+            if ip.is_unspecified() {
+                return true;
+            }
+            // IPv4-mapped IPv6 addresses - check the embedded IPv4
+            if let Some(ipv4) = ip.to_ipv4_mapped() {
+                // Localhost
+                if ipv4.octets()[0] == 127 {
+                    return true;
+                }
+                // Private ranges
+                if ipv4.octets()[0] == 10 {
+                    return true;
+                }
+                if ipv4.octets()[0] == 172 && ipv4.octets()[1] >= 16 && ipv4.octets()[1] <= 31 {
+                    return true;
+                }
+                if ipv4.octets()[0] == 192 && ipv4.octets()[1] == 168 {
+                    return true;
+                }
+                if ipv4.octets()[0] == 169 && ipv4.octets()[1] == 254 {
+                    return true;
+                }
+            }
+            // Unique local addresses: fc00::/7
+            let segments = ip.segments();
+            if (segments[0] >> 9) == 0b1111110 {
+                return true;
+            }
+            // Link-local: fe80::/10
+            if (segments[0] >> 6) == 0b1111111010 {
+                return true;
+            }
+            return false;
+        }
+
+        // Check for hostname-based bypasses
+        let host_lower = host_part.to_lowercase();
+
+        // Localhost variants
+        if host_lower == "localhost"
+            || host_lower == "localhost.localdomain"
+            || host_lower.ends_with(".localhost")
+        {
+            return true;
+        }
+
+        // Cloud metadata service endpoints
+        // AWS/GCP/Azure all use 169.254.169.254
+        // Some also respond to hostnames
+        if host_lower == "metadata.google.internal"
+            || host_lower == "metadata"
+            || host_lower.contains("169.254.169.254")
+        {
+            return true;
+        }
+
+        false
+    }
+
+    /// M-11 FIX: Build a URL with SSRF protection
+    ///
+    /// Returns an error if the host resolves to an internal/private address.
+    fn build_url(&self, host: &str, path: &str) -> GhostResult<String> {
+        // M-11 FIX: Validate the host is not an internal address
+        if Self::is_internal_address(host) {
+            return Err(GhostError::Config(format!(
+                "M-11 SSRF Protection: Refusing to connect to internal address: {}",
+                host
+            )));
+        }
+        Ok(format!("{}://{}{}", self.scheme(), host, path))
     }
 
     /// Get health status of a node
     pub async fn health(&self, node_address: &str) -> GhostResult<HealthResponse> {
-        let url = self.build_url(node_address, "/health?unsigned=true");
+        let url = self.build_url(node_address, "/health?unsigned=true")?;
         debug!(url = %url, "Checking node health");
 
         let response = self.client.get(&url).send().await.map_err(|e| {
@@ -232,7 +368,7 @@ impl VerificationClient {
         let url = self.build_url(
             node_address,
             &format!("/verify/archive?{}", params.join("&")),
-        );
+        )?;
 
         debug!(url = %url, "Verifying archive capability");
 
@@ -271,7 +407,7 @@ impl VerificationClient {
                 "/verify/policy?tx={}&unsigned=true",
                 urlencoding::encode(tx_hex)
             ),
-        );
+        )?;
 
         debug!(url = %url, "Verifying policy capability");
 
@@ -313,7 +449,7 @@ impl VerificationClient {
         let url = self.build_url(
             node_address,
             &format!("/verify/stratum?protocol={}&unsigned=true", protocol_str),
-        );
+        )?;
 
         debug!(url = %url, "Verifying stratum capability");
 
@@ -341,22 +477,23 @@ impl VerificationClient {
     }
 
     /// Verify GhostPay capability
+    ///
+    /// H-1 FIX: Now accepts challenge_epoch parameter to require epoch state proof.
+    /// When challenge_epoch is provided, the response must include epoch_state_hash
+    /// to prove the node actually has L2 state data.
     pub async fn verify_ghostpay(
         &self,
         node_address: &str,
-        address: Option<&str>,
+        challenge_epoch: Option<u64>,
     ) -> GhostResult<GhostPayResponse> {
-        let path = if let Some(addr) = address {
-            format!(
-                "/verify/ghostpay?unsigned=true&address={}",
-                urlencoding::encode(addr)
-            )
-        } else {
-            "/verify/ghostpay?unsigned=true".to_string()
+        // H-1 FIX: Always include challenge_epoch in the request
+        let path = match challenge_epoch {
+            Some(epoch) => format!("/verify/ghostpay?unsigned=true&challenge_epoch={}", epoch),
+            None => "/verify/ghostpay?unsigned=true".to_string(),
         };
-        let url = self.build_url(node_address, &path);
+        let url = self.build_url(node_address, &path)?;
 
-        debug!(url = %url, "Verifying GhostPay capability");
+        debug!(url = %url, challenge_epoch = ?challenge_epoch, "Verifying GhostPay capability");
 
         let response = self.client.get(&url).send().await.map_err(|e| {
             debug!("GhostPay verification request failed: {}", e);
@@ -646,5 +783,87 @@ mod tests {
             !config.danger_accept_invalid_certs,
             "mainnet() config should not accept invalid certs"
         );
+    }
+
+    #[test]
+    fn test_m11_ssrf_protection_private_ipv4() {
+        // M-11: Test SSRF protection rejects private IPv4 ranges
+        // Private: 10.0.0.0/8
+        assert!(VerificationClient::is_internal_address("10.0.0.1"));
+        assert!(VerificationClient::is_internal_address("10.255.255.255"));
+        assert!(VerificationClient::is_internal_address("10.0.0.1:8080"));
+
+        // Private: 172.16.0.0/12
+        assert!(VerificationClient::is_internal_address("172.16.0.1"));
+        assert!(VerificationClient::is_internal_address("172.31.255.255"));
+        assert!(!VerificationClient::is_internal_address("172.15.0.1")); // Not private
+        assert!(!VerificationClient::is_internal_address("172.32.0.1")); // Not private
+
+        // Private: 192.168.0.0/16
+        assert!(VerificationClient::is_internal_address("192.168.0.1"));
+        assert!(VerificationClient::is_internal_address("192.168.255.255"));
+    }
+
+    #[test]
+    fn test_m11_ssrf_protection_localhost() {
+        // M-11: Test SSRF protection rejects localhost
+        assert!(VerificationClient::is_internal_address("127.0.0.1"));
+        assert!(VerificationClient::is_internal_address("127.255.255.255"));
+        assert!(VerificationClient::is_internal_address("localhost"));
+        assert!(VerificationClient::is_internal_address("localhost:8080"));
+        assert!(VerificationClient::is_internal_address("localhost.localdomain"));
+    }
+
+    #[test]
+    fn test_m11_ssrf_protection_link_local() {
+        // M-11: Test SSRF protection rejects link-local
+        assert!(VerificationClient::is_internal_address("169.254.0.1"));
+        assert!(VerificationClient::is_internal_address("169.254.169.254")); // AWS metadata
+    }
+
+    #[test]
+    fn test_m11_ssrf_protection_cloud_metadata() {
+        // M-11: Test SSRF protection rejects cloud metadata endpoints
+        assert!(VerificationClient::is_internal_address("169.254.169.254"));
+        assert!(VerificationClient::is_internal_address("metadata.google.internal"));
+        assert!(VerificationClient::is_internal_address("metadata"));
+    }
+
+    #[test]
+    fn test_m11_ssrf_protection_public_ip_allowed() {
+        // M-11: Test SSRF protection allows legitimate public IPs
+        assert!(!VerificationClient::is_internal_address("8.8.8.8"));
+        assert!(!VerificationClient::is_internal_address("1.1.1.1"));
+        assert!(!VerificationClient::is_internal_address("203.0.113.1")); // TEST-NET-3
+        assert!(!VerificationClient::is_internal_address("93.184.216.34")); // example.com
+    }
+
+    #[test]
+    fn test_m11_ssrf_protection_ipv6() {
+        // M-11: Test SSRF protection rejects internal IPv6 addresses
+        assert!(VerificationClient::is_internal_address("::1")); // Loopback
+        assert!(VerificationClient::is_internal_address("::"));  // Unspecified
+
+        // Allow legitimate public IPv6
+        assert!(!VerificationClient::is_internal_address("2001:4860:4860::8888")); // Google DNS
+    }
+
+    #[test]
+    fn test_m11_build_url_rejects_internal() {
+        // M-11: Test that build_url rejects internal addresses
+        let client = VerificationClient::new().unwrap();
+
+        // Should reject localhost
+        let result = client.build_url("127.0.0.1:8080", "/health");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("M-11"));
+
+        // Should reject private IPs
+        let result = client.build_url("192.168.1.1:8080", "/health");
+        assert!(result.is_err());
+
+        // Should allow public IPs
+        let result = client.build_url("93.184.216.34:8080", "/health");
+        assert!(result.is_ok());
     }
 }

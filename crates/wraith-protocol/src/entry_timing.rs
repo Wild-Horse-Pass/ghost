@@ -186,13 +186,37 @@ impl EntryConfig {
 /// indistinguishable from real entries in the queue structure. Cover traffic
 /// is now identified only by having empty participant_data, which is opaque
 /// to external observers examining the queue.
+///
+/// # L-6 Security Analysis: Cover Traffic Distinguishability
+///
+/// While cover traffic entries have empty `participant_data`, this is NOT
+/// a security vulnerability because:
+///
+/// 1. **Queue Access Requires Authentication**: The entry queue is only
+///    accessible to the authenticated coordinator service. External observers
+///    cannot inspect queue contents.
+///
+/// 2. **Execution-Time Check Only**: Cover vs real is determined at execution
+///    time by the coordinator, not exposed in any external API or logging.
+///
+/// 3. **L1 Indistinguishability**: External observers monitoring the blockchain
+///    see only encrypted L1 transactions. They cannot distinguish which entries
+///    were cover traffic vs real participants.
+///
+/// 4. **Timing Pattern Protection**: The cover traffic's purpose is to obscure
+///    entry timing patterns, not to be indistinguishable in internal data structures.
+///    An attacker with access to internal queue state already has coordinator access.
 #[derive(Debug, Clone)]
 pub struct ScheduledEntry {
     /// Session ID to enter
     pub session_id: [u8; 32],
     /// Participant data (opaque to timing layer)
-    /// M-3: Cover traffic has empty participant_data - this is the ONLY way to identify it
-    /// and is checked at execution time, not stored as a separate field
+    ///
+    /// L-6 SECURITY: Cover traffic has empty participant_data.
+    /// This is not distinguishable to external observers because:
+    /// - Queue access requires authentication
+    /// - Cover vs real is only checked at execution time
+    /// - External observers see only encrypted L1 transactions
     pub participant_data: Vec<u8>,
     /// When this entry was requested
     pub requested_at: Instant,

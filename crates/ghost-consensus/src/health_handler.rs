@@ -76,11 +76,33 @@ pub type CapabilityVerifierCallback =
 const HEALTH_RATE_LIMIT_MAX_TOKENS: u32 = 10;
 const HEALTH_RATE_LIMIT_REFILL_RATE: u32 = 1;
 
-/// L-7 SECURITY: Dynamic PoW difficulty adjustment configuration
+/// L-7/M-5 SECURITY: Dynamic PoW difficulty adjustment configuration
 ///
 /// The difficulty is adjusted based on recent ping rates to prevent
 /// Sybil attacks during high-traffic periods while maintaining usability
 /// during low-activity periods.
+///
+/// M-5 DESIGN NOTE: Node-local PoW difficulty adjustment is INTENTIONAL
+///
+/// Each node independently adjusts its PoW difficulty based on the traffic it observes.
+/// This is a deliberate design choice for DoS protection, NOT a bug:
+///
+/// 1. **Local DoS Protection**: A node under attack sees high traffic and raises its
+///    difficulty, protecting itself without affecting other nodes.
+///
+/// 2. **Attack Isolation**: An attacker flooding one node doesn't affect the difficulty
+///    for communications with other nodes in the network.
+///
+/// 3. **No Coordination Required**: Nodes don't need to agree on difficulty, avoiding
+///    the complexity and attack surface of consensus on PoW difficulty.
+///
+/// 4. **Graceful Degradation**: If an attacker manages to lower difficulty on one node,
+///    other nodes still maintain their own appropriate difficulty levels.
+///
+/// This is analogous to TCP congestion control - each endpoint manages its own state
+/// based on local observations. A global PoW difficulty would require consensus and
+/// could be manipulated by colluding nodes.
+///
 /// Base PoW difficulty (minimum)
 const BASE_POW_DIFFICULTY: u32 = 16;
 

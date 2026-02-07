@@ -108,6 +108,30 @@ impl Default for BanManagerConfig {
         // 4.1 SECURITY: 24-hour base bans for serious violations
         // Equivocation and protocol violations are Byzantine behaviors
         // that warrant significant penalties to deter attacks
+        //
+        // M-6 DESIGN NOTE: Node-local ban escalation is INTENTIONAL
+        //
+        // Each node maintains its own ban list and escalation state. This is a
+        // deliberate design choice, NOT a bug:
+        //
+        // 1. **Attack Isolation**: An attacker cannot use one compromised node to
+        //    propagate false ban information to the entire network.
+        //
+        // 2. **No Ban Consensus Required**: Requiring network-wide agreement on bans
+        //    would add complexity and create new attack vectors (e.g., colluding
+        //    nodes voting to ban honest nodes).
+        //
+        // 3. **Local Observation Accuracy**: Nodes that directly observe misbehavior
+        //    have the most accurate information. Trusting remote ban reports could
+        //    enable "ban reflection" attacks.
+        //
+        // 4. **Sybil Resistance**: With node-local bans, an attacker with multiple
+        //    identities still gets banned on each node they misbehave against.
+        //    Network-wide bans could be gamed via Sybil voting.
+        //
+        // The escalation multiplier ensures repeat offenders face increasingly long
+        // bans on each node they attack, providing strong deterrence even without
+        // network-wide coordination.
         Self {
             equivocation_secs: 24 * 60 * 60, // 24 hours for Byzantine behavior
             rate_limit_secs: 60 * 60,        // 1 hour for rate limits

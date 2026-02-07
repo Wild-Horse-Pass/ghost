@@ -52,6 +52,19 @@ pub const MAX_EQUIVOCATION_PROOF_SIZE: usize = 100 * 1024;
 /// At most this should be ~500 bytes, so 10KB provides generous headroom.
 pub const MAX_ROTATION_PROOF_SIZE: usize = 10 * 1024;
 
+/// M-2: Maximum size for kv_store values (1 MB)
+/// Prevents storage exhaustion attacks through the key-value store API.
+pub const MAX_KV_VALUE_SIZE: usize = 1024 * 1024;
+
+/// L-1: Maximum length for node display_name field (128 chars)
+pub const MAX_DISPLAY_NAME_LEN: usize = 128;
+
+/// L-1: Maximum length for node public_address field (256 chars)
+pub const MAX_PUBLIC_ADDRESS_LEN: usize = 256;
+
+/// L-4: Maximum size for node capabilities JSON (4 KB)
+pub const MAX_CAPABILITIES_JSON_SIZE: usize = 4096;
+
 // =============================================================================
 // SAFE TYPE CONVERSIONS
 // =============================================================================
@@ -612,7 +625,48 @@ impl Database {
 
 impl Database {
     /// Upsert a node record
+    ///
+    /// L-1 FIX: Validates display_name (128 chars max) and public_address (256 chars max).
+    /// L-4 FIX: Validates capabilities JSON structure and size (4 KB max).
     pub fn upsert_node(&self, node: &NodeRecord) -> GhostResult<()> {
+        // L-1 FIX: Validate display_name length
+        if let Some(ref name) = node.display_name {
+            if name.len() > MAX_DISPLAY_NAME_LEN {
+                return Err(GhostError::Database(format!(
+                    "L-1: display_name too long: {} > {} chars",
+                    name.len(),
+                    MAX_DISPLAY_NAME_LEN
+                )));
+            }
+        }
+
+        // L-1 FIX: Validate public_address length
+        if let Some(ref addr) = node.public_address {
+            if addr.len() > MAX_PUBLIC_ADDRESS_LEN {
+                return Err(GhostError::Database(format!(
+                    "L-1: public_address too long: {} > {} chars",
+                    addr.len(),
+                    MAX_PUBLIC_ADDRESS_LEN
+                )));
+            }
+        }
+
+        // L-4 FIX: Validate capabilities JSON size
+        if node.capabilities.len() > MAX_CAPABILITIES_JSON_SIZE {
+            return Err(GhostError::Database(format!(
+                "L-4: capabilities JSON too large: {} > {} bytes",
+                node.capabilities.len(),
+                MAX_CAPABILITIES_JSON_SIZE
+            )));
+        }
+
+        // L-4 FIX: Validate capabilities is valid JSON
+        if serde_json::from_str::<serde_json::Value>(&node.capabilities).is_err() {
+            return Err(GhostError::Database(
+                "L-4: capabilities is not valid JSON".into(),
+            ));
+        }
+
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO nodes (node_id, public_address, display_name, first_seen, last_seen,
@@ -1506,7 +1560,19 @@ impl Database {
     }
 
     /// Set a value in the key-value store
+    ///
+    /// M-2 FIX: Validates value size to prevent storage exhaustion attacks.
+    /// Maximum value size is 1 MB (MAX_KV_VALUE_SIZE).
     pub fn kv_set(&self, key: &str, value: &str) -> GhostResult<()> {
+        // M-2 FIX: Validate value size before storing
+        if value.len() > MAX_KV_VALUE_SIZE {
+            return Err(GhostError::Database(format!(
+                "M-2: KV value exceeds maximum size: {} > {} bytes",
+                value.len(),
+                MAX_KV_VALUE_SIZE
+            )));
+        }
+
         let now = chrono::Utc::now().timestamp();
 
         self.with_connection(|conn| {
@@ -3207,6 +3273,10 @@ impl Database {
 
 impl Database {
     /// Insert an archive challenge result
+    ///
+    /// L-3 FIX: Uses INSERT OR REPLACE to enforce rate limiting. The unique index
+    /// on (node_id, challenger_id, date(timestamp)) prevents duplicate challenges
+    /// from the same challenger for the same node on the same day.
     pub fn insert_archive_challenge(
         &self,
         node_id: &str,
@@ -3218,8 +3288,9 @@ impl Database {
     ) -> GhostResult<i64> {
         self.with_connection(|conn| {
             let timestamp = chrono::Utc::now().timestamp();
+            // L-3 FIX: INSERT OR REPLACE updates if same (node, challenger, day) exists
             conn.execute(
-                "INSERT INTO archive_challenges
+                "INSERT OR REPLACE INTO archive_challenges
                  (node_id, challenger_id, block_height, expected_hash, response_hash, passed, timestamp)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
@@ -3238,6 +3309,10 @@ impl Database {
     }
 
     /// Insert a policy challenge result
+    ///
+    /// L-3 FIX: Uses INSERT OR REPLACE to enforce rate limiting. The unique index
+    /// on (node_id, challenger_id, date(timestamp)) prevents duplicate challenges
+    /// from the same challenger for the same node on the same day.
     pub fn insert_policy_challenge(
         &self,
         node_id: &str,
@@ -3249,8 +3324,9 @@ impl Database {
     ) -> GhostResult<i64> {
         self.with_connection(|conn| {
             let timestamp = chrono::Utc::now().timestamp();
+            // L-3 FIX: INSERT OR REPLACE updates if same (node, challenger, day) exists
             conn.execute(
-                "INSERT INTO policy_challenges
+                "INSERT OR REPLACE INTO policy_challenges
                  (node_id, challenger_id, txid, expected_tier, response_tier, passed, timestamp)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
@@ -3269,6 +3345,10 @@ impl Database {
     }
 
     /// Insert a stratum challenge result
+    ///
+    /// L-3 FIX: Uses INSERT OR REPLACE to enforce rate limiting. The unique index
+    /// on (node_id, challenger_id, date(timestamp)) prevents duplicate challenges
+    /// from the same challenger for the same node on the same day.
     pub fn insert_stratum_challenge(
         &self,
         node_id: &str,
@@ -3279,8 +3359,9 @@ impl Database {
     ) -> GhostResult<i64> {
         self.with_connection(|conn| {
             let timestamp = chrono::Utc::now().timestamp();
+            // L-3 FIX: INSERT OR REPLACE updates if same (node, challenger, day) exists
             conn.execute(
-                "INSERT INTO stratum_challenges
+                "INSERT OR REPLACE INTO stratum_challenges
                  (node_id, challenger_id, connected, latency_ms, passed, timestamp)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
@@ -3298,6 +3379,10 @@ impl Database {
     }
 
     /// Insert a Ghost Pay challenge result
+    ///
+    /// L-3 FIX: Uses INSERT OR REPLACE to enforce rate limiting. The unique index
+    /// on (node_id, challenger_id, date(timestamp)) prevents duplicate challenges
+    /// from the same challenger for the same node on the same day.
     pub fn insert_ghostpay_challenge(
         &self,
         node_id: &str,
@@ -3308,8 +3393,9 @@ impl Database {
     ) -> GhostResult<i64> {
         self.with_connection(|conn| {
             let timestamp = chrono::Utc::now().timestamp();
+            // L-3 FIX: INSERT OR REPLACE updates if same (node, challenger, day) exists
             conn.execute(
-                "INSERT INTO ghostpay_challenges
+                "INSERT OR REPLACE INTO ghostpay_challenges
                  (node_id, challenger_id, endpoint, response_valid, passed, timestamp)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
@@ -4968,6 +5054,27 @@ mod tests {
     }
 
     #[test]
+    fn test_kv_store_size_limit() {
+        // M-2: Test that oversized values are rejected
+        let db = Database::in_memory().unwrap();
+
+        // Value at the limit should succeed
+        let max_value = "x".repeat(super::MAX_KV_VALUE_SIZE);
+        db.kv_set("max_key", &max_value).unwrap();
+
+        // Value over the limit should fail
+        let oversized_value = "x".repeat(super::MAX_KV_VALUE_SIZE + 1);
+        let result = db.kv_set("oversized_key", &oversized_value);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("M-2"),
+            "Expected M-2 error, got: {}",
+            err_msg
+        );
+    }
+
+    #[test]
     fn test_node_reward_ledger() {
         let db = Database::in_memory().unwrap();
 
@@ -5059,6 +5166,74 @@ mod tests {
 
         let active = db.get_active_peers(10).unwrap();
         assert_eq!(active.len(), 1);
+    }
+
+    #[test]
+    fn test_node_validation() {
+        // L-1 and L-4: Test validation on node fields
+        let db = Database::in_memory().unwrap();
+        let now = chrono::Utc::now().timestamp();
+
+        // Valid node should succeed
+        let valid_node = NodeRecord {
+            node_id: "node123".to_string(),
+            public_address: Some("192.168.1.1:8555".to_string()),
+            display_name: Some("Test Node".to_string()),
+            first_seen: now,
+            last_seen: now,
+            is_elder: false,
+            elder_order: None,
+            capabilities: "{}".to_string(),
+            total_uptime_secs: 0,
+            uptime_7d_percent: 0.0,
+            verification_pass_rate: 0.0,
+            total_shares_received: 0,
+            total_blocks_found: 0,
+            payout_address: None,
+        };
+        db.upsert_node(&valid_node).unwrap();
+
+        // L-1: display_name too long
+        let long_name_node = NodeRecord {
+            display_name: Some("x".repeat(super::MAX_DISPLAY_NAME_LEN + 1)),
+            ..valid_node.clone()
+        };
+        let result = db.upsert_node(&long_name_node);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("L-1"));
+
+        // L-1: public_address too long
+        let long_addr_node = NodeRecord {
+            node_id: "node456".to_string(),
+            public_address: Some("x".repeat(super::MAX_PUBLIC_ADDRESS_LEN + 1)),
+            display_name: None,
+            ..valid_node.clone()
+        };
+        let result = db.upsert_node(&long_addr_node);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("L-1"));
+
+        // L-4: capabilities too large
+        let large_caps_node = NodeRecord {
+            node_id: "node789".to_string(),
+            capabilities: "x".repeat(super::MAX_CAPABILITIES_JSON_SIZE + 1),
+            display_name: None,
+            ..valid_node.clone()
+        };
+        let result = db.upsert_node(&large_caps_node);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("L-4"));
+
+        // L-4: capabilities invalid JSON
+        let invalid_json_node = NodeRecord {
+            node_id: "node_abc".to_string(),
+            capabilities: "not valid json".to_string(),
+            display_name: None,
+            ..valid_node.clone()
+        };
+        let result = db.upsert_node(&invalid_json_node);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("L-4"));
     }
 
     #[test]

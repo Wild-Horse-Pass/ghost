@@ -397,9 +397,12 @@ async fn handle_connection(
         merkle_path: Vec::new(),
     }));
 
-    // Create channels for communication between tasks
-    let (sv1_to_sv2_tx, mut sv1_to_sv2_rx) = mpsc::channel::<Vec<u8>>(100);
-    let (sv2_to_sv1_tx, mut sv2_to_sv1_rx) = mpsc::channel::<String>(100);
+    // H-10: Create bounded channels with reasonable capacity for backpressure
+    // If a channel fills up, sends will block until capacity is available.
+    // This prevents unbounded memory growth under high load.
+    const CHANNEL_CAPACITY: usize = 10_000;
+    let (sv1_to_sv2_tx, mut sv1_to_sv2_rx) = mpsc::channel::<Vec<u8>>(CHANNEL_CAPACITY);
+    let (sv2_to_sv1_tx, mut sv2_to_sv1_rx) = mpsc::channel::<String>(CHANNEL_CAPACITY);
 
     // Split streams
     let (sv1_read, mut sv1_write) = sv1_stream.into_split();

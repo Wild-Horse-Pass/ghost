@@ -24,6 +24,7 @@
 
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use ghost_gsp_proto::{SessionToken, WalletId};
 
@@ -52,6 +53,12 @@ struct Claims {
 
     /// M-14: Audience
     aud: String,
+
+    /// M-13 FIX: Client IP address for token binding
+    /// Tokens are bound to the IP that created them to prevent session hijacking.
+    /// If IP changes, a new token must be obtained.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_ip: Option<String>,
 }
 
 /// M-2: Duration during which the previous key remains valid (graceful rotation window)
@@ -112,7 +119,25 @@ impl JwtManager {
     }
 
     /// Create a new session token
+    ///
+    /// # M-13 Security Fix
+    /// Accepts an optional client IP to bind the token to. When provided, the
+    /// token can only be validated from the same IP address, preventing session
+    /// hijacking through token theft.
     pub fn create_token(&self, wallet_id: &WalletId) -> GspResult<SessionToken> {
+        self.create_token_with_ip(wallet_id, None)
+    }
+
+    /// M-13 FIX: Create a new session token bound to a specific client IP
+    ///
+    /// When client_ip is provided, the token will only validate if the request
+    /// comes from the same IP address. This prevents token theft and session
+    /// hijacking attacks.
+    pub fn create_token_with_ip(
+        &self,
+        wallet_id: &WalletId,
+        client_ip: Option<String>,
+    ) -> GspResult<SessionToken> {
         let now = chrono::Utc::now().timestamp();
         let exp = now + self.expiry_secs as i64;
 
@@ -122,6 +147,7 @@ impl JwtManager {
             exp,
             iss: JWT_ISSUER.to_string(),
             aud: JWT_AUDIENCE.to_string(),
+            client_ip,
         };
 
         let token = encode(&Header::default(), &claims, &self.encoding_key)?;
@@ -139,6 +165,28 @@ impl JwtManager {
     /// M-14: Validates issuer and audience claims to prevent token misuse
     /// M-2: During key rotation, accepts tokens signed with either current or previous key
     pub fn validate_token(&self, token: &str) -> GspResult<WalletId> {
+        self.validate_token_with_ip(token, None)
+    }
+
+    /// M-13 FIX: Validate a token with IP binding check
+    ///
+    /// If the token has a bound IP and current_ip is provided, they must match.
+    /// This prevents session hijacking through token theft - even if an attacker
+    /// steals a token, they cannot use it from a different IP address.
+    ///
+    /// # Arguments
+    /// * `token` - The JWT to validate
+    /// * `current_ip` - The IP address of the current request (if available)
+    ///
+    /// # Security
+    /// - If token has client_ip and current_ip is provided, they must match
+    /// - If token has client_ip but current_ip is None, validation fails (fail closed)
+    /// - If token has no client_ip, IP check is skipped (backwards compatible)
+    pub fn validate_token_with_ip(
+        &self,
+        token: &str,
+        current_ip: Option<&str>,
+    ) -> GspResult<WalletId> {
         let mut validation = Validation::default();
         // M-14: Require correct issuer
         validation.set_issuer(&[JWT_ISSUER]);
@@ -147,12 +195,18 @@ impl JwtManager {
 
         // Try current key first
         match decode::<Claims>(token, &self.decoding_key, &validation) {
-            Ok(token_data) => Ok(WalletId::from(token_data.claims.sub)),
+            Ok(token_data) => {
+                // M-13: Check IP binding if present
+                self.verify_ip_binding(&token_data.claims, current_ip)?;
+                Ok(WalletId::from(token_data.claims.sub))
+            }
             Err(e) => {
                 // M-2: If current key fails and we have a previous key in rotation window, try it
                 if self.is_previous_key_valid() {
                     if let Some(ref prev_key) = self.previous_decoding_key {
                         if let Ok(token_data) = decode::<Claims>(token, prev_key, &validation) {
+                            // M-13: Check IP binding if present
+                            self.verify_ip_binding(&token_data.claims, current_ip)?;
                             return Ok(WalletId::from(token_data.claims.sub));
                         }
                     }
@@ -170,6 +224,43 @@ impl JwtManager {
                     _ => GspError::InvalidToken(e.to_string()),
                 })
             }
+        }
+    }
+
+    /// M-13 FIX: Verify IP binding in token claims
+    ///
+    /// If the token has a bound client_ip, verify it matches the current request IP.
+    /// Fail closed: if token has IP but we can't verify, reject the token.
+    fn verify_ip_binding(&self, claims: &Claims, current_ip: Option<&str>) -> GspResult<()> {
+        match (&claims.client_ip, current_ip) {
+            // Token has IP binding and we have current IP - must match
+            (Some(bound_ip), Some(request_ip)) => {
+                if bound_ip != request_ip {
+                    warn!(
+                        bound_ip = %bound_ip,
+                        request_ip = %request_ip,
+                        wallet_id = %claims.sub,
+                        "M-13: Token IP binding mismatch - possible session hijacking attempt"
+                    );
+                    return Err(GspError::InvalidToken(
+                        "Token IP binding mismatch - re-authentication required".to_string(),
+                    ));
+                }
+                Ok(())
+            }
+            // Token has IP binding but we don't have current IP - fail closed for security
+            (Some(bound_ip), None) => {
+                warn!(
+                    bound_ip = %bound_ip,
+                    wallet_id = %claims.sub,
+                    "M-13: Token has IP binding but current IP not available - rejecting"
+                );
+                Err(GspError::InvalidToken(
+                    "Cannot verify IP binding - re-authentication required".to_string(),
+                ))
+            }
+            // Token has no IP binding - allow (backwards compatible with old tokens)
+            (None, _) => Ok(()),
         }
     }
 }

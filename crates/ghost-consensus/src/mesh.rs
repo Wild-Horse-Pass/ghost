@@ -151,7 +151,13 @@ impl Default for MeshConfig {
             noise_enabled: true,
             noise_port: DEFAULT_NOISE_PORT,
             noise_keypair_path: None, // Will generate ephemeral keypair
-            noise_required: false,    // Allow fallback during migration
+            // C-3 SECURITY: Require Noise encryption for mainnet operation
+            // Plaintext P2P communication is unacceptable for production as it allows:
+            // - Message interception and modification by network attackers
+            // - Impersonation of nodes without cryptographic proof
+            // - Snooping on consensus votes, share submissions, and payouts
+            // Fallback mode should ONLY be used during development/testing.
+            noise_required: true
         }
     }
 }
@@ -318,7 +324,14 @@ const MAX_SEQUENCE_JUMP: u64 = 1_000_000;
 /// A legitimate wrap-around should happen immediately - not hours after the last message.
 const MAX_WRAP_AROUND_GAP_SECS: u64 = 3600;
 
-/// M-2/H-P2P-5: Sequence state tracking with wrap-around protection
+/// H-7 SECURITY: Maximum cumulative sequence distance allowed before wrap-around
+/// An attacker jumping by MAX_SEQUENCE_JUMP repeatedly could reach wrap-around.
+/// This tracks total distance traveled and rejects if it exceeds this threshold
+/// without having sent MIN_MESSAGES_BEFORE_WRAP messages.
+/// Set to 10x MAX_SEQUENCE_JUMP to allow some legitimate variance while blocking attacks.
+const MAX_CUMULATIVE_DISTANCE_BEFORE_WRAP: u64 = MAX_SEQUENCE_JUMP * 10;
+
+/// M-2/H-P2P-5/H-7: Sequence state tracking with wrap-around protection
 /// Handles the case where sequence numbers wrap from MAX back to 1,
 /// while preventing attackers from trivially triggering wrap-around.
 #[derive(Debug, Clone, Default)]
@@ -331,6 +344,10 @@ struct SequenceState {
     message_count: u64,
     /// M-3: Timestamp of last message (Unix seconds) for timing-based wrap-around validation
     last_message_time: u64,
+    /// H-7 SECURITY: Cumulative sequence distance traveled
+    /// Tracks total sequence jumps to prevent attackers from repeatedly jumping
+    /// by exactly MAX_SEQUENCE_JUMP to reach wrap-around without enough messages.
+    cumulative_distance: u64,
 }
 
 /// Bounded LRU-like cache for seen message deduplication (P2P-L1)
@@ -458,6 +475,27 @@ impl SeenMessageCache {
                         );
                         return false;
                     }
+
+                    // H-7 SECURITY: Check cumulative distance to prevent repeated MAX_SEQUENCE_JUMP attacks
+                    // An attacker could repeatedly jump by exactly MAX_SEQUENCE_JUMP to slowly reach
+                    // wrap-around territory without triggering the per-message jump check.
+                    // The cumulative check ensures we've sent enough messages to justify the total distance.
+                    let projected_cumulative = state.cumulative_distance.saturating_add(jump);
+                    if projected_cumulative > MAX_CUMULATIVE_DISTANCE_BEFORE_WRAP
+                        && state.message_count < MIN_MESSAGES_BEFORE_WRAP
+                    {
+                        warn!(
+                            sender = %hex::encode(&sender[..8]),
+                            highest_seq = state.highest_seq,
+                            new_seq = sequence,
+                            cumulative_distance = projected_cumulative,
+                            message_count = state.message_count,
+                            max_cumulative = MAX_CUMULATIVE_DISTANCE_BEFORE_WRAP,
+                            min_messages = MIN_MESSAGES_BEFORE_WRAP,
+                            "H-7: Rejecting message - cumulative sequence distance too high for message count"
+                        );
+                        return false;
+                    }
                 }
 
                 // Normal case: sequence must be strictly greater
@@ -509,6 +547,8 @@ impl SeenMessageCache {
                     // Note: is_sequence_valid already verified this is legitimate (enough messages + recent)
                     state.epoch = state.epoch.saturating_add(1);
                     state.highest_seq = sequence; // Reset to new sequence after wrap
+                    // H-7: Reset cumulative distance on wrap-around
+                    state.cumulative_distance = 0;
                     info!(
                         sender = %hex::encode(&sender[..8]),
                         new_seq = sequence,
@@ -517,6 +557,11 @@ impl SeenMessageCache {
                         "H-P2P-5/M-3: Legitimate sequence wrap-around detected"
                     );
                 } else {
+                    // H-7: Track cumulative distance for sequence jump attack prevention
+                    if sequence > state.highest_seq {
+                        let jump = sequence - state.highest_seq;
+                        state.cumulative_distance = state.cumulative_distance.saturating_add(jump);
+                    }
                     // Normal case: update to max of current and new
                     state.highest_seq = state.highest_seq.max(sequence);
                 }
@@ -526,6 +571,7 @@ impl SeenMessageCache {
                 epoch: 0,
                 message_count: 1,
                 last_message_time: now_secs,
+                cumulative_distance: sequence, // H-7: Initial sequence is first distance
             });
     }
 

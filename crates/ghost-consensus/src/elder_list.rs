@@ -104,18 +104,41 @@ impl ElderEntry {
     }
 }
 
-/// L-6: Maximum allowed timestamp drift for elder approvals (15 seconds in milliseconds)
+/// L-6/M-7: Maximum allowed timestamp drift for elder approvals (15 seconds in milliseconds)
 ///
 /// This prevents replay attacks with old approvals while allowing for reasonable
 /// clock skew. Reduced from 30 seconds to 15 seconds to minimize the replay window.
+///
+/// M-7 DESIGN NOTE: 15-second window is appropriate for distributed systems
+///
+/// This window balances security against operational requirements:
+///
+/// **Why not shorter (e.g., 5 seconds)?**
+/// - Global networks have significant propagation delays
+/// - NTP sync isn't always perfect (mobile nodes, firewalled nodes)
+/// - Shorter windows cause false rejections, reducing liveness
+/// - Elder list transitions are rare (days/weeks apart)
+///
+/// **Why not longer (e.g., 60 seconds)?**
+/// - Longer windows increase replay attack surface
+/// - 15 seconds is already 10x typical network delay
+/// - Approval messages are one-time (not continuous traffic)
+///
+/// **Defense in Depth:**
+/// - Approvals are tied to specific epoch+merkle_root (can't replay for different list)
+/// - Signature includes timestamp (can't reuse old signature with new timestamp)
+/// - Duplicate approvals from same approver are ignored
+/// - Elder list transitions require BFT quorum (>67%)
+///
+/// A successful replay attack would require:
+/// 1. Capturing a valid approval within 15 seconds of signing
+/// 2. Replaying before the epoch transitions
+/// 3. The replay providing additional approval weight (unlikely if honest majority)
 ///
 /// 15 seconds is sufficient for:
 /// - Normal clock skew between nodes (typically < 1 second with NTP)
 /// - Network propagation delays (typically < 5 seconds)
 /// - Processing time on recipient (typically < 1 second)
-///
-/// The timestamp is included in the signed message, providing defense-in-depth
-/// against replay attacks.
 pub const MAX_APPROVAL_TIMESTAMP_DRIFT_MS: u64 = 15 * 1000;
 
 /// An approval signature from an elder
@@ -861,23 +884,24 @@ impl ElderListManager {
     }
 
     /// Transition to a new canonical list (after sufficient approvals)
+    ///
+    /// C-4 SECURITY: Uses verify_canonical_with_min_epoch() to prevent epoch rollback attacks.
+    /// An attacker could attempt to replay an old, legitimately signed elder list from a
+    /// previous epoch to override the current elder set. This check ensures the new list's
+    /// epoch is at least current.epoch (which combined with the sequential check ensures
+    /// it must be exactly current.epoch + 1).
     pub fn transition_to(&self, new_list: CanonicalElderList) -> GhostResult<()> {
         let current = self.current();
-
-        // Verify the new list
-        if !new_list.verify_merkle_root() {
-            return Err(GhostError::Config("Invalid merkle root".to_string()));
-        }
-
-        // Verify sufficient approvals
         let prev_elders = current.get_eligible_voters();
-        if !new_list.has_sufficient_approvals(&prev_elders) {
-            return Err(GhostError::Config(
-                "Insufficient approvals for transition".to_string(),
-            ));
-        }
 
-        // Verify epoch is sequential
+        // C-4 SECURITY: Full canonical verification with epoch rollback protection
+        // This verifies:
+        // 1. Merkle root integrity (tamper detection)
+        // 2. Sufficient BFT approvals from previous elders (>67%)
+        // 3. Epoch >= current.epoch (rollback prevention)
+        new_list.verify_canonical_with_min_epoch(&prev_elders, current.epoch)?;
+
+        // Verify epoch is sequential (must be exactly current + 1, not just >= current)
         if new_list.epoch != current.epoch + 1 {
             return Err(GhostError::Config(format!(
                 "Epoch must be sequential: expected {}, got {}",

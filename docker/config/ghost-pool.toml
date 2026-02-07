@@ -9,6 +9,11 @@ display_name = "Ghost Pool (Docker)"
 # M-17 FIX: RPC credentials must be set via environment variables
 # Set BITCOIN_RPC_USER and BITCOIN_RPC_PASSWORD in your environment or docker-compose.yml
 # Example: docker run -e BITCOIN_RPC_USER=myuser -e BITCOIN_RPC_PASSWORD=mysecurepassword ...
+#
+# H-14 SECURITY WARNING: Environment variables may be logged or visible in /proc.
+# For production, consider using Docker secrets or file-based credentials:
+#   rpc_password_file = "/run/secrets/btc_rpc_password"
+# See: https://docs.docker.com/compose/use-secrets/
 rpc_host = "bitcoind"
 rpc_port = 8332
 rpc_user = "${BITCOIN_RPC_USER}"

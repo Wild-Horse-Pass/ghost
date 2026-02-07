@@ -1306,6 +1306,11 @@ async fn handle_confirm_ghost_lock_funding(
 /// Check instant payment capability for a lock
 ///
 /// Evaluates whether a lock can accept instant (optimistic) payments.
+///
+/// # H-4 Security Fix
+/// Before querying capability info, we verify that the authenticated wallet
+/// actually owns the lock. This prevents information disclosure about other
+/// users' locks.
 async fn handle_check_instant_capability(
     state: &Arc<GspState>,
     conn_state: &ConnectionState,
@@ -1323,6 +1328,33 @@ async fn handle_check_instant_capability(
         amount_sats = amount_sats,
         "Checking instant capability"
     );
+
+    // H-4 FIX: Verify the authenticated wallet owns this lock before returning capability info
+    match state
+        .pay_node
+        .is_lock_owner(&wallet_id.to_string(), lock_id)
+        .await
+    {
+        Ok(true) => {} // Wallet owns the lock, proceed
+        Ok(false) => {
+            warn!(
+                wallet_id = %wallet_id,
+                lock_id = %lock_id,
+                "H-4: Unauthorized attempt to check instant capability for lock owned by another wallet"
+            );
+            return Err(GspError::Unauthorized);
+        }
+        Err(e) => {
+            // If we can't verify ownership, fail closed for security
+            warn!(
+                wallet_id = %wallet_id,
+                lock_id = %lock_id,
+                error = %e,
+                "H-4: Failed to verify lock ownership, denying access"
+            );
+            return Err(GspError::Unauthorized);
+        }
+    }
 
     // Query lock state from pay node
     let lock_snapshot = match state.pay_node.get_lock_snapshot(lock_id).await {
@@ -1363,6 +1395,11 @@ async fn handle_check_instant_capability(
 }
 
 /// Subscribe to real-time lock state updates
+///
+/// # H-3 Security Fix
+/// Before allowing subscription, we verify that the authenticated wallet
+/// actually owns the lock. This prevents users from subscribing to state
+/// updates for locks they don't own.
 async fn handle_subscribe_lock_state(
     state: &Arc<GspState>,
     conn_state: &mut ConnectionState,
@@ -1378,6 +1415,33 @@ async fn handle_subscribe_lock_state(
         lock_id = %lock_id,
         "Subscribing to lock state updates"
     );
+
+    // H-3 FIX: Verify the authenticated wallet owns this lock before allowing subscription
+    match state
+        .pay_node
+        .is_lock_owner(&wallet_id.to_string(), lock_id)
+        .await
+    {
+        Ok(true) => {} // Wallet owns the lock, proceed
+        Ok(false) => {
+            warn!(
+                wallet_id = %wallet_id,
+                lock_id = %lock_id,
+                "H-3: Unauthorized attempt to subscribe to lock state for lock owned by another wallet"
+            );
+            return Err(GspError::Unauthorized);
+        }
+        Err(e) => {
+            // If we can't verify ownership, fail closed for security
+            warn!(
+                wallet_id = %wallet_id,
+                lock_id = %lock_id,
+                error = %e,
+                "H-3: Failed to verify lock ownership, denying subscription"
+            );
+            return Err(GspError::Unauthorized);
+        }
+    }
 
     // Register subscription
     conn_state

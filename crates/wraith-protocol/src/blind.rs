@@ -49,6 +49,7 @@ use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use zeroize::Zeroize;
 
 use crate::error::WraithError;
 use std::time::Instant;
@@ -325,6 +326,25 @@ pub struct SigningNonce {
     pub bound_ghost_id: Option<String>,
     /// Timestamp when nonce was created (for expiry)
     created_at: Instant,
+}
+
+/// M-10 FIX: Zeroize secret nonce on drop to prevent memory leakage
+///
+/// SecretKey doesn't implement Zeroize directly, but we can overwrite
+/// its internal representation by calling non_secure_erase() and then
+/// replacing with a dummy key to ensure the original bytes are cleared.
+impl Drop for SigningNonce {
+    fn drop(&mut self) {
+        // First, erase using secp256k1's built-in method
+        self.secret_nonce.non_secure_erase();
+        // Then overwrite with a deterministic dummy value
+        // This provides defense-in-depth against compiler optimizations
+        let mut dummy = [1u8; 32];
+        if let Ok(dummy_key) = SecretKey::from_slice(&dummy) {
+            self.secret_nonce = dummy_key;
+        }
+        dummy.zeroize();
+    }
 }
 
 /// Public nonce sent to participants
@@ -1147,6 +1167,36 @@ impl BlindingContext {
     /// Get the blinded nonce R' (for debugging)
     pub fn blinded_nonce(&self) -> &PublicKey {
         &self.blinded_nonce
+    }
+}
+
+/// M-9 FIX: Zeroize blinding factors (alpha, beta) on drop to prevent memory leakage
+///
+/// These secret scalars could allow an attacker to link participants to their
+/// output addresses if recovered from memory. We use defense-in-depth:
+/// 1. Call secp256k1's non_secure_erase()
+/// 2. Overwrite with deterministic dummy values
+/// 3. Zeroize the temporary buffer
+impl Drop for BlindingContext {
+    fn drop(&mut self) {
+        // Erase alpha using secp256k1's built-in method
+        self.alpha.non_secure_erase();
+        // Erase beta using secp256k1's built-in method
+        self.beta.non_secure_erase();
+
+        // Overwrite with deterministic dummy values for defense-in-depth
+        let mut dummy = [1u8; 32];
+        if let Ok(dummy_key) = SecretKey::from_slice(&dummy) {
+            self.alpha = dummy_key;
+        }
+        dummy[0] = 2; // Use different value for beta
+        if let Ok(dummy_key) = SecretKey::from_slice(&dummy) {
+            self.beta = dummy_key;
+        }
+        dummy.zeroize();
+
+        // Also clear the message which may contain sensitive output address info
+        self.message.zeroize();
     }
 }
 
