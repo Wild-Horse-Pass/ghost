@@ -390,18 +390,22 @@ mod tests {
     #[test]
     fn test_handler_with_peers_constructor() {
         // Create an in-memory database for testing
-        let db = Arc::new(
-            Database::in_memory()
-                .expect("Failed to create in-memory database"),
-        );
+        let db = Arc::new(Database::in_memory().expect("Failed to create in-memory database"));
 
         // Create handler without peers (legacy mode)
         let handler_no_peers = VerificationResultHandler::new(Arc::clone(&db));
-        assert!(handler_no_peers.peers.is_none(), "Handler without peers should have None");
+        assert!(
+            handler_no_peers.peers.is_none(),
+            "Handler without peers should have None"
+        );
 
         // Create handler with peers (HIGH-VER-4 mode)
         let peer_manager = Arc::new(PeerManager::new([0u8; 32], 100));
-        let handler_with_peers = VerificationResultHandler::with_peers(Arc::clone(&db), peer_manager);
-        assert!(handler_with_peers.peers.is_some(), "Handler with peers should have Some");
+        let handler_with_peers =
+            VerificationResultHandler::with_peers(Arc::clone(&db), peer_manager);
+        assert!(
+            handler_with_peers.peers.is_some(),
+            "Handler with peers should have Some"
+        );
     }
 }

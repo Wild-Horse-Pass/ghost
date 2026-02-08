@@ -192,31 +192,27 @@ impl PayNodeProxy {
 
         // CRIT-AUTH-2: Validate secret strength
         if internal_secret.len() < 32 {
-            return Err(GspError::Config(
-                format!(
-                    "CRIT-AUTH-2: GHOST_PAY_INTERNAL_SECRET is too short ({} bytes). \
+            return Err(GspError::Config(format!(
+                "CRIT-AUTH-2: GHOST_PAY_INTERNAL_SECRET is too short ({} bytes). \
                      Minimum 32 bytes required for cryptographic security. \
                      Generate a strong secret: openssl rand -base64 32",
-                    internal_secret.len()
-                )
-            ));
+                internal_secret.len()
+            )));
         }
 
         // CRIT-AUTH-2: Check for weak/predictable secrets
         let weak_secrets = [
-            "test", "password", "secret", "changeme", "default",
-            "admin", "root", "12345", "abc", "ghost"
+            "test", "password", "secret", "changeme", "default", "admin", "root", "12345", "abc",
+            "ghost",
         ];
         let secret_lower = internal_secret.to_lowercase();
         for weak in &weak_secrets {
             if secret_lower.contains(weak) {
-                return Err(GspError::Config(
-                    format!(
-                        "CRIT-AUTH-2: GHOST_PAY_INTERNAL_SECRET contains weak pattern '{}'. \
+                return Err(GspError::Config(format!(
+                    "CRIT-AUTH-2: GHOST_PAY_INTERNAL_SECRET contains weak pattern '{}'. \
                          Use cryptographically random secret: openssl rand -base64 32",
-                        weak
-                    )
-                ));
+                    weak
+                )));
             }
         }
 
@@ -1244,7 +1240,11 @@ impl PayNodeProxy {
     /// payments they created, preventing payment hijacking.
     ///
     /// HIGH-AUTHZ-1: Includes requesting_wallet_id for server-side access control.
-    pub async fn get_payment(&self, payment_id: &str, requesting_wallet_id: &str) -> GspResult<PaymentInfo> {
+    pub async fn get_payment(
+        &self,
+        payment_id: &str,
+        requesting_wallet_id: &str,
+    ) -> GspResult<PaymentInfo> {
         let url = format!(
             "{}/api/v1/payments/{}?wallet_id={}",
             self.base_url, payment_id, requesting_wallet_id

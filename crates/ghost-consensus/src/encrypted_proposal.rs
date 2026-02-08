@@ -681,6 +681,7 @@ fn shamir_combine(shares: &[(u8, [u8; 32])], k: usize) -> Result<[u8; 32], Propo
 }
 
 #[cfg(test)]
+#[allow(unused_variables)]
 mod tests {
     use super::*;
 

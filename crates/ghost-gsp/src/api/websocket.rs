@@ -485,7 +485,8 @@ fn sanitize_external_error(raw_error: &str, context: &str) -> String {
         return "Resource already exists.".to_string();
     }
 
-    if lower.contains("permission") || lower.contains("unauthorized") || lower.contains("forbidden") {
+    if lower.contains("permission") || lower.contains("unauthorized") || lower.contains("forbidden")
+    {
         return "Access denied.".to_string();
     }
 
@@ -699,7 +700,10 @@ async fn handle_authenticate(
     token: &str,
 ) -> Result<Option<ServerMessage>, GspError> {
     // M-26: Pass client IP to token validation for IP binding check
-    match state.jwt.validate_token_with_ip(token, Some(&conn_state.client_ip)) {
+    match state
+        .jwt
+        .validate_token_with_ip(token, Some(&conn_state.client_ip))
+    {
         Ok(wallet_id) => {
             info!(
                 wallet_id = %wallet_id,
@@ -767,7 +771,9 @@ async fn handle_get_utxos(
         .await?;
 
     // MED-OVERFLOW-1 FIX: Use fold with saturating_add instead of sum
-    let total_sats: u64 = utxos.iter().fold(0u64, |acc, u| acc.saturating_add(u.amount_sats));
+    let total_sats: u64 = utxos
+        .iter()
+        .fold(0u64, |acc, u| acc.saturating_add(u.amount_sats));
 
     Ok(Some(ServerMessage::Utxos { utxos, total_sats }))
 }
@@ -789,7 +795,9 @@ async fn handle_get_ghost_locks(
         .await?;
 
     // MED-OVERFLOW-1 FIX: Use fold with saturating_add instead of sum
-    let total_locked_sats: u64 = locks.iter().fold(0u64, |acc, l| acc.saturating_add(l.balance_sats));
+    let total_locked_sats: u64 = locks
+        .iter()
+        .fold(0u64, |acc, l| acc.saturating_add(l.balance_sats));
 
     Ok(Some(ServerMessage::GhostLocks {
         locks,
@@ -1114,7 +1122,10 @@ async fn handle_submit_signed_payment(
     // This prevents payment hijacking attacks where an attacker could submit
     // signatures for payments created by other wallets.
     // HIGH-AUTHZ-1: Pass wallet_id to enable server-side access control
-    let payment = state.pay_node.get_payment(payment_id, &wallet_id.to_string()).await?;
+    let payment = state
+        .pay_node
+        .get_payment(payment_id, &wallet_id.to_string())
+        .await?;
     if payment.wallet_id != wallet_id.to_string() {
         warn!(
             wallet_id = %wallet_id,
@@ -1212,7 +1223,10 @@ async fn handle_get_payment_status(
     // HIGH-INFO-1 FIX: Verify wallet owns this payment before returning any details
     // This prevents information leakage where confirmations could reveal transaction status
     // to unauthorized parties who guess payment IDs.
-    let payment = state.pay_node.get_payment(payment_id, &wallet_id.to_string()).await?;
+    let payment = state
+        .pay_node
+        .get_payment(payment_id, &wallet_id.to_string())
+        .await?;
     if payment.wallet_id != wallet_id.to_string() {
         warn!(
             wallet_id = %wallet_id,
@@ -1244,9 +1258,7 @@ async fn handle_get_payment_status(
             // PAY-3 FIX: Extract version for optimistic locking and return to client.
             // Clients must include this version when making state changes
             // to detect concurrent modifications.
-            let version = result
-                .get("version")
-                .and_then(|v| v.as_u64());
+            let version = result.get("version").and_then(|v| v.as_u64());
 
             let status = match status_str {
                 "preparing" => PaymentStatus::Preparing,
@@ -1311,7 +1323,10 @@ async fn handle_cancel_payment(
 
     // HIGH-AUTHZ-2 FIX: Verify wallet owns this payment before allowing cancellation
     // This prevents unauthorized cancellation of other users' payments.
-    let payment = state.pay_node.get_payment(payment_id, &wallet_id.to_string()).await?;
+    let payment = state
+        .pay_node
+        .get_payment(payment_id, &wallet_id.to_string())
+        .await?;
     if payment.wallet_id != wallet_id.to_string() {
         warn!(
             wallet_id = %wallet_id,
@@ -1614,7 +1629,10 @@ async fn handle_subscribe_lock_state(
         );
         return Ok(Some(ServerMessage::Error {
             code: "SUBSCRIPTION_LIMIT_EXCEEDED".to_string(),
-            message: format!("Maximum lock subscriptions ({}) per connection reached", MAX_LOCK_SUBSCRIPTIONS),
+            message: format!(
+                "Maximum lock subscriptions ({}) per connection reached",
+                MAX_LOCK_SUBSCRIPTIONS
+            ),
             request_id: None,
         }));
     }
@@ -1622,7 +1640,9 @@ async fn handle_subscribe_lock_state(
     // M-13 FIX: Also check global per-wallet limit (across all connections)
     // This prevents a wallet from bypassing limits by opening multiple connections
     if !state.subscriptions.can_subscribe_lock(wallet_id) {
-        let current_count = state.subscriptions.wallet_lock_subscription_count(wallet_id);
+        let current_count = state
+            .subscriptions
+            .wallet_lock_subscription_count(wallet_id);
         warn!(
             wallet_id = %wallet_id,
             lock_id = %lock_id,
@@ -2140,7 +2160,11 @@ async fn handle_accept_instant_payment(
 /// where an attacker could predict future payment IDs and exploit timing windows.
 ///
 /// HIGH-CRYPTO-1 FIX: Returns Result instead of panicking on getrandom failure.
-fn generate_instant_payment_id(lock_id: &str, amount: u64, height: u64) -> Result<[u8; 32], GspError> {
+fn generate_instant_payment_id(
+    lock_id: &str,
+    amount: u64,
+    height: u64,
+) -> Result<[u8; 32], GspError> {
     use sha2::{Digest, Sha256};
 
     // M-10/HIGH-CRYPTO-1 FIX: Use cryptographically secure random bytes

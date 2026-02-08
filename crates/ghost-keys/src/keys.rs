@@ -400,7 +400,7 @@ impl GhostKeys {
     {
         let scan = Zeroizing::new(self.scan_secret.secret_bytes());
         let spend = Zeroizing::new(self.spend_secret.secret_bytes());
-        f(&*scan, &*spend)
+        f(&scan, &spend)
     }
 
     /// Export as a public-facing structure
@@ -708,7 +708,7 @@ mod tests {
         let (scan, spend) = keys1.export_secrets();
 
         // M-15: Dereference Zeroizing wrappers to get the byte arrays
-        let keys2 = GhostKeys::from_bytes(&*scan, &*spend).unwrap();
+        let keys2 = GhostKeys::from_bytes(&scan, &spend).unwrap();
         assert_eq!(keys1.scan_pubkey(), keys2.scan_pubkey());
         assert_eq!(keys1.spend_pubkey(), keys2.spend_pubkey());
     }

@@ -1273,7 +1273,8 @@ mod tests {
 
         // Run migrations twice
         run_migrations(&conn).expect("MEDIUM-STOR-2: Failed to run migrations first time");
-        run_migrations(&conn).expect("MEDIUM-STOR-2: Failed to run migrations second time (idempotency)");
+        run_migrations(&conn)
+            .expect("MEDIUM-STOR-2: Failed to run migrations second time (idempotency)");
 
         let version = get_schema_version(&conn)
             .expect("MEDIUM-STOR-2: Failed to get schema version after idempotent migrations");

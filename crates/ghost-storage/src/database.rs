@@ -1000,7 +1000,9 @@ mod tests {
     #[test]
     fn test_database_stats() {
         let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
-        let stats = db.stats().expect("LOW-STOR-8: Failed to get database stats");
+        let stats = db
+            .stats()
+            .expect("LOW-STOR-8: Failed to get database stats");
         assert!(stats.page_count > 0);
     }
 
@@ -1018,10 +1020,7 @@ mod tests {
             Ok(42)
         });
 
-        assert_eq!(
-            result.expect("LOW-STOR-8: Transaction should succeed"),
-            42
-        );
+        assert_eq!(result.expect("LOW-STOR-8: Transaction should succeed"), 42);
     }
 
     #[test]

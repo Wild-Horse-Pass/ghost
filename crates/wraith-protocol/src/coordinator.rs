@@ -1117,7 +1117,8 @@ impl WraithCoordinator {
         //
         // We compute all hashes first, then atomically check-and-mark ALL of them.
         // If any token is already used, we abort before marking any new ones.
-        let token_hashes: Vec<[u8; 32]> = tokens.iter().map(|t| self.compute_token_hash(t)).collect();
+        let token_hashes: Vec<[u8; 32]> =
+            tokens.iter().map(|t| self.compute_token_hash(t)).collect();
 
         // First pass: check if any token is already used (read-only)
         for (i, hash) in token_hashes.iter().enumerate() {

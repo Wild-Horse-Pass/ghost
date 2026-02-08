@@ -306,7 +306,9 @@ fn derive_metadata_nonce(
     let mut nonce = [0u8; 12];
     // CRIT-PANIC-4: Return Result instead of expect
     hk.expand(HKDF_NONCE_INFO, &mut nonce).map_err(|_| {
-        GhostKeyError::CryptoError("HKDF nonce derivation failed: invalid output length".to_string())
+        GhostKeyError::CryptoError(
+            "HKDF nonce derivation failed: invalid output length".to_string(),
+        )
     })?;
     Ok(nonce)
 }

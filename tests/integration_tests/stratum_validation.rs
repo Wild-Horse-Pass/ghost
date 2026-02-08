@@ -1,3 +1,25 @@
+// Allow common test-code patterns that clippy flags
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::manual_div_ceil)]
+#![allow(clippy::let_and_return)]
+#![allow(clippy::iter_nth_zero)]
+#![allow(clippy::manual_is_multiple_of)]
+#![allow(clippy::manual_repeat_n)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::manual_range_contains)]
+#![allow(clippy::collapsible_if)]
+#![allow(clippy::unnecessary_unwrap)]
+#![allow(clippy::manual_memcpy)]
+#![allow(clippy::upper_case_acronyms)]
+#![allow(clippy::needless_character_iteration)]
+#![allow(clippy::assertions_on_constants)]
+#![allow(clippy::bool_assert_comparison)]
+
 //! Category 4: Stratum Protocol Tests (75 tests)
 //!
 //! Comprehensive tests for Stratum protocol validation including:
@@ -45,7 +67,7 @@ fn validate_username(username: &str) -> Result<(), ValidationError> {
     if username.chars().any(|c| c.is_control()) {
         return Err(ValidationError::ControlChars("username".into()));
     }
-    if !username.chars().all(|c| c.is_ascii()) {
+    if !username.is_ascii() {
         return Err(ValidationError::NonAscii("username".into()));
     }
     // Check for path traversal first (forward/backslash or ..)
@@ -100,7 +122,7 @@ fn validate_user_agent(agent: &str) -> Result<(), ValidationError> {
     if agent.chars().any(|c| c.is_control()) {
         return Err(ValidationError::ControlChars("user_agent".into()));
     }
-    if !agent.chars().all(|c| c.is_ascii()) {
+    if !agent.is_ascii() {
         return Err(ValidationError::NonAscii("user_agent".into()));
     }
     Ok(())
@@ -202,11 +224,7 @@ fn validate_share_params(
 }
 
 fn validate_ntime_adjustment(share_ntime: u32, job_ntime: u32) -> Result<(), ValidationError> {
-    let diff = if share_ntime > job_ntime {
-        share_ntime - job_ntime
-    } else {
-        job_ntime - share_ntime
-    };
+    let diff = share_ntime.abs_diff(job_ntime);
 
     if diff > MAX_NTIME_ADJUSTMENT {
         return Err(ValidationError::InvalidFormat(format!(

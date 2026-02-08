@@ -184,7 +184,10 @@ impl RoundShares {
         }
 
         // Update scaled storage (using checked_add for miner's entry too)
-        let miner_entry = self.miner_shares_scaled.entry(miner_id.to_string()).or_insert(0);
+        let miner_entry = self
+            .miner_shares_scaled
+            .entry(miner_id.to_string())
+            .or_insert(0);
         match miner_entry.checked_add(work_scaled) {
             Some(new_miner_work) => {
                 *miner_entry = new_miner_work;
@@ -448,6 +451,7 @@ impl DifficultyCalculator {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 

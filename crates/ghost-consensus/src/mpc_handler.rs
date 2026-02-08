@@ -396,7 +396,7 @@ impl MpcHandler {
 
                 // Check if we have BFT threshold
                 let elder_count = self.elder_manager.read().current().elder_count() as u32;
-                let threshold = (elder_count * MPC_BFT_THRESHOLD_PERCENT + 99) / 100;
+                let threshold = (elder_count * MPC_BFT_THRESHOLD_PERCENT).div_ceil(100);
 
                 debug!(
                     approvals = contribution.approval_count,

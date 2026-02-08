@@ -98,7 +98,8 @@ impl GhostLock {
         if combined.is_err() {
             // combine() returns error if the points are exact negations
             return Err(GhostLockError::InvalidKey(
-                "Lock and recovery keys are negations of each other - this breaks 2-of-2 security".to_string(),
+                "Lock and recovery keys are negations of each other - this breaks 2-of-2 security"
+                    .to_string(),
             ));
         }
 

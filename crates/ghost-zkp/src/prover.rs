@@ -32,6 +32,8 @@
 //! The `new_with_setup` constructor is provided for testing only.
 //! Production deployments MUST use `from_params` with MPC-generated parameters.
 
+// generate_random_parameters and prepare_verifying_key are used in cfg(not(feature = "zk-production"))
+#[allow(unused_imports)]
 use bellperson::{
     groth16::{
         create_random_proof, generate_random_parameters, prepare_verifying_key, Parameters,
@@ -44,6 +46,8 @@ use blstrs::{Bls12, Scalar as Fr};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
+// error! is used in cfg(not(test)) and cfg(not(feature = "zk-production")) blocks
+#[allow(unused_imports)]
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::circuit::block::BlockCircuit;
@@ -305,6 +309,7 @@ impl BlockProver {
     /// Generate simulated proof bytes from witness (test mode only)
     /// This is a placeholder - real implementation uses Groth16
     #[cfg(test)]
+    #[allow(dead_code)]
     fn generate_proof_bytes(&self, witness: &BlockWitnessV2, num_constraints: usize) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(b"ghost-zkp-proof-v2");

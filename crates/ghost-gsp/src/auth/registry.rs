@@ -486,8 +486,14 @@ mod tests {
     // L-11 FIX: Display name sanitization tests
     #[test]
     fn test_sanitize_display_name_basic() {
-        assert_eq!(sanitize_display_name(Some("Alice")), Some("Alice".to_string()));
-        assert_eq!(sanitize_display_name(Some("  Bob  ")), Some("Bob".to_string()));
+        assert_eq!(
+            sanitize_display_name(Some("Alice")),
+            Some("Alice".to_string())
+        );
+        assert_eq!(
+            sanitize_display_name(Some("  Bob  ")),
+            Some("Bob".to_string())
+        );
         assert_eq!(sanitize_display_name(None), None);
         assert_eq!(sanitize_display_name(Some("")), None);
         assert_eq!(sanitize_display_name(Some("   ")), None);
@@ -496,13 +502,28 @@ mod tests {
     #[test]
     fn test_sanitize_display_name_control_chars() {
         // Control characters should be removed
-        assert_eq!(sanitize_display_name(Some("Hello\x00World")), Some("HelloWorld".to_string()));
-        assert_eq!(sanitize_display_name(Some("Test\nName")), Some("TestName".to_string()));
-        assert_eq!(sanitize_display_name(Some("Tab\there")), Some("Tabhere".to_string()));
-        assert_eq!(sanitize_display_name(Some("\x1FBad\x7F")), Some("Bad".to_string()));
+        assert_eq!(
+            sanitize_display_name(Some("Hello\x00World")),
+            Some("HelloWorld".to_string())
+        );
+        assert_eq!(
+            sanitize_display_name(Some("Test\nName")),
+            Some("TestName".to_string())
+        );
+        assert_eq!(
+            sanitize_display_name(Some("Tab\there")),
+            Some("Tabhere".to_string())
+        );
+        assert_eq!(
+            sanitize_display_name(Some("\x1FBad\x7F")),
+            Some("Bad".to_string())
+        );
 
         // Space should be preserved
-        assert_eq!(sanitize_display_name(Some("Hello World")), Some("Hello World".to_string()));
+        assert_eq!(
+            sanitize_display_name(Some("Hello World")),
+            Some("Hello World".to_string())
+        );
     }
 
     #[test]
@@ -518,7 +539,10 @@ mod tests {
     #[test]
     fn test_sanitize_display_name_utf8() {
         // UTF-8 characters should be preserved
-        assert_eq!(sanitize_display_name(Some("Satoshi")), Some("Satoshi".to_string()));
+        assert_eq!(
+            sanitize_display_name(Some("Satoshi")),
+            Some("Satoshi".to_string())
+        );
 
         // Long UTF-8 should truncate at valid boundary
         let utf8_name = "a".to_string() + &"e".repeat(100);
@@ -554,7 +578,9 @@ mod tests {
         registry.maybe_cleanup_nonces();
 
         // Last cleanup timestamp should be initialized
-        let last_cleanup = registry.last_cleanup.load(std::sync::atomic::Ordering::Relaxed);
+        let last_cleanup = registry
+            .last_cleanup
+            .load(std::sync::atomic::Ordering::Relaxed);
         assert!(last_cleanup > 0, "M-11: last_cleanup should be initialized");
     }
 
@@ -572,7 +598,8 @@ mod tests {
             conn.execute(
                 "INSERT INTO used_nonces (nonce, wallet_id, used_at) VALUES (?, ?, ?)",
                 params!["old_nonce", wallet_id.as_str(), old_time],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         // Verify old nonce exists
@@ -583,6 +610,9 @@ mod tests {
 
         // Old nonce should be deleted
         assert!(deleted > 0, "M-11: cleanup should delete old nonces");
-        assert!(!registry.is_nonce_used("old_nonce").unwrap(), "M-11: old nonce should be gone after cleanup");
+        assert!(
+            !registry.is_nonce_used("old_nonce").unwrap(),
+            "M-11: old nonce should be gone after cleanup"
+        );
     }
 }

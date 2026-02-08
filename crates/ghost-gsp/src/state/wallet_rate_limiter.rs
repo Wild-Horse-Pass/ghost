@@ -125,9 +125,7 @@ impl WalletTokenBucket {
 
         // H-3 FIX: Integer arithmetic: millis_to_add = elapsed_ms * (refill_rate_millis / 1000)
         // Simplified: elapsed_millis * refill_rate_millis_per_sec / 1000
-        let millis_to_add = elapsed_millis
-            .saturating_mul(self.refill_rate_millis_per_sec)
-            / 1000;
+        let millis_to_add = elapsed_millis.saturating_mul(self.refill_rate_millis_per_sec) / 1000;
 
         if millis_to_add > 0 {
             self.milli_tokens = self

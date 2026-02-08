@@ -266,7 +266,10 @@ fn rand_nonce() -> Result<[u8; 16], GspProtoError> {
     let mut nonce = [0u8; 16];
     // getrandom uses the OS CSPRNG (/dev/urandom on Linux, CryptGenRandom on Windows)
     getrandom::getrandom(&mut nonce).map_err(|e| {
-        GspProtoError::Internal(format!("Failed to generate secure nonce: OS entropy source unavailable ({})", e))
+        GspProtoError::Internal(format!(
+            "Failed to generate secure nonce: OS entropy source unavailable ({})",
+            e
+        ))
     })?;
     Ok(nonce)
 }

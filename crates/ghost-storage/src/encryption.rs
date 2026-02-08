@@ -164,7 +164,10 @@ pub fn could_be_encrypted(value: &str) -> bool {
 }
 
 /// Deprecated alias for `could_be_encrypted`. Use `could_be_encrypted` instead.
-#[deprecated(since = "1.0.0", note = "Renamed to could_be_encrypted() to clarify heuristic nature")]
+#[deprecated(
+    since = "1.0.0",
+    note = "Renamed to could_be_encrypted() to clarify heuristic nature"
+)]
 pub fn is_likely_encrypted(value: &str) -> bool {
     could_be_encrypted(value)
 }
@@ -182,10 +185,7 @@ pub fn get_encryption_key_from_env() -> Option<[u8; 32]> {
         .ok()
         .map(Zeroizing::new);
 
-    let key_string = match key_string {
-        Some(k) => k,
-        None => return None,
-    };
+    let key_string = key_string?;
 
     // DB-2 FIX: Clear the environment variable immediately after reading.
     // This prevents the key from lingering in the process environment where
@@ -303,8 +303,8 @@ mod tests {
         let key = test_key();
         let plaintext = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
 
-        let encrypted = encrypt_sensitive(plaintext, &key)
-            .expect("MEDIUM-STOR-2: Failed to encrypt plaintext");
+        let encrypted =
+            encrypt_sensitive(plaintext, &key).expect("MEDIUM-STOR-2: Failed to encrypt plaintext");
         let decrypted = decrypt_sensitive(&encrypted, &key)
             .expect("MEDIUM-STOR-2: Failed to decrypt ciphertext");
 
@@ -316,8 +316,8 @@ mod tests {
         let key = test_key();
         let plaintext = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
 
-        let encrypted = encrypt_sensitive(plaintext, &key)
-            .expect("MEDIUM-STOR-2: Failed to encrypt plaintext");
+        let encrypted =
+            encrypt_sensitive(plaintext, &key).expect("MEDIUM-STOR-2: Failed to encrypt plaintext");
 
         assert_ne!(plaintext, encrypted);
         assert!(encrypted.len() > plaintext.len()); // Adds nonce + tag
@@ -341,8 +341,8 @@ mod tests {
     fn test_tampered_data_fails() {
         let key = test_key();
         let plaintext = "secret address";
-        let mut encrypted = encrypt_sensitive(plaintext, &key)
-            .expect("MEDIUM-STOR-2: Failed to encrypt plaintext");
+        let mut encrypted =
+            encrypt_sensitive(plaintext, &key).expect("MEDIUM-STOR-2: Failed to encrypt plaintext");
 
         // Tamper with the encrypted data
         let mut bytes = BASE64
@@ -358,8 +358,8 @@ mod tests {
     #[test]
     fn test_could_be_encrypted() {
         let key = test_key();
-        let encrypted = encrypt_sensitive("test", &key)
-            .expect("MEDIUM-STOR-2: Failed to encrypt test string");
+        let encrypted =
+            encrypt_sensitive("test", &key).expect("MEDIUM-STOR-2: Failed to encrypt test string");
 
         assert!(could_be_encrypted(&encrypted));
         assert!(!could_be_encrypted("bc1qtest")); // Plaintext address
@@ -375,8 +375,8 @@ mod tests {
     #[test]
     fn test_empty_string() {
         let key = test_key();
-        let encrypted = encrypt_sensitive("", &key)
-            .expect("MEDIUM-STOR-2: Failed to encrypt empty string");
+        let encrypted =
+            encrypt_sensitive("", &key).expect("MEDIUM-STOR-2: Failed to encrypt empty string");
         let decrypted = decrypt_sensitive(&encrypted, &key)
             .expect("MEDIUM-STOR-2: Failed to decrypt empty ciphertext");
         assert_eq!("", decrypted);

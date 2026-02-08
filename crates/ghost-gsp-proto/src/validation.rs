@@ -285,7 +285,9 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             let priority_lower = priority.to_lowercase();
             let valid_priorities = ["normal", "high", "urgent"];
             if !valid_priorities.contains(&priority_lower.as_str()) {
-                result.add_error("Invalid priority (must be normal, high, or urgent - case insensitive)");
+                result.add_error(
+                    "Invalid priority (must be normal, high, or urgent - case insensitive)",
+                );
             }
 
             // Validate target address
@@ -593,7 +595,8 @@ mod tests {
     /// Helper to create a valid test WalletProof
     fn test_wallet_proof() -> WalletProof {
         let pubkey = [1u8; 32];
-        let mut proof = WalletProof::new("get_payment_status", &pubkey).expect("nonce generation failed");
+        let mut proof =
+            WalletProof::new("get_payment_status", &pubkey).expect("nonce generation failed");
         proof.signature = hex::encode([2u8; 64]); // Valid signature format
         proof
     }

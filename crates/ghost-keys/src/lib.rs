@@ -62,7 +62,6 @@ pub use derivation::{
     tagged_hash,
 };
 // M-15/M-17: Re-export Zeroizing for callers who receive zeroizing wrappers
-pub use zeroize::Zeroizing;
 pub use error::GhostKeyError;
 pub use ghost_id::GhostId;
 pub use keys::{GhostKeys, GhostKeysExport};
@@ -72,6 +71,7 @@ pub use metadata::{
     METADATA_CIPHERTEXT_SIZE, METADATA_PLAINTEXT_SIZE,
 };
 pub use scanning::{BatchScanner, PaymentDetector, ScannedPayment};
+pub use zeroize::Zeroizing;
 
 /// Human-readable part for Ghost ID bech32 encoding (mainnet)
 pub const GHOST_ID_HRP: &str = "ghost";

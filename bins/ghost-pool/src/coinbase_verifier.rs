@@ -193,10 +193,7 @@ impl CoinbaseCommitment {
         coinbase_outputs: &[CoinbaseOutput],
     ) -> Result<(), CoinbaseVerificationError> {
         // L-5: Check total script size before processing
-        let total_script_size: usize = coinbase_outputs
-            .iter()
-            .map(|o| o.script_pubkey.len())
-            .sum();
+        let total_script_size: usize = coinbase_outputs.iter().map(|o| o.script_pubkey.len()).sum();
         if total_script_size > Self::MAX_TOTAL_SCRIPT_SIZE {
             error!(
                 total_size = total_script_size,

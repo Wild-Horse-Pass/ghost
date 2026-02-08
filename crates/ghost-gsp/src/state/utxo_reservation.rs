@@ -215,9 +215,7 @@ impl UtxoReservationManager {
 
         // L-1: Enable WAL mode for better concurrent performance
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")
-            .map_err(|e| {
-                GspError::Database(format!("L-1: Failed to enable WAL mode: {}", e))
-            })?;
+            .map_err(|e| GspError::Database(format!("L-1: Failed to enable WAL mode: {}", e)))?;
 
         // Create reservations table
         conn.execute(
@@ -231,10 +229,7 @@ impl UtxoReservationManager {
             [],
         )
         .map_err(|e| {
-            GspError::Database(format!(
-                "H-11: Failed to create reservation table: {}",
-                e
-            ))
+            GspError::Database(format!("H-11: Failed to create reservation table: {}", e))
         })?;
 
         // Create index for cleanup queries
@@ -275,7 +270,10 @@ impl UtxoReservationManager {
             [now_unix],
         )
         .map_err(|e| {
-            GspError::Database(format!("H-11: Failed to cleanup expired reservations: {}", e))
+            GspError::Database(format!(
+                "H-11: Failed to cleanup expired reservations: {}",
+                e
+            ))
         })?;
 
         // Load unexpired reservations
@@ -307,8 +305,8 @@ impl UtxoReservationManager {
         let mut loaded_count = 0;
 
         for row_result in rows {
-            let (lock_id, payment_id, wallet_id, _created_at_unix, expires_at_unix) =
-                row_result.map_err(|e| {
+            let (lock_id, payment_id, wallet_id, _created_at_unix, expires_at_unix) = row_result
+                .map_err(|e| {
                     GspError::Database(format!("H-11: Failed to read reservation row: {}", e))
                 })?;
 
@@ -343,10 +341,9 @@ impl UtxoReservationManager {
     fn remove_from_db(&self, lock_id: &str) {
         if let Some(db) = &self.db {
             let conn = db.lock();
-            if let Err(e) = conn.execute(
-                "DELETE FROM utxo_reservations WHERE lock_id = ?",
-                [lock_id],
-            ) {
+            if let Err(e) =
+                conn.execute("DELETE FROM utxo_reservations WHERE lock_id = ?", [lock_id])
+            {
                 warn!(
                     lock_id = lock_id,
                     error = %e,
@@ -388,7 +385,9 @@ impl UtxoReservationManager {
     ) -> GspResult<ReservationGuard> {
         // M-2: Validate lock ID format
         if lock_id.is_empty() {
-            return Err(GspError::InvalidLockId("lock ID cannot be empty".to_string()));
+            return Err(GspError::InvalidLockId(
+                "lock ID cannot be empty".to_string(),
+            ));
         }
         if lock_id.len() > MAX_LOCK_ID_LENGTH {
             return Err(GspError::InvalidLockId(format!(
@@ -544,10 +543,7 @@ impl UtxoReservationManager {
     pub fn active_count(&self) -> usize {
         let reservations = self.reservations.lock();
         let now = Instant::now();
-        reservations
-            .values()
-            .filter(|r| now < r.expires_at)
-            .count()
+        reservations.values().filter(|r| now < r.expires_at).count()
     }
 
     /// Cleanup expired reservations periodically
@@ -974,7 +970,10 @@ mod tests {
         // Lock ID exceeding MAX_LOCK_ID_LENGTH should be rejected
         let long_lock_id = "x".repeat(MAX_LOCK_ID_LENGTH + 1);
         let result = manager.reserve(&long_lock_id, "payment1", "wallet1");
-        assert!(result.is_err(), "M-2: Lock ID exceeding max length should be rejected");
+        assert!(
+            result.is_err(),
+            "M-2: Lock ID exceeding max length should be rejected"
+        );
         assert!(matches!(result.unwrap_err(), GspError::InvalidLockId(_)));
     }
 
@@ -985,7 +984,10 @@ mod tests {
         // Lock ID at exactly MAX_LOCK_ID_LENGTH should be accepted
         let max_lock_id = "x".repeat(MAX_LOCK_ID_LENGTH);
         let result = manager.reserve(&max_lock_id, "payment1", "wallet1");
-        assert!(result.is_ok(), "M-2: Lock ID at max length should be accepted");
+        assert!(
+            result.is_ok(),
+            "M-2: Lock ID at max length should be accepted"
+        );
     }
 
     #[test]

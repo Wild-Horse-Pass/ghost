@@ -1407,7 +1407,13 @@ mod tests {
 
         // H-5: Should reject with InsufficientVoters error
         assert!(
-            matches!(result, Err(GhostError::InsufficientVoters { required: 7, available: 3 })),
+            matches!(
+                result,
+                Err(GhostError::InsufficientVoters {
+                    required: 7,
+                    available: 3
+                })
+            ),
             "Should reject session with fewer than 7 voters, got {:?}",
             result
         );
@@ -1522,7 +1528,6 @@ mod tests {
     #[test]
     fn test_crit4_rejects_invalid_merkle_root() {
         use crate::elder_list::{CanonicalElderList, ElderEntry};
-        use ghost_common::identity::NodeIdProof;
 
         // Create a helper to make elder entries
         fn make_elder(i: u8) -> ElderEntry {
@@ -1816,7 +1821,10 @@ mod tests {
         // MED-CONS-1: Invalid timeouts are now rejected, not clamped
         assert!(result.is_err(), "Zero timeout should be rejected");
         if let Err(e) = result {
-            assert!(e.to_string().contains("timeout must be"), "Error should mention timeout");
+            assert!(
+                e.to_string().contains("timeout must be"),
+                "Error should mention timeout"
+            );
         }
     }
 
@@ -1832,9 +1840,15 @@ mod tests {
         let result = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 500);
 
         // MED-CONS-1: Invalid timeouts are now rejected, not clamped
-        assert!(result.is_err(), "Timeout below MIN_TIMEOUT_MS should be rejected");
+        assert!(
+            result.is_err(),
+            "Timeout below MIN_TIMEOUT_MS should be rejected"
+        );
         if let Err(e) = result {
-            assert!(e.to_string().contains("timeout must be"), "Error should mention timeout");
+            assert!(
+                e.to_string().contains("timeout must be"),
+                "Error should mention timeout"
+            );
         }
     }
 

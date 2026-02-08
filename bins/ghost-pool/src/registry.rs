@@ -247,15 +247,13 @@ impl RegistryClient {
     /// * `Ok(())` if the clock is sane
     /// * `Err(message)` with a user-friendly error message if the clock is broken
     pub fn verify_system_clock() -> Result<(), String> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| {
-                format!(
-                    "L-7 CRITICAL: System clock is before UNIX epoch (1970-01-01). \
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| {
+            format!(
+                "L-7 CRITICAL: System clock is before UNIX epoch (1970-01-01). \
                      Please check your system time settings. Error: {}",
-                    e
-                )
-            })?;
+                e
+            )
+        })?;
 
         let now_secs = now.as_secs();
 

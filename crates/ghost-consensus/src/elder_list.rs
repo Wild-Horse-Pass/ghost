@@ -181,7 +181,9 @@ mod optional_bytes32 {
             Some(hex_str) => {
                 let bytes = hex::decode(&hex_str).map_err(serde::de::Error::custom)?;
                 if bytes.len() != 32 {
-                    return Err(serde::de::Error::custom("prev_merkle_root must be 32 bytes"));
+                    return Err(serde::de::Error::custom(
+                        "prev_merkle_root must be 32 bytes",
+                    ));
                 }
                 let mut arr = [0u8; 32];
                 arr.copy_from_slice(&bytes);
@@ -209,7 +211,11 @@ impl ElderApproval {
     /// Includes the previous epoch's merkle root to prevent replay attacks across epochs.
     /// An approval for epoch N is only valid when transitioning from the specific epoch N-1
     /// that produced the given prev_merkle_root.
-    pub fn signing_message_v2(epoch: u64, merkle_root: &[u8; 32], prev_merkle_root: &[u8; 32]) -> Vec<u8> {
+    pub fn signing_message_v2(
+        epoch: u64,
+        merkle_root: &[u8; 32],
+        prev_merkle_root: &[u8; 32],
+    ) -> Vec<u8> {
         let mut msg = Vec::with_capacity(APPROVAL_DOMAIN.len() + 8 + 32 + 32);
         msg.extend_from_slice(APPROVAL_DOMAIN);
         msg.extend_from_slice(&epoch.to_le_bytes());
@@ -1569,6 +1575,9 @@ impl ElderListManager {
 }
 
 #[cfg(test)]
+#[allow(clippy::assertions_on_constants)]
+#[allow(unused_imports)]
+#[allow(unused_mut)]
 mod tests {
     use super::*;
     use ghost_common::identity::NodeIdentity;
@@ -2060,7 +2069,7 @@ mod tests {
             approver: identity.node_id(),
             signature,
             timestamp: now - 15_000, // 15 seconds ago (beyond 10s limit)
-            prev_merkle_root: None, // Legacy test
+            prev_merkle_root: None,  // Legacy test
         };
         assert!(
             !old_approval.is_timestamp_valid(),
@@ -2072,7 +2081,7 @@ mod tests {
             approver: identity.node_id(),
             signature,
             timestamp: now + 15_000, // 15 seconds in future (beyond 10s limit)
-            prev_merkle_root: None, // Legacy test
+            prev_merkle_root: None,  // Legacy test
         };
         assert!(
             !future_approval.is_timestamp_valid(),

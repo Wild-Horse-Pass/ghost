@@ -157,7 +157,7 @@ impl Default for MeshConfig {
             // - Impersonation of nodes without cryptographic proof
             // - Snooping on consensus votes, share submissions, and payouts
             // Fallback mode should ONLY be used during development/testing.
-            noise_required: true
+            noise_required: true,
         }
     }
 }
@@ -2011,7 +2011,9 @@ impl MeshNetwork {
                             let should_log = {
                                 let last_log = topic_mismatch_log_times.get(&envelope.sender);
                                 match last_log {
-                                    Some(t) => t.elapsed().as_secs() >= TOPIC_MISMATCH_LOG_INTERVAL_SECS,
+                                    Some(t) => {
+                                        t.elapsed().as_secs() >= TOPIC_MISMATCH_LOG_INTERVAL_SECS
+                                    }
                                     None => true,
                                 }
                             };
@@ -2032,7 +2034,8 @@ impl MeshNetwork {
                                         );
                                     }
                                 }
-                                topic_mismatch_log_times.insert(envelope.sender, std::time::Instant::now());
+                                topic_mismatch_log_times
+                                    .insert(envelope.sender, std::time::Instant::now());
                                 warn!(
                                     received_topic = topic_name,
                                     expected_topic = expected_topic,
@@ -2403,6 +2406,7 @@ impl EndpointBuilder {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 

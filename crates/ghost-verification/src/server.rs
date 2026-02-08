@@ -135,8 +135,8 @@ fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
     use std::net::IpAddr;
 
     // PAY-2: Check TRUSTED_PROXY_IPS first (preferred), then GHOST_TRUSTED_PROXIES (legacy)
-    let proxies_str = std::env::var("TRUSTED_PROXY_IPS")
-        .or_else(|_| std::env::var("GHOST_TRUSTED_PROXIES"));
+    let proxies_str =
+        std::env::var("TRUSTED_PROXY_IPS").or_else(|_| std::env::var("GHOST_TRUSTED_PROXIES"));
 
     if let Ok(proxies_str) = proxies_str {
         let proxies: Vec<IpAddr> = proxies_str
@@ -505,10 +505,7 @@ fn is_valid_cors_origin(origin: &str) -> bool {
 /// 4. Logs the request with the correlation ID
 ///
 /// This enables request tracing across distributed systems and makes debugging easier.
-async fn correlation_id_middleware(
-    mut request: axum::extract::Request,
-    next: Next,
-) -> Response {
+async fn correlation_id_middleware(mut request: axum::extract::Request, next: Next) -> Response {
     // Check if client provided X-Request-ID
     let request_id = request
         .headers()
@@ -554,10 +551,7 @@ async fn correlation_id_middleware(
 /// - X-XSS-Protection: 1; mode=block (legacy XSS protection)
 /// - Content-Security-Policy: restrict resources
 /// - Referrer-Policy: no-referrer (don't leak referrer)
-async fn security_headers_middleware(
-    request: axum::extract::Request,
-    next: Next,
-) -> Response {
+async fn security_headers_middleware(request: axum::extract::Request, next: Next) -> Response {
     let mut response = next.run(request).await;
 
     let headers = response.headers_mut();
@@ -580,10 +574,7 @@ async fn security_headers_middleware(
         "content-security-policy",
         HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
     );
-    headers.insert(
-        "referrer-policy",
-        HeaderValue::from_static("no-referrer"),
-    );
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
 
     response
 }
@@ -986,7 +977,8 @@ impl VerificationState {
     ///
     /// Default is false (disabled) for security.
     pub fn with_debug_endpoints(self, enabled: bool) -> Self {
-        self.debug_endpoints_frozen.store(enabled, Ordering::Relaxed);
+        self.debug_endpoints_frozen
+            .store(enabled, Ordering::Relaxed);
         // Also update dashboard_config for consistency in responses
         {
             let mut config = self.dashboard_config.write();
@@ -1540,7 +1532,10 @@ impl VerificationState {
         // Falls back to localhost if no external address is configured (dev mode).
         let verification_host = {
             let config = self.dashboard_config.read();
-            config.stratum_host.clone().unwrap_or_else(|| "127.0.0.1".to_string())
+            config
+                .stratum_host
+                .clone()
+                .unwrap_or_else(|| "127.0.0.1".to_string())
         };
 
         let result = match challenge.protocol {
@@ -2134,12 +2129,18 @@ mod tests {
             vec!["127.0.0.1".parse().unwrap()],
             0,
         );
-        assert_eq!(extractor_zero.trusted_proxy_count, 1, "M-14: Count 0 should clamp to 1");
+        assert_eq!(
+            extractor_zero.trusted_proxy_count, 1,
+            "M-14: Count 0 should clamp to 1"
+        );
 
         let extractor_high = NodeIdKeyExtractor::with_trusted_proxies_and_count(
             vec!["127.0.0.1".parse().unwrap()],
             100,
         );
-        assert_eq!(extractor_high.trusted_proxy_count, 10, "M-14: Count 100 should clamp to 10");
+        assert_eq!(
+            extractor_high.trusted_proxy_count, 10,
+            "M-14: Count 100 should clamp to 10"
+        );
     }
 }

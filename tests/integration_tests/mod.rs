@@ -1,3 +1,14 @@
+// Allow common test-code patterns that clippy flags
+#![allow(dead_code)]
+#![allow(unused_variables)]
+#![allow(unused_imports)]
+#![allow(unused_mut)]
+#![allow(clippy::field_reassign_with_default)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::manual_div_ceil)]
+#![allow(clippy::let_and_return)]
+#![allow(clippy::iter_nth_zero)]
+
 //! Integration Tests for Bitcoin Ghost
 //!
 //! These tests verify end-to-end functionality across multiple components.

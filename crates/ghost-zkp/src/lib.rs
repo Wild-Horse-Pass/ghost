@@ -461,21 +461,11 @@ pub fn check_simulated_proofs_warning() {
 
     if allow_simulated {
         // L-8: Log a prominent startup warning
-        tracing::error!(
-            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        );
-        tracing::error!(
-            "L-8 SECURITY WARNING: GHOST_ALLOW_SIMULATED_PROOFS=1 is enabled!"
-        );
-        tracing::error!(
-            "Simulated proofs bypass ALL cryptographic verification."
-        );
-        tracing::error!(
-            "This MUST NOT be used in production - proofs can be forged!"
-        );
-        tracing::error!(
-            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-        );
+        tracing::error!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+        tracing::error!("L-8 SECURITY WARNING: GHOST_ALLOW_SIMULATED_PROOFS=1 is enabled!");
+        tracing::error!("Simulated proofs bypass ALL cryptographic verification.");
+        tracing::error!("This MUST NOT be used in production - proofs can be forged!");
+        tracing::error!("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
     } else {
         tracing::debug!(
             "L-8: Simulated proofs are disabled (GHOST_ALLOW_SIMULATED_PROOFS not set to 1)"

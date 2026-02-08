@@ -34,8 +34,8 @@ use std::str::FromStr;
 
 use crate::derivation::{derive_payment_address_v2, derive_shared_secret};
 use crate::error::GhostKeyError;
-use zeroize::Zeroizing;
 use crate::{GHOST_ID_HRP, GHOST_ID_HRP_REGTEST, GHOST_ID_HRP_SIGNET, GHOST_ID_HRP_TESTNET};
+use zeroize::Zeroizing;
 
 /// Network type for Ghost ID encoding
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -374,7 +374,9 @@ mod tests {
         let (_, spend_pubkey) = secp.generate_keypair(&mut OsRng);
 
         let id = GhostId::new(scan_pubkey, spend_pubkey);
-        let encoded = id.encode().expect("C-9: encode should succeed for valid keys");
+        let encoded = id
+            .encode()
+            .expect("C-9: encode should succeed for valid keys");
 
         assert!(encoded.starts_with("ghost1"));
 

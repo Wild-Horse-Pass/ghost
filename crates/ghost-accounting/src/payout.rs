@@ -154,7 +154,10 @@ impl PayoutCalculator {
         // CRIT-POOL-1: Use checked multiplication to prevent overflow
         // pool_fee_bps is now guaranteed to be 0-10000 (0% to 100%)
         let pool_fee_bps = (clamped_fee_percent * 100.0) as u64;
-        debug_assert!(pool_fee_bps <= 10000, "pool_fee_bps should be <= 10000 (100%)");
+        debug_assert!(
+            pool_fee_bps <= 10000,
+            "pool_fee_bps should be <= 10000 (100%)"
+        );
         let pool_fee = (subsidy_sats as u128 * pool_fee_bps as u128 / 10000) as u64;
         // Per ECONOMICS.md: Pool fee is split 50/50 between treasury and node pool (pre-threshold)
         // Treasury gets half of the pool fee (0.5% of subsidy)
@@ -431,7 +434,8 @@ impl PayoutCalculator {
             // This eliminates the precision loss from the intermediate basis point calculation.
             // Formula: amount = (pool_amount * shares) / total_shares
             // Using u128 to prevent overflow in the multiplication
-            let amount = ((pool_amount as u128 * node_info.shares as u128) / total_shares as u128) as u64;
+            let amount =
+                ((pool_amount as u128 * node_info.shares as u128) / total_shares as u128) as u64;
 
             if amount < self.dust_threshold {
                 // Track dust for redistribution to top node
@@ -593,6 +597,7 @@ impl PayoutResult {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use ghost_common::types::NodeCapabilities;

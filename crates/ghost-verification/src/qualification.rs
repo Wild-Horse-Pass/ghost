@@ -262,8 +262,8 @@ impl QualifiedCapabilityProvider {
         // MED-VER-5 FIX: Cap network size to prevent overflow
         let capped_size = network_size.min(Self::MAX_NETWORK_SIZE);
 
-        let scaled = BASE_MIN_UNIQUE_CHALLENGERS as f64
-            + ((capped_size as f64) / 10.0).sqrt().floor();
+        let scaled =
+            BASE_MIN_UNIQUE_CHALLENGERS as f64 + ((capped_size as f64) / 10.0).sqrt().floor();
 
         (scaled as u32).min(MAX_MIN_UNIQUE_CHALLENGERS)
     }
@@ -948,7 +948,7 @@ mod tests {
         // 100 nodes: 10 + sqrt(10) = 10 + 3.16 = 13
         let result_100 = provider.scaled_min_unique_challengers(100);
         assert!(
-            result_100 >= 13 && result_100 <= 14,
+            (13..=14).contains(&result_100),
             "100 nodes should give ~13, got {}",
             result_100
         );
@@ -956,7 +956,7 @@ mod tests {
         // 500 nodes: 10 + sqrt(50) = 10 + 7.07 = 17
         let result_500 = provider.scaled_min_unique_challengers(500);
         assert!(
-            result_500 >= 17 && result_500 <= 18,
+            (17..=18).contains(&result_500),
             "500 nodes should give ~17, got {}",
             result_500
         );
@@ -991,10 +991,16 @@ mod tests {
         // Initial call should populate cache and return result
         let size1 = provider.get_network_size_with_fallback();
         // With empty DB, should return 0 or cached default
-        assert!(size1 <= 100, "Empty DB should return small value or default");
+        assert!(
+            size1 <= 100,
+            "Empty DB should return small value or default"
+        );
 
         // Cache should be populated after first call
         let cache = provider.cached_network_size.read();
-        assert!(cache.is_some(), "Cache should be populated after first call");
+        assert!(
+            cache.is_some(),
+            "Cache should be populated after first call"
+        );
     }
 }

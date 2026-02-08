@@ -282,7 +282,9 @@ pub async fn create_session(
 
     // CRIT-AUTH-3: Create session token bound to client IP
     // This prevents session hijacking if the token is stolen
-    let token = state.jwt.create_token_with_ip(&wallet_id, client_ip.clone())?;
+    let token = state
+        .jwt
+        .create_token_with_ip(&wallet_id, client_ip.clone())?;
 
     if let Some(ref ip) = client_ip {
         info!(wallet_id = %wallet_id, client_ip = %ip, "Session created with IP binding");

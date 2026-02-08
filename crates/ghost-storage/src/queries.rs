@@ -41,7 +41,10 @@ use crate::models::*;
 ///
 /// # Errors
 /// Returns rusqlite::Error if the status string is not a valid PayoutStatus.
-fn parse_payout_status_strict(status_str: &str, context: &str) -> Result<PayoutStatus, rusqlite::Error> {
+fn parse_payout_status_strict(
+    status_str: &str,
+    context: &str,
+) -> Result<PayoutStatus, rusqlite::Error> {
     PayoutStatus::parse(status_str).ok_or_else(|| {
         warn!(
             status_str = status_str,
@@ -53,14 +56,20 @@ fn parse_payout_status_strict(status_str: &str, context: &str) -> Result<PayoutS
             rusqlite::types::Type::Text,
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Invalid PayoutStatus '{}' in context '{}'", status_str, context),
+                format!(
+                    "Invalid PayoutStatus '{}' in context '{}'",
+                    status_str, context
+                ),
             )),
         )
     })
 }
 
 /// L-22 FIX: Parse RecipientType, returning error on invalid value.
-fn parse_recipient_type_strict(type_str: &str, context: &str) -> Result<RecipientType, rusqlite::Error> {
+fn parse_recipient_type_strict(
+    type_str: &str,
+    context: &str,
+) -> Result<RecipientType, rusqlite::Error> {
     RecipientType::parse(type_str).ok_or_else(|| {
         warn!(
             type_str = type_str,
@@ -72,14 +81,20 @@ fn parse_recipient_type_strict(type_str: &str, context: &str) -> Result<Recipien
             rusqlite::types::Type::Text,
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Invalid RecipientType '{}' in context '{}'", type_str, context),
+                format!(
+                    "Invalid RecipientType '{}' in context '{}'",
+                    type_str, context
+                ),
             )),
         )
     })
 }
 
 /// LOW-STOR-8 FIX: Parse GhostLockState, returning error on invalid value.
-fn parse_ghost_lock_state_strict(state_str: &str, context: &str) -> Result<GhostLockState, rusqlite::Error> {
+fn parse_ghost_lock_state_strict(
+    state_str: &str,
+    context: &str,
+) -> Result<GhostLockState, rusqlite::Error> {
     GhostLockState::parse(state_str).ok_or_else(|| {
         warn!(
             state_str = state_str,
@@ -91,14 +106,20 @@ fn parse_ghost_lock_state_strict(state_str: &str, context: &str) -> Result<Ghost
             rusqlite::types::Type::Text,
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Invalid GhostLockState '{}' in context '{}'", state_str, context),
+                format!(
+                    "Invalid GhostLockState '{}' in context '{}'",
+                    state_str, context
+                ),
             )),
         )
     })
 }
 
 /// LOW-STOR-8 FIX: Parse WraithPhase, returning error on invalid value.
-fn parse_wraith_phase_strict(phase_str: &str, context: &str) -> Result<WraithPhase, rusqlite::Error> {
+fn parse_wraith_phase_strict(
+    phase_str: &str,
+    context: &str,
+) -> Result<WraithPhase, rusqlite::Error> {
     WraithPhase::parse(phase_str).ok_or_else(|| {
         warn!(
             phase_str = phase_str,
@@ -110,14 +131,20 @@ fn parse_wraith_phase_strict(phase_str: &str, context: &str) -> Result<WraithPha
             rusqlite::types::Type::Text,
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Invalid WraithPhase '{}' in context '{}'", phase_str, context),
+                format!(
+                    "Invalid WraithPhase '{}' in context '{}'",
+                    phase_str, context
+                ),
             )),
         )
     })
 }
 
 /// LOW-STOR-8 FIX: Parse WraithStatus, returning error on invalid value.
-fn parse_wraith_status_strict(status_str: &str, context: &str) -> Result<WraithStatus, rusqlite::Error> {
+fn parse_wraith_status_strict(
+    status_str: &str,
+    context: &str,
+) -> Result<WraithStatus, rusqlite::Error> {
     WraithStatus::parse(status_str).ok_or_else(|| {
         warn!(
             status_str = status_str,
@@ -129,14 +156,20 @@ fn parse_wraith_status_strict(status_str: &str, context: &str) -> Result<WraithS
             rusqlite::types::Type::Text,
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Invalid WraithStatus '{}' in context '{}'", status_str, context),
+                format!(
+                    "Invalid WraithStatus '{}' in context '{}'",
+                    status_str, context
+                ),
             )),
         )
     })
 }
 
 /// LOW-STOR-8 FIX: Parse ReconciliationStatus, returning error on invalid value.
-fn parse_reconciliation_status_strict(status_str: &str, context: &str) -> Result<ReconciliationStatus, rusqlite::Error> {
+fn parse_reconciliation_status_strict(
+    status_str: &str,
+    context: &str,
+) -> Result<ReconciliationStatus, rusqlite::Error> {
     ReconciliationStatus::parse(status_str).ok_or_else(|| {
         warn!(
             status_str = status_str,
@@ -148,14 +181,20 @@ fn parse_reconciliation_status_strict(status_str: &str, context: &str) -> Result
             rusqlite::types::Type::Text,
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Invalid ReconciliationStatus '{}' in context '{}'", status_str, context),
+                format!(
+                    "Invalid ReconciliationStatus '{}' in context '{}'",
+                    status_str, context
+                ),
             )),
         )
     })
 }
 
 /// LOW-STOR-8 FIX: Parse WithdrawalStatus, returning error on invalid value.
-fn parse_withdrawal_status_strict(status_str: &str, context: &str) -> Result<WithdrawalStatus, rusqlite::Error> {
+fn parse_withdrawal_status_strict(
+    status_str: &str,
+    context: &str,
+) -> Result<WithdrawalStatus, rusqlite::Error> {
     WithdrawalStatus::parse(status_str).ok_or_else(|| {
         warn!(
             status_str = status_str,
@@ -167,7 +206,10 @@ fn parse_withdrawal_status_strict(status_str: &str, context: &str) -> Result<Wit
             rusqlite::types::Type::Text,
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Invalid WithdrawalStatus '{}' in context '{}'", status_str, context),
+                format!(
+                    "Invalid WithdrawalStatus '{}' in context '{}'",
+                    status_str, context
+                ),
             )),
         )
     })
@@ -742,7 +784,10 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: parse_payout_status_strict(&status_str, "get_rounds_by_block_hash")?,
+                        payout_status: parse_payout_status_strict(
+                            &status_str,
+                            "get_rounds_by_block_hash",
+                        )?,
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
                     })
@@ -780,7 +825,10 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: parse_payout_status_strict(&status_str, "get_recent_rounds")?,
+                        payout_status: parse_payout_status_strict(
+                            &status_str,
+                            "get_recent_rounds",
+                        )?,
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
                     })
@@ -6314,18 +6362,12 @@ mod tests {
         // Positive values should succeed
         let result = i64_to_u64_sats(100, "test_field");
         assert!(result.is_ok());
-        assert_eq!(
-            result.expect("LOW-STOR-8: 100 should convert"),
-            100u64
-        );
+        assert_eq!(result.expect("LOW-STOR-8: 100 should convert"), 100u64);
 
         // Zero should succeed
         let result = i64_to_u64_sats(0, "test_field");
         assert!(result.is_ok());
-        assert_eq!(
-            result.expect("LOW-STOR-8: 0 should convert"),
-            0u64
-        );
+        assert_eq!(result.expect("LOW-STOR-8: 0 should convert"), 0u64);
 
         // Large positive value should succeed
         let result = i64_to_u64_sats(i64::MAX, "test_field");

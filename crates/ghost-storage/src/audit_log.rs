@@ -380,7 +380,9 @@ impl AuditLog {
                 break;
             }
 
-            for (id, timestamp, event_type, actor, target, details, prev_hash, entry_hash) in batch_result {
+            for (id, timestamp, event_type, actor, target, details, prev_hash, entry_hash) in
+                batch_result
+            {
                 total_entries += 1;
                 last_id = id;
 

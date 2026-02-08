@@ -898,6 +898,8 @@ impl MessageHandler for HealthPingHandler {
 }
 
 #[cfg(test)]
+#[allow(clippy::assertions_on_constants)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use ghost_common::identity::NodeIdProof;

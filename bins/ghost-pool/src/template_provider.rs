@@ -656,7 +656,10 @@ async fn handle_template_distribution_message(
                             // M-10 SECURITY FIX: Use map_err to handle conversion failure gracefully
                             // instead of expect(). String to Str0255 conversion can fail if string
                             // exceeds 255 bytes, though "transaction-list-overflow" never will.
-                            let error_code = match "transaction-list-overflow".to_string().try_into() {
+                            let error_code = match "transaction-list-overflow"
+                                .to_string()
+                                .try_into()
+                            {
                                 Ok(code) => code,
                                 Err(_) => {
                                     warn!("M-10: Failed to create error code string - returning without response");

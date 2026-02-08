@@ -415,7 +415,7 @@ impl Drop for SigningNonce {
         let dummy_key = SecretKey::from_slice(&dummy).expect(
             "CRYPT-5: dummy value [1u8; 32] is always a valid secp256k1 secret key \
              (non-zero and less than curve order). If this panics, the secp256k1 \
-             library has a fundamental bug."
+             library has a fundamental bug.",
         );
         self.secret_nonce = dummy_key;
 
@@ -571,7 +571,7 @@ impl CoordinatorSigner {
             session_id: *session_id,
             active_nonces: std::collections::HashMap::new(),
             nonces_per_participant: std::collections::HashMap::new(),
-            previous_keys: Vec::new(), // WR4-L10
+            previous_keys: Vec::new(),                   // WR4-L10
             grace_period_secs: config.grace_period_secs, // LOW-CRYPTO-1
         })
     }
@@ -606,7 +606,7 @@ impl CoordinatorSigner {
             session_id: *session_id,
             active_nonces: std::collections::HashMap::new(),
             nonces_per_participant: std::collections::HashMap::new(),
-            previous_keys: Vec::new(), // WR4-L10
+            previous_keys: Vec::new(),                   // WR4-L10
             grace_period_secs: config.grace_period_secs, // LOW-CRYPTO-1
         })
     }
@@ -1039,8 +1039,7 @@ impl CoordinatorSigner {
     /// WR4-L10: Clean up old keys that are past the grace period
     /// LOW-CRYPTO-1: Now uses configurable grace_period_secs instead of constant
     fn cleanup_old_keys(&mut self) {
-        let cutoff =
-            Instant::now() - std::time::Duration::from_secs(self.grace_period_secs);
+        let cutoff = Instant::now() - std::time::Duration::from_secs(self.grace_period_secs);
         let before = self.previous_keys.len();
         self.previous_keys.retain(|pk| pk.rotated_at > cutoff);
         let removed = before - self.previous_keys.len();
@@ -1946,7 +1945,7 @@ mod tests {
         ];
         let good_runs = count_bit_runs(&good_data);
         assert!(
-            good_runs >= MIN_RUNS_FOR_32_BYTES && good_runs <= MAX_RUNS_FOR_32_BYTES,
+            (MIN_RUNS_FOR_32_BYTES..=MAX_RUNS_FOR_32_BYTES).contains(&good_runs),
             "Good data should have acceptable run count: {} (expected {}-{})",
             good_runs,
             MIN_RUNS_FOR_32_BYTES,

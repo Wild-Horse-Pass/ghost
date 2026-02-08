@@ -855,7 +855,10 @@ mod tests {
 
         // HIGH-3/H-5 SECURITY TEST: With zero validators, threshold should be 0 (no consensus possible)
         let threshold = handler.calculate_threshold();
-        assert_eq!(threshold, 0, "HIGH-3: Zero validators should return threshold of 0");
+        assert_eq!(
+            threshold, 0,
+            "HIGH-3: Zero validators should return threshold of 0"
+        );
 
         // Add 4 validators
         for i in 0..4 {

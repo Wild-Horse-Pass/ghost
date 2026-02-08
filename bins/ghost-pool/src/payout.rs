@@ -266,7 +266,8 @@ impl PayoutProposalCreator {
         let rpc = match &self.rpc {
             Some(rpc) => rpc,
             None => {
-                let is_mainnet = self.config.network == ghost_common::config::BitcoinNetwork::Mainnet;
+                let is_mainnet =
+                    self.config.network == ghost_common::config::BitcoinNetwork::Mainnet;
 
                 if is_mainnet {
                     // LOW: On mainnet, RPC is REQUIRED - fail if not configured
@@ -296,9 +297,8 @@ impl PayoutProposalCreator {
         // Query Bitcoin Core for the block header
         // This will fail if the block doesn't exist
         let header = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                rpc.get_block_header(&block_hash_hex).await
-            })
+            tokio::runtime::Handle::current()
+                .block_on(async { rpc.get_block_header(&block_hash_hex).await })
         })?;
 
         // Verify the block is at the expected height (within reasonable tolerance)
@@ -584,11 +584,17 @@ impl PayoutProposalCreator {
             }
 
             debug!(
-                script_type = if script.is_p2pkh() { "P2PKH" }
-                    else if script.is_p2sh() { "P2SH" }
-                    else if script.is_p2wpkh() { "P2WPKH" }
-                    else if script.is_p2wsh() { "P2WSH" }
-                    else { "P2TR" },
+                script_type = if script.is_p2pkh() {
+                    "P2PKH"
+                } else if script.is_p2sh() {
+                    "P2SH"
+                } else if script.is_p2wpkh() {
+                    "P2WPKH"
+                } else if script.is_p2wsh() {
+                    "P2WSH"
+                } else {
+                    "P2TR"
+                },
                 script_len = treasury_address.len(),
                 "Validated treasury address script"
             );
@@ -1162,9 +1168,10 @@ impl PayoutProposalCreator {
     /// Returns Ok(()) if valid, or an error describing the issue.
     fn validate_payout_address(&self, address: &[u8], context: &str) -> GhostResult<()> {
         if address.is_empty() {
-            return Err(ghost_common::error::GhostError::InvalidAddress(
-                format!("{} address is empty", context)
-            ));
+            return Err(ghost_common::error::GhostError::InvalidAddress(format!(
+                "{} address is empty",
+                context
+            )));
         }
 
         // Convert bytes to string (assuming UTF-8 encoding for bech32/base58)
@@ -1205,7 +1212,9 @@ impl PayoutProposalCreator {
         if let Some(address_str) = self.db.get_miner_payout_address(miner_id)? {
             if !address_str.is_empty() {
                 // MED-POOL-5: Validate the address is a valid Bitcoin address
-                if let Err(e) = address_str.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>() {
+                if let Err(e) =
+                    address_str.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+                {
                     warn!(
                         miner_id,
                         address = %address_str,
@@ -1239,7 +1248,9 @@ impl PayoutProposalCreator {
         if let Some(address_str) = self.db.get_node_payout_address(&node_id_hex)? {
             if !address_str.is_empty() {
                 // MED-POOL-5: Validate the address is a valid Bitcoin address
-                if let Err(e) = address_str.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>() {
+                if let Err(e) =
+                    address_str.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>()
+                {
                     warn!(
                         node_id = %node_id_hex,
                         address = %address_str,
@@ -1485,6 +1496,7 @@ impl PayoutHandler {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 mod tests {
     use super::*;
 

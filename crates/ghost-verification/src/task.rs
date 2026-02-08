@@ -225,8 +225,8 @@ impl SignedVerificationBroadcast {
         }
 
         // Decode signature
-        let signature_bytes = hex::decode(&self.signature)
-            .map_err(|e| format!("Invalid signature hex: {}", e))?;
+        let signature_bytes =
+            hex::decode(&self.signature).map_err(|e| format!("Invalid signature hex: {}", e))?;
 
         if signature_bytes.len() != 64 {
             return Err(format!(
@@ -250,7 +250,10 @@ impl SignedVerificationBroadcast {
         challenge_hasher.update(self.broadcast.challenge_data.as_bytes());
         let expected_challenge_hash = challenge_hasher.finalize();
         if challenge_hash_bytes != expected_challenge_hash.as_slice() {
-            return Err("M-6: Challenge data hash mismatch - signature not bound to this challenge".to_string());
+            return Err(
+                "M-6: Challenge data hash mismatch - signature not bound to this challenge"
+                    .to_string(),
+            );
         }
 
         // Recompute message hash - M-6 FIX: now includes challenge_data_hash
@@ -265,7 +268,11 @@ impl SignedVerificationBroadcast {
         let message_hash = hasher.finalize();
 
         // Verify signature using challenger's public key (node ID)
-        if verify_fn(&self.broadcast.challenger_id, message_hash.as_slice(), &signature_bytes) {
+        if verify_fn(
+            &self.broadcast.challenger_id,
+            message_hash.as_slice(),
+            &signature_bytes,
+        ) {
             Ok(())
         } else {
             Err("CRIT-VER-2: Signature verification failed".to_string())
@@ -315,7 +322,9 @@ fn build_test_transaction() -> Option<String> {
     // M-12: Do NOT fall back to timestamp - that's predictable and insecure
     let mut rng_bytes = [0u8; 64];
     if getrandom::getrandom(&mut rng_bytes).is_err() {
-        warn!("M-12: Failed to get cryptographic randomness, skipping policy challenge (fail closed)");
+        warn!(
+            "M-12: Failed to get cryptographic randomness, skipping policy challenge (fail closed)"
+        );
         return None;
     }
 
@@ -383,7 +392,9 @@ fn build_test_transaction() -> Option<String> {
             let mut pubkey_hash = [0u8; 20];
             pubkey_hash.copy_from_slice(&rng_bytes[17..37]);
             // Future block height for timelock
-            let locktime = u32::from_le_bytes([rng_bytes[37], rng_bytes[38], rng_bytes[39], rng_bytes[40]]) % 1_000_000;
+            let locktime =
+                u32::from_le_bytes([rng_bytes[37], rng_bytes[38], rng_bytes[39], rng_bytes[40]])
+                    % 1_000_000;
             Builder::new()
                 .push_int(locktime as i64)
                 .push_opcode(bitcoin::opcodes::all::OP_CLTV)
@@ -459,7 +470,9 @@ fn build_test_transaction() -> Option<String> {
     // HIGH-VER-3: Randomize locktime (CLTV with 30% probability)
     let use_locktime = (rng_bytes[53] % 10) < 3;
     let lock_time = if use_locktime {
-        let locktime_val = u32::from_le_bytes([rng_bytes[54], rng_bytes[55], rng_bytes[56], rng_bytes[57]]) % 700_000;
+        let locktime_val =
+            u32::from_le_bytes([rng_bytes[54], rng_bytes[55], rng_bytes[56], rng_bytes[57]])
+                % 700_000;
         LockTime::from_consensus(locktime_val)
     } else {
         LockTime::ZERO
@@ -707,11 +720,9 @@ impl VerificationTask {
     /// This prevents challenger ID spoofing in DB entries.
     fn require_identity_verified(&self) -> Result<(), String> {
         if !self.identity_verified {
-            return Err(
-                "H-1: Cannot write to DB without verified identity. \
+            return Err("H-1: Cannot write to DB without verified identity. \
                  Call with_verified_identity() or use new_with_identity() constructor."
-                    .to_string(),
-            );
+                .to_string());
         }
         Ok(())
     }
@@ -766,21 +777,19 @@ impl VerificationTask {
         // H-13 FIX: On lock failure, return empty vector (fail closed) instead of using unfiltered list
         // Using unfiltered list could allow challenge flooding attacks if an attacker can cause lock poisoning
         let filtered: Vec<_> = match self.challenge_tracker.lock() {
-            Ok(tracker) => {
-                selected
-                    .into_iter()
-                    .filter(|peer| {
-                        let can_challenge = tracker.can_challenge(&peer.node_id);
-                        if !can_challenge {
-                            debug!(
-                                node_id = %hex::encode(&peer.node_id[..8]),
-                                "LOW-VER-3: Skipping recently challenged peer"
-                            );
-                        }
-                        can_challenge
-                    })
-                    .collect()
-            }
+            Ok(tracker) => selected
+                .into_iter()
+                .filter(|peer| {
+                    let can_challenge = tracker.can_challenge(&peer.node_id);
+                    if !can_challenge {
+                        debug!(
+                            node_id = %hex::encode(&peer.node_id[..8]),
+                            "LOW-VER-3: Skipping recently challenged peer"
+                        );
+                    }
+                    can_challenge
+                })
+                .collect(),
             Err(e) => {
                 // H-13 FIX: Fail closed - return empty set instead of using unfiltered list
                 // A poisoned lock indicates a panic occurred, which is a serious error.
@@ -965,7 +974,10 @@ impl VerificationTask {
         // Parse IPv6 - CRIT-VER-1 FIX: Use /64 (4 segments) not /48 (3 segments)
         if let Ok(addr) = ip.parse::<std::net::Ipv6Addr>() {
             let segments = addr.segments();
-            return format!("{:x}:{:x}:{:x}:{:x}", segments[0], segments[1], segments[2], segments[3]);
+            return format!(
+                "{:x}:{:x}:{:x}:{:x}",
+                segments[0], segments[1], segments[2], segments[3]
+            );
         }
 
         // Fallback: return as-is
@@ -1002,25 +1014,37 @@ impl VerificationTask {
         // Verify each claimed capability
         // CRIT-VER-3: Log DB errors but continue with other capabilities
         if capabilities.archive_mode {
-            if let Err(e) = self.verify_archive(peer, &peer_id_hex, &our_id_hex, timestamp).await {
+            if let Err(e) = self
+                .verify_archive(peer, &peer_id_hex, &our_id_hex, timestamp)
+                .await
+            {
                 warn!(peer = %short_id, error = %e, "Archive verification DB error");
             }
         }
 
         if capabilities.bitcoin_pure {
-            if let Err(e) = self.verify_policy(peer, &peer_id_hex, &our_id_hex, timestamp).await {
+            if let Err(e) = self
+                .verify_policy(peer, &peer_id_hex, &our_id_hex, timestamp)
+                .await
+            {
                 warn!(peer = %short_id, error = %e, "Policy verification DB error");
             }
         }
 
         if capabilities.public_mining {
-            if let Err(e) = self.verify_stratum(peer, &peer_id_hex, &our_id_hex, timestamp).await {
+            if let Err(e) = self
+                .verify_stratum(peer, &peer_id_hex, &our_id_hex, timestamp)
+                .await
+            {
                 warn!(peer = %short_id, error = %e, "Stratum verification DB error");
             }
         }
 
         if capabilities.ghost_pay {
-            if let Err(e) = self.verify_ghostpay(peer, &peer_id_hex, &our_id_hex, timestamp).await {
+            if let Err(e) = self
+                .verify_ghostpay(peer, &peer_id_hex, &our_id_hex, timestamp)
+                .await
+            {
                 warn!(peer = %short_id, error = %e, "GhostPay verification DB error");
             }
         }
@@ -1249,7 +1273,10 @@ impl VerificationTask {
 
         // C-2 FIX: Validate merkle root format (64 hex chars)
         if block_data.merkle_root.len() != 64
-            || !block_data.merkle_root.chars().all(|c| c.is_ascii_hexdigit())
+            || !block_data
+                .merkle_root
+                .chars()
+                .all(|c| c.is_ascii_hexdigit())
         {
             return (
                 false,
@@ -1470,13 +1497,10 @@ impl VerificationTask {
         self.require_identity_verified()?;
 
         // CRIT-VER-3: Store result with proper error handling - return error if DB fails
-        if let Err(e) = self.db.insert_stratum_challenge(
-            peer_id_hex,
-            our_id_hex,
-            connected,
-            latency_ms,
-            passed,
-        ) {
+        if let Err(e) =
+            self.db
+                .insert_stratum_challenge(peer_id_hex, our_id_hex, connected, latency_ms, passed)
+        {
             warn!(
                 peer = %peer_id_hex[..8],
                 error = %e,
@@ -1557,14 +1581,19 @@ impl VerificationTask {
         // H-1/VER-2 FIX: Pass both challenge_epoch and challenge_nonce
         let result = self
             .client
-            .verify_ghostpay_with_nonce(&peer.http_address, Some(challenge_epoch), Some(&challenge_nonce))
+            .verify_ghostpay_with_nonce(
+                &peer.http_address,
+                Some(challenge_epoch),
+                Some(&challenge_nonce),
+            )
             .await;
 
         let (passed, response_valid, response_data) = match result {
             Ok(resp) => {
                 // H-1/VER-2/VER-3 FIX: Validate the response includes proper epoch state proof
                 // and nonce-bound proof to prevent precomputation attacks
-                let validation = self.validate_ghostpay_response(&resp, challenge_epoch, &challenge_nonce);
+                let validation =
+                    self.validate_ghostpay_response(&resp, challenge_epoch, &challenge_nonce);
 
                 let response_json = serde_json::json!({
                     "success": resp.success,
@@ -1577,7 +1606,11 @@ impl VerificationTask {
                     "validation": validation.1,
                 });
 
-                (validation.0, resp.l2_enabled, Some(response_json.to_string()))
+                (
+                    validation.0,
+                    resp.l2_enabled,
+                    Some(response_json.to_string()),
+                )
             }
             Err(e) => {
                 warn!(peer = %short_id, error = %e, "GhostPay verification failed");
@@ -1800,10 +1833,15 @@ impl VerificationTask {
         };
 
         // VER-3: Validate nonce_bound_proof format (64 hex chars for SHA256)
-        if nonce_bound_proof.len() != 64 || !nonce_bound_proof.chars().all(|c| c.is_ascii_hexdigit()) {
+        if nonce_bound_proof.len() != 64
+            || !nonce_bound_proof.chars().all(|c| c.is_ascii_hexdigit())
+        {
             return (
                 false,
-                format!("VER-3: Invalid nonce_bound_proof format: {}", nonce_bound_proof),
+                format!(
+                    "VER-3: Invalid nonce_bound_proof format: {}",
+                    nonce_bound_proof
+                ),
             );
         }
 
@@ -1827,7 +1865,10 @@ impl VerificationTask {
             );
         }
 
-        (true, "Epoch state proof and nonce binding validated".to_string())
+        (
+            true,
+            "Epoch state proof and nonce binding validated".to_string(),
+        )
     }
 
     /// Broadcast a verification result via P2P
@@ -1936,7 +1977,11 @@ mod tests {
         let signed = SignedVerificationBroadcast::new(broadcast.clone(), test_signing_fn);
 
         // Verify challenge_data_hash is populated and correct
-        assert_eq!(signed.challenge_data_hash.len(), 64, "challenge_data_hash should be 64 hex chars");
+        assert_eq!(
+            signed.challenge_data_hash.len(),
+            64,
+            "challenge_data_hash should be 64 hex chars"
+        );
 
         // Verify the hash matches the challenge data
         use sha2::{Digest, Sha256};
@@ -2052,10 +2097,7 @@ mod tests {
 
         let signed = SignedVerificationBroadcast::new(broadcast, test_signing_fn);
         let result = signed.verify(test_verify_fn);
-        assert!(
-            result.is_err(),
-            "Timestamp too far in future should fail"
-        );
+        assert!(result.is_err(), "Timestamp too far in future should fail");
         assert!(
             result.unwrap_err().contains("too far in the future"),
             "Error should mention future timestamp"

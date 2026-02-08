@@ -50,7 +50,10 @@ use crate::api::{rest, websocket};
 use crate::auth::{JwtManager, WalletRegistry};
 use crate::error::{GspError, GspResult};
 use crate::proxy::PayNodeProxy;
-use crate::state::{ReorgBridge, ReorgBridgeConfig, ReorgNotifier, SubscriptionManager, UtxoReservationManager, WalletRateLimiter};
+use crate::state::{
+    ReorgBridge, ReorgBridgeConfig, ReorgNotifier, SubscriptionManager, UtxoReservationManager,
+    WalletRateLimiter,
+};
 
 use ghost_consensus::reorg::{L1ChainMonitor, L2ForkDetector};
 
@@ -138,8 +141,8 @@ fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
     use std::net::IpAddr;
 
     // PAY-2: Check TRUSTED_PROXY_IPS first (preferred), then GHOST_TRUSTED_PROXIES (legacy)
-    let proxies_str = std::env::var("TRUSTED_PROXY_IPS")
-        .or_else(|_| std::env::var("GHOST_TRUSTED_PROXIES"));
+    let proxies_str =
+        std::env::var("TRUSTED_PROXY_IPS").or_else(|_| std::env::var("GHOST_TRUSTED_PROXIES"));
 
     if let Ok(proxies_str) = proxies_str {
         let proxies: Vec<IpAddr> = proxies_str
@@ -363,10 +366,7 @@ impl KeyExtractor for IpKeyExtractor {
 }
 
 /// LOW-API-1: Security headers middleware for all HTTP responses
-async fn security_headers_middleware(
-    request: axum::extract::Request,
-    next: Next,
-) -> Response {
+async fn security_headers_middleware(request: axum::extract::Request, next: Next) -> Response {
     let mut response = next.run(request).await;
 
     let headers = response.headers_mut();
@@ -386,10 +386,7 @@ async fn security_headers_middleware(
         "content-security-policy",
         HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
     );
-    headers.insert(
-        "referrer-policy",
-        HeaderValue::from_static("no-referrer"),
-    );
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
 
     response
 }
@@ -627,14 +624,13 @@ impl GspState {
         // C-6/H-11: Initialize UTXO reservation manager with persistence for crash recovery
         let reservations_db_path = config.data_dir.join("utxo_reservations.db");
         let utxo_reservations = Arc::new(
-            UtxoReservationManager::with_persistence(&reservations_db_path)
-                .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        error = %e,
-                        "H-11: Failed to initialize persistent UTXO reservations, using in-memory only"
-                    );
-                    UtxoReservationManager::new()
-                })
+            UtxoReservationManager::with_persistence(&reservations_db_path).unwrap_or_else(|e| {
+                tracing::warn!(
+                    error = %e,
+                    "H-11: Failed to initialize persistent UTXO reservations, using in-memory only"
+                );
+                UtxoReservationManager::new()
+            }),
         );
 
         // M-12: Initialize per-wallet rate limiter
@@ -875,6 +871,7 @@ impl GspServer {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -979,7 +976,9 @@ mod tests {
         let config = GspConfig::default();
         // Default should trust localhost
         assert!(
-            config.trusted_proxy_ips.contains(&"127.0.0.1".parse().unwrap()),
+            config
+                .trusted_proxy_ips
+                .contains(&"127.0.0.1".parse().unwrap()),
             "PAY-2: Default config should trust 127.0.0.1"
         );
         assert!(
@@ -1000,10 +999,8 @@ mod tests {
     #[tokio::test]
     async fn test_pay2_state_is_trusted_proxy() {
         let mut config = create_test_config();
-        config.trusted_proxy_ips = vec![
-            "10.0.0.1".parse().unwrap(),
-            "192.168.1.1".parse().unwrap(),
-        ];
+        config.trusted_proxy_ips =
+            vec!["10.0.0.1".parse().unwrap(), "192.168.1.1".parse().unwrap()];
         let state = GspState::new(config).unwrap();
 
         // Should recognize configured proxies

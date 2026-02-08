@@ -429,7 +429,8 @@ impl ElderRegistrationHandler {
         // H-2 SECURITY: Verify uptime claims against actual database records
         // Don't trust the claimed uptime_percent and first_seen - verify them.
         let candidate_hex = hex::encode(msg.candidate);
-        let verified_uptime = self.verify_uptime_claim(&candidate_hex, msg.first_seen, msg.uptime_percent)?;
+        let verified_uptime =
+            self.verify_uptime_claim(&candidate_hex, msg.first_seen, msg.uptime_percent)?;
 
         if !verified_uptime {
             warn!(
@@ -478,7 +479,9 @@ impl ElderRegistrationHandler {
                     target = msg.target_epoch,
                     "Genesis bootstrap must target epoch 1"
                 );
-                return Err(GhostError::Config("Genesis bootstrap must target epoch 1".to_string()));
+                return Err(GhostError::Config(
+                    "Genesis bootstrap must target epoch 1".to_string(),
+                ));
             }
             // M-6: On mainnet, genesis requires explicit configuration
             if self.is_mainnet {
@@ -546,7 +549,9 @@ impl ElderRegistrationHandler {
         let seven_days_ago = now - ELDER_MIN_UPTIME_PERIOD_SECS as i64;
 
         // Get actual uptime percentage from uptime_samples (returns 0-100 integer)
-        let actual_uptime = self.db.get_node_uptime_percent(node_id_hex, seven_days_ago)?;
+        let actual_uptime = self
+            .db
+            .get_node_uptime_percent(node_id_hex, seven_days_ago)?;
 
         // Get actual first seen time
         let actual_first_seen = self.db.get_node_first_seen(node_id_hex)?;
@@ -1204,7 +1209,8 @@ impl ElderRegistrationHandler {
     /// and maintainability. The cleanup intervals are documented above.
     pub fn cleanup(&self) {
         // L-1 FIX: Clean up rate limiter using named constant
-        self.rate_limiter.cleanup(RATE_LIMITER_CLEANUP_INTERVAL_SECS);
+        self.rate_limiter
+            .cleanup(RATE_LIMITER_CLEANUP_INTERVAL_SECS);
 
         // M-2: Clean up expired pending proposals using wall clock time
         // Instant::elapsed() is fine for relative timing but wall time ensures
@@ -1212,9 +1218,7 @@ impl ElderRegistrationHandler {
         {
             let mut pending = self.pending_proposals.write();
             let now = chrono::Utc::now().timestamp();
-            pending.retain(|_, p| {
-                (now - p.received_at_unix) < APPROVAL_TIMEOUT_SECS as i64
-            });
+            pending.retain(|_, p| (now - p.received_at_unix) < APPROVAL_TIMEOUT_SECS as i64);
         }
 
         // L-2 FIX: Clean up approved registrations using named constant multiplier

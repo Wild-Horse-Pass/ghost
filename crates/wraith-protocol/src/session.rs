@@ -112,7 +112,7 @@ impl SessionRegistry {
         // CRYPT-6 FIX: Check if process has been running long enough for old sessions
         // to have expired. Default session timeout is typically the longest phase timeout.
         let process_uptime = self.process_start.elapsed();
-        let session_timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS as u64);
+        let session_timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
 
         if process_uptime < session_timeout {
             let remaining_secs = (session_timeout - process_uptime).as_secs();
@@ -646,7 +646,9 @@ impl WraithSession {
 
         // Check wall clock (protects against suspend evasion)
         let wall_clock_expired = match self.creation_system_time.elapsed() {
-            Ok(elapsed) => elapsed.as_secs() >= self.timeout_duration_secs + self.total_extensions_secs,
+            Ok(elapsed) => {
+                elapsed.as_secs() >= self.timeout_duration_secs + self.total_extensions_secs
+            }
             Err(_) => {
                 // System clock went backwards - be conservative and don't timeout
                 // This can happen on NTP adjustments, handled safely

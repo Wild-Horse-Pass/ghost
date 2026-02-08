@@ -330,7 +330,9 @@ mod tests {
         let proof = compute_merkle_proof(&leaves, 3);
 
         // Verify through the limiter
-        let result = verifier.verify_merkle(&leaves[3], &proof, &root, 3, 8).await;
+        let result = verifier
+            .verify_merkle(&leaves[3], &proof, &root, 3, 8)
+            .await;
         assert!(result.is_ok());
         assert!(result.unwrap());
     }

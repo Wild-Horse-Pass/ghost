@@ -1131,6 +1131,10 @@ async fn main() -> Result<()> {
                 block_vk_hash: s.block_vk_hash,
                 payout_vk_hash: s.payout_vk_hash,
                 updated_at: s.updated_at,
+                // Fields added in later versions - derive ceremony_id from params hash
+                genesis_timestamp: None,
+                ceremony_id: s.current_params_hash, // Use params hash as ceremony ID for continuity
+                pending_commitment_count: 0,
             }),
         ) {
             Ok(manager) => Arc::new(manager),

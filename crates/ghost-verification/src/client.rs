@@ -376,7 +376,9 @@ impl VerificationClient {
                 if let Some(ipv4) = ipv6.to_ipv4_mapped() {
                     if ipv4.octets()[0] == 127
                         || ipv4.octets()[0] == 10
-                        || (ipv4.octets()[0] == 172 && ipv4.octets()[1] >= 16 && ipv4.octets()[1] <= 31)
+                        || (ipv4.octets()[0] == 172
+                            && ipv4.octets()[1] >= 16
+                            && ipv4.octets()[1] <= 31)
                         || (ipv4.octets()[0] == 192 && ipv4.octets()[1] == 168)
                         || (ipv4.octets()[0] == 169 && ipv4.octets()[1] == 254)
                     {
@@ -429,7 +431,8 @@ impl VerificationClient {
                     if Self::is_internal_ip(addr.ip()) {
                         return Err(GhostError::Config(format!(
                             "M-19 SSRF Protection: Host '{}' resolves to internal address: {}",
-                            host, addr.ip()
+                            host,
+                            addr.ip()
                         )));
                     }
                 }
@@ -641,7 +644,8 @@ impl VerificationClient {
         node_address: &str,
         challenge_epoch: Option<u64>,
     ) -> GhostResult<GhostPayResponse> {
-        self.verify_ghostpay_with_nonce(node_address, challenge_epoch, None).await
+        self.verify_ghostpay_with_nonce(node_address, challenge_epoch, None)
+            .await
     }
 
     /// VER-2 FIX: Verify GhostPay capability with challenge nonce
@@ -1030,7 +1034,9 @@ mod tests {
         assert!(VerificationClient::is_internal_address("127.255.255.255"));
         assert!(VerificationClient::is_internal_address("localhost"));
         assert!(VerificationClient::is_internal_address("localhost:8080"));
-        assert!(VerificationClient::is_internal_address("localhost.localdomain"));
+        assert!(VerificationClient::is_internal_address(
+            "localhost.localdomain"
+        ));
     }
 
     #[test]
@@ -1044,7 +1050,9 @@ mod tests {
     fn test_m11_ssrf_protection_cloud_metadata() {
         // M-11: Test SSRF protection rejects cloud metadata endpoints
         assert!(VerificationClient::is_internal_address("169.254.169.254"));
-        assert!(VerificationClient::is_internal_address("metadata.google.internal"));
+        assert!(VerificationClient::is_internal_address(
+            "metadata.google.internal"
+        ));
         assert!(VerificationClient::is_internal_address("metadata"));
     }
 
@@ -1061,10 +1069,12 @@ mod tests {
     fn test_m11_ssrf_protection_ipv6() {
         // M-11: Test SSRF protection rejects internal IPv6 addresses
         assert!(VerificationClient::is_internal_address("::1")); // Loopback
-        assert!(VerificationClient::is_internal_address("::"));  // Unspecified
+        assert!(VerificationClient::is_internal_address("::")); // Unspecified
 
         // Allow legitimate public IPv6
-        assert!(!VerificationClient::is_internal_address("2001:4860:4860::8888")); // Google DNS
+        assert!(!VerificationClient::is_internal_address(
+            "2001:4860:4860::8888"
+        )); // Google DNS
     }
 
     #[test]

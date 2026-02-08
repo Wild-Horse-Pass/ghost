@@ -212,8 +212,13 @@ impl OwnershipProof {
         let batch_id = self.batch_id()?;
 
         // Build the message (C-7: now includes epoch and batch_id)
-        let message_hash =
-            Self::build_message(self.epoch, &batch_id, settlement_id, destination, amount_sats);
+        let message_hash = Self::build_message(
+            self.epoch,
+            &batch_id,
+            settlement_id,
+            destination,
+            amount_sats,
+        );
         let message = Message::from_digest(message_hash);
 
         // Verify the signature
@@ -791,8 +796,10 @@ mod tests {
         let destination = "bc1qtest";
         let amount = 50_000u64;
 
-        let msg1 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
-        let msg2 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
+        let msg1 =
+            OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
+        let msg2 =
+            OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
 
         assert_eq!(msg1, msg2, "Same inputs must produce same message hash");
     }
@@ -805,25 +812,34 @@ mod tests {
         let destination = "bc1qtest";
         let amount = 50_000u64;
 
-        let msg1 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
+        let msg1 =
+            OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
 
         // Different settlement ID
         let different_id = [2u8; 32];
-        let msg2 = OwnershipProof::build_message(epoch, &batch_id, &different_id, destination, amount);
+        let msg2 =
+            OwnershipProof::build_message(epoch, &batch_id, &different_id, destination, amount);
         assert_ne!(
             msg1, msg2,
             "Different settlement_id must produce different hash"
         );
 
         // Different destination
-        let msg3 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, "bc1qother", amount);
+        let msg3 =
+            OwnershipProof::build_message(epoch, &batch_id, &settlement_id, "bc1qother", amount);
         assert_ne!(
             msg1, msg3,
             "Different destination must produce different hash"
         );
 
         // Different amount
-        let msg4 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount + 1);
+        let msg4 = OwnershipProof::build_message(
+            epoch,
+            &batch_id,
+            &settlement_id,
+            destination,
+            amount + 1,
+        );
         assert_ne!(msg1, msg4, "Different amount must produce different hash");
     }
 
@@ -835,10 +851,15 @@ mod tests {
         let destination = "bc1qtest";
         let amount = 50_000u64;
 
-        let msg1 = OwnershipProof::build_message(10, &batch_id, &settlement_id, destination, amount);
-        let msg2 = OwnershipProof::build_message(11, &batch_id, &settlement_id, destination, amount);
+        let msg1 =
+            OwnershipProof::build_message(10, &batch_id, &settlement_id, destination, amount);
+        let msg2 =
+            OwnershipProof::build_message(11, &batch_id, &settlement_id, destination, amount);
 
-        assert_ne!(msg1, msg2, "C-7: Different epoch must produce different hash");
+        assert_ne!(
+            msg1, msg2,
+            "C-7: Different epoch must produce different hash"
+        );
     }
 
     #[test]
@@ -852,10 +873,15 @@ mod tests {
         let batch_id1 = [5u8; 32];
         let batch_id2 = [6u8; 32];
 
-        let msg1 = OwnershipProof::build_message(epoch, &batch_id1, &settlement_id, destination, amount);
-        let msg2 = OwnershipProof::build_message(epoch, &batch_id2, &settlement_id, destination, amount);
+        let msg1 =
+            OwnershipProof::build_message(epoch, &batch_id1, &settlement_id, destination, amount);
+        let msg2 =
+            OwnershipProof::build_message(epoch, &batch_id2, &settlement_id, destination, amount);
 
-        assert_ne!(msg1, msg2, "C-7: Different batch_id must produce different hash");
+        assert_ne!(
+            msg1, msg2,
+            "C-7: Different batch_id must produce different hash"
+        );
     }
 
     #[test]
@@ -934,8 +960,14 @@ mod tests {
 
         let proof = OwnershipProof::new(sig, pubkey, epoch, batch_id);
 
-        assert!(proof.verify_epoch(42).is_ok(), "Should pass for matching epoch");
-        assert!(proof.verify_epoch(43).is_err(), "Should fail for different epoch");
+        assert!(
+            proof.verify_epoch(42).is_ok(),
+            "Should pass for matching epoch"
+        );
+        assert!(
+            proof.verify_epoch(43).is_err(),
+            "Should fail for different epoch"
+        );
     }
 
     #[test]

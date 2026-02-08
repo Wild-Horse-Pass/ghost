@@ -76,28 +76,38 @@ impl NodeCapabilities {
         if self.archive_mode {
             shares = shares
                 .checked_add(crate::constants::ARCHIVE_MODE_SHARES)
-                .expect("BUG: share calculation overflow - max possible shares verified < i32::MAX");
+                .expect(
+                    "BUG: share calculation overflow - max possible shares verified < i32::MAX",
+                );
         }
         if self.ghost_pay {
             shares = shares
                 .checked_add(crate::constants::GHOST_PAY_SHARES)
-                .expect("BUG: share calculation overflow - max possible shares verified < i32::MAX");
+                .expect(
+                    "BUG: share calculation overflow - max possible shares verified < i32::MAX",
+                );
         }
         if self.public_mining {
             shares = shares
                 .checked_add(crate::constants::PUBLIC_MINING_SHARES)
-                .expect("BUG: share calculation overflow - max possible shares verified < i32::MAX");
+                .expect(
+                    "BUG: share calculation overflow - max possible shares verified < i32::MAX",
+                );
         }
         if self.bitcoin_pure {
             // Bitcoin Pure works with both private and public mining
             shares = shares
                 .checked_add(crate::constants::BITCOIN_PURE_SHARES)
-                .expect("BUG: share calculation overflow - max possible shares verified < i32::MAX");
+                .expect(
+                    "BUG: share calculation overflow - max possible shares verified < i32::MAX",
+                );
         }
         if self.elder_status {
             shares = shares
                 .checked_add(crate::constants::ELDER_STATUS_SHARES)
-                .expect("BUG: share calculation overflow - max possible shares verified < i32::MAX");
+                .expect(
+                    "BUG: share calculation overflow - max possible shares verified < i32::MAX",
+                );
         }
         shares
     }

@@ -177,7 +177,11 @@ impl SubscriptionManager {
     ///
     /// M-13 FIX: Returns Ok(true) if subscribed, Ok(false) if already subscribed,
     /// Err if the wallet has reached the global subscription limit.
-    pub fn subscribe_lock_state(&self, wallet_id: &WalletId, lock_id: &str) -> Result<bool, &'static str> {
+    pub fn subscribe_lock_state(
+        &self,
+        wallet_id: &WalletId,
+        lock_id: &str,
+    ) -> Result<bool, &'static str> {
         let wallet_str = wallet_id.to_string();
         let lock_str = lock_id.to_string();
 
@@ -207,10 +211,7 @@ impl SubscriptionManager {
         // M-13 FIX: Add to wallet -> locks mapping (global tracking)
         {
             let mut wallet_subs = self.wallet_lock_subscriptions.write();
-            wallet_subs
-                .entry(wallet_str)
-                .or_default()
-                .insert(lock_str);
+            wallet_subs.entry(wallet_str).or_default().insert(lock_str);
         }
 
         Ok(true)
@@ -350,6 +351,7 @@ impl Default for SubscriptionManager {
 }
 
 #[cfg(test)]
+#[allow(clippy::bool_assert_comparison)]
 mod tests {
     use super::*;
 
@@ -476,19 +478,34 @@ mod tests {
             assert!(result.is_ok(), "M-13: Should allow subscription {}", i);
         }
 
-        assert_eq!(manager.wallet_lock_subscription_count(&wallet_id), MAX_LOCK_SUBSCRIPTIONS_PER_WALLET);
-        assert!(!manager.can_subscribe_lock(&wallet_id), "M-13: Should be at limit");
+        assert_eq!(
+            manager.wallet_lock_subscription_count(&wallet_id),
+            MAX_LOCK_SUBSCRIPTIONS_PER_WALLET
+        );
+        assert!(
+            !manager.can_subscribe_lock(&wallet_id),
+            "M-13: Should be at limit"
+        );
 
         // One more should fail
         let result = manager.subscribe_lock_state(&wallet_id, "lock_overflow");
-        assert!(result.is_err(), "M-13: Should reject subscription over limit");
+        assert!(
+            result.is_err(),
+            "M-13: Should reject subscription over limit"
+        );
 
         // Unsubscribe one and try again
         manager.unsubscribe_lock_state(&wallet_id, "lock_0");
-        assert!(manager.can_subscribe_lock(&wallet_id), "M-13: Should be under limit after unsubscribe");
+        assert!(
+            manager.can_subscribe_lock(&wallet_id),
+            "M-13: Should be under limit after unsubscribe"
+        );
 
         let result = manager.subscribe_lock_state(&wallet_id, "lock_new");
-        assert!(result.is_ok(), "M-13: Should allow subscription after unsubscribe");
+        assert!(
+            result.is_ok(),
+            "M-13: Should allow subscription after unsubscribe"
+        );
     }
 
     #[test]

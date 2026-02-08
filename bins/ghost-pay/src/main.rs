@@ -46,14 +46,14 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use tower_governor::{
-    errors::GovernorError, governor::GovernorConfigBuilder, key_extractor::KeyExtractor,
-    GovernorLayer,
-};
 use clap::Parser;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
+use tower_governor::{
+    errors::GovernorError, governor::GovernorConfigBuilder, key_extractor::KeyExtractor,
+    GovernorLayer,
+};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{debug, error, info, warn, Level};
@@ -343,7 +343,11 @@ fn is_valid_trusted_proxy(ip: &std::net::IpAddr) -> bool {
 
     match ip {
         IpAddr::V4(ipv4) => {
-            if ipv4.is_unspecified() || ipv4.is_link_local() || ipv4.is_multicast() || ipv4.is_broadcast() {
+            if ipv4.is_unspecified()
+                || ipv4.is_link_local()
+                || ipv4.is_multicast()
+                || ipv4.is_broadcast()
+            {
                 return false;
             }
             // Reject documentation addresses
@@ -378,8 +382,8 @@ fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
     use std::net::IpAddr;
 
     // PAY-2: Check TRUSTED_PROXY_IPS first (preferred), then GHOST_TRUSTED_PROXIES (legacy)
-    let proxies_str = std::env::var("TRUSTED_PROXY_IPS")
-        .or_else(|_| std::env::var("GHOST_TRUSTED_PROXIES"));
+    let proxies_str =
+        std::env::var("TRUSTED_PROXY_IPS").or_else(|_| std::env::var("GHOST_TRUSTED_PROXIES"));
 
     if let Ok(proxies_str) = proxies_str {
         let proxies: Vec<IpAddr> = proxies_str
@@ -395,7 +399,9 @@ fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
 
         if proxies.is_empty() {
             vec![
-                "127.0.0.1".parse().expect("L-1: Valid hardcoded IPv4 localhost"),
+                "127.0.0.1"
+                    .parse()
+                    .expect("L-1: Valid hardcoded IPv4 localhost"),
                 "::1".parse().expect("L-1: Valid hardcoded IPv6 localhost"),
             ]
         } else {
@@ -407,7 +413,9 @@ fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
         }
     } else {
         vec![
-            "127.0.0.1".parse().expect("L-1: Valid hardcoded IPv4 localhost"),
+            "127.0.0.1"
+                .parse()
+                .expect("L-1: Valid hardcoded IPv4 localhost"),
             "::1".parse().expect("L-1: Valid hardcoded IPv6 localhost"),
         ]
     }
@@ -600,10 +608,7 @@ async fn require_api_auth(
 }
 
 /// LOW-API-1: Security headers middleware for all HTTP responses
-async fn security_headers_middleware(
-    request: Request,
-    next: Next,
-) -> Response {
+async fn security_headers_middleware(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
 
     let headers = response.headers_mut();
@@ -623,10 +628,7 @@ async fn security_headers_middleware(
         "content-security-policy",
         HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
     );
-    headers.insert(
-        "referrer-policy",
-        HeaderValue::from_static("no-referrer"),
-    );
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
 
     response
 }
@@ -1129,8 +1131,9 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>()
-    ).await?;
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
 
     Ok(())
 }
@@ -1879,10 +1882,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> impl axum::response
     // Check Bitcoin RPC connectivity (async call)
     if let Err(e) = state.rpc.get_block_count().await {
         error!("L-13: Bitcoin RPC health check failed: {}", e);
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "rpc unhealthy".to_string(),
-        );
+        return (StatusCode::SERVICE_UNAVAILABLE, "rpc unhealthy".to_string());
     }
 
     (StatusCode::OK, "OK".to_string())
@@ -2369,7 +2369,8 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                                             .get("blockheight")
                                             .and_then(|v| v.as_u64())
                                             .unwrap_or(0);
-                                        let confirm_height = match safe_block_height_u64(raw_height) {
+                                        let confirm_height = match safe_block_height_u64(raw_height)
+                                        {
                                             Ok(h) => h,
                                             Err(e) => {
                                                 warn!(error = %e, "Invalid block height, skipping phase 2 confirmation");

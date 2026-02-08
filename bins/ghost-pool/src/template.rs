@@ -2016,7 +2016,10 @@ impl TemplateProcessor {
 
         // M-28: Verify coinbase matches approved payout before submission
         // This prevents address substitution attacks by modified nodes
-        if !self.coinbase_verifier.verify_before_submission(coinbase_witness) {
+        if !self
+            .coinbase_verifier
+            .verify_before_submission(coinbase_witness)
+        {
             return Err(anyhow::anyhow!(
                 "M-28: Coinbase verification failed - block submission blocked. \
                  Coinbase outputs do not match the BFT-approved payout proposal."

@@ -314,7 +314,7 @@ pub fn derive_spend_key(
     // 3. CRYPT-4 FIX: Second pass - overwrite with deterministic dummy value
     //    This provides additional protection against compiler optimization of non_secure_erase
     let mut dummy_bytes = [0x55u8; 32]; // 0x55 = 01010101 pattern, clearly distinguishable
-    // Create dummy key (this will overwrite tweak_secret's memory location)
+                                        // Create dummy key (this will overwrite tweak_secret's memory location)
     if let Ok(dummy_key) = SecretKey::from_slice(&dummy_bytes) {
         tweak_secret = dummy_key;
     }
@@ -448,7 +448,7 @@ mod tests {
 
         // Verify we can derive the spend key
         // M-17: Dereference Zeroizing wrapper to pass to derive_spend_key
-        let derived_spend = derive_spend_key(&spend_secret, &*tweak).unwrap();
+        let derived_spend = derive_spend_key(&spend_secret, &tweak).unwrap();
         let derived_pubkey = PublicKey::from_secret_key(&secp, &derived_spend);
 
         assert_eq!(output_pubkey, derived_pubkey);
@@ -562,7 +562,7 @@ mod tests {
 
         // Verify we can still derive the spend key
         // M-17: Dereference Zeroizing wrapper to pass to derive_spend_key
-        let derived_spend = derive_spend_key(&spend_secret, &*tweak).unwrap();
+        let derived_spend = derive_spend_key(&spend_secret, &tweak).unwrap();
         let derived_pubkey = PublicKey::from_secret_key(&secp, &derived_spend);
 
         assert_eq!(output_pubkey, derived_pubkey);

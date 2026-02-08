@@ -866,7 +866,7 @@ mod tests {
     fn test_ws_state_mainnet() {
         // L-30 FIX: Test mainnet configuration
         let secret = create_test_secret();
-        let state = WsState::mainnet(secret);
+        let state = WsState::with_required_auth(secret, true);
 
         assert!(state.requires_auth());
         assert_eq!(state.auth_secret(), Some(&secret));
