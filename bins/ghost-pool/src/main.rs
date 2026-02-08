@@ -963,7 +963,7 @@ async fn main() -> Result<()> {
         });
 
     // Create the elder registration handler with transition callback set BEFORE Arc wrapping
-    let mut elder_handler = ghost_consensus::ElderRegistrationHandler::new(
+    let elder_handler = ghost_consensus::ElderRegistrationHandler::new(
         Arc::clone(&identity),
         Arc::clone(&elder_list_manager),
         Arc::clone(&db),

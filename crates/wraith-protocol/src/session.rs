@@ -182,6 +182,7 @@ impl SessionRegistry {
 ///
 /// Implement this trait to provide crash-safe session tracking.
 /// Without persistence, session replay attacks are possible after restarts.
+#[allow(dead_code)] // Prepared for persistence integration
 pub trait SessionPersistence: Send + Sync {
     /// Store a session ID in persistent storage
     fn store_session(&self, session_id: &[u8; 32]) -> Result<(), crate::WraithError>;
@@ -206,6 +207,7 @@ pub trait SessionPersistence: Send + Sync {
 /// 1. Load all session IDs from persistent storage
 /// 2. Populate in-memory cache
 /// 3. Acknowledge in-memory mode (automatic when persistence is available)
+#[allow(dead_code)] // Prepared for persistence integration
 pub struct PersistentSessionRegistry {
     /// In-memory cache for fast lookup
     in_memory: SessionRegistry,
@@ -231,6 +233,7 @@ impl Default for PersistentSessionRegistry {
     }
 }
 
+#[allow(dead_code)] // Prepared for persistence integration
 impl PersistentSessionRegistry {
     /// Default session expiry: 7 days (matches maximum session duration)
     const DEFAULT_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;

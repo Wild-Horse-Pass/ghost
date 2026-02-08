@@ -185,6 +185,10 @@ impl SettlementCoordinator {
         // Create settlement record
         let mut settlement = EpochSettlement::new(epoch, role);
 
+        // M-5 SECURITY FIX: Handle all SettlerRole variants gracefully instead of
+        // using unreachable!(). While the early return above filters NotSettler,
+        // we handle it explicitly to avoid panics if enum variants are added or
+        // if there's a race condition between the check and this match.
         match role {
             SettlerRole::Primary => {
                 info!(epoch, "We are the PRIMARY settler for this epoch");
@@ -194,7 +198,15 @@ impl SettlementCoordinator {
                 info!(epoch, "We are the FALLBACK settler for this epoch");
                 settlement.state = CoordinatorState::WaitingForPrimary;
             }
-            SettlerRole::NotSettler => unreachable!(),
+            SettlerRole::NotSettler => {
+                // This should never happen due to the early return above, but handle
+                // gracefully rather than panicking. Log a warning and return None.
+                warn!(
+                    epoch,
+                    "M-5: Unexpected NotSettler role after filtering - returning None"
+                );
+                return Ok(None);
+            }
         }
 
         self.settlements.write().insert(epoch, settlement);

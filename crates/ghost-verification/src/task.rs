@@ -1786,3 +1786,200 @@ impl VerificationTask {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_signing_fn(message: &[u8]) -> [u8; 64] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(message);
+        hasher.update(b"test_secret_key");
+        let hash = hasher.finalize();
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&hash);
+        sig[32..].copy_from_slice(&hash);
+        sig
+    }
+
+    fn test_verify_fn(pubkey: &[u8], message: &[u8], signature: &[u8]) -> bool {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(message);
+        hasher.update(b"test_secret_key");
+        let expected = hasher.finalize();
+        signature.len() == 64 && signature[..32] == expected[..] && !pubkey.is_empty()
+    }
+
+    #[test]
+    fn test_signed_verification_broadcast_challenge_binding() {
+        // MEDIUM-5 verification: Test that signature is bound to challenge data
+        let broadcast = VerificationBroadcast {
+            target_node_id: [1u8; 32],
+            challenger_id: [2u8; 32],
+            capability: "archive".to_string(),
+            passed: true,
+            challenge_data: r#"{"block_hash":"00000000deadbeef","block_height":12345}"#.to_string(),
+            response_data: Some(r#"{"success":true}"#.to_string()),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        };
+
+        let signed = SignedVerificationBroadcast::new(broadcast.clone(), test_signing_fn);
+
+        // Verify challenge_data_hash is populated and correct
+        assert_eq!(signed.challenge_data_hash.len(), 64, "challenge_data_hash should be 64 hex chars");
+
+        // Verify the hash matches the challenge data
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(broadcast.challenge_data.as_bytes());
+        let expected_hash = hex::encode(hasher.finalize());
+        assert_eq!(
+            signed.challenge_data_hash, expected_hash,
+            "challenge_data_hash should match SHA256 of challenge_data"
+        );
+
+        // Verify signature is valid
+        assert!(
+            signed.verify(test_verify_fn).is_ok(),
+            "Valid signature should verify"
+        );
+    }
+
+    #[test]
+    fn test_signed_verification_broadcast_challenge_tampering_detected() {
+        // MEDIUM-5 verification: Test that modifying challenge_data invalidates signature
+        let broadcast = VerificationBroadcast {
+            target_node_id: [1u8; 32],
+            challenger_id: [2u8; 32],
+            capability: "archive".to_string(),
+            passed: true,
+            challenge_data: r#"{"block_hash":"00000000deadbeef","block_height":12345}"#.to_string(),
+            response_data: None,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64,
+        };
+
+        let mut signed = SignedVerificationBroadcast::new(broadcast, test_signing_fn);
+
+        // Tamper with challenge_data after signing
+        signed.broadcast.challenge_data =
+            r#"{"block_hash":"00000000cafebabe","block_height":99999}"#.to_string();
+
+        // Verification should fail because challenge_data_hash no longer matches
+        let result = signed.verify(test_verify_fn);
+        assert!(
+            result.is_err(),
+            "Tampered challenge_data should fail verification"
+        );
+        assert!(
+            result.unwrap_err().contains("Challenge data hash mismatch"),
+            "Error should mention challenge data hash mismatch"
+        );
+    }
+
+    #[test]
+    fn test_signed_verification_broadcast_different_challenges() {
+        // MEDIUM-5 verification: Test that different challenge data produces different hashes
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        let broadcast1 = VerificationBroadcast {
+            target_node_id: [1u8; 32],
+            challenger_id: [2u8; 32],
+            capability: "archive".to_string(),
+            passed: true,
+            challenge_data: r#"{"block_hash":"hash1","block_height":100}"#.to_string(),
+            response_data: None,
+            timestamp,
+        };
+
+        let broadcast2 = VerificationBroadcast {
+            target_node_id: [1u8; 32],
+            challenger_id: [2u8; 32],
+            capability: "archive".to_string(),
+            passed: true,
+            challenge_data: r#"{"block_hash":"hash2","block_height":200}"#.to_string(),
+            response_data: None,
+            timestamp,
+        };
+
+        let signed1 = SignedVerificationBroadcast::new(broadcast1, test_signing_fn);
+        let signed2 = SignedVerificationBroadcast::new(broadcast2, test_signing_fn);
+
+        // Different challenge data should produce different hashes
+        assert_ne!(
+            signed1.challenge_data_hash, signed2.challenge_data_hash,
+            "Different challenges should have different hashes"
+        );
+
+        // Different challenge data should produce different signatures
+        assert_ne!(
+            signed1.signature, signed2.signature,
+            "Different challenges should have different signatures"
+        );
+    }
+
+    #[test]
+    fn test_signed_verification_broadcast_timestamp_validation() {
+        // MED-VER-7 verification: Test timestamp bounds checking
+        let broadcast = VerificationBroadcast {
+            target_node_id: [1u8; 32],
+            challenger_id: [2u8; 32],
+            capability: "archive".to_string(),
+            passed: true,
+            challenge_data: r#"{"block":"test"}"#.to_string(),
+            response_data: None,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+                + 300, // 5 minutes in the future
+        };
+
+        let signed = SignedVerificationBroadcast::new(broadcast, test_signing_fn);
+        let result = signed.verify(test_verify_fn);
+        assert!(
+            result.is_err(),
+            "Timestamp too far in future should fail"
+        );
+        assert!(
+            result.unwrap_err().contains("too far in the future"),
+            "Error should mention future timestamp"
+        );
+    }
+
+    #[test]
+    fn test_signed_verification_broadcast_stale_timestamp() {
+        // MED-VER-7 verification: Test stale timestamp rejection
+        let broadcast = VerificationBroadcast {
+            target_node_id: [1u8; 32],
+            challenger_id: [2u8; 32],
+            capability: "archive".to_string(),
+            passed: true,
+            challenge_data: r#"{"block":"test"}"#.to_string(),
+            response_data: None,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+                - 700, // 11+ minutes in the past
+        };
+
+        let signed = SignedVerificationBroadcast::new(broadcast, test_signing_fn);
+        let result = signed.verify(test_verify_fn);
+        assert!(result.is_err(), "Stale timestamp should fail");
+        assert!(
+            result.unwrap_err().contains("too old"),
+            "Error should mention old timestamp"
+        );
+    }
+}

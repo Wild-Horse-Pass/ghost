@@ -825,4 +825,80 @@ mod tests {
         assert!((stats.stratum_pass_rate() - 0.0).abs() < 0.001);
         assert!((stats.ghostpay_pass_rate() - 0.8).abs() < 0.001);
     }
+
+    #[test]
+    fn test_scaled_min_unique_challengers() {
+        // MEDIUM-1/MEDIUM-2 verification: Test that scaled_min_unique_challengers
+        // returns appropriate values based on network size
+        let db = Arc::new(Database::in_memory().unwrap());
+        let provider = QualifiedCapabilityProvider::new(db);
+
+        // Small networks: base requirement (10)
+        assert_eq!(
+            provider.scaled_min_unique_challengers(0),
+            BASE_MIN_UNIQUE_CHALLENGERS
+        );
+        assert_eq!(
+            provider.scaled_min_unique_challengers(5),
+            BASE_MIN_UNIQUE_CHALLENGERS
+        );
+        assert_eq!(
+            provider.scaled_min_unique_challengers(10),
+            BASE_MIN_UNIQUE_CHALLENGERS
+        );
+
+        // Larger networks: scaled requirement
+        // Formula: min(MAX, BASE + sqrt(network_size / 10))
+        // 100 nodes: 10 + sqrt(10) = 10 + 3.16 = 13
+        let result_100 = provider.scaled_min_unique_challengers(100);
+        assert!(
+            result_100 >= 13 && result_100 <= 14,
+            "100 nodes should give ~13, got {}",
+            result_100
+        );
+
+        // 500 nodes: 10 + sqrt(50) = 10 + 7.07 = 17
+        let result_500 = provider.scaled_min_unique_challengers(500);
+        assert!(
+            result_500 >= 17 && result_500 <= 18,
+            "500 nodes should give ~17, got {}",
+            result_500
+        );
+
+        // 1000 nodes: 10 + sqrt(100) = 10 + 10 = 20
+        let result_1000 = provider.scaled_min_unique_challengers(1000);
+        assert_eq!(result_1000, 20, "1000 nodes should give 20");
+
+        // Very large networks: capped at MAX_MIN_UNIQUE_CHALLENGERS (50)
+        let result_max = provider.scaled_min_unique_challengers(100_000);
+        assert_eq!(
+            result_max, MAX_MIN_UNIQUE_CHALLENGERS,
+            "Large networks should cap at {}",
+            MAX_MIN_UNIQUE_CHALLENGERS
+        );
+
+        // Overflow protection: very large values should not overflow
+        let result_huge = provider.scaled_min_unique_challengers(usize::MAX);
+        assert_eq!(
+            result_huge, MAX_MIN_UNIQUE_CHALLENGERS,
+            "Huge networks should cap at {}",
+            MAX_MIN_UNIQUE_CHALLENGERS
+        );
+    }
+
+    #[test]
+    fn test_network_size_fallback_cache() {
+        // M-7/H-14 verification: Test cached network size behavior
+        let db = Arc::new(Database::in_memory().unwrap());
+        let provider = QualifiedCapabilityProvider::new(db);
+
+        // Initial call should populate cache and return result
+        let size1 = provider.get_network_size_with_fallback();
+        // With empty DB, should return 0 or cached default
+        assert!(size1 <= 100, "Empty DB should return small value or default");
+
+        // Cache should be populated after first call
+        let cache = provider.cached_network_size.read();
+        assert!(cache.is_some(), "Cache should be populated after first call");
+    }
 }
