@@ -104,20 +104,38 @@ fn calculate_shannon_entropy(bytes: &[u8]) -> f64 {
 /// This threshold is complemented by runs test and unique byte count checks
 /// to catch patterns that pass Shannon entropy but exhibit non-random structure.
 /// The combination of three independent tests provides strong RNG failure detection.
+///
+/// M-14 FALSE POSITIVE NOTE: Legitimate RNG can occasionally produce data that
+/// fails these statistical tests by pure chance. For a 3-sigma threshold, this
+/// occurs roughly 0.3% of the time per test. With three independent tests, the
+/// combined false positive rate is approximately 0.9% (3 x 0.3%). The
+/// `random_bytes_32_with_retry()` function handles this by retrying up to
+/// MAX_RNG_RETRIES times before failing, making false positive failures
+/// astronomically unlikely (0.009^100 ~ 10^-204) while still catching genuine
+/// RNG failures which would fail consistently.
 const MIN_ENTROPY_BITS_PER_BYTE: f64 = 4.0;
 
 /// L-10 SEC-WRAITH-1: Minimum number of runs (bit transitions) expected in random data.
 /// For 256 bits (32 bytes), random data should have ~128 runs (+/- ~11 std dev).
 /// L-10 FIX: Tightened from 85 to 95 runs (~3 std dev below mean instead of ~4).
+///
+/// M-14 NOTE: Legitimate random data falls outside this range ~0.3% of the time.
+/// The retry mechanism in random_bytes_32_with_retry() handles these rare cases.
 const MIN_RUNS_FOR_32_BYTES: usize = 95;
 
 /// L-10 SEC-WRAITH-1: Maximum runs test to catch oscillating patterns (0101010...).
 /// L-10 FIX: Tightened from 171 to 161 runs (~3 std dev above mean instead of ~4).
+///
+/// M-14 NOTE: Legitimate random data falls outside this range ~0.3% of the time.
+/// The retry mechanism in random_bytes_32_with_retry() handles these rare cases.
 const MAX_RUNS_FOR_32_BYTES: usize = 161;
 
 /// L-10 SEC-WRAITH-1: Minimum unique byte count for 32 bytes.
 /// With 32 samples from 256 values, birthday paradox gives ~30.4 expected unique values.
 /// L-10 FIX: Increased from 15 to 18 unique bytes for stronger pattern detection.
+///
+/// M-14 NOTE: Legitimate random data can occasionally have fewer unique bytes.
+/// The retry mechanism in random_bytes_32_with_retry() handles these rare cases.
 const MIN_UNIQUE_BYTES: usize = 18;
 
 /// SEC-WRAITH-1: Perform runs test on byte data

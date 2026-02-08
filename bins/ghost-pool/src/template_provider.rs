@@ -141,27 +141,69 @@ impl TdpConfig {
     }
 }
 
-// C-2 SECURITY FIX: Removed Default impl for TdpConfig
+// C-1 SECURITY FIX: Removed Default impl for TdpConfig
 //
 // RATIONALE: Default impl panicked on key generation failure, which could
 // crash the pool in production. Production deployments MUST provide explicit
 // TdpConfig with properly generated keys via TdpConfig::new().
 //
-// The Default impl was only used in tests. Tests should now use:
-//   TdpConfig::new_for_testing() which handles errors gracefully.
+// Available alternatives:
+//   - TdpConfig::new(secret_key) - Production use with explicit key
+//   - TdpConfig::try_default() - Fallible random key generation
+//   - TdpConfig::new_for_testing() - Test-only, returns Option
 //
 // This is a BREAKING CHANGE - code using TdpConfig::default() must be updated.
 
+/// Error type for TdpConfig creation failures
+#[derive(Debug, Clone)]
+pub enum TdpConfigError {
+    /// Failed to generate random bytes for secret key
+    RandomGeneration(String),
+    /// Invalid secret key (e.g., all zeros or out of curve range)
+    InvalidSecretKey(String),
+}
+
+impl std::fmt::Display for TdpConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TdpConfigError::RandomGeneration(e) => {
+                write!(f, "Failed to generate random secret key: {}", e)
+            }
+            TdpConfigError::InvalidSecretKey(e) => {
+                write!(f, "Invalid secret key: {}", e)
+            }
+        }
+    }
+}
+
+impl std::error::Error for TdpConfigError {}
+
 impl TdpConfig {
+    /// Create a TdpConfig with a randomly generated secret key.
+    ///
+    /// # Security Note
+    /// For production deployments, prefer using `TdpConfig::new()` with a secret key
+    /// loaded from persistent storage. Random keys generated here will be different
+    /// on each restart, breaking client authentication.
+    ///
+    /// # Errors
+    /// Returns an error if:
+    /// - Random number generation fails (system entropy unavailable)
+    /// - The generated key is invalid (statistically impossible but handled)
+    pub fn try_default() -> Result<Self, TdpConfigError> {
+        let mut secret_key = [0u8; 32];
+        getrandom::getrandom(&mut secret_key)
+            .map_err(|e| TdpConfigError::RandomGeneration(e.to_string()))?;
+        Self::new(secret_key).map_err(|e| TdpConfigError::InvalidSecretKey(e.to_string()))
+    }
+
     /// Create a TdpConfig for testing purposes only
     ///
     /// Returns None if key generation fails (should never happen in tests)
     /// Production code should use TdpConfig::new() with explicit keys.
     #[cfg(test)]
     pub fn new_for_testing() -> Option<Self> {
-        let mut secret_key = [0u8; 32];
-        getrandom::getrandom(&mut secret_key).ok()?;
-        Self::new(secret_key).ok()
+        Self::try_default().ok()
     }
 }
 
@@ -1292,8 +1334,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_tdp_config_try_default() {
+        // C-1: try_default() should succeed when entropy is available
+        let config = TdpConfig::try_default().expect("Key generation should succeed in tests");
+        assert_eq!(config.port, 8442);
+        assert_eq!(config.max_connections, 10);
+        // Public key should be derivable
+        assert!(!config.authority_pubkey_base58().is_empty());
+    }
+
+    #[test]
     fn test_tdp_config_new_for_testing() {
-        // C-2: Use new_for_testing() instead of Default (which was removed)
+        // C-1: new_for_testing() wraps try_default() for convenience in tests
         let config = TdpConfig::new_for_testing().expect("Key generation should succeed in tests");
         assert_eq!(config.port, 8442);
         assert_eq!(config.max_connections, 10);

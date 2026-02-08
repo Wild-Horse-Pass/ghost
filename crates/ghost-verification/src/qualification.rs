@@ -420,6 +420,7 @@ impl QualifiedCapabilityProvider {
     /// Get qualified capabilities for a node by hex string
     ///
     /// M-4 FIX: Now uses scaled_min_unique_challengers like get_qualified()
+    /// M-10 FIX: Uses get_network_size_with_fallback() for cached fallback on DB failure
     pub fn get_qualified_by_hex(&self, node_id_hex: &str) -> NodeCapabilities {
         let since = self.lookback_timestamp();
 
@@ -433,19 +434,11 @@ impl QualifiedCapabilityProvider {
             Err(_) => return NodeCapabilities::default(),
         }
 
-        // M-4 FIX: Get network size for scaled unique challenger requirement
-        // On DB failure, return default capabilities rather than using static value
-        let network_size = match self.db.get_all_node_ids_with_payout() {
-            Ok(ids) => ids.len(),
-            Err(e) => {
-                warn!(
-                    node = %&node_id_hex[..8.min(node_id_hex.len())],
-                    error = %e,
-                    "M-4: Failed to get network size for unique challenger scaling"
-                );
-                return NodeCapabilities::default();
-            }
-        };
+        // M-4 + M-10 FIX: Get network size for scaled unique challenger requirement
+        // M-10: Use get_network_size_with_fallback() for cached fallback on DB failure,
+        // matching the behavior of get_qualified(). This prevents transient DB issues
+        // from causing all nodes to return default capabilities.
+        let network_size = self.get_network_size_with_fallback();
         let min_unique = self.scaled_min_unique_challengers(network_size);
 
         // C-2: Get unique challenger counts for Sybil prevention
@@ -503,7 +496,10 @@ impl QualifiedCapabilityProvider {
     /// Queries the `nodes` table (not `peers`) to include the local node.
     ///
     /// M-5 FIX: Now uses scaled_min_unique_challengers based on network size
+    /// M-11 FIX: Updates network size cache for other methods to use as fallback
     pub fn get_all_qualified_nodes(&self) -> Vec<(NodeId, i32)> {
+        use std::sync::atomic::Ordering;
+
         let since = self.lookback_timestamp();
         let mut qualified_nodes = Vec::new();
 
@@ -516,8 +512,11 @@ impl QualifiedCapabilityProvider {
             }
         };
 
-        // M-5 FIX: Calculate scaled unique challenger requirement based on network size
+        // M-5 + M-11 FIX: Calculate scaled unique challenger requirement based on network size
+        // M-11: Also update the cached network size so other methods (like get_qualified_by_hex)
+        // can use it as a fallback if their DB queries fail
         let network_size = node_ids.len();
+        self.cached_network_size.store(network_size, Ordering::Relaxed);
         let min_unique = self.scaled_min_unique_challengers(network_size);
 
         info!(

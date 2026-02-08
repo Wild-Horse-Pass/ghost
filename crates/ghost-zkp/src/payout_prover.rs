@@ -219,8 +219,9 @@ impl PayoutProver {
         // Production MUST use MPC-generated parameters
         info!("Generating Groth16 parameters (TESTING ONLY - NOT SECURE FOR PRODUCTION)...");
         let setup_start = Instant::now();
+        // H-3 FIX: Use OsRng for cryptographic security instead of thread_rng()
         let params =
-            generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rand::thread_rng())
+            generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rand::rngs::OsRng)
                 .map_err(|e| {
                     ZkError::SetupError(format!("Parameter generation failed: {:?}", e))
                 })?;
@@ -387,7 +388,8 @@ impl PayoutProver {
         let proving_start = Instant::now();
 
         // Generate the Groth16 proof
-        let proof = create_random_proof(circuit, params, &mut rand::thread_rng())
+        // H-3 FIX: Use OsRng for cryptographic security instead of thread_rng()
+        let proof = create_random_proof(circuit, params, &mut rand::rngs::OsRng)
             .map_err(|e| ZkError::ProvingError(format!("Groth16 proving failed: {:?}", e)))?;
 
         debug!("Groth16 proof generated in {:?}", proving_start.elapsed());

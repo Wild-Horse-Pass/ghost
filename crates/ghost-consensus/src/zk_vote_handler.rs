@@ -252,14 +252,14 @@ impl ZkVoteHandler {
 
     /// Calculate the threshold for BFT consensus
     ///
-    /// H-6 SECURITY FIX: Explicit check for zero validators before division.
-    /// Returns 1 as minimum threshold if no validators exist (consensus impossible).
+    /// H-5 SECURITY FIX: Returns 0 when no validators exist to indicate
+    /// consensus is impossible. Callers must check for 0 threshold.
     fn calculate_threshold(&self) -> u32 {
         let total = self.validators.read().len() as u32;
-        // H-6: Explicit zero check before threshold calculation
-        // With zero validators, consensus is impossible, return minimum threshold
+        // H-5: With zero validators, no consensus is possible
+        // Return 0 to signal this - callers must handle appropriately
         if total == 0 {
-            return 1; // Minimum threshold - no proposals can pass with 0 validators
+            return 0;
         }
         // 67% threshold (2/3 + 1)
         (total * self.config.bft_threshold_percent / 100).max(1)
@@ -476,8 +476,12 @@ impl ZkVoteHandler {
         let threshold = self.calculate_threshold();
         let total_validators = self.validators.read().len() as u32;
 
+        // H-5 SECURITY: With 0 validators (threshold=0), consensus is impossible
         // Check if we reached consensus and prepare the result
-        let consensus_result = if state.approvals.len() as u32 >= threshold {
+        let consensus_result = if threshold == 0 {
+            // No validators means no consensus possible
+            None
+        } else if state.approvals.len() as u32 >= threshold {
             // Consensus reached - approved!
             let new_state_root = state.proposal.new_state_root;
             let approvals_count = state.approvals.len() as u32;
@@ -842,9 +846,9 @@ mod tests {
         let identity = create_test_identity();
         let handler = ZkVoteHandler::new(identity);
 
-        // H-6 SECURITY TEST: With zero validators, threshold should be 1 (not panic)
+        // H-5 SECURITY TEST: With zero validators, threshold should be 0 (no consensus possible)
         let threshold = handler.calculate_threshold();
-        assert_eq!(threshold, 1, "H-6: Zero validators should return threshold of 1");
+        assert_eq!(threshold, 0, "H-5: Zero validators should return threshold of 0");
 
         // Add 4 validators
         for i in 0..4 {
@@ -866,13 +870,13 @@ mod tests {
     }
 
     #[test]
-    fn test_h6_zero_validators_no_panic() {
-        // H-6 SECURITY TEST: Verify that operations with zero validators don't panic
+    fn test_h5_zero_validators_no_consensus() {
+        // H-5 SECURITY TEST: Verify that zero validators means no consensus possible
         let identity = create_test_identity();
         let handler = ZkVoteHandler::new(identity);
 
-        // Should return 1 (minimum threshold) with zero validators
-        assert_eq!(handler.calculate_threshold(), 1);
+        // Should return 0 (no consensus possible) with zero validators
+        assert_eq!(handler.calculate_threshold(), 0);
         assert_eq!(handler.validator_count(), 0);
 
         // Operations should not panic with zero validators

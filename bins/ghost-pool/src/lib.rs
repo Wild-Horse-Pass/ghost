@@ -22,19 +22,60 @@
 
 //! Ghost Pool Library
 //!
-//! This module exposes internal components for testing and fuzzing.
-//! The main entry point is the binary in main.rs.
+//! Core components for Bitcoin Ghost mining pool operations.
+//! This library provides all necessary functionality for running a Ghost mining node.
+//!
+//! # Modules
+//!
+//! - [`coinbase_verifier`] - Validates coinbase transactions against approved payouts
+//! - [`connection`] - Manages miner connections and session state
+//! - [`payout`] - Payout proposal creation and BFT consensus integration
+//! - [`payout_commitment`] - Cryptographic commitments for payout proposals
+//! - [`payout_validator`] - Validates payout proposals against economic rules
+//! - [`registry`] - Load balancer registration and health reporting
+//! - [`reorg`] - Chain reorganization detection and handling
+//! - [`round`] - Mining round management and share tracking
+//! - [`rpc`] - JSON-RPC request parsing for Stratum protocol
+//! - [`template`] - Block template processing with BUDS filtering
+//! - [`template_provider`] - Template Distribution Protocol (TDP) server
+//! - [`treasury`] - Treasury state and fee distribution tracking
+//! - [`validation`] - Input validation for miner credentials and shares
 
+/// Coinbase transaction verification against payout commitments.
 pub mod coinbase_verifier;
+
+/// Miner connection and session management.
 pub mod connection;
+
+/// Payout proposal creation and consensus coordination.
 pub mod payout;
+
+/// Cryptographic commitments for payout integrity.
 pub mod payout_commitment;
+
+/// Economic validation of payout proposals.
 pub mod payout_validator;
+
+/// Load balancer registration and node discovery.
 pub mod registry;
+
+/// Chain reorganization detection and recovery.
 pub mod reorg;
+
+/// Mining round lifecycle and share accounting.
 pub mod round;
+
+/// Stratum JSON-RPC request parsing.
 pub mod rpc;
+
+/// Block template processing with policy filtering.
 pub mod template;
+
+/// Template Distribution Protocol (TDP) for SRI integration.
 pub mod template_provider;
+
+/// Treasury and fee distribution state.
 pub mod treasury;
+
+/// Input validation utilities for security.
 pub mod validation;

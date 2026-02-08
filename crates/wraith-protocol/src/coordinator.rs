@@ -240,7 +240,9 @@ impl ReputationTracker {
 
     /// Manually unban a participant (use with caution)
     ///
-    /// M-3 FIX: Now correctly uses hashed ghost_id like ban() and is_banned()
+    /// H-1 FIX: Now correctly uses hashed ghost_id like ban() and is_banned()
+    /// Previously this function used raw ghost_id which would never match
+    /// entries in self.banned (which stores hashed IDs).
     pub fn unban(&mut self, ghost_id: &str) {
         let hashed = Self::hash_ghost_id(ghost_id);
         self.banned.remove(&hashed);

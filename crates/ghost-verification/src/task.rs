@@ -1616,7 +1616,12 @@ impl VerificationTask {
         // HIGH-VER-1: Use first 8 bytes as epoch, ensuring full 64-bit random range
         // This makes precomputation of all possible epochs infeasible (2^64 values)
         // Combined with the random nonce in validation, provides strong security.
-        let epoch = u64::from_le_bytes(rand_bytes[..8].try_into().unwrap());
+        // L-1: Replace unwrap with expect for clarity - slice is always exactly 8 bytes
+        let epoch = u64::from_le_bytes(
+            rand_bytes[..8]
+                .try_into()
+                .expect("slice is exactly 8 bytes from 32-byte array"),
+        );
 
         // Ensure non-zero epoch (epoch 0 is genesis with special semantics)
         let epoch = if epoch == 0 { 1 } else { epoch };

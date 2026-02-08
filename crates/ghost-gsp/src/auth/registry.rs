@@ -259,9 +259,10 @@ impl WalletRegistry {
     /// while ensuring nonces are eventually cleaned up.
     fn maybe_cleanup_nonces(&self) {
         // Use a simple random check - cleanup ~1% of the time
+        // H-3 FIX: Use OsRng for cryptographic security instead of thread_rng()
+        use rand::rngs::OsRng;
         use rand::Rng;
-        let mut rng = rand::thread_rng();
-        if rng.gen_range(0..100) == 0 {
+        if OsRng.gen_range(0..100) == 0 {
             if let Ok(deleted) = self.cleanup_old_nonces() {
                 if deleted > 0 {
                     tracing::debug!(

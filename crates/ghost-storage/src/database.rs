@@ -48,6 +48,12 @@ impl UmaskGuard {
     /// Set a restrictive umask and return a guard that restores the original on drop.
     /// umask 0o077 means: remove all permissions for group and others.
     fn new_restrictive() -> Self {
+        // SAFETY: libc::umask is a POSIX standard function that:
+        // 1. Atomically sets the process umask to the specified value
+        // 2. Returns the previous umask value (which we store for restoration)
+        // 3. Has no failure mode - it always succeeds
+        // 4. Only affects file creation permissions, not existing files
+        // The returned old_umask is always valid as umask cannot fail.
         let old_umask = unsafe { libc::umask(0o077) };
         Self { old_umask }
     }
@@ -56,6 +62,12 @@ impl UmaskGuard {
 #[cfg(unix)]
 impl Drop for UmaskGuard {
     fn drop(&mut self) {
+        // SAFETY: libc::umask is a POSIX standard function that:
+        // 1. Atomically restores the process umask to the original value
+        // 2. Has no failure mode - it always succeeds
+        // 3. old_umask was obtained from a previous umask call, so it's valid
+        // This restoration is critical for RAII: we must restore the umask
+        // even if a panic occurs, which Drop guarantees.
         unsafe {
             libc::umask(self.old_umask);
         }

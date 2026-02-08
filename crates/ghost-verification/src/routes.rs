@@ -95,12 +95,24 @@ fn get_system_resources(proc_paths_allowed: &[String]) -> (f64, f64, f64) {
             use std::ffi::CString;
             use std::mem::MaybeUninit;
 
-            let path = CString::new("/").unwrap();
+            // L-1: Root path has no NUL bytes so this always succeeds
+            let path = CString::new("/").expect("root path contains no NUL bytes");
             let mut stat: MaybeUninit<libc::statvfs> = MaybeUninit::uninit();
 
+            // SAFETY: libc::statvfs is a POSIX standard function that:
+            // 1. Takes a valid C string pointer (path.as_ptr() is null-terminated)
+            // 2. Writes to a properly aligned, uninitialized statvfs struct
+            // 3. Returns 0 on success, -1 on failure (we check result before using stat)
+            // 4. Does not retain the pointer after the call returns
+            // The MaybeUninit wrapper ensures we don't assume initialization until
+            // statvfs succeeds (result == 0).
             let result = unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) };
 
             if result == 0 {
+                // SAFETY: We only call assume_init() after verifying result == 0,
+                // which guarantees statvfs successfully wrote valid data to the struct.
+                // The statvfs struct contains only POD types (integers) with no
+                // invariants beyond being initialized, which statvfs guarantees on success.
                 let stat = unsafe { stat.assume_init() };
                 let total = stat.f_blocks as f64 * stat.f_frsize as f64;
                 let free = stat.f_bfree as f64 * stat.f_frsize as f64;

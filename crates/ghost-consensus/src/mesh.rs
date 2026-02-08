@@ -944,14 +944,14 @@ impl MeshNetwork {
         })
     }
 
-    /// Create a new mesh network (infallible, panics on required Noise failure)
+    /// Create a new mesh network (infallible, panics on failure)
     ///
-    /// C-4 SECURITY: This method is restricted to test code only.
+    /// C-3 SECURITY: This method is restricted to test code only via #[cfg(test)].
     /// Production code MUST use `try_new()` which returns a Result and allows
     /// proper error handling instead of panicking.
     ///
     /// # Panics
-    /// Panics if `noise_required=true` and Noise initialization fails.
+    /// Panics if MeshNetwork initialization fails (e.g., noise_required=true but Noise fails).
     #[cfg(test)]
     pub fn new(identity: Arc<NodeIdentity>, config: MeshConfig) -> Self {
         Self::try_new(identity, config).expect("MeshNetwork initialization failed")

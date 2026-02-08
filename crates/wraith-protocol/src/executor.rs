@@ -475,7 +475,7 @@ impl WraithTransactionBuilder {
     ///
     /// Combines the session ID with additional entropy (from CSPRNG) to create
     /// an unpredictable shuffle seed. The entropy should be generated fresh
-    /// for each phase transaction using `rand::thread_rng()`.
+    /// for each phase transaction using `getrandom::getrandom()`.
     /// Returns a full 32-byte seed suitable for ChaCha20Rng.
     fn session_shuffle_seed_with_entropy(&self, entropy: &[u8; 32]) -> [u8; 32] {
         use sha2::{Digest, Sha256};

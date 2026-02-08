@@ -271,8 +271,8 @@ impl std::fmt::Debug for LocalSigner {
 impl LocalSigner {
     /// Create a new LocalSigner with a random key
     pub fn generate() -> Self {
-        let mut rng = rand::thread_rng();
-        let signing_key = SigningKey::generate(&mut rng);
+        // H-3 FIX: Use OsRng for cryptographic security instead of thread_rng()
+        let signing_key = SigningKey::generate(&mut rand::rngs::OsRng);
         let verifying_key = signing_key.verifying_key();
 
         Self {
