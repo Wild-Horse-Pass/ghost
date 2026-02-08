@@ -79,6 +79,11 @@ impl VerificationClientConfig {
     /// Create a config for testing (HTTP allowed)
     ///
     /// WARNING: Do not use in production - allows MITM attacks.
+    ///
+    /// L-29: This method is only available when the `allow-insecure` feature is enabled.
+    /// In release builds without this feature, this method does not exist, making it
+    /// impossible to accidentally create an insecure configuration.
+    #[cfg(feature = "allow-insecure")]
     pub fn insecure_for_testing() -> Self {
         Self {
             use_https: false,
@@ -114,10 +119,15 @@ impl VerificationClient {
     /// # Errors
     /// Returns an error if the HTTP client cannot be created
     ///
-    /// L-29 FIX: On mainnet, insecure TLS bypass is completely blocked
+    /// L-29 FIX: On mainnet, insecure TLS bypass is completely blocked.
+    /// When compiled without `allow-insecure` feature, danger_accept_invalid_certs is ignored.
     pub fn with_config(config: VerificationClientConfig) -> GhostResult<Self> {
+        // L-29: `mut` only needed when `allow-insecure` feature is enabled
+        #[allow(unused_mut)]
         let mut builder = reqwest::Client::builder().timeout(config.timeout);
 
+        // L-29: Insecure TLS options only available with `allow-insecure` feature
+        #[cfg(feature = "allow-insecure")]
         if config.danger_accept_invalid_certs {
             // L-29 FIX: On mainnet, COMPLETELY block insecure TLS - no env var override
             if config.is_mainnet {
@@ -137,6 +147,12 @@ impl VerificationClient {
             }
             warn!("DANGER: Verification client accepting invalid TLS certificates - GHOST_ALLOW_INSECURE_TLS is set (non-mainnet)");
             builder = builder.danger_accept_invalid_certs(true);
+        }
+
+        // L-29: When compiled without `allow-insecure`, silently ignore danger_accept_invalid_certs
+        #[cfg(not(feature = "allow-insecure"))]
+        if config.danger_accept_invalid_certs {
+            warn!("L-29: danger_accept_invalid_certs ignored - compile with 'allow-insecure' feature to enable (testing only)");
         }
 
         let client = builder.build().map_err(|e| {
@@ -163,8 +179,13 @@ impl VerificationClient {
     /// WARNING: This client uses HTTP without TLS, allowing MITM attacks.
     /// Do not use in production.
     ///
+    /// L-29: This method is only available when the `allow-insecure` feature is enabled.
+    /// In release builds without this feature, this method does not exist, making it
+    /// impossible to accidentally create an insecure client.
+    ///
     /// # Errors
     /// Returns an error if the HTTP client cannot be created
+    #[cfg(feature = "allow-insecure")]
     pub fn new_insecure() -> GhostResult<Self> {
         warn!("Creating INSECURE verification client - for testing only!");
         Self::with_config(VerificationClientConfig::insecure_for_testing())
@@ -686,6 +707,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(feature = "allow-insecure")]
     fn test_insecure_tls_requires_env_var() {
         // M-7: Ensure insecure TLS is rejected without env var
         // First, ensure the env var is NOT set
@@ -710,6 +732,29 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(not(feature = "allow-insecure"))]
+    fn test_insecure_tls_ignored_without_feature() {
+        // L-29: Without allow-insecure feature, danger_accept_invalid_certs is ignored
+        std::env::remove_var("GHOST_ALLOW_INSECURE_TLS");
+
+        let config = VerificationClientConfig {
+            use_https: true,
+            timeout: std::time::Duration::from_secs(10),
+            danger_accept_invalid_certs: true, // This is ignored without feature
+            is_mainnet: false,
+        };
+
+        // Should succeed because danger_accept_invalid_certs is ignored
+        let result = VerificationClient::with_config(config);
+        assert!(
+            result.is_ok(),
+            "L-29: Without allow-insecure feature, client creation should succeed"
+        );
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(feature = "allow-insecure")]
     fn test_insecure_tls_allowed_with_env_var() {
         // M-7: Ensure insecure TLS works when env var is set
         std::env::set_var("GHOST_ALLOW_INSECURE_TLS", "1");
@@ -743,6 +788,7 @@ mod tests {
 
     #[test]
     #[serial]
+    #[cfg(feature = "allow-insecure")]
     fn test_l29_insecure_tls_blocked_on_mainnet() {
         // L-29 FIX: Insecure TLS must be COMPLETELY blocked on mainnet
         // Even with GHOST_ALLOW_INSECURE_TLS set, mainnet should reject
@@ -768,6 +814,27 @@ mod tests {
 
         // Clean up
         std::env::remove_var("GHOST_ALLOW_INSECURE_TLS");
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(not(feature = "allow-insecure"))]
+    fn test_l29_mainnet_insecure_ignored_without_feature() {
+        // L-29: Without allow-insecure feature, danger_accept_invalid_certs is ignored
+        // even on mainnet
+        let config = VerificationClientConfig {
+            use_https: true,
+            timeout: std::time::Duration::from_secs(10),
+            danger_accept_invalid_certs: true, // Ignored without feature
+            is_mainnet: true,
+        };
+
+        // Should succeed because the dangerous option is ignored
+        let result = VerificationClient::with_config(config);
+        assert!(
+            result.is_ok(),
+            "L-29: Without allow-insecure feature, client creation should succeed"
+        );
     }
 
     #[test]

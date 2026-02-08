@@ -329,40 +329,60 @@ impl AuditLog {
     }
 
     /// Verify the integrity of the audit log chain
+    ///
+    /// LOW FIX: Uses batched verification to prevent unbounded memory usage.
+    /// Loads 10,000 entries at a time instead of entire log into memory.
     pub fn verify_chain(&self) -> GhostResult<ChainVerification> {
-        self.db.with_connection(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, timestamp, event_type, actor, target, details, prev_hash, entry_hash
-                     FROM audit_log ORDER BY id ASC",
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
+        const BATCH_SIZE: i64 = 10_000;
 
-            let mut expected_prev_hash =
-                "0000000000000000000000000000000000000000000000000000000000000000".to_string();
-            let mut total_entries = 0u64;
-            let mut broken_at: Option<i64> = None;
+        let mut expected_prev_hash =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        let mut total_entries = 0u64;
+        let mut broken_at: Option<i64> = None;
+        let mut last_id: i64 = 0;
 
-            let rows = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,            // id
-                        row.get::<_, i64>(1)?,            // timestamp
-                        row.get::<_, String>(2)?,         // event_type
-                        row.get::<_, String>(3)?,         // actor
-                        row.get::<_, Option<String>>(4)?, // target
-                        row.get::<_, String>(5)?,         // details
-                        row.get::<_, String>(6)?,         // prev_hash
-                        row.get::<_, String>(7)?,         // entry_hash
-                    ))
-                })
-                .map_err(|e| GhostError::Database(e.to_string()))?;
+        loop {
+            let batch_result = self.db.with_connection(|conn| {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, timestamp, event_type, actor, target, details, prev_hash, entry_hash
+                         FROM audit_log
+                         WHERE id > ?1
+                         ORDER BY id ASC
+                         LIMIT ?2",
+                    )
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
 
-            for row_result in rows {
-                let (id, timestamp, event_type, actor, target, details, prev_hash, entry_hash) =
-                    row_result.map_err(|e| GhostError::Database(e.to_string()))?;
+                let rows = stmt
+                    .query_map([last_id, BATCH_SIZE], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,            // id
+                            row.get::<_, i64>(1)?,            // timestamp
+                            row.get::<_, String>(2)?,         // event_type
+                            row.get::<_, String>(3)?,         // actor
+                            row.get::<_, Option<String>>(4)?, // target
+                            row.get::<_, String>(5)?,         // details
+                            row.get::<_, String>(6)?,         // prev_hash
+                            row.get::<_, String>(7)?,         // entry_hash
+                        ))
+                    })
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
 
+                let batch: Vec<_> = rows
+                    .filter_map(|r| r.ok())
+                    .collect();
+
+                Ok(batch)
+            })?;
+
+            // If no more rows, we're done
+            if batch_result.is_empty() {
+                break;
+            }
+
+            for (id, timestamp, event_type, actor, target, details, prev_hash, entry_hash) in batch_result {
                 total_entries += 1;
+                last_id = id;
 
                 // Check prev_hash matches expected
                 if prev_hash != expected_prev_hash {
@@ -401,12 +421,12 @@ impl AuditLog {
 
                 expected_prev_hash = entry_hash;
             }
+        }
 
-            Ok(ChainVerification {
-                total_entries,
-                is_valid: broken_at.is_none(),
-                broken_at_id: broken_at,
-            })
+        Ok(ChainVerification {
+            total_entries,
+            is_valid: broken_at.is_none(),
+            broken_at_id: broken_at,
         })
     }
 

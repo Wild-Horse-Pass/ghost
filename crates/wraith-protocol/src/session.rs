@@ -306,8 +306,9 @@ impl WraithSession {
 
         // Generate cryptographically secure random session ID
         // SECURITY: Using full 32 bytes of randomness prevents session ID prediction/collision
+        // M-1 FIX: Use OsRng for cryptographic security instead of thread_rng()
         let mut session_id = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut session_id);
+        rand::rngs::OsRng.fill_bytes(&mut session_id);
 
         // Use monotonic clock for timeout (WR-L3)
         // This prevents NTP manipulation attacks on session timeouts

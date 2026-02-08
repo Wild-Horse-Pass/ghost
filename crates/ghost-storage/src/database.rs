@@ -739,11 +739,13 @@ impl Database {
     ///
     /// Deletes uptime samples older than the specified number of days.
     /// STOR-1: uptime_samples grows ~8,640/day/node without cleanup.
+    ///
+    /// LOW FIX: Uses transaction for consistency with other prune operations.
     pub fn prune_old_uptime_samples(&self, keep_days: u32) -> GhostResult<usize> {
-        self.with_connection(|conn| {
+        self.transaction(|tx| {
             let cutoff = chrono::Utc::now().timestamp() - (keep_days as i64 * 86400);
 
-            let deleted = conn
+            let deleted = tx
                 .execute(
                     "DELETE FROM uptime_samples WHERE sample_time < ?1",
                     [cutoff],
@@ -821,11 +823,13 @@ impl Database {
     ///
     /// Deletes verification records older than the specified number of days.
     /// STOR-6: verifications grows ~864/day without cleanup.
+    ///
+    /// LOW FIX: Uses transaction for consistency with other prune operations.
     pub fn prune_old_verifications(&self, keep_days: u32) -> GhostResult<usize> {
-        self.with_connection(|conn| {
+        self.transaction(|tx| {
             let cutoff = chrono::Utc::now().timestamp() - (keep_days as i64 * 86400);
 
-            let deleted = conn
+            let deleted = tx
                 .execute(
                     "DELETE FROM verifications WHERE completed_at < ?1 OR (completed_at IS NULL AND started_at < ?1)",
                     [cutoff],

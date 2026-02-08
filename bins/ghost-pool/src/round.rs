@@ -187,6 +187,9 @@ pub struct RoundManager {
     /// M-MINE-1: Recent template IDs for accepting shares during template transitions
     /// Keeps last N templates to avoid rejecting shares during brief overlap periods
     recent_template_ids: RwLock<Vec<[u8; 32]>>,
+    /// L-8: Counter for automatic rate limit cleanup
+    /// Cleanup is triggered every RATE_LIMIT_CLEANUP_INTERVAL shares
+    shares_since_cleanup: std::sync::atomic::AtomicU64,
 }
 
 impl RoundManager {
@@ -211,6 +214,7 @@ impl RoundManager {
             miner_tolerance_tracker: RwLock::new(HashMap::new()),
             current_template_id: RwLock::new(None),
             recent_template_ids: RwLock::new(Vec::new()),
+            shares_since_cleanup: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -449,15 +453,27 @@ impl RoundManager {
         }
 
         // C4: Verify work consistency - calculated work should match claimed work
-        // L-17: Reduced tolerance from 1% to 0.1% to prevent accumulation gaming
+        // M-9 SECURITY FIX: Reduced tolerance from 0.1% to 0.01%
+        //
+        // Previous 0.1% per-share tolerance allowed systematic gaming:
+        // - 1000 shares/round * 0.1% = 1% total pool inflation possible
+        // - Attackers could claim 1.001x their actual work on every share
+        //
+        // New 0.01% tolerance limits total gaming potential to:
+        // - 1000 shares/round * 0.01% = 0.1% maximum pool inflation
+        // - This is acceptable for floating-point rounding tolerance
+        //
+        // Combined with L-7 cumulative tolerance tracking (1% cap per miner),
+        // this prevents any meaningful payout inflation.
         let calculated_work = diff_calc.calculate_work(proof.difficulty);
-        let per_share_tolerance = calculated_work * 0.001; // 0.1% tolerance for floating point
+        let per_share_tolerance = calculated_work * 0.0001; // M-9: 0.01% tolerance (was 0.1%)
         let work_difference = proof.work - calculated_work;
         if work_difference.abs() > per_share_tolerance {
             tracing::warn!(
                 claimed_work = proof.work,
                 calculated_work = calculated_work,
-                "Share proof work mismatch"
+                tolerance = per_share_tolerance,
+                "M-9: Share proof work mismatch exceeds 0.01% tolerance"
             );
             return Err(ShareError::WorkValueTooHigh {
                 got: proof.work,
@@ -635,6 +651,7 @@ impl RoundManager {
     /// Used when ghost-pool runs in TDP-only mode without direct stratum access
     ///
     /// H6 security fix: Adds rate limiting and anomaly detection
+    /// L-8: Automatic cleanup every RATE_LIMIT_CLEANUP_INTERVAL shares
     pub fn record_share(
         &self,
         miner_id: &str,
@@ -644,6 +661,23 @@ impl RoundManager {
         let round_id = *self.current_round.read();
         if round_id == 0 {
             return Err(ShareError::NoActiveRound);
+        }
+
+        // L-8: Automatic rate limit cleanup every N shares
+        // This prevents memory accumulation without relying on external calls
+        const RATE_LIMIT_CLEANUP_INTERVAL: u64 = 10_000;
+        let shares_count = self
+            .shares_since_cleanup
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if shares_count >= RATE_LIMIT_CLEANUP_INTERVAL {
+            // Reset counter and perform cleanup
+            self.shares_since_cleanup
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            self.cleanup_rate_limits();
+            debug!(
+                shares_count = shares_count,
+                "L-8: Automatic rate limit cleanup triggered"
+            );
         }
 
         // H6: Rate limiting check

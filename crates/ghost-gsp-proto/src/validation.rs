@@ -24,6 +24,10 @@
 //!
 //! Provides validation for protocol messages before processing.
 
+use std::str::FromStr;
+
+use bitcoin::Address;
+
 use crate::error::GspProtoError;
 use crate::messages::ClientMessage;
 use crate::payment::PaymentMode;
@@ -448,23 +452,20 @@ fn is_valid_recipient(recipient: &str) -> bool {
 }
 
 /// Check if string is a valid Bitcoin address
+///
+/// LOW FIX: Uses bitcoin crate's Address::from_str() for full validation
+/// including checksum verification. This prevents accepting malformed
+/// addresses that could cause payment failures.
 fn is_valid_bitcoin_address(address: &str) -> bool {
-    // Bech32/bech32m (mainnet, testnet, regtest)
-    if address.starts_with("bc1") || address.starts_with("tb1") || address.starts_with("bcrt1") {
-        return address.len() >= 42 && address.len() <= 90;
-    }
-
-    // Legacy P2PKH (1...)
-    if address.starts_with('1') || address.starts_with('m') || address.starts_with('n') {
-        return address.len() >= 26 && address.len() <= 35;
-    }
-
-    // Legacy P2SH (3...)
-    if address.starts_with('3') || address.starts_with('2') {
-        return address.len() >= 26 && address.len() <= 35;
-    }
-
-    false
+    // LOW FIX: Use bitcoin crate's Address parsing which validates:
+    // - Correct prefix for network (bc1, tb1, bcrt1, 1, 3, m, n, 2)
+    // - Valid bech32/bech32m checksum for segwit addresses
+    // - Valid base58check checksum for legacy addresses
+    // - Correct length and format
+    //
+    // We use Address::from_str with Unchecked network because we accept
+    // addresses from any Bitcoin network (mainnet, testnet, signet, regtest).
+    Address::<bitcoin::address::NetworkUnchecked>::from_str(address).is_ok()
 }
 
 #[cfg(test)]
@@ -592,7 +593,7 @@ mod tests {
     /// Helper to create a valid test WalletProof
     fn test_wallet_proof() -> WalletProof {
         let pubkey = [1u8; 32];
-        let mut proof = WalletProof::new("get_payment_status", &pubkey);
+        let mut proof = WalletProof::new("get_payment_status", &pubkey).expect("nonce generation failed");
         proof.signature = hex::encode([2u8; 64]); // Valid signature format
         proof
     }

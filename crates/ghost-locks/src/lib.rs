@@ -109,9 +109,9 @@ mod tests {
     use rand::RngCore;
 
     fn generate_secret_key() -> SecretKey {
-        let mut rng = rand::thread_rng();
+        // M-2 FIX: Use OsRng for cryptographic security instead of thread_rng()
         let mut secret_bytes = [0u8; 32];
-        rng.fill_bytes(&mut secret_bytes);
+        rand::rngs::OsRng.fill_bytes(&mut secret_bytes);
         SecretKey::from_slice(&secret_bytes).expect("32 bytes, within curve order")
     }
 

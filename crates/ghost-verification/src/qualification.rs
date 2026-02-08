@@ -104,11 +104,16 @@ impl Default for QualificationConfig {
 ///
 /// This replaces CLAIMED capabilities with VERIFIED capabilities
 /// based on challenge results and uptime tracking.
+///
+/// M-7 FIX: Includes cached network size for fallback on DB failures
 pub struct QualifiedCapabilityProvider {
     /// Database for looking up challenge results and uptime
     db: Arc<Database>,
     /// Qualification configuration
     config: QualificationConfig,
+    /// M-7 FIX: Cached network size for fallback on DB failures
+    /// Uses atomic for thread-safe access without locks
+    cached_network_size: std::sync::atomic::AtomicUsize,
 }
 
 impl QualifiedCapabilityProvider {
@@ -117,12 +122,55 @@ impl QualifiedCapabilityProvider {
         Self {
             db,
             config: QualificationConfig::default(),
+            // M-7 FIX: Initialize with a safe default (uses base requirement)
+            cached_network_size: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
     /// Create with custom configuration
     pub fn with_config(db: Arc<Database>, config: QualificationConfig) -> Self {
-        Self { db, config }
+        Self {
+            db,
+            config,
+            cached_network_size: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// M-7 FIX: Get network size with fallback to cached value
+    ///
+    /// On DB success, updates the cache and returns the fresh value.
+    /// On DB failure, returns the cached value with a warning.
+    /// If cache is empty (0), uses a conservative default (100 nodes).
+    fn get_network_size_with_fallback(&self) -> usize {
+        use std::sync::atomic::Ordering;
+
+        match self.db.get_all_node_ids_with_payout() {
+            Ok(ids) => {
+                let size = ids.len();
+                // Update cache on successful query
+                self.cached_network_size.store(size, Ordering::Relaxed);
+                size
+            }
+            Err(e) => {
+                let cached = self.cached_network_size.load(Ordering::Relaxed);
+                if cached > 0 {
+                    warn!(
+                        cached_size = cached,
+                        error = %e,
+                        "M-7: DB failure for network size, using cached value"
+                    );
+                    cached
+                } else {
+                    // No cache yet - use conservative default
+                    // 100 nodes gives min_unique = 13, which is reasonable
+                    warn!(
+                        error = %e,
+                        "M-7: DB failure for network size with empty cache, using default (100)"
+                    );
+                    100
+                }
+            }
+        }
     }
 
     /// MED-VER-5/MED-VER-6: Maximum network size for scaling calculation
@@ -249,20 +297,10 @@ impl QualifiedCapabilityProvider {
             .get_ghostpay_unique_challengers(&node_id_hex, since)
             .unwrap_or(0);
 
-        // MED-VER-6 FIX: Get network size for scaled requirements
-        // On DB failure, return default capabilities (no qualification) rather than
-        // using a fallback value that could be exploited
-        let network_size = match self.db.get_all_node_ids_with_payout() {
-            Ok(ids) => ids.len(),
-            Err(e) => {
-                warn!(
-                    node = %&node_id_hex[..8],
-                    error = %e,
-                    "MED-VER-6: Failed to get network size, returning default capabilities"
-                );
-                return NodeCapabilities::default();
-            }
-        };
+        // MED-VER-6 + M-7 FIX: Get network size with fallback to cached value
+        // M-7: On DB failure, use cached network size instead of returning empty capabilities
+        // This prevents transient DB issues from stalling all payouts
+        let network_size = self.get_network_size_with_fallback();
         let min_unique_scaled = self.scaled_min_unique_challengers(network_size);
 
         // AUTH4-L3 + MED-VER-6: Log per-capability pass rate requirements
@@ -289,19 +327,9 @@ impl QualifiedCapabilityProvider {
             return NodeCapabilities::default(); // 0 shares if uptime < 95%
         }
 
-        // MED-VER-6 FIX: Calculate scaled unique challenger requirement based on network size
-        // On DB failure, return default capabilities rather than using fallback
-        let network_size = match self.db.get_all_node_ids_with_payout() {
-            Ok(ids) => ids.len(),
-            Err(e) => {
-                warn!(
-                    node = %&node_id_hex[..8],
-                    error = %e,
-                    "MED-VER-6: Failed to get network size for unique challenger scaling"
-                );
-                return NodeCapabilities::default();
-            }
-        };
+        // MED-VER-6 + M-7 FIX: Calculate scaled unique challenger requirement
+        // M-7: Use cached fallback on DB failure instead of returning empty capabilities
+        let network_size = self.get_network_size_with_fallback();
         let min_unique = self.scaled_min_unique_challengers(network_size);
 
         // Get qualified capabilities from database
@@ -390,6 +418,8 @@ impl QualifiedCapabilityProvider {
     }
 
     /// Get qualified capabilities for a node by hex string
+    ///
+    /// M-4 FIX: Now uses scaled_min_unique_challengers like get_qualified()
     pub fn get_qualified_by_hex(&self, node_id_hex: &str) -> NodeCapabilities {
         let since = self.lookback_timestamp();
 
@@ -402,6 +432,21 @@ impl QualifiedCapabilityProvider {
             }
             Err(_) => return NodeCapabilities::default(),
         }
+
+        // M-4 FIX: Get network size for scaled unique challenger requirement
+        // On DB failure, return default capabilities rather than using static value
+        let network_size = match self.db.get_all_node_ids_with_payout() {
+            Ok(ids) => ids.len(),
+            Err(e) => {
+                warn!(
+                    node = %&node_id_hex[..8.min(node_id_hex.len())],
+                    error = %e,
+                    "M-4: Failed to get network size for unique challenger scaling"
+                );
+                return NodeCapabilities::default();
+            }
+        };
+        let min_unique = self.scaled_min_unique_challengers(network_size);
 
         // C-2: Get unique challenger counts for Sybil prevention
         let archive_unique = self
@@ -433,17 +478,17 @@ impl QualifiedCapabilityProvider {
             )
             .unwrap_or_default();
 
-        // C-2: Apply unique challengers requirement (Sybil prevention)
-        if archive_unique < self.config.min_unique_challengers {
+        // C-2 + M-4 FIX: Apply SCALED unique challengers requirement (Sybil prevention)
+        if archive_unique < min_unique {
             caps.archive_mode = false;
         }
-        if policy_unique < self.config.min_unique_challengers {
+        if policy_unique < min_unique {
             caps.bitcoin_pure = false;
         }
-        if stratum_unique < self.config.min_unique_challengers {
+        if stratum_unique < min_unique {
             caps.public_mining = false;
         }
-        if ghostpay_unique < self.config.min_unique_challengers {
+        if ghostpay_unique < min_unique {
             caps.ghost_pay = false;
         }
 
@@ -456,6 +501,8 @@ impl QualifiedCapabilityProvider {
     /// verified capabilities. Used for payout calculations.
     ///
     /// Queries the `nodes` table (not `peers`) to include the local node.
+    ///
+    /// M-5 FIX: Now uses scaled_min_unique_challengers based on network size
     pub fn get_all_qualified_nodes(&self) -> Vec<(NodeId, i32)> {
         let since = self.lookback_timestamp();
         let mut qualified_nodes = Vec::new();
@@ -469,9 +516,14 @@ impl QualifiedCapabilityProvider {
             }
         };
 
+        // M-5 FIX: Calculate scaled unique challenger requirement based on network size
+        let network_size = node_ids.len();
+        let min_unique = self.scaled_min_unique_challengers(network_size);
+
         info!(
             total_nodes = node_ids.len(),
-            "DIAG: Checking qualification for all nodes with payout addresses"
+            min_unique_challengers = min_unique,
+            "DIAG: Checking qualification for all nodes with payout addresses (M-5: scaled requirement)"
         );
 
         for node_id_hex in &node_ids {
@@ -520,17 +572,17 @@ impl QualifiedCapabilityProvider {
                 )
                 .unwrap_or_default();
 
-            // C-2: Apply unique challengers requirement (Sybil prevention)
-            if archive_unique < self.config.min_unique_challengers {
+            // C-2 + M-5 FIX: Apply SCALED unique challengers requirement (Sybil prevention)
+            if archive_unique < min_unique {
                 caps.archive_mode = false;
             }
-            if policy_unique < self.config.min_unique_challengers {
+            if policy_unique < min_unique {
                 caps.bitcoin_pure = false;
             }
-            if stratum_unique < self.config.min_unique_challengers {
+            if stratum_unique < min_unique {
                 caps.public_mining = false;
             }
-            if ghostpay_unique < self.config.min_unique_challengers {
+            if ghostpay_unique < min_unique {
                 caps.ghost_pay = false;
             }
 

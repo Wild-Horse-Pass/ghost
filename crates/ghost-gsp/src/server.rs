@@ -30,6 +30,8 @@ use std::time::Duration;
 
 use axum::{
     http::{header, Method},
+    middleware::Next,
+    response::Response,
     routing::{get, post},
     Router,
 };
@@ -276,6 +278,38 @@ impl KeyExtractor for IpKeyExtractor {
         // Last resort: return error (no IP could be extracted)
         Err(GovernorError::UnableToExtractKey)
     }
+}
+
+/// LOW-API-1: Security headers middleware for all HTTP responses
+async fn security_headers_middleware(
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let mut response = next.run(request).await;
+
+    let headers = response.headers_mut();
+
+    use axum::http::HeaderValue;
+
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert(
+        "x-xss-protection",
+        HeaderValue::from_static("1; mode=block"),
+    );
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+    );
+    headers.insert(
+        "referrer-policy",
+        HeaderValue::from_static("no-referrer"),
+    );
+
+    response
 }
 
 /// GSP server configuration
@@ -661,6 +695,8 @@ impl GspServer {
             .route("/api/v1/session", post(rest::create_session))
             // WebSocket endpoint
             .route("/ws/v1", get(websocket::ws_handler))
+            // LOW-API-1: Security headers for all responses
+            .layer(axum::middleware::from_fn(security_headers_middleware))
             // H-3: Rate limiting layer
             .layer(GovernorLayer {
                 config: governor_config,

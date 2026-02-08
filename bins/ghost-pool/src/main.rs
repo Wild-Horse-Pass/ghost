@@ -1215,6 +1215,7 @@ async fn main() -> Result<()> {
         max_miner_outputs: 200,
         max_node_outputs: 100,
         treasury_address: Some(treasury_script),
+        network: config.bitcoin.network, // M-15/LOW: Enable mainnet-specific security checks
     };
 
     // H-MINE-1: PayoutHandler uses the same QualifiedCapabilityProvider as health_handler

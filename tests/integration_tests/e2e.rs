@@ -331,7 +331,7 @@ mod gsp_protocol {
     #[test]
     fn test_wallet_proof_creation() {
         let pubkey = [1u8; 32];
-        let proof = WalletProof::new("register", &pubkey);
+        let proof = WalletProof::new("register", &pubkey).expect("nonce generation failed");
 
         assert!(proof.is_timestamp_valid());
         assert_eq!(proof.action(), Some("register"));
@@ -342,7 +342,7 @@ mod gsp_protocol {
         let pubkey = [1u8; 32];
 
         for action in ["register", "session", "jump", "payment"] {
-            let proof = WalletProof::new(action, &pubkey);
+            let proof = WalletProof::new(action, &pubkey).expect("nonce generation failed");
             assert_eq!(proof.action(), Some(action));
         }
     }
@@ -690,7 +690,7 @@ mod full_stack {
         assert!(wallet_id.is_valid());
 
         // 3. Create wallet proof
-        let proof = WalletProof::new("register", &test_pubkey);
+        let proof = WalletProof::new("register", &test_pubkey).expect("nonce generation failed");
         assert!(proof.is_timestamp_valid());
 
         // 4. Simulate auth message

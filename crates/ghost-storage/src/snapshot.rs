@@ -344,6 +344,9 @@ impl SnapshotManager {
     ///
     /// Returns the snapshot to restore from and the target height.
     /// Caller is responsible for replaying blocks from snapshot height to target.
+    ///
+    /// M-13 FIX: Uses transaction to ensure atomic rollback. Both DELETE operations
+    /// must succeed together or be rolled back together to prevent inconsistent state.
     pub fn rollback_to(&self, target_height: u64) -> GhostResult<Option<StateSnapshot>> {
         let snapshot = self.get_snapshot_at_or_before(target_height)?;
 
@@ -354,16 +357,17 @@ impl SnapshotManager {
                 "Rolling back to snapshot"
             );
 
-            // Delete any snapshots above target height
-            self.db.with_connection(|conn| {
-                conn.execute(
+            // M-13 FIX: Use transaction for atomic deletion of both tables
+            self.db.transaction(|tx| {
+                // Delete any snapshots above target height
+                tx.execute(
                     "DELETE FROM state_snapshots WHERE height > ?1",
                     params![target_height as i64],
                 )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
                 // Delete block proposers above target height
-                conn.execute(
+                tx.execute(
                     "DELETE FROM block_proposers WHERE height > ?1",
                     params![target_height as i64],
                 )

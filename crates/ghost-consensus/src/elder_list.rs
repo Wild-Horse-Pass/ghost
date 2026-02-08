@@ -223,7 +223,21 @@ impl ElderApproval {
     /// Returns false if the timestamp is too far in the past or future,
     /// which could indicate a replay attack or clock skew issue.
     pub fn is_timestamp_valid(&self) -> bool {
-        let now = chrono::Utc::now().timestamp_millis() as u64;
+        self.is_timestamp_valid_at(None)
+    }
+
+    /// H-3 SECURITY: Validate timestamp against a specific point in time
+    ///
+    /// This variant accepts the current time as a parameter to avoid TOCTOU
+    /// (time-of-check to time-of-use) vulnerabilities. By capturing the current
+    /// time once and passing it to all validation steps, we ensure consistent
+    /// validation without race conditions.
+    ///
+    /// # Arguments
+    /// * `now_ms` - The current time in milliseconds since Unix epoch.
+    ///   If None, uses chrono::Utc::now().
+    pub fn is_timestamp_valid_at(&self, now_ms: Option<u64>) -> bool {
+        let now = now_ms.unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as u64);
 
         // Check if timestamp is in the future (with small tolerance)
         if self.timestamp > now.saturating_add(MAX_APPROVAL_TIMESTAMP_DRIFT_MS) {
@@ -255,18 +269,48 @@ impl ElderApproval {
     /// SEC-SIG-1: Logs errors instead of silently returning false
     /// Also validates that the timestamp is within a reasonable window.
     ///
-    /// HIGH-CONS-2: If the approval includes prev_merkle_root, it uses v2 verification
-    /// which binds the approval to the specific epoch transition.
+    /// C-1 SECURITY: Requires prev_merkle_root for all non-genesis approvals.
+    /// Legacy approvals without prev_merkle_root are REJECTED to prevent replay attacks.
+    /// An attacker could replay an old approval for a different epoch transition
+    /// if we allowed approvals without the chain binding.
     pub fn verify(&self, epoch: u64, merkle_root: &[u8; 32]) -> bool {
+        self.verify_with_timestamp(epoch, merkle_root, None)
+    }
+
+    /// H-3 SECURITY: Verify approval with explicit timestamp parameter
+    ///
+    /// This variant accepts the timestamp as a parameter to avoid TOCTOU issues
+    /// where time changes between validation calls. The caller captures the current
+    /// time once and passes it to all verification steps.
+    ///
+    /// If `now_ms` is None, uses the current system time (original behavior).
+    pub fn verify_with_timestamp(
+        &self,
+        epoch: u64,
+        merkle_root: &[u8; 32],
+        now_ms: Option<u64>,
+    ) -> bool {
         // First validate timestamp to prevent replay attacks
-        if !self.is_timestamp_valid() {
+        if !self.is_timestamp_valid_at(now_ms) {
             return false;
         }
 
-        // HIGH-CONS-2: Use v2 message format if prev_merkle_root is present
+        // C-1 SECURITY: Require prev_merkle_root for all non-genesis (epoch > 0) approvals
+        // Genesis list (epoch 0) doesn't need chain binding since there's no previous epoch.
+        // For all other epochs, prev_merkle_root MUST be present to prevent replay attacks.
+        if epoch > 0 && self.prev_merkle_root.is_none() {
+            tracing::warn!(
+                approver = %hex::encode(&self.approver[..8]),
+                epoch = epoch,
+                "C-1 SECURITY: Rejecting approval without prev_merkle_root (required for epoch > 0)"
+            );
+            return false;
+        }
+
+        // Use v2 message format if prev_merkle_root is present, v1 only for genesis
         let message = match &self.prev_merkle_root {
             Some(prev) => Self::signing_message_v2(epoch, merkle_root, prev),
-            None => Self::signing_message(epoch, merkle_root),
+            None => Self::signing_message(epoch, merkle_root), // Only valid for epoch 0
         };
 
         match verify_signature(&self.approver, &message, &self.signature) {
@@ -287,12 +331,25 @@ impl ElderApproval {
     ///
     /// Use this for historical verification where timestamp is expected to be old.
     ///
-    /// HIGH-CONS-2: If the approval includes prev_merkle_root, it uses v2 verification.
+    /// C-1 SECURITY: Still requires prev_merkle_root for epoch > 0 to prevent replay.
+    /// The only difference is that timestamp validation is skipped for historical data.
     pub fn verify_signature_only(&self, epoch: u64, merkle_root: &[u8; 32]) -> bool {
-        // HIGH-CONS-2: Use v2 message format if prev_merkle_root is present
+        // C-1 SECURITY: Require prev_merkle_root for all non-genesis (epoch > 0) approvals
+        // This check applies even for historical verification since the protection is
+        // about binding the approval to a specific epoch transition, not timing.
+        if epoch > 0 && self.prev_merkle_root.is_none() {
+            tracing::warn!(
+                approver = %hex::encode(&self.approver[..8]),
+                epoch = epoch,
+                "C-1 SECURITY: Rejecting approval without prev_merkle_root (required for epoch > 0)"
+            );
+            return false;
+        }
+
+        // Use v2 message format if prev_merkle_root is present, v1 only for genesis
         let message = match &self.prev_merkle_root {
             Some(prev) => Self::signing_message_v2(epoch, merkle_root, prev),
-            None => Self::signing_message(epoch, merkle_root),
+            None => Self::signing_message(epoch, merkle_root), // Only valid for epoch 0
         };
 
         match verify_signature(&self.approver, &message, &self.signature) {
@@ -1625,6 +1682,56 @@ mod tests {
         let identity = NodeIdentity::generate();
         let epoch = 5u64;
         let merkle_root = [42u8; 32];
+        let prev_merkle_root = [41u8; 32]; // C-1: Required for epoch > 0
+
+        // C-1: Use v2 message format with prev_merkle_root for epoch > 0
+        let message = ElderApproval::signing_message_v2(epoch, &merkle_root, &prev_merkle_root);
+        let signature = identity.sign(&message);
+
+        let approval = ElderApproval {
+            approver: identity.node_id(),
+            signature,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            prev_merkle_root: Some(prev_merkle_root), // C-1: Required for epoch > 0
+        };
+
+        // Use verify_signature_only for tests to avoid timestamp validation issues
+        assert!(approval.verify_signature_only(epoch, &merkle_root));
+        assert!(!approval.verify_signature_only(epoch + 1, &merkle_root)); // Wrong epoch
+        assert!(!approval.verify_signature_only(epoch, &[0u8; 32])); // Wrong merkle root
+    }
+
+    #[test]
+    fn test_c1_approval_requires_prev_merkle_root_for_nongenesis() {
+        // C-1 SECURITY: Approvals for epoch > 0 MUST include prev_merkle_root
+        let identity = NodeIdentity::generate();
+        let epoch = 5u64;
+        let merkle_root = [42u8; 32];
+
+        // Legacy v1 message (without prev_merkle_root)
+        let message = ElderApproval::signing_message(epoch, &merkle_root);
+        let signature = identity.sign(&message);
+
+        let approval_without_prev = ElderApproval {
+            approver: identity.node_id(),
+            signature,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            prev_merkle_root: None, // Missing prev_merkle_root
+        };
+
+        // C-1: Should be rejected for epoch > 0
+        assert!(
+            !approval_without_prev.verify_signature_only(epoch, &merkle_root),
+            "C-1: Approval without prev_merkle_root should be rejected for epoch > 0"
+        );
+    }
+
+    #[test]
+    fn test_c1_genesis_allows_no_prev_merkle_root() {
+        // C-1: Genesis (epoch 0) doesn't need prev_merkle_root
+        let identity = NodeIdentity::generate();
+        let epoch = 0u64; // Genesis
+        let merkle_root = [42u8; 32];
 
         let message = ElderApproval::signing_message(epoch, &merkle_root);
         let signature = identity.sign(&message);
@@ -1633,13 +1740,14 @@ mod tests {
             approver: identity.node_id(),
             signature,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
-            prev_merkle_root: None, // Legacy test - not testing epoch binding
+            prev_merkle_root: None, // OK for genesis
         };
 
-        // Use verify_signature_only for tests to avoid timestamp validation issues
-        assert!(approval.verify_signature_only(epoch, &merkle_root));
-        assert!(!approval.verify_signature_only(epoch + 1, &merkle_root)); // Wrong epoch
-        assert!(!approval.verify_signature_only(epoch, &[0u8; 32])); // Wrong merkle root
+        // Should be accepted for epoch 0
+        assert!(
+            approval.verify_signature_only(epoch, &merkle_root),
+            "C-1: Genesis approvals (epoch 0) should allow no prev_merkle_root"
+        );
     }
 
     #[test]
@@ -1652,28 +1760,31 @@ mod tests {
 
         // 67% of 10 = 7 approvals needed
         let merkle_root = list.merkle_root;
+        // C-1: Need prev_merkle_root for epoch 1
+        let prev_merkle_root = [0u8; 32]; // Simulated previous epoch merkle root
 
         // Add 6 approvals (not enough)
         let now = chrono::Utc::now().timestamp_millis() as u64;
         for identity in identities.iter().take(6) {
-            let message = ElderApproval::signing_message(1, &merkle_root);
+            // C-1: Use v2 message format with prev_merkle_root
+            let message = ElderApproval::signing_message_v2(1, &merkle_root, &prev_merkle_root);
             let approval = ElderApproval {
                 approver: identity.node_id(),
                 signature: identity.sign(&message),
                 timestamp: now,
-                prev_merkle_root: None, // Legacy test
+                prev_merkle_root: Some(prev_merkle_root), // C-1: Required for epoch > 0
             };
             list.add_approval(approval);
         }
         assert!(!list.has_sufficient_approvals(&previous_elders));
 
         // Add 7th approval (enough)
-        let message = ElderApproval::signing_message(1, &merkle_root);
+        let message = ElderApproval::signing_message_v2(1, &merkle_root, &prev_merkle_root);
         let approval = ElderApproval {
             approver: identities[6].node_id(),
             signature: identities[6].sign(&message),
             timestamp: now,
-            prev_merkle_root: None, // Legacy test
+            prev_merkle_root: Some(prev_merkle_root), // C-1: Required for epoch > 0
         };
         list.add_approval(approval);
         assert!(list.has_sufficient_approvals(&previous_elders));

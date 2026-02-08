@@ -119,19 +119,21 @@ impl WalletProof {
     /// Create a new wallet proof (unsigned)
     ///
     /// The caller must sign the message and set the signature field.
-    pub fn new(action: &str, public_key: &[u8; 32]) -> Self {
+    ///
+    /// LOW FIX: Returns Result to propagate entropy source errors instead of panicking.
+    pub fn new(action: &str, public_key: &[u8; 32]) -> Result<Self, GspProtoError> {
         let timestamp = chrono::Utc::now().timestamp();
-        let nonce_bytes: [u8; 16] = rand_nonce();
+        let nonce_bytes: [u8; 16] = rand_nonce()?;
         let nonce = hex::encode(nonce_bytes);
         let message = format!("ghost-{}:{}:{}", action, timestamp, nonce);
 
-        WalletProof {
+        Ok(WalletProof {
             timestamp,
             nonce,
             message,
             signature: String::new(),
             public_key: hex::encode(public_key),
-        }
+        })
     }
 
     /// Get the message bytes for signing
@@ -258,14 +260,15 @@ impl WalletProof {
 /// CRIT-1 FIX: Uses getrandom for CSPRNG-quality randomness instead of
 /// the insecure time-based approach. This is essential for replay protection
 /// in wallet proofs - predictable nonces could allow replay attacks.
-fn rand_nonce() -> [u8; 16] {
+///
+/// LOW FIX: Returns Result instead of panicking to allow graceful error handling.
+fn rand_nonce() -> Result<[u8; 16], GspProtoError> {
     let mut nonce = [0u8; 16];
     // getrandom uses the OS CSPRNG (/dev/urandom on Linux, CryptGenRandom on Windows)
-    // This will panic only if the OS entropy pool is completely unavailable,
-    // which indicates a catastrophic system failure where crypto operations
-    // should not proceed anyway.
-    getrandom::getrandom(&mut nonce).expect("OS entropy source unavailable");
-    nonce
+    getrandom::getrandom(&mut nonce).map_err(|e| {
+        GspProtoError::Internal(format!("Failed to generate secure nonce: OS entropy source unavailable ({})", e))
+    })?;
+    Ok(nonce)
 }
 
 /// Registration request sent to GSP
@@ -374,7 +377,7 @@ mod tests {
     #[test]
     fn test_wallet_proof_structure() {
         let pubkey = [1u8; 32];
-        let mut proof = WalletProof::new("register", &pubkey);
+        let mut proof = WalletProof::new("register", &pubkey).expect("nonce generation failed");
 
         // Without signature, validation should fail
         assert!(proof.validate_structure().is_err());
@@ -387,17 +390,17 @@ mod tests {
     #[test]
     fn test_wallet_proof_timestamp_valid() {
         let pubkey = [1u8; 32];
-        let proof = WalletProof::new("register", &pubkey);
+        let proof = WalletProof::new("register", &pubkey).expect("nonce generation failed");
         assert!(proof.is_timestamp_valid());
     }
 
     #[test]
     fn test_wallet_proof_action() {
         let pubkey = [1u8; 32];
-        let proof = WalletProof::new("register", &pubkey);
+        let proof = WalletProof::new("register", &pubkey).expect("nonce generation failed");
         assert_eq!(proof.action(), Some("register"));
 
-        let proof2 = WalletProof::new("session", &pubkey);
+        let proof2 = WalletProof::new("session", &pubkey).expect("nonce generation failed");
         assert_eq!(proof2.action(), Some("session"));
     }
 
@@ -426,7 +429,7 @@ mod tests {
     fn test_wallet_proof_debug_redacts_sensitive_fields() {
         // M-INFO-1 TEST: Verify Debug implementation redacts sensitive data
         let pubkey = [1u8; 32];
-        let mut proof = WalletProof::new("register", &pubkey);
+        let mut proof = WalletProof::new("register", &pubkey).expect("nonce generation failed");
         proof.signature = hex::encode([2u8; 64]);
 
         let debug_output = format!("{:?}", proof);
@@ -466,7 +469,7 @@ mod tests {
         // Generate multiple nonces and verify they're all unique
         let mut seen_nonces = HashSet::new();
         for _ in 0..100 {
-            let nonce = super::rand_nonce();
+            let nonce = super::rand_nonce().expect("nonce generation failed");
             // Each nonce should be unique
             assert!(
                 seen_nonces.insert(nonce),
@@ -475,7 +478,7 @@ mod tests {
         }
 
         // Verify all 16 bytes are being used (not just a few bytes)
-        let nonce = super::rand_nonce();
+        let nonce = super::rand_nonce().expect("nonce generation failed");
         let zeros: usize = nonce.iter().filter(|&&b| b == 0).count();
         // Statistically, having more than 12 zero bytes in 16 random bytes is extremely unlikely
         // P(12+ zeros) = sum(C(16,k) * (1/256)^k * (255/256)^(16-k) for k in 12..17) < 1e-20
@@ -490,8 +493,8 @@ mod tests {
     fn test_crit1_wallet_proof_has_random_nonce() {
         // CRIT-1 TEST: Verify WalletProof uses CSPRNG nonces
         let pubkey = [1u8; 32];
-        let proof1 = WalletProof::new("register", &pubkey);
-        let proof2 = WalletProof::new("register", &pubkey);
+        let proof1 = WalletProof::new("register", &pubkey).expect("nonce generation failed");
+        let proof2 = WalletProof::new("register", &pubkey).expect("nonce generation failed");
 
         // Nonces must be different even for same action and pubkey
         assert_ne!(

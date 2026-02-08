@@ -278,7 +278,7 @@ mod authentication {
     #[test]
     fn test_wallet_proof_new() {
         let pubkey = [1u8; 32];
-        let proof = WalletProof::new("register", &pubkey);
+        let proof = WalletProof::new("register", &pubkey).expect("nonce generation failed");
 
         assert!(proof.message.starts_with("ghost-register:"));
         assert_eq!(proof.nonce.len(), 32); // 16 bytes = 32 hex chars
@@ -290,27 +290,27 @@ mod authentication {
     fn test_wallet_proof_action() {
         let pubkey = [1u8; 32];
 
-        let proof1 = WalletProof::new("register", &pubkey);
+        let proof1 = WalletProof::new("register", &pubkey).expect("nonce generation failed");
         assert_eq!(proof1.action(), Some("register"));
 
-        let proof2 = WalletProof::new("session", &pubkey);
+        let proof2 = WalletProof::new("session", &pubkey).expect("nonce generation failed");
         assert_eq!(proof2.action(), Some("session"));
 
-        let proof3 = WalletProof::new("jump", &pubkey);
+        let proof3 = WalletProof::new("jump", &pubkey).expect("nonce generation failed");
         assert_eq!(proof3.action(), Some("jump"));
     }
 
     #[test]
     fn test_wallet_proof_timestamp_valid() {
         let pubkey = [1u8; 32];
-        let proof = WalletProof::new("register", &pubkey);
+        let proof = WalletProof::new("register", &pubkey).expect("nonce generation failed");
         assert!(proof.is_timestamp_valid());
     }
 
     #[test]
     fn test_wallet_proof_message_bytes() {
         let pubkey = [1u8; 32];
-        let proof = WalletProof::new("test", &pubkey);
+        let proof = WalletProof::new("test", &pubkey).expect("nonce generation failed");
         let bytes = proof.message_bytes();
         assert!(!bytes.is_empty());
         assert!(String::from_utf8(bytes).unwrap().starts_with("ghost-test:"));
@@ -319,7 +319,7 @@ mod authentication {
     #[test]
     fn test_wallet_proof_wallet_id() {
         let pubkey = [1u8; 32];
-        let proof = WalletProof::new("register", &pubkey);
+        let proof = WalletProof::new("register", &pubkey).expect("nonce generation failed");
         let wallet_id = proof.wallet_id().unwrap();
         assert!(wallet_id.is_valid());
     }

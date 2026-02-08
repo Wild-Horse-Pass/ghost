@@ -142,17 +142,30 @@ pub fn decrypt_sensitive(encrypted: &str, key: &[u8; 32]) -> GhostResult<String>
     String::from_utf8(plaintext).map_err(|e| GhostError::Crypto(format!("Invalid UTF-8: {}", e)))
 }
 
-/// Check if a string appears to be encrypted (base64 format with sufficient length).
+/// LOW FIX: Check if a string could potentially be encrypted data.
 ///
-/// This is a heuristic check to help with migration from plaintext to encrypted storage.
+/// This is a HEURISTIC check to help with migration from plaintext to encrypted storage.
 /// It checks if the string is valid base64 and decodes to at least nonce + tag size.
-pub fn is_likely_encrypted(value: &str) -> bool {
+///
+/// **WARNING: This function can produce false positives.**
+/// A string that passes this check is not necessarily encrypted data - it could be
+/// any base64-encoded data of sufficient length. Use this only as a hint for migration
+/// purposes, not as a security check.
+///
+/// Renamed from `is_likely_encrypted` to `could_be_encrypted` to clarify the heuristic nature.
+pub fn could_be_encrypted(value: &str) -> bool {
     if let Ok(decoded) = BASE64.decode(value) {
         // Encrypted data must be at least nonce (12) + tag (16) = 28 bytes
         decoded.len() >= NONCE_SIZE + 16
     } else {
         false
     }
+}
+
+/// Deprecated alias for `could_be_encrypted`. Use `could_be_encrypted` instead.
+#[deprecated(since = "1.0.0", note = "Renamed to could_be_encrypted() to clarify heuristic nature")]
+pub fn is_likely_encrypted(value: &str) -> bool {
+    could_be_encrypted(value)
 }
 
 /// Get encryption key from environment or return None.
@@ -193,8 +206,19 @@ pub fn get_encryption_key_from_env() -> Option<[u8; 32]> {
 /// - Sequential bytes
 /// - Very low unique byte count
 ///
-/// This is a heuristic check to catch common mistakes like using a weak passphrase
-/// or test key in production. It does NOT guarantee cryptographic strength.
+/// **SECURITY WARNING: This is a HEURISTIC check only.**
+///
+/// This function can detect obviously weak keys but CANNOT guarantee cryptographic
+/// strength. Keys MUST be generated from a cryptographically secure pseudorandom
+/// number generator (CSPRNG) such as:
+/// - `openssl rand -hex 32`
+/// - `getrandom` crate
+/// - `/dev/urandom` on Unix
+/// - `CryptGenRandom` on Windows
+///
+/// A key that passes this check is NOT necessarily secure - it simply isn't
+/// obviously weak. Always use proper key generation, never derive keys from
+/// passwords without a proper KDF (Argon2, scrypt), and never reuse keys.
 fn has_sufficient_entropy(key: &[u8; 32]) -> bool {
     // Reject all zeros
     if key.iter().all(|&b| b == 0) {
@@ -307,14 +331,20 @@ mod tests {
     }
 
     #[test]
-    fn test_is_likely_encrypted() {
+    fn test_could_be_encrypted() {
         let key = test_key();
         let encrypted = encrypt_sensitive("test", &key)
             .expect("MEDIUM-STOR-2: Failed to encrypt test string");
 
-        assert!(is_likely_encrypted(&encrypted));
-        assert!(!is_likely_encrypted("bc1qtest")); // Plaintext address
-        assert!(!is_likely_encrypted("short")); // Too short
+        assert!(could_be_encrypted(&encrypted));
+        assert!(!could_be_encrypted("bc1qtest")); // Plaintext address
+        assert!(!could_be_encrypted("short")); // Too short
+
+        // LOW FIX: Also test the deprecated alias still works
+        #[allow(deprecated)]
+        {
+            assert!(is_likely_encrypted(&encrypted));
+        }
     }
 
     #[test]
@@ -353,8 +383,8 @@ mod tests {
 
         // Low unique byte count (only 10 unique bytes)
         let mut low_unique = [0u8; 32];
-        for i in 0..32 {
-            low_unique[i] = (i % 10) as u8;
+        for (i, byte) in low_unique.iter_mut().enumerate() {
+            *byte = (i % 10) as u8;
         }
         assert!(!has_sufficient_entropy(&low_unique));
     }

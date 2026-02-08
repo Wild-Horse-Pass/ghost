@@ -141,29 +141,27 @@ impl TdpConfig {
     }
 }
 
-impl Default for TdpConfig {
-    fn default() -> Self {
-        // CRIT-PANIC-5: Handle getrandom failure gracefully
-        // WARNING: Default impl is for testing only - production MUST provide explicit config
-        let mut secret_key = [0u8; 32];
+// C-2 SECURITY FIX: Removed Default impl for TdpConfig
+//
+// RATIONALE: Default impl panicked on key generation failure, which could
+// crash the pool in production. Production deployments MUST provide explicit
+// TdpConfig with properly generated keys via TdpConfig::new().
+//
+// The Default impl was only used in tests. Tests should now use:
+//   TdpConfig::new_for_testing() which handles errors gracefully.
+//
+// This is a BREAKING CHANGE - code using TdpConfig::default() must be updated.
 
-        // Try to generate random key
-        match getrandom::getrandom(&mut secret_key) {
-            Ok(_) => {
-                // Got random bytes, create config
-                match Self::new(secret_key) {
-                    Ok(config) => config,
-                    Err(e) => panic!("TDP Default: generated invalid secp256k1 key: {}", e),
-                }
-            }
-            Err(e) => {
-                // getrandom failed - this should never happen on modern systems
-                panic!(
-                    "TDP Default: getrandom failed ({}). Production deployments must provide explicit TdpConfig.",
-                    e
-                );
-            }
-        }
+impl TdpConfig {
+    /// Create a TdpConfig for testing purposes only
+    ///
+    /// Returns None if key generation fails (should never happen in tests)
+    /// Production code should use TdpConfig::new() with explicit keys.
+    #[cfg(test)]
+    pub fn new_for_testing() -> Option<Self> {
+        let mut secret_key = [0u8; 32];
+        getrandom::getrandom(&mut secret_key).ok()?;
+        Self::new(secret_key).ok()
     }
 }
 
@@ -613,16 +611,19 @@ async fn handle_template_distribution_message(
                                 request.template_id
                             );
                             // Send error response
+                            // M-10 SECURITY FIX: Use map_err to handle conversion failure gracefully
+                            // instead of expect(). String to Str0255 conversion can fail if string
+                            // exceeds 255 bytes, though "transaction-list-overflow" never will.
+                            let error_code = match "transaction-list-overflow".to_string().try_into() {
+                                Ok(code) => code,
+                                Err(_) => {
+                                    warn!("M-10: Failed to create error code string - returning without response");
+                                    return Ok(());
+                                }
+                            };
                             let error = RequestTransactionDataError {
                                 template_id: request.template_id,
-                                error_code: "transaction-list-overflow"
-                                    .to_string()
-                                    .try_into()
-                                    .unwrap_or_else(|_| {
-                                        vec![]
-                                            .try_into()
-                                            .expect("L-1: Empty vec should always convert")
-                                    }),
+                                error_code,
                             };
                             let error_frame: Sv2Frame = AnyMessage::TemplateDistribution(
                                 TemplateDistribution::RequestTransactionDataError(error)
@@ -638,9 +639,15 @@ async fn handle_template_distribution_message(
                         }
                     };
 
-                    let excess_data: B064K<'static> = vec![]
-                        .try_into()
-                        .expect("empty vec should always be valid for B064K");
+                    // M-10 SECURITY FIX: Use match instead of expect()
+                    // Empty vec conversion to B064K should always succeed, but handle gracefully
+                    let excess_data: B064K<'static> = match Vec::new().try_into() {
+                        Ok(v) => v,
+                        Err(_) => {
+                            warn!("M-10: Failed to create empty excess_data - returning without response");
+                            return Ok(());
+                        }
+                    };
 
                     let success = RequestTransactionDataSuccess {
                         template_id: request.template_id,
@@ -674,16 +681,17 @@ async fn handle_template_distribution_message(
                         request.template_id, client_id
                     );
 
+                    // M-10 SECURITY FIX: Use match instead of expect()
+                    let error_code = match "template-id-not-found".to_string().try_into() {
+                        Ok(code) => code,
+                        Err(_) => {
+                            warn!("M-10: Failed to create error code string - returning without response");
+                            return Ok(());
+                        }
+                    };
                     let error = RequestTransactionDataError {
                         template_id: request.template_id,
-                        error_code: "template-id-not-found"
-                            .to_string()
-                            .try_into()
-                            .unwrap_or_else(|_| {
-                                vec![]
-                                    .try_into()
-                                    .expect("L-1: Empty vec should always convert")
-                            }),
+                        error_code,
                     };
 
                     let error_frame: Sv2Frame = AnyMessage::TemplateDistribution(
@@ -1250,8 +1258,18 @@ fn nbits_to_target_u256(nbits: u32) -> stratum_apps::stratum_core::binary_sv2::U
         }
     }
 
+    // M-10 SECURITY FIX: Use safe fallback instead of expect()
+    // Convert target to U256, falling back to zero if conversion fails
     U256::try_from(target.to_vec()).unwrap_or_else(|_| {
-        U256::try_from(vec![0u8; 32]).expect("L-1: 32-byte zero vec should always convert to U256")
+        // 32-byte zero vec conversion is infallible, but handle gracefully
+        match U256::try_from(vec![0u8; 32]) {
+            Ok(v) => v,
+            Err(_) => {
+                // This should never happen, but return a valid zero U256
+                // by using the From<[u8; 32]> impl which is infallible
+                U256::from([0u8; 32])
+            }
+        }
     })
 }
 
@@ -1274,8 +1292,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tdp_config_default() {
-        let config = TdpConfig::default();
+    fn test_tdp_config_new_for_testing() {
+        // C-2: Use new_for_testing() instead of Default (which was removed)
+        let config = TdpConfig::new_for_testing().expect("Key generation should succeed in tests");
         assert_eq!(config.port, 8442);
         assert_eq!(config.max_connections, 10);
         // Public key should be derivable

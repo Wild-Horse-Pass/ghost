@@ -180,15 +180,23 @@ async fn handle_register(
     }
 
     // Check rate limiting (if node already exists)
+    // LOW-RATE: Return 429 when rate limited
     if let Ok(Some(existing)) = state.db.get_node(&req.node_id) {
         let since_registered = (Utc::now() - existing.registered_at).num_seconds();
         if since_registered < state.health_config.registration_rate_limit_secs as i64 {
+            let seconds_remaining = state.health_config.registration_rate_limit_secs as i64 - since_registered;
             debug!(
                 node_id = %req.node_id,
-                seconds_remaining = state.health_config.registration_rate_limit_secs as i64 - since_registered,
+                seconds_remaining = seconds_remaining,
                 "Rate limited registration"
             );
-            // Allow re-registration but don't update registered_at
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(ApiResponse::error(format!(
+                    "Rate limited. Please wait {} seconds before re-registering.",
+                    seconds_remaining
+                ))),
+            );
         }
     }
 
@@ -214,10 +222,16 @@ async fn handle_register(
     };
 
     // Store in database
+    // LOW-DB: Don't expose database errors to clients
     if let Err(e) = state.db.upsert_node(&node) {
+        warn!(
+            node_id = %req.node_id,
+            error = %e,
+            "Database error during node registration"
+        );
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Database error: {}", e))),
+            Json(ApiResponse::error("Internal server error")),
         );
     }
 
@@ -279,14 +293,20 @@ async fn handle_heartbeat(
             );
         }
         Err(e) => {
+            warn!(
+                node_id = %req.node_id,
+                error = %e,
+                "Database error checking node existence"
+            );
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiResponse::error(format!("Database error: {}", e))),
+                Json(ApiResponse::error("Internal server error")),
             );
         }
     }
 
     // Update heartbeat
+    // LOW-DB: Don't expose database errors to clients
     if let Err(e) = state.db.update_heartbeat(
         &req.node_id,
         req.miner_count,
@@ -295,9 +315,14 @@ async fn handle_heartbeat(
         req.memory_percent,
         req.accepting_miners,
     ) {
+        warn!(
+            node_id = %req.node_id,
+            error = %e,
+            "Database error updating heartbeat"
+        );
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Database error: {}", e))),
+            Json(ApiResponse::error("Internal server error")),
         );
     }
 
@@ -328,10 +353,17 @@ async fn handle_deregister(
             StatusCode::NOT_FOUND,
             Json(ApiResponse::error("Node not found")),
         ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Database error: {}", e))),
-        ),
+        Err(e) => {
+            warn!(
+                node_id = %node_id,
+                error = %e,
+                "Database error during deregistration"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error("Internal server error")),
+            )
+        }
     }
 }
 
@@ -375,10 +407,17 @@ async fn handle_node_status(
             StatusCode::NOT_FOUND,
             Json(ApiResponse::error("Node not found")),
         ),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Database error: {}", e))),
-        ),
+        Err(e) => {
+            warn!(
+                node_id = %node_id,
+                error = %e,
+                "Database error fetching node status"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error("Internal server error")),
+            )
+        }
     }
 }
 
@@ -422,10 +461,13 @@ async fn handle_list_nodes(State(state): State<Arc<AppState>>) -> impl IntoRespo
 
             (StatusCode::OK, Json(ApiResponse::ok_with_data(response)))
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Database error: {}", e))),
-        ),
+        Err(e) => {
+            warn!(error = %e, "Database error listing nodes");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error("Internal server error")),
+            )
+        }
     }
 }
 
@@ -433,10 +475,13 @@ async fn handle_list_nodes(State(state): State<Arc<AppState>>) -> impl IntoRespo
 async fn handle_list_regions(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.db.get_region_stats() {
         Ok(stats) => (StatusCode::OK, Json(ApiResponse::ok_with_data(stats))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Database error: {}", e))),
-        ),
+        Err(e) => {
+            warn!(error = %e, "Database error fetching region stats");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error("Internal server error")),
+            )
+        }
     }
 }
 
@@ -444,10 +489,13 @@ async fn handle_list_regions(State(state): State<Arc<AppState>>) -> impl IntoRes
 async fn handle_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match state.health_checker.get_health_summary() {
         Ok(summary) => (StatusCode::OK, Json(ApiResponse::ok_with_data(summary))),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse::error(format!("Health check failed: {}", e))),
-        ),
+        Err(e) => {
+            warn!(error = %e, "Health check failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiResponse::error("Health check failed")),
+            )
+        }
     }
 }
 

@@ -63,6 +63,8 @@ pub struct PayoutConfig {
     /// Treasury address (script pubkey bytes) - REQUIRED
     /// None indicates unconfigured state; must be set before use
     pub treasury_address: Option<Vec<u8>>,
+    /// M-15/LOW: Bitcoin network for mainnet-specific security checks
+    pub network: ghost_common::config::BitcoinNetwork,
 }
 
 impl Default for PayoutConfig {
@@ -72,6 +74,7 @@ impl Default for PayoutConfig {
             max_miner_outputs: 200,
             max_node_outputs: 100,
             treasury_address: None, // Must be configured at startup
+            network: ghost_common::config::BitcoinNetwork::Signet, // Safe default
         }
     }
 }
@@ -257,16 +260,33 @@ impl PayoutProposalCreator {
         block_hash: &[u8; 32],
         expected_height: u64,
     ) -> GhostResult<()> {
-        // If no RPC client configured, skip validation (warn but don't fail)
-        // This allows tests to run without a Bitcoin Core instance
+        // LOW SECURITY FIX: RPC is REQUIRED on mainnet for block validation
+        // On mainnet, we MUST validate blocks via RPC to prevent invalid payout proposals.
+        // On testnets, we allow skipping RPC for development convenience.
         let rpc = match &self.rpc {
             Some(rpc) => rpc,
             None => {
-                warn!(
-                    "CRIT-MINE-2: No Bitcoin RPC configured - skipping block validation. \
-                     This is NOT SAFE for mainnet!"
-                );
-                return Ok(());
+                let is_mainnet = self.config.network == ghost_common::config::BitcoinNetwork::Mainnet;
+
+                if is_mainnet {
+                    // LOW: On mainnet, RPC is REQUIRED - fail if not configured
+                    error!(
+                        "LOW SECURITY: No Bitcoin RPC configured on MAINNET - cannot validate blocks"
+                    );
+                    return Err(ghost_common::error::GhostError::ConfigError(
+                        "Bitcoin RPC is required on mainnet for block validation. \
+                         Configure bitcoin.rpc_host and bitcoin.rpc_port in your config."
+                            .to_string(),
+                    ));
+                } else {
+                    // On testnets, warn but allow (for development/testing)
+                    warn!(
+                        network = ?self.config.network,
+                        "CRIT-MINE-2: No Bitcoin RPC configured - skipping block validation. \
+                         This would FAIL on mainnet!"
+                    );
+                    return Ok(());
+                }
             }
         };
 
@@ -323,19 +343,40 @@ impl PayoutProposalCreator {
         // which could lead to incorrect payout consensus.
         self.validate_block_exists_and_difficulty(&data.block_hash, data.block_height)?;
 
-        // MED-POOL-1: Validate subsidy matches expected for height
+        // M-15 SECURITY FIX: Validate subsidy matches expected for height
+        // On MAINNET: Subsidy mismatch is a CRITICAL error - indicates template manipulation
+        // On testnets: Log warning but allow (testnets may have different subsidy rules)
         let expected_subsidy = ghost_common::rpc::calculate_block_subsidy(data.block_height, None);
         if data.subsidy_sats != expected_subsidy {
-            // Allow some tolerance for signet/testnet where subsidy may differ
-            // But log it as a warning for mainnet auditing
-            warn!(
-                height = data.block_height,
-                expected = expected_subsidy,
-                actual = data.subsidy_sats,
-                "MED-POOL-1: Subsidy mismatch - may be normal for signet/testnet"
-            );
-            // On mainnet, this would be a critical error. For now, log but don't fail
-            // to allow signet/testnet operation.
+            let is_mainnet = self.config.network == ghost_common::config::BitcoinNetwork::Mainnet;
+
+            if is_mainnet {
+                // M-15: On mainnet, subsidy mismatch is a CRITICAL error
+                // This could indicate:
+                // - Template manipulation attack
+                // - Block height confusion
+                // - Internal calculation bug
+                error!(
+                    height = data.block_height,
+                    expected = expected_subsidy,
+                    actual = data.subsidy_sats,
+                    "M-15 CRITICAL: Subsidy mismatch on MAINNET - rejecting payout proposal"
+                );
+                return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                    "M-15: Subsidy mismatch on mainnet at height {}: expected {} sats, got {} sats. \
+                     This indicates potential template manipulation or internal bug.",
+                    data.block_height, expected_subsidy, data.subsidy_sats
+                )));
+            } else {
+                // On testnets, log warning but continue (signet/testnet may differ)
+                warn!(
+                    height = data.block_height,
+                    expected = expected_subsidy,
+                    actual = data.subsidy_sats,
+                    network = ?self.config.network,
+                    "M-15: Subsidy mismatch - acceptable on testnet but would fail on mainnet"
+                );
+            }
         }
 
         // MED-POOL-2: Sanity check TX fees - reject absurdly high values
@@ -1050,7 +1091,24 @@ impl PayoutProposalCreator {
         }
         let payouts = merged_payouts;
 
-        // Add dust to the top node's payout (first in sorted order = highest capability shares)
+        // M-8 INTENTIONAL DESIGN: Node payout rounding remainder goes to top node
+        //
+        // When distributing node rewards, integer division causes small rounding losses.
+        // For example, with 1000 sats split among 3 equal nodes: each gets 333, with
+        // 1 sat remainder. Rather than lose this satoshi, we add it to the top node
+        // (the node with the highest capability shares).
+        //
+        // This is INTENTIONAL and documented behavior:
+        // 1. All satoshis are accounted for - none are lost
+        // 2. The top node benefits slightly from rounding (typically 0-10 sats/block)
+        // 3. This creates a small incentive to maintain high capability scores
+        // 4. Alternative approaches (random distribution, burn, treasury) were considered
+        //    but this is the simplest and most predictable
+        //
+        // Security consideration: The maximum rounding benefit is bounded by the number
+        // of nodes (max 100) and the precision of integer division, making it economically
+        // insignificant compared to the capability shares they already earned.
+        //
         // CRIT-PANIC-2: Use .first_mut() instead of direct indexing for defensive coding
         if dust_total > 0 {
             let mut payouts = payouts;
@@ -1060,7 +1118,7 @@ impl PayoutProposalCreator {
                     dust_total,
                     top_node = %hex::encode(&top_payout.recipient_id[..8]),
                     nodes_affected = node_shares.len().saturating_sub(payouts.len()),
-                    "Node dust redistributed to top node"
+                    "M-8: Node dust + rounding remainder redistributed to top node (intentional)"
                 );
                 return Ok(payouts);
             } else {

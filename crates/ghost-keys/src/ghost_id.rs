@@ -121,15 +121,30 @@ impl GhostId {
     ///
     /// SECURITY: Different networks use different HRPs to prevent
     /// accidentally sending to wrong network addresses.
+    ///
+    /// LOW FIX: HRP parsing and bech32 encoding are infallible for valid inputs.
+    /// The HRPs are hardcoded valid constants and public keys serialize to valid bytes.
+    /// Using unwrap_or_else to provide clear error messages if invariants are violated.
     pub fn encode_for_network(&self, network: GhostNetwork) -> String {
-        let hrp = Hrp::parse(network.hrp()).expect("valid HRP");
+        let hrp_str = network.hrp();
+        let hrp = Hrp::parse(hrp_str).unwrap_or_else(|e| {
+            panic!(
+                "BUG: HRP constant '{}' failed to parse - this should never happen: {}",
+                hrp_str, e
+            )
+        });
 
         // Concatenate scan and spend pubkeys (66 bytes total)
         let mut data = Vec::with_capacity(66);
         data.extend_from_slice(&self.scan_pubkey.serialize());
         data.extend_from_slice(&self.spend_pubkey.serialize());
 
-        bech32::encode::<Bech32m>(hrp, &data).expect("valid encoding")
+        bech32::encode::<Bech32m>(hrp, &data).unwrap_or_else(|e| {
+            panic!(
+                "BUG: bech32 encoding of valid public keys failed - this should never happen: {}",
+                e
+            )
+        })
     }
 
     /// Decode from bech32m string (mainnet only)

@@ -251,8 +251,16 @@ impl ZkVoteHandler {
     }
 
     /// Calculate the threshold for BFT consensus
+    ///
+    /// H-6 SECURITY FIX: Explicit check for zero validators before division.
+    /// Returns 1 as minimum threshold if no validators exist (consensus impossible).
     fn calculate_threshold(&self) -> u32 {
         let total = self.validators.read().len() as u32;
+        // H-6: Explicit zero check before threshold calculation
+        // With zero validators, consensus is impossible, return minimum threshold
+        if total == 0 {
+            return 1; // Minimum threshold - no proposals can pass with 0 validators
+        }
         // 67% threshold (2/3 + 1)
         (total * self.config.bft_threshold_percent / 100).max(1)
     }
@@ -834,6 +842,10 @@ mod tests {
         let identity = create_test_identity();
         let handler = ZkVoteHandler::new(identity);
 
+        // H-6 SECURITY TEST: With zero validators, threshold should be 1 (not panic)
+        let threshold = handler.calculate_threshold();
+        assert_eq!(threshold, 1, "H-6: Zero validators should return threshold of 1");
+
         // Add 4 validators
         for i in 0..4 {
             handler.add_validator([i; 32]);
@@ -851,6 +863,21 @@ mod tests {
         // 67% of 10 = 6.7, so threshold should be 6
         let threshold = handler.calculate_threshold();
         assert_eq!(threshold, 6);
+    }
+
+    #[test]
+    fn test_h6_zero_validators_no_panic() {
+        // H-6 SECURITY TEST: Verify that operations with zero validators don't panic
+        let identity = create_test_identity();
+        let handler = ZkVoteHandler::new(identity);
+
+        // Should return 1 (minimum threshold) with zero validators
+        assert_eq!(handler.calculate_threshold(), 1);
+        assert_eq!(handler.validator_count(), 0);
+
+        // Operations should not panic with zero validators
+        let timeouts = handler.check_timeouts();
+        assert!(timeouts.is_empty());
     }
 
     #[test]

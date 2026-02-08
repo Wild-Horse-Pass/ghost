@@ -34,6 +34,9 @@ mod db;
 mod health_checker;
 
 use anyhow::Result;
+use axum::extract::DefaultBodyLimit;
+use axum::middleware::Next;
+use axum::response::Response;
 use clap::Parser;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -43,6 +46,38 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
+
+/// LOW-API-1: Security headers middleware for all HTTP responses
+async fn security_headers_middleware(
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let mut response = next.run(request).await;
+
+    let headers = response.headers_mut();
+
+    use axum::http::HeaderValue;
+
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert(
+        "x-xss-protection",
+        HeaderValue::from_static("1; mode=block"),
+    );
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+    );
+    headers.insert(
+        "referrer-policy",
+        HeaderValue::from_static("no-referrer"),
+    );
+
+    response
+}
 
 use api::{build_router, AppState};
 use cloudflare::CloudflareClient;
@@ -210,9 +245,15 @@ async fn main() -> Result<()> {
     };
 
     // Build router with middleware
+    // H-9: Apply body size limit from config (prevents memory exhaustion)
+    // LOW-API-1: Add security headers to all responses
     let app = build_router(app_state)
+        .layer(axum::middleware::from_fn(security_headers_middleware))
         .layer(TraceLayer::new_for_http())
-        .layer(cors);
+        .layer(cors)
+        .layer(DefaultBodyLimit::max(config.server.max_body_size));
+
+    info!("H-9: Request body limit set to {} bytes", config.server.max_body_size);
 
     // Parse listen address
     let addr: SocketAddr = config.server.listen.parse()?;

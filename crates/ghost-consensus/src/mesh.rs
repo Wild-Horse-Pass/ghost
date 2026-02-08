@@ -409,9 +409,22 @@ impl SeenMessageCache {
         }
     }
 
-    /// HIGH-CONS-1: Rigorous sequence validation with comprehensive wrap-around checks
+    /// H-5 SECURITY: Atomically validate and update sequence state
     ///
-    /// Returns true if this sequence is valid (not a replay).
+    /// This method combines validation and update into a single atomic operation
+    /// to prevent TOCTOU (time-of-check to time-of-use) race conditions.
+    ///
+    /// Previously, `is_sequence_valid()` and `update_highest_seq()` were separate,
+    /// allowing a race where:
+    /// 1. Thread A checks: sequence 100 is valid (highest is 99)
+    /// 2. Thread B checks: sequence 100 is valid (highest is 99)
+    /// 3. Thread A updates: highest becomes 100
+    /// 4. Thread B updates: highest stays 100 (duplicate accepted!)
+    ///
+    /// Now both operations happen atomically using entry() API.
+    ///
+    /// Returns true if the sequence was valid and state was updated.
+    /// Returns false if the sequence was a replay/invalid.
     ///
     /// SECURITY LAYERS:
     /// 1. **Message Count Gate**: Wrap-around requires >= 1M messages (H-P2P-5)
@@ -420,24 +433,23 @@ impl SeenMessageCache {
     /// 4. **Cumulative Distance**: Total distance checked against message count (H-7)
     /// 5. **Strict Ordering**: Sequence must be > highest_seq (no replay)
     /// 6. **Initial Sequence**: First message limited to prevent setup attacks
-    ///
-    /// WRAP-AROUND ATTACK PREVENTION:
-    /// An attacker trying to wrap sequences would need to either:
-    /// - Send 1M legitimate messages first (rate-limited, takes weeks)
-    /// - Jump by 1M repeatedly (blocked by cumulative distance check)
-    /// - Wait >1 hour between messages (blocked by timing check)
-    /// - Start at near-MAX (blocked by initial sequence check)
-    ///
-    /// All realistic attack vectors are covered.
-    fn is_sequence_valid(&self, sender: &NodeId, sequence: u64) -> bool {
-        match self.sequence_state.get(sender) {
-            Some(state) => {
+    fn validate_and_update_sequence(&mut self, sender: &NodeId, sequence: u64) -> bool {
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        // H-5: Use entry() API for atomic check-and-update
+        match self.sequence_state.entry(*sender) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                let state = entry.get_mut();
+
                 // H-P2P-5: Check for wrap-around detection
-                if state.highest_seq > WRAP_DETECTION_THRESHOLD
-                    && sequence < WRAP_DETECTION_THRESHOLD
-                {
+                let is_wrap_around = state.highest_seq > WRAP_DETECTION_THRESHOLD
+                    && sequence < WRAP_DETECTION_THRESHOLD;
+
+                if is_wrap_around {
                     // H-P2P-5: Only accept wrap-around if we've seen enough messages
-                    // This prevents an attacker from trivially triggering wrap-around
                     if state.message_count < MIN_MESSAGES_BEFORE_WRAP {
                         warn!(
                             sender = %hex::encode(&sender[..8]),
@@ -450,14 +462,7 @@ impl SeenMessageCache {
                         return false;
                     }
 
-                    // M-3 SECURITY: Add timestamp-based validation during wrap-around
-                    // The last message must be recent - a wrap-around should happen immediately,
-                    // not hours after the last message (which would indicate a replay attack)
-                    let now_secs = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-
+                    // M-3 SECURITY: Timing-based validation during wrap-around
                     let time_since_last = now_secs.saturating_sub(state.last_message_time);
                     if time_since_last > MAX_WRAP_AROUND_GAP_SECS {
                         warn!(
@@ -472,9 +477,6 @@ impl SeenMessageCache {
                     }
 
                     // HIGH-CONS-1: Legitimate wrap-around must start in range 1-1000
-                    // After wrap-around, sequence should restart low (typically 1)
-                    // Allowing any value up to WRAP_DETECTION_THRESHOLD would let attackers
-                    // skip ahead to dangerous positions post-wrap
                     const MAX_POST_WRAP_SEQUENCE: u64 = 1000;
                     if sequence == 0 || sequence > MAX_POST_WRAP_SEQUENCE {
                         warn!(
@@ -485,52 +487,70 @@ impl SeenMessageCache {
                         );
                         return false;
                     }
+
+                    // Valid wrap-around - update state atomically
+                    state.message_count = state.message_count.saturating_add(1);
+                    state.last_message_time = now_secs;
+                    state.epoch = state.epoch.saturating_add(1);
+                    state.highest_seq = sequence;
+                    state.cumulative_distance = 0;
+                    info!(
+                        sender = %hex::encode(&sender[..8]),
+                        new_seq = sequence,
+                        epoch = state.epoch,
+                        message_count = state.message_count,
+                        "H-P2P-5/M-3: Legitimate sequence wrap-around detected"
+                    );
                     return true;
                 }
 
-                // H-P2P-5: Reject large sequence jumps (potential wrap-around attack)
-                if sequence > state.highest_seq {
-                    let jump = sequence - state.highest_seq;
-                    if jump > MAX_SEQUENCE_JUMP {
-                        warn!(
-                            sender = %hex::encode(&sender[..8]),
-                            highest_seq = state.highest_seq,
-                            new_seq = sequence,
-                            jump = jump,
-                            max_jump = MAX_SEQUENCE_JUMP,
-                            "H-P2P-5: Rejecting message with excessive sequence jump"
-                        );
-                        return false;
-                    }
-
-                    // H-7 SECURITY: Check cumulative distance to prevent repeated MAX_SEQUENCE_JUMP attacks
-                    // An attacker could repeatedly jump by exactly MAX_SEQUENCE_JUMP to slowly reach
-                    // wrap-around territory without triggering the per-message jump check.
-                    // The cumulative check ensures we've sent enough messages to justify the total distance.
-                    let projected_cumulative = state.cumulative_distance.saturating_add(jump);
-                    if projected_cumulative > MAX_CUMULATIVE_DISTANCE_BEFORE_WRAP
-                        && state.message_count < MIN_MESSAGES_BEFORE_WRAP
-                    {
-                        warn!(
-                            sender = %hex::encode(&sender[..8]),
-                            highest_seq = state.highest_seq,
-                            new_seq = sequence,
-                            cumulative_distance = projected_cumulative,
-                            message_count = state.message_count,
-                            max_cumulative = MAX_CUMULATIVE_DISTANCE_BEFORE_WRAP,
-                            min_messages = MIN_MESSAGES_BEFORE_WRAP,
-                            "H-7: Rejecting message - cumulative sequence distance too high for message count"
-                        );
-                        return false;
-                    }
+                // Normal case: sequence must be strictly greater
+                if sequence <= state.highest_seq {
+                    // Replay or duplicate - reject
+                    return false;
                 }
 
-                // Normal case: sequence must be strictly greater
-                sequence > state.highest_seq
+                // H-P2P-5: Reject large sequence jumps
+                let jump = sequence - state.highest_seq;
+                if jump > MAX_SEQUENCE_JUMP {
+                    warn!(
+                        sender = %hex::encode(&sender[..8]),
+                        highest_seq = state.highest_seq,
+                        new_seq = sequence,
+                        jump = jump,
+                        max_jump = MAX_SEQUENCE_JUMP,
+                        "H-P2P-5: Rejecting message with excessive sequence jump"
+                    );
+                    return false;
+                }
+
+                // H-7 SECURITY: Check cumulative distance
+                let projected_cumulative = state.cumulative_distance.saturating_add(jump);
+                if projected_cumulative > MAX_CUMULATIVE_DISTANCE_BEFORE_WRAP
+                    && state.message_count < MIN_MESSAGES_BEFORE_WRAP
+                {
+                    warn!(
+                        sender = %hex::encode(&sender[..8]),
+                        highest_seq = state.highest_seq,
+                        new_seq = sequence,
+                        cumulative_distance = projected_cumulative,
+                        message_count = state.message_count,
+                        max_cumulative = MAX_CUMULATIVE_DISTANCE_BEFORE_WRAP,
+                        min_messages = MIN_MESSAGES_BEFORE_WRAP,
+                        "H-7: Rejecting message - cumulative sequence distance too high for message count"
+                    );
+                    return false;
+                }
+
+                // Valid sequence - update state atomically
+                state.message_count = state.message_count.saturating_add(1);
+                state.last_message_time = now_secs;
+                state.cumulative_distance = projected_cumulative;
+                state.highest_seq = sequence;
+                true
             }
-            None => {
-                // First message from this sender - reject unreasonably high initial sequence
-                // This prevents starting at near-MAX to set up for wrap attack
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                // First message from this sender
                 if sequence > MAX_SEQUENCE_JUMP {
                     warn!(
                         sender = %hex::encode(&sender[..8]),
@@ -540,66 +560,74 @@ impl SeenMessageCache {
                     );
                     return false;
                 }
+
+                // Valid first message - insert state atomically
+                entry.insert(SequenceState {
+                    highest_seq: sequence,
+                    epoch: 0,
+                    message_count: 1,
+                    last_message_time: now_secs,
+                    cumulative_distance: sequence,
+                });
                 true
             }
         }
     }
 
-    /// M-2/M-3/H-P2P-5: Update the highest sequence seen from a sender with wrap-around handling
+    /// Check if a sequence is valid (read-only, for testing)
     ///
-    /// Should be called after accepting a valid message.
-    /// Detects wrap-around and increments epoch accordingly.
-    /// H-P2P-5: Also tracks message count for wrap-around validation.
-    /// M-3: Also tracks last message timestamp for timing-based wrap-around validation.
-    fn update_highest_seq(&mut self, sender: &NodeId, sequence: u64) {
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        self.sequence_state
-            .entry(*sender)
-            .and_modify(|state| {
-                // H-P2P-5: Always increment message count
-                state.message_count = state.message_count.saturating_add(1);
-                // M-3: Always update last message time
-                state.last_message_time = now_secs;
-
-                // M-2: Detect wrap-around
+    /// NOTE: For actual message processing, use `validate_and_update_sequence()`
+    /// which combines validation and update atomically.
+    #[cfg(test)]
+    fn is_sequence_valid(&self, sender: &NodeId, sequence: u64) -> bool {
+        match self.sequence_state.get(sender) {
+            Some(state) => {
+                // Check for wrap-around
                 if state.highest_seq > WRAP_DETECTION_THRESHOLD
                     && sequence < WRAP_DETECTION_THRESHOLD
                 {
-                    // 4.3/H-P2P-5 SECURITY: Sequence wrapped around - increment epoch and RESET highest
-                    // After wrap-around, the new sequence (e.g., 1) is the new baseline
-                    // Note: is_sequence_valid already verified this is legitimate (enough messages + recent)
-                    state.epoch = state.epoch.saturating_add(1);
-                    state.highest_seq = sequence; // Reset to new sequence after wrap
-                    // H-7: Reset cumulative distance on wrap-around
-                    state.cumulative_distance = 0;
-                    info!(
-                        sender = %hex::encode(&sender[..8]),
-                        new_seq = sequence,
-                        epoch = state.epoch,
-                        message_count = state.message_count,
-                        "H-P2P-5/M-3: Legitimate sequence wrap-around detected"
-                    );
-                } else {
-                    // H-7: Track cumulative distance for sequence jump attack prevention
-                    if sequence > state.highest_seq {
-                        let jump = sequence - state.highest_seq;
-                        state.cumulative_distance = state.cumulative_distance.saturating_add(jump);
+                    if state.message_count < MIN_MESSAGES_BEFORE_WRAP {
+                        return false;
                     }
-                    // Normal case: update to max of current and new
-                    state.highest_seq = state.highest_seq.max(sequence);
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let time_since_last = now_secs.saturating_sub(state.last_message_time);
+                    if time_since_last > MAX_WRAP_AROUND_GAP_SECS {
+                        return false;
+                    }
+                    const MAX_POST_WRAP_SEQUENCE: u64 = 1000;
+                    return sequence > 0 && sequence <= MAX_POST_WRAP_SEQUENCE;
                 }
-            })
-            .or_insert(SequenceState {
-                highest_seq: sequence,
-                epoch: 0,
-                message_count: 1,
-                last_message_time: now_secs,
-                cumulative_distance: sequence, // H-7: Initial sequence is first distance
-            });
+
+                if sequence <= state.highest_seq {
+                    return false;
+                }
+
+                let jump = sequence - state.highest_seq;
+                if jump > MAX_SEQUENCE_JUMP {
+                    return false;
+                }
+
+                let projected_cumulative = state.cumulative_distance.saturating_add(jump);
+                if projected_cumulative > MAX_CUMULATIVE_DISTANCE_BEFORE_WRAP
+                    && state.message_count < MIN_MESSAGES_BEFORE_WRAP
+                {
+                    return false;
+                }
+
+                true
+            }
+            None => sequence <= MAX_SEQUENCE_JUMP,
+        }
+    }
+
+    /// Update sequence state (for testing backward compatibility)
+    #[cfg(test)]
+    fn update_highest_seq(&mut self, sender: &NodeId, sequence: u64) {
+        // Use the atomic method but ignore the result
+        let _ = self.validate_and_update_sequence(sender, sequence);
     }
 
     /// Check if a message has been seen
@@ -918,10 +946,13 @@ impl MeshNetwork {
 
     /// Create a new mesh network (infallible, panics on required Noise failure)
     ///
-    /// For test compatibility. Production code should use `try_new()`.
+    /// C-4 SECURITY: This method is restricted to test code only.
+    /// Production code MUST use `try_new()` which returns a Result and allows
+    /// proper error handling instead of panicking.
     ///
     /// # Panics
     /// Panics if `noise_required=true` and Noise initialization fails.
+    #[cfg(test)]
     pub fn new(identity: Arc<NodeIdentity>, config: MeshConfig) -> Self {
         Self::try_new(identity, config).expect("MeshNetwork initialization failed")
     }
@@ -1022,21 +1053,57 @@ impl MeshNetwork {
         }
     }
 
-    /// Check if message is duplicate or has invalid sequence (H-P2P-4)
+    /// H-5 SECURITY: Atomically check if duplicate and mark as seen if valid
     ///
-    /// Returns true if the message should be rejected because:
+    /// This combines the duplicate check and mark-seen into a single atomic operation
+    /// to prevent TOCTOU race conditions at the MeshNetwork level.
+    ///
+    /// Returns true if the message is a duplicate (should be rejected).
+    /// Returns false if the message is new and has been marked as seen.
+    ///
+    /// The message is rejected if:
     /// 1. We've already seen this exact (sender, sequence) pair, OR
-    /// 2. The sequence is <= the highest sequence we've seen from this sender
-    ///
-    /// This prevents replay attacks where old messages are re-sent.
-    fn is_duplicate(&self, msg_id: MessageId) -> bool {
-        let seen = self.seen_messages.read();
-        // Check both exact duplicate AND sequence monotonicity (H-P2P-4)
-        seen.contains(&msg_id) || !seen.is_sequence_valid(&msg_id.sender, msg_id.sequence)
+    /// 2. The sequence is <= the highest sequence we've seen from this sender, OR
+    /// 3. The sequence violates wrap-around protection rules
+    fn check_duplicate_and_mark(&self, msg_id: MessageId) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut seen = self.seen_messages.write();
+
+        // Check if already seen (exact duplicate)
+        if seen.contains(&msg_id) {
+            return true; // Duplicate
+        }
+
+        // H-5: Atomically validate sequence and update state
+        // This uses the combined validate_and_update_sequence method
+        // which prevents TOCTOU between validation and update
+        if !seen.validate_and_update_sequence(&msg_id.sender, msg_id.sequence) {
+            return true; // Invalid sequence (replay or attack)
+        }
+
+        // Valid new message - insert into cache
+        seen.insert(msg_id, now);
+        false // Not a duplicate
     }
 
-    /// Mark message as seen (P2P-L1: O(1) insertion with automatic eviction)
-    /// Also updates highest sequence tracking for H-P2P-4
+    /// Check if message is duplicate or has invalid sequence (H-P2P-4)
+    ///
+    /// DEPRECATED: Use check_duplicate_and_mark() for atomic operation.
+    /// This read-only check is kept for diagnostic purposes.
+    #[cfg(test)]
+    fn is_duplicate(&self, msg_id: MessageId) -> bool {
+        let seen = self.seen_messages.read();
+        seen.contains(&msg_id)
+    }
+
+    /// Mark message as seen - DEPRECATED
+    ///
+    /// DEPRECATED: Use check_duplicate_and_mark() for atomic operation.
+    #[cfg(test)]
     fn mark_seen(&self, msg_id: MessageId) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1045,8 +1112,7 @@ impl MeshNetwork {
 
         let mut seen = self.seen_messages.write();
         seen.insert(msg_id, now);
-        // H-P2P-4: Update highest sequence tracking
-        seen.update_highest_seq(&msg_id.sender, msg_id.sequence);
+        seen.validate_and_update_sequence(&msg_id.sender, msg_id.sequence);
     }
 
     /// Create a message envelope
@@ -1513,13 +1579,15 @@ impl MeshNetwork {
             );
         }
 
-        // Check for duplicate
+        // H-5 SECURITY: Atomically check for duplicate and mark as seen
+        // This prevents TOCTOU race conditions where two threads could both
+        // pass the duplicate check and then both process the same message
         let msg_id = MessageId {
             sender: envelope.sender,
             sequence: envelope.sequence,
         };
 
-        if self.is_duplicate(msg_id) {
+        if self.check_duplicate_and_mark(msg_id) {
             tracing::trace!(
                 sender = %hex::encode(&envelope.sender[..8]),
                 msg_type = ?envelope.msg_type,
@@ -1528,8 +1596,6 @@ impl MeshNetwork {
             );
             return Ok(());
         }
-
-        self.mark_seen(msg_id);
 
         // Update peer last seen
         self.peers.update_last_seen(&envelope.sender);
@@ -1770,9 +1836,12 @@ impl MeshNetwork {
         let mut receive_errors: u64 = 0;
 
         // MED-CONS-2: Rate limit topic mismatch warnings per sender (1 per minute)
+        // H-4 SECURITY: Bounded to prevent memory exhaustion from malicious senders
         let mut topic_mismatch_log_times: std::collections::HashMap<[u8; 32], std::time::Instant> =
             std::collections::HashMap::new();
         const TOPIC_MISMATCH_LOG_INTERVAL_SECS: u64 = 60;
+        // H-4: Maximum entries to prevent unbounded memory growth
+        const MAX_TOPIC_MISMATCH_ENTRIES: usize = 1000;
 
         while self.running.load(Ordering::SeqCst) {
             // Get ALL peers (not just connected ones) - we need to attempt connection first
@@ -1947,6 +2016,22 @@ impl MeshNetwork {
                                 }
                             };
                             if should_log {
+                                // H-4 SECURITY: Evict oldest entries if at capacity
+                                // This prevents unbounded memory growth from malicious senders
+                                if topic_mismatch_log_times.len() >= MAX_TOPIC_MISMATCH_ENTRIES {
+                                    // Find and remove the oldest entry (LRU eviction)
+                                    if let Some(oldest_sender) = topic_mismatch_log_times
+                                        .iter()
+                                        .min_by_key(|(_, instant)| *instant)
+                                        .map(|(sender, _)| *sender)
+                                    {
+                                        topic_mismatch_log_times.remove(&oldest_sender);
+                                        debug!(
+                                            evicted = %hex::encode(&oldest_sender[..8]),
+                                            "H-4: Evicted oldest topic mismatch log entry (LRU)"
+                                        );
+                                    }
+                                }
                                 topic_mismatch_log_times.insert(envelope.sender, std::time::Instant::now());
                                 warn!(
                                     received_topic = topic_name,
@@ -2601,10 +2686,14 @@ mod tests {
 
     #[test]
     fn test_mesh_deduplication_with_sequence_check() {
-        // H-P2P-4: Integration test - MeshNetwork should reject old sequences
+        // H-P2P-4/H-5: Integration test - MeshNetwork should reject old sequences
+        // Using the new atomic check_duplicate_and_mark method
         let identity = Arc::new(NodeIdentity::generate());
-        let config = MeshConfig::default();
-        let mesh = MeshNetwork::new(identity, config);
+        let mut config = MeshConfig::default();
+        // Disable noise for test
+        config.noise_enabled = false;
+        config.noise_required = false;
+        let mesh = MeshNetwork::try_new(identity, config).expect("Failed to create mesh");
 
         let sender = [1u8; 32];
 
@@ -2613,11 +2702,17 @@ mod tests {
             sender,
             sequence: 10,
         };
-        assert!(!mesh.is_duplicate(msg1));
-        mesh.mark_seen(msg1);
+        // H-5: Use atomic check_duplicate_and_mark (returns false if not duplicate)
+        assert!(
+            !mesh.check_duplicate_and_mark(msg1),
+            "First message should not be duplicate"
+        );
 
         // Same message should now be duplicate
-        assert!(mesh.is_duplicate(msg1));
+        assert!(
+            mesh.check_duplicate_and_mark(msg1),
+            "Same message should be duplicate"
+        );
 
         // Message with sequence 5 (old) should be rejected as duplicate
         // even though we haven't seen this exact (sender, seq) pair
@@ -2626,7 +2721,7 @@ mod tests {
             sequence: 5,
         };
         assert!(
-            mesh.is_duplicate(msg_old),
+            mesh.check_duplicate_and_mark(msg_old),
             "Old sequence should be rejected"
         );
 
@@ -2636,7 +2731,7 @@ mod tests {
             sequence: 11,
         };
         assert!(
-            !mesh.is_duplicate(msg_new),
+            !mesh.check_duplicate_and_mark(msg_new),
             "New sequence should be accepted"
         );
     }

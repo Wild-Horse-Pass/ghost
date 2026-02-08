@@ -23,11 +23,51 @@
 //! Database query operations
 
 use rusqlite::{params, Connection, OptionalExtension};
+use tracing::warn;
 
 use ghost_common::error::{GhostError, GhostResult};
 
 use crate::database::Database;
 use crate::models::*;
+
+// =============================================================================
+// LOW FIX: HELPER FUNCTIONS FOR STATUS PARSING WITH LOGGING
+// =============================================================================
+
+/// LOW FIX: Parse PayoutStatus with logging on fallback to default.
+///
+/// Instead of silently falling back to a default status, this logs a warning
+/// so operators can investigate potential data corruption or schema issues.
+fn parse_payout_status_with_logging(status_str: &str, default: PayoutStatus, context: &str) -> PayoutStatus {
+    match PayoutStatus::parse(status_str) {
+        Some(status) => status,
+        None => {
+            warn!(
+                status_str = status_str,
+                default = ?default,
+                context = context,
+                "LOW FIX: Unknown PayoutStatus value in database, using default"
+            );
+            default
+        }
+    }
+}
+
+/// LOW FIX: Parse RecipientType with logging on fallback to default.
+fn parse_recipient_type_with_logging(type_str: &str, default: RecipientType, context: &str) -> RecipientType {
+    match RecipientType::parse(type_str) {
+        Some(rt) => rt,
+        None => {
+            warn!(
+                type_str = type_str,
+                default = ?default,
+                context = context,
+                "LOW FIX: Unknown RecipientType value in database, using default"
+            );
+            default
+        }
+    }
+}
 
 /// Type alias for node rotation data: (is_elder, elder_order, pow_proof, capabilities, first_seen)
 type NodeRotationData = (
@@ -483,8 +523,11 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: PayoutStatus::parse(&status_str)
-                            .unwrap_or(PayoutStatus::Active),
+                        payout_status: parse_payout_status_with_logging(
+                            &status_str,
+                            PayoutStatus::Active,
+                            "get_round",
+                        ),
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
                     })
@@ -599,8 +642,11 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: PayoutStatus::parse(&status_str)
-                            .unwrap_or(PayoutStatus::Active),
+                        payout_status: parse_payout_status_with_logging(
+                            &status_str,
+                            PayoutStatus::Active,
+                            "get_rounds_by_block_hash",
+                        ),
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
                     })
@@ -638,8 +684,11 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: PayoutStatus::parse(&status_str)
-                            .unwrap_or(PayoutStatus::Active),
+                        payout_status: parse_payout_status_with_logging(
+                            &status_str,
+                            PayoutStatus::Active,
+                            "get_recent_rounds",
+                        ),
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
                     })
@@ -3201,12 +3250,20 @@ fn payout_from_row(row: &rusqlite::Row) -> rusqlite::Result<PayoutRecord> {
         id: Some(row.get(0)?),
         round_id: row.get(1)?,
         recipient_id: row.get(2)?,
-        recipient_type: RecipientType::parse(&recipient_type_str).unwrap_or(RecipientType::Miner),
+        recipient_type: parse_recipient_type_with_logging(
+            &recipient_type_str,
+            RecipientType::Miner,
+            "payout_from_row",
+        ),
         address: row.get(4)?,
         amount_sats: row.get(5)?,
         txid: row.get(6)?,
         vout: row.get(7)?,
-        status: PayoutStatus::parse(&status_str).unwrap_or(PayoutStatus::Pending),
+        status: parse_payout_status_with_logging(
+            &status_str,
+            PayoutStatus::Pending,
+            "payout_from_row",
+        ),
         created_at: row.get(9)?,
         confirmed_at: row.get(10)?,
     })

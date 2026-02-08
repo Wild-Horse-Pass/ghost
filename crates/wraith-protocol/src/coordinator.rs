@@ -239,9 +239,12 @@ impl ReputationTracker {
     }
 
     /// Manually unban a participant (use with caution)
+    ///
+    /// M-3 FIX: Now correctly uses hashed ghost_id like ban() and is_banned()
     pub fn unban(&mut self, ghost_id: &str) {
-        self.banned.remove(ghost_id);
-        self.strikes.remove(ghost_id);
+        let hashed = Self::hash_ghost_id(ghost_id);
+        self.banned.remove(&hashed);
+        self.strikes.remove(&hashed);
     }
 
     /// Get all banned participants
@@ -582,9 +585,17 @@ impl std::fmt::Debug for WraithCoordinator {
 
 impl WraithCoordinator {
     /// Create a new coordinator for a session
-    pub fn new(tier: ParticipantTier, denomination: WraithDenomination, network: Network) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `WraithError::SecurityError` if the RNG fails to generate signing keys.
+    pub fn new(
+        tier: ParticipantTier,
+        denomination: WraithDenomination,
+        network: Network,
+    ) -> Result<Self, WraithError> {
         let session = WraithSession::new(tier, denomination);
-        let signer = CoordinatorSigner::new(session.session_id());
+        let signer = CoordinatorSigner::new(session.session_id())?;
 
         let session_id = *session.session_id();
         let coordinator = Self {
@@ -619,7 +630,7 @@ impl WraithCoordinator {
             "Wraith session created"
         );
 
-        coordinator
+        Ok(coordinator)
     }
 
     /// Set broadcast callback function
@@ -2087,7 +2098,9 @@ mod tests {
         denomination: WraithDenomination,
         network: Network,
     ) -> WraithCoordinator {
-        WraithCoordinator::new(tier, denomination, network).without_utxo_required_for_registration()
+        WraithCoordinator::new(tier, denomination, network)
+            .expect("test RNG should work")
+            .without_utxo_required_for_registration()
     }
 
     #[test]
@@ -2461,6 +2474,7 @@ mod tests {
             WraithDenomination::Small,
             Network::Regtest,
         )
+        .expect("test RNG should work")
         .with_reputation(reputation)
         .without_utxo_required_for_registration();
 
@@ -2493,6 +2507,7 @@ mod tests {
             WraithDenomination::Small,
             Network::Regtest,
         )
+        .expect("test RNG should work")
         .with_utxo_verifier(move |_txid, _vout| {
             verification_called_clone.store(true, Ordering::SeqCst);
             Ok(true) // UTXO exists
@@ -2534,6 +2549,7 @@ mod tests {
             WraithDenomination::Small,
             Network::Regtest,
         )
+        .expect("test RNG should work")
         .with_utxo_verifier(|_txid, _vout| {
             Ok(false) // UTXO does NOT exist
         })
@@ -2633,6 +2649,7 @@ mod tests {
             WraithDenomination::Small,
             Network::Regtest,
         )
+        .expect("test RNG should work")
         .with_utxo_verifier(|_txid, _vout| Ok(true)) // UTXO exists
         .with_utxo_required_for_registration();
 
@@ -2658,6 +2675,7 @@ mod tests {
             WraithDenomination::Small,
             Network::Regtest,
         )
+        .expect("test RNG should work")
         .with_utxo_verifier(move |_txid, _vout| {
             verification_called_clone.store(true, Ordering::SeqCst);
             Ok(true) // UTXO exists
@@ -2686,6 +2704,7 @@ mod tests {
             WraithDenomination::Small,
             Network::Regtest,
         )
+        .expect("test RNG should work")
         .with_utxo_verifier(|_txid, _vout| Ok(false)) // UTXO does NOT exist
         .with_utxo_required_for_registration();
 
@@ -2813,7 +2832,7 @@ mod tests {
         let old_key_id = *coord.signer.key_id();
 
         // Rotate the coordinator's signing key
-        let new_key = coord.signer.rotate_key();
+        let new_key = coord.signer.rotate_key().unwrap();
         let new_key_id = *coord.signer.key_id();
 
         // Verify key actually changed

@@ -91,6 +91,9 @@ struct LockInfoResponse {
     output_pubkey: String,
     recovery_height: Option<u64>,
     blocks_until_jump: Option<u64>,
+    /// M-11: Owner wallet ID for explicit ownership verification
+    /// If present, this field is used for ownership checks in fallback path
+    owner_wallet_id: Option<String>,
 }
 
 /// Status response from pay node
@@ -618,6 +621,37 @@ impl PayNodeProxy {
         })
     }
 
+    /// M-11: Internal method to get raw lock info including owner_wallet_id
+    ///
+    /// This returns the internal LockInfoResponse which includes the owner_wallet_id
+    /// field for explicit ownership verification in fallback paths.
+    async fn get_lock_info_internal(&self, lock_id: &str) -> GspResult<LockInfoResponse> {
+        let url = format!("{}/api/v1/locks/{}", self.base_url, lock_id);
+        debug!(url = %url, "M-11: Getting internal lock info for ownership check");
+
+        let response = self
+            .add_internal_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(GspError::NotFound(format!("Lock not found: {}", lock_id)));
+        }
+
+        if !response.status().is_success() {
+            return Err(GspError::PayNodeError(format!(
+                "Lock request failed: {}",
+                response.status()
+            )));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(e.to_string()))
+    }
+
     /// H-3/H-4/HIGH-STATE-1 FIX: Check if a wallet owns a specific lock
     ///
     /// Verifies ownership by checking if the lock exists in the wallet's lock list.
@@ -657,8 +691,38 @@ impl PayNodeProxy {
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
-            // Endpoint doesn't exist yet - fall back to client-side check
-            debug!("HIGH-STATE-1: Server-side endpoint not available, falling back to client-side check");
+            // M-11: Endpoint doesn't exist yet - fall back to client-side check with explicit verification
+            warn!(
+                wallet_id = %wallet_id,
+                lock_id = %lock_id,
+                "M-11: Server-side ownership endpoint not available, using fallback path. \
+                 This is less secure - upgrade pay node to support /owner endpoint."
+            );
+
+            // M-11: Use get_lock_info_internal to verify ownership explicitly via owner_wallet_id field
+            let lock_info = self.get_lock_info_internal(lock_id).await?;
+
+            // M-11: Verify ownership using explicit owner_wallet_id if available
+            if let Some(ref owner) = lock_info.owner_wallet_id {
+                let is_owner = owner == wallet_id;
+                if !is_owner {
+                    debug!(
+                        wallet_id = %wallet_id,
+                        lock_id = %lock_id,
+                        actual_owner = %owner,
+                        "M-11: Explicit ownership check failed - lock owned by different wallet"
+                    );
+                }
+                return Ok(is_owner);
+            }
+
+            // M-11: If owner_wallet_id not available, fall back to list-based check with warning
+            warn!(
+                wallet_id = %wallet_id,
+                lock_id = %lock_id,
+                "M-11: Lock does not have owner_wallet_id field - using list-based fallback. \
+                 This is the weakest verification path."
+            );
             let locks = self.get_ghost_locks(wallet_id).await?;
             return Ok(locks.iter().any(|lock| lock.lock_id == lock_id));
         }

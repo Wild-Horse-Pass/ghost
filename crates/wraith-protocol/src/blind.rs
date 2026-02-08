@@ -97,10 +97,14 @@ fn calculate_shannon_entropy(bytes: &[u8]) -> f64 {
 /// samples from 256 possible values, valid randomness yields ~4.5-5.0 bits/byte
 /// due to expected collisions in small samples (birthday paradox).
 ///
-/// L-10 FIX: Increased from 4.0 to 4.5 bits/byte for mainnet security.
+/// Set to 4.0 bits/byte as a balance between:
+/// - Security (detecting weak RNG) - 4.0 is ~3 standard deviations below expected
+/// - Reliability (avoiding false positives on valid random data)
+///
 /// This threshold is complemented by runs test and unique byte count checks
 /// to catch patterns that pass Shannon entropy but exhibit non-random structure.
-const MIN_ENTROPY_BITS_PER_BYTE: f64 = 4.5;
+/// The combination of three independent tests provides strong RNG failure detection.
+const MIN_ENTROPY_BITS_PER_BYTE: f64 = 4.0;
 
 /// L-10 SEC-WRAITH-1: Minimum number of runs (bit transitions) expected in random data.
 /// For 256 bits (32 bytes), random data should have ~128 runs (+/- ~11 std dev).
@@ -212,21 +216,25 @@ fn random_bytes_32() -> Result<[u8; 32], WraithError> {
     Ok(bytes)
 }
 
-/// LOW-WRAITH-2 FIX: Maximum RNG retry attempts before giving up
+/// C-3 FIX: Maximum RNG retry attempts before returning error
 const MAX_RNG_RETRIES: usize = 100;
 
-/// Generate random 32 bytes for key material (infallible version for key generation)
+/// Generate random 32 bytes for key material with retry logic
 ///
-/// LOW-WRAITH-2 FIX: Added circuit breaker with MAX_RNG_RETRIES limit.
-/// This version loops until valid entropy is obtained, but will panic after
-/// MAX_RNG_RETRIES failed attempts to prevent infinite loops if RNG is broken.
-/// Use for critical key generation where we cannot propagate errors but must have valid keys.
-fn random_bytes_32_infallible() -> [u8; 32] {
+/// C-3 FIX: Returns Result instead of panicking. The caller is responsible for
+/// handling RNG failures appropriately. This allows graceful degradation rather
+/// than crashing the entire system.
+///
+/// # Errors
+///
+/// Returns `WraithError::SecurityError` if RNG fails MAX_RNG_RETRIES consecutive
+/// times, indicating a potentially broken system RNG.
+fn random_bytes_32_with_retry() -> Result<[u8; 32], WraithError> {
     for attempt in 0..MAX_RNG_RETRIES {
         if let Ok(bytes) = random_bytes_32() {
-            return bytes;
+            return Ok(bytes);
         }
-        // If we get here, RNG is broken - log and retry
+        // If we get here, RNG produced invalid entropy - log and retry
         tracing::error!(
             attempt = attempt + 1,
             max = MAX_RNG_RETRIES,
@@ -234,21 +242,34 @@ fn random_bytes_32_infallible() -> [u8; 32] {
         );
     }
 
-    // LOW-WRAITH-2: Circuit breaker - RNG is persistently failing
-    panic!(
-        "CRITICAL: RNG failed {} consecutive attempts. System RNG may be broken. Terminating for safety.",
+    // C-3 FIX: Return error instead of panicking
+    Err(WraithError::SecurityError(format!(
+        "RNG failed {} consecutive attempts - system RNG may be compromised",
         MAX_RNG_RETRIES
-    );
+    )))
 }
 
 /// Generate a random secret key
-fn random_secret_key() -> SecretKey {
-    loop {
-        let bytes = random_bytes_32_infallible();
+///
+/// C-3 FIX: Now returns Result to propagate RNG failures to callers.
+///
+/// # Errors
+///
+/// Returns `WraithError::SecurityError` if the RNG is broken or if valid
+/// secret key bytes cannot be generated after retries.
+fn random_secret_key() -> Result<SecretKey, WraithError> {
+    // Try up to MAX_RNG_RETRIES times to get valid secret key bytes
+    for _ in 0..MAX_RNG_RETRIES {
+        let bytes = random_bytes_32_with_retry()?;
         if let Ok(sk) = SecretKey::from_slice(&bytes) {
-            return sk;
+            return Ok(sk);
         }
+        // Bytes passed entropy check but weren't valid for secp256k1
+        // This is extremely rare (probability ~2^-128) but possible
     }
+    Err(WraithError::SecurityError(
+        "Failed to generate valid secret key after maximum retries".to_string(),
+    ))
 }
 
 // Custom serde for [u8; 33] using hex encoding
@@ -468,18 +489,29 @@ impl std::fmt::Debug for CoordinatorSigner {
 
 impl CoordinatorSigner {
     /// Create a new coordinator signer for a session with default configuration
-    pub fn new(session_id: &[u8; 32]) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `WraithError::SecurityError` if the RNG fails to generate a valid signing key.
+    pub fn new(session_id: &[u8; 32]) -> Result<Self, WraithError> {
         Self::with_config(session_id, CoordinatorSignerConfig::default())
     }
 
     /// LOW-CRYPTO-1 FIX: Create a new coordinator signer with custom configuration
     ///
     /// Allows customization of security-critical parameters like grace period.
-    pub fn with_config(session_id: &[u8; 32], config: CoordinatorSignerConfig) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns `WraithError::SecurityError` if the RNG fails to generate a valid signing key.
+    pub fn with_config(
+        session_id: &[u8; 32],
+        config: CoordinatorSignerConfig,
+    ) -> Result<Self, WraithError> {
         let secp = Secp256k1::new();
 
         // Generate session-specific signing key
-        let signing_key = random_secret_key();
+        let signing_key = random_secret_key()?;
         let public_key = PublicKey::from_secret_key(&secp, &signing_key);
 
         // Key ID is hash of session_id and public key
@@ -489,7 +521,7 @@ impl CoordinatorSigner {
         engine.input(&public_key.serialize());
         let key_id = sha256::Hash::from_engine(engine).to_byte_array();
 
-        Self {
+        Ok(Self {
             signing_key,
             public_key,
             key_id,
@@ -498,7 +530,7 @@ impl CoordinatorSigner {
             nonces_per_participant: std::collections::HashMap::new(),
             previous_keys: Vec::new(), // WR4-L10
             grace_period_secs: config.grace_period_secs, // LOW-CRYPTO-1
-        }
+        })
     }
 
     /// Create from existing key bytes (for restoration) with default config
@@ -588,7 +620,7 @@ impl CoordinatorSigner {
         let secp = Secp256k1::new();
 
         // Generate random nonce k
-        let secret_nonce = random_secret_key();
+        let secret_nonce = random_secret_key()?;
         let public_nonce = PublicKey::from_secret_key(&secp, &secret_nonce);
 
         // Create unique session ID for this nonce INCLUDING ghost_id binding
@@ -596,7 +628,7 @@ impl CoordinatorSigner {
         engine.input(b"wraith/nonce-session/v2"); // v2 includes ghost_id
         engine.input(&public_nonce.serialize());
         engine.input(ghost_id.as_bytes()); // Bind to participant
-        engine.input(&random_bytes_32_infallible());
+        engine.input(&random_bytes_32_with_retry()?);
         let session_id = sha256::Hash::from_engine(engine).to_byte_array();
 
         let nonce = SigningNonce {
@@ -917,7 +949,11 @@ impl CoordinatorSigner {
     /// # Returns
     ///
     /// The new public key after rotation.
-    pub fn rotate_key(&mut self) -> PublicKey {
+    ///
+    /// # Errors
+    ///
+    /// Returns `WraithError::SecurityError` if the RNG fails to generate a new signing key.
+    pub fn rotate_key(&mut self) -> Result<PublicKey, WraithError> {
         let secp = Secp256k1::new();
 
         // Store old key for grace period
@@ -930,7 +966,7 @@ impl CoordinatorSigner {
         self.previous_keys.push(previous);
 
         // Generate new key
-        let new_signing_key = random_secret_key();
+        let new_signing_key = random_secret_key()?;
         let new_public_key = PublicKey::from_secret_key(&secp, &new_signing_key);
 
         // Generate new key ID
@@ -954,7 +990,7 @@ impl CoordinatorSigner {
             "Signing key rotated"
         );
 
-        self.public_key
+        Ok(self.public_key)
     }
 
     /// WR4-L10: Clean up old keys that are past the grace period
@@ -1101,7 +1137,7 @@ impl CoordinatorSigner {
             )));
         }
 
-        Ok(self.rotate_key())
+        self.rotate_key()
     }
 
     /// H-WRAITH-2: Get the number of active nonces that would block rotation
@@ -1158,8 +1194,8 @@ impl BlindingContext {
             .map_err(|e| WraithError::InvalidSignature(format!("Invalid nonce: {}", e)))?;
 
         // Generate random blinding factors
-        let alpha = random_secret_key();
-        let beta = random_secret_key();
+        let alpha = random_secret_key()?;
+        let beta = random_secret_key()?;
 
         // Compute R' = R + α*G + β*X
         let alpha_g = PublicKey::from_secret_key(&secp, &alpha);
@@ -1441,7 +1477,7 @@ mod tests {
 
     fn generate_test_address() -> XOnlyPublicKey {
         let secp = Secp256k1::new();
-        let sk = random_secret_key();
+        let sk = random_secret_key().expect("test RNG should work");
         let pk = PublicKey::from_secret_key(&secp, &sk);
         pk.x_only_public_key().0
     }
@@ -1454,7 +1490,7 @@ mod tests {
         let participant = "test_participant";
 
         // Step 1: Coordinator creates signer and nonce bound to participant
-        let mut signer = CoordinatorSigner::new(&session_id);
+        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
         let nonce = signer.create_nonce_for_participant(participant).unwrap();
 
         // Step 2: Participant creates blinding context
@@ -1489,7 +1525,7 @@ mod tests {
         let message = address.serialize().to_vec();
         let participant = "unlinkability_test";
 
-        let mut signer = CoordinatorSigner::new(&session_id);
+        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
 
         // Get two blind signatures on the same message
         let nonce1 = signer.create_nonce_for_participant(participant).unwrap();
@@ -1533,7 +1569,7 @@ mod tests {
         let message = address.serialize().to_vec();
         let participant = "single_use_test";
 
-        let mut signer = CoordinatorSigner::new(&session_id);
+        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
         let nonce = signer.create_nonce_for_participant(participant).unwrap();
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
@@ -1554,8 +1590,8 @@ mod tests {
         let session1 = [1u8; 32];
         let session2 = [2u8; 32];
 
-        let signer1 = CoordinatorSigner::new(&session1);
-        let signer2 = CoordinatorSigner::new(&session2);
+        let signer1 = CoordinatorSigner::new(&session1).unwrap();
+        let signer2 = CoordinatorSigner::new(&session2).unwrap();
 
         assert_ne!(signer1.key_id(), signer2.key_id());
     }
@@ -1567,7 +1603,7 @@ mod tests {
         let message = address.serialize().to_vec();
         let participant = "wrong_key_test";
 
-        let mut signer = CoordinatorSigner::new(&session_id);
+        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
         let nonce = signer.create_nonce_for_participant(participant).unwrap();
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
@@ -1591,7 +1627,7 @@ mod tests {
         let message = address.serialize().to_vec();
         let participant = "tampered_msg_test";
 
-        let mut signer = CoordinatorSigner::new(&session_id);
+        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
         let nonce = signer.create_nonce_for_participant(participant).unwrap();
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
@@ -1615,7 +1651,7 @@ mod tests {
         let message = address.serialize().to_vec();
         let participant = "schnorr_test";
 
-        let mut signer = CoordinatorSigner::new(&session_id);
+        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
         let nonce = signer.create_nonce_for_participant(participant).unwrap();
 
         let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
@@ -1642,7 +1678,7 @@ mod tests {
         let address = generate_test_address();
         let message = address.serialize().to_vec();
 
-        let mut signer = CoordinatorSigner::new(&session_id);
+        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
 
         // Create a nonce bound to "ghost1"
         let nonce = signer.create_nonce_for_participant("ghost1").unwrap();
@@ -1678,8 +1714,8 @@ mod tests {
     fn test_nonce_session_id_includes_participant() {
         let session_id = [8u8; 32];
 
-        let mut signer1 = CoordinatorSigner::new(&session_id);
-        let mut signer2 = CoordinatorSigner::new(&session_id);
+        let mut signer1 = CoordinatorSigner::new(&session_id).unwrap();
+        let mut signer2 = CoordinatorSigner::new(&session_id).unwrap();
 
         // Create nonces for different participants on different signers
         let nonce1 = signer1.create_nonce_for_participant("ghost1").unwrap();
@@ -1701,7 +1737,7 @@ mod tests {
     #[test]
     fn test_nonce_rate_limiting() {
         let session_id = [10u8; 32];
-        let mut signer = CoordinatorSigner::new(&session_id);
+        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
 
         // Create nonces up to the per-participant limit
         let mut nonces = Vec::new();
@@ -1751,7 +1787,7 @@ mod tests {
     #[allow(deprecated)]
     fn test_deprecated_nonce_returns_error() {
         let session_id = [9u8; 32];
-        let mut signer = CoordinatorSigner::new(&session_id);
+        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
 
         // C-6: This should return an error, not panic
         let result = signer.create_nonce();
@@ -1784,7 +1820,7 @@ mod tests {
         let message = address.serialize().to_vec();
         let participant = "test_participant";
 
-        let mut signer = CoordinatorSigner::new(&session_id);
+        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
 
         // Create a proper bound nonce
         let nonce = signer.create_nonce_for_participant(participant).unwrap();
@@ -1952,7 +1988,7 @@ mod tests {
     #[test]
     fn test_malformed_inputs_return_errors_not_panic() {
         let session_id = [42u8; 32];
-        let mut signer = CoordinatorSigner::new(&session_id);
+        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
 
         // Test 1: Invalid session_id in BlindedChallenge (nonce doesn't exist)
         let fake_challenge = BlindedChallenge {
@@ -1984,7 +2020,7 @@ mod tests {
             session_id: [1u8; 32],
         };
         let secp = Secp256k1::new();
-        let sk = random_secret_key();
+        let sk = random_secret_key().expect("test RNG should work");
         let pubkey = PublicKey::from_secret_key(&secp, &sk);
         let result = BlindingContext::new(vec![0u8; 32], &pubkey, &fake_nonce);
         assert!(
@@ -1994,7 +2030,7 @@ mod tests {
 
         // Test 4: Verify signature on token with invalid nonce_point
         let session_id2 = [43u8; 32];
-        let signer2 = CoordinatorSigner::new(&session_id2);
+        let signer2 = CoordinatorSigner::new(&session_id2).unwrap();
         let token_with_bad_nonce = UnblindedToken {
             message: vec![1, 2, 3],
             nonce_point: [0u8; 33], // Invalid point
@@ -2026,7 +2062,7 @@ mod tests {
     fn test_token_verifier_malformed_input() {
         let session_id = [44u8; 32];
         let secp = Secp256k1::new();
-        let sk = random_secret_key();
+        let sk = random_secret_key().expect("test RNG should work");
         let pubkey = PublicKey::from_secret_key(&secp, &sk);
 
         let verifier = TokenVerifier::new(pubkey, &session_id);
@@ -2070,11 +2106,11 @@ mod tests {
     #[test]
     fn test_blinding_context_edge_cases() {
         let secp = Secp256k1::new();
-        let sk = random_secret_key();
+        let sk = random_secret_key().expect("test RNG should work");
         let pubkey = PublicKey::from_secret_key(&secp, &sk);
 
         // Test with valid nonce - should succeed
-        let mut signer = CoordinatorSigner::new(&[45u8; 32]);
+        let mut signer = CoordinatorSigner::new(&[45u8; 32]).unwrap();
         let valid_nonce = signer.create_nonce_for_participant("test").unwrap();
         let result = BlindingContext::new(vec![0u8; 32], &pubkey, &valid_nonce);
         assert!(result.is_ok(), "Valid inputs should succeed");

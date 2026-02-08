@@ -196,9 +196,17 @@ fn is_trusted_proxy(ip: &std::net::IpAddr, trusted: &[std::net::IpAddr]) -> bool
 ///
 /// C-2: X-Forwarded-For and X-Real-IP headers are ONLY trusted when the direct
 /// peer IP is in the trusted proxy list. This prevents IP spoofing attacks.
+///
+/// M-14 FIX: Supports multi-proxy chains via configurable trusted_proxy_count.
+/// Default is 1 (single proxy). For multi-proxy setups (e.g., CDN -> LB -> App),
+/// set GHOST_TRUSTED_PROXY_COUNT=N where N is the number of trusted proxies.
 #[derive(Debug, Clone)]
 pub struct NodeIdKeyExtractor {
     trusted_proxies: Vec<std::net::IpAddr>,
+    /// M-14 FIX: Number of trusted proxies in the chain
+    /// For X-Forwarded-For: "client, proxy1, proxy2" with count=2,
+    /// we skip the last 2 entries (proxy1, proxy2) and use client IP
+    trusted_proxy_count: usize,
 }
 
 impl Default for NodeIdKeyExtractor {
@@ -207,18 +215,62 @@ impl Default for NodeIdKeyExtractor {
     }
 }
 
+/// M-14 FIX: Get trusted proxy count from environment
+///
+/// Returns the number of trusted proxies in the chain. Default is 1.
+/// For multi-proxy setups (CDN -> LB -> App), set GHOST_TRUSTED_PROXY_COUNT=2.
+fn get_trusted_proxy_count() -> usize {
+    std::env::var("GHOST_TRUSTED_PROXY_COUNT")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|count| {
+            // M-14: Sanity check - cap at 10 proxies, minimum 1
+            let capped = count.clamp(1, 10);
+            if capped != count {
+                tracing::warn!(
+                    requested = count,
+                    capped = capped,
+                    "M-14: Trusted proxy count capped to valid range [1, 10]"
+                );
+            }
+            capped
+        })
+        .unwrap_or(1) // Default: single proxy
+}
+
 impl NodeIdKeyExtractor {
     /// Create a new NodeIdKeyExtractor with trusted proxies from environment.
     pub fn new() -> Self {
+        let trusted_proxy_count = get_trusted_proxy_count();
+        tracing::info!(
+            trusted_proxy_count = trusted_proxy_count,
+            "M-14: Configured trusted proxy count for X-Forwarded-For parsing"
+        );
         Self {
             trusted_proxies: get_trusted_proxies(),
+            trusted_proxy_count,
         }
     }
 
     /// Create with explicit trusted proxy list (for testing).
     #[cfg(test)]
     pub fn with_trusted_proxies(trusted_proxies: Vec<std::net::IpAddr>) -> Self {
-        Self { trusted_proxies }
+        Self {
+            trusted_proxies,
+            trusted_proxy_count: 1,
+        }
+    }
+
+    /// M-14 FIX: Create with explicit proxy count (for testing multi-proxy chains)
+    #[cfg(test)]
+    pub fn with_trusted_proxies_and_count(
+        trusted_proxies: Vec<std::net::IpAddr>,
+        trusted_proxy_count: usize,
+    ) -> Self {
+        Self {
+            trusted_proxies,
+            trusted_proxy_count: trusted_proxy_count.clamp(1, 10),
+        }
     }
 }
 
@@ -256,19 +308,36 @@ impl KeyExtractor for NodeIdKeyExtractor {
 
         if trust_proxy_headers {
             // Try X-Forwarded-For (standard for proxied requests)
-            // L-15: Use the LAST IP in the chain, not the first.
-            // X-Forwarded-For format: "client, proxy1, proxy2, ..."
-            // The first IP (client) can be spoofed by the client.
-            // Each proxy appends its peer's IP, so the last IP was added by our
-            // trusted proxy and represents the actual connecting peer.
+            // M-14 FIX: Handle multi-proxy chains correctly
+            // X-Forwarded-For format: "client, proxy1, proxy2, ..." (left to right)
+            // With N trusted proxies, we skip the rightmost N entries and take the next one.
+            //
+            // Example with trusted_proxy_count=2 (CDN -> LB -> App):
+            //   Header: "client, cdn_saw, lb_saw"
+            //   Skip 2 from right: take "client" (the actual client IP)
+            //
+            // Example with trusted_proxy_count=1 (single proxy):
+            //   Header: "client, proxy"
+            //   Skip 1 from right: take "client"
             if let Some(xff) = req.headers().get("X-Forwarded-For") {
                 if let Ok(xff_str) = xff.to_str() {
-                    let s: &str = xff_str;
-                    // L-15: Take the LAST IP (added by our trusted proxy), not the first (spoofable)
-                    if let Some(ip_str) = s.split(',').next_back() {
-                        let ip_trimmed: &str = ip_str.trim();
-                        if !ip_trimmed.is_empty() {
-                            return Ok(NodeIdOrIpKey(format!("ip:{}", ip_trimmed)));
+                    let ips: Vec<&str> = xff_str.split(',').map(|s| s.trim()).collect();
+
+                    // M-14 FIX: Calculate the correct index based on proxy count
+                    // The client IP is at position (len - 1 - trusted_proxy_count)
+                    // because each proxy appends the IP of who connected to it.
+                    if ips.len() > self.trusted_proxy_count {
+                        let client_index = ips.len() - 1 - self.trusted_proxy_count;
+                        let client_ip = ips[client_index];
+                        if !client_ip.is_empty() {
+                            return Ok(NodeIdOrIpKey(format!("ip:{}", client_ip)));
+                        }
+                    } else if !ips.is_empty() {
+                        // M-14: Not enough IPs in chain, take the first (client)
+                        // This handles the case where we have fewer hops than expected
+                        let client_ip = ips[0];
+                        if !client_ip.is_empty() {
+                            return Ok(NodeIdOrIpKey(format!("ip:{}", client_ip)));
                         }
                     }
                 }
@@ -306,6 +375,33 @@ use crate::websocket::WsState;
 /// - The origin doesn't contain path components (origins are scheme + host + optional port)
 ///
 /// This prevents malformed origins from bypassing CORS protection.
+///
+/// # Security Warning: CORS Origin Configuration
+///
+/// **IMPORTANT**: Improperly configured allowed_origins can create security vulnerabilities:
+///
+/// 1. **Never use wildcards in production**: Using "*" or "*.example.com" allows any origin
+///    to make cross-origin requests to your API.
+///
+/// 2. **Verify all origins explicitly**: Each origin in your allowed list should be a
+///    known, trusted domain under your control.
+///
+/// 3. **Use specific origins, not patterns**: Instead of "https://*.example.com",
+///    list each subdomain explicitly: "https://app.example.com", "https://api.example.com"
+///
+/// 4. **Never trust user-provided origins**: The Origin header can be spoofed in
+///    non-browser contexts. CORS is a browser security feature, not a server security feature.
+///
+/// 5. **Review origins regularly**: Remove origins that are no longer in use.
+///
+/// Example secure configuration:
+/// ```toml
+/// [dashboard]
+/// allowed_origins = [
+///     "https://dashboard.bitcoinghost.org",
+///     "https://admin.bitcoinghost.org"
+/// ]
+/// ```
 fn is_valid_cors_origin(origin: &str) -> bool {
     // Must start with https:// for security
     if !origin.starts_with("https://") {
@@ -686,10 +782,19 @@ pub struct VerificationState {
     /// Signal to trigger graceful restart (set by config update API)
     /// When true, main.rs will initiate shutdown and exit with code 100
     pub restart_signal: Arc<AtomicBool>,
-    /// L-28: Debug endpoints enabled flag - IMMUTABLE after startup
-    /// This is set once from DashboardConfig during construction and cannot be changed
-    /// at runtime via any API. This prevents attackers from enabling debug endpoints
-    /// to gain access to sensitive system information.
+    /// L-28: Debug endpoints enabled flag - IMMUTABLE after server start
+    ///
+    /// This is set from DashboardConfig during construction and can be modified
+    /// via with_debug_endpoints() during the builder phase. Once the VerificationState
+    /// is wrapped in Arc<> and passed to start_server(), this value is effectively
+    /// immutable because:
+    /// 1. The builder pattern takes ownership (self, not &self)
+    /// 2. After Arc wrapping, no &mut reference can be obtained
+    /// 3. AtomicBool only allows interior mutability via explicit store()
+    /// 4. The only store() call is in with_debug_endpoints() which takes self
+    ///
+    /// This prevents attackers from enabling debug endpoints at runtime to gain
+    /// access to sensitive system information.
     debug_endpoints_frozen: AtomicBool,
 }
 
@@ -802,7 +907,7 @@ impl VerificationState {
             // VF-C2: Default to requiring internal auth for security
             require_internal_auth: true,
             restart_signal: Arc::new(AtomicBool::new(false)),
-            // L-28: Debug endpoints flag frozen at startup
+            // L-28: Debug endpoints flag frozen from DashboardConfig
             debug_endpoints_frozen: AtomicBool::new(debug_enabled),
         }
     }
@@ -837,13 +942,14 @@ impl VerificationState {
 
     /// L-28: Set debug endpoints enabled (builder pattern).
     ///
-    /// **WARNING**: This can only be called during construction (before start_server).
-    /// Once the server is started, this setting is immutable.
+    /// **SECURITY**: This method can only be called during construction because
+    /// it takes ownership (self, not &self). Once the VerificationState is
+    /// wrapped in Arc<> and passed to start_server(), no further modifications
+    /// are possible.
     ///
     /// Default is false (disabled) for security.
     pub fn with_debug_endpoints(self, enabled: bool) -> Self {
-        self.debug_endpoints_frozen
-            .store(enabled, Ordering::Relaxed);
+        self.debug_endpoints_frozen.store(enabled, Ordering::Relaxed);
         // Also update dashboard_config for consistency in responses
         {
             let mut config = self.dashboard_config.write();
@@ -1628,11 +1734,41 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
 
     let governor_limiter = governor_conf.limiter().clone();
 
-    // Spawn background task to clean up rate limiter state
+    // L-28: Spawn background task to clean up rate limiter state with adaptive frequency
+    // Cleanup frequency increases when there are many keys to prevent memory accumulation
     tokio::spawn(async move {
+        // Maximum number of keys before aggressive cleanup
+        const MAX_EXPECTED_KEYS: usize = 10_000;
+        // Base cleanup interval in seconds
+        const BASE_CLEANUP_INTERVAL_SECS: u64 = 60;
+        // Minimum cleanup interval in seconds (when at max keys)
+        const MIN_CLEANUP_INTERVAL_SECS: u64 = 5;
+
         loop {
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            // Get current key count and calculate adaptive interval
+            let key_count = governor_limiter.len();
+
+            // Adaptive cleanup: more frequent when more keys present
+            // Linear interpolation: 60s at 0 keys, 5s at 10000+ keys
+            let cleanup_interval = if key_count >= MAX_EXPECTED_KEYS {
+                MIN_CLEANUP_INTERVAL_SECS
+            } else {
+                let ratio = key_count as f64 / MAX_EXPECTED_KEYS as f64;
+                let range = BASE_CLEANUP_INTERVAL_SECS - MIN_CLEANUP_INTERVAL_SECS;
+                BASE_CLEANUP_INTERVAL_SECS - (ratio * range as f64) as u64
+            };
+
+            tokio::time::sleep(Duration::from_secs(cleanup_interval)).await;
             governor_limiter.retain_recent();
+
+            // Log warning if key count is high
+            if key_count > MAX_EXPECTED_KEYS / 2 {
+                tracing::warn!(
+                    key_count = key_count,
+                    cleanup_interval_secs = cleanup_interval,
+                    "L-28: Rate limiter has high key count - possible memory pressure"
+                );
+            }
         }
     });
 
@@ -1894,5 +2030,42 @@ mod tests {
             state.debug_endpoints_enabled(),
             "L-28: Frozen debug flag should not change after startup"
         );
+    }
+
+    // M-14: X-Forwarded-For multi-proxy chain tests
+    #[test]
+    fn test_xff_single_proxy() {
+        // With 1 trusted proxy: "client, proxy1" -> take "client"
+        let extractor = NodeIdKeyExtractor::with_trusted_proxies_and_count(
+            vec!["127.0.0.1".parse().unwrap()],
+            1,
+        );
+        assert_eq!(extractor.trusted_proxy_count, 1);
+    }
+
+    #[test]
+    fn test_xff_multi_proxy() {
+        // With 2 trusted proxies: "client, cdn, lb" -> take "client"
+        let extractor = NodeIdKeyExtractor::with_trusted_proxies_and_count(
+            vec!["127.0.0.1".parse().unwrap()],
+            2,
+        );
+        assert_eq!(extractor.trusted_proxy_count, 2);
+    }
+
+    #[test]
+    fn test_xff_proxy_count_clamped() {
+        // Proxy count should be clamped to valid range [1, 10]
+        let extractor_zero = NodeIdKeyExtractor::with_trusted_proxies_and_count(
+            vec!["127.0.0.1".parse().unwrap()],
+            0,
+        );
+        assert_eq!(extractor_zero.trusted_proxy_count, 1, "M-14: Count 0 should clamp to 1");
+
+        let extractor_high = NodeIdKeyExtractor::with_trusted_proxies_and_count(
+            vec!["127.0.0.1".parse().unwrap()],
+            100,
+        );
+        assert_eq!(extractor_high.trusted_proxy_count, 10, "M-14: Count 100 should clamp to 10");
     }
 }

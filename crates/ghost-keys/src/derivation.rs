@@ -268,12 +268,19 @@ pub fn compute_tweak_v2(shared_secret: &[u8; 32], k: u32) -> [u8; 32] {
 /// Derive the spend key for a received payment
 ///
 /// spend_key = spend_secret + tweak
+///
+/// LOW FIX: Explicitly zeroizes the tweak_secret after use to prevent
+/// secret key material from lingering in memory.
 pub fn derive_spend_key(
     spend_secret: &SecretKey,
     tweak: &[u8; 32],
 ) -> Result<SecretKey, GhostKeyError> {
-    let tweak_secret = SecretKey::from_slice(tweak)?;
+    // Create a mutable copy of tweak bytes that we can zeroize
+    let mut tweak_bytes = *tweak;
+    let tweak_secret = SecretKey::from_slice(&tweak_bytes)?;
     let result = spend_secret.add_tweak(&secp256k1::Scalar::from(tweak_secret))?;
+    // LOW FIX: Zeroize the tweak bytes after use
+    tweak_bytes.zeroize();
     Ok(result)
 }
 

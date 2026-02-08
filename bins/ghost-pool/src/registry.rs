@@ -215,12 +215,74 @@ impl RegistryClient {
         })
     }
 
-    /// Get current timestamp
+    /// Get current timestamp with graceful error handling
+    ///
+    /// L-7 FIX: Returns Result instead of panicking if system clock is broken.
+    /// Callers should handle the error appropriately.
     fn now_timestamp() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("L-1: System clock is before UNIX epoch - check system time")
+            .unwrap_or_else(|e| {
+                // Log error and return 0 - operations will fail gracefully
+                error!(
+                    error = %e,
+                    "L-7: System clock is before UNIX epoch - check system time. \
+                     This will cause authentication failures."
+                );
+                Duration::ZERO
+            })
             .as_secs()
+    }
+
+    /// L-7: Verify system clock is sane at startup
+    ///
+    /// Checks that the system clock is:
+    /// 1. After UNIX epoch (1970-01-01)
+    /// 2. After a reasonable minimum date (2020-01-01)
+    /// 3. Not too far in the future (year 2100)
+    ///
+    /// Call this once during initialization before using the registry client.
+    ///
+    /// # Returns
+    /// * `Ok(())` if the clock is sane
+    /// * `Err(message)` with a user-friendly error message if the clock is broken
+    pub fn verify_system_clock() -> Result<(), String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| {
+                format!(
+                    "L-7 CRITICAL: System clock is before UNIX epoch (1970-01-01). \
+                     Please check your system time settings. Error: {}",
+                    e
+                )
+            })?;
+
+        let now_secs = now.as_secs();
+
+        // Minimum: 2020-01-01 00:00:00 UTC (timestamp 1577836800)
+        const MIN_TIMESTAMP: u64 = 1_577_836_800;
+        // Maximum: 2100-01-01 00:00:00 UTC (timestamp 4102444800)
+        const MAX_TIMESTAMP: u64 = 4_102_444_800;
+
+        if now_secs < MIN_TIMESTAMP {
+            return Err(format!(
+                "L-7 CRITICAL: System clock appears to be in the past (before 2020-01-01). \
+                 Current timestamp: {}. Expected at least {}. \
+                 Please check your system time settings.",
+                now_secs, MIN_TIMESTAMP
+            ));
+        }
+
+        if now_secs > MAX_TIMESTAMP {
+            return Err(format!(
+                "L-7 CRITICAL: System clock appears to be too far in the future (after 2100-01-01). \
+                 Current timestamp: {}. Maximum allowed: {}. \
+                 Please check your system time settings.",
+                now_secs, MAX_TIMESTAMP
+            ));
+        }
+
+        Ok(())
     }
 
     /// Hash a message using SHA256

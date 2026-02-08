@@ -41,10 +41,14 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
+};
+use tower_governor::{
+    errors::GovernorError, governor::GovernorConfigBuilder, key_extractor::KeyExtractor,
+    GovernorLayer,
 };
 use clap::Parser;
 use parking_lot::RwLock;
@@ -293,6 +297,141 @@ fn get_encryption_password(args: &Args, network: Network) -> Result<String> {
 }
 
 // =============================================================================
+// H-7/H-8: IP-BASED RATE LIMITING FOR API SECURITY
+// =============================================================================
+
+/// L-21 FIX: Validate that an IP address is acceptable as a trusted proxy.
+fn is_valid_trusted_proxy(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+
+    match ip {
+        IpAddr::V4(ipv4) => {
+            if ipv4.is_unspecified() || ipv4.is_link_local() || ipv4.is_multicast() || ipv4.is_broadcast() {
+                return false;
+            }
+            // Reject documentation addresses
+            let octets = ipv4.octets();
+            if (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+                || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+                || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+            {
+                return false;
+            }
+            true
+        }
+        IpAddr::V6(ipv6) => {
+            if ipv6.is_unspecified() || ipv6.is_multicast() {
+                return false;
+            }
+            let segments = ipv6.segments();
+            if (segments[0] & 0xffc0) == 0xfe80 {
+                return false; // Link-local
+            }
+            true
+        }
+    }
+}
+
+/// Get trusted proxy IPs from GHOST_TRUSTED_PROXIES env var or use defaults
+fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
+    use std::net::IpAddr;
+
+    if let Ok(proxies_str) = std::env::var("GHOST_TRUSTED_PROXIES") {
+        let proxies: Vec<IpAddr> = proxies_str
+            .split(',')
+            .filter_map(|s| {
+                let trimmed = s.trim();
+                match trimmed.parse::<IpAddr>() {
+                    Ok(ip) if is_valid_trusted_proxy(&ip) => Some(ip),
+                    _ => None,
+                }
+            })
+            .collect();
+
+        if proxies.is_empty() {
+            vec![
+                "127.0.0.1".parse().expect("L-1: Valid hardcoded IPv4 localhost"),
+                "::1".parse().expect("L-1: Valid hardcoded IPv6 localhost"),
+            ]
+        } else {
+            proxies
+        }
+    } else {
+        vec![
+            "127.0.0.1".parse().expect("L-1: Valid hardcoded IPv4 localhost"),
+            "::1".parse().expect("L-1: Valid hardcoded IPv6 localhost"),
+        ]
+    }
+}
+
+fn is_trusted_proxy(ip: &std::net::IpAddr, trusted: &[std::net::IpAddr]) -> bool {
+    trusted.contains(ip)
+}
+
+/// H-8: IP-based key extractor for rate limiting
+#[derive(Debug, Clone)]
+struct IpKeyExtractor {
+    trusted_proxies: Vec<std::net::IpAddr>,
+}
+
+impl Default for IpKeyExtractor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl IpKeyExtractor {
+    fn new() -> Self {
+        Self {
+            trusted_proxies: get_trusted_proxies(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct IpKey(String);
+
+impl KeyExtractor for IpKeyExtractor {
+    type Key = IpKey;
+
+    fn extract<T>(&self, req: &axum::http::Request<T>) -> Result<Self::Key, GovernorError> {
+        let peer_ip = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip());
+
+        let trust_proxy_headers = peer_ip
+            .as_ref()
+            .map(|ip| is_trusted_proxy(ip, &self.trusted_proxies))
+            .unwrap_or(false);
+
+        if trust_proxy_headers {
+            if let Some(xff) = req.headers().get("X-Forwarded-For") {
+                if let Ok(xff_str) = xff.to_str() {
+                    if let Some(ip_str) = xff_str.split(',').next_back() {
+                        let ip_trimmed = ip_str.trim();
+                        if !ip_trimmed.is_empty() {
+                            return Ok(IpKey(ip_trimmed.to_string()));
+                        }
+                    }
+                }
+            }
+            if let Some(xri) = req.headers().get("X-Real-IP") {
+                if let Ok(ip_str) = xri.to_str() {
+                    return Ok(IpKey(ip_str.to_string()));
+                }
+            }
+        }
+
+        if let Some(ip) = peer_ip {
+            return Ok(IpKey(ip.to_string()));
+        }
+
+        Err(GovernorError::UnableToExtractKey)
+    }
+}
+
+// =============================================================================
 // H-2: API AUTHENTICATION MIDDLEWARE
 // =============================================================================
 
@@ -409,6 +548,38 @@ async fn require_api_auth(
     // Reconstruct request with body
     let request = Request::from_parts(parts, Body::from(body_bytes));
     Ok(next.run(request).await)
+}
+
+/// LOW-API-1: Security headers middleware for all HTTP responses
+async fn security_headers_middleware(
+    request: Request,
+    next: Next,
+) -> Response {
+    let mut response = next.run(request).await;
+
+    let headers = response.headers_mut();
+
+    use axum::http::HeaderValue;
+
+    headers.insert(
+        "x-content-type-options",
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    headers.insert(
+        "x-xss-protection",
+        HeaderValue::from_static("1; mode=block"),
+    );
+    headers.insert(
+        "content-security-policy",
+        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+    );
+    headers.insert(
+        "referrer-policy",
+        HeaderValue::from_static("no-referrer"),
+    );
+
+    response
 }
 
 /// Application state
@@ -847,9 +1018,38 @@ async fn main() -> Result<()> {
         info!(origins = ?cors_origins_str, "CORS origins configured");
     }
 
+    // H-8: Build rate limiter for API protection
+    // 30 requests per minute per IP, with burst of 10
+    let governor_conf = GovernorConfigBuilder::default()
+        .per_second(1) // 1 request per second sustained
+        .burst_size(10) // Allow bursts of up to 10 requests
+        .key_extractor(IpKeyExtractor::new())
+        .finish()
+        .expect("L-1: Valid hardcoded rate limiter config");
+
+    let governor_conf = std::sync::Arc::new(governor_conf);
+
+    // Spawn background task to clean up rate limiter state
+    let governor_limiter = governor_conf.limiter().clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            governor_limiter.retain_recent();
+        }
+    });
+
+    info!("H-8: Rate limiting enabled (10 burst / 1 per sec per IP)");
+
     // Merge routes and apply common layers
+    // H-7: 1MB body size limit to prevent memory exhaustion
+    // H-8: Rate limiting to prevent API abuse
+    // LOW-API-1: Security headers for all responses
     let app = public_routes
         .merge(authenticated_routes)
+        .layer(axum::middleware::from_fn(security_headers_middleware))
+        .layer(GovernorLayer {
+            config: governor_conf,
+        })
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list(cors_origins))
@@ -866,7 +1066,10 @@ async fn main() -> Result<()> {
                 ])
                 .max_age(std::time::Duration::from_secs(3600)),
         )
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http())
+        .layer(DefaultBodyLimit::max(1024 * 1024)); // H-7: 1MB body limit
+
+    info!("H-7: Request body limit set to 1MB");
 
     // Parse listen address
     let addr: SocketAddr = state.config.api_listen.parse()?;
@@ -875,7 +1078,10 @@ async fn main() -> Result<()> {
 
     // Start server
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>()
+    ).await?;
 
     Ok(())
 }

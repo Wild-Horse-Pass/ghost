@@ -1525,17 +1525,12 @@ async fn handle_subscribe_lock_state(
         }
     }
 
-    // Register subscription
-    // MED-DOS-2 FIX: Using HashSet for deduplication
-    conn_state
-        .lock_state_subscriptions
-        .insert(lock_id.to_string());
-    state.subscriptions.subscribe_lock_state(wallet_id, lock_id);
-
-    // Get current lock snapshot
+    // LOW FIX: Get lock snapshot BEFORE registering subscription
+    // This ensures we don't leak subscriptions if the snapshot fetch fails
     let snapshot = match state.pay_node.get_lock_state_snapshot(lock_id).await {
         Ok(s) => s,
         Err(e) => {
+            // LOW FIX: Return error without registering subscription
             return Ok(Some(ServerMessage::Error {
                 code: "LOCK_NOT_FOUND".to_string(),
                 message: format!("Failed to get lock state: {}", e),
@@ -1543,6 +1538,13 @@ async fn handle_subscribe_lock_state(
             }));
         }
     };
+
+    // LOW FIX: Only register subscription after successful snapshot retrieval
+    // MED-DOS-2 FIX: Using HashSet for deduplication
+    conn_state
+        .lock_state_subscriptions
+        .insert(lock_id.to_string());
+    state.subscriptions.subscribe_lock_state(wallet_id, lock_id);
 
     Ok(Some(ServerMessage::LockStateSubscribed {
         lock_id: lock_id.to_string(),
@@ -1675,8 +1677,9 @@ async fn handle_accept_instant_payment(
     }
 
     // M-9 Check 4: Verify the timestamp is recent (prevent replay of old payments)
+    // M-12 FIX: Reduced from 5 minutes to 90 seconds to limit replay attack window
     let now_millis = chrono::Utc::now().timestamp_millis() as u64;
-    const MAX_PAYMENT_AGE_MILLIS: u64 = 5 * 60 * 1000; // 5 minutes
+    const MAX_PAYMENT_AGE_MILLIS: u64 = 90 * 1000; // 90 seconds (M-12: tightened from 5 min)
     if signed_payment.timestamp + MAX_PAYMENT_AGE_MILLIS < now_millis {
         warn!(
             wallet_id = %wallet_id,

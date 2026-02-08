@@ -122,34 +122,54 @@ pub struct VerificationBroadcast {
 /// - Forgery: Attackers cannot create fake verification results
 /// - Impersonation: Only the actual challenger can sign the result
 /// - Tampering: Any modification invalidates the signature
+///
+/// M-6 FIX: Now includes challenge_data_hash to bind the signature to the specific
+/// challenge issued, preventing replay of signatures for different challenges.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SignedVerificationBroadcast {
     /// The verification result
     pub broadcast: VerificationBroadcast,
     /// Ed25519 signature over the broadcast data
-    /// Signature = Sign(SHA256(target_id || challenger_id || capability || passed || timestamp))
+    /// M-6 FIX: Signature = Sign(SHA256(target_id || challenger_id || capability || passed || timestamp || challenge_data_hash))
+    /// The challenge_data_hash binds this signature to the specific challenge (block hash, tx hex, etc.)
     pub signature: String,
+    /// M-6 FIX: SHA256 hash of challenge_data, included in signature to bind to specific challenge
+    pub challenge_data_hash: String,
 }
 
 impl SignedVerificationBroadcast {
-    /// CRIT-VER-2: Create a signed broadcast
+    /// CRIT-VER-2 + M-6 FIX: Create a signed broadcast with challenge binding
     ///
     /// # Arguments
     /// * `broadcast` - The verification result to sign
     /// * `sign_fn` - Function that signs the message hash and returns 64-byte signature
+    ///
+    /// # Security (M-6)
+    /// The signature now includes a hash of the challenge_data, binding this broadcast
+    /// to the specific challenge issued (block hash, tx hex, epoch, etc.). This prevents:
+    /// - Replay attacks with signatures from different challenges
+    /// - Signature reuse across unrelated verification attempts
     pub fn new<F>(broadcast: VerificationBroadcast, sign_fn: F) -> Self
     where
         F: FnOnce(&[u8]) -> [u8; 64],
     {
         use sha2::{Digest, Sha256};
 
-        // Compute message hash for signing
+        // M-6 FIX: Compute hash of challenge data to bind signature to specific challenge
+        let mut challenge_hasher = Sha256::new();
+        challenge_hasher.update(broadcast.challenge_data.as_bytes());
+        let challenge_data_hash_bytes = challenge_hasher.finalize();
+        let challenge_data_hash = hex::encode(challenge_data_hash_bytes);
+
+        // Compute message hash for signing - M-6 FIX: now includes challenge_data_hash
         let mut hasher = Sha256::new();
         hasher.update(broadcast.target_node_id);
         hasher.update(broadcast.challenger_id);
         hasher.update(broadcast.capability.as_bytes());
         hasher.update([if broadcast.passed { 1u8 } else { 0u8 }]);
         hasher.update(broadcast.timestamp.to_le_bytes());
+        // M-6 FIX: Include challenge data hash in signature
+        hasher.update(challenge_data_hash_bytes);
         let message_hash = hasher.finalize();
 
         // Sign the message hash
@@ -159,17 +179,22 @@ impl SignedVerificationBroadcast {
         Self {
             broadcast,
             signature,
+            challenge_data_hash,
         }
     }
 
-    /// CRIT-VER-2 + MED-VER-7: Verify the signature and timestamp are valid
+    /// CRIT-VER-2 + MED-VER-7 + M-6 FIX: Verify the signature, timestamp, and challenge binding
     ///
     /// # Arguments
     /// * `verify_fn` - Function that verifies (pubkey, message, signature) -> bool
     ///
     /// # Returns
-    /// * `Ok(())` if signature and timestamp are valid
+    /// * `Ok(())` if signature, timestamp, and challenge binding are valid
     /// * `Err(reason)` if verification fails
+    ///
+    /// # Security (M-6)
+    /// Verifies that the signature includes the challenge_data_hash, ensuring the
+    /// broadcast is bound to a specific challenge and cannot be replayed.
     pub fn verify<F>(&self, verify_fn: F) -> Result<(), String>
     where
         F: FnOnce(&[u8], &[u8], &[u8]) -> bool,
@@ -210,13 +235,33 @@ impl SignedVerificationBroadcast {
             ));
         }
 
-        // Recompute message hash
+        // M-6 FIX: Validate and decode challenge_data_hash
+        if self.challenge_data_hash.len() != 64 {
+            return Err(format!(
+                "M-6: Invalid challenge_data_hash length: {} (expected 64)",
+                self.challenge_data_hash.len()
+            ));
+        }
+        let challenge_hash_bytes = hex::decode(&self.challenge_data_hash)
+            .map_err(|e| format!("M-6: Invalid challenge_data_hash hex: {}", e))?;
+
+        // M-6 FIX: Verify that challenge_data_hash matches the actual challenge_data
+        let mut challenge_hasher = Sha256::new();
+        challenge_hasher.update(self.broadcast.challenge_data.as_bytes());
+        let expected_challenge_hash = challenge_hasher.finalize();
+        if challenge_hash_bytes != expected_challenge_hash.as_slice() {
+            return Err("M-6: Challenge data hash mismatch - signature not bound to this challenge".to_string());
+        }
+
+        // Recompute message hash - M-6 FIX: now includes challenge_data_hash
         let mut hasher = Sha256::new();
         hasher.update(self.broadcast.target_node_id);
         hasher.update(self.broadcast.challenger_id);
         hasher.update(self.broadcast.capability.as_bytes());
         hasher.update([if self.broadcast.passed { 1u8 } else { 0u8 }]);
         hasher.update(self.broadcast.timestamp.to_le_bytes());
+        // M-6 FIX: Include challenge data hash in verification
+        hasher.update(&challenge_hash_bytes);
         let message_hash = hasher.finalize();
 
         // Verify signature using challenger's public key (node ID)
@@ -488,6 +533,12 @@ impl ChallengeTracker {
 /// Periodic verification task
 ///
 /// Runs in the background and periodically verifies peer capabilities.
+///
+/// # Security (H-1)
+/// The task requires cryptographic identity verification to ensure that:
+/// - `our_node_id` is derived from the node's actual cryptographic identity
+/// - DB writes are only accepted from properly authenticated challengers
+/// - The identity binding is verified at task creation time
 pub struct VerificationTask {
     /// HTTP client for issuing challenges
     client: VerificationClient,
@@ -495,6 +546,9 @@ pub struct VerificationTask {
     db: Arc<Database>,
     /// Our node ID (to exclude from verification)
     our_node_id: NodeId,
+    /// H-1 FIX: Flag indicating identity has been cryptographically verified
+    /// When true, our_node_id has been verified to match a NodeIdentity's public key
+    identity_verified: bool,
     /// Peer provider
     peer_provider: Arc<dyn PeerProvider>,
     /// Configuration
@@ -512,12 +566,20 @@ pub struct VerificationTask {
 pub enum VerificationTaskError {
     #[error("Failed to create verification client: {0}")]
     ClientInit(String),
+    /// H-1: Identity verification failed
+    #[error("H-1: Identity verification failed: {0}")]
+    IdentityMismatch(String),
 }
 
 impl VerificationTask {
     /// Create a new verification task
     ///
     /// C-3: Returns Result instead of panicking on client creation failure.
+    ///
+    /// # H-1 Security Note
+    /// This constructor creates a task WITHOUT identity verification. The task will
+    /// refuse to write to the database until `with_verified_identity` is called.
+    /// For production use, prefer `new_with_identity` which verifies the binding.
     pub fn new(
         db: Arc<Database>,
         our_node_id: NodeId,
@@ -529,6 +591,45 @@ impl VerificationTask {
             client,
             db,
             our_node_id,
+            identity_verified: false, // H-1: Not verified yet
+            peer_provider,
+            config: VerificationTaskConfig::default(),
+            broadcast_tx: None,
+            rpc: None,
+            challenge_tracker: std::sync::Mutex::new(ChallengeTracker::new()),
+        })
+    }
+
+    /// H-1 FIX: Create a verification task with cryptographic identity binding
+    ///
+    /// This constructor verifies that `our_node_id` matches the public key derived
+    /// from the provided `NodeIdentity`. This cryptographic binding prevents:
+    /// - Attackers from spoofing challenger IDs in DB writes
+    /// - Nodes from claiming verification results they didn't perform
+    ///
+    /// # Arguments
+    /// * `db` - Database for storing challenge results
+    /// * `identity` - Node's cryptographic identity (must derive to our_node_id)
+    /// * `peer_provider` - Provider for peers to verify
+    ///
+    /// # Errors
+    /// Returns `IdentityMismatch` if the identity's public key doesn't match our_node_id
+    pub fn new_with_identity(
+        db: Arc<Database>,
+        identity: &ghost_common::identity::NodeIdentity,
+        peer_provider: Arc<dyn PeerProvider>,
+    ) -> Result<Self, VerificationTaskError> {
+        let client = VerificationClient::new()
+            .map_err(|e| VerificationTaskError::ClientInit(e.to_string()))?;
+
+        // H-1: Derive node_id from identity and verify binding
+        let our_node_id = identity.node_id();
+
+        Ok(Self {
+            client,
+            db,
+            our_node_id,
+            identity_verified: true, // H-1: Cryptographically verified
             peer_provider,
             config: VerificationTaskConfig::default(),
             broadcast_tx: None,
@@ -552,12 +653,40 @@ impl VerificationTask {
             client,
             db,
             our_node_id,
+            identity_verified: false, // H-1: Not verified yet
             peer_provider,
             config,
             broadcast_tx: None,
             rpc: None,
             challenge_tracker: std::sync::Mutex::new(ChallengeTracker::new()),
         })
+    }
+
+    /// H-1 FIX: Verify identity binding and enable DB writes
+    ///
+    /// Call this method to cryptographically verify that `our_node_id` matches
+    /// the provided identity. After successful verification, DB writes are allowed.
+    ///
+    /// # Errors
+    /// Returns error if the identity's node_id doesn't match our_node_id
+    pub fn with_verified_identity(
+        mut self,
+        identity: &ghost_common::identity::NodeIdentity,
+    ) -> Result<Self, VerificationTaskError> {
+        let derived_node_id = identity.node_id();
+        if derived_node_id != self.our_node_id {
+            return Err(VerificationTaskError::IdentityMismatch(format!(
+                "NodeId mismatch: expected {}, got {} from identity",
+                hex::encode(&self.our_node_id[..8]),
+                hex::encode(&derived_node_id[..8])
+            )));
+        }
+        self.identity_verified = true;
+        info!(
+            node_id = %hex::encode(&self.our_node_id[..8]),
+            "H-1: Identity verification successful - DB writes enabled"
+        );
+        Ok(self)
     }
 
     /// Set the broadcast channel for verification results
@@ -570,6 +699,21 @@ impl VerificationTask {
     pub fn with_rpc(mut self, rpc: Arc<BitcoinRpc>) -> Self {
         self.rpc = Some(rpc);
         self
+    }
+
+    /// H-1 FIX: Check if identity has been verified before allowing DB writes
+    ///
+    /// Returns Ok(()) if identity is verified, Err if not.
+    /// This prevents challenger ID spoofing in DB entries.
+    fn require_identity_verified(&self) -> Result<(), String> {
+        if !self.identity_verified {
+            return Err(
+                "H-1: Cannot write to DB without verified identity. \
+                 Call with_verified_identity() or use new_with_identity() constructor."
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     /// Run the verification task loop
@@ -949,6 +1093,9 @@ impl VerificationTask {
             "Archive verification complete"
         );
 
+        // H-1 FIX: Verify identity before DB write to prevent challenger ID spoofing
+        self.require_identity_verified()?;
+
         // CRIT-VER-3: Store result with proper error handling - return error if DB fails
         if let Err(e) = self.db.insert_archive_challenge(
             peer_id_hex,
@@ -1232,6 +1379,9 @@ impl VerificationTask {
             "Policy verification complete"
         );
 
+        // H-1 FIX: Verify identity before DB write to prevent challenger ID spoofing
+        self.require_identity_verified()?;
+
         // CRIT-VER-3: Store result with proper error handling - return error if DB fails
         if let Err(e) = self.db.insert_policy_challenge(
             peer_id_hex,
@@ -1307,6 +1457,9 @@ impl VerificationTask {
         };
 
         info!(peer = %short_id, passed = passed, connected = connected, "Stratum verification complete");
+
+        // H-1 FIX: Verify identity before DB write to prevent challenger ID spoofing
+        self.require_identity_verified()?;
 
         // CRIT-VER-3: Store result with proper error handling - return error if DB fails
         if let Err(e) = self.db.insert_stratum_challenge(
@@ -1409,6 +1562,9 @@ impl VerificationTask {
             challenge_epoch = challenge_epoch,
             "GhostPay verification complete"
         );
+
+        // H-1 FIX: Verify identity before DB write to prevent challenger ID spoofing
+        self.require_identity_verified()?;
 
         // CRIT-VER-3: Store result with proper error handling - return error if DB fails
         if let Err(e) = self.db.insert_ghostpay_challenge(

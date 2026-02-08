@@ -28,6 +28,14 @@ authors.workspace = true
 license.workspace = true
 description = "HTTP verification endpoints for Bitcoin Ghost node capabilities"
 
+[features]
+default = []
+# L-29: Enable insecure HTTP/TLS options for development/testing ONLY
+# This feature is NOT enabled by default and should NEVER be enabled in release builds
+# When disabled, all insecure_for_testing() and danger_accept_invalid_certs options
+# are compile-time removed, making insecure configurations impossible
+allow-insecure = []
+
 [dependencies]
 ghost-common = { workspace = true }
 ghost-buds = { workspace = true }

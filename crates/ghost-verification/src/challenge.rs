@@ -402,8 +402,9 @@ pub struct NonceCache {
     /// Maps nonce string -> timestamp when issued (seconds since epoch)
     issued: parking_lot::RwLock<std::collections::HashMap<String, u64>>,
     /// Nonces that have been used (for preventing replay)
-    /// We keep used nonces until they would have expired anyway
-    used: parking_lot::RwLock<std::collections::HashSet<String>>,
+    /// Maps nonce string -> timestamp when used (seconds since epoch)
+    /// Used nonces are kept for TTL duration after use to prevent replay attacks
+    used: parking_lot::RwLock<std::collections::HashMap<String, u64>>,
     /// TTL in seconds for nonces
     ttl_secs: u64,
     /// Maximum cache size
@@ -420,7 +421,7 @@ impl NonceCache {
     pub fn with_ttl(ttl_secs: u64) -> Self {
         Self {
             issued: parking_lot::RwLock::new(std::collections::HashMap::new()),
-            used: parking_lot::RwLock::new(std::collections::HashSet::new()),
+            used: parking_lot::RwLock::new(std::collections::HashMap::new()),
             ttl_secs,
             max_size: MAX_NONCE_CACHE_SIZE,
         }
@@ -467,7 +468,7 @@ impl NonceCache {
         // Check if already used
         {
             let used = self.used.read();
-            if used.contains(nonce) {
+            if used.contains_key(nonce) {
                 return Err(NonceError::AlreadyUsed);
             }
         }
@@ -487,12 +488,13 @@ impl NonceCache {
         }
 
         // Mark as used and remove from issued
+        // Track the usage timestamp for selective cleanup
         {
             let mut issued = self.issued.write();
             let mut used = self.used.write();
 
             issued.remove(nonce);
-            used.insert(nonce.to_string());
+            used.insert(nonce.to_string(), now);
         }
 
         Ok(())
@@ -508,7 +510,7 @@ impl NonceCache {
         // Check if used
         {
             let used = self.used.read();
-            if used.contains(nonce) {
+            if used.contains_key(nonce) {
                 return false;
             }
         }
@@ -541,16 +543,13 @@ impl NonceCache {
             removed += before - issued.len();
         }
 
-        // Clean up expired used nonces (we keep them for TTL duration)
-        // Since we don't track when they were used, we use issued time as proxy
-        // For safety, just clear the whole used set when doing cleanup
-        // This is acceptable because expired nonces can't be validated anyway
+        // Clean up expired used nonces (kept for TTL duration after use)
+        // Now that we track usage timestamps, we can selectively remove only expired entries
         {
             let mut used = self.used.write();
-            if !used.is_empty() {
-                removed += used.len();
-                used.clear();
-            }
+            let before = used.len();
+            used.retain(|_, &mut used_at| used_at > cutoff);
+            removed += before - used.len();
         }
 
         removed

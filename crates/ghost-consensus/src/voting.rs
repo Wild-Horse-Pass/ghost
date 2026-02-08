@@ -40,7 +40,7 @@
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
@@ -876,8 +876,9 @@ pub fn verify_vote_signature(vote: &Vote, proposal_hash: &[u8; 32]) -> bool {
 pub struct VotingManager {
     /// Active sessions by (round_id, proposal_hash)
     sessions: RwLock<HashMap<(RoundId, [u8; 32]), VotingSession>>,
-    /// Completed sessions (for reference)
-    completed: RwLock<Vec<VotingSession>>,
+    /// H-2 SECURITY: Completed sessions stored in VecDeque for O(1) front eviction
+    /// Using Vec with remove(0) would be O(n) and exploitable for DoS
+    completed: RwLock<VecDeque<VotingSession>>,
     /// Max completed sessions to keep
     max_completed: usize,
 }
@@ -887,7 +888,7 @@ impl VotingManager {
     pub fn new(max_completed: usize) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
-            completed: RwLock::new(Vec::new()),
+            completed: RwLock::new(VecDeque::new()),
             max_completed,
         }
     }
@@ -1045,11 +1046,13 @@ impl VotingManager {
     /// Add completed session
     fn add_completed(&self, session: VotingSession) {
         let mut completed = self.completed.write();
-        completed.push(session);
+        completed.push_back(session);
 
-        // Trim if too many
+        // H-2 SECURITY: Use pop_front() instead of remove(0) for O(1) eviction
+        // VecDeque::remove(0) is O(n) and could be exploited for DoS attacks
+        // by forcing many evictions. pop_front() is O(1).
         while completed.len() > self.max_completed {
-            completed.remove(0);
+            completed.pop_front();
         }
     }
 
