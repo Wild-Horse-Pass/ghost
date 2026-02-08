@@ -61,6 +61,8 @@ pub use derivation::{
     compute_tweak_v2, derive_payment_address_v2, derive_shared_secret, derive_spend_key,
     tagged_hash,
 };
+// M-15/M-17: Re-export Zeroizing for callers who receive zeroizing wrappers
+pub use zeroize::Zeroizing;
 pub use error::GhostKeyError;
 pub use ghost_id::GhostId;
 pub use keys::{GhostKeys, GhostKeysExport};

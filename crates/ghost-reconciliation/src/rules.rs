@@ -81,21 +81,43 @@ pub fn validate_settlement(
     Ok(())
 }
 
+/// M-11: Maximum settlement fee (0.01 BTC = 1,000,000 sats)
+/// This prevents unreasonably high fees on very large settlements.
+/// Any settlement that would generate a fee higher than this will be rejected.
+pub const MAX_FEE_SATS: u64 = 1_000_000;
+
 /// Calculate settlement fee
 ///
 /// # PAY-M1: Use integer arithmetic to avoid floating-point precision errors
 /// # H-9: Use ceiling division to ensure fee is always rounded UP
+/// # M-11: Enforce upper bound on fees
 ///
 /// This ensures small amounts don't result in 0 fees. The formula:
 /// `(amount + divisor - 1) / divisor` computes the ceiling of integer division.
 ///
-/// Additionally, we enforce a minimum fee of 1 satoshi.
+/// Additionally, we enforce:
+/// - Minimum fee of 1 satoshi (H-9)
+/// - Maximum fee of 1,000,000 satoshis / 0.01 BTC (M-11)
 pub fn calculate_fee(amount_sats: u64) -> u64 {
     // H-9: Ceiling division
     let divisor = crate::SETTLEMENT_FEE_DIVISOR;
     let fee = amount_sats.div_ceil(divisor);
-    // H-9: Ensure minimum fee of 1 sat
-    fee.max(1)
+    // H-9/M-11: Clamp between minimum (1 sat) and maximum fee
+    fee.clamp(1, MAX_FEE_SATS)
+}
+
+/// Validate that a calculated fee is within acceptable bounds (M-11)
+///
+/// Returns Ok(()) if the fee is valid, or an error if it exceeds the maximum.
+/// This should be called after calculate_fee() when additional validation is needed.
+pub fn validate_fee(fee_sats: u64) -> ReconciliationResult<()> {
+    if fee_sats > MAX_FEE_SATS {
+        return Err(ReconciliationError::InvalidSettlement(format!(
+            "M-11: Fee {} sats exceeds maximum allowed {} sats (0.01 BTC)",
+            fee_sats, MAX_FEE_SATS
+        )));
+    }
+    Ok(())
 }
 
 /// Calculate net amount after fee
@@ -256,6 +278,28 @@ mod tests {
         assert_eq!(calculate_fee(0), 1);
         assert_eq!(calculate_fee(1), 1);
         assert_eq!(calculate_fee(500), 1);
+
+        // M-11: Test maximum fee cap
+        // 1 BTC = 100_000_000 sats -> 0.1% = 100_000 sats (under cap)
+        assert_eq!(calculate_fee(100_000_000), 100_000);
+        // 10 BTC = 1_000_000_000 sats -> 0.1% = 1_000_000 sats (at cap)
+        assert_eq!(calculate_fee(1_000_000_000), MAX_FEE_SATS);
+        // 100 BTC = 10_000_000_000 sats -> 0.1% = 10_000_000 sats (capped to 1M)
+        assert_eq!(calculate_fee(10_000_000_000), MAX_FEE_SATS);
+        // 1000 BTC = 100_000_000_000 sats -> capped to MAX_FEE_SATS
+        assert_eq!(calculate_fee(100_000_000_000), MAX_FEE_SATS);
+    }
+
+    #[test]
+    fn test_m11_validate_fee() {
+        // Valid fees
+        assert!(validate_fee(1).is_ok());
+        assert!(validate_fee(100_000).is_ok());
+        assert!(validate_fee(MAX_FEE_SATS).is_ok());
+
+        // Invalid fees (over max)
+        assert!(validate_fee(MAX_FEE_SATS + 1).is_err());
+        assert!(validate_fee(10_000_000).is_err());
     }
 
     #[test]

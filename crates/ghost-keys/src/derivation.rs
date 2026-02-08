@@ -36,7 +36,7 @@
 
 use secp256k1::{ecdh::SharedSecret, PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::error::GhostKeyError;
 
@@ -102,11 +102,12 @@ impl<'a> Drop for ZeroizeGuard<'a> {
     }
 }
 
+/// M-17 FIX: Returns Zeroizing wrapper for tweak to ensure automatic zeroization
 pub fn derive_payment_address_v2(
     spend_pubkey: &PublicKey,
     shared_secret: &[u8; 32],
     k: u32,
-) -> Result<(PublicKey, [u8; 32]), GhostKeyError> {
+) -> Result<(PublicKey, Zeroizing<[u8; 32]>), GhostKeyError> {
     let secp = Secp256k1::new();
 
     // Compute tweak using v2 (position-independent)
@@ -150,9 +151,9 @@ pub fn derive_payment_address_v2(
     // Additional safety: Verify output_pubkey can be serialized (confirms it's not infinity)
     let _ = output_pubkey.serialize(); // This will work if the point is valid
 
-    // CRIT-CRYPTO-3 FIX: Copy tweak before zeroizing for return value
-    // The tweak value needs to be returned but we must zeroize the local copy
-    let tweak_copy = tweak;
+    // M-17 FIX: Return Zeroizing wrapper to ensure automatic zeroization by caller
+    // The tweak value needs to be returned, wrapped in Zeroizing for safety
+    let tweak_copy = Zeroizing::new(tweak);
     tweak.zeroize();
     Ok((output_pubkey, tweak_copy))
 }
@@ -405,7 +406,8 @@ mod tests {
             derive_payment_address_v2(&spend_pubkey, &shared_secret, 0).unwrap();
 
         // Verify we can derive the spend key
-        let derived_spend = derive_spend_key(&spend_secret, &tweak).unwrap();
+        // M-17: Dereference Zeroizing wrapper to pass to derive_spend_key
+        let derived_spend = derive_spend_key(&spend_secret, &*tweak).unwrap();
         let derived_pubkey = PublicKey::from_secret_key(&secp, &derived_spend);
 
         assert_eq!(output_pubkey, derived_pubkey);
@@ -518,7 +520,8 @@ mod tests {
             derive_payment_address_v2(&spend_pubkey, &shared_secret, 0).unwrap();
 
         // Verify we can still derive the spend key
-        let derived_spend = derive_spend_key(&spend_secret, &tweak).unwrap();
+        // M-17: Dereference Zeroizing wrapper to pass to derive_spend_key
+        let derived_spend = derive_spend_key(&spend_secret, &*tweak).unwrap();
         let derived_pubkey = PublicKey::from_secret_key(&secp, &derived_spend);
 
         assert_eq!(output_pubkey, derived_pubkey);

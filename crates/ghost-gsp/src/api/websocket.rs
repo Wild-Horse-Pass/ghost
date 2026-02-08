@@ -414,6 +414,13 @@ fn sanitize_websocket_error(error: GspError) -> ServerMessage {
             "UTXO_ALREADY_RESERVED",
             "UTXO is already reserved for another payment",
         ),
+        // H-2: Too many reservations (DoS protection)
+        GspError::TooManyReservations => (
+            "SERVICE_UNAVAILABLE",
+            "Service temporarily overloaded, please retry later",
+        ),
+        // M-2: Invalid lock ID
+        GspError::InvalidLockId(_) => ("BAD_REQUEST", "Invalid lock ID format"),
 
         // Internal errors - NEVER expose details to clients
         GspError::Config(_) => ("INTERNAL_ERROR", "Internal server error"),

@@ -790,11 +790,16 @@ impl PayoutProposalCreator {
             .filter(|(_, w)| *w > 0.0 && w.is_finite())
             .filter_map(|(id, w)| {
                 let scaled = *w * WORK_SCALE as f64;
-                // L-5: Check bounds before conversion
-                // u128::MAX is ~3.4e38, so we check against a safe maximum
-                // that is well below the representable range.
-                // A work value this high would be astronomically improbable.
-                const MAX_SAFE_SCALED: f64 = 1e36; // Well below u128::MAX (~3.4e38)
+                // L-5/M-13: Check bounds before conversion
+                // u128::MAX is ~3.4e38, so we check against a safe maximum.
+                //
+                // M-13: The bound must accommodate legitimate high-hashrate miners.
+                // Analysis: A mega-pool with 30% of network hashrate (~1.5e20 H/s)
+                // accumulating work over a day would generate ~1.3e25 work.
+                // With WORK_SCALE=1e12, this becomes ~1.3e37 scaled.
+                // We set MAX_SAFE_SCALED to 1e37 to accommodate this while
+                // maintaining safety margin from u128::MAX (~3.4e38).
+                const MAX_SAFE_SCALED: f64 = 1e37; // Safe for high-hashrate miners (M-13)
                 if !(0.0..=MAX_SAFE_SCALED).contains(&scaled) || !scaled.is_finite() {
                     warn!(
                         miner_id = %id,

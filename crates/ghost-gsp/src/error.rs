@@ -145,6 +145,14 @@ pub enum GspError {
     /// C-6: UTXO is already reserved by another instant payment
     #[error("UTXO already reserved for another instant payment")]
     UtxoAlreadyReserved,
+
+    /// H-2: Too many active reservations (DoS protection)
+    #[error("Too many active reservations")]
+    TooManyReservations,
+
+    /// M-2: Invalid lock ID format
+    #[error("Invalid lock ID: {0}")]
+    InvalidLockId(String),
 }
 
 impl From<ghost_gsp_proto::GspProtoError> for GspError {
@@ -338,6 +346,18 @@ impl IntoResponse for GspError {
                 StatusCode::CONFLICT,
                 "UTXO_ALREADY_RESERVED",
                 "UTXO is already reserved for another instant payment".to_string(),
+            ),
+            // H-2: Too many reservations (DoS protection)
+            GspError::TooManyReservations => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "TOO_MANY_RESERVATIONS",
+                "Service temporarily overloaded, please retry later".to_string(),
+            ),
+            // M-2: Invalid lock ID
+            GspError::InvalidLockId(_) => (
+                StatusCode::BAD_REQUEST,
+                "INVALID_LOCK_ID",
+                "Invalid lock ID format".to_string(),
             ),
         };
 

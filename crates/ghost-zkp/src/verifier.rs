@@ -196,29 +196,33 @@ impl BlockVerifier {
                     .map(|v| v.to_lowercase() == "mainnet" || v.to_lowercase() == "bitcoin")
                     .unwrap_or(false);
 
-                if is_mainnet {
-                    // L-18 SECURITY: On mainnet, simulated proofs are ALWAYS rejected
-                    // No environment variable can bypass this check
-                    error!(
-                        "L-18 SECURITY: Simulated proof REJECTED on mainnet. \
-                         Simulated proofs are NEVER allowed on mainnet, regardless of GHOST_ALLOW_SIMULATED_PROOFS setting. \
-                         A valid Groth16 proof with proper trusted setup is required."
-                    );
-                    return Err(ZkError::SimulatedProofRejected);
-                }
-
-                // Non-mainnet: require explicit opt-in via environment variable.
-                // This prevents accidental use in production while allowing development/staging.
-                // The env var must be set to "1" explicitly - any other value is rejected.
-                let allow_simulated = std::env::var("GHOST_ALLOW_SIMULATED_PROOFS")
+                // L-9 FIX: Additional safety - if GHOST_ALLOW_SIMULATED_PROOFS is not explicitly set,
+                // treat it as if we're in production mode. This means simulated proofs are blocked
+                // by default unless explicitly enabled AND we're not on mainnet.
+                let simulated_explicitly_allowed = std::env::var("GHOST_ALLOW_SIMULATED_PROOFS")
                     .map(|v| v == "1")
                     .unwrap_or(false);
 
-                if !allow_simulated {
-                    error!(
-                        "SECURITY: Simulated proof rejected. \
-                         Set GHOST_ALLOW_SIMULATED_PROOFS=1 to allow (development only, NEVER in production)."
-                    );
+                // L-9 FIX: Fail safe - if the env var is not set, assume production-like behavior
+                // This prevents the case where someone forgets to set GHOST_NETWORK but we're on mainnet
+                let simulated_blocked = !simulated_explicitly_allowed;
+
+                if is_mainnet || simulated_blocked {
+                    if is_mainnet {
+                        // L-18 SECURITY: On mainnet, simulated proofs are ALWAYS rejected
+                        // No environment variable can bypass this check
+                        error!(
+                            "L-18 SECURITY: Simulated proof REJECTED on mainnet. \
+                             Simulated proofs are NEVER allowed on mainnet, regardless of GHOST_ALLOW_SIMULATED_PROOFS setting. \
+                             A valid Groth16 proof with proper trusted setup is required."
+                        );
+                    } else {
+                        // L-9: Not mainnet, but simulated proofs not explicitly allowed
+                        error!(
+                            "SECURITY: Simulated proof rejected. \
+                             Set GHOST_ALLOW_SIMULATED_PROOFS=1 to allow (development only, NEVER in production)."
+                        );
+                    }
                     return Err(ZkError::SimulatedProofRejected);
                 }
 

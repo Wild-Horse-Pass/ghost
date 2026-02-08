@@ -30,6 +30,7 @@
 //! The `ProofVerifier` wraps the synchronous verification functions and limits
 //! the number of concurrent verifications using a semaphore.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -44,6 +45,13 @@ const MAX_CONCURRENT_PROOFS: usize = 10;
 /// M-14 FIX: Proof verification timeout (milliseconds)
 /// If a verification takes longer than this, something is wrong
 const PROOF_VERIFICATION_TIMEOUT_MS: u64 = 5000;
+
+/// H-5 FIX: Maximum merkle proof size (number of hashes)
+/// 64 hashes can represent a tree with 2^64 leaves, which is far more than any realistic use
+const MAX_MERKLE_PROOF_SIZE: usize = 64;
+
+/// M-8 FIX: Maximum pending verification requests before rejecting new ones
+const MAX_PENDING_REQUESTS: usize = 100;
 
 /// M-14 FIX: Semaphore-limited proof verifier
 ///
@@ -69,6 +77,10 @@ pub struct ProofVerifier {
     proof_semaphore: Arc<Semaphore>,
     /// Maximum concurrent verifications (for monitoring)
     max_concurrent: usize,
+    /// M-8 FIX: Pending request counter for rate limiting
+    pending_requests: Arc<AtomicUsize>,
+    /// M-8 FIX: Maximum pending requests before rejection
+    max_pending: usize,
 }
 
 impl ProofVerifier {
@@ -82,6 +94,8 @@ impl ProofVerifier {
         Self {
             proof_semaphore: Arc::new(Semaphore::new(max_concurrent)),
             max_concurrent,
+            pending_requests: Arc::new(AtomicUsize::new(0)),
+            max_pending: MAX_PENDING_REQUESTS,
         }
     }
 
@@ -95,6 +109,11 @@ impl ProofVerifier {
         self.max_concurrent
     }
 
+    /// M-8 FIX: Get the current pending request count (for monitoring)
+    pub fn pending_count(&self) -> usize {
+        self.pending_requests.load(Ordering::SeqCst)
+    }
+
     /// M-14 FIX: Verify a settlement proof with concurrency limiting
     ///
     /// Acquires a semaphore permit before verification to limit concurrent
@@ -104,6 +123,29 @@ impl ProofVerifier {
         &self,
         proof: &SettlementProof,
     ) -> ReconciliationResult<()> {
+        // H-5 FIX: Validate proof size BEFORE cloning to prevent memory exhaustion
+        if proof.merkle_proof.len() > MAX_MERKLE_PROOF_SIZE {
+            return Err(ReconciliationError::ProofTooLarge {
+                size: proof.merkle_proof.len(),
+                max: MAX_MERKLE_PROOF_SIZE,
+            });
+        }
+
+        // M-8 FIX: Check pending request count before proceeding
+        let pending = self.pending_requests.fetch_add(1, Ordering::SeqCst);
+        if pending >= self.max_pending {
+            self.pending_requests.fetch_sub(1, Ordering::SeqCst);
+            return Err(ReconciliationError::TooManyPendingVerifications {
+                pending,
+                max: self.max_pending,
+            });
+        }
+
+        // M-8 FIX: Use scopeguard to ensure pending count is decremented on exit
+        let pending_guard = scopeguard::guard((), |_| {
+            self.pending_requests.fetch_sub(1, Ordering::SeqCst);
+        });
+
         // Try to acquire permit with timeout
         let permit = tokio::time::timeout(
             std::time::Duration::from_millis(PROOF_VERIFICATION_TIMEOUT_MS),
@@ -120,15 +162,27 @@ impl ProofVerifier {
 
         // Perform verification while holding permit
         // Use spawn_blocking for CPU-intensive work
+        // H-5 FIX: Size already validated above, safe to clone now
         let proof_clone = proof.clone();
-        let result = tokio::task::spawn_blocking(move || proof_clone.verify())
-            .await
-            .map_err(|e| ReconciliationError::InternalError {
-                details: format!("Verification task panicked: {}", e),
-            })?;
+
+        // M-7 FIX: Add timeout to the verification task itself
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(PROOF_VERIFICATION_TIMEOUT_MS),
+            tokio::task::spawn_blocking(move || proof_clone.verify()),
+        )
+        .await
+        .map_err(|_| ReconciliationError::VerificationTimeout {
+            reason: "M-7: Proof verification task timed out".to_string(),
+        })?
+        .map_err(|e| ReconciliationError::InternalError {
+            details: format!("Verification task panicked: {}", e),
+        })?;
 
         // Release permit (implicit when permit drops)
         drop(permit);
+
+        // Pending guard will decrement on drop
+        drop(pending_guard);
 
         result
     }
@@ -144,6 +198,29 @@ impl ProofVerifier {
         index: usize,
         leaf_count: usize,
     ) -> ReconciliationResult<bool> {
+        // H-5 FIX: Validate proof size BEFORE cloning
+        if proof.len() > MAX_MERKLE_PROOF_SIZE {
+            return Err(ReconciliationError::ProofTooLarge {
+                size: proof.len(),
+                max: MAX_MERKLE_PROOF_SIZE,
+            });
+        }
+
+        // M-8 FIX: Check pending request count before proceeding
+        let pending = self.pending_requests.fetch_add(1, Ordering::SeqCst);
+        if pending >= self.max_pending {
+            self.pending_requests.fetch_sub(1, Ordering::SeqCst);
+            return Err(ReconciliationError::TooManyPendingVerifications {
+                pending,
+                max: self.max_pending,
+            });
+        }
+
+        // M-8 FIX: Use scopeguard to ensure pending count is decremented on exit
+        let pending_guard = scopeguard::guard((), |_| {
+            self.pending_requests.fetch_sub(1, Ordering::SeqCst);
+        });
+
         // Try to acquire permit with timeout
         let permit = tokio::time::timeout(
             std::time::Duration::from_millis(PROOF_VERIFICATION_TIMEOUT_MS),
@@ -158,16 +235,22 @@ impl ProofVerifier {
         })?
         .map_err(|_| ReconciliationError::SemaphoreClosed)?;
 
-        // Copy data for blocking task
+        // Copy data for blocking task (H-5: size already validated above)
         let leaf = *leaf;
         let proof_vec: Vec<[u8; 32]> = proof.to_vec();
         let root = *root;
 
-        // Use spawn_blocking for CPU-intensive work
-        let result = tokio::task::spawn_blocking(move || {
-            verify_merkle_proof(&leaf, &proof_vec, &root, index, leaf_count)
-        })
+        // M-7 FIX: Add timeout to the verification task itself
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(PROOF_VERIFICATION_TIMEOUT_MS),
+            tokio::task::spawn_blocking(move || {
+                verify_merkle_proof(&leaf, &proof_vec, &root, index, leaf_count)
+            }),
+        )
         .await
+        .map_err(|_| ReconciliationError::VerificationTimeout {
+            reason: "M-7: Merkle verification task timed out".to_string(),
+        })?
         .map_err(|e| ReconciliationError::InternalError {
             details: format!("Merkle verification task panicked: {}", e),
         })?;
@@ -175,24 +258,26 @@ impl ProofVerifier {
         // Release permit (implicit when permit drops)
         drop(permit);
 
+        // Pending guard will decrement on drop
+        drop(pending_guard);
+
         Ok(result)
     }
 
-    /// M-14 FIX: Batch verify multiple proofs with concurrency limiting
+    /// H-4 FIX: Batch verify multiple proofs with parallel execution
     ///
-    /// Verifies multiple settlement proofs, limiting total concurrent verifications.
+    /// Verifies multiple settlement proofs in parallel using futures::join_all.
+    /// Each individual verification is still rate-limited by the semaphore.
     /// Returns a vector of results corresponding to each input proof.
-    pub async fn verify_batch(
-        &self,
-        proofs: &[SettlementProof],
-    ) -> Vec<ReconciliationResult<()>> {
-        let mut results = Vec::with_capacity(proofs.len());
+    pub async fn verify_batch(&self, proofs: &[SettlementProof]) -> Vec<ReconciliationResult<()>> {
+        use futures::future::join_all;
 
-        for proof in proofs {
-            results.push(self.verify_settlement_proof(proof).await);
-        }
+        let futures: Vec<_> = proofs
+            .iter()
+            .map(|proof| self.verify_settlement_proof(proof))
+            .collect();
 
-        results
+        join_all(futures).await
     }
 }
 
@@ -207,6 +292,8 @@ impl Clone for ProofVerifier {
         Self {
             proof_semaphore: Arc::clone(&self.proof_semaphore),
             max_concurrent: self.max_concurrent,
+            pending_requests: Arc::clone(&self.pending_requests),
+            max_pending: self.max_pending,
         }
     }
 }
@@ -363,5 +450,149 @@ mod tests {
         // Both should share the same semaphore
         let _permit = verifier1.proof_semaphore.acquire().await.unwrap();
         assert_eq!(verifier2.available_permits(), MAX_CONCURRENT_PROOFS - 1);
+    }
+
+    #[tokio::test]
+    async fn test_h5_proof_size_limit() {
+        // H-5 FIX: Test that oversized proofs are rejected before cloning
+        let verifier = ProofVerifier::new();
+
+        // Create a proof with too many hashes
+        let oversized_proof: Vec<[u8; 32]> = (0..MAX_MERKLE_PROOF_SIZE + 1)
+            .map(|i| [i as u8; 32])
+            .collect();
+
+        let proof = SettlementProof {
+            settlement_hash: [0u8; 32],
+            merkle_proof: oversized_proof.clone(),
+            index: 0,
+            leaf_count: 1,
+            merkle_root: [0u8; 32],
+            batch_id: [0u8; 32],
+            l1_txid: "test".to_string(),
+            l1_height: 0,
+            l1_block_hash: "test".to_string(),
+        };
+
+        let result = verifier.verify_settlement_proof(&proof).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ReconciliationError::ProofTooLarge { size, max } => {
+                assert_eq!(size, MAX_MERKLE_PROOF_SIZE + 1);
+                assert_eq!(max, MAX_MERKLE_PROOF_SIZE);
+            }
+            e => panic!("Expected ProofTooLarge error, got: {:?}", e),
+        }
+
+        // Also test verify_merkle
+        let result = verifier
+            .verify_merkle(&[0u8; 32], &oversized_proof, &[0u8; 32], 0, 1)
+            .await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ReconciliationError::ProofTooLarge { size, max } => {
+                assert_eq!(size, MAX_MERKLE_PROOF_SIZE + 1);
+                assert_eq!(max, MAX_MERKLE_PROOF_SIZE);
+            }
+            e => panic!("Expected ProofTooLarge error, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_h5_valid_size_proof_allowed() {
+        // H-5: Verify that max-size proofs are still allowed
+        let verifier = ProofVerifier::new();
+
+        // Create a proof at exactly the limit
+        let max_size_proof: Vec<[u8; 32]> =
+            (0..MAX_MERKLE_PROOF_SIZE).map(|i| [i as u8; 32]).collect();
+
+        // This should not fail due to size (may fail for other reasons, but not size)
+        let result = verifier
+            .verify_merkle(&[0u8; 32], &max_size_proof, &[0u8; 32], 0, 1)
+            .await;
+
+        // Should not be a ProofTooLarge error
+        if let Err(ReconciliationError::ProofTooLarge { .. }) = result {
+            panic!("Max size proof should not be rejected for size");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_m8_pending_count() {
+        // M-8 FIX: Test pending request tracking
+        let verifier = ProofVerifier::new();
+
+        // Initially pending count should be 0
+        assert_eq!(verifier.pending_count(), 0);
+
+        // Create a valid proof
+        let leaves: Vec<[u8; 32]> = (0..8).map(|i| [i; 32]).collect();
+        let root = compute_merkle_root(&leaves);
+        let merkle_proof = compute_merkle_proof(&leaves, 0);
+
+        let proof = SettlementProof {
+            settlement_hash: leaves[0],
+            merkle_proof,
+            index: 0,
+            leaf_count: 8,
+            merkle_root: root,
+            batch_id: [0u8; 32],
+            l1_txid: "test".to_string(),
+            l1_height: 800_000,
+            l1_block_hash: "test".to_string(),
+        };
+
+        // After verification, pending count should return to 0
+        let _ = verifier.verify_settlement_proof(&proof).await;
+        assert_eq!(verifier.pending_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_h4_parallel_batch_verification() {
+        // H-4 FIX: Test that batch verification runs in parallel
+        let verifier = ProofVerifier::with_max_concurrent(5);
+
+        // Create valid proofs
+        let leaves: Vec<[u8; 32]> = (0..8).map(|i| [i; 32]).collect();
+        let root = compute_merkle_root(&leaves);
+
+        let proofs: Vec<SettlementProof> = (0..5)
+            .map(|i| {
+                let merkle_proof = compute_merkle_proof(&leaves, i % 8);
+                SettlementProof {
+                    settlement_hash: leaves[i % 8],
+                    merkle_proof,
+                    index: i % 8,
+                    leaf_count: 8,
+                    merkle_root: root,
+                    batch_id: [0u8; 32],
+                    l1_txid: format!("txid_{}", i),
+                    l1_height: 800_000,
+                    l1_block_hash: "test".to_string(),
+                }
+            })
+            .collect();
+
+        // Run batch verification - this should complete faster than sequential
+        // because verifications run in parallel
+        let start = std::time::Instant::now();
+        let results = verifier.verify_batch(&proofs).await;
+        let duration = start.elapsed();
+
+        // All should succeed
+        assert_eq!(results.len(), 5);
+        assert!(results.iter().all(|r| r.is_ok()));
+
+        // Pending count should be 0 after completion
+        assert_eq!(verifier.pending_count(), 0);
+
+        // Duration should be reasonable (parallel, not sequential)
+        // This is a sanity check, not a strict timing test
+        assert!(
+            duration.as_secs() < 10,
+            "Batch verification took too long: {:?}",
+            duration
+        );
     }
 }

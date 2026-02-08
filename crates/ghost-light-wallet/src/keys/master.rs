@@ -188,8 +188,10 @@ impl MasterKey {
     pub fn export_secrets(&self) -> MasterKeyExport {
         let (scan, spend) = self.ghost_keys.export_secrets();
         MasterKeyExport {
-            scan_secret: scan,
-            spend_secret: spend,
+            // M-15 FIX: Dereference Zeroizing wrapper to get inner bytes
+            // The Zeroizing wrapper will zeroize when dropped at end of function
+            scan_secret: *scan,
+            spend_secret: *spend,
             auth_secret: self.auth_secret.secret_bytes(),
             auth_pubkey: self.auth_pubkey,
             network: self.network,

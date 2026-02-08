@@ -34,6 +34,7 @@ use std::str::FromStr;
 
 use crate::derivation::{derive_payment_address_v2, derive_shared_secret};
 use crate::error::GhostKeyError;
+use zeroize::Zeroizing;
 use crate::{GHOST_ID_HRP, GHOST_ID_HRP_REGTEST, GHOST_ID_HRP_SIGNET, GHOST_ID_HRP_TESTNET};
 
 /// Network type for Ghost ID encoding
@@ -251,10 +252,12 @@ impl GhostId {
     ///
     /// # Returns
     /// (output_pubkey, ephemeral_pubkey, tweak)
+    ///
+    /// M-17 FIX: Tweak is now returned as Zeroizing wrapper for automatic cleanup
     pub fn derive_payment_address_v2_full(
         &self,
         k: u32,
-    ) -> Result<(PublicKey, PublicKey, [u8; 32]), GhostKeyError> {
+    ) -> Result<(PublicKey, PublicKey, Zeroizing<[u8; 32]>), GhostKeyError> {
         let secp = Secp256k1::new();
 
         // Generate ephemeral keypair
@@ -272,11 +275,13 @@ impl GhostId {
     }
 
     /// Derive payment address with a specific ephemeral secret (v2 - for testing/determinism)
+    ///
+    /// M-17 FIX: Tweak is now returned as Zeroizing wrapper for automatic cleanup
     pub fn derive_payment_address_v2_with_ephemeral(
         &self,
         ephemeral_secret: &SecretKey,
         k: u32,
-    ) -> Result<(PublicKey, PublicKey, [u8; 32]), GhostKeyError> {
+    ) -> Result<(PublicKey, PublicKey, Zeroizing<[u8; 32]>), GhostKeyError> {
         let secp = Secp256k1::new();
         let ephemeral_pubkey = PublicKey::from_secret_key(&secp, ephemeral_secret);
 

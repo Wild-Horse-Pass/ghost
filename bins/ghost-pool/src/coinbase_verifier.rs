@@ -66,6 +66,9 @@ pub enum CoinbaseVerificationError {
     #[error("Total value mismatch: expected {expected}, got {actual}")]
     TotalValueMismatch { expected: u64, actual: u64 },
 
+    #[error("L-5: Total script size too large: {actual} > {max}")]
+    TotalScriptSizeTooLarge { actual: usize, max: usize },
+
     #[error("Failed to parse coinbase transaction: {0}")]
     ParseError(String),
 }
@@ -90,56 +93,66 @@ pub struct CoinbaseCommitment {
     pub proposal_hash: [u8; 32],
 }
 
+/// H-8: Domain separator for coinbase output hash consistency
+/// CRITICAL: Both from_proposal() and compute_outputs_hash() MUST use this same domain.
+const COINBASE_OUTPUTS_DOMAIN: &[u8] = b"CoinbaseOutputs/v1";
+
 impl CoinbaseCommitment {
     /// Create a commitment from an approved payout proposal
     ///
+    /// H-8 FIX: Uses the same hash format as compute_outputs_hash() to ensure
+    /// that verification will succeed when the actual coinbase matches the proposal.
+    ///
     /// The commitment hash is computed from:
-    /// - All miner payout addresses and amounts
-    /// - All node payout addresses and amounts
-    /// - Treasury amount
-    /// - Block height
-    /// - Proposal hash
+    /// - All miner payout addresses (as script pubkeys) and amounts
+    /// - All node payout addresses (as script pubkeys) and amounts
+    /// - Treasury address (as script pubkey) and amount
+    ///
+    /// The hash format matches compute_outputs_hash() exactly:
+    /// - Domain separator: "CoinbaseOutputs/v1"
+    /// - Total output count (including all expected outputs)
+    /// - For each output: amount (8 bytes LE) + script length (4 bytes LE) + script bytes
     pub fn from_proposal(proposal: &PayoutProposal, treasury_address: &[u8]) -> Self {
-        let mut hasher = Sha256::new();
-
-        // Domain separator to prevent hash collisions
-        hasher.update(b"CoinbaseCommitment/v1");
-        hasher.update(proposal.proposal_hash);
-        hasher.update(proposal.block_height.to_le_bytes());
-
         let mut total_value = 0u64;
         let mut output_count = 0usize;
 
-        // Hash miner payouts (order-sensitive)
-        hasher.update(b"miners:");
-        hasher.update((proposal.miner_payouts.len() as u32).to_le_bytes());
+        // Count all outputs first
+        output_count += proposal.miner_payouts.len();
+        output_count += proposal.node_payouts.len();
+        if proposal.treasury_amount > 0 {
+            output_count += 1;
+        }
+
+        // H-8: Use the SAME domain separator and format as compute_outputs_hash()
+        let mut hasher = Sha256::new();
+        hasher.update(COINBASE_OUTPUTS_DOMAIN);
+        // Note: We add 1 to include the witness commitment output that will have value 0
+        // The compute_outputs_hash skips 0-value outputs, so we need the same count
+        // Actually, the total count should only be value outputs, matching what verify() checks
+        hasher.update((output_count as u32).to_le_bytes());
+
+        // Hash miner payouts (order-sensitive) - same format as compute_outputs_hash
         for payout in &proposal.miner_payouts {
             hasher.update(payout.amount.to_le_bytes());
             hasher.update((payout.address.len() as u32).to_le_bytes());
             hasher.update(&payout.address);
             total_value = total_value.saturating_add(payout.amount);
-            output_count += 1;
         }
 
-        // Hash node payouts (order-sensitive)
-        hasher.update(b"nodes:");
-        hasher.update((proposal.node_payouts.len() as u32).to_le_bytes());
+        // Hash node payouts (order-sensitive) - same format as compute_outputs_hash
         for payout in &proposal.node_payouts {
             hasher.update(payout.amount.to_le_bytes());
             hasher.update((payout.address.len() as u32).to_le_bytes());
             hasher.update(&payout.address);
             total_value = total_value.saturating_add(payout.amount);
-            output_count += 1;
         }
 
-        // Hash treasury output
-        hasher.update(b"treasury:");
-        hasher.update(proposal.treasury_amount.to_le_bytes());
+        // Hash treasury output - same format as compute_outputs_hash
         if proposal.treasury_amount > 0 {
+            hasher.update(proposal.treasury_amount.to_le_bytes());
             hasher.update((treasury_address.len() as u32).to_le_bytes());
             hasher.update(treasury_address);
             total_value = total_value.saturating_add(proposal.treasury_amount);
-            output_count += 1;
         }
 
         let output_hash: [u8; 32] = hasher.finalize().into();
@@ -150,7 +163,7 @@ impl CoinbaseCommitment {
             output_count = output_count,
             total_value = total_value,
             hash = %hex::encode(&output_hash[..8]),
-            "Created coinbase commitment"
+            "Created coinbase commitment (H-8 consistent format)"
         );
 
         Self {
@@ -163,16 +176,39 @@ impl CoinbaseCommitment {
         }
     }
 
+    /// L-5: Maximum total script size across all outputs (100KB)
+    /// This prevents excessively large coinbase transactions that could
+    /// cause memory issues or slow down block validation.
+    pub const MAX_TOTAL_SCRIPT_SIZE: usize = 100_000;
+
     /// Verify a coinbase transaction matches this commitment
     ///
     /// This performs a deep verification:
-    /// 1. Output count matches
-    /// 2. Total value matches
-    /// 3. Cryptographic hash of outputs matches
+    /// 1. L-5: Total script size is within bounds
+    /// 2. Output count matches
+    /// 3. Total value matches
+    /// 4. Cryptographic hash of outputs matches
     pub fn verify(
         &self,
         coinbase_outputs: &[CoinbaseOutput],
     ) -> Result<(), CoinbaseVerificationError> {
+        // L-5: Check total script size before processing
+        let total_script_size: usize = coinbase_outputs
+            .iter()
+            .map(|o| o.script_pubkey.len())
+            .sum();
+        if total_script_size > Self::MAX_TOTAL_SCRIPT_SIZE {
+            error!(
+                total_size = total_script_size,
+                max = Self::MAX_TOTAL_SCRIPT_SIZE,
+                "L-5: Total script size exceeds maximum"
+            );
+            return Err(CoinbaseVerificationError::TotalScriptSizeTooLarge {
+                actual: total_script_size,
+                max: Self::MAX_TOTAL_SCRIPT_SIZE,
+            });
+        }
+
         // Check output count (excluding witness commitment which has 0 value)
         let value_outputs: Vec<_> = coinbase_outputs.iter().filter(|o| o.value > 0).collect();
 
@@ -217,10 +253,22 @@ impl CoinbaseCommitment {
     }
 
     /// Compute hash of coinbase outputs for comparison
+    ///
+    /// H-8 FIX: Uses the same domain separator and format as from_proposal()
+    /// to ensure hash consistency between expected and actual coinbases.
+    ///
+    /// Format:
+    /// - Domain separator: "CoinbaseOutputs/v1" (COINBASE_OUTPUTS_DOMAIN)
+    /// - Value output count (excludes 0-value witness commitment)
+    /// - For each value output: amount (8 bytes LE) + script length (4 bytes LE) + script bytes
     fn compute_outputs_hash(outputs: &[CoinbaseOutput]) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        hasher.update(b"CoinbaseOutputs/v1");
-        hasher.update((outputs.len() as u32).to_le_bytes());
+        // H-8: Use the SAME domain separator as from_proposal()
+        hasher.update(COINBASE_OUTPUTS_DOMAIN);
+
+        // Count only value outputs (exclude witness commitment)
+        let value_output_count = outputs.iter().filter(|o| o.value > 0).count();
+        hasher.update((value_output_count as u32).to_le_bytes());
 
         for output in outputs {
             if output.value > 0 {
@@ -515,7 +563,7 @@ mod tests {
 
     #[test]
     fn test_commitment_different_for_different_proposals() {
-        let mut proposal1 = create_test_proposal();
+        let proposal1 = create_test_proposal();
         let mut proposal2 = create_test_proposal();
         proposal2.miner_payouts[0].amount = 99_999_999; // Change one satoshi
 

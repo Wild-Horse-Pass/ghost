@@ -270,9 +270,43 @@ impl SettlementRequest {
     ///
     /// This MUST be called before including the settlement in a batch.
     /// Returns Ok(()) if the proof is valid.
+    ///
+    /// Note: This method verifies the signature but does not validate the epoch.
+    /// For full H-6 compliance, use `verify_ownership_with_epoch()` which also
+    /// validates that the proof was created for the current epoch.
     pub fn verify_ownership(&self) -> ReconciliationResult<()> {
         // The expected lock pubkey is derived from the lock_id
         // In Ghost Locks, the lock_id IS the x-only pubkey of the lock output
+        self.ownership_proof.verify(
+            self.settlement.id(),
+            self.settlement.destination_address(),
+            self.settlement.amount_sats(),
+            self.settlement.source_lock_id(),
+        )
+    }
+
+    /// H-6 FIX: Verify the ownership proof is valid for this settlement AND the current epoch
+    ///
+    /// This is the PREFERRED method for verifying settlement requests. It verifies both:
+    /// 1. The signature is valid (C-1)
+    /// 2. The epoch in the proof matches the current epoch (H-6)
+    ///
+    /// The epoch check prevents replay attacks where old proofs from previous epochs
+    /// are reused in the current epoch.
+    ///
+    /// # Arguments
+    ///
+    /// * `current_epoch` - The current epoch number. Must match the epoch in the proof.
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) if both signature and epoch are valid.
+    pub fn verify_ownership_with_epoch(&self, current_epoch: u64) -> ReconciliationResult<()> {
+        // H-6: Verify epoch FIRST before signature verification
+        // This prevents processing of stale proofs from old epochs
+        self.ownership_proof.verify_epoch(current_epoch)?;
+
+        // C-1: Now verify the signature
         self.ownership_proof.verify(
             self.settlement.id(),
             self.settlement.destination_address(),
@@ -902,5 +936,45 @@ mod tests {
 
         assert!(proof.verify_epoch(42).is_ok(), "Should pass for matching epoch");
         assert!(proof.verify_epoch(43).is_err(), "Should fail for different epoch");
+    }
+
+    #[test]
+    fn test_h6_verify_ownership_with_epoch() {
+        // H-6 TEST: verify_ownership_with_epoch should check epoch FIRST
+        let settlement = Settlement::new(
+            "ghost1abc".to_string(),
+            test_lock_id(),
+            "bc1qtest".to_string(),
+            100_000,
+        )
+        .unwrap();
+
+        // Create proof with epoch 10
+        let proof_epoch = 10u64;
+        let batch_id = [5u8; 32];
+        let proof = OwnershipProof::new([0u8; 64], test_lock_id(), proof_epoch, batch_id);
+        let request = SettlementRequest::new(settlement, proof);
+
+        // Verification with wrong epoch should fail immediately (epoch mismatch)
+        let result = request.verify_ownership_with_epoch(11);
+        assert!(result.is_err(), "Should fail with wrong epoch");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("epoch") && err_msg.contains("does not match"),
+            "Error should indicate epoch mismatch, got: {}",
+            err_msg
+        );
+
+        // Verification with correct epoch should proceed to signature check
+        // (will fail because signature is invalid, but that's after epoch check)
+        let result = request.verify_ownership_with_epoch(10);
+        assert!(result.is_err(), "Should fail with invalid signature");
+        // This error should be about signature, not epoch
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("signature") || err_msg.contains("verification failed"),
+            "Error should be about signature after epoch passes, got: {}",
+            err_msg
+        );
     }
 }

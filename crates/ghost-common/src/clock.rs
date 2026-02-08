@@ -29,6 +29,43 @@
 //! - Monotonic time for internal timers (not affected by clock adjustments)
 //! - Median peer time for consensus-safe timestamps
 //!
+//! # Operational Requirements (M-10)
+//!
+//! ## NTP Synchronization
+//!
+//! **All Ghost Pool nodes MUST have accurate system time.** The recommended
+//! configuration is:
+//!
+//! 1. Install and enable NTP or chrony
+//! 2. Configure at least 3 reliable NTP servers
+//! 3. Ensure firewall allows NTP traffic (UDP port 123)
+//! 4. Monitor for clock skew warnings in logs
+//!
+//! Example NTP configuration (`/etc/ntp.conf`):
+//! ```text
+//! server 0.pool.ntp.org iburst
+//! server 1.pool.ntp.org iburst
+//! server 2.pool.ntp.org iburst
+//! server 3.pool.ntp.org iburst
+//! ```
+//!
+//! ## Clock Tolerance
+//!
+//! The system tolerates up to [`MAX_ACCEPTABLE_SKEW_SECS`] (2 minutes) of clock
+//! drift before warning. However, for optimal operation:
+//!
+//! - Clock accuracy within 10 seconds is recommended
+//! - Clock accuracy within 30 seconds is acceptable
+//! - Clock drift >2 minutes will generate warnings
+//! - Clock drift >1 hour will cause peer timestamp rejection
+//!
+//! ## Why Accurate Time Matters
+//!
+//! - **Voting sessions**: BFT consensus uses timestamps to detect stale votes
+//! - **Settlement proofs**: Epoch-bound signatures require consistent time
+//! - **Health monitoring**: Peer liveness detection relies on timestamp freshness
+//! - **Share attribution**: Mining shares are timestamped for round accounting
+//!
 //! # Security Model
 //!
 //! The system assumes nodes may have slightly inaccurate clocks (up to a few

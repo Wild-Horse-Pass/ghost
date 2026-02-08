@@ -29,7 +29,7 @@ use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tracing::warn;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::config::ScanConfig;
 use crate::derivation::{compute_tweak_v2, derive_shared_secret, derive_spend_key};
@@ -313,10 +313,13 @@ impl GhostKeys {
     }
 
     /// Export secret keys as bytes
-    pub fn export_secrets(&self) -> ([u8; 32], [u8; 32]) {
+    ///
+    /// M-15 FIX: Returns Zeroizing wrappers to ensure the secret bytes are
+    /// automatically zeroized when dropped by the caller.
+    pub fn export_secrets(&self) -> (Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>) {
         (
-            self.scan_secret.secret_bytes(),
-            self.spend_secret.secret_bytes(),
+            Zeroizing::new(self.scan_secret.secret_bytes()),
+            Zeroizing::new(self.spend_secret.secret_bytes()),
         )
     }
 
@@ -502,21 +505,37 @@ impl TryFrom<GhostKeysExport> for GhostKeys {
     type Error = GhostKeyError;
 
     fn try_from(export: GhostKeysExport) -> Result<Self, Self::Error> {
-        let scan_bytes = hex::decode(&export.scan_secret)
+        let mut scan_bytes = hex::decode(&export.scan_secret)
             .map_err(|e| GhostKeyError::InvalidSecretKey(e.to_string()))?;
-        let spend_bytes = hex::decode(&export.spend_secret)
+        let mut spend_bytes = hex::decode(&export.spend_secret)
             .map_err(|e| GhostKeyError::InvalidSecretKey(e.to_string()))?;
 
         if scan_bytes.len() != 32 || spend_bytes.len() != 32 {
+            // M-16 FIX: Zeroize intermediate vectors on error path
+            scan_bytes.zeroize();
+            spend_bytes.zeroize();
             return Err(GhostKeyError::InvalidSecretKey(
                 "Invalid key length".to_string(),
             ));
         }
 
-        let scan_array: [u8; 32] = scan_bytes.try_into().unwrap();
-        let spend_array: [u8; 32] = spend_bytes.try_into().unwrap();
+        // M-16 FIX: Copy to fixed arrays before zeroizing vectors
+        let mut scan_array = [0u8; 32];
+        let mut spend_array = [0u8; 32];
+        scan_array.copy_from_slice(&scan_bytes);
+        spend_array.copy_from_slice(&spend_bytes);
 
-        GhostKeys::from_bytes(&scan_array, &spend_array)
+        // M-16 FIX: Zeroize intermediate vectors after copying
+        scan_bytes.zeroize();
+        spend_bytes.zeroize();
+
+        let result = GhostKeys::from_bytes(&scan_array, &spend_array);
+
+        // M-16 FIX: Zeroize local arrays after use
+        scan_array.zeroize();
+        spend_array.zeroize();
+
+        result
     }
 }
 
@@ -536,7 +555,8 @@ mod tests {
         let keys1 = GhostKeys::generate();
         let (scan, spend) = keys1.export_secrets();
 
-        let keys2 = GhostKeys::from_bytes(&scan, &spend).unwrap();
+        // M-15: Dereference Zeroizing wrappers to get the byte arrays
+        let keys2 = GhostKeys::from_bytes(&*scan, &*spend).unwrap();
         assert_eq!(keys1.scan_pubkey(), keys2.scan_pubkey());
         assert_eq!(keys1.spend_pubkey(), keys2.spend_pubkey());
     }

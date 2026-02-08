@@ -142,6 +142,18 @@ pub enum ReconciliationError {
     #[error("Internal error: proof verification semaphore closed")]
     SemaphoreClosed,
 
+    /// M-8: Too many pending verifications - rate limiting
+    #[error("Too many pending verifications: {pending} >= {max}")]
+    TooManyPendingVerifications { pending: usize, max: usize },
+
+    /// M-14: Too many pending settlements - rate limiting
+    #[error("Too many pending settlements: {count} >= {max}. Try again after current batch is processed.")]
+    TooManyPendingSettlements { count: usize, max: usize },
+
+    /// H-5: Merkle proof size too large
+    #[error("Merkle proof too large: {size} > {max}")]
+    ProofTooLarge { size: usize, max: usize },
+
     /// Internal error for unexpected conditions
     #[error("Internal error: {details}")]
     InternalError { details: String },

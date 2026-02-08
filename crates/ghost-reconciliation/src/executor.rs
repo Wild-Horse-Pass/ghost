@@ -323,36 +323,61 @@ impl BatchExecutor {
         self.add_settlement_internal(request.into_settlement())
     }
 
-    /// Add a settlement request (DEPRECATED - use add_settlement_request)
+    /// M-12: Add a pre-verified settlement (INTERNAL USE ONLY)
     ///
-    /// # Deprecation Warning
+    /// # Security Warning
     ///
-    /// This method does NOT verify ownership. It exists only for backwards
-    /// compatibility and internal use. External callers MUST use
-    /// `add_settlement_request()` which includes ownership verification.
+    /// This method does NOT verify ownership. It MUST only be used when:
+    /// 1. The caller has already verified ownership through another mechanism
+    /// 2. The settlement originates from a trusted internal source
     ///
-    /// # Security Risk
+    /// For external/untrusted settlement requests, ALWAYS use
+    /// `add_settlement_request()` which includes C-1 ownership verification.
     ///
-    /// Using this method without ownership verification could allow attackers
-    /// to request settlements from locks they don't own.
+    /// # Deprecation
+    ///
+    /// This method is deprecated for external callers. Internal callers that
+    /// have pre-verified ownership (e.g., Ghost Pay withdrawal processing)
+    /// may continue to use it with `#[allow(deprecated)]` and a comment
+    /// explaining why ownership verification was performed elsewhere.
     #[deprecated(
         since = "1.6.0",
-        note = "Use add_settlement_request() which includes C-1 ownership verification"
+        note = "M-12: Use add_settlement_request() for C-1 ownership verification. \
+                Only use this method if ownership was verified through another mechanism \
+                and document why in a code comment."
     )]
     pub fn add_settlement(&mut self, settlement: Settlement) -> Result<(), ReconciliationError> {
-        tracing::warn!(
+        // M-12: Log at debug level since legitimate internal use exists
+        // The deprecation warning at compile time is sufficient for catching misuse
+        tracing::debug!(
             settlement_id = %hex::encode(settlement.id()),
-            "DEPRECATED: add_settlement() called without ownership verification. \
-             Use add_settlement_request() for C-1 security."
+            "add_settlement() called - caller must ensure ownership was verified elsewhere"
         );
         self.add_settlement_internal(settlement)
     }
+
+    /// M-14: Maximum number of pending settlements before rate limiting
+    /// This prevents memory exhaustion from excessive settlement requests.
+    pub const MAX_PENDING_SETTLEMENTS: usize = 10_000;
 
     /// Internal method to add a settlement after verification
     fn add_settlement_internal(
         &mut self,
         settlement: Settlement,
     ) -> Result<(), ReconciliationError> {
+        // M-14: Rate limit - check pending settlement count before adding
+        if self.pending_settlements.len() >= Self::MAX_PENDING_SETTLEMENTS {
+            tracing::warn!(
+                current = self.pending_settlements.len(),
+                max = Self::MAX_PENDING_SETTLEMENTS,
+                "M-14: Rate limit reached - too many pending settlements"
+            );
+            return Err(ReconciliationError::TooManyPendingSettlements {
+                count: self.pending_settlements.len(),
+                max: Self::MAX_PENDING_SETTLEMENTS,
+            });
+        }
+
         // Validate settlement
         crate::rules::validate_settlement(
             settlement.source_ghost_id(),
