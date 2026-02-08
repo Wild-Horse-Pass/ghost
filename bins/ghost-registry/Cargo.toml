@@ -84,5 +84,9 @@ bitcoin = { workspace = true }
 secp256k1 = { version = "0.28.2", features = ["rand"] }
 rand = { workspace = true }
 
+# H-17: Unix permissions
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 tempfile = "3.10"

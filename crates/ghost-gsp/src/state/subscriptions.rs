@@ -64,6 +64,10 @@ impl SubscriptionType {
     }
 }
 
+/// M-13 FIX: Maximum lock subscriptions per wallet (global, not per-connection)
+/// This prevents a wallet from subscribing to excessive locks even across connections.
+const MAX_LOCK_SUBSCRIPTIONS_PER_WALLET: usize = 100;
+
 /// Manager for WebSocket subscriptions
 pub struct SubscriptionManager {
     /// wallet_id -> set of subscription types
@@ -71,6 +75,10 @@ pub struct SubscriptionManager {
 
     /// lock_id -> set of wallet_ids subscribed to that lock's state updates
     lock_state_subscriptions: RwLock<HashMap<String, HashSet<String>>>,
+
+    /// M-13 FIX: wallet_id -> set of lock_ids this wallet is subscribed to (global tracking)
+    /// This enables enforcement of per-wallet lock subscription limits across all connections.
+    wallet_lock_subscriptions: RwLock<HashMap<String, HashSet<String>>>,
 }
 
 impl SubscriptionManager {
@@ -79,6 +87,7 @@ impl SubscriptionManager {
         Self {
             subscriptions: RwLock::new(HashMap::new()),
             lock_state_subscriptions: RwLock::new(HashMap::new()),
+            wallet_lock_subscriptions: RwLock::new(HashMap::new()),
         }
     }
 
@@ -143,46 +152,133 @@ impl SubscriptionManager {
     // Lock State Subscriptions (for instant payments)
     // =========================================================================
 
+    /// M-13 FIX: Check if wallet can subscribe to another lock (under global limit)
+    ///
+    /// Returns true if the wallet has room for more lock subscriptions.
+    /// This is checked globally across all connections for this wallet.
+    pub fn can_subscribe_lock(&self, wallet_id: &WalletId) -> bool {
+        let wallet_subs = self.wallet_lock_subscriptions.read();
+        wallet_subs
+            .get(&wallet_id.to_string())
+            .map(|locks| locks.len() < MAX_LOCK_SUBSCRIPTIONS_PER_WALLET)
+            .unwrap_or(true)
+    }
+
+    /// M-13 FIX: Get the current lock subscription count for a wallet
+    pub fn wallet_lock_subscription_count(&self, wallet_id: &WalletId) -> usize {
+        let wallet_subs = self.wallet_lock_subscriptions.read();
+        wallet_subs
+            .get(&wallet_id.to_string())
+            .map(|locks| locks.len())
+            .unwrap_or(0)
+    }
+
     /// Subscribe a wallet to lock state updates for a specific lock
-    pub fn subscribe_lock_state(&self, wallet_id: &WalletId, lock_id: &str) {
-        let mut subs = self.lock_state_subscriptions.write();
-        subs.entry(lock_id.to_string())
-            .or_default()
-            .insert(wallet_id.to_string());
+    ///
+    /// M-13 FIX: Returns Ok(true) if subscribed, Ok(false) if already subscribed,
+    /// Err if the wallet has reached the global subscription limit.
+    pub fn subscribe_lock_state(&self, wallet_id: &WalletId, lock_id: &str) -> Result<bool, &'static str> {
+        let wallet_str = wallet_id.to_string();
+        let lock_str = lock_id.to_string();
+
+        // M-13 FIX: Check global per-wallet limit first
+        {
+            let wallet_subs = self.wallet_lock_subscriptions.read();
+            if let Some(locks) = wallet_subs.get(&wallet_str) {
+                // Already subscribed to this lock - no-op, return success
+                if locks.contains(&lock_str) {
+                    return Ok(false);
+                }
+                // Check limit
+                if locks.len() >= MAX_LOCK_SUBSCRIPTIONS_PER_WALLET {
+                    return Err("M-13: Maximum lock subscriptions per wallet exceeded");
+                }
+            }
+        }
+
+        // Add to lock -> wallets mapping
+        {
+            let mut subs = self.lock_state_subscriptions.write();
+            subs.entry(lock_str.clone())
+                .or_default()
+                .insert(wallet_str.clone());
+        }
+
+        // M-13 FIX: Add to wallet -> locks mapping (global tracking)
+        {
+            let mut wallet_subs = self.wallet_lock_subscriptions.write();
+            wallet_subs
+                .entry(wallet_str)
+                .or_default()
+                .insert(lock_str);
+        }
+
+        Ok(true)
     }
 
     /// Unsubscribe a wallet from lock state updates for a specific lock
+    ///
+    /// M-13 FIX: Also removes from global wallet tracking
     pub fn unsubscribe_lock_state(&self, wallet_id: &WalletId, lock_id: &str) {
-        let mut subs = self.lock_state_subscriptions.write();
-        if let Some(lock_subs) = subs.get_mut(lock_id) {
-            lock_subs.remove(&wallet_id.to_string());
-            if lock_subs.is_empty() {
-                subs.remove(lock_id);
+        let wallet_str = wallet_id.to_string();
+        let lock_str = lock_id.to_string();
+
+        // Remove from lock -> wallets mapping
+        {
+            let mut subs = self.lock_state_subscriptions.write();
+            if let Some(lock_subs) = subs.get_mut(&lock_str) {
+                lock_subs.remove(&wallet_str);
+                if lock_subs.is_empty() {
+                    subs.remove(&lock_str);
+                }
+            }
+        }
+
+        // M-13 FIX: Remove from wallet -> locks mapping
+        {
+            let mut wallet_subs = self.wallet_lock_subscriptions.write();
+            if let Some(locks) = wallet_subs.get_mut(&wallet_str) {
+                locks.remove(&lock_str);
+                if locks.is_empty() {
+                    wallet_subs.remove(&wallet_str);
+                }
             }
         }
     }
 
     /// Unsubscribe a wallet from all lock state subscriptions
+    ///
+    /// M-13 FIX: Also clears global wallet tracking
     pub fn unsubscribe_all_lock_states(&self, wallet_id: &WalletId) {
         let wallet_str = wallet_id.to_string();
-        let mut subs = self.lock_state_subscriptions.write();
 
-        // Remove wallet from all lock subscriptions
-        let empty_locks: Vec<String> = subs
-            .iter_mut()
-            .filter_map(|(lock_id, wallets)| {
-                wallets.remove(&wallet_str);
-                if wallets.is_empty() {
-                    Some(lock_id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Remove from all lock -> wallets mappings
+        {
+            let mut subs = self.lock_state_subscriptions.write();
 
-        // Clean up empty lock entries
-        for lock_id in empty_locks {
-            subs.remove(&lock_id);
+            // Remove wallet from all lock subscriptions
+            let empty_locks: Vec<String> = subs
+                .iter_mut()
+                .filter_map(|(lock_id, wallets)| {
+                    wallets.remove(&wallet_str);
+                    if wallets.is_empty() {
+                        Some(lock_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Clean up empty lock entries
+            for lock_id in empty_locks {
+                subs.remove(&lock_id);
+            }
+        }
+
+        // M-13 FIX: Clear wallet -> locks mapping entirely
+        {
+            let mut wallet_subs = self.wallet_lock_subscriptions.write();
+            wallet_subs.remove(&wallet_str);
         }
     }
 
@@ -331,5 +427,88 @@ mod tests {
         // Invalid type should be ignored
         manager.subscribe(&wallet_id, "invalid");
         assert_eq!(manager.wallet_count(), 0);
+    }
+
+    // M-13 FIX: Global lock subscription tracking tests
+    #[test]
+    fn test_m13_lock_subscription_basic() {
+        let manager = SubscriptionManager::new();
+        let wallet_id = WalletId::from("test_wallet_12345678901234".to_string());
+
+        // Initially no subscriptions
+        assert_eq!(manager.wallet_lock_subscription_count(&wallet_id), 0);
+        assert!(manager.can_subscribe_lock(&wallet_id));
+
+        // Subscribe to a lock
+        let result = manager.subscribe_lock_state(&wallet_id, "lock1");
+        assert!(result.is_ok());
+        assert_eq!(manager.wallet_lock_subscription_count(&wallet_id), 1);
+
+        // Subscribe again should be idempotent
+        let result = manager.subscribe_lock_state(&wallet_id, "lock1");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false); // Already subscribed
+        assert_eq!(manager.wallet_lock_subscription_count(&wallet_id), 1);
+
+        // Subscribe to another lock
+        let result = manager.subscribe_lock_state(&wallet_id, "lock2");
+        assert!(result.is_ok());
+        assert_eq!(manager.wallet_lock_subscription_count(&wallet_id), 2);
+
+        // Unsubscribe from one
+        manager.unsubscribe_lock_state(&wallet_id, "lock1");
+        assert_eq!(manager.wallet_lock_subscription_count(&wallet_id), 1);
+
+        // Unsubscribe from all
+        manager.unsubscribe_all_lock_states(&wallet_id);
+        assert_eq!(manager.wallet_lock_subscription_count(&wallet_id), 0);
+    }
+
+    #[test]
+    fn test_m13_lock_subscription_limit() {
+        let manager = SubscriptionManager::new();
+        let wallet_id = WalletId::from("test_wallet_12345678901234".to_string());
+
+        // Subscribe up to the limit
+        for i in 0..MAX_LOCK_SUBSCRIPTIONS_PER_WALLET {
+            let lock_id = format!("lock_{}", i);
+            let result = manager.subscribe_lock_state(&wallet_id, &lock_id);
+            assert!(result.is_ok(), "M-13: Should allow subscription {}", i);
+        }
+
+        assert_eq!(manager.wallet_lock_subscription_count(&wallet_id), MAX_LOCK_SUBSCRIPTIONS_PER_WALLET);
+        assert!(!manager.can_subscribe_lock(&wallet_id), "M-13: Should be at limit");
+
+        // One more should fail
+        let result = manager.subscribe_lock_state(&wallet_id, "lock_overflow");
+        assert!(result.is_err(), "M-13: Should reject subscription over limit");
+
+        // Unsubscribe one and try again
+        manager.unsubscribe_lock_state(&wallet_id, "lock_0");
+        assert!(manager.can_subscribe_lock(&wallet_id), "M-13: Should be under limit after unsubscribe");
+
+        let result = manager.subscribe_lock_state(&wallet_id, "lock_new");
+        assert!(result.is_ok(), "M-13: Should allow subscription after unsubscribe");
+    }
+
+    #[test]
+    fn test_m13_lock_subscription_different_wallets() {
+        let manager = SubscriptionManager::new();
+        let wallet1 = WalletId::from("wallet1_1234567890123456".to_string());
+        let wallet2 = WalletId::from("wallet2_1234567890123456".to_string());
+
+        // Both wallets can subscribe to the same lock
+        let result1 = manager.subscribe_lock_state(&wallet1, "lock1");
+        let result2 = manager.subscribe_lock_state(&wallet2, "lock1");
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+
+        // Check subscribers
+        let subscribers = manager.get_lock_state_subscribers("lock1");
+        assert_eq!(subscribers.len(), 2);
+
+        // Each wallet has independent count
+        assert_eq!(manager.wallet_lock_subscription_count(&wallet1), 1);
+        assert_eq!(manager.wallet_lock_subscription_count(&wallet2), 1);
     }
 }

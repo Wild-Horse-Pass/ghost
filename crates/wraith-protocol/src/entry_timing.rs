@@ -369,9 +369,10 @@ impl EntryScheduler {
         let mean = (self.config.max_delay_ms - self.config.min_delay_ms) as f64;
         let raw_exp_delay = -mean * random.ln();
 
-        // M-4 FIX: Clamp exponential result to 10x mean to prevent extreme delays
+        // M-8 FIX: Clamp exponential result to 3x mean to prevent extreme delays
         // This bounds the tail of the distribution while preserving its shape for typical values
-        let max_exp_delay = mean * 10.0;
+        // Reduced from 10x to 3x to keep delays more predictable
+        let max_exp_delay = mean * 3.0;
         let clamped_exp_delay = raw_exp_delay.min(max_exp_delay);
 
         let delay_ms =

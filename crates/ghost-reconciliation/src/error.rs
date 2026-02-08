@@ -133,6 +133,18 @@ pub enum ReconciliationError {
     /// HIGH-5: RNG failure during cryptographic operations
     #[error("RNG failure: system entropy source unavailable")]
     RngFailure,
+
+    /// M-14: Verification timeout - too many concurrent proof verifications
+    #[error("Verification timeout: {reason}")]
+    VerificationTimeout { reason: String },
+
+    /// M-14: Semaphore was closed (should not happen in normal operation)
+    #[error("Internal error: proof verification semaphore closed")]
+    SemaphoreClosed,
+
+    /// Internal error for unexpected conditions
+    #[error("Internal error: {details}")]
+    InternalError { details: String },
 }
 
 // Simplified BatchNotFound that takes a String directly

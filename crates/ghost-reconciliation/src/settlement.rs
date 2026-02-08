@@ -44,30 +44,78 @@ use crate::MIN_SETTLEMENT_SATS;
 // Verification ensures the requester controls the lock's private key.
 // ============================================================================
 
-/// Domain separator for settlement ownership signatures
-/// This prevents signature reuse across different protocols
-const SETTLEMENT_OWNERSHIP_DOMAIN: &[u8] = b"GhostSettlement/Ownership/v1";
+/// C-7 FIX: Domain separator for settlement ownership signatures (version 2)
+/// This prevents signature reuse across different protocols AND across epochs/batches.
+/// The "v2" domain indicates signatures include epoch and batch_id.
+const SETTLEMENT_OWNERSHIP_DOMAIN: &[u8] = b"GhostSettlement/Ownership/v2";
 
-/// Ownership proof for a settlement request (C-1)
+/// Ownership proof for a settlement request (C-1, C-7)
 ///
 /// Proves that the requester owns the lock being spent by providing a
 /// Schnorr signature over the settlement details.
+///
+/// C-7 FIX: The signed message now includes epoch and batch_id to prevent signature
+/// replay attacks across different epochs or batches. An attacker cannot reuse a
+/// signature from a previous epoch/batch to claim funds in a new context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnershipProof {
-    /// The signature over: DOMAIN || settlement_id || destination_address || amount_sats
+    /// The signature over: DOMAIN || epoch || batch_id || settlement_id || destination_address || amount_sats
     /// Stored as hex string because serde doesn't support [u8; 64] natively
     signature_hex: String,
     /// The x-only public key (32 bytes) corresponding to the lock's private key
     source_pubkey: [u8; 32],
+    /// C-7: Epoch number when this proof was created (prevents cross-epoch replay)
+    epoch: u64,
+    /// C-7: Batch ID this proof is for (prevents cross-batch replay, 32 bytes as hex)
+    /// If not yet assigned to a batch, this should be all zeros.
+    batch_id_hex: String,
 }
 
 impl OwnershipProof {
     /// Create a new ownership proof from raw components
-    pub fn new(signature: [u8; 64], source_pubkey: [u8; 32]) -> Self {
+    ///
+    /// C-7 FIX: Now requires epoch and batch_id to prevent replay attacks.
+    pub fn new(
+        signature: [u8; 64],
+        source_pubkey: [u8; 32],
+        epoch: u64,
+        batch_id: [u8; 32],
+    ) -> Self {
         Self {
             signature_hex: hex::encode(signature),
             source_pubkey,
+            epoch,
+            batch_id_hex: hex::encode(batch_id),
         }
+    }
+
+    /// Create an ownership proof for a pending settlement (batch_id = zeros)
+    ///
+    /// Use this when creating a proof before the settlement is assigned to a batch.
+    /// The batch_id is set to all zeros, which will be verified during batching.
+    pub fn new_pending(signature: [u8; 64], source_pubkey: [u8; 32], epoch: u64) -> Self {
+        Self::new(signature, source_pubkey, epoch, [0u8; 32])
+    }
+
+    /// Get the epoch this proof is for
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// Get the batch_id this proof is for
+    pub fn batch_id(&self) -> Result<[u8; 32], ReconciliationError> {
+        let bytes = hex::decode(&self.batch_id_hex).map_err(|e| {
+            ReconciliationError::InvalidSettlement(format!("Invalid batch_id hex: {}", e))
+        })?;
+        if bytes.len() != 32 {
+            return Err(ReconciliationError::InvalidSettlement(format!(
+                "Invalid batch_id length: expected 32, got {}",
+                bytes.len()
+            )));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Ok(arr)
     }
 
     /// Get the signature bytes
@@ -93,14 +141,25 @@ impl OwnershipProof {
 
     /// Build the message that should be signed for ownership verification
     ///
-    /// Format: DOMAIN || settlement_id || destination_address || amount_sats (LE)
+    /// C-7 FIX: Format now includes epoch and batch_id to prevent replay:
+    /// DOMAIN || epoch (LE) || batch_id || settlement_id || destination_address || amount_sats (LE)
+    ///
+    /// This ensures signatures cannot be replayed across:
+    /// - Different epochs (epoch changes prevent old signatures from being valid)
+    /// - Different batches (batch_id uniqueness prevents cross-batch replay)
     pub fn build_message(
+        epoch: u64,
+        batch_id: &[u8; 32],
         settlement_id: &[u8; 32],
         destination: &str,
         amount_sats: u64,
     ) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(SETTLEMENT_OWNERSHIP_DOMAIN);
+        // C-7: Include epoch first to prevent cross-epoch replay
+        hasher.update(epoch.to_le_bytes());
+        // C-7: Include batch_id to prevent cross-batch replay
+        hasher.update(batch_id);
         hasher.update(settlement_id);
         hasher.update(destination.as_bytes());
         hasher.update(amount_sats.to_le_bytes());
@@ -108,6 +167,8 @@ impl OwnershipProof {
     }
 
     /// Verify that this proof is valid for the given settlement details
+    ///
+    /// C-7 FIX: Now validates epoch and batch_id are included in the signed message.
     ///
     /// Returns Ok(()) if verification succeeds, or an error describing why it failed.
     pub fn verify(
@@ -147,19 +208,38 @@ impl OwnershipProof {
             ))
         })?;
 
-        // Build the message
-        let message_hash = Self::build_message(settlement_id, destination, amount_sats);
+        // C-7: Get batch_id from proof for replay prevention
+        let batch_id = self.batch_id()?;
+
+        // Build the message (C-7: now includes epoch and batch_id)
+        let message_hash =
+            Self::build_message(self.epoch, &batch_id, settlement_id, destination, amount_sats);
         let message = Message::from_digest(message_hash);
 
         // Verify the signature
         secp.verify_schnorr(&sig, &message, &pubkey).map_err(|e| {
             ReconciliationError::InvalidSettlement(format!(
-                "C-1 SECURITY: Settlement ownership verification failed - signature invalid: {}. \
-                 Requester does NOT own the lock they are trying to spend!",
+                "C-1/C-7 SECURITY: Settlement ownership verification failed - signature invalid: {}. \
+                 Requester does NOT own the lock they are trying to spend OR signature was created \
+                 for a different epoch/batch (replay attack prevented)!",
                 e
             ))
         })?;
 
+        Ok(())
+    }
+
+    /// Verify that this proof matches the expected epoch (C-7)
+    ///
+    /// Call this during batch formation to ensure the proof is for the current epoch.
+    pub fn verify_epoch(&self, expected_epoch: u64) -> ReconciliationResult<()> {
+        if self.epoch != expected_epoch {
+            return Err(ReconciliationError::InvalidSettlement(format!(
+                "C-7 SECURITY: Ownership proof epoch {} does not match current epoch {}. \
+                 This prevents replay of old proofs.",
+                self.epoch, expected_epoch
+            )));
+        }
         Ok(())
     }
 }
@@ -645,51 +725,103 @@ mod tests {
     fn test_c1_ownership_proof_creation() {
         let sig = [1u8; 64];
         let pubkey = [2u8; 32];
+        let epoch = 42u64;
+        let batch_id = [3u8; 32];
 
-        let proof = OwnershipProof::new(sig, pubkey);
+        let proof = OwnershipProof::new(sig, pubkey, epoch, batch_id);
 
         assert_eq!(proof.signature().unwrap(), sig);
         assert_eq!(proof.source_pubkey(), &pubkey);
+        assert_eq!(proof.epoch(), epoch);
+        assert_eq!(proof.batch_id().unwrap(), batch_id);
+    }
+
+    #[test]
+    fn test_c7_ownership_proof_pending() {
+        // C-7 TEST: Test pending proof (batch_id = zeros)
+        let sig = [1u8; 64];
+        let pubkey = [2u8; 32];
+        let epoch = 42u64;
+
+        let proof = OwnershipProof::new_pending(sig, pubkey, epoch);
+
+        assert_eq!(proof.batch_id().unwrap(), [0u8; 32]);
+        assert_eq!(proof.epoch(), epoch);
     }
 
     #[test]
     fn test_c1_ownership_proof_message_deterministic() {
+        let epoch = 10u64;
+        let batch_id = [5u8; 32];
         let settlement_id = [1u8; 32];
         let destination = "bc1qtest";
         let amount = 50_000u64;
 
-        let msg1 = OwnershipProof::build_message(&settlement_id, destination, amount);
-        let msg2 = OwnershipProof::build_message(&settlement_id, destination, amount);
+        let msg1 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
+        let msg2 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
 
         assert_eq!(msg1, msg2, "Same inputs must produce same message hash");
     }
 
     #[test]
     fn test_c1_ownership_proof_message_varies_with_inputs() {
+        let epoch = 10u64;
+        let batch_id = [5u8; 32];
         let settlement_id = [1u8; 32];
         let destination = "bc1qtest";
         let amount = 50_000u64;
 
-        let msg1 = OwnershipProof::build_message(&settlement_id, destination, amount);
+        let msg1 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
 
         // Different settlement ID
         let different_id = [2u8; 32];
-        let msg2 = OwnershipProof::build_message(&different_id, destination, amount);
+        let msg2 = OwnershipProof::build_message(epoch, &batch_id, &different_id, destination, amount);
         assert_ne!(
             msg1, msg2,
             "Different settlement_id must produce different hash"
         );
 
         // Different destination
-        let msg3 = OwnershipProof::build_message(&settlement_id, "bc1qother", amount);
+        let msg3 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, "bc1qother", amount);
         assert_ne!(
             msg1, msg3,
             "Different destination must produce different hash"
         );
 
         // Different amount
-        let msg4 = OwnershipProof::build_message(&settlement_id, destination, amount + 1);
+        let msg4 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount + 1);
         assert_ne!(msg1, msg4, "Different amount must produce different hash");
+    }
+
+    #[test]
+    fn test_c7_ownership_proof_message_varies_with_epoch() {
+        // C-7 TEST: Different epoch must produce different hash
+        let batch_id = [5u8; 32];
+        let settlement_id = [1u8; 32];
+        let destination = "bc1qtest";
+        let amount = 50_000u64;
+
+        let msg1 = OwnershipProof::build_message(10, &batch_id, &settlement_id, destination, amount);
+        let msg2 = OwnershipProof::build_message(11, &batch_id, &settlement_id, destination, amount);
+
+        assert_ne!(msg1, msg2, "C-7: Different epoch must produce different hash");
+    }
+
+    #[test]
+    fn test_c7_ownership_proof_message_varies_with_batch_id() {
+        // C-7 TEST: Different batch_id must produce different hash
+        let epoch = 10u64;
+        let settlement_id = [1u8; 32];
+        let destination = "bc1qtest";
+        let amount = 50_000u64;
+
+        let batch_id1 = [5u8; 32];
+        let batch_id2 = [6u8; 32];
+
+        let msg1 = OwnershipProof::build_message(epoch, &batch_id1, &settlement_id, destination, amount);
+        let msg2 = OwnershipProof::build_message(epoch, &batch_id2, &settlement_id, destination, amount);
+
+        assert_ne!(msg1, msg2, "C-7: Different batch_id must produce different hash");
     }
 
     #[test]
@@ -699,10 +831,12 @@ mod tests {
         let amount = 50_000u64;
         let expected_lock_pubkey = [3u8; 32]; // Expected pubkey
 
-        // Create proof with DIFFERENT pubkey
+        // Create proof with DIFFERENT pubkey (C-7: with epoch and batch)
         let fake_sig = [0u8; 64];
         let wrong_pubkey = [4u8; 32]; // Doesn't match expected
-        let proof = OwnershipProof::new(fake_sig, wrong_pubkey);
+        let epoch = 10u64;
+        let batch_id = [5u8; 32];
+        let proof = OwnershipProof::new(fake_sig, wrong_pubkey, epoch, batch_id);
 
         let result = proof.verify(&settlement_id, destination, amount, &expected_lock_pubkey);
 
@@ -725,7 +859,9 @@ mod tests {
         )
         .unwrap();
 
-        let proof = OwnershipProof::new([0u8; 64], test_lock_id());
+        let epoch = 10u64;
+        let batch_id = [5u8; 32];
+        let proof = OwnershipProof::new([0u8; 64], test_lock_id(), epoch, batch_id);
         let request = SettlementRequest::new(settlement.clone(), proof);
 
         assert_eq!(request.settlement().id(), settlement.id());
@@ -742,13 +878,29 @@ mod tests {
         )
         .unwrap();
 
-        // Create proof with matching pubkey but invalid signature
+        // Create proof with matching pubkey but invalid signature (C-7: with epoch and batch)
         let invalid_sig = [0u8; 64]; // All zeros is not a valid signature
-        let proof = OwnershipProof::new(invalid_sig, test_lock_id());
+        let epoch = 10u64;
+        let batch_id = [5u8; 32];
+        let proof = OwnershipProof::new(invalid_sig, test_lock_id(), epoch, batch_id);
         let request = SettlementRequest::new(settlement, proof);
 
         // Verification should fail due to invalid signature
         let result = request.verify_ownership();
         assert!(result.is_err(), "Should fail with invalid signature");
+    }
+
+    #[test]
+    fn test_c7_epoch_verification() {
+        // C-7 TEST: Epoch verification should pass for matching epoch
+        let sig = [1u8; 64];
+        let pubkey = [2u8; 32];
+        let epoch = 42u64;
+        let batch_id = [3u8; 32];
+
+        let proof = OwnershipProof::new(sig, pubkey, epoch, batch_id);
+
+        assert!(proof.verify_epoch(42).is_ok(), "Should pass for matching epoch");
+        assert!(proof.verify_epoch(43).is_err(), "Should fail for different epoch");
     }
 }

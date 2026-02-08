@@ -485,11 +485,22 @@ async fn handle_connection(
                 }
             };
 
+            // H-18: Use try_from for safe conversion on 32-bit platforms
             // C-5: Validate payload size before allocation to prevent memory exhaustion
             const MAX_SV2_PAYLOAD_SIZE: usize = 16 * 1024 * 1024; // 16MB max
-            if header.msg_length as usize > MAX_SV2_PAYLOAD_SIZE {
+            let payload_size = match usize::try_from(header.msg_length) {
+                Ok(size) => size,
+                Err(_) => {
+                    warn!(
+                        size = header.msg_length,
+                        "H-18 SECURITY: Payload size overflow (would exceed usize on this platform)"
+                    );
+                    break;
+                }
+            };
+            if payload_size > MAX_SV2_PAYLOAD_SIZE {
                 warn!(
-                    size = header.msg_length,
+                    size = payload_size,
                     max = MAX_SV2_PAYLOAD_SIZE,
                     "C-5 SECURITY: SV2 payload exceeds maximum size, dropping connection"
                 );
@@ -497,7 +508,7 @@ async fn handle_connection(
             }
 
             // Read payload
-            let mut payload = vec![0u8; header.msg_length as usize];
+            let mut payload = vec![0u8; payload_size];
             if let Err(e) = tokio::io::AsyncReadExt::read_exact(&mut reader, &mut payload).await {
                 debug!(error = %e, "SV2 payload read error");
                 break;

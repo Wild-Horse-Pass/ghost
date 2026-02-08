@@ -410,7 +410,8 @@ impl DifficultyCalculator {
         // Calculate approximate difficulty
         // Each leading zero bit doubles the difficulty
         // Base difficulty 1 corresponds to target with 32 leading zero bits (4 zero bytes)
-        let diff_bits = leading_zeros as i32 - 32;
+        // H-20: Use saturating subtraction to prevent overflow on edge cases
+        let diff_bits = (leading_zeros as i32).saturating_sub(32);
 
         if diff_bits >= 0 {
             2.0_f64.powi(diff_bits)

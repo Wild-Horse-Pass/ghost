@@ -146,6 +146,99 @@ impl MinerToleranceTracker {
     }
 }
 
+/// M-29: Cross-round tolerance tracking entry
+/// Tracks a miner's tolerance exploitation pattern across multiple rounds
+/// to identify persistent exploiters who game the per-round 1% limit.
+#[derive(Debug, Clone)]
+struct CrossRoundToleranceEntry {
+    /// Number of rounds where this miner hit the tolerance limit
+    limit_hit_count: u32,
+    /// Total rounds participated in (for percentage calculation)
+    rounds_participated: u32,
+    /// Timestamp of last tolerance limit violation (for decay)
+    last_violation_time: std::time::Instant,
+    /// Total exploitation across all tracked rounds
+    total_exploitation_percent: f64,
+}
+
+impl Default for CrossRoundToleranceEntry {
+    fn default() -> Self {
+        Self {
+            limit_hit_count: 0,
+            rounds_participated: 0,
+            last_violation_time: std::time::Instant::now(),
+            total_exploitation_percent: 0.0,
+        }
+    }
+}
+
+/// M-29: Cross-round tolerance tracker
+/// Identifies miners who persistently exploit tolerance limits across rounds.
+/// A miner who hits the 1% tolerance limit in more than 50% of rounds they
+/// participate in (minimum 5 rounds) is considered a persistent exploiter.
+#[derive(Default)]
+struct CrossRoundToleranceTracker {
+    /// Map of miner_id -> cross-round exploitation data
+    entries: HashMap<String, CrossRoundToleranceEntry>,
+}
+
+impl CrossRoundToleranceTracker {
+    /// M-29: Maximum percentage of rounds where tolerance limit can be hit
+    /// before being flagged as a persistent exploiter
+    const MAX_LIMIT_HIT_RATIO: f64 = 0.50; // 50% of rounds
+
+    /// M-29: Minimum rounds before cross-round tracking kicks in
+    const MIN_ROUNDS_FOR_TRACKING: u32 = 5;
+
+    /// M-29: Time after which violations decay (1 hour)
+    const VIOLATION_DECAY_DURATION: std::time::Duration = std::time::Duration::from_secs(3600);
+
+    /// Record a miner's participation in a round
+    fn record_round_participation(&mut self, miner_id: &str) {
+        let entry = self.entries.entry(miner_id.to_string()).or_default();
+        entry.rounds_participated += 1;
+    }
+
+    /// Record that a miner hit the tolerance limit in a round
+    fn record_tolerance_limit_hit(&mut self, miner_id: &str, exploitation_percent: f64) {
+        let entry = self.entries.entry(miner_id.to_string()).or_default();
+        entry.limit_hit_count += 1;
+        entry.last_violation_time = std::time::Instant::now();
+        entry.total_exploitation_percent += exploitation_percent;
+    }
+
+    /// Check if a miner is a persistent exploiter
+    /// Returns Some(hit_ratio) if they are, None if they're not
+    fn is_persistent_exploiter(&self, miner_id: &str) -> Option<f64> {
+        let entry = self.entries.get(miner_id)?;
+
+        // Check for decay - if last violation was too long ago, don't flag
+        if entry.last_violation_time.elapsed() > Self::VIOLATION_DECAY_DURATION {
+            return None;
+        }
+
+        // Need minimum rounds for meaningful tracking
+        if entry.rounds_participated < Self::MIN_ROUNDS_FOR_TRACKING {
+            return None;
+        }
+
+        let hit_ratio = entry.limit_hit_count as f64 / entry.rounds_participated as f64;
+        if hit_ratio > Self::MAX_LIMIT_HIT_RATIO {
+            Some(hit_ratio * 100.0)
+        } else {
+            None
+        }
+    }
+
+    /// Clean up old entries (called periodically)
+    fn cleanup_old_entries(&mut self) {
+        self.entries.retain(|_, entry| {
+            entry.last_violation_time.elapsed() < Self::VIOLATION_DECAY_DURATION
+                || entry.rounds_participated < Self::MIN_ROUNDS_FOR_TRACKING
+        });
+    }
+}
+
 /// Manages mining rounds and share accounting
 pub struct RoundManager {
     /// Configuration
@@ -182,6 +275,9 @@ pub struct RoundManager {
     /// L-7: Per-miner cumulative tolerance tracking per round
     /// Prevents systematic inflation through repeated 0.1% tolerance exploitation
     miner_tolerance_tracker: RwLock<HashMap<RoundId, MinerToleranceTracker>>,
+    /// M-29: Cross-round tolerance tracking
+    /// Identifies miners who persistently exploit tolerance limits across rounds
+    cross_round_tolerance: RwLock<CrossRoundToleranceTracker>,
     /// M-MINE-1: Current template ID (prev_block_hash) for share validation
     current_template_id: RwLock<Option<[u8; 32]>>,
     /// M-MINE-1: Recent template IDs for accepting shares during template transitions
@@ -212,6 +308,7 @@ impl RoundManager {
             submitted_shares: RwLock::new(HashMap::new()),
             miner_rate_limits: RwLock::new(HashMap::new()),
             miner_tolerance_tracker: RwLock::new(HashMap::new()),
+            cross_round_tolerance: RwLock::new(CrossRoundToleranceTracker::default()),
             current_template_id: RwLock::new(None),
             recent_template_ids: RwLock::new(Vec::new()),
             shares_since_cleanup: std::sync::atomic::AtomicU64::new(0),
@@ -264,6 +361,12 @@ impl RoundManager {
                 submitted.remove(&old_round);
                 tolerance.remove(&old_round);
             }
+        }
+
+        // M-29: Cleanup old cross-round tolerance entries
+        {
+            let mut cross_round = self.cross_round_tolerance.write();
+            cross_round.cleanup_old_entries();
         }
 
         info!(
@@ -497,6 +600,24 @@ impl RoundManager {
         //
         // Together these provide both compatibility (per-share) and security (cumulative).
         let miner_id = hex::encode(&proof.miner_id[..8]);
+
+        // M-29: Check if this miner is a persistent exploiter across rounds
+        {
+            let cross_round = self.cross_round_tolerance.read();
+            if let Some(hit_ratio) = cross_round.is_persistent_exploiter(&miner_id) {
+                warn!(
+                    miner_id = %miner_id,
+                    round_id = proof.round_id,
+                    hit_ratio = hit_ratio,
+                    "M-29: Rejecting share - miner is a persistent tolerance exploiter"
+                );
+                return Err(ShareError::PersistentToleranceExploiter {
+                    miner_id: miner_id.clone(),
+                    hit_ratio,
+                });
+            }
+        }
+
         if work_difference > 0.0 {
             // Miner is claiming more work than calculated - this is tolerance exploitation
             let mut tolerance_trackers = self.miner_tolerance_tracker.write();
@@ -505,6 +626,12 @@ impl RoundManager {
             if let Err(exploitation_percent) =
                 tracker.record_tolerance(&miner_id, calculated_work, work_difference)
             {
+                // M-29: Record this tolerance limit hit in cross-round tracker
+                {
+                    let mut cross_round = self.cross_round_tolerance.write();
+                    cross_round.record_tolerance_limit_hit(&miner_id, exploitation_percent);
+                }
+
                 warn!(
                     miner_id = %miner_id,
                     round_id = proof.round_id,
@@ -549,6 +676,12 @@ impl RoundManager {
 
         // Credit the node that received it
         round.increment_node_shares(&proof.received_by);
+
+        // M-29: Record this miner's participation in the round for cross-round tracking
+        {
+            let mut cross_round = self.cross_round_tolerance.write();
+            cross_round.record_round_participation(&miner_id);
+        }
 
         debug!(
             round_id = proof.round_id,
@@ -971,6 +1104,12 @@ pub enum ShareError {
         miner_id: String,
         exploitation_percent: f64,
     },
+
+    /// M-29: Persistent tolerance exploiter across multiple rounds
+    #[error(
+        "Persistent tolerance exploiter: {miner_id} hit tolerance limit in {hit_ratio:.1}% of rounds (max 50%)"
+    )]
+    PersistentToleranceExploiter { miner_id: String, hit_ratio: f64 },
 }
 
 /// Round statistics

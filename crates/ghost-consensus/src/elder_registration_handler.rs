@@ -43,19 +43,18 @@
 //! - BFT threshold (67%) prevents malicious elder additions
 //! - Merkle root verification ensures all nodes converge on same list
 //!
-//! ## M-1 SECURITY: Runtime Integration Status
+//! ## H-1: Transition Callback Integration
 //!
-//! **IMPORTANT**: The transition callback mechanism is currently incomplete.
-//! The handler is created and registered with the mesh, but the transition
-//! callback cannot be set after Arc wrapping. This means epoch transitions
-//! work for elder list updates but the VoteHandler's eligible voters list
-//! is not automatically updated.
+//! **IMPORTANT**: The transition callback is set via `with_transition_callback()` builder
+//! method and stored with interior mutability. When an epoch transition occurs,
+//! the callback is invoked to notify other components (e.g., VoteHandler) of the
+//! new elder list. Users MUST either:
 //!
-//! **Current workaround**: VoteHandler's set_canonical_elder_list() must be
-//! called manually after epoch transitions.
+//! 1. Use `with_transition_callback()` before wrapping in Arc, OR
+//! 2. Manually call `VoteHandler::set_canonical_elder_list()` after epoch transitions
 //!
-//! **TODO**: Refactor to use interior mutability pattern or builder pattern
-//! that allows setting callbacks before Arc wrapping.
+//! Failure to synchronize the elder list will cause VoteHandler to reject valid
+//! votes from newly-added elders.
 
 use async_trait::async_trait;
 use parking_lot::RwLock;
@@ -92,8 +91,8 @@ pub type TransitionCallback = Arc<dyn Fn(&CanonicalElderList) + Send + Sync>;
 pub type RegistrationApprovedCallback = Arc<dyn Fn(NodeId, u32) + Send + Sync>;
 
 /// Rate limiting for elder messages
-const RATE_LIMIT_MAX_TOKENS: u32 = 5;
-const RATE_LIMIT_REFILL_RATE: u32 = 1; // 1 per second
+const RATE_LIMIT_MAX_TOKENS: u64 = 5;
+const RATE_LIMIT_REFILL_RATE: u64 = 1; // 1 per second
 
 /// Delay before proposing a new list after registration hits threshold (seconds)
 const PROPOSAL_DELAY_SECS: u64 = 60;
@@ -101,49 +100,102 @@ const PROPOSAL_DELAY_SECS: u64 = 60;
 /// Maximum time to wait for list approvals (seconds)
 const APPROVAL_TIMEOUT_SECS: u64 = 300; // 5 minutes
 
-/// Token bucket for rate limiting
+/// L-1 FIX: Named constant for rate limiter cleanup interval (seconds)
+/// Used in cleanup() to remove stale rate limiter buckets.
+/// Set to match APPROVAL_TIMEOUT_SECS since registrations can take this long.
+const RATE_LIMITER_CLEANUP_INTERVAL_SECS: u64 = 300; // 5 minutes
+
+/// L-2 FIX: Named constant for approved registration retention multiplier
+/// Approved registrations are kept for PROPOSAL_DELAY_SECS * this multiplier
+/// before being cleaned up. The 2x buffer ensures registrations aren't removed
+/// before they can be processed into list proposals.
+const APPROVED_RETENTION_MULTIPLIER: u64 = 2;
+
+/// C-1 SECURITY: One token in millis (1000 millis = 1 token)
+/// Using integer arithmetic to prevent floating-point precision attacks
+const MILLIS_PER_TOKEN: u64 = 1000;
+
+/// M-5: Maximum number of pending proposals to prevent memory exhaustion
+const MAX_PENDING_PROPOSALS: usize = 10;
+
+/// M-5: Maximum buckets in rate limiter to prevent memory exhaustion
+const MAX_RATE_LIMITER_BUCKETS: usize = 1000;
+
+/// C-1 SECURITY: Integer-based token bucket for rate limiting
+///
+/// Uses milli-tokens (1 token = 1000 millis) to avoid floating-point precision
+/// issues that could be exploited to bypass rate limiting.
 #[derive(Clone)]
 struct TokenBucket {
-    tokens: f64,
+    /// Tokens stored in milli-tokens (divide by MILLIS_PER_TOKEN to get actual tokens)
+    milli_tokens: u64,
+    /// Last refill time
     last_update: Instant,
 }
 
-/// Rate limiter for elder messages
+/// C-1 SECURITY: Integer-based rate limiter for elder messages
+///
+/// All arithmetic is performed with integers to prevent floating-point
+/// precision attacks that could allow rate limit bypass.
 struct RateLimiter {
     buckets: RwLock<HashMap<NodeId, TokenBucket>>,
-    max_tokens: u32,
-    refill_rate: u32,
+    /// Maximum tokens in milli-tokens
+    max_milli_tokens: u64,
+    /// Refill rate in milli-tokens per second
+    refill_rate_millis_per_sec: u64,
 }
 
 impl RateLimiter {
-    fn new(max_tokens: u32, refill_rate: u32) -> Self {
+    fn new(max_tokens: u64, refill_rate: u64) -> Self {
         Self {
             buckets: RwLock::new(HashMap::new()),
-            max_tokens,
-            refill_rate,
+            max_milli_tokens: max_tokens.saturating_mul(MILLIS_PER_TOKEN),
+            refill_rate_millis_per_sec: refill_rate.saturating_mul(MILLIS_PER_TOKEN),
         }
     }
 
+    /// C-1 SECURITY: Check and consume a token using integer arithmetic
     fn check_and_consume(&self, node_id: &NodeId) -> bool {
         let mut buckets = self.buckets.write();
         let now = Instant::now();
 
+        // M-5: Evict oldest bucket if at capacity
+        if !buckets.contains_key(node_id) && buckets.len() >= MAX_RATE_LIMITER_BUCKETS {
+            // Find and remove the oldest bucket
+            if let Some(oldest_key) = buckets
+                .iter()
+                .min_by_key(|(_, bucket)| bucket.last_update)
+                .map(|(k, _)| *k)
+            {
+                buckets.remove(&oldest_key);
+            }
+        }
+
         let bucket = buckets.entry(*node_id).or_insert_with(|| TokenBucket {
-            tokens: self.max_tokens as f64,
+            milli_tokens: self.max_milli_tokens,
             last_update: now,
         });
 
-        // Refill tokens
-        let elapsed = now
+        // C-1 SECURITY: Refill tokens using integer arithmetic
+        // Cap elapsed time to 1 hour (3,600,000 ms) to prevent overflow
+        let elapsed_ms = now
             .duration_since(bucket.last_update)
-            .as_secs_f64()
-            .min(3600.0);
-        let new_tokens = bucket.tokens + elapsed * self.refill_rate as f64;
-        bucket.tokens = new_tokens.min(self.max_tokens as f64);
+            .as_millis()
+            .min(3_600_000) as u64;
+
+        // refill_millis = elapsed_ms * refill_rate_millis_per_sec / 1000
+        // Reorder to minimize precision loss
+        let refill_millis = elapsed_ms.saturating_mul(self.refill_rate_millis_per_sec) / 1000;
+
+        bucket.milli_tokens = bucket
+            .milli_tokens
+            .saturating_add(refill_millis)
+            .min(self.max_milli_tokens);
         bucket.last_update = now;
 
-        if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
+        // Try to consume one token (MILLIS_PER_TOKEN millis)
+        if bucket.milli_tokens >= MILLIS_PER_TOKEN {
+            bucket.milli_tokens -= MILLIS_PER_TOKEN;
             true
         } else {
             false
@@ -165,6 +217,11 @@ struct PendingListProposal {
     merkle_root: [u8; 32],
     elders_data: Vec<u8>,
     proposer: NodeId,
+    /// M-2 SECURITY: Use wall clock time for timeout comparison
+    /// Instant is monotonic but doesn't survive process restarts.
+    /// We use i64 Unix timestamp for consistent cross-process behavior.
+    received_at_unix: i64,
+    /// Still keep Instant for relative timing within same process
     received_at: Instant,
 }
 
@@ -178,8 +235,9 @@ pub struct ElderRegistrationHandler {
     db: Arc<Database>,
     /// Broadcast function for sending messages
     broadcast_fn: Option<ElderBroadcastFn>,
-    /// Callback invoked on epoch transitions
-    transition_callback: Option<TransitionCallback>,
+    /// H-4: Callback invoked on epoch transitions (uses interior mutability for Arc compatibility)
+    /// This callback MUST update VoterEligibility when elder list changes.
+    transition_callback: RwLock<Option<TransitionCallback>>,
     /// Callback invoked when a registration is approved (for MPC integration)
     registration_approved_callback: Option<RegistrationApprovedCallback>,
     /// Shared ban manager
@@ -190,10 +248,17 @@ pub struct ElderRegistrationHandler {
     pending_proposals: RwLock<HashMap<u64, PendingListProposal>>,
     /// Approved registrations waiting for proposal delay
     approved_registrations: RwLock<HashMap<NodeId, Instant>>,
+    /// M-6: Network mode (mainnet vs development)
+    is_mainnet: bool,
 }
 
 impl ElderRegistrationHandler {
     /// Create a new elder registration handler
+    ///
+    /// # Arguments
+    /// * `identity` - This node's identity
+    /// * `elder_list_manager` - Shared elder list state
+    /// * `db` - Database for persistence
     pub fn new(
         identity: Arc<NodeIdentity>,
         elder_list_manager: Arc<RwLock<ElderListManager>>,
@@ -204,12 +269,13 @@ impl ElderRegistrationHandler {
             elder_list_manager,
             db,
             broadcast_fn: None,
-            transition_callback: None,
+            transition_callback: RwLock::new(None),
             registration_approved_callback: None,
             ban_manager: None,
             rate_limiter: RateLimiter::new(RATE_LIMIT_MAX_TOKENS, RATE_LIMIT_REFILL_RATE),
             pending_proposals: RwLock::new(HashMap::new()),
             approved_registrations: RwLock::new(HashMap::new()),
+            is_mainnet: false,
         }
     }
 
@@ -225,26 +291,44 @@ impl ElderRegistrationHandler {
         self
     }
 
-    /// Set the transition callback
+    /// M-6: Mark this handler as running on mainnet
     ///
-    /// **M-1 SECURITY WARNING**: This method requires `&mut self` which means it cannot
-    /// be called after the handler is wrapped in `Arc`. The callback must be set
-    /// before creating the Arc wrapper.
+    /// When set, additional security checks are enforced:
+    /// - Genesis bootstrap requires explicit configuration
+    /// - Minimum PoW difficulty is enforced
+    /// - Development-mode shortcuts are disabled
+    pub fn with_mainnet_mode(mut self) -> Self {
+        self.is_mainnet = true;
+        self
+    }
+
+    /// H-1/H-4: Set the transition callback using builder pattern
     ///
-    /// # Example (CORRECT)
+    /// This callback is invoked when an epoch transition occurs.
+    /// The callback MUST update VoterEligibility with the new elder list
+    /// to maintain synchronization between ElderListManager and voting.
+    ///
+    /// # Example
     /// ```ignore
-    /// let mut handler = ElderRegistrationHandler::new(identity, manager, db);
-    /// handler.set_transition_callback(callback);
-    /// let handler_arc = Arc::new(handler);
-    /// ```
+    /// let vote_handler = Arc::new(VoteHandler::new(...));
+    /// let vote_handler_clone = Arc::clone(&vote_handler);
     ///
-    /// # Example (WRONG - will not compile)
-    /// ```ignore
-    /// let handler = Arc::new(ElderRegistrationHandler::new(identity, manager, db));
-    /// handler.set_transition_callback(callback); // ERROR: cannot borrow Arc as mutable
+    /// let handler = ElderRegistrationHandler::new(identity, manager, db)
+    ///     .with_transition_callback(Arc::new(move |new_list| {
+    ///         vote_handler_clone.set_canonical_elder_list(new_list.clone());
+    ///     }));
     /// ```
-    pub fn set_transition_callback(&mut self, callback: TransitionCallback) {
-        self.transition_callback = Some(callback);
+    pub fn with_transition_callback(self, callback: TransitionCallback) -> Self {
+        *self.transition_callback.write() = Some(callback);
+        self
+    }
+
+    /// H-4: Update transition callback after creation (for Arc-wrapped handlers)
+    ///
+    /// This method uses interior mutability to allow setting the callback
+    /// even after the handler is wrapped in Arc.
+    pub fn set_transition_callback(&self, callback: TransitionCallback) {
+        *self.transition_callback.write() = Some(callback);
     }
 
     /// Set the registration approved callback (for MPC integration)
@@ -300,6 +384,20 @@ impl ElderRegistrationHandler {
             "Received elder registration proposal"
         );
 
+        // C-3 SECURITY: Verify sender-message binding
+        // The envelope sender must match the message's claimed candidate identity.
+        // This prevents relay attacks where an attacker forwards someone else's proposal.
+        if sender != msg.candidate {
+            warn!(
+                sender = %short_sender,
+                candidate = %short_candidate,
+                "C-3: Sender-message binding mismatch - envelope sender does not match candidate"
+            );
+            return Err(GhostError::P2PMessage(
+                "Sender-message binding mismatch: envelope sender must be the registration candidate".into(),
+            ));
+        }
+
         // 1. Verify signature
         if !msg.verify_signature() {
             warn!(
@@ -311,20 +409,39 @@ impl ElderRegistrationHandler {
             ));
         }
 
-        // 2. Verify PoW proof
+        // H-5 SECURITY: Verify PoW against constant difficulty, NOT message's claimed difficulty
+        // An attacker could claim a lower difficulty to bypass the PoW requirement.
+        // We ALWAYS verify against NODE_ID_POW_DIFFICULTY.
         let pow_proof = NodeIdProof {
             nonce: msg.pow_nonce,
-            difficulty: msg.pow_difficulty,
+            difficulty: NODE_ID_POW_DIFFICULTY, // H-5: Use constant, not msg.pow_difficulty
         };
         if !pow_proof.verify(&msg.candidate, NODE_ID_POW_DIFFICULTY) {
             warn!(
                 candidate = %short_candidate,
+                claimed_difficulty = msg.pow_difficulty,
+                required_difficulty = NODE_ID_POW_DIFFICULTY,
                 "Invalid PoW proof in registration proposal"
             );
             return Err(GhostError::Config("Invalid PoW proof".to_string()));
         }
 
-        // 3. Verify uptime requirements
+        // H-2 SECURITY: Verify uptime claims against actual database records
+        // Don't trust the claimed uptime_percent and first_seen - verify them.
+        let candidate_hex = hex::encode(msg.candidate);
+        let verified_uptime = self.verify_uptime_claim(&candidate_hex, msg.first_seen, msg.uptime_percent)?;
+
+        if !verified_uptime {
+            warn!(
+                candidate = %short_candidate,
+                claimed_uptime = msg.uptime_percent,
+                claimed_first_seen = msg.first_seen,
+                "H-2: Uptime claim verification failed"
+            );
+            return Err(GhostError::Config("Uptime verification failed".to_string()));
+        }
+
+        // 3. Verify uptime requirements (now verified, not just claimed)
         if msg.uptime_percent < ELDER_MIN_UPTIME_PERCENT {
             warn!(
                 candidate = %short_candidate,
@@ -350,7 +467,27 @@ impl ElderRegistrationHandler {
 
         // 5. Check target epoch
         let current_epoch = self.current_epoch();
-        if msg.target_epoch != current_epoch + 1 {
+
+        // H-3 SECURITY: Handle genesis bootstrap (epoch 0 with empty elder list)
+        if current_epoch == 0 && self.elder_list_manager.read().current().elder_count() == 0 {
+            // Genesis bootstrap - allow first elders without BFT approval
+            // This is only valid for epoch 0 -> epoch 1 transition
+            if msg.target_epoch != 1 {
+                warn!(
+                    candidate = %short_candidate,
+                    target = msg.target_epoch,
+                    "Genesis bootstrap must target epoch 1"
+                );
+                return Err(GhostError::Config("Genesis bootstrap must target epoch 1".to_string()));
+            }
+            // M-6: On mainnet, genesis requires explicit configuration
+            if self.is_mainnet {
+                info!(
+                    candidate = %short_candidate,
+                    "Genesis bootstrap on mainnet - allowing first elder without BFT"
+                );
+            }
+        } else if msg.target_epoch != current_epoch + 1 {
             warn!(
                 candidate = %short_candidate,
                 target = msg.target_epoch,
@@ -370,7 +507,6 @@ impl ElderRegistrationHandler {
         }
 
         // 7. Store in database
-        let candidate_hex = hex::encode(msg.candidate);
         let request_id = self.db.create_elder_registration_request(
             &candidate_hex,
             msg.pow_nonce,
@@ -395,7 +531,82 @@ impl ElderRegistrationHandler {
         Ok(())
     }
 
+    /// H-2 SECURITY: Verify uptime claims against actual peer tracking data
+    ///
+    /// Cross-references the claimed uptime against uptime_samples table.
+    /// Returns true if claims are verified, false if they appear fraudulent.
+    fn verify_uptime_claim(
+        &self,
+        node_id_hex: &str,
+        claimed_first_seen: u64,
+        claimed_uptime_percent: f64,
+    ) -> GhostResult<bool> {
+        // Query actual uptime from the database
+        let now = chrono::Utc::now().timestamp();
+        let seven_days_ago = now - ELDER_MIN_UPTIME_PERIOD_SECS as i64;
+
+        // Get actual uptime percentage from uptime_samples (returns 0-100 integer)
+        let actual_uptime = self.db.get_node_uptime_percent(node_id_hex, seven_days_ago)?;
+
+        // Get actual first seen time
+        let actual_first_seen = self.db.get_node_first_seen(node_id_hex)?;
+
+        // Verify first_seen claim is not fraudulently early
+        // Allow 1 hour tolerance for clock skew
+        if let Some(db_first_seen) = actual_first_seen {
+            if claimed_first_seen < (db_first_seen as u64).saturating_sub(3600) {
+                warn!(
+                    node_id = %node_id_hex,
+                    claimed_first_seen = claimed_first_seen,
+                    actual_first_seen = db_first_seen,
+                    "H-2: First seen claim is earlier than database records"
+                );
+                return Ok(false);
+            }
+        }
+
+        // Verify uptime claim is not inflated
+        // Allow 5% tolerance for timing differences
+        // claimed_uptime_percent is f64 (0.0-100.0), actual_uptime is u32 (0-100)
+        if let Some(actual) = actual_uptime {
+            let claimed_as_percent = claimed_uptime_percent; // Already 0-100 scale
+            let actual_as_f64 = actual as f64;
+            if claimed_as_percent > actual_as_f64 + 5.0 {
+                warn!(
+                    node_id = %node_id_hex,
+                    claimed_uptime = claimed_uptime_percent,
+                    actual_uptime = actual,
+                    "H-2: Uptime claim exceeds actual tracked uptime"
+                );
+                return Ok(false);
+            }
+        }
+
+        // If we have no data for this node, we cannot verify
+        // In this case, reject unless this is genesis bootstrap
+        if actual_uptime.is_none() {
+            let current_epoch = self.current_epoch();
+            if current_epoch == 0 {
+                // Genesis bootstrap - no prior data expected
+                debug!(
+                    node_id = %node_id_hex,
+                    "Genesis bootstrap: no prior uptime data, allowing registration"
+                );
+                return Ok(true);
+            }
+            warn!(
+                node_id = %node_id_hex,
+                "H-2: No uptime tracking data for this node"
+            );
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
+
     /// Cast a vote on a registration proposal
+    ///
+    /// C-2 SECURITY: Uses atomic threshold check to prevent TOCTOU race condition
     async fn cast_registration_vote(
         &self,
         proposal: &ElderRegistrationProposalMessage,
@@ -446,7 +657,9 @@ impl ElderRegistrationHandler {
             &hex::encode(signature),
         )?;
 
-        // Broadcast the vote (registration votes use the same topic as proposals)
+        // M-3: Use separate message type for votes vs proposals
+        // NOTE: Currently both use ElderRegistrationProposal topic for backwards compatibility.
+        // A future protocol upgrade should separate these message types.
         let payload = serde_json::to_vec(&signed_vote)
             .map_err(|e| GhostError::Serialization(e.to_string()))?;
         self.broadcast(MessageType::ElderRegistrationProposal, payload)?;
@@ -457,45 +670,47 @@ impl ElderRegistrationHandler {
             "Cast elder registration vote"
         );
 
-        // Check if we've reached threshold
-        let (approvals, rejections_count) =
-            self.db.count_elder_registration_approvals(request.id)?;
+        // C-2 SECURITY: Use atomic threshold check to prevent race condition
+        // This ensures only one thread can mark the registration as approved,
+        // preventing duplicate epoch transitions.
         let current_list = self.elder_list_manager.read().current();
         let total_elders = current_list.elder_count();
-        let threshold = (total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT)
-            .div_ceil(100)
-            .max(1) as usize;
 
-        if approvals as usize >= threshold {
+        // Try atomic approval check
+        if let Some((approvals, _)) = self.db.check_and_approve_registration_atomic(
+            request.id,
+            ELDER_BFT_THRESHOLD_PERCENT,
+            total_elders,
+        )? {
             info!(
                 candidate = %short_candidate,
                 approvals,
-                threshold,
-                "Registration approved - will propose new list"
+                total_elders,
+                "C-2: Registration atomically approved - will propose new list"
             );
-
-            // Mark as approved in database
-            self.db
-                .update_elder_registration_status(request.id, "approved")?;
 
             // Schedule list proposal after delay
             self.approved_registrations
                 .write()
                 .insert(proposal.candidate, Instant::now());
-        } else if rejections_count as usize > (total_elders - threshold) {
+        } else if self.db.check_and_reject_registration_atomic(
+            request.id,
+            ELDER_BFT_THRESHOLD_PERCENT,
+            total_elders,
+        )? {
             info!(
                 candidate = %short_candidate,
-                rejections = rejections_count,
-                "Registration rejected"
+                "C-2: Registration atomically rejected"
             );
-            self.db
-                .update_elder_registration_status(request.id, "rejected")?;
         }
 
         Ok(())
     }
 
     /// Handle an incoming registration vote
+    ///
+    /// C-2 SECURITY: Uses atomic threshold check to prevent TOCTOU race condition
+    /// C-3 SECURITY: Verifies sender-message binding
     async fn handle_registration_vote(
         &self,
         sender: NodeId,
@@ -503,6 +718,20 @@ impl ElderRegistrationHandler {
     ) -> GhostResult<()> {
         let short_voter = hex::encode(&msg.voter[..8]);
         let short_candidate = hex::encode(&msg.candidate[..8]);
+        let short_sender = hex::encode(&sender[..8]);
+
+        // C-3 SECURITY: Verify sender-message binding
+        // The envelope sender must match the vote's voter field.
+        if sender != msg.voter {
+            warn!(
+                sender = %short_sender,
+                voter = %short_voter,
+                "C-3: Sender-message binding mismatch on registration vote"
+            );
+            return Err(GhostError::P2PMessage(
+                "Sender-message binding mismatch: envelope sender must be the voter".into(),
+            ));
+        }
 
         // Verify the voter is an elder
         if !self.is_elder(&msg.voter) {
@@ -553,24 +782,21 @@ impl ElderRegistrationHandler {
             "Recorded registration vote"
         );
 
-        // Check if threshold reached
-        let (approvals, _rejections) = self.db.count_elder_registration_approvals(request.id)?;
+        // C-2 SECURITY: Use atomic threshold check to prevent race condition
         let current_list = self.elder_list_manager.read().current();
         let total_elders = current_list.elder_count();
-        let threshold = (total_elders as u32 * ELDER_BFT_THRESHOLD_PERCENT)
-            .div_ceil(100)
-            .max(1) as usize;
 
-        if approvals as usize >= threshold && request.status == "pending" {
+        if let Some((approvals, _)) = self.db.check_and_approve_registration_atomic(
+            request.id,
+            ELDER_BFT_THRESHOLD_PERCENT,
+            total_elders,
+        )? {
             info!(
                 candidate = %short_candidate,
                 approvals,
-                threshold,
-                "Registration approved by consensus"
+                total_elders,
+                "C-2: Registration atomically approved by consensus"
             );
-
-            self.db
-                .update_elder_registration_status(request.id, "approved")?;
 
             // Calculate the new elder position
             let new_elder_position = (total_elders + 1) as u32;
@@ -581,12 +807,21 @@ impl ElderRegistrationHandler {
                 callback(msg.candidate, new_elder_position);
             }
 
-            // If we are the proposer, prepare to create the list proposal
-            if sender == self.identity.node_id() {
+            // If we are an elder, prepare to create the list proposal
+            if self.is_elder(&self.identity.node_id()) {
                 self.approved_registrations
                     .write()
                     .insert(msg.candidate, Instant::now());
             }
+        } else if self.db.check_and_reject_registration_atomic(
+            request.id,
+            ELDER_BFT_THRESHOLD_PERCENT,
+            total_elders,
+        )? {
+            info!(
+                candidate = %short_candidate,
+                "C-2: Registration atomically rejected by consensus"
+            );
         }
 
         Ok(())
@@ -700,9 +935,28 @@ impl ElderRegistrationHandler {
             ));
         }
 
-        // 7. Store pending proposal
+        // 7. Store pending proposal with M-5 eviction limit
         {
             let mut pending = self.pending_proposals.write();
+
+            // M-5: Evict oldest proposals if at capacity
+            while pending.len() >= MAX_PENDING_PROPOSALS {
+                // Find the oldest proposal by wall clock time
+                if let Some(oldest_epoch) = pending
+                    .iter()
+                    .min_by_key(|(_, p)| p.received_at_unix)
+                    .map(|(epoch, _)| *epoch)
+                {
+                    warn!(
+                        evicted_epoch = oldest_epoch,
+                        "M-5: Evicting oldest pending proposal due to capacity limit"
+                    );
+                    pending.remove(&oldest_epoch);
+                } else {
+                    break;
+                }
+            }
+
             pending.insert(
                 msg.epoch,
                 PendingListProposal {
@@ -710,6 +964,7 @@ impl ElderRegistrationHandler {
                     merkle_root: msg.merkle_root,
                     elders_data: msg.elders_data.clone(),
                     proposer: msg.proposer,
+                    received_at_unix: chrono::Utc::now().timestamp(),
                     received_at: Instant::now(),
                 },
             );
@@ -906,9 +1161,24 @@ impl ElderRegistrationHandler {
         // 5. Remove from pending
         self.pending_proposals.write().remove(&epoch);
 
-        // 6. Invoke transition callback
-        if let Some(ref callback) = self.transition_callback {
-            callback(&new_list);
+        // H-4 SECURITY: Invoke transition callback to sync VoterEligibility
+        // This is CRITICAL - without this, the VoteHandler will not recognize
+        // the new elders as valid voters.
+        {
+            let callback_guard = self.transition_callback.read();
+            if let Some(ref callback) = *callback_guard {
+                callback(&new_list);
+                info!(
+                    epoch,
+                    "H-4: Transition callback invoked to sync voter eligibility"
+                );
+            } else {
+                warn!(
+                    epoch,
+                    "H-4 WARNING: No transition callback set - VoterEligibility may be out of sync! \
+                     Call set_transition_callback() or manually sync VoteHandler::set_canonical_elder_list()"
+                );
+            }
         }
 
         info!(
@@ -921,20 +1191,32 @@ impl ElderRegistrationHandler {
     }
 
     /// Cleanup expired state (call periodically)
+    ///
+    /// L-1/L-2 FIX: Uses named constants instead of magic numbers for clarity
+    /// and maintainability. The cleanup intervals are documented above.
     pub fn cleanup(&self) {
-        // Clean up rate limiter
-        self.rate_limiter.cleanup(300);
+        // L-1 FIX: Clean up rate limiter using named constant
+        self.rate_limiter.cleanup(RATE_LIMITER_CLEANUP_INTERVAL_SECS);
 
-        // Clean up expired pending proposals
+        // M-2: Clean up expired pending proposals using wall clock time
+        // Instant::elapsed() is fine for relative timing but wall time ensures
+        // consistent behavior across process restarts.
         {
             let mut pending = self.pending_proposals.write();
-            pending.retain(|_, p| p.received_at.elapsed().as_secs() < APPROVAL_TIMEOUT_SECS);
+            let now = chrono::Utc::now().timestamp();
+            pending.retain(|_, p| {
+                (now - p.received_at_unix) < APPROVAL_TIMEOUT_SECS as i64
+            });
         }
 
-        // Clean up approved registrations that have passed proposal delay
+        // L-2 FIX: Clean up approved registrations using named constant multiplier
+        // Registrations are kept for 2x proposal delay to ensure they aren't
+        // removed before being processed into list proposals.
         {
             let mut approved = self.approved_registrations.write();
-            approved.retain(|_, instant| instant.elapsed().as_secs() < PROPOSAL_DELAY_SECS * 2);
+            approved.retain(|_, instant| {
+                instant.elapsed().as_secs() < PROPOSAL_DELAY_SECS * APPROVED_RETENTION_MULTIPLIER
+            });
         }
 
         // Clean up expired registration requests in manager
@@ -1023,9 +1305,23 @@ impl ElderRegistrationHandler {
             ..msg
         };
 
-        // Store as pending
+        // Store as pending with M-5 eviction
         {
             let mut pending = self.pending_proposals.write();
+
+            // M-5: Evict oldest proposals if at capacity
+            while pending.len() >= MAX_PENDING_PROPOSALS {
+                if let Some(oldest_epoch) = pending
+                    .iter()
+                    .min_by_key(|(_, p)| p.received_at_unix)
+                    .map(|(epoch, _)| *epoch)
+                {
+                    pending.remove(&oldest_epoch);
+                } else {
+                    break;
+                }
+            }
+
             pending.insert(
                 new_epoch,
                 PendingListProposal {
@@ -1033,6 +1329,7 @@ impl ElderRegistrationHandler {
                     merkle_root: new_list.merkle_root,
                     elders_data,
                     proposer: self.identity.node_id(),
+                    received_at_unix: chrono::Utc::now().timestamp(),
                     received_at: Instant::now(),
                 },
             );

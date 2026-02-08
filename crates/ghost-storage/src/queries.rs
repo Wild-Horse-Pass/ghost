@@ -31,42 +31,51 @@ use crate::database::Database;
 use crate::models::*;
 
 // =============================================================================
-// LOW FIX: HELPER FUNCTIONS FOR STATUS PARSING WITH LOGGING
+// L-22 FIX: HELPER FUNCTIONS FOR STATUS PARSING WITH ERROR RETURNS
 // =============================================================================
 
-/// LOW FIX: Parse PayoutStatus with logging on fallback to default.
+/// L-22 FIX: Parse PayoutStatus, returning error on invalid value.
 ///
-/// Instead of silently falling back to a default status, this logs a warning
-/// so operators can investigate potential data corruption or schema issues.
-fn parse_payout_status_with_logging(status_str: &str, default: PayoutStatus, context: &str) -> PayoutStatus {
-    match PayoutStatus::parse(status_str) {
-        Some(status) => status,
-        None => {
-            warn!(
-                status_str = status_str,
-                default = ?default,
-                context = context,
-                "LOW FIX: Unknown PayoutStatus value in database, using default"
-            );
-            default
-        }
-    }
+/// Unlike the previous implementation that fell back to defaults (which could
+/// mask data corruption), this now returns an error to surface the issue.
+///
+/// # Errors
+/// Returns rusqlite::Error if the status string is not a valid PayoutStatus.
+fn parse_payout_status_strict(status_str: &str, context: &str) -> Result<PayoutStatus, rusqlite::Error> {
+    PayoutStatus::parse(status_str).ok_or_else(|| {
+        warn!(
+            status_str = status_str,
+            context = context,
+            "L-22: Invalid PayoutStatus value in database"
+        );
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid PayoutStatus '{}' in context '{}'", status_str, context),
+            )),
+        )
+    })
 }
 
-/// LOW FIX: Parse RecipientType with logging on fallback to default.
-fn parse_recipient_type_with_logging(type_str: &str, default: RecipientType, context: &str) -> RecipientType {
-    match RecipientType::parse(type_str) {
-        Some(rt) => rt,
-        None => {
-            warn!(
-                type_str = type_str,
-                default = ?default,
-                context = context,
-                "LOW FIX: Unknown RecipientType value in database, using default"
-            );
-            default
-        }
-    }
+/// L-22 FIX: Parse RecipientType, returning error on invalid value.
+fn parse_recipient_type_strict(type_str: &str, context: &str) -> Result<RecipientType, rusqlite::Error> {
+    RecipientType::parse(type_str).ok_or_else(|| {
+        warn!(
+            type_str = type_str,
+            context = context,
+            "L-22: Invalid RecipientType value in database"
+        );
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid RecipientType '{}' in context '{}'", type_str, context),
+            )),
+        )
+    })
 }
 
 /// Type alias for node rotation data: (is_elder, elder_order, pow_proof, capabilities, first_seen)
@@ -523,11 +532,7 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: parse_payout_status_with_logging(
-                            &status_str,
-                            PayoutStatus::Active,
-                            "get_round",
-                        ),
+                        payout_status: parse_payout_status_strict(&status_str, "get_round")?,
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
                     })
@@ -642,11 +647,7 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: parse_payout_status_with_logging(
-                            &status_str,
-                            PayoutStatus::Active,
-                            "get_rounds_by_block_hash",
-                        ),
+                        payout_status: parse_payout_status_strict(&status_str, "get_rounds_by_block_hash")?,
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
                     })
@@ -684,11 +685,7 @@ impl Database {
                         total_work: row.get(6)?,
                         winning_miner: row.get(7)?,
                         found_by_node: row.get(8)?,
-                        payout_status: parse_payout_status_with_logging(
-                            &status_str,
-                            PayoutStatus::Active,
-                            "get_recent_rounds",
-                        ),
+                        payout_status: parse_payout_status_strict(&status_str, "get_recent_rounds")?,
                         subsidy_sats: row.get(10)?,
                         tx_fees_sats: row.get(11)?,
                     })
@@ -3250,20 +3247,12 @@ fn payout_from_row(row: &rusqlite::Row) -> rusqlite::Result<PayoutRecord> {
         id: Some(row.get(0)?),
         round_id: row.get(1)?,
         recipient_id: row.get(2)?,
-        recipient_type: parse_recipient_type_with_logging(
-            &recipient_type_str,
-            RecipientType::Miner,
-            "payout_from_row",
-        ),
+        recipient_type: parse_recipient_type_strict(&recipient_type_str, "payout_from_row")?,
         address: row.get(4)?,
         amount_sats: row.get(5)?,
         txid: row.get(6)?,
         vout: row.get(7)?,
-        status: parse_payout_status_with_logging(
-            &status_str,
-            PayoutStatus::Pending,
-            "payout_from_row",
-        ),
+        status: parse_payout_status_strict(&status_str, "payout_from_row")?,
         created_at: row.get(9)?,
         confirmed_at: row.get(10)?,
     })
@@ -3747,9 +3736,11 @@ impl Database {
         self.with_connection(|conn| {
             let count: i64 = conn
                 .query_row(
+                    // M-18 FIX: Only count unique challengers where passed = 1
+                    // This prevents inflation via colluding nodes sending failing challenges
                     "SELECT COUNT(DISTINCT challenger_id)
                      FROM archive_challenges
-                     WHERE node_id = ?1 AND timestamp >= ?2",
+                     WHERE node_id = ?1 AND timestamp >= ?2 AND passed = 1",
                     params![node_id, since],
                     |row| row.get(0),
                 )
@@ -3766,9 +3757,11 @@ impl Database {
         self.with_connection(|conn| {
             let count: i64 = conn
                 .query_row(
+                    // M-18 FIX: Only count unique challengers where passed = 1
+                    // This prevents inflation via colluding nodes sending failing challenges
                     "SELECT COUNT(DISTINCT challenger_id)
                      FROM policy_challenges
-                     WHERE node_id = ?1 AND timestamp >= ?2",
+                     WHERE node_id = ?1 AND timestamp >= ?2 AND passed = 1",
                     params![node_id, since],
                     |row| row.get(0),
                 )
@@ -3785,9 +3778,11 @@ impl Database {
         self.with_connection(|conn| {
             let count: i64 = conn
                 .query_row(
+                    // M-18 FIX: Only count unique challengers where passed = 1
+                    // This prevents inflation via colluding nodes sending failing challenges
                     "SELECT COUNT(DISTINCT challenger_id)
                      FROM stratum_challenges
-                     WHERE node_id = ?1 AND timestamp >= ?2",
+                     WHERE node_id = ?1 AND timestamp >= ?2 AND passed = 1",
                     params![node_id, since],
                     |row| row.get(0),
                 )
@@ -3804,9 +3799,11 @@ impl Database {
         self.with_connection(|conn| {
             let count: i64 = conn
                 .query_row(
+                    // M-18 FIX: Only count unique challengers where passed = 1
+                    // This prevents inflation via colluding nodes sending failing challenges
                     "SELECT COUNT(DISTINCT challenger_id)
                      FROM ghostpay_challenges
-                     WHERE node_id = ?1 AND timestamp >= ?2",
+                     WHERE node_id = ?1 AND timestamp >= ?2 AND passed = 1",
                     params![node_id, since],
                     |row| row.get(0),
                 )
@@ -3865,6 +3862,79 @@ impl Database {
         })
     }
 
+    /// H-2 SECURITY: Get uptime percentage as integer (0-100)
+    ///
+    /// Returns the uptime as a percentage (0-100), or None if no samples exist.
+    /// This is used for elder registration verification where we compare against
+    /// claimed uptime values.
+    pub fn get_node_uptime_percent(&self, node_id: &str, since: i64) -> GhostResult<Option<u32>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        SUM(CASE WHEN was_online = 1 THEN 1 ELSE 0 END) as online,
+                        COUNT(*) as total
+                     FROM uptime_samples
+                     WHERE node_id = ?1 AND sample_time >= ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let result = stmt
+                .query_row(params![node_id, since], |row| {
+                    let online: Option<i64> = row.get(0)?;
+                    let total: i64 = row.get(1)?;
+                    Ok((online.unwrap_or(0), total))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let (online, total) = result;
+            if total == 0 {
+                return Ok(None);
+            }
+            // Convert to 0-100 percentage
+            let percent = ((online as f64 / total as f64) * 100.0).round() as u32;
+            Ok(Some(percent.min(100)))
+        })
+    }
+
+    /// H-2 SECURITY: Get first seen timestamp for a node
+    ///
+    /// Returns the earliest timestamp when this node was first observed.
+    /// Used to verify elder registration uptime claims.
+    pub fn get_node_first_seen(&self, node_id: &str) -> GhostResult<Option<i64>> {
+        self.with_connection(|conn| {
+            // First check the nodes table
+            let from_nodes: Option<i64> = conn
+                .query_row(
+                    "SELECT first_seen FROM nodes WHERE node_id = ?1",
+                    [node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .flatten();
+
+            // Also check uptime_samples for earliest sample
+            let from_samples: Option<i64> = conn
+                .query_row(
+                    "SELECT MIN(sample_time) FROM uptime_samples WHERE node_id = ?1",
+                    [node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .flatten();
+
+            // Return the earliest of the two
+            match (from_nodes, from_samples) {
+                (Some(n), Some(s)) => Ok(Some(n.min(s))),
+                (Some(n), None) => Ok(Some(n)),
+                (None, Some(s)) => Ok(Some(s)),
+                (None, None) => Ok(None),
+            }
+        })
+    }
+
     /// Check if a node has elder status
     ///
     /// Elder status is granted to the first 101 registered nodes.
@@ -3900,34 +3970,67 @@ impl Database {
         min_challenges: u32,
         min_pass_rate: f64,
     ) -> GhostResult<ghost_common::types::NodeCapabilities> {
+        // Legacy function - uses same pass rate for all capabilities
+        // Call the new per-capability function with uniform rates
+        self.get_qualified_capabilities_with_rates(
+            node_id,
+            since,
+            min_challenges,
+            min_pass_rate,
+            min_pass_rate,
+            min_pass_rate,
+            min_pass_rate,
+        )
+    }
+
+    /// M-16 FIX: Get qualified capabilities with per-capability pass rates
+    ///
+    /// A capability is qualified if:
+    /// 1. Node passes uptime gatekeeper (95% over lookback period)
+    /// 2. Capability has min_challenges or more challenges
+    /// 3. Pass rate is >= the capability-specific threshold
+    ///
+    /// H-4: This function safely handles division by zero by checking total > 0
+    /// before computing pass rate. If total is 0, the capability is not qualified.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_qualified_capabilities_with_rates(
+        &self,
+        node_id: &str,
+        since: i64,
+        min_challenges: u32,
+        archive_pass_rate: f64,
+        ghostpay_pass_rate: f64,
+        stratum_pass_rate: f64,
+        policy_pass_rate: f64,
+    ) -> GhostResult<ghost_common::types::NodeCapabilities> {
         use ghost_common::types::NodeCapabilities;
 
         // H-4: Helper function to safely compute qualification without division by zero
         // Returns true only if total >= min_challenges AND total > 0 AND pass_rate >= threshold
-        let is_qualified = |passed: u32, total: u32| -> bool {
+        let is_qualified = |passed: u32, total: u32, min_rate: f64| -> bool {
             // Explicit check for total > 0 to prevent any division by zero
-            total > 0 && total >= min_challenges && (passed as f64 / total as f64) >= min_pass_rate
+            total > 0 && total >= min_challenges && (passed as f64 / total as f64) >= min_rate
         };
 
-        // Check each capability
+        // M-16 FIX: Check each capability with its own pass rate threshold
         let archive_qualified = {
             let (passed, total) = self.get_archive_pass_rate(node_id, since)?;
-            is_qualified(passed, total)
+            is_qualified(passed, total, archive_pass_rate)
         };
 
         let policy_qualified = {
             let (passed, total) = self.get_policy_pass_rate(node_id, since)?;
-            is_qualified(passed, total)
+            is_qualified(passed, total, policy_pass_rate)
         };
 
         let stratum_qualified = {
             let (passed, total) = self.get_stratum_pass_rate(node_id, since)?;
-            is_qualified(passed, total)
+            is_qualified(passed, total, stratum_pass_rate)
         };
 
         let ghostpay_qualified = {
             let (passed, total) = self.get_ghostpay_pass_rate(node_id, since)?;
-            is_qualified(passed, total)
+            is_qualified(passed, total, ghostpay_pass_rate)
         };
 
         // Elder status is based on is_elder flag in the nodes table
@@ -4464,6 +4567,135 @@ impl Database {
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
+        })
+    }
+
+    /// C-2 SECURITY: Atomically check threshold and mark registration as approved
+    ///
+    /// This method prevents the TOCTOU race condition in elder registration approval.
+    /// Without this, two concurrent threads could both see the threshold reached
+    /// and both attempt to mark as approved, leading to duplicate epoch transitions.
+    ///
+    /// Returns:
+    /// - `Ok(Some((approvals, total_elders)))` if threshold was reached AND status was updated
+    /// - `Ok(None)` if threshold not reached or already approved/rejected
+    /// - `Err(...)` on database error
+    ///
+    /// # Arguments
+    /// * `request_id` - The registration request ID
+    /// * `threshold_percent` - BFT threshold percentage (e.g., 67)
+    /// * `total_elders` - Current number of elders
+    pub fn check_and_approve_registration_atomic(
+        &self,
+        request_id: i64,
+        threshold_percent: u32,
+        total_elders: usize,
+    ) -> GhostResult<Option<(u32, usize)>> {
+        self.transaction(|tx| {
+            // Step 1: Check current status (within transaction)
+            let current_status: String = tx
+                .query_row(
+                    "SELECT status FROM elder_registration_requests WHERE id = ?1",
+                    [request_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            // If already approved or rejected, nothing to do
+            if current_status != "pending" {
+                return Ok(None);
+            }
+
+            // Step 2: Count approvals (within transaction)
+            let approvals: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM elder_registration_votes WHERE request_id = ?1 AND approve = 1",
+                    [request_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            // Step 3: Calculate threshold
+            let threshold = ((total_elders as u32) * threshold_percent)
+                .div_ceil(100)
+                .max(1) as i64;
+
+            // Step 4: If threshold reached, atomically mark as approved
+            if approvals >= threshold {
+                tx.execute(
+                    "UPDATE elder_registration_requests SET status = 'approved' WHERE id = ?1 AND status = 'pending'",
+                    [request_id],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                // Double-check it was us who did the update (could have been a concurrent tx)
+                let changes = tx.changes();
+                if changes > 0 {
+                    return Ok(Some((
+                        i64_to_u32_count(approvals, "approvals")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
+                        total_elders,
+                    )));
+                }
+            }
+
+            Ok(None)
+        })
+    }
+
+    /// C-2 SECURITY: Atomically check rejection threshold and mark as rejected
+    ///
+    /// Similar to `check_and_approve_registration_atomic` but for rejections.
+    ///
+    /// Returns:
+    /// - `Ok(true)` if rejection threshold was reached AND status was updated
+    /// - `Ok(false)` if threshold not reached or already approved/rejected
+    pub fn check_and_reject_registration_atomic(
+        &self,
+        request_id: i64,
+        threshold_percent: u32,
+        total_elders: usize,
+    ) -> GhostResult<bool> {
+        self.transaction(|tx| {
+            // Check current status
+            let current_status: String = tx
+                .query_row(
+                    "SELECT status FROM elder_registration_requests WHERE id = ?1",
+                    [request_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if current_status != "pending" {
+                return Ok(false);
+            }
+
+            // Count rejections
+            let rejections: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM elder_registration_votes WHERE request_id = ?1 AND approve = 0",
+                    [request_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            // If rejections > (total - threshold), it's mathematically impossible to reach approval
+            let approval_threshold = ((total_elders as u32) * threshold_percent)
+                .div_ceil(100)
+                .max(1) as usize;
+            let rejection_threshold = total_elders.saturating_sub(approval_threshold) + 1;
+
+            if rejections as usize >= rejection_threshold {
+                tx.execute(
+                    "UPDATE elder_registration_requests SET status = 'rejected' WHERE id = ?1 AND status = 'pending'",
+                    [request_id],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+                return Ok(tx.changes() > 0);
+            }
+
+            Ok(false)
         })
     }
 }

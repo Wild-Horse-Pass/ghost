@@ -61,6 +61,10 @@ pub enum ZkError {
     #[error("Invalid proof: {0}")]
     InvalidProof(String),
 
+    /// Invalid parameters provided to ZK operation
+    #[error("Invalid parameters: {0}")]
+    InvalidParams(String),
+
     /// Setup/trusted setup failed
     #[error("Setup error: {0}")]
     SetupError(String),

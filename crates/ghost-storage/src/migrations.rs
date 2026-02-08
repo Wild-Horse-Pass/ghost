@@ -789,10 +789,14 @@ fn migrate_v10(conn: &Connection) -> GhostResult<()> {
     // so we need to recreate each table with the CASCADE option.
     // We use a safe pattern: create new table, copy data, drop old, rename new.
 
-    conn.execute_batch(
+    // M-22 FIX: Disable foreign keys first, then wrap migration in a closure
+    // to ensure we ALWAYS re-enable foreign keys, even on error.
+    conn.execute("PRAGMA foreign_keys = OFF", [])
+        .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    // M-22: Run migration, capturing any error
+    let migration_result = conn.execute_batch(
         r#"
-        -- Enable foreign keys for this session
-        PRAGMA foreign_keys = OFF;
 
         -- 1. payouts table: cascade from rounds
         CREATE TABLE IF NOT EXISTS payouts_new (
@@ -951,11 +955,16 @@ fn migrate_v10(conn: &Connection) -> GhostResult<()> {
         ALTER TABLE elder_slashing_new RENAME TO elder_slashing;
         CREATE INDEX IF NOT EXISTS idx_elder_slashing_node ON elder_slashing(node_id);
 
-        -- Re-enable foreign keys
-        PRAGMA foreign_keys = ON;
         "#,
-    )
-    .map_err(|e| GhostError::Migration(e.to_string()))?;
+    );
+
+    // M-22 FIX: ALWAYS re-enable foreign keys, even if migration failed
+    // This ensures we don't leave the connection in a bad state.
+    conn.execute("PRAGMA foreign_keys = ON", [])
+        .map_err(|e| GhostError::Migration(format!("Failed to re-enable foreign keys: {}", e)))?;
+
+    // Now check if migration succeeded
+    migration_result.map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("DB-C4: Added ON DELETE CASCADE to all foreign keys");
     Ok(())

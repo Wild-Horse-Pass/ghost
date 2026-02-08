@@ -61,8 +61,12 @@ struct Claims {
     client_ip: Option<String>,
 }
 
-/// M-2: Duration during which the previous key remains valid (graceful rotation window)
-const KEY_ROTATION_WINDOW_SECS: i64 = 3600; // 1 hour
+/// H-10/M-2: Duration during which the previous key remains valid (graceful rotation window)
+///
+/// H-10 FIX: Reduced from 1 hour to 15 minutes to limit exposure window if a key is compromised.
+/// The 15-minute window is sufficient for clients to refresh their tokens while minimizing
+/// the time an attacker could exploit a stolen key.
+const KEY_ROTATION_WINDOW_SECS: i64 = 900; // 15 minutes
 
 /// JWT session manager with M-2 key rotation support
 pub struct JwtManager {

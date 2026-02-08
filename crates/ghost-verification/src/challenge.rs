@@ -22,6 +22,7 @@
 
 //! Verification challenge types
 
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -443,7 +444,9 @@ impl NonceCache {
             }
         }
 
-        let nonce_bytes: [u8; 16] = rand::random();
+        // C-4 FIX: Use OsRng for cryptographically secure nonce generation
+        let mut nonce_bytes = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = hex::encode(nonce_bytes);
 
         let now = std::time::SystemTime::now()
@@ -609,8 +612,9 @@ impl<T: Serialize> SignedResponse<T> {
             .unwrap_or_default()
             .as_secs();
 
-        // Generate random nonce
-        let nonce_bytes: [u8; 16] = rand::random();
+        // C-4 FIX: Use OsRng for cryptographically secure nonce generation
+        let mut nonce_bytes = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = hex::encode(nonce_bytes);
 
         // Compute message hash for signing
@@ -743,7 +747,9 @@ pub struct VerificationRequest<T> {
 impl<T> VerificationRequest<T> {
     /// Create a new verification request with random nonce
     pub fn new(request: T) -> Self {
-        let nonce_bytes: [u8; 16] = rand::random();
+        // C-4 FIX: Use OsRng for cryptographically secure nonce generation
+        let mut nonce_bytes = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
 
         Self {
             request,

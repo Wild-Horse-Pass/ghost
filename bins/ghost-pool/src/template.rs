@@ -64,6 +64,9 @@ use ghost_common::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
 use ghost_common::types::{PayoutProposal, TreasuryAddress};
 use ghost_policy::PolicyProfile;
 
+// M-28: Import CoinbaseVerifier for pre-submission verification
+use crate::coinbase_verifier::{CoinbaseCommitment, CoinbaseVerifier};
+
 /// Errors that can occur during template processing
 #[derive(Debug, Error)]
 pub enum TemplateError {
@@ -307,6 +310,8 @@ pub struct TemplateProcessor {
     approved_payout: RwLock<Option<[u8; 32]>>,
     /// Cached payout proposals (hash -> proposal)
     payout_proposals: RwLock<HashMap<[u8; 32], PayoutProposal>>,
+    /// M-28: Coinbase verifier for pre-submission verification
+    coinbase_verifier: CoinbaseVerifier,
 }
 
 impl TemplateProcessor {
@@ -326,6 +331,7 @@ impl TemplateProcessor {
             running: RwLock::new(false),
             approved_payout: RwLock::new(None),
             payout_proposals: RwLock::new(HashMap::new()),
+            coinbase_verifier: CoinbaseVerifier::new(),
         }
     }
 
@@ -353,7 +359,29 @@ impl TemplateProcessor {
     /// This is called when consensus approves a payout proposal.
     /// The template processor uses this to include proper payout
     /// outputs in the coinbase transaction.
+    ///
+    /// M-28: Also sets the coinbase commitment for pre-submission verification.
     pub fn set_approved_payout(&self, proposal_hash: [u8; 32]) {
+        // M-28: Create and store coinbase commitment for verification
+        if let Some(proposal) = self.get_proposal(&proposal_hash) {
+            let treasury_addr = if !proposal.treasury_address.is_empty() {
+                proposal.treasury_address.clone()
+            } else {
+                self.config.treasury_address.address().as_bytes().to_vec()
+            };
+            let commitment = CoinbaseCommitment::from_proposal(&proposal, &treasury_addr);
+            self.coinbase_verifier.set_commitment(commitment);
+            info!(
+                hash = %hex::encode(&proposal_hash[..8]),
+                "M-28: Set coinbase commitment for verification"
+            );
+        } else {
+            warn!(
+                hash = %hex::encode(&proposal_hash[..8]),
+                "M-28: Could not find proposal to create coinbase commitment"
+            );
+        }
+
         *self.approved_payout.write() = Some(proposal_hash);
         info!(
             hash = %hex::encode(&proposal_hash[..8]),
@@ -364,6 +392,8 @@ impl TemplateProcessor {
     /// Clear the approved payout (after block is found)
     pub fn clear_approved_payout(&self) {
         *self.approved_payout.write() = None;
+        // M-28: Clear coinbase commitment when payout is cleared
+        self.coinbase_verifier.clear_commitment();
     }
 
     /// Get the current approved payout hash
@@ -1982,6 +2012,15 @@ impl TemplateProcessor {
         if version == 0 || version > 0x3FFFFFFF {
             error!(version = version, "Invalid block version");
             return Err(anyhow::anyhow!("Invalid block version: {}", version));
+        }
+
+        // M-28: Verify coinbase matches approved payout before submission
+        // This prevents address substitution attacks by modified nodes
+        if !self.coinbase_verifier.verify_before_submission(coinbase_witness) {
+            return Err(anyhow::anyhow!(
+                "M-28: Coinbase verification failed - block submission blocked. \
+                 Coinbase outputs do not match the BFT-approved payout proposal."
+            ));
         }
 
         // Assemble the full block using the ORIGINAL witness coinbase from SRI

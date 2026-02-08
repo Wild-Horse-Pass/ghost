@@ -102,18 +102,29 @@ impl Default for QualificationConfig {
 
 /// Provides qualified (verified) capabilities for nodes
 ///
+/// H-14: Maximum age for cached network size (1 hour in seconds)
+const NETWORK_SIZE_CACHE_MAX_AGE_SECS: u64 = 3600;
+
+/// H-14: Cached network size with timestamp for expiration
+struct CachedNetworkSize {
+    size: usize,
+    /// Timestamp when cached (seconds since epoch)
+    timestamp: u64,
+}
+
 /// This replaces CLAIMED capabilities with VERIFIED capabilities
 /// based on challenge results and uptime tracking.
 ///
 /// M-7 FIX: Includes cached network size for fallback on DB failures
+/// H-14 FIX: Cache now includes timestamp for expiration (max 1 hour)
 pub struct QualifiedCapabilityProvider {
     /// Database for looking up challenge results and uptime
     db: Arc<Database>,
     /// Qualification configuration
     config: QualificationConfig,
-    /// M-7 FIX: Cached network size for fallback on DB failures
-    /// Uses atomic for thread-safe access without locks
-    cached_network_size: std::sync::atomic::AtomicUsize,
+    /// M-7/H-14 FIX: Cached network size with timestamp for expiration
+    /// Uses RwLock for thread-safe access with timestamp
+    cached_network_size: parking_lot::RwLock<Option<CachedNetworkSize>>,
 }
 
 impl QualifiedCapabilityProvider {
@@ -122,8 +133,8 @@ impl QualifiedCapabilityProvider {
         Self {
             db,
             config: QualificationConfig::default(),
-            // M-7 FIX: Initialize with a safe default (uses base requirement)
-            cached_network_size: std::sync::atomic::AtomicUsize::new(0),
+            // M-7/H-14 FIX: Initialize with empty cache
+            cached_network_size: parking_lot::RwLock::new(None),
         }
     }
 
@@ -132,43 +143,69 @@ impl QualifiedCapabilityProvider {
         Self {
             db,
             config,
-            cached_network_size: std::sync::atomic::AtomicUsize::new(0),
+            cached_network_size: parking_lot::RwLock::new(None),
         }
     }
 
-    /// M-7 FIX: Get network size with fallback to cached value
+    /// Get current Unix timestamp
+    fn current_timestamp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    /// M-7/H-14 FIX: Get network size with fallback to cached value
     ///
     /// On DB success, updates the cache and returns the fresh value.
-    /// On DB failure, returns the cached value with a warning.
-    /// If cache is empty (0), uses a conservative default (100 nodes).
+    /// On DB failure, returns the cached value with a warning if not expired.
+    /// H-14: Cached values older than 1 hour are rejected (treated as empty).
+    /// If cache is empty or expired, uses a conservative default (100 nodes).
     fn get_network_size_with_fallback(&self) -> usize {
-        use std::sync::atomic::Ordering;
+        let now = Self::current_timestamp();
 
         match self.db.get_all_node_ids_with_payout() {
             Ok(ids) => {
                 let size = ids.len();
-                // Update cache on successful query
-                self.cached_network_size.store(size, Ordering::Relaxed);
+                // Update cache on successful query with current timestamp
+                let mut cache = self.cached_network_size.write();
+                *cache = Some(CachedNetworkSize {
+                    size,
+                    timestamp: now,
+                });
                 size
             }
             Err(e) => {
-                let cached = self.cached_network_size.load(Ordering::Relaxed);
-                if cached > 0 {
-                    warn!(
-                        cached_size = cached,
-                        error = %e,
-                        "M-7: DB failure for network size, using cached value"
-                    );
-                    cached
+                let cache = self.cached_network_size.read();
+                if let Some(ref cached) = *cache {
+                    // H-14 FIX: Check if cache is expired (older than 1 hour)
+                    let age_secs = now.saturating_sub(cached.timestamp);
+                    if age_secs <= NETWORK_SIZE_CACHE_MAX_AGE_SECS {
+                        warn!(
+                            cached_size = cached.size,
+                            cache_age_secs = age_secs,
+                            error = %e,
+                            "M-7: DB failure for network size, using cached value"
+                        );
+                        return cached.size;
+                    } else {
+                        warn!(
+                            cached_size = cached.size,
+                            cache_age_secs = age_secs,
+                            max_age = NETWORK_SIZE_CACHE_MAX_AGE_SECS,
+                            error = %e,
+                            "H-14: DB failure and cache expired, using conservative default"
+                        );
+                    }
                 } else {
-                    // No cache yet - use conservative default
-                    // 100 nodes gives min_unique = 13, which is reasonable
                     warn!(
                         error = %e,
                         "M-7: DB failure for network size with empty cache, using default (100)"
                     );
-                    100
                 }
+                // No valid cache - use conservative default
+                // 100 nodes gives min_unique = 13, which is reasonable
+                100
             }
         }
     }
@@ -332,15 +369,16 @@ impl QualifiedCapabilityProvider {
         let network_size = self.get_network_size_with_fallback();
         let min_unique = self.scaled_min_unique_challengers(network_size);
 
-        // Get qualified capabilities from database
-        // AUTH4-L3: Use archive_pass_rate as the baseline (0.95), but each capability
-        // has its own threshold. The database uses a single rate for all capabilities,
-        // so we use the strictest common rate here.
-        match self.db.get_qualified_capabilities(
+        // M-16 FIX: Get qualified capabilities with per-capability pass rates
+        // Each capability type has its own threshold (e.g., GhostPay is 90%, Archive is 95%)
+        match self.db.get_qualified_capabilities_with_rates(
             &node_id_hex,
             since,
             self.config.min_challenges,
             self.config.archive_pass_rate,
+            self.config.ghostpay_pass_rate,
+            self.config.stratum_pass_rate,
+            self.config.policy_pass_rate,
         ) {
             Ok(mut caps) => {
                 // C-2 + MED-VER-6: Apply unique challengers requirement (Sybil prevention)
@@ -497,9 +535,8 @@ impl QualifiedCapabilityProvider {
     ///
     /// M-5 FIX: Now uses scaled_min_unique_challengers based on network size
     /// M-11 FIX: Updates network size cache for other methods to use as fallback
+    /// H-14 FIX: Cache now includes timestamp for expiration
     pub fn get_all_qualified_nodes(&self) -> Vec<(NodeId, i32)> {
-        use std::sync::atomic::Ordering;
-
         let since = self.lookback_timestamp();
         let mut qualified_nodes = Vec::new();
 
@@ -512,11 +549,18 @@ impl QualifiedCapabilityProvider {
             }
         };
 
-        // M-5 + M-11 FIX: Calculate scaled unique challenger requirement based on network size
+        // M-5 + M-11 + H-14 FIX: Calculate scaled unique challenger requirement based on network size
         // M-11: Also update the cached network size so other methods (like get_qualified_by_hex)
         // can use it as a fallback if their DB queries fail
+        // H-14: Include timestamp so cache can expire
         let network_size = node_ids.len();
-        self.cached_network_size.store(network_size, Ordering::Relaxed);
+        {
+            let mut cache = self.cached_network_size.write();
+            *cache = Some(CachedNetworkSize {
+                size: network_size,
+                timestamp: Self::current_timestamp(),
+            });
+        }
         let min_unique = self.scaled_min_unique_challengers(network_size);
 
         info!(

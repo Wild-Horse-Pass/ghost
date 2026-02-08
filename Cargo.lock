@@ -2406,6 +2406,7 @@ dependencies = [
  "hex",
  "hyper",
  "hyper-util",
+ "libc",
  "parking_lot",
  "rand",
  "reqwest",

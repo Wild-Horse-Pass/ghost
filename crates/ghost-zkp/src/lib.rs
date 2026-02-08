@@ -305,3 +305,180 @@ pub fn load_trusted_params() -> ZkResult<()> {
     );
     Ok(())
 }
+
+// ============================================================================
+// C-5: Startup Verification for Mainnet Deployment
+// ============================================================================
+
+/// C-5: Verify ZK trusted setup is properly configured for mainnet
+///
+/// This function MUST be called at startup on mainnet deployments.
+/// It performs comprehensive checks to ensure ZK proofs can be trusted:
+///
+/// 1. Checks if `zk-production` feature is enabled
+/// 2. Verifies `ZK_PARAMS_PATH` environment variable is set
+/// 3. Verifies parameter files exist at the specified path
+/// 4. Validates parameter hashes match ceremony output
+///
+/// # Errors
+///
+/// Returns `ZkError::InvalidParams` if:
+/// - Production feature is not enabled but `is_mainnet` is true
+/// - `ZK_PARAMS_PATH` is not set
+/// - Parameter files are missing
+/// - Parameter hashes don't match expected values
+///
+/// # Example
+///
+/// ```ignore
+/// // At startup:
+/// if is_mainnet {
+///     verify_zk_setup_for_mainnet()?;
+/// }
+/// ```
+#[cfg(feature = "zk-production")]
+pub fn verify_zk_setup_for_mainnet() -> ZkResult<()> {
+    use std::path::PathBuf;
+
+    tracing::info!("C-5: Verifying ZK trusted setup for mainnet deployment");
+
+    // Step 1: Verify ZK_PARAMS_PATH is set
+    let params_path = std::env::var(ZK_PARAMS_PATH_ENV).map_err(|_| {
+        ZkError::InvalidParams(format!(
+            "C-5 CRITICAL: Mainnet requires {} environment variable. \
+             Set path to trusted setup ceremony output directory.",
+            ZK_PARAMS_PATH_ENV
+        ))
+    })?;
+
+    // Step 2: Verify base path exists
+    let base_path = PathBuf::from(&params_path);
+    if !base_path.exists() {
+        return Err(ZkError::InvalidParams(format!(
+            "C-5 CRITICAL: Trusted setup directory not found: {}. \
+             Complete MPC ceremony first.",
+            params_path
+        )));
+    }
+
+    // Step 3: Verify at least one parameter file exists
+    let block_params = base_path.join("block_params_current.bin");
+    let payout_params = base_path.join("payout_params_current.bin");
+
+    if !block_params.exists() && !payout_params.exists() {
+        return Err(ZkError::InvalidParams(format!(
+            "C-5 CRITICAL: No parameter files found in {}. \
+             Expected block_params_current.bin and/or payout_params_current.bin",
+            params_path
+        )));
+    }
+
+    // Step 4: Verify parameter hashes are configured
+    if std::env::var(ZK_PARAMS_HASH_ENV).is_err() {
+        return Err(ZkError::InvalidParams(format!(
+            "C-5 CRITICAL: {} environment variable not set. \
+             Set to ceremony output hashes: BLOCK:sha256hex,PAYOUT:sha256hex",
+            ZK_PARAMS_HASH_ENV
+        )));
+    }
+
+    // Step 5: Load and verify parameters (this validates hashes)
+    load_trusted_params()?;
+
+    tracing::info!(
+        path = %params_path,
+        "C-5: ZK trusted setup verified successfully for mainnet"
+    );
+
+    Ok(())
+}
+
+/// C-5: Verify ZK trusted setup (non-production mode)
+///
+/// In non-production mode, this returns an error when called on mainnet,
+/// as ZK proofs cannot be trusted without the proper ceremony parameters.
+#[cfg(not(feature = "zk-production"))]
+pub fn verify_zk_setup_for_mainnet() -> ZkResult<()> {
+    Err(ZkError::InvalidParams(
+        "C-5 CRITICAL: zk-production feature is NOT enabled. \
+         Mainnet deployment REQUIRES trusted setup ceremony. \
+         Compile with --features zk-production after completing MPC ceremony."
+            .to_string(),
+    ))
+}
+
+/// C-5: Check if ZK setup is valid for mainnet (non-throwing version)
+///
+/// Returns true if ZK trusted setup is properly configured for mainnet,
+/// false otherwise. Use this for conditional logic; use
+/// `verify_zk_setup_for_mainnet()` when you want detailed error messages.
+pub fn is_zk_setup_valid_for_mainnet() -> bool {
+    verify_zk_setup_for_mainnet().is_ok()
+}
+
+// ============================================================================
+// L-8: Startup Warning for Simulated Proofs
+// ============================================================================
+
+/// L-8 FIX: Check and log warning if simulated proofs are enabled at startup.
+///
+/// This function should be called during application initialization to provide
+/// a clear warning at startup if the GHOST_ALLOW_SIMULATED_PROOFS environment
+/// variable is set. This makes it immediately visible in logs that the system
+/// is running in an insecure development mode.
+///
+/// # Security Warning
+///
+/// Simulated proofs bypass all cryptographic verification. They should NEVER
+/// be enabled in production. This startup check ensures operators are immediately
+/// aware if this dangerous setting is enabled.
+///
+/// # Example
+///
+/// ```ignore
+/// // In main.rs or server initialization:
+/// ghost_zkp::check_simulated_proofs_warning();
+/// ```
+pub fn check_simulated_proofs_warning() {
+    // Check if on mainnet - simulated proofs are NEVER allowed regardless of env var
+    let is_mainnet = std::env::var("GHOST_NETWORK")
+        .map(|v| v.to_lowercase() == "mainnet" || v.to_lowercase() == "bitcoin")
+        .unwrap_or(false);
+
+    if is_mainnet {
+        // On mainnet, simulated proofs are blocked at runtime anyway
+        // Just log that we're in production mode
+        tracing::info!(
+            "L-8: Running on mainnet - simulated proofs are blocked regardless of environment settings"
+        );
+        return;
+    }
+
+    // Check if GHOST_ALLOW_SIMULATED_PROOFS is set
+    let allow_simulated = std::env::var("GHOST_ALLOW_SIMULATED_PROOFS")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
+    if allow_simulated {
+        // L-8: Log a prominent startup warning
+        tracing::error!(
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        );
+        tracing::error!(
+            "L-8 SECURITY WARNING: GHOST_ALLOW_SIMULATED_PROOFS=1 is enabled!"
+        );
+        tracing::error!(
+            "Simulated proofs bypass ALL cryptographic verification."
+        );
+        tracing::error!(
+            "This MUST NOT be used in production - proofs can be forged!"
+        );
+        tracing::error!(
+            "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+        );
+    } else {
+        tracing::debug!(
+            "L-8: Simulated proofs are disabled (GHOST_ALLOW_SIMULATED_PROOFS not set to 1)"
+        );
+    }
+}

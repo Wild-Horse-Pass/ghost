@@ -763,6 +763,8 @@ impl VerificationTask {
         }
 
         // LOW-VER-3: Filter out recently challenged peers for even distribution
+        // H-13 FIX: On lock failure, return empty vector (fail closed) instead of using unfiltered list
+        // Using unfiltered list could allow challenge flooding attacks if an attacker can cause lock poisoning
         let filtered: Vec<_> = match self.challenge_tracker.lock() {
             Ok(tracker) => {
                 selected
@@ -780,8 +782,14 @@ impl VerificationTask {
                     .collect()
             }
             Err(e) => {
-                warn!(error = %e, "LOW-VER-3: Failed to lock challenge tracker, skipping rate limiting");
-                selected // Use the original selected without filtering
+                // H-13 FIX: Fail closed - return empty set instead of using unfiltered list
+                // A poisoned lock indicates a panic occurred, which is a serious error.
+                // Using the unfiltered list could allow challenge flooding attacks.
+                tracing::error!(
+                    error = %e,
+                    "H-13: Challenge tracker lock poisoned - failing closed (no peers selected)"
+                );
+                Vec::new() // Fail closed - skip this verification cycle entirely
             }
         };
         let selected = filtered;

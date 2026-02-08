@@ -141,6 +141,43 @@ const SCRYPT_LOG_N: u8 = 15;
 const SCRYPT_R: u32 = 8;
 const SCRYPT_P: u32 = 1;
 
+// =============================================================================
+// H-21: SAFE BLOCK HEIGHT CONVERSION
+// =============================================================================
+
+/// H-21: Safely convert a block height from i64/u64 to u32 with bounds checking.
+/// Returns an error if the value is out of range for u32.
+fn safe_block_height_u64(height: u64) -> Result<u32, anyhow::Error> {
+    if height > u32::MAX as u64 {
+        return Err(anyhow::anyhow!(
+            "H-21 SECURITY: Block height {} exceeds u32::MAX ({})",
+            height,
+            u32::MAX
+        ));
+    }
+    Ok(height as u32)
+}
+
+/// H-21: Safely convert a block height from i64 to u32 with bounds checking.
+/// Returns an error if the value is negative or out of range for u32.
+#[allow(dead_code)] // Kept for potential future use with Bitcoin RPC responses
+fn safe_block_height_i64(height: i64) -> Result<u32, anyhow::Error> {
+    if height < 0 {
+        return Err(anyhow::anyhow!(
+            "H-21 SECURITY: Block height {} is negative",
+            height
+        ));
+    }
+    if height > u32::MAX as i64 {
+        return Err(anyhow::anyhow!(
+            "H-21 SECURITY: Block height {} exceeds u32::MAX ({})",
+            height,
+            u32::MAX
+        ));
+    }
+    Ok(height as u32)
+}
+
 /// Derive encryption key from password using scrypt
 fn derive_encryption_key(password: &str, salt: &[u8]) -> Result<[u8; 32], anyhow::Error> {
     let params = ScryptParams::new(SCRYPT_LOG_N, SCRYPT_R, SCRYPT_P, 32)
@@ -1225,14 +1262,20 @@ async fn create_lock(
     Json(req): Json<CreateLockRequest>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     // Fetch current block height from Bitcoin Core first (before acquiring locks)
+    // H-21: Use safe block height conversion with bounds checking
     let creation_height = state
         .rpc
         .get_blockchain_info()
         .await
-        .map(|info| info.blocks as u32)
         .map_err(|e| {
             error!(error = %e, "Bitcoin RPC unavailable - cannot determine block height");
             StatusCode::SERVICE_UNAVAILABLE
+        })
+        .and_then(|info| {
+            safe_block_height_u64(info.blocks).map_err(|e| {
+                error!(error = %e, "H-21: Invalid block height from RPC");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })
         })?;
 
     let keys_guard = state.keys.read();
@@ -1249,7 +1292,12 @@ async fn create_lock(
     };
 
     // Get current lock index
-    let lock_index = state.ghost_locks.read().len() as u32;
+    // H-21: Safe conversion with bounds checking
+    let lock_count = state.ghost_locks.read().len();
+    let lock_index = u32::try_from(lock_count).map_err(|_| {
+        error!("H-21: Lock index {} exceeds u32::MAX", lock_count);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     // Derive lock and recovery secrets
     let lock_secret = keys
@@ -2133,11 +2181,18 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                                     .unwrap_or(0);
                                 if confirmations >= REQUIRED_CONFIRMATIONS as i64 {
                                     // Get the block height where it was confirmed
-                                    let confirm_height = tx_info
+                                    // H-21: Safe block height conversion with bounds checking
+                                    let raw_height = tx_info
                                         .get("blockheight")
                                         .and_then(|v| v.as_u64())
-                                        .unwrap_or(0)
-                                        as u32;
+                                        .unwrap_or(0);
+                                    let confirm_height = match safe_block_height_u64(raw_height) {
+                                        Ok(h) => h,
+                                        Err(e) => {
+                                            warn!(error = %e, "Invalid block height, skipping confirmation");
+                                            continue;
+                                        }
+                                    };
 
                                     // Confirm phase 1
                                     let mut coordinators = state.coordinators.write();
@@ -2297,11 +2352,18 @@ async fn run_session_coordinator(state: Arc<AppState>) {
                                         .unwrap_or(0);
 
                                     if confirmations >= REQUIRED_CONFIRMATIONS as i64 {
-                                        let confirm_height = tx_info
+                                        // H-21: Safe block height conversion with bounds checking
+                                        let raw_height = tx_info
                                             .get("blockheight")
                                             .and_then(|v| v.as_u64())
-                                            .unwrap_or(0)
-                                            as u32;
+                                            .unwrap_or(0);
+                                        let confirm_height = match safe_block_height_u64(raw_height) {
+                                            Ok(h) => h,
+                                            Err(e) => {
+                                                warn!(error = %e, "Invalid block height, skipping phase 2 confirmation");
+                                                continue;
+                                            }
+                                        };
 
                                         let mut coordinators = state.coordinators.write();
                                         if let Some(coordinator) = coordinators.get_mut(&session_id)
@@ -2693,11 +2755,18 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                 );
 
                                 // Get block height from transaction
-                                let block_height = tx_json
+                                // H-21: Safe block height conversion with bounds checking
+                                let raw_height = tx_json
                                     .get("blockheight")
                                     .and_then(|h| h.as_u64())
-                                    .unwrap_or(0)
-                                    as u32;
+                                    .unwrap_or(0);
+                                let block_height = match safe_block_height_u64(raw_height) {
+                                    Ok(h) => h,
+                                    Err(e) => {
+                                        error!(error = %e, "Invalid block height, cannot finalize batch");
+                                        continue;
+                                    }
+                                };
 
                                 // Mark batch as confirmed in executor
                                 if let Err(e) = executor.mark_confirmed(&batch_id, block_height) {

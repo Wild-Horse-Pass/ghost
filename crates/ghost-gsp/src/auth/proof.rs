@@ -27,6 +27,48 @@
 //! - Wallet ID derivation validation (public key -> wallet ID)
 //! - Timestamp validation
 //! - Structure validation
+//!
+//! # H-12: L2-First Wallet Registration Design
+//!
+//! Ghost GSP intentionally does NOT require on-chain Bitcoin ownership for wallet
+//! registration. This is a deliberate architectural decision for the following reasons:
+//!
+//! ## Why No On-Chain Proof Required
+//!
+//! 1. **L2-First User Experience**: New users should be able to create a wallet and
+//!    receive L2 instant payments immediately, without needing to first acquire L1 Bitcoin.
+//!    Requiring on-chain proof creates a chicken-and-egg problem for new users.
+//!
+//! 2. **Schnorr Signature Is Proof of Key Ownership**: The WalletProof mechanism already
+//!    proves the user controls the private key corresponding to their wallet ID. This is
+//!    cryptographically binding - the wallet ID is SHA256(pubkey)[0:16], so only the key
+//!    holder can create valid proofs.
+//!
+//! 3. **Ghost Locks Handle L1 Security**: When users want to send funds that require L1
+//!    settlement (e.g., instant payments above the optimistic threshold), they must create
+//!    a Ghost Lock which DOES require on-chain Bitcoin. The H-11 L1 UTXO verification
+//!    ensures the lock exists and has sufficient confirmations before accepting instant
+//!    payments.
+//!
+//! 4. **Cost-Free Attack Prevention**: Sybil attacks on registration are prevented by:
+//!    - Rate limiting per IP (H-3)
+//!    - Proof-of-work or CAPTCHA can be added at the API layer if needed
+//!    - Registration without funds grants no economic benefit
+//!    - All valuable operations (payments, locks) require actual funds
+//!
+//! ## Security Model
+//!
+//! | Operation | Requires L1 Funds? | Why |
+//! |-----------|-------------------|-----|
+//! | Registration | No | Just creates wallet ID mapping |
+//! | Session creation | No | Just proves key ownership |
+//! | Receive L2 payment | No | Receiving is always safe |
+//! | Send L2 payment | No (from lock) | Deducted from sender's Ghost Lock |
+//! | Create Ghost Lock | Yes | Must fund lock on L1 (H-11 verifies) |
+//! | Accept instant payment | Yes | Sender's lock verified on L1 (H-11) |
+//!
+//! This design allows maximum accessibility while maintaining security where it matters:
+//! at the point where actual value is transferred.
 
 use bitcoin::secp256k1::{schnorr::Signature, Message, Secp256k1, XOnlyPublicKey};
 use sha2::{Digest, Sha256};

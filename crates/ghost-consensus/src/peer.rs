@@ -28,6 +28,37 @@ use tracing::info;
 
 use ghost_common::types::{NodeCapabilities, NodeId};
 
+/// L-3 FIX: Extract host portion from an address, handling both IPv4 and IPv6 formats.
+///
+/// IPv6 addresses are formatted as [::1]:8080, so we can't just split on ':'.
+/// This function properly handles:
+/// - IPv4: "192.168.1.1:8080" -> "192.168.1.1"
+/// - IPv6: "[::1]:8080" -> "::1"
+/// - IPv6 without port: "[::1]" -> "::1"
+/// - Invalid format: returns the original string
+fn extract_host_from_address(address: &str) -> String {
+    // Check for IPv6 format: [host]:port
+    if address.starts_with('[') {
+        if let Some(bracket_end) = address.find(']') {
+            // Extract the IPv6 address between brackets
+            return address[1..bracket_end].to_string();
+        }
+    }
+
+    // IPv4 format: host:port
+    // Only split on the last colon to handle cases correctly
+    if let Some(colon_pos) = address.rfind(':') {
+        // Verify the part after colon looks like a port (all digits)
+        let potential_port = &address[colon_pos + 1..];
+        if potential_port.chars().all(|c| c.is_ascii_digit()) {
+            return address[..colon_pos].to_string();
+        }
+    }
+
+    // No port found or unparseable, return as-is
+    address.to_string()
+}
+
 /// Peer manager for tracking connected peers
 #[derive(Debug)]
 pub struct PeerManager {
@@ -133,17 +164,15 @@ impl PeerManager {
     ///
     /// Returns count of unique IP addresses, which represents actual peer nodes.
     /// This avoids double-counting when temp and real node_ids exist for same peer.
+    ///
+    /// L-3 FIX: Properly handles IPv6 addresses like [::1]:8080 by extracting
+    /// the host portion between brackets, not just splitting on colon.
     pub fn unique_peer_count(&self) -> usize {
         let peers = self.peers.read();
-        let unique_hosts: std::collections::HashSet<&str> = peers
+        let unique_hosts: std::collections::HashSet<String> = peers
             .values()
             .filter(|p| !p.public_address.is_empty())
-            .map(|p| {
-                p.public_address
-                    .split(':')
-                    .next()
-                    .unwrap_or(&p.public_address)
-            })
+            .map(|p| extract_host_from_address(&p.public_address))
             .collect();
         unique_hosts.len()
     }
@@ -298,10 +327,13 @@ impl PeerScore {
         // priority while limiting potential Sybil amplification.
         let elder_bonus = if peer.is_elder { 0.1 } else { 0.0 };
 
-        let score = (latency_score * 0.3)
-            + (reliability_score * 0.3)
-            + (capability_score * 0.2)
-            + elder_bonus;
+        // L-4 FIX: Weights adjusted to sum to 1.0 for proper scoring
+        // 0.30 + 0.30 + 0.30 + 0.10 = 1.0
+        // Elder bonus is included in the base calculation, not added separately
+        let score = (latency_score * 0.30)
+            + (reliability_score * 0.30)
+            + (capability_score * 0.30)
+            + elder_bonus; // 0.10 for elders, 0.0 for non-elders
 
         Self {
             node_id: peer.node_id,

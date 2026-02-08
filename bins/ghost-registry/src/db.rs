@@ -111,25 +111,110 @@ impl PoolNode {
     }
 }
 
+// =============================================================================
+// H-17: RAII UMASK GUARD FOR PERMISSION HARDENING
+// =============================================================================
+
+/// H-17: RAII guard that restores the original umask on drop.
+/// Ensures umask is restored even if a panic occurs during file creation.
+#[cfg(unix)]
+struct UmaskGuard {
+    old_umask: libc::mode_t,
+}
+
+#[cfg(unix)]
+impl UmaskGuard {
+    /// Set a restrictive umask and return a guard that restores the original on drop.
+    /// umask 0o077 means: remove all permissions for group and others.
+    fn new_restrictive() -> Self {
+        // SAFETY: libc::umask is a POSIX standard function that:
+        // 1. Atomically sets the process umask to the specified value
+        // 2. Returns the previous umask value (which we store for restoration)
+        // 3. Has no failure mode - it always succeeds
+        // 4. Only affects file creation permissions, not existing files
+        let old_umask = unsafe { libc::umask(0o077) };
+        Self { old_umask }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for UmaskGuard {
+    fn drop(&mut self) {
+        // SAFETY: libc::umask is a POSIX standard function that:
+        // 1. Atomically restores the process umask to the original value
+        // 2. Has no failure mode - it always succeeds
+        // 3. old_umask was obtained from a previous umask call, so it's valid
+        unsafe {
+            libc::umask(self.old_umask);
+        }
+    }
+}
+
 /// Database handle
 pub struct RegistryDb {
     conn: Arc<Mutex<Connection>>,
 }
 
 impl RegistryDb {
+    /// Maximum rows returned by unbounded queries (M-23: OOM prevention)
+    pub const MAX_QUERY_RESULTS: u32 = 10000;
+
     /// Open or create database at path
+    ///
+    /// H-17 FIX: Uses UmaskGuard to create files with restrictive permissions (0o600).
     pub fn open(path: &Path) -> Result<Self, DbError> {
-        // Ensure parent directory exists
+        // H-17 FIX: Set restrictive umask before creating any files.
+        // Uses RAII guard to ensure umask is restored even on panic.
+        // umask 0o077 means: remove all permissions for group and others
+        // Directory 0o777 & !0o077 = 0o700
+        // File 0o666 & !0o077 = 0o600
+        #[cfg(unix)]
+        let _umask_guard = UmaskGuard::new_restrictive();
+
+        // Ensure parent directory exists (now created with 0o700 due to umask)
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 DbError::InvalidData(format!("Failed to create db directory: {}", e))
             })?;
         }
 
+        // Open database (file created with 0o600 due to umask)
         let conn = Connection::open(path)?;
+
+        // H-17: UmaskGuard is dropped here automatically when going out of scope,
+        // restoring original umask. This happens even if an error occurred above
+        // due to the RAII pattern.
+        #[cfg(unix)]
+        drop(_umask_guard);
 
         // Enable WAL mode for better concurrent access
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+
+        // H-17 FIX: Verify permissions are correct and fix if needed
+        // This handles cases where the file existed before with wrong permissions
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            if let Ok(metadata) = std::fs::metadata(path) {
+                let perms = metadata.permissions();
+                if perms.mode() & 0o077 != 0 {
+                    tracing::warn!(
+                        path = %path.display(),
+                        mode = format!("{:o}", perms.mode()),
+                        "H-17: Registry database file has weak permissions, fixing..."
+                    );
+                    let mut new_perms = perms;
+                    new_perms.set_mode(0o600);
+                    std::fs::set_permissions(path, new_perms).map_err(|e| {
+                        DbError::InvalidData(format!(
+                            "Failed to secure database file permissions: {}",
+                            e
+                        ))
+                    })?;
+                }
+            }
+        }
 
         let db = Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -311,6 +396,8 @@ impl RegistryDb {
     }
 
     /// Get all nodes
+    ///
+    /// M-23 FIX: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_all_nodes(&self) -> Result<Vec<PoolNode>, DbError> {
         let conn = self.conn.lock();
 
@@ -321,12 +408,12 @@ impl RegistryDb {
                    load_percent, cpu_percent, memory_percent,
                    healthy, accepting_miners, excluded_for_load,
                    registered_at, last_heartbeat
-            FROM nodes ORDER BY region, load_percent
+            FROM nodes ORDER BY region, load_percent LIMIT ?1
             "#,
         )?;
 
         let nodes = stmt
-            .query_map([], |row| {
+            .query_map(params![Self::MAX_QUERY_RESULTS], |row| {
                 Ok(PoolNode {
                     node_id: row.get(0)?,
                     host: row.get(1)?,
@@ -354,6 +441,8 @@ impl RegistryDb {
 
     /// Get healthy nodes by region, sorted by load score
     /// Excludes nodes that are marked as excluded_for_load (hysteresis)
+    ///
+    /// M-23 FIX: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     pub fn get_healthy_nodes_by_region(&self, region: Region) -> Result<Vec<PoolNode>, DbError> {
         let conn = self.conn.lock();
 
@@ -367,11 +456,12 @@ impl RegistryDb {
             FROM nodes
             WHERE region = ?1 AND healthy = 1 AND accepting_miners = 1 AND excluded_for_load = 0
             ORDER BY load_percent ASC, miner_count ASC
+            LIMIT ?2
             "#,
         )?;
 
         let nodes = stmt
-            .query_map(params![region_to_string(region)], |row| {
+            .query_map(params![region_to_string(region), Self::MAX_QUERY_RESULTS], |row| {
                 Ok(PoolNode {
                     node_id: row.get(0)?,
                     host: row.get(1)?,
@@ -400,24 +490,33 @@ impl RegistryDb {
     /// Update load exclusion flags based on hysteresis thresholds
     /// Sets excluded_for_load = 1 when load >= max_load_percent
     /// Sets excluded_for_load = 0 when load < resume_load_percent
+    ///
+    /// M-24 FIX: Wrapped in transaction for atomicity. Both updates succeed
+    /// or both fail together, preventing inconsistent state.
     pub fn update_load_exclusions(
         &self,
         max_load_percent: u8,
         resume_load_percent: u8,
     ) -> Result<(usize, usize), DbError> {
-        let conn = self.conn.lock();
+        let mut conn = self.conn.lock();
+
+        // M-24 FIX: Use transaction for atomic update
+        let tx = conn.transaction()?;
 
         // Exclude nodes that exceed max load
-        let excluded = conn.execute(
+        let excluded = tx.execute(
             "UPDATE nodes SET excluded_for_load = 1 WHERE load_percent >= ?1 AND excluded_for_load = 0",
             params![max_load_percent],
         )?;
 
         // Re-include nodes that dropped below resume threshold
-        let included = conn.execute(
+        let included = tx.execute(
             "UPDATE nodes SET excluded_for_load = 0 WHERE load_percent < ?1 AND excluded_for_load = 1",
             params![resume_load_percent],
         )?;
+
+        // M-24: Commit transaction - both updates succeed or both fail
+        tx.commit()?;
 
         Ok((excluded, included))
     }
@@ -479,19 +578,37 @@ impl RegistryDb {
     }
 
     /// Get count of all nodes
+    ///
+    /// L-25 FIX: Validates count is non-negative before converting to usize.
     pub fn get_node_count(&self) -> Result<usize, DbError> {
         let conn = self.conn.lock();
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM nodes", [], |row| row.get(0))?;
+        // L-25 FIX: Validate non-negative before usize cast
+        if count < 0 {
+            return Err(DbError::InvalidData(format!(
+                "Invalid negative node count: {}",
+                count
+            )));
+        }
         Ok(count as usize)
     }
 
     /// Get count of healthy nodes
+    ///
+    /// L-25 FIX: Validates count is non-negative before converting to usize.
     pub fn get_healthy_node_count(&self) -> Result<usize, DbError> {
         let conn = self.conn.lock();
         let count: i64 =
             conn.query_row("SELECT COUNT(*) FROM nodes WHERE healthy = 1", [], |row| {
                 row.get(0)
             })?;
+        // L-25 FIX: Validate non-negative before usize cast
+        if count < 0 {
+            return Err(DbError::InvalidData(format!(
+                "Invalid negative healthy node count: {}",
+                count
+            )));
+        }
         Ok(count as usize)
     }
 

@@ -113,7 +113,11 @@ impl GhostId {
     }
 
     /// Encode as bech32m string (mainnet by default)
-    pub fn encode(&self) -> String {
+    ///
+    /// C-9 FIX: Returns Result instead of panicking on encoding failure.
+    /// While bech32 encoding of valid public keys should never fail, we
+    /// avoid panics for mainnet code to ensure graceful error handling.
+    pub fn encode(&self) -> Result<String, GhostKeyError> {
         self.encode_for_network(GhostNetwork::Mainnet)
     }
 
@@ -122,28 +126,29 @@ impl GhostId {
     /// SECURITY: Different networks use different HRPs to prevent
     /// accidentally sending to wrong network addresses.
     ///
-    /// LOW FIX: HRP parsing and bech32 encoding are infallible for valid inputs.
-    /// The HRPs are hardcoded valid constants and public keys serialize to valid bytes.
-    /// Using unwrap_or_else to provide clear error messages if invariants are violated.
-    pub fn encode_for_network(&self, network: GhostNetwork) -> String {
+    /// C-9 FIX: Returns Result instead of panicking. While HRP parsing and
+    /// bech32 encoding are theoretically infallible for valid inputs (HRPs are
+    /// hardcoded valid constants, public keys serialize to valid bytes), we
+    /// return errors to avoid panics in mainnet code.
+    pub fn encode_for_network(&self, network: GhostNetwork) -> Result<String, GhostKeyError> {
         let hrp_str = network.hrp();
-        let hrp = Hrp::parse(hrp_str).unwrap_or_else(|e| {
-            panic!(
-                "BUG: HRP constant '{}' failed to parse - this should never happen: {}",
+        let hrp = Hrp::parse(hrp_str).map_err(|e| {
+            GhostKeyError::Bech32Error(format!(
+                "HRP constant '{}' failed to parse (this should never happen): {}",
                 hrp_str, e
-            )
-        });
+            ))
+        })?;
 
         // Concatenate scan and spend pubkeys (66 bytes total)
         let mut data = Vec::with_capacity(66);
         data.extend_from_slice(&self.scan_pubkey.serialize());
         data.extend_from_slice(&self.spend_pubkey.serialize());
 
-        bech32::encode::<Bech32m>(hrp, &data).unwrap_or_else(|e| {
-            panic!(
-                "BUG: bech32 encoding of valid public keys failed - this should never happen: {}",
+        bech32::encode::<Bech32m>(hrp, &data).map_err(|e| {
+            GhostKeyError::Bech32Error(format!(
+                "Bech32 encoding of valid public keys failed (this should never happen): {}",
                 e
-            )
+            ))
         })
     }
 
@@ -296,7 +301,12 @@ impl GhostId {
 
 impl fmt::Display for GhostId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.encode())
+        // C-9 FIX: encode() now returns Result, handle it gracefully
+        // In practice this should never fail for valid GhostId instances
+        match self.encode() {
+            Ok(encoded) => write!(f, "{}", encoded),
+            Err(e) => write!(f, "<encoding error: {}>", e),
+        }
     }
 }
 
@@ -314,11 +324,14 @@ pub struct GhostIdExport {
     pub encoded: String,
 }
 
-impl From<&GhostId> for GhostIdExport {
-    fn from(id: &GhostId) -> Self {
-        Self {
-            encoded: id.encode(),
-        }
+impl TryFrom<&GhostId> for GhostIdExport {
+    type Error = GhostKeyError;
+
+    /// C-9 FIX: Changed from From to TryFrom since encode() now returns Result.
+    fn try_from(id: &GhostId) -> Result<Self, Self::Error> {
+        Ok(Self {
+            encoded: id.encode()?,
+        })
     }
 }
 
@@ -341,7 +354,7 @@ mod tests {
         let (_, spend_pubkey) = secp.generate_keypair(&mut OsRng);
 
         let id = GhostId::new(scan_pubkey, spend_pubkey);
-        let encoded = id.encode();
+        let encoded = id.encode().expect("C-9: encode should succeed for valid keys");
 
         assert!(encoded.starts_with("ghost1"));
 
@@ -357,6 +370,9 @@ mod tests {
 
         let id = GhostId::new(scan_pubkey, spend_pubkey);
         let encoded = id.to_string();
+
+        // C-9: Display now gracefully handles encode errors, but for valid keys it should work
+        assert!(!encoded.contains("encoding error"));
 
         let parsed: GhostId = encoded.parse().unwrap();
         assert_eq!(id, parsed);

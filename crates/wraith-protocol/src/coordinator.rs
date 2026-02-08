@@ -94,12 +94,19 @@ impl TokenCache {
     ///
     /// Returns true if the token was already seen (replay attack detected).
     /// Returns false if the token is new (and has been added to the cache).
+    ///
+    /// H-7 FIX: Logs warning if capacity-based eviction occurs before age expiry.
     pub fn check_and_mark(&mut self, token_hash: [u8; 32]) -> bool {
         // Clean expired tokens first
         let cutoff = Instant::now() - self.max_age;
+        let before_age_cleanup = self.tokens.len();
         self.tokens.retain(|_, ts| *ts > cutoff);
+        let after_age_cleanup = self.tokens.len();
+        let age_expired = before_age_cleanup - after_age_cleanup;
 
         // If still at capacity, evict oldest entries
+        // H-7 FIX: Track capacity-based evictions that happen before natural age expiry
+        let mut capacity_evictions = 0;
         while self.tokens.len() >= self.max_size {
             if let Some(oldest_key) = self
                 .tokens
@@ -107,10 +114,30 @@ impl TokenCache {
                 .min_by_key(|(_, ts)| *ts)
                 .map(|(k, _)| *k)
             {
+                // H-7 FIX: Check if this token would have naturally expired
+                if let Some(oldest_ts) = self.tokens.get(&oldest_key) {
+                    if oldest_ts.elapsed() < self.max_age {
+                        // Token is being evicted before its natural expiry
+                        capacity_evictions += 1;
+                    }
+                }
                 self.tokens.remove(&oldest_key);
             } else {
                 break;
             }
+        }
+
+        // H-7 FIX: Warn about potential replay risk from early evictions
+        if capacity_evictions > 0 {
+            tracing::warn!(
+                capacity_evictions = capacity_evictions,
+                age_expired = age_expired,
+                cache_size = self.tokens.len(),
+                max_size = self.max_size,
+                max_age_secs = self.max_age.as_secs(),
+                "H-7 SECURITY: Tokens evicted before natural expiry - potential replay risk. \
+                 Consider increasing MAX_USED_TOKENS or reducing session throughput."
+            );
         }
 
         // Check for replay

@@ -35,9 +35,11 @@ use axum::{
 use futures::{SinkExt, StreamExt};
 use tracing::{debug, error, info, warn};
 
-/// M-3: Ping timeout in seconds (30 seconds default)
+/// L-9 FIX: Ping timeout in seconds (reduced from 30 to 15 seconds)
 /// Connections that don't respond to pings within this time will be closed.
-const PING_TIMEOUT_SECS: u64 = 30;
+/// A 15-second timeout is sufficient for detecting dead connections while
+/// reducing resource waste from stale sessions.
+const PING_TIMEOUT_SECS: u64 = 15;
 
 /// M-3: Ping interval in seconds
 /// How often to send pings to check client liveness.
@@ -172,8 +174,13 @@ fn verify_websocket_proof(
 }
 
 /// WebSocket upgrade handler
+///
+/// M-26 FIX: Extracts client IP from connection info for token validation.
+/// The IP is passed to handle_authenticate where it's used to validate
+/// IP-bound JWT tokens, preventing session hijacking attacks.
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
+    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     State(state): State<Arc<GspState>>,
 ) -> impl IntoResponse {
     // L-12: Atomically check and increment connection count
@@ -188,7 +195,10 @@ pub async fn ws_handler(
             .on_upgrade(|_| async {});
     }
 
-    ws.on_upgrade(move |socket| handle_socket_with_connection(socket, state))
+    // M-26: Extract client IP as string for token validation
+    let client_ip = addr.ip().to_string();
+
+    ws.on_upgrade(move |socket| handle_socket_with_connection(socket, state, client_ip))
 }
 
 /// Connection state
@@ -210,30 +220,38 @@ struct ConnectionState {
 
     /// HIGH-2: Per-connection rate limiter to prevent message flooding
     rate_limiter: TokenBucket,
+
+    /// M-26: Client IP address for token validation
+    /// Used to validate IP-bound JWT tokens to prevent session hijacking.
+    client_ip: String,
 }
 
-impl Default for ConnectionState {
-    fn default() -> Self {
+impl ConnectionState {
+    /// Create a new ConnectionState with client IP
+    ///
+    /// M-26: Client IP is required for IP-bound token validation.
+    fn new(client_ip: String) -> Self {
         Self {
             wallet_id: None,
             subscriptions: HashSet::new(),
             lock_state_subscriptions: HashSet::new(),
             last_activity: None,
             rate_limiter: TokenBucket::new(RATE_LIMIT_BUCKET_CAPACITY, RATE_LIMIT_MESSAGES_PER_SEC),
+            client_ip,
         }
     }
 }
 
 /// Handle a WebSocket connection (connection already counted via try_add_connection)
-async fn handle_socket_with_connection(socket: WebSocket, state: Arc<GspState>) {
+///
+/// M-26: client_ip is used for IP-bound JWT token validation to prevent session hijacking.
+async fn handle_socket_with_connection(socket: WebSocket, state: Arc<GspState>, client_ip: String) {
     // L-12: Connection was already added atomically in ws_handler via try_add_connection()
-    debug!("WebSocket connection established");
+    debug!(client_ip = %client_ip, "WebSocket connection established");
 
     let (mut sender, mut receiver) = socket.split();
-    let mut conn_state = ConnectionState {
-        last_activity: Some(Instant::now()),
-        ..Default::default()
-    };
+    let mut conn_state = ConnectionState::new(client_ip);
+    conn_state.last_activity = Some(Instant::now());
 
     // M-3: Ping interval timer
     let mut ping_interval = tokio::time::interval(Duration::from_secs(PING_INTERVAL_SECS));
@@ -391,6 +409,11 @@ fn sanitize_websocket_error(error: GspError) -> ServerMessage {
             "QUANTUM_UNSAFE",
             "P2TR addresses are not supported. Use P2WPKH.",
         ),
+        // C-6: UTXO reservation conflict
+        GspError::UtxoAlreadyReserved => (
+            "UTXO_ALREADY_RESERVED",
+            "UTXO is already reserved for another payment",
+        ),
 
         // Internal errors - NEVER expose details to clients
         GspError::Config(_) => ("INTERNAL_ERROR", "Internal server error"),
@@ -414,6 +437,57 @@ fn sanitize_websocket_error(error: GspError) -> ServerMessage {
         message: message.to_string(),
         request_id: None,
     }
+}
+
+/// L-10 FIX: Sanitize external error messages before sending to clients
+///
+/// This function converts raw error strings from external services (like pay_node)
+/// into safe, generic messages. It logs the full error internally for debugging
+/// but prevents information disclosure to clients.
+///
+/// External errors may contain:
+/// - Database connection strings
+/// - Internal service URLs
+/// - Stack traces
+/// - File paths
+/// - Implementation details
+fn sanitize_external_error(raw_error: &str, context: &str) -> String {
+    // Log full error internally for debugging
+    warn!(
+        context = %context,
+        raw_error = %raw_error,
+        "L-10: External error sanitized for client response"
+    );
+
+    // Check for common error patterns and return generic messages
+    let lower = raw_error.to_lowercase();
+
+    if lower.contains("connection") || lower.contains("timeout") || lower.contains("network") {
+        return "Service temporarily unavailable. Please try again.".to_string();
+    }
+
+    if lower.contains("database") || lower.contains("sql") || lower.contains("sqlite") {
+        return "Internal error. Please try again later.".to_string();
+    }
+
+    if lower.contains("not found") || lower.contains("no such") {
+        return "Resource not found.".to_string();
+    }
+
+    if lower.contains("already exists") || lower.contains("duplicate") {
+        return "Resource already exists.".to_string();
+    }
+
+    if lower.contains("permission") || lower.contains("unauthorized") || lower.contains("forbidden") {
+        return "Access denied.".to_string();
+    }
+
+    if lower.contains("invalid") {
+        return "Invalid request. Please check your parameters.".to_string();
+    }
+
+    // Default generic message for unrecognized errors
+    "Operation failed. Please try again.".to_string()
 }
 
 /// Handle a single WebSocket message
@@ -446,6 +520,24 @@ async fn handle_message(
     // Check authentication for protected messages
     if client_msg.requires_auth() && conn_state.wallet_id.is_none() {
         return Err(GspError::Unauthorized);
+    }
+
+    // M-12 FIX: Per-wallet rate limiting for authenticated messages
+    // This prevents a single wallet from overwhelming the system even across
+    // multiple connections. Unauthenticated messages (Ping, Authenticate) are
+    // handled by the per-connection rate limiter only.
+    if let Some(wallet_id) = &conn_state.wallet_id {
+        if client_msg.requires_auth() && !state.wallet_rate_limiter.try_consume(wallet_id) {
+            warn!(
+                wallet_id = %wallet_id,
+                "M-12: Per-wallet rate limit exceeded"
+            );
+            return Ok(Some(ServerMessage::Error {
+                code: "WALLET_RATE_LIMIT_EXCEEDED".to_string(),
+                message: "Wallet rate limit exceeded. Please slow down.".to_string(),
+                request_id: None,
+            }));
+        }
     }
 
     // Handle message
@@ -590,14 +682,23 @@ async fn handle_message(
 }
 
 /// Handle authenticate message
+///
+/// M-26 FIX: Uses validate_token_with_ip to verify IP-bound JWT tokens.
+/// This prevents session hijacking attacks where an attacker steals a token
+/// and tries to use it from a different IP address.
 async fn handle_authenticate(
     state: &Arc<GspState>,
     conn_state: &mut ConnectionState,
     token: &str,
 ) -> Result<Option<ServerMessage>, GspError> {
-    match state.jwt.validate_token(token) {
+    // M-26: Pass client IP to token validation for IP binding check
+    match state.jwt.validate_token_with_ip(token, Some(&conn_state.client_ip)) {
         Ok(wallet_id) => {
-            info!(wallet_id = %wallet_id, "WebSocket authenticated");
+            info!(
+                wallet_id = %wallet_id,
+                client_ip = %conn_state.client_ip,
+                "M-26: WebSocket authenticated (IP validated)"
+            );
             conn_state.wallet_id = Some(wallet_id.clone());
 
             Ok(Some(ServerMessage::AuthResult {
@@ -606,11 +707,18 @@ async fn handle_authenticate(
                 error: None,
             }))
         }
-        Err(e) => Ok(Some(ServerMessage::AuthResult {
-            success: false,
-            wallet_id: None,
-            error: Some(e.to_string()),
-        })),
+        Err(e) => {
+            warn!(
+                client_ip = %conn_state.client_ip,
+                error = %e,
+                "M-26: WebSocket authentication failed"
+            );
+            Ok(Some(ServerMessage::AuthResult {
+                success: false,
+                wallet_id: None,
+                error: Some(e.to_string()),
+            }))
+        }
     }
 }
 
@@ -840,7 +948,8 @@ async fn handle_request_jump(
                 success: false,
                 lock_id: lock_id.to_string(),
                 jump_txid: None,
-                error: Some(e.to_string()),
+                // L-10 FIX: Sanitize external error message
+                error: Some(sanitize_external_error(&e.to_string(), "jump_request")),
             }))
         }
     }
@@ -968,7 +1077,8 @@ async fn handle_prepare_payment(
             Ok(Some(ServerMessage::PaymentPrepared {
                 success: false,
                 payment: None,
-                error: Some(e.to_string()),
+                // L-10 FIX: Sanitize external error message
+                error: Some(sanitize_external_error(&e.to_string(), "prepare_payment")),
             }))
         }
     }
@@ -1053,7 +1163,8 @@ async fn handle_submit_signed_payment(
                 success: false,
                 payment_id: payment_id.to_string(),
                 txid: None,
-                error: Some(e.to_string()),
+                // L-10 FIX: Sanitize external error message
+                error: Some(sanitize_external_error(&e.to_string(), "submit_payment")),
             }))
         }
     }
@@ -1236,7 +1347,8 @@ async fn handle_cancel_payment(
             Ok(Some(ServerMessage::PaymentCancelled {
                 success: false,
                 payment_id: payment_id.to_string(),
-                error: Some(e.to_string()),
+                // L-10 FIX: Sanitize external error message
+                error: Some(sanitize_external_error(&e.to_string(), "cancel_payment")),
             }))
         }
     }
@@ -1287,7 +1399,8 @@ async fn handle_prepare_ghost_lock(
                 lock_id: None,
                 funding_address: None,
                 required_sats: None,
-                error: Some(e.to_string()),
+                // L-10 FIX: Sanitize external error message
+                error: Some(sanitize_external_error(&e.to_string(), "prepare_lock")),
             }))
         }
     }
@@ -1356,7 +1469,8 @@ async fn handle_confirm_ghost_lock_funding(
 
             Ok(Some(ServerMessage::Error {
                 code: "CONFIRMATION_FAILED".to_string(),
-                message: e.to_string(),
+                // L-10 FIX: Sanitize external error message
+                message: sanitize_external_error(&e.to_string(), "confirm_lock"),
                 request_id: None,
             }))
         }
@@ -1489,11 +1603,31 @@ async fn handle_subscribe_lock_state(
             lock_id = %lock_id,
             current_count = conn_state.lock_state_subscriptions.len(),
             max_allowed = MAX_LOCK_SUBSCRIPTIONS,
-            "CRIT-DOS-1: Lock subscription limit reached - rejecting subscription"
+            "CRIT-DOS-1: Per-connection lock subscription limit reached"
         );
         return Ok(Some(ServerMessage::Error {
             code: "SUBSCRIPTION_LIMIT_EXCEEDED".to_string(),
-            message: format!("Maximum lock subscriptions ({}) reached", MAX_LOCK_SUBSCRIPTIONS),
+            message: format!("Maximum lock subscriptions ({}) per connection reached", MAX_LOCK_SUBSCRIPTIONS),
+            request_id: None,
+        }));
+    }
+
+    // M-13 FIX: Also check global per-wallet limit (across all connections)
+    // This prevents a wallet from bypassing limits by opening multiple connections
+    if !state.subscriptions.can_subscribe_lock(wallet_id) {
+        let current_count = state.subscriptions.wallet_lock_subscription_count(wallet_id);
+        warn!(
+            wallet_id = %wallet_id,
+            lock_id = %lock_id,
+            current_count = current_count,
+            "M-13: Global per-wallet lock subscription limit reached"
+        );
+        return Ok(Some(ServerMessage::Error {
+            code: "WALLET_SUBSCRIPTION_LIMIT_EXCEEDED".to_string(),
+            message: format!(
+                "Maximum lock subscriptions ({}) per wallet reached (across all connections)",
+                current_count
+            ),
             request_id: None,
         }));
     }
@@ -1540,11 +1674,35 @@ async fn handle_subscribe_lock_state(
     };
 
     // LOW FIX: Only register subscription after successful snapshot retrieval
-    // MED-DOS-2 FIX: Using HashSet for deduplication
-    conn_state
-        .lock_state_subscriptions
-        .insert(lock_id.to_string());
-    state.subscriptions.subscribe_lock_state(wallet_id, lock_id);
+    // M-13 FIX: Handle Result from subscribe_lock_state (enforces global limit)
+    match state.subscriptions.subscribe_lock_state(wallet_id, lock_id) {
+        Ok(true) => {
+            // New subscription added - also track per-connection
+            conn_state
+                .lock_state_subscriptions
+                .insert(lock_id.to_string());
+        }
+        Ok(false) => {
+            // Already subscribed (idempotent) - still ensure per-connection tracking
+            conn_state
+                .lock_state_subscriptions
+                .insert(lock_id.to_string());
+        }
+        Err(e) => {
+            // M-13: Global limit exceeded
+            warn!(
+                wallet_id = %wallet_id,
+                lock_id = %lock_id,
+                error = %e,
+                "M-13: Failed to subscribe to lock state"
+            );
+            return Ok(Some(ServerMessage::Error {
+                code: "WALLET_SUBSCRIPTION_LIMIT_EXCEEDED".to_string(),
+                message: e.to_string(),
+                request_id: None,
+            }));
+        }
+    }
 
     Ok(Some(ServerMessage::LockStateSubscribed {
         lock_id: lock_id.to_string(),
@@ -1729,6 +1887,57 @@ async fn handle_accept_instant_payment(
     );
 
     // =========================================================================
+    // C-6 FIX: Reserve UTXO BEFORE async L1 verification
+    // =========================================================================
+    // This prevents race conditions where the same UTXO could be used for
+    // multiple instant payments before L1 verification completes. The
+    // reservation is atomic (check + insert in one lock) and the guard
+    // will automatically release the reservation if we return early due
+    // to verification failure.
+
+    let payment_id_for_reservation = format!(
+        "instant_{}_{}_{}",
+        sender_lock_id,
+        amount_sats,
+        chrono::Utc::now().timestamp_millis()
+    );
+
+    let reservation_guard = match state.utxo_reservations.reserve(
+        sender_lock_id,
+        &payment_id_for_reservation,
+        &wallet_id.to_string(),
+    ) {
+        Ok(guard) => guard,
+        Err(crate::error::GspError::UtxoAlreadyReserved) => {
+            warn!(
+                wallet_id = %wallet_id,
+                sender_lock_id = %sender_lock_id,
+                "C-6: UTXO already reserved - preventing race condition"
+            );
+            return Ok(Some(ServerMessage::Error {
+                code: "UTXO_ALREADY_RESERVED".to_string(),
+                message: "This UTXO is already being processed for another instant payment. Please try again shortly.".to_string(),
+                request_id: None,
+            }));
+        }
+        Err(e) => {
+            error!(
+                wallet_id = %wallet_id,
+                sender_lock_id = %sender_lock_id,
+                error = %e,
+                "C-6: Failed to reserve UTXO"
+            );
+            return Err(e);
+        }
+    };
+
+    debug!(
+        wallet_id = %wallet_id,
+        sender_lock_id = %sender_lock_id,
+        "C-6: UTXO reserved for instant payment processing"
+    );
+
+    // =========================================================================
     // H-11: Verify L1 UTXO state before accepting instant payment
     // =========================================================================
     // This is CRITICAL for instant payment security. We must verify the lock
@@ -1866,6 +2075,10 @@ async fn handle_accept_instant_payment(
     {
         Ok(_) => {
             // Successfully recorded - this is the FIRST acceptance
+            // C-6: Commit the reservation - UTXO will remain reserved until expiry
+            // This prevents the same UTXO from being used again during the settlement period
+            reservation_guard.commit();
+
             info!(
                 payment_id = hex::encode(payment_id),
                 sender_lock_id = sender_lock_id,
@@ -1874,7 +2087,7 @@ async fn handle_accept_instant_payment(
                 settlement_block = settlement_block,
                 confidence = capability.confidence,
                 l1_confirmations = utxo_state.confirmations,
-                "HIGH-RACE-1: Instant payment accepted (L1 verified, atomically recorded) - show Confirmed"
+                "C-6/HIGH-RACE-1: Instant payment accepted (L1 verified, atomically recorded, reservation committed) - show Confirmed"
             );
 
             Ok(Some(ServerMessage::InstantPaymentAccepted {

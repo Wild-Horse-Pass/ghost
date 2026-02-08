@@ -138,6 +138,13 @@ pub enum GspError {
     /// P2TR address is quantum-unsafe (exposes public key on-chain)
     #[error("Quantum-unsafe: P2TR addresses (bc1p...) are quantum-vulnerable. Use P2WPKH (bc1q...) instead.")]
     QuantumUnsafe,
+
+    // =========================================================================
+    // C-6: UTXO Reservation Errors
+    // =========================================================================
+    /// C-6: UTXO is already reserved by another instant payment
+    #[error("UTXO already reserved for another instant payment")]
+    UtxoAlreadyReserved,
 }
 
 impl From<ghost_gsp_proto::GspProtoError> for GspError {
@@ -325,6 +332,12 @@ impl IntoResponse for GspError {
                 StatusCode::BAD_REQUEST,
                 "QUANTUM_UNSAFE",
                 "P2TR addresses are quantum-vulnerable. Use P2WPKH (bc1q...) instead.".to_string(),
+            ),
+            // C-6: UTXO reservation conflict
+            GspError::UtxoAlreadyReserved => (
+                StatusCode::CONFLICT,
+                "UTXO_ALREADY_RESERVED",
+                "UTXO is already reserved for another instant payment".to_string(),
             ),
         };
 

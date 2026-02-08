@@ -966,9 +966,12 @@ mod tests {
         .unwrap();
 
         // Create a fake/invalid ownership proof (wrong signature)
+        // C-7: Must include epoch and batch_id now
         let fake_sig = [0u8; 64];
         let fake_pubkey = test_lock_id(1); // This won't match the actual lock pubkey
-        let ownership_proof = OwnershipProof::new(fake_sig, fake_pubkey);
+        let epoch = 0u64;
+        let batch_id = [0u8; 32]; // Pending settlement
+        let ownership_proof = OwnershipProof::new(fake_sig, fake_pubkey, epoch, batch_id);
 
         let request = SettlementRequest::new(settlement, ownership_proof);
 
@@ -1001,9 +1004,12 @@ mod tests {
         .unwrap();
 
         // Create proof with DIFFERENT pubkey than the lock
+        // C-7: Must include epoch and batch_id now
         let fake_sig = [0u8; 64];
         let wrong_pubkey = test_lock_id(2); // Different from settlement's lock_id
-        let ownership_proof = OwnershipProof::new(fake_sig, wrong_pubkey);
+        let epoch = 0u64;
+        let batch_id = [0u8; 32]; // Pending settlement
+        let ownership_proof = OwnershipProof::new(fake_sig, wrong_pubkey, epoch, batch_id);
 
         let request = SettlementRequest::new(settlement, ownership_proof);
 
@@ -1022,24 +1028,36 @@ mod tests {
     #[test]
     fn test_c1_ownership_proof_message_format() {
         // Verify the message format is deterministic
+        // C-7: Now includes epoch and batch_id
+        let epoch = 1u64;
+        let batch_id = [0u8; 32];
         let settlement_id = [1u8; 32];
         let destination = "bcrt1qtest";
         let amount = 100_000u64;
 
-        let msg1 = OwnershipProof::build_message(&settlement_id, destination, amount);
-        let msg2 = OwnershipProof::build_message(&settlement_id, destination, amount);
+        let msg1 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
+        let msg2 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
 
         assert_eq!(msg1, msg2, "Message hash should be deterministic");
 
         // Different inputs should produce different messages
-        let msg3 = OwnershipProof::build_message(&settlement_id, destination, amount + 1);
+        let msg3 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount + 1);
         assert_ne!(msg1, msg3, "Different amount should produce different hash");
 
-        let msg4 = OwnershipProof::build_message(&settlement_id, "bcrt1qother", amount);
+        let msg4 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, "bcrt1qother", amount);
         assert_ne!(
             msg1, msg4,
             "Different destination should produce different hash"
         );
+
+        // C-7: Different epochs should produce different messages
+        let msg5 = OwnershipProof::build_message(epoch + 1, &batch_id, &settlement_id, destination, amount);
+        assert_ne!(msg1, msg5, "Different epoch should produce different hash");
+
+        // C-7: Different batch_ids should produce different messages
+        let other_batch = [1u8; 32];
+        let msg6 = OwnershipProof::build_message(epoch, &other_batch, &settlement_id, destination, amount);
+        assert_ne!(msg1, msg6, "Different batch_id should produce different hash");
     }
 
     // ========================================================================

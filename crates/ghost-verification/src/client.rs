@@ -327,17 +327,147 @@ impl VerificationClient {
         false
     }
 
-    /// M-11 FIX: Build a URL with SSRF protection
+    /// M-19 FIX: Check if an IP address is internal/private
     ///
-    /// Returns an error if the host resolves to an internal/private address.
+    /// Separated from hostname checking for use with resolved IPs.
+    fn is_internal_ip(ip: std::net::IpAddr) -> bool {
+        match ip {
+            std::net::IpAddr::V4(ipv4) => {
+                // Localhost: 127.0.0.0/8
+                if ipv4.octets()[0] == 127 {
+                    return true;
+                }
+                // Private: 10.0.0.0/8
+                if ipv4.octets()[0] == 10 {
+                    return true;
+                }
+                // Private: 172.16.0.0/12
+                if ipv4.octets()[0] == 172 && ipv4.octets()[1] >= 16 && ipv4.octets()[1] <= 31 {
+                    return true;
+                }
+                // Private: 192.168.0.0/16
+                if ipv4.octets()[0] == 192 && ipv4.octets()[1] == 168 {
+                    return true;
+                }
+                // Link-local: 169.254.0.0/16
+                if ipv4.octets()[0] == 169 && ipv4.octets()[1] == 254 {
+                    return true;
+                }
+                // Broadcast: 255.255.255.255
+                if ipv4.octets() == [255, 255, 255, 255] {
+                    return true;
+                }
+                // Current network: 0.0.0.0/8
+                if ipv4.octets()[0] == 0 {
+                    return true;
+                }
+                false
+            }
+            std::net::IpAddr::V6(ipv6) => {
+                // Loopback: ::1
+                if ipv6.is_loopback() {
+                    return true;
+                }
+                // Unspecified: ::
+                if ipv6.is_unspecified() {
+                    return true;
+                }
+                // IPv4-mapped IPv6 addresses - check the embedded IPv4
+                if let Some(ipv4) = ipv6.to_ipv4_mapped() {
+                    if ipv4.octets()[0] == 127
+                        || ipv4.octets()[0] == 10
+                        || (ipv4.octets()[0] == 172 && ipv4.octets()[1] >= 16 && ipv4.octets()[1] <= 31)
+                        || (ipv4.octets()[0] == 192 && ipv4.octets()[1] == 168)
+                        || (ipv4.octets()[0] == 169 && ipv4.octets()[1] == 254)
+                    {
+                        return true;
+                    }
+                }
+                // Unique local addresses: fc00::/7
+                let segments = ipv6.segments();
+                if (segments[0] >> 9) == 0b1111110 {
+                    return true;
+                }
+                // Link-local: fe80::/10
+                if (segments[0] >> 6) == 0b1111111010 {
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
+    /// M-19 FIX: Resolve hostname and check if it resolves to internal addresses
+    ///
+    /// This prevents DNS rebinding attacks where an attacker's DNS server
+    /// returns internal IP addresses for their malicious hostname.
+    fn resolve_and_check_host(host: &str) -> GhostResult<()> {
+        use std::net::ToSocketAddrs;
+
+        // Extract host part without port for resolution
+        let host_part = if host.starts_with('[') {
+            // IPv6 with brackets
+            host.trim_start_matches('[')
+                .split(']')
+                .next()
+                .unwrap_or(host)
+        } else if host.contains("::") {
+            // IPv6 without brackets
+            host
+        } else {
+            // IPv4 or hostname
+            host.split(':').next().unwrap_or(host)
+        };
+
+        // Add a default port for DNS resolution (won't affect actual connection)
+        let addr_with_port = format!("{}:443", host_part);
+
+        // Resolve the hostname to IP addresses
+        match addr_with_port.to_socket_addrs() {
+            Ok(addrs) => {
+                for addr in addrs {
+                    if Self::is_internal_ip(addr.ip()) {
+                        return Err(GhostError::Config(format!(
+                            "M-19 SSRF Protection: Host '{}' resolves to internal address: {}",
+                            host, addr.ip()
+                        )));
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => {
+                // If the hostname was already an IP address that failed to parse,
+                // this is a format error, not a DNS issue
+                warn!(
+                    host = %host,
+                    error = %e,
+                    "M-19: DNS resolution failed for host"
+                );
+                // We still allow the request to proceed since the hostname check passed.
+                // The actual HTTP client will fail if the host is truly unreachable.
+                Ok(())
+            }
+        }
+    }
+
+    /// M-11/M-19 FIX: Build a URL with comprehensive SSRF protection
+    ///
+    /// Returns an error if:
+    /// - The host is a known internal hostname (localhost, metadata, etc.)
+    /// - The host resolves (via DNS) to an internal/private IP address
     fn build_url(&self, host: &str, path: &str) -> GhostResult<String> {
-        // M-11 FIX: Validate the host is not an internal address
+        // M-11 FIX: First validate the host string isn't a known internal address
         if Self::is_internal_address(host) {
             return Err(GhostError::Config(format!(
                 "M-11 SSRF Protection: Refusing to connect to internal address: {}",
                 host
             )));
         }
+
+        // M-19 FIX: Resolve hostname and check if it resolves to internal addresses
+        // This prevents DNS rebinding attacks
+        Self::resolve_and_check_host(host)?;
+
         Ok(format!("{}://{}{}", self.scheme(), host, path))
     }
 

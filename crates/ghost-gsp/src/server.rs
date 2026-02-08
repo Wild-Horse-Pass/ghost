@@ -50,7 +50,7 @@ use crate::api::{rest, websocket};
 use crate::auth::{JwtManager, WalletRegistry};
 use crate::error::{GspError, GspResult};
 use crate::proxy::PayNodeProxy;
-use crate::state::{ReorgBridge, ReorgBridgeConfig, ReorgNotifier, SubscriptionManager};
+use crate::state::{ReorgBridge, ReorgBridgeConfig, ReorgNotifier, SubscriptionManager, UtxoReservationManager, WalletRateLimiter};
 
 use ghost_consensus::reorg::{L1ChainMonitor, L2ForkDetector};
 
@@ -190,6 +190,29 @@ fn is_trusted_proxy(ip: &std::net::IpAddr, trusted: &[std::net::IpAddr]) -> bool
     trusted.contains(ip)
 }
 
+/// M-25 FIX: Get trusted proxy count from environment
+///
+/// Returns the number of trusted proxies in the chain. Default is 1.
+/// For multi-proxy setups (CDN -> LB -> App), set GHOST_TRUSTED_PROXY_COUNT=2.
+fn get_trusted_proxy_count() -> usize {
+    std::env::var("GHOST_TRUSTED_PROXY_COUNT")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|count| {
+            // M-25: Sanity check - cap at 10 proxies, minimum 1
+            let capped = count.clamp(1, 10);
+            if capped != count {
+                tracing::warn!(
+                    requested = count,
+                    capped = capped,
+                    "M-25: Trusted proxy count capped to valid range [1, 10]"
+                );
+            }
+            capped
+        })
+        .unwrap_or(1) // Default: single proxy
+}
+
 /// H-3/C-2: IP-based key extractor for rate limiting with trusted proxy validation.
 ///
 /// Extracts client IP from X-Forwarded-For, X-Real-IP, or connection info.
@@ -198,9 +221,17 @@ fn is_trusted_proxy(ip: &std::net::IpAddr, trusted: &[std::net::IpAddr]) -> bool
 /// C-2: X-Forwarded-For and X-Real-IP headers are ONLY trusted when the direct
 /// peer IP is in the trusted proxy list. This prevents IP spoofing attacks where
 /// attackers send fake X-Forwarded-For headers to bypass rate limiting.
+///
+/// M-25 FIX: Supports multi-proxy chains via configurable trusted_proxy_count.
+/// Default is 1 (single proxy). For multi-proxy setups (e.g., CDN -> LB -> App),
+/// set GHOST_TRUSTED_PROXY_COUNT=N where N is the number of trusted proxies.
 #[derive(Debug, Clone)]
 pub struct IpKeyExtractor {
     trusted_proxies: Vec<std::net::IpAddr>,
+    /// M-25 FIX: Number of trusted proxies in the chain
+    /// For X-Forwarded-For: "client, proxy1, proxy2" with count=2,
+    /// we skip the last 2 entries (proxy1, proxy2) and use client IP
+    trusted_proxy_count: usize,
 }
 
 impl Default for IpKeyExtractor {
@@ -212,15 +243,36 @@ impl Default for IpKeyExtractor {
 impl IpKeyExtractor {
     /// Create a new IpKeyExtractor with trusted proxies from environment.
     pub fn new() -> Self {
+        let trusted_proxy_count = get_trusted_proxy_count();
+        tracing::info!(
+            trusted_proxy_count = trusted_proxy_count,
+            "M-25: Configured trusted proxy count for X-Forwarded-For parsing"
+        );
         Self {
             trusted_proxies: get_trusted_proxies(),
+            trusted_proxy_count,
         }
     }
 
     /// Create with explicit trusted proxy list (for testing).
     #[cfg(test)]
     pub fn with_trusted_proxies(trusted_proxies: Vec<std::net::IpAddr>) -> Self {
-        Self { trusted_proxies }
+        Self {
+            trusted_proxies,
+            trusted_proxy_count: 1,
+        }
+    }
+
+    /// M-25 FIX: Create with explicit proxy count (for testing multi-proxy chains)
+    #[cfg(test)]
+    pub fn with_trusted_proxies_and_count(
+        trusted_proxies: Vec<std::net::IpAddr>,
+        trusted_proxy_count: usize,
+    ) -> Self {
+        Self {
+            trusted_proxies,
+            trusted_proxy_count: trusted_proxy_count.clamp(1, 10),
+        }
     }
 }
 
@@ -246,23 +298,43 @@ impl KeyExtractor for IpKeyExtractor {
 
         if trust_proxy_headers {
             // Try X-Forwarded-For (standard for proxied requests)
-            // M-1 FIX: Use .last() instead of .next() to get the most trustworthy IP.
-            // The X-Forwarded-For header format is: "client, proxy1, proxy2, ..."
-            // The LAST entry is added by our trusted proxy (the direct peer), so it's the
-            // most trustworthy. Earlier entries can be spoofed by the client or untrusted proxies.
-            // This matches the verification server's implementation.
+            // M-25 FIX: Handle multi-proxy chains correctly (matching verification server)
+            // X-Forwarded-For format: "client, proxy1, proxy2, ..." (left to right)
+            // With N trusted proxies, we skip the rightmost N entries and take the next one.
+            //
+            // Example with trusted_proxy_count=2 (CDN -> LB -> App):
+            //   Header: "client, cdn_saw, lb_saw"
+            //   Skip 2 from right: take "client" (the actual client IP)
+            //
+            // Example with trusted_proxy_count=1 (single proxy):
+            //   Header: "client, proxy"
+            //   Skip 1 from right: take "client"
             if let Some(xff) = req.headers().get("X-Forwarded-For") {
                 if let Ok(xff_str) = xff.to_str() {
-                    if let Some(ip_str) = xff_str.split(',').next_back() {
-                        let ip_trimmed = ip_str.trim();
-                        if !ip_trimmed.is_empty() {
-                            return Ok(IpKey(ip_trimmed.to_string()));
+                    let ips: Vec<&str> = xff_str.split(',').map(|s| s.trim()).collect();
+
+                    // M-25 FIX: Calculate the correct index based on proxy count
+                    // The client IP is at position (len - 1 - trusted_proxy_count)
+                    // because each proxy appends the IP of who connected to it.
+                    if ips.len() > self.trusted_proxy_count {
+                        let client_index = ips.len() - 1 - self.trusted_proxy_count;
+                        let client_ip = ips[client_index];
+                        if !client_ip.is_empty() {
+                            return Ok(IpKey(client_ip.to_string()));
+                        }
+                    } else if !ips.is_empty() {
+                        // M-25: Not enough IPs in chain, take the first (client)
+                        // This handles the case where we have fewer hops than expected
+                        let client_ip = ips[0];
+                        if !client_ip.is_empty() {
+                            return Ok(IpKey(client_ip.to_string()));
                         }
                     }
                 }
             }
 
-            // Try X-Real-IP (nginx convention)
+            // Try X-Real-IP (nginx convention) - this is typically set by the proxy
+            // to the actual client IP, so it's already trustworthy when from a trusted proxy
             if let Some(xri) = req.headers().get("X-Real-IP") {
                 if let Ok(ip_str) = xri.to_str() {
                     return Ok(IpKey(ip_str.to_string()));
@@ -455,6 +527,22 @@ impl GspConfig {
             )));
         }
 
+        // C-8: Pre-validate rate limiter configuration to ensure it can be built
+        // This prevents the panic in build_router by catching invalid configs early
+        let per_second = (self.rate_limit_rpm.max(60) / 60).max(1);
+        let burst_size = self.rate_limit_rpm.max(10);
+        let test_config = GovernorConfigBuilder::default()
+            .per_second(per_second as u64)
+            .burst_size(burst_size)
+            .finish();
+        if test_config.is_none() {
+            return Err(crate::error::GspError::Config(format!(
+                "C-8: Invalid rate limiter configuration: per_second={}, burst_size={}. \
+                 Rate limiting is a critical security control.",
+                per_second, burst_size
+            )));
+        }
+
         Ok(())
     }
 }
@@ -481,6 +569,13 @@ pub struct GspState {
 
     /// Current connection count (L-12: AtomicUsize for race-free connection limiting)
     pub connection_count: AtomicUsize,
+
+    /// C-6: UTXO reservation manager for instant payment race condition prevention
+    pub utxo_reservations: Arc<UtxoReservationManager>,
+
+    /// M-12: Per-wallet rate limiter
+    /// Limits operations per wallet across all connections to prevent abuse
+    pub wallet_rate_limiter: Arc<WalletRateLimiter>,
 }
 
 impl GspState {
@@ -506,6 +601,22 @@ impl GspState {
         // Initialize reorg notifier
         let reorg_notifier = ReorgNotifier::new();
 
+        // C-6/H-11: Initialize UTXO reservation manager with persistence for crash recovery
+        let reservations_db_path = config.data_dir.join("utxo_reservations.db");
+        let utxo_reservations = Arc::new(
+            UtxoReservationManager::with_persistence(&reservations_db_path)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        error = %e,
+                        "H-11: Failed to initialize persistent UTXO reservations, using in-memory only"
+                    );
+                    UtxoReservationManager::new()
+                })
+        );
+
+        // M-12: Initialize per-wallet rate limiter
+        let wallet_rate_limiter = Arc::new(WalletRateLimiter::new());
+
         Ok(Self {
             config,
             jwt,
@@ -514,6 +625,8 @@ impl GspState {
             subscriptions,
             reorg_notifier,
             connection_count: AtomicUsize::new(0),
+            utxo_reservations,
+            wallet_rate_limiter,
         })
     }
 
@@ -640,26 +753,17 @@ impl GspServer {
         let per_second = (state.config.rate_limit_rpm.max(60) / 60).max(1);
         let burst_size = state.config.rate_limit_rpm.max(10);
 
-        // HIGH-API-4: Fail startup if rate limiter can't be initialized properly
-        // Rate limiting is a critical security control and must be properly configured.
-        let governor_config = GovernorConfigBuilder::default()
-            .per_second(per_second as u64)
-            .burst_size(burst_size)
-            .key_extractor(IpKeyExtractor::new())
-            .finish();
-
-        let governor_config = Arc::new(match governor_config {
-            Some(config) => config,
-            None => {
-                // HIGH-API-4: Don't use fallback - fail startup instead
-                panic!(
-                    "HIGH-API-4: Failed to build rate limiter config with per_second={}, burst_size={}. \
-                     Rate limiting is a critical security control and must be properly configured. \
-                     Check configuration values and restart.",
-                    per_second, burst_size
-                );
-            }
-        });
+        // C-8/HIGH-API-4: Rate limiter configuration is pre-validated in GspConfig::validate()
+        // which is called in GspServer::new() before this function. The expect() below should
+        // never trigger because validate() tests the exact same configuration.
+        let governor_config = Arc::new(
+            GovernorConfigBuilder::default()
+                .per_second(per_second as u64)
+                .burst_size(burst_size)
+                .key_extractor(IpKeyExtractor::new())
+                .finish()
+                .expect("C-8: Rate limiter config already validated in GspConfig::validate()"),
+        );
 
         // Spawn background task to clean up rate limiter state periodically
         let governor_limiter = governor_config.limiter().clone();

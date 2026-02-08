@@ -25,7 +25,11 @@
 mod reorg_bridge;
 mod reorg_notifier;
 mod subscriptions;
+mod utxo_reservation;
+mod wallet_rate_limiter;
 
 pub use reorg_bridge::{ReorgBridge, ReorgBridgeConfig};
 pub use reorg_notifier::{ReorgEvent, ReorgNotifier};
 pub use subscriptions::SubscriptionManager;
+pub use utxo_reservation::{ReservationGuard, UtxoReservationManager};
+pub use wallet_rate_limiter::WalletRateLimiter;

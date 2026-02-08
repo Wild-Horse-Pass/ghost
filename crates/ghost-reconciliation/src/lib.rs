@@ -67,6 +67,7 @@ pub mod rpc;
 pub mod rules;
 pub mod settlement;
 pub mod transaction;
+pub mod verifier;
 
 pub use batch::*;
 pub use broadcaster::*;
@@ -78,6 +79,7 @@ pub use proof::*;
 pub use rules::*;
 pub use settlement::*;
 pub use transaction::*;
+pub use verifier::*;
 
 /// Minimum settlements per batch
 pub const MIN_BATCH_SIZE: usize = 10;

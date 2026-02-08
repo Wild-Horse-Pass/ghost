@@ -174,6 +174,221 @@ impl SessionRegistry {
     }
 }
 
+// ============================================================================
+// H-6: Persistent Session Registry
+// ============================================================================
+
+/// H-6: Trait for persisting session IDs to durable storage
+///
+/// Implement this trait to provide crash-safe session tracking.
+/// Without persistence, session replay attacks are possible after restarts.
+pub trait SessionPersistence: Send + Sync {
+    /// Store a session ID in persistent storage
+    fn store_session(&self, session_id: &[u8; 32]) -> Result<(), crate::WraithError>;
+
+    /// Check if a session ID exists in persistent storage
+    fn session_exists(&self, session_id: &[u8; 32]) -> Result<bool, crate::WraithError>;
+
+    /// Load all session IDs from persistent storage
+    /// Used on startup to restore in-memory state
+    fn load_all_sessions(&self) -> Result<Vec<[u8; 32]>, crate::WraithError>;
+
+    /// Remove expired sessions older than the given timestamp
+    fn cleanup_expired(&self, before_timestamp: u64) -> Result<usize, crate::WraithError>;
+}
+
+/// H-6: Session registry with optional persistent storage
+///
+/// This registry provides crash-safe session tracking when a persistence
+/// backend is provided. It combines in-memory caching with durable storage.
+///
+/// On startup:
+/// 1. Load all session IDs from persistent storage
+/// 2. Populate in-memory cache
+/// 3. Acknowledge in-memory mode (automatic when persistence is available)
+pub struct PersistentSessionRegistry {
+    /// In-memory cache for fast lookup
+    in_memory: SessionRegistry,
+    /// Optional persistence backend
+    persistence: Option<std::sync::Arc<dyn SessionPersistence>>,
+    /// Session expiry duration in seconds (default: 7 days)
+    expiry_secs: u64,
+}
+
+impl std::fmt::Debug for PersistentSessionRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PersistentSessionRegistry")
+            .field("in_memory", &self.in_memory)
+            .field("persistence", &self.persistence.is_some())
+            .field("expiry_secs", &self.expiry_secs)
+            .finish()
+    }
+}
+
+impl Default for PersistentSessionRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PersistentSessionRegistry {
+    /// Default session expiry: 7 days (matches maximum session duration)
+    const DEFAULT_EXPIRY_SECS: u64 = 7 * 24 * 60 * 60;
+
+    /// Create a new persistent session registry without a backend
+    ///
+    /// Without a persistence backend, this behaves like the basic SessionRegistry
+    /// and requires explicit acknowledgment of in-memory mode.
+    pub fn new() -> Self {
+        Self {
+            in_memory: SessionRegistry::new(),
+            persistence: None,
+            expiry_secs: Self::DEFAULT_EXPIRY_SECS,
+        }
+    }
+
+    /// Create with a persistence backend
+    ///
+    /// This automatically:
+    /// 1. Loads existing sessions from storage
+    /// 2. Acknowledges in-memory mode (persistence provides crash safety)
+    ///
+    /// # Errors
+    /// Returns error if loading from persistence fails
+    pub fn with_persistence(
+        persistence: std::sync::Arc<dyn SessionPersistence>,
+    ) -> Result<Self, crate::WraithError> {
+        let mut registry = Self {
+            in_memory: SessionRegistry::new(),
+            persistence: Some(persistence.clone()),
+            expiry_secs: Self::DEFAULT_EXPIRY_SECS,
+        };
+
+        // Load existing sessions from persistent storage
+        let sessions = persistence.load_all_sessions()?;
+        registry.in_memory.acknowledge_in_memory_mode();
+
+        for session_id in sessions {
+            // Use register directly since we've already acknowledged
+            let _ = registry.in_memory.register(session_id);
+        }
+
+        tracing::info!(
+            session_count = registry.in_memory.session_count(),
+            "H-6: Loaded session registry from persistent storage"
+        );
+
+        Ok(registry)
+    }
+
+    /// Set custom expiry duration
+    pub fn with_expiry(mut self, expiry_secs: u64) -> Self {
+        self.expiry_secs = expiry_secs;
+        self
+    }
+
+    /// Check if persistence is available
+    pub fn has_persistence(&self) -> bool {
+        self.persistence.is_some()
+    }
+
+    /// Check if the registry requires persistence warning
+    ///
+    /// Returns true if no persistence backend is configured and the caller
+    /// has not acknowledged in-memory mode.
+    pub fn requires_persistence_warning(&self) -> bool {
+        self.persistence.is_none() && self.in_memory.requires_persistence_warning()
+    }
+
+    /// Acknowledge in-memory mode (only needed without persistence)
+    pub fn acknowledge_in_memory_mode(&mut self) {
+        self.in_memory.acknowledge_in_memory_mode();
+    }
+
+    /// Check and register a session ID
+    ///
+    /// Returns Ok(()) if the session ID is new, Err if already seen.
+    /// If persistence is available, also stores to durable storage.
+    pub fn check_and_register(&mut self, session_id: [u8; 32]) -> Result<(), crate::WraithError> {
+        // Check in-memory first (fast path)
+        self.in_memory.check_and_register(session_id)?;
+
+        // If persistence is available, also store durably
+        if let Some(ref persistence) = self.persistence {
+            if let Err(e) = persistence.store_session(&session_id) {
+                // Rollback in-memory registration on persistence failure
+                // Note: We can't easily remove from HashSet, but the session will be
+                // rejected on next attempt anyway since it's marked as seen
+                tracing::error!(
+                    session_id = %hex::encode(session_id),
+                    error = %e,
+                    "H-6: Failed to persist session ID"
+                );
+                return Err(e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Check if a session ID has been seen
+    pub fn is_seen(&self, session_id: &[u8; 32]) -> Result<bool, crate::WraithError> {
+        // Check in-memory cache first
+        if self.in_memory.is_seen(session_id)? {
+            return Ok(true);
+        }
+
+        // If not in cache but persistence is available, check storage
+        // (This handles the case where cache was cleared but storage wasn't)
+        if let Some(ref persistence) = self.persistence {
+            return persistence.session_exists(session_id);
+        }
+
+        Ok(false)
+    }
+
+    /// Get the number of sessions in the in-memory cache
+    pub fn session_count(&self) -> usize {
+        self.in_memory.session_count()
+    }
+
+    /// Cleanup expired sessions
+    ///
+    /// Removes sessions older than expiry_secs from both in-memory cache
+    /// and persistent storage.
+    pub fn cleanup_expired(&mut self) -> Result<usize, crate::WraithError> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let cutoff = now.saturating_sub(self.expiry_secs);
+
+        // Clear in-memory (we don't track timestamps in HashSet, so clear all)
+        // The persistent storage tracks timestamps
+        self.in_memory.clear();
+
+        // Cleanup persistent storage if available
+        if let Some(ref persistence) = self.persistence {
+            let removed = persistence.cleanup_expired(cutoff)?;
+
+            // Reload from persistent storage to repopulate in-memory cache
+            let sessions = persistence.load_all_sessions()?;
+            for session_id in sessions {
+                let _ = self.in_memory.register(session_id);
+            }
+
+            return Ok(removed);
+        }
+
+        Ok(0)
+    }
+
+    /// Reset for restart (clears both in-memory and requires re-initialization)
+    pub fn reset_for_restart(&mut self) {
+        self.in_memory.reset_for_restart();
+    }
+}
+
 /// State of a Wraith session
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SessionState {
