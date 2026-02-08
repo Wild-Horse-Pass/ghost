@@ -529,6 +529,21 @@ impl NonceCache {
     /// Clean up expired nonces
     ///
     /// Returns the number of entries removed
+    ///
+    /// LOW-VER-7 SAFETY: Removing expired nonces is safe because:
+    /// 1. Expired issued nonces cannot be used - validation checks timestamp freshness
+    /// 2. Expired used nonces need not be tracked - any attempt to reuse them would
+    ///    fail the timestamp freshness check before reaching the replay check
+    /// 3. The TTL window (default 5 minutes) provides sufficient time for legitimate
+    ///    challenge-response cycles while preventing memory exhaustion
+    ///
+    /// The nonce validation flow is:
+    /// 1. Check timestamp freshness (rejects if > TTL seconds old)
+    /// 2. Check if nonce was issued by us (reject if not)
+    /// 3. Check if nonce was already used (reject if replay)
+    ///
+    /// Since step 1 happens before step 3, expired nonces are rejected before
+    /// we even check the used set, making their removal from the used set safe.
     pub fn cleanup(&self) -> usize {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -78,6 +78,101 @@ fn parse_recipient_type_strict(type_str: &str, context: &str) -> Result<Recipien
     })
 }
 
+/// LOW-STOR-8 FIX: Parse GhostLockState, returning error on invalid value.
+fn parse_ghost_lock_state_strict(state_str: &str, context: &str) -> Result<GhostLockState, rusqlite::Error> {
+    GhostLockState::parse(state_str).ok_or_else(|| {
+        warn!(
+            state_str = state_str,
+            context = context,
+            "LOW-STOR-8: Invalid GhostLockState value in database"
+        );
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid GhostLockState '{}' in context '{}'", state_str, context),
+            )),
+        )
+    })
+}
+
+/// LOW-STOR-8 FIX: Parse WraithPhase, returning error on invalid value.
+fn parse_wraith_phase_strict(phase_str: &str, context: &str) -> Result<WraithPhase, rusqlite::Error> {
+    WraithPhase::parse(phase_str).ok_or_else(|| {
+        warn!(
+            phase_str = phase_str,
+            context = context,
+            "LOW-STOR-8: Invalid WraithPhase value in database"
+        );
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid WraithPhase '{}' in context '{}'", phase_str, context),
+            )),
+        )
+    })
+}
+
+/// LOW-STOR-8 FIX: Parse WraithStatus, returning error on invalid value.
+fn parse_wraith_status_strict(status_str: &str, context: &str) -> Result<WraithStatus, rusqlite::Error> {
+    WraithStatus::parse(status_str).ok_or_else(|| {
+        warn!(
+            status_str = status_str,
+            context = context,
+            "LOW-STOR-8: Invalid WraithStatus value in database"
+        );
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid WraithStatus '{}' in context '{}'", status_str, context),
+            )),
+        )
+    })
+}
+
+/// LOW-STOR-8 FIX: Parse ReconciliationStatus, returning error on invalid value.
+fn parse_reconciliation_status_strict(status_str: &str, context: &str) -> Result<ReconciliationStatus, rusqlite::Error> {
+    ReconciliationStatus::parse(status_str).ok_or_else(|| {
+        warn!(
+            status_str = status_str,
+            context = context,
+            "LOW-STOR-8: Invalid ReconciliationStatus value in database"
+        );
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid ReconciliationStatus '{}' in context '{}'", status_str, context),
+            )),
+        )
+    })
+}
+
+/// LOW-STOR-8 FIX: Parse WithdrawalStatus, returning error on invalid value.
+fn parse_withdrawal_status_strict(status_str: &str, context: &str) -> Result<WithdrawalStatus, rusqlite::Error> {
+    WithdrawalStatus::parse(status_str).ok_or_else(|| {
+        warn!(
+            status_str = status_str,
+            context = context,
+            "LOW-STOR-8: Invalid WithdrawalStatus value in database"
+        );
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid WithdrawalStatus '{}' in context '{}'", status_str, context),
+            )),
+        )
+    })
+}
+
 /// Type alias for node rotation data: (is_elder, elder_order, pow_proof, capabilities, first_seen)
 type NodeRotationData = (
     bool,
@@ -1940,7 +2035,7 @@ fn ghost_lock_from_row(row: &rusqlite::Row) -> rusqlite::Result<GhostLockRecord>
         timelock_tier: row.get(6)?,
         creation_height: row.get(7)?,
         recovery_height: row.get(8)?,
-        state: GhostLockState::parse(&state_str).unwrap_or(GhostLockState::Pending),
+        state: parse_ghost_lock_state_strict(&state_str, "ghost_lock_from_row")?,
         funding_txid: row.get(10)?,
         funding_vout: row.get(11)?,
         spend_txid: row.get(12)?,
@@ -2203,7 +2298,7 @@ fn wraith_round_from_row(row: &rusqlite::Row) -> rusqlite::Result<WraithRoundRec
         coordinator_id: row.get(1)?,
         denomination: row.get(2)?,
         amount_sats: row.get(3)?,
-        phase: WraithPhase::parse(&phase_str).unwrap_or(WraithPhase::Registration),
+        phase: parse_wraith_phase_strict(&phase_str, "wraith_round_from_row")?,
         participant_count: row.get(5)?,
         min_participants: row.get(6)?,
         max_participants: row.get(7)?,
@@ -2211,7 +2306,7 @@ fn wraith_round_from_row(row: &rusqlite::Row) -> rusqlite::Result<WraithRoundRec
         execution_deadline: row.get(9)?,
         split_txid: row.get(10)?,
         merge_txid: row.get(11)?,
-        status: WraithStatus::parse(&status_str).unwrap_or(WraithStatus::Active),
+        status: parse_wraith_status_strict(&status_str, "wraith_round_from_row")?,
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
     })
@@ -2344,7 +2439,7 @@ fn reconciliation_from_row(row: &rusqlite::Row) -> rusqlite::Result<Reconciliati
         l1_txid: row.get(5)?,
         l1_block_height: row.get(6)?,
         dispute_deadline: row.get(7)?,
-        status: ReconciliationStatus::parse(&status_str).unwrap_or(ReconciliationStatus::Pending),
+        status: parse_reconciliation_status_strict(&status_str, "reconciliation_from_row")?,
         created_at: row.get(9)?,
         finalized_at: row.get(10)?,
     })
@@ -3232,7 +3327,7 @@ fn withdrawal_from_row(row: &rusqlite::Row) -> rusqlite::Result<WithdrawalReques
         destination_address: row.get(3)?,
         amount_sats: row.get(4)?,
         fee_sats: row.get(5)?,
-        status: WithdrawalStatus::parse(&status_str).unwrap_or(WithdrawalStatus::Pending),
+        status: parse_withdrawal_status_strict(&status_str, "withdrawal_from_row")?,
         batch_id: row.get(7)?,
         l1_txid: row.get(8)?,
         created_at: row.get(9)?,

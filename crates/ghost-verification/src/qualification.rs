@@ -445,10 +445,12 @@ impl QualifiedCapabilityProvider {
                 caps
             }
             Err(e) => {
+                // MED-VER-10: Log at warn level - this node won't receive capability-based payouts
                 warn!(
                     node = %&node_id_hex[..8],
                     error = %e,
-                    "Failed to get qualified capabilities - using defaults"
+                    "MED-VER-10: Failed to get qualified capabilities - node receives 0 shares. \
+                     If this persists, check database connectivity."
                 );
                 NodeCapabilities::default()
             }
@@ -541,10 +543,19 @@ impl QualifiedCapabilityProvider {
         let mut qualified_nodes = Vec::new();
 
         // Get all nodes with payout addresses from database (includes local node)
+        // MED-VER-10: If this DB query fails, the returned empty list will cause
+        // the payout handler to skip node reward distribution. This is fail-safe
+        // (no incorrect payments) but may delay payouts until DB recovers.
         let node_ids = match self.db.get_all_node_ids_with_payout() {
             Ok(ids) => ids,
             Err(e) => {
-                warn!(error = %e, "Failed to get nodes for qualification");
+                // MED-VER-10: Log at ERROR level since this affects payouts
+                tracing::error!(
+                    error = %e,
+                    "MED-VER-10: PAYOUT IMPACT - Failed to get nodes for qualification. \
+                     Node reward distribution will be empty until DB recovers. \
+                     This is fail-safe but delays payouts."
+                );
                 return qualified_nodes;
             }
         };
@@ -569,11 +580,23 @@ impl QualifiedCapabilityProvider {
             "DIAG: Checking qualification for all nodes with payout addresses (M-5: scaled requirement)"
         );
 
+        // MED-VER-10: Track DB failures for logging
+        let mut db_failures = 0u32;
+
         for node_id_hex in &node_ids {
             // GATEKEEPER: Check uptime first
             let uptime = match self.db.get_uptime_percent(node_id_hex, since) {
                 Ok(u) => u,
-                Err(_) => continue,
+                Err(e) => {
+                    // MED-VER-10: Log individual failures at debug level, aggregate at end
+                    tracing::debug!(
+                        node = %&node_id_hex[..8.min(node_id_hex.len())],
+                        error = %e,
+                        "MED-VER-10: Failed to get uptime for node - skipping"
+                    );
+                    db_failures += 1;
+                    continue;
+                }
             };
 
             if uptime < self.config.min_uptime {
@@ -651,11 +674,22 @@ impl QualifiedCapabilityProvider {
             }
         }
 
-        info!(
-            total_nodes = node_ids.len(),
-            qualified_nodes = qualified_nodes.len(),
-            "DIAG: Qualification complete"
-        );
+        // MED-VER-10: Log summary with DB failure count if any occurred
+        if db_failures > 0 {
+            warn!(
+                total_nodes = node_ids.len(),
+                qualified_nodes = qualified_nodes.len(),
+                db_failures = db_failures,
+                "MED-VER-10: Qualification complete with DB failures. \
+                 Some nodes may not receive payouts due to failed uptime queries."
+            );
+        } else {
+            info!(
+                total_nodes = node_ids.len(),
+                qualified_nodes = qualified_nodes.len(),
+                "DIAG: Qualification complete"
+            );
+        }
 
         qualified_nodes
     }

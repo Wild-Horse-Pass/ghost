@@ -882,7 +882,11 @@ async fn main() -> Result<()> {
     );
 
     // Create and register verification result handler for P2P verification results
-    let verification_result_handler = Arc::new(VerificationResultHandler::new(Arc::clone(&db)));
+    // HIGH-VER-4: Use with_peers to validate challengers are known nodes before recording
+    let verification_result_handler = Arc::new(VerificationResultHandler::with_peers(
+        Arc::clone(&db),
+        Arc::clone(mesh.peers()),
+    ));
     mesh.register_handler(Arc::clone(&verification_result_handler)
         as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
 

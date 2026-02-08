@@ -131,9 +131,19 @@ impl GhostId {
     /// bech32 encoding are theoretically infallible for valid inputs (HRPs are
     /// hardcoded valid constants, public keys serialize to valid bytes), we
     /// return errors to avoid panics in mainnet code.
+    ///
+    /// LOW-CRYPTO-3 SAFETY: The HRP constants ("ghost", "tghost", "sghost", "rghost")
+    /// are compile-time string literals that satisfy all bech32 HRP requirements:
+    /// - 1-83 ASCII characters
+    /// - Only lowercase letters (a-z) and digits (0-9)
+    /// - No leading/trailing whitespace
+    ///
+    /// Therefore Hrp::parse() cannot fail for these inputs. The error path exists
+    /// only for defense-in-depth and to satisfy the type system.
     pub fn encode_for_network(&self, network: GhostNetwork) -> Result<String, GhostKeyError> {
         let hrp_str = network.hrp();
         let hrp = Hrp::parse(hrp_str).map_err(|e| {
+            // LOW-CRYPTO-3: This error path is unreachable for our hardcoded HRP constants
             GhostKeyError::Bech32Error(format!(
                 "HRP constant '{}' failed to parse (this should never happen): {}",
                 hrp_str, e
@@ -145,6 +155,11 @@ impl GhostId {
         data.extend_from_slice(&self.scan_pubkey.serialize());
         data.extend_from_slice(&self.spend_pubkey.serialize());
 
+        // LOW-CRYPTO-3 SAFETY: bech32 encoding cannot fail for valid inputs:
+        // - HRP is validated above (always valid for our constants)
+        // - Data is 66 bytes of valid public key serialization
+        // - Bech32m has no length limit that would reject 66 bytes
+        // The error path exists only for defense-in-depth.
         bech32::encode::<Bech32m>(hrp, &data).map_err(|e| {
             GhostKeyError::Bech32Error(format!(
                 "Bech32 encoding of valid public keys failed (this should never happen): {}",

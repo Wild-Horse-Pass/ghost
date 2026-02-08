@@ -40,17 +40,32 @@ use ghost_storage::Database;
 
 use crate::mesh::MessageHandler;
 use crate::message::{CapabilityType, MessageEnvelope, MessageType, VerificationResultMessage};
+use crate::peer::PeerManager;
 
 /// Handler for verification result messages
 pub struct VerificationResultHandler {
     /// Database for storing verification results
     db: Arc<Database>,
+    /// HIGH-VER-4: Peer manager for validating challenger is a known node
+    peers: Option<Arc<PeerManager>>,
 }
 
 impl VerificationResultHandler {
     /// Create a new verification result handler
     pub fn new(db: Arc<Database>) -> Self {
-        Self { db }
+        Self { db, peers: None }
+    }
+
+    /// HIGH-VER-4: Create a verification handler with peer validation
+    ///
+    /// When a PeerManager is provided, the handler will verify that challengers
+    /// are known peers before accepting their verification results. This prevents
+    /// attackers from generating arbitrary keypairs to submit fake results.
+    pub fn with_peers(db: Arc<Database>, peers: Arc<PeerManager>) -> Self {
+        Self {
+            db,
+            peers: Some(peers),
+        }
     }
 
     /// Handle an incoming verification result message
@@ -174,6 +189,25 @@ impl VerificationResultHandler {
                 "Invalid signature on verification result"
             );
             return Ok(()); // Silently ignore invalid signatures
+        }
+
+        // HIGH-VER-4: Validate challenger is a known peer before recording
+        //
+        // This prevents attackers from:
+        // 1. Generating random keypairs to create fake verification results
+        // 2. Submitting verification results from non-existent nodes
+        // 3. Flooding the database with results from fabricated node IDs
+        //
+        // Only nodes that have been seen via health pings (known peers) can
+        // submit verification results that will be recorded.
+        if let Some(ref peers) = self.peers {
+            if peers.get_peer(&msg.challenger_id).is_none() {
+                warn!(
+                    challenger = %short_challenger,
+                    "HIGH-VER-4: Rejecting verification result from unknown challenger"
+                );
+                return Ok(());
+            }
         }
 
         // Store the result in the appropriate challenge table
@@ -347,5 +381,27 @@ mod tests {
         // Invalid size
         let over_limit = "x".repeat(MAX_CHALLENGE_DATA_SIZE + 1);
         assert!(over_limit.len() > MAX_CHALLENGE_DATA_SIZE);
+    }
+
+    /// HIGH-VER-4-TEST: Verify that VerificationResultHandler with peers requires known challenger
+    ///
+    /// This test verifies the constructor and configuration of the handler.
+    /// Full integration testing of peer validation requires a mock PeerManager.
+    #[test]
+    fn test_handler_with_peers_constructor() {
+        // Create an in-memory database for testing
+        let db = Arc::new(
+            Database::in_memory()
+                .expect("Failed to create in-memory database"),
+        );
+
+        // Create handler without peers (legacy mode)
+        let handler_no_peers = VerificationResultHandler::new(Arc::clone(&db));
+        assert!(handler_no_peers.peers.is_none(), "Handler without peers should have None");
+
+        // Create handler with peers (HIGH-VER-4 mode)
+        let peer_manager = Arc::new(PeerManager::new([0u8; 32], 100));
+        let handler_with_peers = VerificationResultHandler::with_peers(Arc::clone(&db), peer_manager);
+        assert!(handler_with_peers.peers.is_some(), "Handler with peers should have Some");
     }
 }

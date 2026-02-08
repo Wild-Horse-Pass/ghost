@@ -197,15 +197,42 @@ fn is_trusted_proxy(ip: &std::net::IpAddr, trusted: &[std::net::IpAddr]) -> bool
 /// C-2: X-Forwarded-For and X-Real-IP headers are ONLY trusted when the direct
 /// peer IP is in the trusted proxy list. This prevents IP spoofing attacks.
 ///
-/// M-14 FIX: Supports multi-proxy chains via configurable trusted_proxy_count.
-/// Default is 1 (single proxy). For multi-proxy setups (e.g., CDN -> LB -> App),
-/// set GHOST_TRUSTED_PROXY_COUNT=N where N is the number of trusted proxies.
+/// # Multi-Proxy Chain Support (M-14/MED-VER-6)
+///
+/// The extractor supports multi-proxy chains via the `trusted_proxy_count` configuration.
+/// This is set via the `GHOST_TRUSTED_PROXY_COUNT` environment variable.
+///
+/// ## How X-Forwarded-For Parsing Works
+///
+/// X-Forwarded-For format: `"client, proxy1, proxy2, ..."` (left to right, appended by each proxy)
+///
+/// With `trusted_proxy_count=N`, we skip the rightmost N entries and take the next one:
+/// - `trusted_proxy_count=1` (default, single proxy): `"client, proxy"` -> use `client`
+/// - `trusted_proxy_count=2` (CDN -> LB -> App): `"client, cdn, lb"` -> use `client`
+/// - `trusted_proxy_count=3` (CDN -> LB -> WAF -> App): `"client, cdn, lb, waf"` -> use `client`
+///
+/// ## Security Implications
+///
+/// **IMPORTANT**: You MUST configure `trusted_proxy_count` to match your EXACT infrastructure:
+///
+/// - If set TOO LOW: Untrusted proxy IPs will be used as client IPs (IP spoofing)
+/// - If set TOO HIGH: Legitimate client IPs in the XFF chain will be skipped
+///
+/// For example, with CDN -> LB -> App:
+/// - If `trusted_proxy_count=1` (wrong): XFF `"client, cdn"` -> uses `cdn` as client (WRONG)
+/// - If `trusted_proxy_count=2` (correct): XFF `"client, cdn"` -> uses `client` (CORRECT)
+///
+/// ## Environment Configuration
+///
+/// - `GHOST_TRUSTED_PROXIES`: Comma-separated list of trusted proxy IPs
+/// - `GHOST_TRUSTED_PROXY_COUNT`: Number of proxies in your infrastructure (1-10, default: 1)
 #[derive(Debug, Clone)]
 pub struct NodeIdKeyExtractor {
     trusted_proxies: Vec<std::net::IpAddr>,
-    /// M-14 FIX: Number of trusted proxies in the chain
+    /// M-14/MED-VER-6: Number of trusted proxies in the chain.
+    /// MUST match your exact infrastructure to prevent IP spoofing.
     /// For X-Forwarded-For: "client, proxy1, proxy2" with count=2,
-    /// we skip the last 2 entries (proxy1, proxy2) and use client IP
+    /// we skip the last 2 entries (proxy1, proxy2) and use client IP.
     trusted_proxy_count: usize,
 }
 
