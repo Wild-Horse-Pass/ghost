@@ -51,6 +51,7 @@ tokio = { workspace = true }
 parking_lot = { workspace = true }
 getrandom = { workspace = true }
 tracing = { workspace = true }
+subtle.workspace = true
 
 [features]
 dev-mode = []  # Enables unsafe testing utilities - NEVER use in production

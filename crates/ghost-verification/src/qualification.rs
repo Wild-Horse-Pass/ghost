@@ -125,6 +125,10 @@ impl QualifiedCapabilityProvider {
         Self { db, config }
     }
 
+    /// MED-VER-5/MED-VER-6: Maximum network size for scaling calculation
+    /// Cap at 1M nodes to prevent overflow and unreasonable scaling
+    const MAX_NETWORK_SIZE: usize = 1_000_000;
+
     /// MED-VER-6: Calculate scaled unique challenger requirement based on network size
     ///
     /// Scales logarithmically with total node count to balance Sybil resistance
@@ -136,13 +140,19 @@ impl QualifiedCapabilityProvider {
     /// - 5000+ nodes: 50 unique challengers (cap)
     ///
     /// Formula: min(MAX, BASE + sqrt(network_size / 10))
+    ///
+    /// MED-VER-5 FIX: Added bounds check to prevent integer overflow.
+    /// Network size is capped at 1M nodes.
     fn scaled_min_unique_challengers(&self, network_size: usize) -> u32 {
         if network_size <= 10 {
             return BASE_MIN_UNIQUE_CHALLENGERS;
         }
 
+        // MED-VER-5 FIX: Cap network size to prevent overflow
+        let capped_size = network_size.min(Self::MAX_NETWORK_SIZE);
+
         let scaled = BASE_MIN_UNIQUE_CHALLENGERS as f64
-            + ((network_size as f64) / 10.0).sqrt().floor();
+            + ((capped_size as f64) / 10.0).sqrt().floor();
 
         (scaled as u32).min(MAX_MIN_UNIQUE_CHALLENGERS)
     }
@@ -239,10 +249,20 @@ impl QualifiedCapabilityProvider {
             .get_ghostpay_unique_challengers(&node_id_hex, since)
             .unwrap_or(0);
 
-        // MED-VER-6: Get network size for scaled requirements
-        let network_size = self.db.get_all_node_ids_with_payout()
-            .map(|ids| ids.len())
-            .unwrap_or(100);
+        // MED-VER-6 FIX: Get network size for scaled requirements
+        // On DB failure, return default capabilities (no qualification) rather than
+        // using a fallback value that could be exploited
+        let network_size = match self.db.get_all_node_ids_with_payout() {
+            Ok(ids) => ids.len(),
+            Err(e) => {
+                warn!(
+                    node = %&node_id_hex[..8],
+                    error = %e,
+                    "MED-VER-6: Failed to get network size, returning default capabilities"
+                );
+                return NodeCapabilities::default();
+            }
+        };
         let min_unique_scaled = self.scaled_min_unique_challengers(network_size);
 
         // AUTH4-L3 + MED-VER-6: Log per-capability pass rate requirements
@@ -269,10 +289,19 @@ impl QualifiedCapabilityProvider {
             return NodeCapabilities::default(); // 0 shares if uptime < 95%
         }
 
-        // MED-VER-6: Calculate scaled unique challenger requirement based on network size
-        let network_size = self.db.get_all_node_ids_with_payout()
-            .map(|ids| ids.len())
-            .unwrap_or(100); // Default to 100 if query fails
+        // MED-VER-6 FIX: Calculate scaled unique challenger requirement based on network size
+        // On DB failure, return default capabilities rather than using fallback
+        let network_size = match self.db.get_all_node_ids_with_payout() {
+            Ok(ids) => ids.len(),
+            Err(e) => {
+                warn!(
+                    node = %&node_id_hex[..8],
+                    error = %e,
+                    "MED-VER-6: Failed to get network size for unique challenger scaling"
+                );
+                return NodeCapabilities::default();
+            }
+        };
         let min_unique = self.scaled_min_unique_challengers(network_size);
 
         // Get qualified capabilities from database

@@ -370,6 +370,7 @@ pub fn validate_no_p2tr(script: &ScriptBuf) -> Result<(), GhostLockError> {
 ///
 /// Returns true for P2WPKH, P2WSH, P2PKH, P2SH (all hash-based).
 /// Returns false for P2TR (key-exposed, quantum vulnerable).
+#[allow(dead_code)] // Public API for external use
 pub fn is_quantum_safe_script(script: &ScriptBuf) -> bool {
     let bytes = script.as_bytes();
 

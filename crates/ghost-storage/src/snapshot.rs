@@ -571,23 +571,36 @@ mod tests {
         let state_root = [1u8; 32];
         let balances = HashMap::new();
 
-        mgr.create_snapshot(100, &state_root, &balances).unwrap();
-        mgr.create_snapshot(200, &[2u8; 32], &balances).unwrap();
+        mgr.create_snapshot(100, &state_root, &balances)
+            .expect("LOW-STOR-8: Failed to create snapshot at height 100");
+        mgr.create_snapshot(200, &[2u8; 32], &balances)
+            .expect("LOW-STOR-8: Failed to create snapshot at height 200");
 
         // Exact match
-        let snapshot = mgr.get_snapshot_at_or_before(100).unwrap().unwrap();
+        let snapshot = mgr
+            .get_snapshot_at_or_before(100)
+            .expect("LOW-STOR-8: Failed to query snapshot")
+            .expect("LOW-STOR-8: Snapshot should exist at height 100");
         assert_eq!(snapshot.height, 100);
 
         // Before
-        let snapshot = mgr.get_snapshot_at_or_before(150).unwrap().unwrap();
+        let snapshot = mgr
+            .get_snapshot_at_or_before(150)
+            .expect("LOW-STOR-8: Failed to query snapshot")
+            .expect("LOW-STOR-8: Snapshot should exist at or before height 150");
         assert_eq!(snapshot.height, 100);
 
         // Latest
-        let snapshot = mgr.get_snapshot_at_or_before(250).unwrap().unwrap();
+        let snapshot = mgr
+            .get_snapshot_at_or_before(250)
+            .expect("LOW-STOR-8: Failed to query snapshot")
+            .expect("LOW-STOR-8: Snapshot should exist at or before height 250");
         assert_eq!(snapshot.height, 200);
 
         // None before
-        let snapshot = mgr.get_snapshot_at_or_before(50).unwrap();
+        let snapshot = mgr
+            .get_snapshot_at_or_before(50)
+            .expect("LOW-STOR-8: Failed to query snapshot");
         assert!(snapshot.is_none());
     }
 
@@ -597,18 +610,33 @@ mod tests {
         let mgr = SnapshotManager::new(db, 100, 50);
 
         let balances = HashMap::new();
-        mgr.create_snapshot(100, &[1u8; 32], &balances).unwrap();
-        mgr.create_snapshot(200, &[2u8; 32], &balances).unwrap();
-        mgr.create_snapshot(300, &[3u8; 32], &balances).unwrap();
+        mgr.create_snapshot(100, &[1u8; 32], &balances)
+            .expect("LOW-STOR-8: Failed to create snapshot at height 100");
+        mgr.create_snapshot(200, &[2u8; 32], &balances)
+            .expect("LOW-STOR-8: Failed to create snapshot at height 200");
+        mgr.create_snapshot(300, &[3u8; 32], &balances)
+            .expect("LOW-STOR-8: Failed to create snapshot at height 300");
 
         // Rollback to 150 should return snapshot at 100
-        let snapshot = mgr.rollback_to(150).unwrap().unwrap();
+        let snapshot = mgr
+            .rollback_to(150)
+            .expect("LOW-STOR-8: Failed to rollback")
+            .expect("LOW-STOR-8: Rollback should return snapshot at height 100");
         assert_eq!(snapshot.height, 100);
 
         // Snapshots at 200 and 300 should be deleted
-        assert!(mgr.get_snapshot_at(200).unwrap().is_none());
-        assert!(mgr.get_snapshot_at(300).unwrap().is_none());
-        assert!(mgr.get_snapshot_at(100).unwrap().is_some());
+        assert!(mgr
+            .get_snapshot_at(200)
+            .expect("LOW-STOR-8: Failed to query snapshot")
+            .is_none());
+        assert!(mgr
+            .get_snapshot_at(300)
+            .expect("LOW-STOR-8: Failed to query snapshot")
+            .is_none());
+        assert!(mgr
+            .get_snapshot_at(100)
+            .expect("LOW-STOR-8: Failed to query snapshot")
+            .is_some());
     }
 
     #[test]
@@ -619,18 +647,37 @@ mod tests {
         let balances = HashMap::new();
         for i in 1..=5 {
             mgr.create_snapshot(i * 10, &[i as u8; 32], &balances)
-                .unwrap();
+                .expect("LOW-STOR-8: Failed to create snapshot");
         }
 
         // Should have pruned to 3
-        assert_eq!(mgr.snapshot_count().unwrap(), 3);
+        assert_eq!(
+            mgr.snapshot_count()
+                .expect("LOW-STOR-8: Failed to count snapshots"),
+            3
+        );
 
         // Should have kept the latest 3 (30, 40, 50)
-        assert!(mgr.get_snapshot_at(10).unwrap().is_none());
-        assert!(mgr.get_snapshot_at(20).unwrap().is_none());
-        assert!(mgr.get_snapshot_at(30).unwrap().is_some());
-        assert!(mgr.get_snapshot_at(40).unwrap().is_some());
-        assert!(mgr.get_snapshot_at(50).unwrap().is_some());
+        assert!(mgr
+            .get_snapshot_at(10)
+            .expect("LOW-STOR-8: Failed to query snapshot")
+            .is_none());
+        assert!(mgr
+            .get_snapshot_at(20)
+            .expect("LOW-STOR-8: Failed to query snapshot")
+            .is_none());
+        assert!(mgr
+            .get_snapshot_at(30)
+            .expect("LOW-STOR-8: Failed to query snapshot")
+            .is_some());
+        assert!(mgr
+            .get_snapshot_at(40)
+            .expect("LOW-STOR-8: Failed to query snapshot")
+            .is_some());
+        assert!(mgr
+            .get_snapshot_at(50)
+            .expect("LOW-STOR-8: Failed to query snapshot")
+            .is_some());
     }
 
     #[test]
@@ -641,15 +688,22 @@ mod tests {
         let proposer = [0xABu8; 32];
         let state_root = [0xCDu8; 32];
 
-        mgr.record_proposer(100, &proposer, &state_root).unwrap();
+        mgr.record_proposer(100, &proposer, &state_root)
+            .expect("LOW-STOR-8: Failed to record proposer");
 
-        let record = mgr.get_proposer_at(100).unwrap().unwrap();
+        let record = mgr
+            .get_proposer_at(100)
+            .expect("LOW-STOR-8: Failed to get proposer")
+            .expect("LOW-STOR-8: Proposer should exist at height 100");
         assert_eq!(record.height, 100);
         assert_eq!(record.proposer_id, hex::encode(proposer));
         assert_eq!(record.state_root, hex::encode(state_root));
 
         // Non-existent
-        assert!(mgr.get_proposer_at(50).unwrap().is_none());
+        assert!(mgr
+            .get_proposer_at(50)
+            .expect("LOW-STOR-8: Failed to query proposer")
+            .is_none());
     }
 
     #[test]
@@ -665,10 +719,10 @@ mod tests {
                  VALUES (?1, ?2, ?3, ?4)",
                 rusqlite::params![100i64, "abc", oversized_json, 12345i64],
             )
-            .unwrap();
+            .expect("LOW-STOR-8: Failed to insert oversized snapshot");
             Ok(())
         })
-        .unwrap();
+        .expect("LOW-STOR-8: Failed to execute with_connection");
 
         let mgr = SnapshotManager::new(db, 100, 50);
 

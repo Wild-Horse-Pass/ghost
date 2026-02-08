@@ -852,8 +852,10 @@ fn test_660_noise_mesh_config_defaults() {
     // C-1: Noise should be enabled by default for secure-by-default
     assert!(config.noise_enabled, "Noise should be enabled by default");
     assert_eq!(config.noise_port, DEFAULT_NOISE_PORT);
+    // C-3 SECURITY: Noise is now REQUIRED by default for mainnet security
+    // Plaintext P2P is unacceptable for production - prevents MITM attacks
     assert!(
-        !config.noise_required,
-        "Noise should not be required by default (gradual rollout)"
+        config.noise_required,
+        "Noise should be required by default for mainnet security"
     );
 }

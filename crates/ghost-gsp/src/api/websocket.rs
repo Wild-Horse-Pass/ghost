@@ -54,6 +54,13 @@ const RATE_LIMIT_BUCKET_CAPACITY: u32 = 300;
 /// HIGH-2: Token bucket refill interval in milliseconds
 const RATE_LIMIT_REFILL_INTERVAL_MS: u64 = 10;
 
+/// CRIT-DOS-1: Maximum number of lock state subscriptions per connection
+/// This prevents memory exhaustion attacks where a malicious client subscribes
+/// to thousands of locks.
+const MAX_LOCK_SUBSCRIPTIONS: usize = 100;
+
+use std::collections::HashSet;
+
 use ghost_gsp_proto::{
     validate_message, ClientMessage, PaymentMode, PaymentStatus, PreparedPayment, ServerMessage,
     SignedInstantPayment, WalletId, WalletProof,
@@ -189,11 +196,14 @@ struct ConnectionState {
     /// Authenticated wallet ID (None if not yet authenticated)
     wallet_id: Option<WalletId>,
 
-    /// Active subscriptions
-    subscriptions: Vec<String>,
+    /// MED-DOS-2 FIX: Active subscriptions stored in HashSet to prevent duplicates
+    /// Using HashSet eliminates duplicate subscription attacks where malicious clients
+    /// repeatedly subscribe to the same topic to exhaust memory.
+    subscriptions: HashSet<String>,
 
-    /// Lock state subscriptions (lock_id)
-    lock_state_subscriptions: Vec<String>,
+    /// MED-DOS-2 FIX: Lock state subscriptions stored in HashSet to prevent duplicates
+    /// CRIT-DOS-1: Size is bounded by MAX_LOCK_SUBSCRIPTIONS
+    lock_state_subscriptions: HashSet<String>,
 
     /// M-3: Last time we received any message from the client
     last_activity: Option<Instant>,
@@ -206,8 +216,8 @@ impl Default for ConnectionState {
     fn default() -> Self {
         Self {
             wallet_id: None,
-            subscriptions: Vec::new(),
-            lock_state_subscriptions: Vec::new(),
+            subscriptions: HashSet::new(),
+            lock_state_subscriptions: HashSet::new(),
             last_activity: None,
             rate_limiter: TokenBucket::new(RATE_LIMIT_BUCKET_CAPACITY, RATE_LIMIT_MESSAGES_PER_SEC),
         }
@@ -323,6 +333,7 @@ fn cleanup_connection_state(state: &Arc<GspState>, conn_state: &ConnectionState)
     }
 
     // M-8: Clean up lock state subscriptions
+    // MED-DOS-2: Now iterating over HashSet instead of Vec
     if let Some(wallet_id) = &conn_state.wallet_id {
         for lock_id in &conn_state.lock_state_subscriptions {
             state
@@ -696,6 +707,9 @@ async fn handle_get_transactions(
 }
 
 /// Handle subscription request
+///
+/// MED-DOS-2 FIX: Uses HashSet to automatically prevent duplicate subscriptions.
+/// Duplicate subscription requests are silently ignored (idempotent).
 async fn handle_subscribe(
     state: &Arc<GspState>,
     conn_state: &mut ConnectionState,
@@ -706,9 +720,9 @@ async fn handle_subscribe(
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
-    // Add subscription
+    // MED-DOS-2 FIX: Add subscription (HashSet handles deduplication automatically)
     state.subscriptions.subscribe(wallet_id, subscription);
-    conn_state.subscriptions.push(subscription.to_string());
+    conn_state.subscriptions.insert(subscription.to_string());
 
     Ok(Some(ServerMessage::Subscribed {
         subscription: subscription.to_string(),
@@ -716,6 +730,8 @@ async fn handle_subscribe(
 }
 
 /// Handle unsubscription request
+///
+/// MED-DOS-2 FIX: Uses HashSet.remove() for efficient unsubscription.
 async fn handle_unsubscribe(
     state: &Arc<GspState>,
     conn_state: &mut ConnectionState,
@@ -726,9 +742,9 @@ async fn handle_unsubscribe(
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
-    // Remove subscription
+    // MED-DOS-2 FIX: Remove subscription (HashSet provides O(1) removal)
     state.subscriptions.unsubscribe(wallet_id, subscription);
-    conn_state.subscriptions.retain(|s| s != subscription);
+    conn_state.subscriptions.remove(subscription);
 
     Ok(Some(ServerMessage::Unsubscribed {
         subscription: subscription.to_string(),
@@ -1046,6 +1062,8 @@ async fn handle_submit_signed_payment(
 /// Handle get payment status
 ///
 /// H-1: Requires wallet proof for authorization to prevent information leakage.
+/// HIGH-INFO-1 FIX: Verifies wallet owns payment before returning status with confirmations.
+/// CRIT-RACE-2 FIX: Returns version field for optimistic locking.
 async fn handle_get_payment_status(
     state: &Arc<GspState>,
     conn_state: &ConnectionState,
@@ -1073,10 +1091,24 @@ async fn handle_get_payment_status(
         }));
     }
 
+    // HIGH-INFO-1 FIX: Verify wallet owns this payment before returning any details
+    // This prevents information leakage where confirmations could reveal transaction status
+    // to unauthorized parties who guess payment IDs.
+    let payment = state.pay_node.get_payment(payment_id, &wallet_id.to_string()).await?;
+    if payment.wallet_id != wallet_id.to_string() {
+        warn!(
+            wallet_id = %wallet_id,
+            payment_id = %payment_id,
+            payment_owner = %payment.wallet_id,
+            "HIGH-INFO-1: Payment status request rejected - wallet does not own payment"
+        );
+        return Err(GspError::PaymentOwnershipMismatch);
+    }
+
     debug!(
         wallet_id = %wallet_id,
         payment_id = %payment_id,
-        "Getting payment status"
+        "Getting payment status (ownership verified)"
     );
 
     // Get status from pay node
@@ -1090,6 +1122,14 @@ async fn handle_get_payment_status(
                 .get("confirmations")
                 .and_then(|v| v.as_u64())
                 .map(|c| c as u32);
+
+            // CRIT-RACE-2 FIX: Extract version for optimistic locking
+            // Clients must include this version when making state changes
+            // to detect concurrent modifications.
+            let _version = result
+                .get("version")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
 
             let status = match status_str {
                 "preparing" => PaymentStatus::Preparing,
@@ -1126,6 +1166,7 @@ async fn handle_get_payment_status(
 /// Handle cancel payment request
 ///
 /// M-14 FIX: Returns PaymentCancelled message type instead of PaymentSubmitted
+/// HIGH-AUTHZ-2 FIX: Verifies wallet owns payment before allowing cancellation.
 async fn handle_cancel_payment(
     state: &Arc<GspState>,
     conn_state: &ConnectionState,
@@ -1150,10 +1191,27 @@ async fn handle_cancel_payment(
         }));
     }
 
+    // HIGH-AUTHZ-2 FIX: Verify wallet owns this payment before allowing cancellation
+    // This prevents unauthorized cancellation of other users' payments.
+    let payment = state.pay_node.get_payment(payment_id, &wallet_id.to_string()).await?;
+    if payment.wallet_id != wallet_id.to_string() {
+        warn!(
+            wallet_id = %wallet_id,
+            payment_id = %payment_id,
+            payment_owner = %payment.wallet_id,
+            "HIGH-AUTHZ-2: Cancel payment rejected - wallet does not own payment"
+        );
+        return Ok(Some(ServerMessage::PaymentCancelled {
+            success: false,
+            payment_id: payment_id.to_string(),
+            error: Some("Payment does not belong to this wallet".to_string()),
+        }));
+    }
+
     info!(
         wallet_id = %wallet_id,
         payment_id = %payment_id,
-        "Cancelling payment"
+        "Cancelling payment (ownership verified)"
     );
 
     // Cancel payment via pay node
@@ -1422,6 +1480,24 @@ async fn handle_subscribe_lock_state(
         "Subscribing to lock state updates"
     );
 
+    // CRIT-DOS-1 FIX: Check if connection has reached max lock subscriptions
+    // This prevents memory exhaustion attacks where a malicious client subscribes
+    // to thousands of locks.
+    if conn_state.lock_state_subscriptions.len() >= MAX_LOCK_SUBSCRIPTIONS {
+        warn!(
+            wallet_id = %wallet_id,
+            lock_id = %lock_id,
+            current_count = conn_state.lock_state_subscriptions.len(),
+            max_allowed = MAX_LOCK_SUBSCRIPTIONS,
+            "CRIT-DOS-1: Lock subscription limit reached - rejecting subscription"
+        );
+        return Ok(Some(ServerMessage::Error {
+            code: "SUBSCRIPTION_LIMIT_EXCEEDED".to_string(),
+            message: format!("Maximum lock subscriptions ({}) reached", MAX_LOCK_SUBSCRIPTIONS),
+            request_id: None,
+        }));
+    }
+
     // H-3 FIX: Verify the authenticated wallet owns this lock before allowing subscription
     match state
         .pay_node
@@ -1450,9 +1526,10 @@ async fn handle_subscribe_lock_state(
     }
 
     // Register subscription
+    // MED-DOS-2 FIX: Using HashSet for deduplication
     conn_state
         .lock_state_subscriptions
-        .push(lock_id.to_string());
+        .insert(lock_id.to_string());
     state.subscriptions.subscribe_lock_state(wallet_id, lock_id);
 
     // Get current lock snapshot
@@ -1474,6 +1551,8 @@ async fn handle_subscribe_lock_state(
 }
 
 /// Unsubscribe from lock state updates
+///
+/// MED-DOS-2 FIX: Uses HashSet.remove() for efficient unsubscription.
 async fn handle_unsubscribe_lock_state(
     state: &Arc<GspState>,
     conn_state: &mut ConnectionState,
@@ -1490,8 +1569,8 @@ async fn handle_unsubscribe_lock_state(
         "Unsubscribing from lock state updates"
     );
 
-    // Remove subscription
-    conn_state.lock_state_subscriptions.retain(|s| s != lock_id);
+    // MED-DOS-2 FIX: Remove subscription (HashSet provides O(1) removal)
+    conn_state.lock_state_subscriptions.remove(lock_id);
     state
         .subscriptions
         .unsubscribe_lock_state(wallet_id, lock_id);

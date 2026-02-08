@@ -276,10 +276,12 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
                 result.add_error("Lock ID cannot be empty");
             }
 
-            // Validate priority
+            // MED-VALIDATE-2 FIX: Normalize priority to lowercase before comparison
+            // This ensures case-insensitive matching (e.g., "High", "HIGH", "high" all valid)
+            let priority_lower = priority.to_lowercase();
             let valid_priorities = ["normal", "high", "urgent"];
-            if !valid_priorities.contains(&priority.to_lowercase().as_str()) {
-                result.add_error("Invalid priority (must be normal, high, or urgent)");
+            if !valid_priorities.contains(&priority_lower.as_str()) {
+                result.add_error("Invalid priority (must be normal, high, or urgent - case insensitive)");
             }
 
             // Validate target address
@@ -392,12 +394,41 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
 /// - Non-empty
 /// - At most 128 characters
 /// - Only contain alphanumeric characters, hyphens, or underscores
+///
+/// HIGH-VALIDATE-1 FIX: Explicitly reject path traversal characters
+/// to prevent directory traversal attacks when payment IDs are used in file paths.
 fn validate_payment_id(id: &str, result: &mut ValidationResult) {
     if id.is_empty() {
         result.add_error("Payment ID cannot be empty");
-    } else if id.len() > 128 {
+        return;
+    }
+
+    if id.len() > 128 {
         result.add_error("Payment ID exceeds 128 character limit");
-    } else if !id
+        return;
+    }
+
+    // HIGH-VALIDATE-1: Explicitly check for path traversal characters FIRST
+    // These checks are explicit to make the security properties clear
+    if id.contains('/') {
+        result.add_error("Payment ID cannot contain '/' (path traversal risk)");
+        return;
+    }
+    if id.contains('\\') {
+        result.add_error("Payment ID cannot contain '\\' (path traversal risk)");
+        return;
+    }
+    if id.contains('.') {
+        result.add_error("Payment ID cannot contain '.' (path traversal risk)");
+        return;
+    }
+    if id.contains('\0') {
+        result.add_error("Payment ID cannot contain null bytes");
+        return;
+    }
+
+    // After path traversal checks, validate allowed character set
+    if !id
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {

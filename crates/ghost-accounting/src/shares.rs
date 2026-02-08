@@ -23,7 +23,7 @@
 //! Share accounting for mining rewards
 
 use std::collections::HashMap;
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 use ghost_common::types::{NodeCapabilities, NodeId, RoundId};
 
@@ -109,22 +109,24 @@ impl RoundShares {
     ///
     /// Returns false if the work value is invalid (negative, NaN, or Inf).
     pub fn add_miner_work(&mut self, miner_id: &str, work: f64) -> bool {
-        // SEC-SHARE-1: Validate work is non-negative
+        // LOW-POOL-2 / SEC-SHARE-1: Validate work is non-negative and log rejection
         if work < 0.0 {
-            error!(
+            warn!(
                 miner = %miner_id,
                 work = work,
-                "Rejected negative work value - potential attack or bug"
+                reason = "negative_work",
+                "LOW-POOL-2: Rejected share with negative work value"
             );
             return false;
         }
 
-        // SEC-SHARE-2: Validate work is finite (not NaN or Inf)
+        // LOW-POOL-2 / SEC-SHARE-2: Validate work is finite (not NaN or Inf) and log rejection
         if !work.is_finite() {
-            error!(
+            warn!(
                 miner = %miner_id,
                 work = work,
-                "Rejected non-finite work value (NaN/Inf) - potential attack or bug"
+                reason = "non_finite_work",
+                "LOW-POOL-2: Rejected share with non-finite work value (NaN/Inf)"
             );
             return false;
         }
@@ -138,11 +140,12 @@ impl RoundShares {
         // So we use a conservative upper bound that's well within f64 precision
         const MAX_SAFE_WORK: f64 = 1e15; // Well within both f64 precision and u128/WORK_SCALE
         if work > MAX_SAFE_WORK {
-            error!(
+            warn!(
                 miner = %miner_id,
                 work = work,
                 max_safe = MAX_SAFE_WORK,
-                "Rejected work value exceeding safe conversion limit - potential attack or bug"
+                reason = "exceeds_safe_limit",
+                "LOW-POOL-2: Rejected share with work value exceeding safe conversion limit"
             );
             return false;
         }
@@ -166,8 +169,9 @@ impl RoundShares {
             }
         };
 
-        // CRIT-MINE-3: Enforce maximum total work limit
-        if new_total > MAX_TOTAL_WORK_SCALED {
+        // CRIT-MINE-3 / MED-POOL-4: Enforce maximum total work limit
+        // MED-POOL-4: Use >= instead of > to reject at exactly the limit
+        if new_total >= MAX_TOTAL_WORK_SCALED {
             error!(
                 miner = %miner_id,
                 current_total = self.total_miner_work_scaled,
@@ -418,10 +422,15 @@ impl DifficultyCalculator {
     /// Verify that a share hash meets the claimed difficulty
     ///
     /// This is the cryptographic verification that the miner actually did the work
+    ///
+    /// HIGH-POOL-5: Tolerance reduced from 1% to 0.1% to match L-17 fix in round.rs.
+    /// A 1% tolerance allows accumulation gaming where miners systematically
+    /// claim higher difficulty than achieved, gaining up to 1% extra reward.
     pub fn verify_share_difficulty(&self, hash: &[u8; 32], claimed_difficulty: f64) -> bool {
         let actual_difficulty = Self::difficulty_from_hash(hash);
-        // Allow 1% tolerance for floating point imprecision
-        actual_difficulty >= claimed_difficulty * 0.99
+        // HIGH-POOL-5: 0.1% tolerance for floating point imprecision (was 1%)
+        // This matches the tolerance in round.rs L-17 fix
+        actual_difficulty >= claimed_difficulty * 0.999
     }
 
     /// Verify that a share hash meets the pool's minimum difficulty

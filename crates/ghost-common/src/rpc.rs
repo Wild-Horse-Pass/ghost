@@ -192,7 +192,15 @@ pub enum TemplateValidationError {
 const MAX_TARGET_HEX: &str = "00000000ffff0000000000000000000000000000000000000000000000000000";
 
 /// Calculate block subsidy for a given height (halving schedule)
-fn calculate_block_subsidy(height: u64, network: Option<&BitcoinNetwork>) -> u64 {
+///
+/// Returns the expected block subsidy in satoshis for the given height.
+/// This follows the Bitcoin halving schedule:
+/// - Initial subsidy: 50 BTC (5,000,000,000 satoshis)
+/// - Halves every 210,000 blocks on mainnet
+/// - Halves every 150 blocks on regtest
+///
+/// MED-POOL-1: This function is public to allow payout validation.
+pub fn calculate_block_subsidy(height: u64, network: Option<&BitcoinNetwork>) -> u64 {
     let halvings = match network {
         // Regtest and testnet have different halving intervals
         Some(BitcoinNetwork::Regtest) => height / 150,

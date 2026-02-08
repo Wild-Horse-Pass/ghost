@@ -215,8 +215,8 @@ fn test_payout_status_transitions() {
 
 #[test]
 fn test_voting_session_with_real_signatures() {
-    // Create 5 voters with real identities
-    let voters: Vec<NodeIdentity> = (0..5).map(test_identity).collect();
+    // Create 7 voters with real identities (BFT minimum)
+    let voters: Vec<NodeIdentity> = (0..7).map(test_identity).collect();
     let voter_ids: HashSet<NodeId> = voters.iter().map(|e| e.node_id()).collect();
 
     // Create a voting session
@@ -229,15 +229,16 @@ fn test_voting_session_with_real_signatures() {
         VoteType::PayoutApproval,
         voter_ids.clone(),
         60_000, // 60 second timeout
-    );
+    )
+    .unwrap();
 
-    // First 3 voters vote yes (should not reach quorum yet with 5 voters)
-    for (i, voter) in voters[0..3].iter().enumerate() {
+    // First 4 voters vote yes (should not reach quorum yet with 7 voters)
+    for (i, voter) in voters[0..4].iter().enumerate() {
         let vote = create_signed_vote_for_round(voter, round_id, &proposal_hash, true);
         let result = session.add_vote(vote);
 
-        // With 5 voters, 67% = ceiling(5 * 0.67) = 4 votes needed
-        // Votes 1-3 should all return ApprovalRecorded (not yet at threshold)
+        // With 7 voters, 67% = ceiling(7 * 0.67) = 5 votes needed
+        // Votes 1-4 should all return ApprovalRecorded (not yet at threshold)
         assert!(
             matches!(result, VoteResult::ApprovalRecorded),
             "Vote {} should be ApprovalRecorded, got {:?}",
@@ -246,11 +247,11 @@ fn test_voting_session_with_real_signatures() {
         );
     }
 
-    // 4th voter votes yes - should reach quorum
-    let vote = create_signed_vote_for_round(&voters[3], round_id, &proposal_hash, true);
+    // 5th voter votes yes - should reach quorum
+    let vote = create_signed_vote_for_round(&voters[4], round_id, &proposal_hash, true);
     let result = session.add_vote(vote);
 
-    // Should be decided now (4/5 = 80% > 67%)
+    // Should be decided now (5/7 = 71% > 67%)
     assert!(matches!(
         result,
         VoteResult::Decided(ConsensusResult::Approved { .. })
@@ -259,8 +260,8 @@ fn test_voting_session_with_real_signatures() {
 
 #[test]
 fn test_voting_rejection_threshold() {
-    // Create 5 voters
-    let voters: Vec<NodeIdentity> = (0..5).map(test_identity).collect();
+    // Create 7 voters (BFT minimum)
+    let voters: Vec<NodeIdentity> = (0..7).map(test_identity).collect();
     let voter_ids: HashSet<NodeId> = voters.iter().map(|e| e.node_id()).collect();
 
     let round_id = 1;
@@ -272,9 +273,10 @@ fn test_voting_rejection_threshold() {
         VoteType::PayoutApproval,
         voter_ids,
         60_000,
-    );
+    )
+    .unwrap();
 
-    // All 5 voters vote no
+    // All 7 voters vote no
     for voter in &voters {
         let vote = create_signed_vote_for_round(voter, round_id, &proposal_hash, false);
         session.add_vote(vote);
@@ -290,7 +292,8 @@ fn test_voting_rejection_threshold() {
 
 #[test]
 fn test_duplicate_vote_prevention() {
-    let voters: Vec<NodeIdentity> = (0..3).map(test_identity).collect();
+    // Create 7 voters (BFT minimum)
+    let voters: Vec<NodeIdentity> = (0..7).map(test_identity).collect();
     let voter_ids: HashSet<NodeId> = voters.iter().map(|e| e.node_id()).collect();
 
     let round_id = 1;
@@ -302,7 +305,8 @@ fn test_duplicate_vote_prevention() {
         VoteType::PayoutApproval,
         voter_ids,
         60_000,
-    );
+    )
+    .unwrap();
 
     // First vote succeeds
     let vote1 = create_signed_vote_for_round(&voters[0], round_id, &proposal_hash, true);
@@ -317,7 +321,8 @@ fn test_duplicate_vote_prevention() {
 
 #[test]
 fn test_ineligible_voter_rejected() {
-    let voters: Vec<NodeIdentity> = (0..3).map(test_identity).collect();
+    // Create 7 voters (BFT minimum)
+    let voters: Vec<NodeIdentity> = (0..7).map(test_identity).collect();
     let voter_ids: HashSet<NodeId> = voters.iter().map(|e| e.node_id()).collect();
 
     // Create an outsider not in the eligible voter set
@@ -332,7 +337,8 @@ fn test_ineligible_voter_rejected() {
         VoteType::PayoutApproval,
         voter_ids,
         60_000,
-    );
+    )
+    .unwrap();
 
     // Vote from non-eligible node should be rejected (checked before signature)
     let vote = create_signed_vote_for_round(&outsider, round_id, &proposal_hash, true);
@@ -342,7 +348,8 @@ fn test_ineligible_voter_rejected() {
 
 #[test]
 fn test_invalid_signature_rejected() {
-    let voters: Vec<NodeIdentity> = (0..3).map(test_identity).collect();
+    // Create 7 voters (BFT minimum)
+    let voters: Vec<NodeIdentity> = (0..7).map(test_identity).collect();
     let voter_ids: HashSet<NodeId> = voters.iter().map(|e| e.node_id()).collect();
 
     let proposal_hash = test_proposal_hash(1, 850_000);
@@ -353,7 +360,8 @@ fn test_invalid_signature_rejected() {
         VoteType::PayoutApproval,
         voter_ids,
         60_000,
-    );
+    )
+    .unwrap();
 
     // Create a vote with wrong signature (sign different hash)
     let wrong_hash = test_proposal_hash(2, 850_001);
@@ -378,8 +386,8 @@ fn test_complete_share_to_consensus_flow() {
     // === Phase 1: Setup ===
     let db = Database::in_memory().unwrap();
 
-    // Create 5 voters
-    let voters: Vec<NodeIdentity> = (0..5).map(test_identity).collect();
+    // Create 7 voters (BFT minimum)
+    let voters: Vec<NodeIdentity> = (0..7).map(test_identity).collect();
     let voter_ids: HashSet<NodeId> = voters.iter().map(|e| e.node_id()).collect();
 
     // === Phase 2: Share Submission ===
@@ -469,15 +477,16 @@ fn test_complete_share_to_consensus_flow() {
         VoteType::PayoutApproval,
         voter_ids.clone(),
         60_000,
-    );
+    )
+    .unwrap();
 
-    // 4 out of 5 voters approve (80% > 67%)
-    for i in 0..4 {
+    // 5 out of 7 voters approve (71% > 67%)
+    for i in 0..5 {
         let vote = create_signed_vote_for_round(&voters[i], round_id, &proposal_hash, true);
         let result = session.add_vote(vote);
 
-        if i == 3 {
-            // 4th vote should trigger approval
+        if i == 4 {
+            // 5th vote should trigger approval
             assert!(matches!(
                 result,
                 VoteResult::Decided(ConsensusResult::Approved { .. })
@@ -497,8 +506,8 @@ fn test_complete_share_to_consensus_flow() {
 
 #[test]
 fn test_consensus_with_minimum_voters() {
-    // Test with exactly 3 voters (minimum for BFT)
-    let voters: Vec<NodeIdentity> = (0..3).map(test_identity).collect();
+    // Test with exactly 7 voters (minimum for BFT)
+    let voters: Vec<NodeIdentity> = (0..7).map(test_identity).collect();
     let voter_ids: HashSet<NodeId> = voters.iter().map(|e| e.node_id()).collect();
 
     let round_id = 1;
@@ -510,24 +519,22 @@ fn test_consensus_with_minimum_voters() {
         VoteType::PayoutApproval,
         voter_ids,
         60_000,
-    );
+    )
+    .unwrap();
 
-    // With 3 voters, 67% = 3 votes needed (ceiling of 2.01)
-    // Vote 1 - pending
-    let vote1 = create_signed_vote_for_round(&voters[0], round_id, &proposal_hash, true);
-    let result1 = session.add_vote(vote1);
-    assert!(matches!(result1, VoteResult::ApprovalRecorded));
+    // With 7 voters, 67% = 5 votes needed (ceiling of 4.69)
+    // Votes 1-4: pending
+    for i in 0..4 {
+        let vote = create_signed_vote_for_round(&voters[i], round_id, &proposal_hash, true);
+        let result = session.add_vote(vote);
+        assert!(matches!(result, VoteResult::ApprovalRecorded));
+    }
 
-    // Vote 2 - still pending
-    let vote2 = create_signed_vote_for_round(&voters[1], round_id, &proposal_hash, true);
-    let result2 = session.add_vote(vote2);
-    assert!(matches!(result2, VoteResult::ApprovalRecorded));
-
-    // Vote 3 - approved (3/3 = 100%)
-    let vote3 = create_signed_vote_for_round(&voters[2], round_id, &proposal_hash, true);
-    let result3 = session.add_vote(vote3);
+    // Vote 5 - approved (5/7 = 71% > 67%)
+    let vote5 = create_signed_vote_for_round(&voters[4], round_id, &proposal_hash, true);
+    let result5 = session.add_vote(vote5);
     assert!(matches!(
-        result3,
+        result5,
         VoteResult::Decided(ConsensusResult::Approved { .. })
     ));
 }
@@ -547,7 +554,8 @@ fn test_consensus_with_split_votes() {
         VoteType::PayoutApproval,
         voter_ids,
         60_000,
-    );
+    )
+    .unwrap();
 
     // 2 yes votes
     for i in 0..2 {
@@ -607,7 +615,8 @@ fn test_large_voter_set() {
         VoteType::PayoutApproval,
         voter_ids,
         60_000,
-    );
+    )
+    .unwrap();
 
     // 67% of 21 = 14.07, ceil = 15 votes needed
     // Cast 15 yes votes

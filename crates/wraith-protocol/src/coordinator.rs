@@ -1071,18 +1071,41 @@ impl WraithCoordinator {
             )));
         }
 
-        // SECURITY: Check for replay BEFORE verification to prevent timing attacks
-        // M-WRAITH-1: Use time-based LRU cache to prevent clearing all tokens at once
-        // WR-C4: Token hash is now session-bound to prevent cross-session replay
-        for token in &tokens {
-            let hash = self.compute_token_hash(token);
-            if self.used_tokens.contains(&hash) {
-                return Err(WraithError::InvalidInput("Token replay detected".into()));
+        // CRIT-CRYPTO-2 FIX: Atomic check-and-reserve for all tokens to prevent race conditions
+        // This prevents a race where two concurrent requests could both pass the contains()
+        // check before either calls check_and_mark().
+        //
+        // We compute all hashes first, then atomically check-and-mark ALL of them.
+        // If any token is already used, we abort before marking any new ones.
+        let token_hashes: Vec<[u8; 32]> = tokens.iter().map(|t| self.compute_token_hash(t)).collect();
+
+        // First pass: check if any token is already used (read-only)
+        for (i, hash) in token_hashes.iter().enumerate() {
+            if self.used_tokens.contains(hash) {
+                return Err(WraithError::InvalidInput(format!(
+                    "Token {} replay detected",
+                    i
+                )));
+            }
+        }
+
+        // CRIT-CRYPTO-2: Reserve all tokens atomically BEFORE verification
+        // This ensures no other request can claim these tokens while we verify
+        for hash in &token_hashes {
+            // check_and_mark returns true if this was a replay (already existed)
+            if self.used_tokens.check_and_mark(*hash) {
+                // Another concurrent request claimed this token between our contains() and check_and_mark()
+                // This is a race condition that we caught - abort cleanly
+                return Err(WraithError::InvalidInput(
+                    "Token replay detected (concurrent claim)".into(),
+                ));
             }
         }
 
         // Verify each token using standard Schnorr verification
         // Coordinator proves tokens are valid WITHOUT knowing who submitted them
+        // Note: Tokens are already marked as used - if verification fails, they stay marked
+        // (conservative: prevents potential attacks using verification timing)
         for (i, token) in tokens.iter().enumerate() {
             let valid = self.signer.verify_signature(token)?;
             if !valid {
@@ -1113,12 +1136,7 @@ impl WraithCoordinator {
             })?;
         }
 
-        // Mark tokens as used AFTER verification
-        // M-WRAITH-1: TokenCache handles size limits with time-based LRU eviction
-        for token in &tokens {
-            let hash = self.compute_token_hash(token);
-            let _ = self.used_tokens.check_and_mark(hash);
-        }
+        // Tokens are already marked as used above (CRIT-CRYPTO-2 fix)
 
         // Record address to prevent duplicates
         self.submitted_addresses.insert(final_address.clone());

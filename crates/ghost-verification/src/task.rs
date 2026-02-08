@@ -49,6 +49,9 @@ pub struct VerificationTaskConfig {
     pub peers_per_cycle: usize,
     /// HTTP timeout for verification requests
     pub request_timeout: Duration,
+    /// LOW-VER-1: Stratum connection timeout (default: 5 seconds)
+    /// Separate from HTTP timeout since stratum uses raw TCP
+    pub stratum_timeout: Duration,
 }
 
 impl Default for VerificationTaskConfig {
@@ -60,6 +63,8 @@ impl Default for VerificationTaskConfig {
             interval: Duration::from_secs(VERIFICATION_INTERVAL_SECS),
             peers_per_cycle: NODES_TO_VERIFY_PER_ROUND,
             request_timeout: Duration::from_secs(VERIFICATION_TIMEOUT_SECS),
+            // LOW-VER-1: Default stratum timeout of 5 seconds
+            stratum_timeout: Duration::from_secs(5),
         }
     }
 }
@@ -140,11 +145,11 @@ impl SignedVerificationBroadcast {
 
         // Compute message hash for signing
         let mut hasher = Sha256::new();
-        hasher.update(&broadcast.target_node_id);
-        hasher.update(&broadcast.challenger_id);
+        hasher.update(broadcast.target_node_id);
+        hasher.update(broadcast.challenger_id);
         hasher.update(broadcast.capability.as_bytes());
-        hasher.update(&[if broadcast.passed { 1u8 } else { 0u8 }]);
-        hasher.update(&broadcast.timestamp.to_le_bytes());
+        hasher.update([if broadcast.passed { 1u8 } else { 0u8 }]);
+        hasher.update(broadcast.timestamp.to_le_bytes());
         let message_hash = hasher.finalize();
 
         // Sign the message hash
@@ -207,11 +212,11 @@ impl SignedVerificationBroadcast {
 
         // Recompute message hash
         let mut hasher = Sha256::new();
-        hasher.update(&self.broadcast.target_node_id);
-        hasher.update(&self.broadcast.challenger_id);
+        hasher.update(self.broadcast.target_node_id);
+        hasher.update(self.broadcast.challenger_id);
         hasher.update(self.broadcast.capability.as_bytes());
-        hasher.update(&[if self.broadcast.passed { 1u8 } else { 0u8 }]);
-        hasher.update(&self.broadcast.timestamp.to_le_bytes());
+        hasher.update([if self.broadcast.passed { 1u8 } else { 0u8 }]);
+        hasher.update(self.broadcast.timestamp.to_le_bytes());
         let message_hash = hasher.finalize();
 
         // Verify signature using challenger's public key (node ID)
@@ -439,6 +444,47 @@ fn build_test_transaction() -> Option<String> {
     Some(serialize_hex(&tx))
 }
 
+/// LOW-VER-3: Per-target challenge tracker for rate limiting
+/// Tracks recent challenges to ensure even distribution across targets
+struct ChallengeTracker {
+    /// Map of NodeId -> last challenge timestamp
+    last_challenged: std::collections::HashMap<NodeId, i64>,
+    /// Minimum interval between challenges to same target (seconds)
+    min_interval_secs: i64,
+}
+
+impl ChallengeTracker {
+    fn new() -> Self {
+        Self {
+            last_challenged: std::collections::HashMap::new(),
+            // LOW-VER-3: Don't challenge same node more than once per 10 minutes
+            min_interval_secs: 600,
+        }
+    }
+
+    /// Check if a target can be challenged (respects rate limit)
+    fn can_challenge(&self, node_id: &NodeId) -> bool {
+        let now = chrono::Utc::now().timestamp();
+        match self.last_challenged.get(node_id) {
+            Some(&last_time) => now - last_time >= self.min_interval_secs,
+            None => true,
+        }
+    }
+
+    /// Record that a target was challenged
+    fn record_challenge(&mut self, node_id: NodeId) {
+        self.last_challenged
+            .insert(node_id, chrono::Utc::now().timestamp());
+    }
+
+    /// Clean up old entries to prevent unbounded growth
+    fn cleanup(&mut self) {
+        let now = chrono::Utc::now().timestamp();
+        let cutoff = now - self.min_interval_secs * 2;
+        self.last_challenged.retain(|_, &mut ts| ts > cutoff);
+    }
+}
+
 /// Periodic verification task
 ///
 /// Runs in the background and periodically verifies peer capabilities.
@@ -457,6 +503,8 @@ pub struct VerificationTask {
     broadcast_tx: Option<VerificationBroadcastSender>,
     /// Bitcoin RPC for fetching real block data
     rpc: Option<Arc<BitcoinRpc>>,
+    /// LOW-VER-3: Track challenges per target for even distribution
+    challenge_tracker: std::sync::Mutex<ChallengeTracker>,
 }
 
 /// C-3: Error type for verification task creation
@@ -485,6 +533,7 @@ impl VerificationTask {
             config: VerificationTaskConfig::default(),
             broadcast_tx: None,
             rpc: None,
+            challenge_tracker: std::sync::Mutex::new(ChallengeTracker::new()),
         })
     }
 
@@ -507,6 +556,7 @@ impl VerificationTask {
             config,
             broadcast_tx: None,
             rpc: None,
+            challenge_tracker: std::sync::Mutex::new(ChallengeTracker::new()),
         })
     }
 
@@ -543,6 +593,13 @@ impl VerificationTask {
 
     /// Perform a single verification cycle
     pub async fn verify_cycle(&self) {
+        // LOW-VER-3: Periodically cleanup old tracker entries to prevent memory growth
+        {
+            if let Ok(mut tracker) = self.challenge_tracker.lock() {
+                tracker.cleanup();
+            }
+        }
+
         // CRIT-VER-1: Request 3x peers to allow filtering for Sybil resistance
         let peers = self
             .peer_provider
@@ -561,15 +618,49 @@ impl VerificationTask {
             return;
         }
 
+        // LOW-VER-3: Filter out recently challenged peers for even distribution
+        let filtered: Vec<_> = match self.challenge_tracker.lock() {
+            Ok(tracker) => {
+                selected
+                    .into_iter()
+                    .filter(|peer| {
+                        let can_challenge = tracker.can_challenge(&peer.node_id);
+                        if !can_challenge {
+                            debug!(
+                                node_id = %hex::encode(&peer.node_id[..8]),
+                                "LOW-VER-3: Skipping recently challenged peer"
+                            );
+                        }
+                        can_challenge
+                    })
+                    .collect()
+            }
+            Err(e) => {
+                warn!(error = %e, "LOW-VER-3: Failed to lock challenge tracker, skipping rate limiting");
+                selected // Use the original selected without filtering
+            }
+        };
+        let selected = filtered;
+
+        if selected.is_empty() {
+            debug!("LOW-VER-3: All selected peers were recently challenged, skipping cycle");
+            return;
+        }
+
         info!(
             peer_count = selected.len(),
             requested = self.config.peers_per_cycle,
             "Starting verification cycle with Sybil-resistant selection"
         );
 
-        // Verify each peer
+        // Verify each peer and record the challenge
         for peer in selected {
             self.verify_peer(&peer).await;
+
+            // LOW-VER-3: Record that this peer was challenged
+            if let Ok(mut tracker) = self.challenge_tracker.lock() {
+                tracker.record_challenge(peer.node_id);
+            }
         }
     }
 
@@ -597,16 +688,34 @@ impl VerificationTask {
             return Vec::new();
         }
 
+        // LOW-VER-5 FIX: Deduplicate by NodeId before selection
+        // Nodes with multiple IPs could appear multiple times in the candidate list.
+        // This ensures each node is only verified once per cycle.
+        let mut seen_node_ids: HashSet<NodeId> = HashSet::new();
+        candidates.retain(|peer| {
+            if seen_node_ids.contains(&peer.node_id) {
+                debug!(
+                    node_id = %hex::encode(&peer.node_id[..8]),
+                    "LOW-VER-5: Removing duplicate NodeId from candidates"
+                );
+                false
+            } else {
+                seen_node_ids.insert(peer.node_id);
+                true
+            }
+        });
+
         // CRIT-VER-1: Extract IP addresses and build diversity map
         let mut ip_subnets: HashSet<String> = HashSet::new();
         let mut selected = Vec::new();
 
-        // CRIT-VER-1: Shuffle candidates using cryptographic randomness
-        let shuffled = Self::cryptographic_shuffle(&mut candidates);
-        if shuffled.is_err() {
-            warn!("CRIT-VER-1: Failed to get cryptographic randomness for peer selection, falling back to subset");
-            candidates.truncate(target_count);
-            return candidates;
+        // CRIT-VER-1 FIX: Shuffle candidates using cryptographic randomness
+        // On RNG failure, return EMPTY set instead of falling back to a subset.
+        // A fallback reduces diversity and enables Sybil attacks.
+        // It's better to skip verification than verify a predictable/manipulated set.
+        if Self::cryptographic_shuffle(&mut candidates).is_err() {
+            warn!("CRIT-VER-1: Failed to get cryptographic randomness for peer selection, skipping verification cycle (fail closed)");
+            return Vec::new();
         }
 
         // CRIT-VER-1: Select peers with IP diversity (prefer different /24 subnets)
@@ -627,9 +736,10 @@ impl VerificationTask {
             };
 
             // CRIT-VER-1: Prefer peers from different subnets
-            // Allow 2 peers max per /24 subnet to balance diversity vs. availability
+            // Allow 1 peer max per subnet to maximize diversity and prevent Sybil attacks
+            // (Changed from 2 to 1 per subnet for stronger Sybil resistance)
             let subnet_count = ip_subnets.iter().filter(|s| s == &&subnet).count();
-            if subnet_count >= 2 {
+            if subnet_count >= 1 {
                 remaining_candidates.push(peer);
                 continue;
             }
@@ -667,6 +777,9 @@ impl VerificationTask {
     ///
     /// Uses getrandom() to ensure unpredictable ordering that cannot be
     /// manipulated by Sybil attackers.
+    ///
+    /// CRIT-VER-1 FIX: Returns Err(()) on RNG failure - caller must NOT use
+    /// fallback that reduces diversity, as this enables Sybil attacks.
     fn cryptographic_shuffle(peers: &mut [VerifiablePeer]) -> Result<(), ()> {
         use rand::seq::SliceRandom;
         use rand::SeedableRng;
@@ -684,8 +797,12 @@ impl VerificationTask {
 
     /// CRIT-VER-1: Extract subnet identifier from IP address
     ///
-    /// For IPv4: Returns first 3 octets (e.g., "192.168.1" from "192.168.1.100")
-    /// For IPv6: Returns first 3 segments (e.g., "2001:db8:abcd" from "2001:db8:abcd::1")
+    /// For IPv4: Returns first 3 octets (/24 subnet, e.g., "192.168.1" from "192.168.1.100")
+    /// For IPv6: Returns first 4 segments (/64 subnet, e.g., "2001:db8:abcd:1234" from "2001:db8:abcd:1234::1")
+    ///
+    /// CRIT-VER-1 FIX: Changed IPv6 from /48 (3 segments) to /64 (4 segments).
+    /// /48 subnets are too broad - many unrelated organizations can share a /48.
+    /// /64 is the standard allocation for individual network segments.
     fn extract_subnet(ip: &str) -> String {
         // Parse IPv4
         if let Ok(addr) = ip.parse::<std::net::Ipv4Addr>() {
@@ -693,10 +810,10 @@ impl VerificationTask {
             return format!("{}.{}.{}", octets[0], octets[1], octets[2]);
         }
 
-        // Parse IPv6
+        // Parse IPv6 - CRIT-VER-1 FIX: Use /64 (4 segments) not /48 (3 segments)
         if let Ok(addr) = ip.parse::<std::net::Ipv6Addr>() {
             let segments = addr.segments();
-            return format!("{:x}:{:x}:{:x}", segments[0], segments[1], segments[2]);
+            return format!("{:x}:{:x}:{:x}:{:x}", segments[0], segments[1], segments[2], segments[3]);
         }
 
         // Fallback: return as-is
@@ -731,24 +848,29 @@ impl VerificationTask {
         let timestamp = chrono::Utc::now().timestamp();
 
         // Verify each claimed capability
+        // CRIT-VER-3: Log DB errors but continue with other capabilities
         if capabilities.archive_mode {
-            self.verify_archive(peer, &peer_id_hex, &our_id_hex, timestamp)
-                .await;
+            if let Err(e) = self.verify_archive(peer, &peer_id_hex, &our_id_hex, timestamp).await {
+                warn!(peer = %short_id, error = %e, "Archive verification DB error");
+            }
         }
 
         if capabilities.bitcoin_pure {
-            self.verify_policy(peer, &peer_id_hex, &our_id_hex, timestamp)
-                .await;
+            if let Err(e) = self.verify_policy(peer, &peer_id_hex, &our_id_hex, timestamp).await {
+                warn!(peer = %short_id, error = %e, "Policy verification DB error");
+            }
         }
 
         if capabilities.public_mining {
-            self.verify_stratum(peer, &peer_id_hex, &our_id_hex, timestamp)
-                .await;
+            if let Err(e) = self.verify_stratum(peer, &peer_id_hex, &our_id_hex, timestamp).await {
+                warn!(peer = %short_id, error = %e, "Stratum verification DB error");
+            }
         }
 
         if capabilities.ghost_pay {
-            self.verify_ghostpay(peer, &peer_id_hex, &our_id_hex, timestamp)
-                .await;
+            if let Err(e) = self.verify_ghostpay(peer, &peer_id_hex, &our_id_hex, timestamp).await {
+                warn!(peer = %short_id, error = %e, "GhostPay verification DB error");
+            }
         }
     }
 
@@ -756,13 +878,15 @@ impl VerificationTask {
     ///
     /// C-2 FIX: Now includes merkle root validation to verify block data authenticity.
     /// Previously only checked resp.success without validating the actual block data.
+    ///
+    /// CRIT-VER-3: Returns Result - DB write failures are propagated to caller
     async fn verify_archive(
         &self,
         peer: &VerifiablePeer,
         peer_id_hex: &str,
         our_id_hex: &str,
         timestamp: i64,
-    ) {
+    ) -> Result<(), String> {
         // L-11: Get a real block hash from the blockchain via RPC
         // Fail closed: if RPC is unavailable, skip the challenge rather than using
         // a predictable genesis block that could be pre-computed
@@ -776,7 +900,7 @@ impl VerificationTask {
                         "RPC unavailable, skipping archive verification (fail closed)"
                     );
                     // Record as inconclusive - don't pass or fail, just skip
-                    return;
+                    return Ok(());
                 }
             };
 
@@ -825,7 +949,7 @@ impl VerificationTask {
             "Archive verification complete"
         );
 
-        // CRIT-VER-3: Store result with proper error handling
+        // CRIT-VER-3: Store result with proper error handling - return error if DB fails
         if let Err(e) = self.db.insert_archive_challenge(
             peer_id_hex,
             our_id_hex,
@@ -837,11 +961,12 @@ impl VerificationTask {
             warn!(
                 peer = %peer_id_hex[..8],
                 error = %e,
-                "CRIT-VER-3: Failed to store archive challenge result"
+                "CRIT-VER-3: Failed to store archive challenge result - not broadcasting"
             );
+            return Err(format!("CRIT-VER-3: DB write failed: {}", e));
         }
 
-        // Broadcast result
+        // Broadcast result (only if DB write succeeded)
         self.broadcast_result(
             peer.node_id,
             "archive",
@@ -851,6 +976,8 @@ impl VerificationTask {
             timestamp,
         )
         .await;
+
+        Ok(())
     }
 
     /// C-2 FIX: Get a random block with merkle root for validation
@@ -878,10 +1005,9 @@ impl VerificationTask {
             return None;
         }
 
-        // HIGH-VER-2: Uniform distribution across ALL heights (0 to current)
-        // Previous code excluded recent 100 blocks, creating bias toward old blocks.
-        // Now we select from 0 to current height with equal probability.
-        // This ensures archive nodes must maintain full history, not just old blocks.
+        // HIGH-VER-2 FIX: True uniform distribution across ALL heights (0 to current)
+        // Removed the 20% early block bias that existed previously.
+        // Archive nodes must maintain full history and should be tested uniformly.
         let mut rand_bytes = [0u8; 8];
         if getrandom::getrandom(&mut rand_bytes).is_err() {
             warn!("Failed to get cryptographic randomness for block selection");
@@ -889,17 +1015,9 @@ impl VerificationTask {
         }
         let rand_val = u64::from_le_bytes(rand_bytes);
 
-        // HIGH-VER-2: Select from blocks 0 through current height
-        // We specifically test early blocks (0-1000) with 20% probability
-        // to ensure archive nodes have genesis and early chain data
-        let use_early_block = (rand_val % 100) < 20; // 20% chance
-        let challenge_height = if use_early_block && height > 1000 {
-            // Select from first 1000 blocks
-            rand_val % 1000
-        } else {
-            // Select uniformly from all blocks
-            rand_val % (height + 1)
-        };
+        // HIGH-VER-2 FIX: Select uniformly from blocks 0 through current height
+        // No bias toward any particular range - every block has equal probability
+        let challenge_height = rand_val % (height + 1);
 
         // Get block hash at that height
         let block_hash = match rpc.get_block_hash(challenge_height).await {
@@ -914,9 +1032,15 @@ impl VerificationTask {
         let merkle_root = match rpc.get_block_header(&block_hash).await {
             Ok(header) => Some(header.merkleroot),
             Err(e) => {
-                // If we can't get the header, we can still proceed without merkle validation
-                debug!(error = %e, "Failed to get block header for merkle root");
-                None
+                // MED-VER-4 FIX: Fail closed - if we can't verify merkle, skip the challenge
+                // Previously we continued without merkle validation, which allows nodes
+                // to pass with unverified block data
+                warn!(
+                    error = %e,
+                    height = challenge_height,
+                    "MED-VER-4: Can't get block header for merkle validation, skipping challenge (fail closed)"
+                );
+                return None;
             }
         };
 
@@ -999,18 +1123,23 @@ impl VerificationTask {
             return (false, "C-2: Block has zero transactions".to_string());
         }
 
-        // C-2 FIX: Validate timestamp is reasonable (not in the far future)
+        // C-2 FIX + LOW-VER-4 FIX: Validate timestamp for historical blocks
+        // Archive verification is for HISTORICAL blocks, so timestamps must be in the past.
+        // The 2-hour future tolerance was for new blocks being mined, but archive challenges
+        // request blocks that already exist in the chain - they cannot have future timestamps.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        // Allow 2 hours in the future (Bitcoin allows ~2 hours clock drift)
-        if block_data.timestamp > now + 7200 {
+
+        // LOW-VER-4 FIX: Historical blocks must have timestamp <= now
+        // Only allow minimal clock skew (60 seconds) to account for verification timing
+        if block_data.timestamp > now + 60 {
             return (
                 false,
                 format!(
-                    "C-2: Block timestamp {} is too far in the future",
-                    block_data.timestamp
+                    "LOW-VER-4: Historical block timestamp {} is in the future (now: {})",
+                    block_data.timestamp, now
                 ),
             );
         }
@@ -1019,13 +1148,15 @@ impl VerificationTask {
     }
 
     /// Verify policy capability
+    ///
+    /// CRIT-VER-3: Returns Result - DB write failures are propagated to caller
     async fn verify_policy(
         &self,
         peer: &VerifiablePeer,
         peer_id_hex: &str,
         our_id_hex: &str,
         timestamp: i64,
-    ) {
+    ) -> Result<(), String> {
         // M-12 FIX: Build valid T0 transaction for policy classification challenge
         // Fail closed if cryptographic randomness unavailable
         let test_tx_hex = match build_test_transaction() {
@@ -1035,7 +1166,7 @@ impl VerificationTask {
                     peer = %peer_id_hex[..8],
                     "M-12: Skipping policy verification - cryptographic randomness unavailable"
                 );
-                return;
+                return Ok(());
             }
         };
         debug!(tx_hex_len = test_tx_hex.len(), tx_hex_prefix = %&test_tx_hex[..40.min(test_tx_hex.len())], "Built test transaction");
@@ -1101,7 +1232,7 @@ impl VerificationTask {
             "Policy verification complete"
         );
 
-        // CRIT-VER-3: Store result with proper error handling
+        // CRIT-VER-3: Store result with proper error handling - return error if DB fails
         if let Err(e) = self.db.insert_policy_challenge(
             peer_id_hex,
             our_id_hex,
@@ -1113,11 +1244,12 @@ impl VerificationTask {
             warn!(
                 peer = %peer_id_hex[..8],
                 error = %e,
-                "CRIT-VER-3: Failed to store policy challenge result"
+                "CRIT-VER-3: Failed to store policy challenge result - not broadcasting"
             );
+            return Err(format!("CRIT-VER-3: DB write failed: {}", e));
         }
 
-        // Broadcast result
+        // Broadcast result (only if DB write succeeded)
         self.broadcast_result(
             peer.node_id,
             "policy",
@@ -1127,16 +1259,20 @@ impl VerificationTask {
             timestamp,
         )
         .await;
+
+        Ok(())
     }
 
     /// Verify stratum capability
+    ///
+    /// CRIT-VER-3: Returns Result - DB write failures are propagated to caller
     async fn verify_stratum(
         &self,
         peer: &VerifiablePeer,
         peer_id_hex: &str,
         our_id_hex: &str,
         timestamp: i64,
-    ) {
+    ) -> Result<(), String> {
         use crate::challenge::StratumProtocol;
 
         let challenge_data = serde_json::json!({
@@ -1172,7 +1308,7 @@ impl VerificationTask {
 
         info!(peer = %short_id, passed = passed, connected = connected, "Stratum verification complete");
 
-        // CRIT-VER-3: Store result with proper error handling
+        // CRIT-VER-3: Store result with proper error handling - return error if DB fails
         if let Err(e) = self.db.insert_stratum_challenge(
             peer_id_hex,
             our_id_hex,
@@ -1183,11 +1319,12 @@ impl VerificationTask {
             warn!(
                 peer = %peer_id_hex[..8],
                 error = %e,
-                "CRIT-VER-3: Failed to store stratum challenge result"
+                "CRIT-VER-3: Failed to store stratum challenge result - not broadcasting"
             );
+            return Err(format!("CRIT-VER-3: DB write failed: {}", e));
         }
 
-        // Broadcast result
+        // Broadcast result (only if DB write succeeded)
         self.broadcast_result(
             peer.node_id,
             "stratum",
@@ -1197,6 +1334,8 @@ impl VerificationTask {
             timestamp,
         )
         .await;
+
+        Ok(())
     }
 
     /// Verify ghostpay capability
@@ -1204,13 +1343,15 @@ impl VerificationTask {
     /// H-1 FIX: Always requires epoch state proof verification. Previously only checked
     /// l2_enabled: true when no challenge_epoch was provided, allowing nodes to claim
     /// GhostPay capability without actually maintaining L2 state.
+    ///
+    /// CRIT-VER-3: Returns Result - DB write failures are propagated to caller
     async fn verify_ghostpay(
         &self,
         peer: &VerifiablePeer,
         peer_id_hex: &str,
         our_id_hex: &str,
         timestamp: i64,
-    ) {
+    ) -> Result<(), String> {
         let short_id = &peer_id_hex[..8];
 
         // H-1 FIX: Generate a random challenge epoch to verify the node has L2 state
@@ -1222,7 +1363,7 @@ impl VerificationTask {
                     peer = %short_id,
                     "H-1: Skipping GhostPay verification - failed to generate challenge epoch"
                 );
-                return;
+                return Ok(());
             }
         };
 
@@ -1269,7 +1410,7 @@ impl VerificationTask {
             "GhostPay verification complete"
         );
 
-        // Store result
+        // CRIT-VER-3: Store result with proper error handling - return error if DB fails
         if let Err(e) = self.db.insert_ghostpay_challenge(
             peer_id_hex,
             our_id_hex,
@@ -1277,10 +1418,15 @@ impl VerificationTask {
             response_valid,
             passed,
         ) {
-            warn!(peer = %short_id, error = %e, "Failed to store GhostPay challenge");
+            warn!(
+                peer = %short_id,
+                error = %e,
+                "CRIT-VER-3: Failed to store GhostPay challenge result - not broadcasting"
+            );
+            return Err(format!("CRIT-VER-3: DB write failed: {}", e));
         }
 
-        // Broadcast result
+        // Broadcast result (only if DB write succeeded)
         self.broadcast_result(
             peer.node_id,
             "ghostpay",
@@ -1290,6 +1436,8 @@ impl VerificationTask {
             timestamp,
         )
         .await;
+
+        Ok(())
     }
 
     /// H-1 FIX: Generate a random challenge epoch for GhostPay verification
@@ -1297,20 +1445,25 @@ impl VerificationTask {
     /// Returns a random epoch number within a reasonable range. Uses cryptographic
     /// randomness to prevent nodes from pre-computing responses.
     ///
-    /// HIGH-VER-1: Expanded range from 1-1000 to 1-1000000 to prevent precomputation
+    /// HIGH-VER-1: Use full 64-bit random epoch to prevent precomputation attacks.
+    /// Previously used 1-1M range which could be pre-computed in ~1TB of storage.
+    /// With 64-bit random values, precomputation is infeasible (2^64 possible values).
+    /// The challenge_epoch is combined with a random nonce for state hash computation.
     fn generate_challenge_epoch(&self) -> Option<u64> {
-        let mut rand_bytes = [0u8; 8];
+        // HIGH-VER-1: Use 32 bytes (256-bit) of randomness for maximum unpredictability
+        let mut rand_bytes = [0u8; 32];
         if getrandom::getrandom(&mut rand_bytes).is_err() {
             warn!("H-1/HIGH-VER-1: Failed to get cryptographic randomness for challenge epoch");
             return None;
         }
 
-        // HIGH-VER-1: Expanded epoch range from 1-1000 to 1-1000000
-        // This prevents attackers from pre-computing and caching responses for all
-        // possible epochs. With 1M possible epochs, pre-computation becomes infeasible.
-        // Range: 1 to 1000000 (epoch 0 is genesis, avoid it)
-        let rand_val = u64::from_le_bytes(rand_bytes);
-        let epoch = 1 + (rand_val % 1_000_000);
+        // HIGH-VER-1: Use first 8 bytes as epoch, ensuring full 64-bit random range
+        // This makes precomputation of all possible epochs infeasible (2^64 values)
+        // Combined with the random nonce in validation, provides strong security.
+        let epoch = u64::from_le_bytes(rand_bytes[..8].try_into().unwrap());
+
+        // Ensure non-zero epoch (epoch 0 is genesis with special semantics)
+        let epoch = if epoch == 0 { 1 } else { epoch };
 
         Some(epoch)
     }
@@ -1408,6 +1561,8 @@ impl VerificationTask {
     }
 
     /// Broadcast a verification result via P2P
+    ///
+    /// MED-VER-7: Validates timestamp before broadcasting to prevent stale/future results
     async fn broadcast_result(
         &self,
         target_node_id: NodeId,
@@ -1417,6 +1572,34 @@ impl VerificationTask {
         response_data: Option<String>,
         timestamp: i64,
     ) {
+        // MED-VER-7 FIX: Clock sanity check before broadcasting
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // Reject if timestamp is more than 2 minutes in the future (clock drift)
+        if timestamp > now + 120 {
+            warn!(
+                timestamp = timestamp,
+                now = now,
+                capability = capability,
+                "MED-VER-7: Not broadcasting - timestamp too far in future (clock drift?)"
+            );
+            return;
+        }
+
+        // Reject if timestamp is more than 10 minutes old (stale result)
+        if timestamp + 600 < now {
+            warn!(
+                timestamp = timestamp,
+                now = now,
+                capability = capability,
+                "MED-VER-7: Not broadcasting - timestamp too old (stale result)"
+            );
+            return;
+        }
+
         if let Some(ref tx) = self.broadcast_tx {
             let broadcast = VerificationBroadcast {
                 target_node_id,

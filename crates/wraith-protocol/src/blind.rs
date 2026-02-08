@@ -49,6 +49,7 @@ use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, SecretKey};
 use rand::RngCore;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use subtle::ConstantTimeEq;
 use zeroize::Zeroize;
 
 use crate::error::WraithError;
@@ -390,11 +391,34 @@ pub struct BlindSignatureResponse {
     pub session_id: [u8; 32],
 }
 
-/// WR4-L10 + H-WRAITH-2: Key rotation grace period in seconds
+/// WR4-L10 + H-WRAITH-2: Default key rotation grace period in seconds
 /// Old keys are kept for this duration to verify in-flight signatures.
 /// Extended to 7 days to match maximum Wraith session duration.
 /// Note: rotate_key_if_safe() should be preferred to ensure no active sessions are broken.
-const KEY_ROTATION_GRACE_PERIOD_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+///
+/// LOW-CRYPTO-1: This is now configurable via CoordinatorSignerConfig::grace_period_secs
+const DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECS: u64 = 7 * 24 * 60 * 60; // 7 days
+
+/// LOW-CRYPTO-1 FIX: Configuration for CoordinatorSigner
+///
+/// Allows customization of security-critical parameters that were previously
+/// hard-coded constants. All fields have secure defaults.
+#[derive(Debug, Clone)]
+pub struct CoordinatorSignerConfig {
+    /// Key rotation grace period in seconds (default: 7 days)
+    ///
+    /// Old keys are kept for this duration to verify in-flight signatures.
+    /// Must be at least as long as the maximum session duration.
+    pub grace_period_secs: u64,
+}
+
+impl Default for CoordinatorSignerConfig {
+    fn default() -> Self {
+        Self {
+            grace_period_secs: DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECS,
+        }
+    }
+}
 
 /// WR4-L10: Previous key information for verification of in-flight signatures
 #[derive(Debug)]
@@ -429,6 +453,8 @@ pub struct CoordinatorSigner {
     nonces_per_participant: std::collections::HashMap<String, usize>,
     /// WR4-L10: Previous keys kept for grace period to verify in-flight signatures
     previous_keys: Vec<PreviousKey>,
+    /// LOW-CRYPTO-1: Configurable grace period in seconds
+    grace_period_secs: u64,
 }
 
 impl std::fmt::Debug for CoordinatorSigner {
@@ -441,8 +467,15 @@ impl std::fmt::Debug for CoordinatorSigner {
 }
 
 impl CoordinatorSigner {
-    /// Create a new coordinator signer for a session
+    /// Create a new coordinator signer for a session with default configuration
     pub fn new(session_id: &[u8; 32]) -> Self {
+        Self::with_config(session_id, CoordinatorSignerConfig::default())
+    }
+
+    /// LOW-CRYPTO-1 FIX: Create a new coordinator signer with custom configuration
+    ///
+    /// Allows customization of security-critical parameters like grace period.
+    pub fn with_config(session_id: &[u8; 32], config: CoordinatorSignerConfig) -> Self {
         let secp = Secp256k1::new();
 
         // Generate session-specific signing key
@@ -464,11 +497,21 @@ impl CoordinatorSigner {
             active_nonces: std::collections::HashMap::new(),
             nonces_per_participant: std::collections::HashMap::new(),
             previous_keys: Vec::new(), // WR4-L10
+            grace_period_secs: config.grace_period_secs, // LOW-CRYPTO-1
         }
     }
 
-    /// Create from existing key bytes (for restoration)
+    /// Create from existing key bytes (for restoration) with default config
     pub fn from_bytes(key_bytes: &[u8; 32], session_id: &[u8; 32]) -> Result<Self, WraithError> {
+        Self::from_bytes_with_config(key_bytes, session_id, CoordinatorSignerConfig::default())
+    }
+
+    /// LOW-CRYPTO-1 FIX: Create from existing key bytes with custom configuration
+    pub fn from_bytes_with_config(
+        key_bytes: &[u8; 32],
+        session_id: &[u8; 32],
+        config: CoordinatorSignerConfig,
+    ) -> Result<Self, WraithError> {
         let secp = Secp256k1::new();
 
         let signing_key = SecretKey::from_slice(key_bytes)
@@ -489,6 +532,7 @@ impl CoordinatorSigner {
             active_nonces: std::collections::HashMap::new(),
             nonces_per_participant: std::collections::HashMap::new(),
             previous_keys: Vec::new(), // WR4-L10
+            grace_period_secs: config.grace_period_secs, // LOW-CRYPTO-1
         })
     }
 
@@ -767,11 +811,15 @@ impl CoordinatorSigner {
     /// Verify a final unblinded signature
     ///
     /// This is standard Schnorr verification: s'*G = R' + c*X
+    ///
+    /// HIGH-CRYPTO-1 FIX: Uses constant-time comparison for key ID.
     pub fn verify_signature(&self, token: &UnblindedToken) -> Result<bool, WraithError> {
         let secp = Secp256k1::new();
 
-        // Check key ID
-        if token.session_key_id != self.key_id {
+        // HIGH-CRYPTO-1 FIX: Use constant-time comparison for key ID
+        // This prevents timing attacks that could reveal key information
+        let key_matches: bool = token.session_key_id.ct_eq(&self.key_id).into();
+        if !key_matches {
             return Ok(false);
         }
 
@@ -910,9 +958,10 @@ impl CoordinatorSigner {
     }
 
     /// WR4-L10: Clean up old keys that are past the grace period
+    /// LOW-CRYPTO-1: Now uses configurable grace_period_secs instead of constant
     fn cleanup_old_keys(&mut self) {
         let cutoff =
-            Instant::now() - std::time::Duration::from_secs(KEY_ROTATION_GRACE_PERIOD_SECS);
+            Instant::now() - std::time::Duration::from_secs(self.grace_period_secs);
         let before = self.previous_keys.len();
         self.previous_keys.retain(|pk| pk.rotated_at > cutoff);
         let removed = before - self.previous_keys.len();
@@ -929,18 +978,25 @@ impl CoordinatorSigner {
     ///
     /// This allows verification of signatures created before a key rotation,
     /// as long as they're within the grace period.
+    ///
+    /// HIGH-CRYPTO-1 FIX: Uses constant-time comparison for key IDs to prevent
+    /// timing side-channel attacks that could reveal which key was used.
     pub fn verify_signature_with_rotation(
         &self,
         token: &UnblindedToken,
     ) -> Result<bool, WraithError> {
-        // First try current key
-        if token.session_key_id == self.key_id {
+        // HIGH-CRYPTO-1 FIX: Use constant-time comparison for key ID
+        // This prevents timing attacks that could reveal which key was used
+        let matches_current: bool = token.session_key_id.ct_eq(&self.key_id).into();
+        if matches_current {
             return self.verify_signature(token);
         }
 
         // Check previous keys within grace period
+        // HIGH-CRYPTO-1 FIX: Use constant-time comparison for all previous keys
         for prev in &self.previous_keys {
-            if token.session_key_id == prev.key_id {
+            let matches_prev: bool = token.session_key_id.ct_eq(&prev.key_id).into();
+            if matches_prev {
                 // Verify with the previous key
                 return self.verify_signature_with_key(token, &prev.public_key, &prev.key_id);
             }
@@ -951,6 +1007,8 @@ impl CoordinatorSigner {
     }
 
     /// WR4-L10: Verify a signature with a specific key
+    ///
+    /// HIGH-CRYPTO-1 FIX: Uses constant-time comparison for key ID.
     fn verify_signature_with_key(
         &self,
         token: &UnblindedToken,
@@ -959,8 +1017,9 @@ impl CoordinatorSigner {
     ) -> Result<bool, WraithError> {
         let secp = Secp256k1::new();
 
-        // Check key ID
-        if token.session_key_id != *expected_key_id {
+        // HIGH-CRYPTO-1 FIX: Use constant-time comparison for key ID
+        let key_matches: bool = token.session_key_id.ct_eq(expected_key_id).into();
+        if !key_matches {
             return Ok(false);
         }
 
@@ -1192,26 +1251,43 @@ impl BlindingContext {
 /// 1. Call secp256k1's non_secure_erase()
 /// 2. Overwrite with deterministic dummy values
 /// 3. Zeroize the temporary buffer
+///
+/// HIGH-CRYPTO-4 FIX: Each zeroization step is wrapped to ensure subsequent
+/// steps execute even if earlier ones panic. This prevents partial cleanup
+/// where some secrets remain in memory if Drop panics midway.
 impl Drop for BlindingContext {
     fn drop(&mut self) {
-        // Erase alpha using secp256k1's built-in method
-        self.alpha.non_secure_erase();
-        // Erase beta using secp256k1's built-in method
-        self.beta.non_secure_erase();
-
-        // Overwrite with deterministic dummy values for defense-in-depth
-        let mut dummy = [1u8; 32];
-        if let Ok(dummy_key) = SecretKey::from_slice(&dummy) {
-            self.alpha = dummy_key;
-        }
-        dummy[0] = 2; // Use different value for beta
-        if let Ok(dummy_key) = SecretKey::from_slice(&dummy) {
-            self.beta = dummy_key;
-        }
-        dummy.zeroize();
-
-        // Also clear the message which may contain sensitive output address info
+        // HIGH-CRYPTO-4: Zeroize message FIRST, unconditionally
+        // This is the most likely to succeed and contains sensitive address info
         self.message.zeroize();
+
+        // HIGH-CRYPTO-4: Use catch_unwind for each step to ensure all zeroization happens
+        // Even if one step panics, the others will execute
+
+        // Step 1: Erase alpha
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.alpha.non_secure_erase();
+        }));
+
+        // Step 2: Erase beta
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.beta.non_secure_erase();
+        }));
+
+        // Step 3: Overwrite with deterministic dummy values for defense-in-depth
+        // HIGH-CRYPTO-4: Use pre-validated dummy key to avoid potential panic
+        // These byte values are valid secp256k1 secret keys (within curve order)
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut dummy = [1u8; 32];
+            if let Ok(dummy_key) = SecretKey::from_slice(&dummy) {
+                self.alpha = dummy_key;
+            }
+            dummy[0] = 2; // Use different value for beta
+            if let Ok(dummy_key) = SecretKey::from_slice(&dummy) {
+                self.beta = dummy_key;
+            }
+            dummy.zeroize();
+        }));
     }
 }
 
@@ -1293,11 +1369,14 @@ impl TokenVerifier {
     /// Verify an unblinded token
     ///
     /// Performs standard Schnorr verification: s'*G == R' + c*X
+    ///
+    /// HIGH-CRYPTO-1 FIX: Uses constant-time comparison for key ID.
     pub fn verify(&self, token: &UnblindedToken) -> Result<bool, WraithError> {
         let secp = Secp256k1::new();
 
-        // Check key ID
-        if token.session_key_id != self.key_id {
+        // HIGH-CRYPTO-1 FIX: Use constant-time comparison for key ID
+        let key_matches: bool = token.session_key_id.ct_eq(&self.key_id).into();
+        if !key_matches {
             return Ok(false);
         }
 

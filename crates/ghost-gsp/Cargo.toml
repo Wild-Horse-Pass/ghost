@@ -53,6 +53,7 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 rand = { workspace = true }
 getrandom = { workspace = true }
+subtle = "2.5"
 
 # Networking
 axum = { workspace = true }

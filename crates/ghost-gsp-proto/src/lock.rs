@@ -48,6 +48,11 @@ pub enum GhostLockStatus {
     Recovered,
     /// Lock was invalidated
     Invalid,
+    /// MED-ENUM-1 FIX: Unknown status for future compatibility
+    /// Used when an unrecognized status string is received.
+    /// This prevents silent data loss and allows graceful handling
+    /// of new status values from updated backends.
+    Unknown,
 }
 
 impl GhostLockStatus {
@@ -86,6 +91,7 @@ impl std::fmt::Display for GhostLockStatus {
             GhostLockStatus::Recovering => "recovering",
             GhostLockStatus::Recovered => "recovered",
             GhostLockStatus::Invalid => "invalid",
+            GhostLockStatus::Unknown => "unknown",
         };
         write!(f, "{}", s)
     }

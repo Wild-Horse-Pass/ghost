@@ -885,6 +885,7 @@ impl ElderRegistrationHandler {
                     approver,
                     signature,
                     timestamp: r.approved_at,
+                    prev_merkle_root: None, // Historic approvals may not have this
                 })
             })
             .collect();

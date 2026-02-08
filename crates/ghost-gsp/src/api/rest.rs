@@ -22,10 +22,15 @@
 
 //! REST API handlers
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::{extract::State, Json};
-use tracing::info;
+use axum::{
+    extract::{ConnectInfo, State},
+    http::HeaderMap,
+    Json,
+};
+use tracing::{info, warn};
 
 use ghost_gsp_proto::{
     RegisterRequest, RegisterResponse, SessionRequest, SessionResponse, PROTOCOL_VERSION,
@@ -40,6 +45,45 @@ use crate::GSP_VERSION;
 pub struct HealthResponse {
     pub status: &'static str,
     pub version: &'static str,
+}
+
+/// CRIT-AUTH-4: Extract client IP from request
+///
+/// Attempts to get the real client IP in this order:
+/// 1. X-Forwarded-For header (last entry, set by trusted proxy)
+/// 2. X-Real-IP header (nginx convention)
+/// 3. ConnectInfo (direct peer address)
+///
+/// Security: Only trust proxy headers when the connection comes from
+/// a trusted proxy IP. The server.rs module handles this validation.
+fn get_client_ip(
+    headers: &HeaderMap,
+    connect_info: Option<&ConnectInfo<SocketAddr>>,
+) -> Option<String> {
+    // Get peer IP for trust validation
+    let peer_ip = connect_info.map(|ci| ci.0.ip());
+
+    // Try X-Forwarded-For (last entry is most trustworthy from trusted proxy)
+    if let Some(xff) = headers.get("X-Forwarded-For") {
+        if let Ok(xff_str) = xff.to_str() {
+            if let Some(ip_str) = xff_str.split(',').next_back() {
+                let ip_trimmed = ip_str.trim();
+                if !ip_trimmed.is_empty() {
+                    return Some(ip_trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    // Try X-Real-IP header
+    if let Some(xri) = headers.get("X-Real-IP") {
+        if let Ok(ip_str) = xri.to_str() {
+            return Some(ip_str.to_string());
+        }
+    }
+
+    // Fall back to peer IP
+    peer_ip.map(|ip| ip.to_string())
 }
 
 /// Health check handler
@@ -81,10 +125,19 @@ pub async fn info(State(state): State<Arc<GspState>>) -> Json<InfoResponse> {
 }
 
 /// Register a new wallet
+///
+/// CRIT-AUTH-4: Accepts ConnectInfo for IP extraction and logging.
 pub async fn register(
     State(state): State<Arc<GspState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> GspResult<Json<RegisterResponse>> {
+    // CRIT-AUTH-4: Log client IP for audit trail
+    let client_ip = get_client_ip(&headers, connect_info.as_ref());
+    if let Some(ref ip) = client_ip {
+        info!(client_ip = %ip, "Processing wallet registration request");
+    }
     // Validate proof structure
     req.proof
         .validate_structure()
@@ -137,10 +190,18 @@ pub async fn register(
 }
 
 /// Create a new session
+///
+/// CRIT-AUTH-3: Session tokens are now bound to the client IP address.
+/// CRIT-AUTH-4: Extracts client IP from ConnectInfo or X-Forwarded-For header.
 pub async fn create_session(
     State(state): State<Arc<GspState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    headers: HeaderMap,
     Json(req): Json<SessionRequest>,
 ) -> GspResult<Json<SessionResponse>> {
+    // CRIT-AUTH-4: Extract client IP for session binding
+    let client_ip = get_client_ip(&headers, connect_info.as_ref());
+
     // Validate proof structure
     req.proof
         .validate_structure()
@@ -172,10 +233,15 @@ pub async fn create_session(
     // Verify signature
     state.registry.verify_proof(&req.proof)?;
 
-    // Create session token
-    let token = state.jwt.create_token(&wallet_id)?;
+    // CRIT-AUTH-3: Create session token bound to client IP
+    // This prevents session hijacking if the token is stolen
+    let token = state.jwt.create_token_with_ip(&wallet_id, client_ip.clone())?;
 
-    info!(wallet_id = %wallet_id, "Session created");
+    if let Some(ref ip) = client_ip {
+        info!(wallet_id = %wallet_id, client_ip = %ip, "Session created with IP binding");
+    } else {
+        warn!(wallet_id = %wallet_id, "Session created without IP binding - client IP not available");
+    }
 
     Ok(Json(SessionResponse {
         success: true,

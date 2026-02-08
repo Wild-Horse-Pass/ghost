@@ -65,8 +65,8 @@ mod session;
 mod tier;
 
 pub use blind::{
-    BlindSignature, BlindedAddress, BlindingContext, CoordinatorSigner, TokenVerifier,
-    UnblindedToken,
+    BlindSignature, BlindedAddress, BlindingContext, CoordinatorSigner, CoordinatorSignerConfig,
+    TokenVerifier, UnblindedToken,
 };
 pub use coordinator::{
     AuditEvent, AuditLog, InMemoryAuditLog, Participant, ReputationTracker, SessionAuditRecord,

@@ -25,7 +25,7 @@
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::denomination::WraithDenomination;
 use crate::phase::{Phase, PhaseExecution};
@@ -250,6 +250,9 @@ impl SessionConfig {
 }
 
 /// A Wraith mixing session
+///
+/// MED-CRYPTO-1 FIX: Uses both Instant (monotonic) and SystemTime for timeout
+/// calculations to handle system suspend/resume correctly.
 #[derive(Debug, Clone)]
 pub struct WraithSession {
     /// Unique session ID
@@ -271,6 +274,9 @@ pub struct WraithSession {
     created_at: u64,
     /// Session timeout instant (monotonic - for timeout calculations) (WR-L3)
     timeout_instant: Instant,
+    /// MED-CRYPTO-1: Session creation time for suspend-aware timeout
+    /// This is used alongside timeout_instant to detect suspend/resume
+    creation_system_time: SystemTime,
     /// Session timeout duration from creation
     timeout_duration_secs: u64,
     /// M-6: Total extension time used (to enforce MAX_EXTENSION_SECS limit)
@@ -307,7 +313,7 @@ impl WraithSession {
         // This prevents NTP manipulation attacks on session timeouts
         // WR4-L1: Allow configurable timeout
         let timeout_duration = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
-        let timeout_instant = Instant::now() + std::time::Duration::from_secs(timeout_duration);
+        let timeout_instant = Instant::now() + Duration::from_secs(timeout_duration);
 
         Self {
             session_id,
@@ -319,6 +325,8 @@ impl WraithSession {
             phase2: None,
             created_at: now_unix,
             timeout_instant,
+            // MED-CRYPTO-1: Initialize SystemTime for suspend-aware timeout
+            creation_system_time: std::time::SystemTime::now(),
             timeout_duration_secs: timeout_duration,
             total_extensions_secs: 0,
         }
@@ -376,21 +384,58 @@ impl WraithSession {
 
     /// Check if session has timed out
     ///
-    /// Uses monotonic clock (Instant) to prevent NTP manipulation attacks (WR-L3).
+    /// MED-CRYPTO-1 FIX: Uses both monotonic clock (Instant) AND wall-clock (SystemTime)
+    /// to handle system suspend/resume correctly. When a system suspends:
+    /// - Instant::now() freezes during suspend (doesn't account for sleep time)
+    /// - SystemTime::now() advances during suspend
+    ///
+    /// We timeout if EITHER clock indicates timeout has elapsed, providing
+    /// protection against both NTP manipulation (via Instant) and suspend evasion
+    /// (via SystemTime).
     pub fn is_timed_out(&self) -> bool {
-        Instant::now() >= self.timeout_instant
+        // Check monotonic clock (protects against NTP manipulation)
+        let monotonic_expired = Instant::now() >= self.timeout_instant;
+
+        // Check wall clock (protects against suspend evasion)
+        let wall_clock_expired = match self.creation_system_time.elapsed() {
+            Ok(elapsed) => elapsed.as_secs() >= self.timeout_duration_secs + self.total_extensions_secs,
+            Err(_) => {
+                // System clock went backwards - be conservative and don't timeout
+                // This can happen on NTP adjustments, handled safely
+                false
+            }
+        };
+
+        // Session is timed out if EITHER clock says so
+        monotonic_expired || wall_clock_expired
     }
 
     /// Get remaining time in seconds
     ///
-    /// Uses monotonic clock (Instant) to prevent NTP manipulation attacks (WR-L3).
+    /// MED-CRYPTO-1 FIX: Returns the minimum of monotonic and wall-clock remaining time.
+    /// This ensures we report the most conservative (lowest) remaining time,
+    /// which protects against both NTP manipulation and suspend evasion.
     pub fn remaining_secs(&self) -> u64 {
+        // Calculate remaining from monotonic clock
         let now = Instant::now();
-        if now >= self.timeout_instant {
+        let monotonic_remaining = if now >= self.timeout_instant {
             0
         } else {
             (self.timeout_instant - now).as_secs()
-        }
+        };
+
+        // Calculate remaining from wall clock
+        let total_timeout = self.timeout_duration_secs + self.total_extensions_secs;
+        let wall_remaining = match self.creation_system_time.elapsed() {
+            Ok(elapsed) => total_timeout.saturating_sub(elapsed.as_secs()),
+            Err(_) => {
+                // System clock went backwards - return monotonic value only
+                return monotonic_remaining;
+            }
+        };
+
+        // Return the minimum (most conservative) of the two
+        monotonic_remaining.min(wall_remaining)
     }
 
     /// Get appropriate timeout for the current state
@@ -413,7 +458,7 @@ impl WraithSession {
     /// Uses monotonic clock (Instant) to prevent NTP manipulation attacks (WR-L3).
     fn reset_timeout(&mut self) {
         let new_duration = Self::timeout_for_state(self.state);
-        self.timeout_instant = Instant::now() + std::time::Duration::from_secs(new_duration);
+        self.timeout_instant = Instant::now() + Duration::from_secs(new_duration);
         self.timeout_duration_secs = new_duration;
     }
 
@@ -438,7 +483,7 @@ impl WraithSession {
         let actual_extension = additional_secs.min(remaining_budget);
 
         if actual_extension > 0 {
-            self.timeout_instant += std::time::Duration::from_secs(actual_extension);
+            self.timeout_instant += Duration::from_secs(actual_extension);
             self.timeout_duration_secs =
                 self.timeout_duration_secs.saturating_add(actual_extension);
             self.total_extensions_secs =

@@ -1269,6 +1269,14 @@ impl VoteHandler {
                 VoteResult::AlreadyDecided => {
                     debug!("Vote received after decision");
                 }
+                VoteResult::SessionTimedOut => {
+                    // MED-CONS-1: Session has timed out, vote is rejected
+                    debug!(
+                        round_id = vote_msg.round_id,
+                        sender = hex::encode(&sender[..8]),
+                        "Vote rejected - voting session has timed out"
+                    );
+                }
                 VoteResult::Equivocation(proof) => {
                     // This is Byzantine behavior - voter signed conflicting votes
                     warn!(

@@ -977,20 +977,20 @@ mod tests {
 
     #[test]
     fn test_in_memory_database() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         assert!(db.is_in_memory());
     }
 
     #[test]
     fn test_database_stats() {
-        let db = Database::in_memory().unwrap();
-        let stats = db.stats().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
+        let stats = db.stats().expect("LOW-STOR-8: Failed to get database stats");
         assert!(stats.page_count > 0);
     }
 
     #[test]
     fn test_transaction() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
 
         let result = db.transaction(|tx| {
             // Use a statement that doesn't return results
@@ -1002,7 +1002,10 @@ mod tests {
             Ok(42)
         });
 
-        assert_eq!(result.unwrap(), 42);
+        assert_eq!(
+            result.expect("LOW-STOR-8: Transaction should succeed"),
+            42
+        );
     }
 
     #[test]
@@ -1052,7 +1055,10 @@ mod tests {
             }
         });
 
-        assert_eq!(result.unwrap(), 42);
+        assert_eq!(
+            result.expect("LOW-STOR-8: Retry should eventually succeed"),
+            42
+        );
         assert_eq!(attempt_count.load(Ordering::SeqCst), 3);
     }
 
@@ -1093,7 +1099,7 @@ mod tests {
 
     #[test]
     fn test_with_connection_retry() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
 
         // Create a test table
         db.with_connection(|conn| {
@@ -1103,7 +1109,7 @@ mod tests {
             )
             .map_err(|e| GhostError::Database(e.to_string()))
         })
-        .unwrap();
+        .expect("LOW-STOR-8: Failed to create test table");
 
         // Test retry method works for normal operations
         let result = db.with_connection_retry("insert_test", |conn| {
@@ -1116,7 +1122,7 @@ mod tests {
 
     #[test]
     fn test_transaction_retry() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
 
         // Create a test table
         db.with_connection(|conn| {
@@ -1126,7 +1132,7 @@ mod tests {
             )
             .map_err(|e| GhostError::Database(e.to_string()))
         })
-        .unwrap();
+        .expect("LOW-STOR-8: Failed to create test table");
 
         // Test retry method works for transactions
         let result = db.transaction_retry("tx_test", |tx| {
@@ -1145,7 +1151,7 @@ mod tests {
                 conn.query_row("SELECT COUNT(*) FROM tx_retry_test", [], |row| row.get(0))
                     .map_err(|e| GhostError::Database(e.to_string()))
             })
-            .unwrap();
+            .expect("LOW-STOR-8: Failed to count rows");
 
         assert_eq!(count, 2);
     }

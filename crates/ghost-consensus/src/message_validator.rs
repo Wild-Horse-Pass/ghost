@@ -260,17 +260,33 @@ pub fn extract_message_type_fast(
     };
 
     // Extract the type value (should be a quoted string)
-    if type_pos >= data_str.len() || data_str.as_bytes()[type_pos] != b'"' {
-        return Ok(None);
+    // CRIT-PANIC-3: Use .get() for safe byte access instead of direct indexing
+    // This prevents panics on UTF-8 multi-byte boundary issues
+    let bytes = data_str.as_bytes();
+    match bytes.get(type_pos) {
+        Some(&b'"') => {}
+        _ => return Ok(None),
     }
 
     let type_start = type_pos + 1;
-    let type_end = match data_str[type_start..].find('"') {
+    // Validate type_start is within bounds before slicing
+    if type_start > data_str.len() {
+        return Ok(None);
+    }
+    let remainder = match data_str.get(type_start..) {
+        Some(s) => s,
+        None => return Ok(None),
+    };
+    let type_end = match remainder.find('"') {
         Some(pos) => type_start + pos,
         None => return Ok(None),
     };
 
-    let type_str = &data_str[type_start..type_end];
+    // Validate slice bounds before extracting
+    let type_str = match data_str.get(type_start..type_end) {
+        Some(s) => s,
+        None => return Ok(None),
+    };
 
     // Map string to MessageType
     let msg_type = match type_str {

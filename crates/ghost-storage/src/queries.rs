@@ -54,8 +54,8 @@ pub const MAX_ROTATION_PROOF_SIZE: usize = 10 * 1024;
 
 /// LOW-STOR-4: Maximum signature size (hex-encoded Ed25519 signature: 128 hex chars = 64 bytes)
 /// Ed25519 signatures are exactly 64 bytes (128 hex characters).
-/// Allow up to 256 chars for potential future signature types or encoding overhead.
-pub const MAX_SIGNATURE_SIZE: usize = 256;
+/// Set to 128 to match the actual Ed25519 signature size.
+pub const MAX_SIGNATURE_SIZE: usize = 128;
 
 /// M-2: Maximum size for kv_store values (1 MB)
 /// Prevents storage exhaustion attacks through the key-value store API.
@@ -69,6 +69,15 @@ pub const MAX_PUBLIC_ADDRESS_LEN: usize = 256;
 
 /// L-4: Maximum size for node capabilities JSON (4 KB)
 pub const MAX_CAPABILITIES_JSON_SIZE: usize = 4096;
+
+/// LOW-STOR-5: Maximum size for challenge string fields (expected_hash, response_hash, txid, endpoint)
+/// Challenge data is small metadata (hashes are 64 hex chars, txids are 64 hex chars, endpoints are URLs).
+/// 1 KB provides generous headroom while preventing storage DoS.
+pub const MAX_CHALLENGE_FIELD_SIZE: usize = 1024;
+
+/// LOW-STOR-5: Maximum size for node_id and challenger_id fields
+/// Node IDs are 64 hex chars (32 bytes). Set to 128 for safety.
+pub const MAX_CHALLENGE_ID_SIZE: usize = 128;
 
 // =============================================================================
 // SAFE TYPE CONVERSIONS
@@ -1357,14 +1366,26 @@ impl Database {
     }
 
     /// Increment miner share count and work
+    ///
+    /// MED-STOR-1: Uses saturating arithmetic to prevent overflow. If values would overflow,
+    /// they saturate at their maximum instead of wrapping.
     pub fn increment_miner_stats(&self, miner_id: &str, shares: u64, work: f64) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
 
         self.with_connection(|conn| {
+            // MED-STOR-1: Use MIN(current + new, max_value) to implement saturating arithmetic
+            // SQLite's integer max is i64::MAX (9223372036854775807)
+            // For total_shares, we use saturating add via CASE statement
             conn.execute(
                 "UPDATE miners SET
-                    total_shares = total_shares + ?1,
-                    total_work = total_work + ?2,
+                    total_shares = CASE
+                        WHEN total_shares > 9223372036854775807 - ?1 THEN 9223372036854775807
+                        ELSE total_shares + ?1
+                    END,
+                    total_work = CASE
+                        WHEN total_work + ?2 > 1.7976931348623157e+308 THEN total_work
+                        ELSE total_work + ?2
+                    END,
                     last_seen = ?3
                  WHERE miner_id = ?4",
                 params![shares, work, now, miner_id],
@@ -3302,6 +3323,8 @@ impl Database {
     /// L-3 FIX: Uses INSERT OR REPLACE to enforce rate limiting. The unique index
     /// on (node_id, challenger_id, date(timestamp)) prevents duplicate challenges
     /// from the same challenger for the same node on the same day.
+    ///
+    /// LOW-STOR-5: Validates all string field sizes before INSERT.
     pub fn insert_archive_challenge(
         &self,
         node_id: &str,
@@ -3311,6 +3334,38 @@ impl Database {
         response_hash: Option<&str>,
         passed: bool,
     ) -> GhostResult<i64> {
+        // LOW-STOR-5: Validate field sizes before INSERT
+        if node_id.len() > MAX_CHALLENGE_ID_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "LOW-STOR-5: node_id too large: {} bytes (max {})",
+                node_id.len(),
+                MAX_CHALLENGE_ID_SIZE
+            )));
+        }
+        if challenger_id.len() > MAX_CHALLENGE_ID_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "LOW-STOR-5: challenger_id too large: {} bytes (max {})",
+                challenger_id.len(),
+                MAX_CHALLENGE_ID_SIZE
+            )));
+        }
+        if expected_hash.len() > MAX_CHALLENGE_FIELD_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "LOW-STOR-5: expected_hash too large: {} bytes (max {})",
+                expected_hash.len(),
+                MAX_CHALLENGE_FIELD_SIZE
+            )));
+        }
+        if let Some(hash) = response_hash {
+            if hash.len() > MAX_CHALLENGE_FIELD_SIZE {
+                return Err(GhostError::InvalidInput(format!(
+                    "LOW-STOR-5: response_hash too large: {} bytes (max {})",
+                    hash.len(),
+                    MAX_CHALLENGE_FIELD_SIZE
+                )));
+            }
+        }
+
         self.with_connection(|conn| {
             let timestamp = chrono::Utc::now().timestamp();
             // L-3 FIX: INSERT OR REPLACE updates if same (node, challenger, day) exists
@@ -3338,6 +3393,8 @@ impl Database {
     /// L-3 FIX: Uses INSERT OR REPLACE to enforce rate limiting. The unique index
     /// on (node_id, challenger_id, date(timestamp)) prevents duplicate challenges
     /// from the same challenger for the same node on the same day.
+    ///
+    /// LOW-STOR-5: Validates all string field sizes before INSERT.
     pub fn insert_policy_challenge(
         &self,
         node_id: &str,
@@ -3347,6 +3404,29 @@ impl Database {
         response_tier: Option<i32>,
         passed: bool,
     ) -> GhostResult<i64> {
+        // LOW-STOR-5: Validate field sizes before INSERT
+        if node_id.len() > MAX_CHALLENGE_ID_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "LOW-STOR-5: node_id too large: {} bytes (max {})",
+                node_id.len(),
+                MAX_CHALLENGE_ID_SIZE
+            )));
+        }
+        if challenger_id.len() > MAX_CHALLENGE_ID_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "LOW-STOR-5: challenger_id too large: {} bytes (max {})",
+                challenger_id.len(),
+                MAX_CHALLENGE_ID_SIZE
+            )));
+        }
+        if txid.len() > MAX_CHALLENGE_FIELD_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "LOW-STOR-5: txid too large: {} bytes (max {})",
+                txid.len(),
+                MAX_CHALLENGE_FIELD_SIZE
+            )));
+        }
+
         self.with_connection(|conn| {
             let timestamp = chrono::Utc::now().timestamp();
             // L-3 FIX: INSERT OR REPLACE updates if same (node, challenger, day) exists
@@ -3374,6 +3454,8 @@ impl Database {
     /// L-3 FIX: Uses INSERT OR REPLACE to enforce rate limiting. The unique index
     /// on (node_id, challenger_id, date(timestamp)) prevents duplicate challenges
     /// from the same challenger for the same node on the same day.
+    ///
+    /// LOW-STOR-5: Validates all string field sizes before INSERT.
     pub fn insert_stratum_challenge(
         &self,
         node_id: &str,
@@ -3382,6 +3464,22 @@ impl Database {
         latency_ms: Option<u32>,
         passed: bool,
     ) -> GhostResult<i64> {
+        // LOW-STOR-5: Validate field sizes before INSERT
+        if node_id.len() > MAX_CHALLENGE_ID_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "LOW-STOR-5: node_id too large: {} bytes (max {})",
+                node_id.len(),
+                MAX_CHALLENGE_ID_SIZE
+            )));
+        }
+        if challenger_id.len() > MAX_CHALLENGE_ID_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "LOW-STOR-5: challenger_id too large: {} bytes (max {})",
+                challenger_id.len(),
+                MAX_CHALLENGE_ID_SIZE
+            )));
+        }
+
         self.with_connection(|conn| {
             let timestamp = chrono::Utc::now().timestamp();
             // L-3 FIX: INSERT OR REPLACE updates if same (node, challenger, day) exists
@@ -3408,6 +3506,8 @@ impl Database {
     /// L-3 FIX: Uses INSERT OR REPLACE to enforce rate limiting. The unique index
     /// on (node_id, challenger_id, date(timestamp)) prevents duplicate challenges
     /// from the same challenger for the same node on the same day.
+    ///
+    /// LOW-STOR-5: Validates all string field sizes before INSERT.
     pub fn insert_ghostpay_challenge(
         &self,
         node_id: &str,
@@ -3416,6 +3516,29 @@ impl Database {
         response_valid: bool,
         passed: bool,
     ) -> GhostResult<i64> {
+        // LOW-STOR-5: Validate field sizes before INSERT
+        if node_id.len() > MAX_CHALLENGE_ID_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "LOW-STOR-5: node_id too large: {} bytes (max {})",
+                node_id.len(),
+                MAX_CHALLENGE_ID_SIZE
+            )));
+        }
+        if challenger_id.len() > MAX_CHALLENGE_ID_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "LOW-STOR-5: challenger_id too large: {} bytes (max {})",
+                challenger_id.len(),
+                MAX_CHALLENGE_ID_SIZE
+            )));
+        }
+        if endpoint.len() > MAX_CHALLENGE_FIELD_SIZE {
+            return Err(GhostError::InvalidInput(format!(
+                "LOW-STOR-5: endpoint too large: {} bytes (max {})",
+                endpoint.len(),
+                MAX_CHALLENGE_FIELD_SIZE
+            )));
+        }
+
         self.with_connection(|conn| {
             let timestamp = chrono::Utc::now().timestamp();
             // L-3 FIX: INSERT OR REPLACE updates if same (node, challenger, day) exists
@@ -5074,7 +5197,7 @@ mod tests {
 
     #[test]
     fn test_share_insert_and_query() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
 
         let share = ShareRecord {
             id: None,
@@ -5088,17 +5211,21 @@ mod tests {
             valid: true,
         };
 
-        let id = db.insert_share(&share).unwrap();
+        let id = db
+            .insert_share(&share)
+            .expect("LOW-STOR-8: Failed to insert share");
         assert!(id > 0);
 
-        let shares = db.get_shares_by_round(1).unwrap();
+        let shares = db
+            .get_shares_by_round(1)
+            .expect("LOW-STOR-8: Failed to get shares by round");
         assert_eq!(shares.len(), 1);
         assert_eq!(shares[0].miner_id, "abc123");
     }
 
     #[test]
     fn test_round_operations() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
 
         let round = RoundRecord {
             round_id: 1,
@@ -5115,39 +5242,52 @@ mod tests {
             tx_fees_sats: None,
         };
 
-        db.create_round(&round).unwrap();
+        db.create_round(&round)
+            .expect("LOW-STOR-8: Failed to create round");
 
-        let fetched = db.get_round(1).unwrap().unwrap();
+        let fetched = db
+            .get_round(1)
+            .expect("LOW-STOR-8: Failed to get round")
+            .expect("LOW-STOR-8: Round should exist");
         assert_eq!(fetched.block_height, 100);
     }
 
     #[test]
     fn test_kv_store() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
 
-        db.kv_set("test_key", "test_value").unwrap();
-        let value = db.kv_get("test_key").unwrap();
+        db.kv_set("test_key", "test_value")
+            .expect("LOW-STOR-8: Failed to set key-value");
+        let value = db
+            .kv_get("test_key")
+            .expect("LOW-STOR-8: Failed to get key");
         assert_eq!(value, Some("test_value".to_string()));
 
-        db.kv_delete("test_key").unwrap();
-        let value = db.kv_get("test_key").unwrap();
+        db.kv_delete("test_key")
+            .expect("LOW-STOR-8: Failed to delete key");
+        let value = db
+            .kv_get("test_key")
+            .expect("LOW-STOR-8: Failed to get deleted key");
         assert_eq!(value, None);
     }
 
     #[test]
     fn test_kv_store_size_limit() {
         // M-2: Test that oversized values are rejected
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
 
         // Value at the limit should succeed
         let max_value = "x".repeat(super::MAX_KV_VALUE_SIZE);
-        db.kv_set("max_key", &max_value).unwrap();
+        db.kv_set("max_key", &max_value)
+            .expect("LOW-STOR-8: Max size value should succeed");
 
         // Value over the limit should fail
         let oversized_value = "x".repeat(super::MAX_KV_VALUE_SIZE + 1);
         let result = db.kv_set("oversized_key", &oversized_value);
         assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
+        let err_msg = result
+            .expect_err("LOW-STOR-8: Oversized value should fail")
+            .to_string();
         assert!(
             err_msg.contains("M-2"),
             "Expected M-2 error, got: {}",
@@ -5157,21 +5297,26 @@ mod tests {
 
     #[test]
     fn test_node_reward_ledger() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
 
-        let entry = db.get_or_create_node_reward("node123").unwrap();
+        let entry = db
+            .get_or_create_node_reward("node123")
+            .expect("LOW-STOR-8: Failed to get or create node reward");
         assert_eq!(entry.balance_sats, 0);
 
-        db.credit_node_reward("node123", 1000, 1).unwrap();
+        db.credit_node_reward("node123", 1000, 1)
+            .expect("LOW-STOR-8: Failed to credit node reward");
 
-        let entry = db.get_or_create_node_reward("node123").unwrap();
+        let entry = db
+            .get_or_create_node_reward("node123")
+            .expect("LOW-STOR-8: Failed to get node reward after credit");
         assert_eq!(entry.balance_sats, 1000);
         assert_eq!(entry.last_credited_round, 1);
     }
 
     #[test]
     fn test_ghost_lock_operations() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let now = chrono::Utc::now().timestamp();
 
         let lock = GhostLockRecord {
@@ -5195,31 +5340,42 @@ mod tests {
             updated_at: now,
         };
 
-        db.insert_ghost_lock(&lock).unwrap();
+        db.insert_ghost_lock(&lock)
+            .expect("LOW-STOR-8: Failed to insert ghost lock");
 
-        let fetched = db.get_ghost_lock("lock123").unwrap().unwrap();
+        let fetched = db
+            .get_ghost_lock("lock123")
+            .expect("LOW-STOR-8: Failed to get ghost lock")
+            .expect("LOW-STOR-8: Ghost lock should exist");
         assert_eq!(fetched.amount_sats, 10_000_000);
         assert_eq!(fetched.state, GhostLockState::Pending);
 
         // Update funding
         db.update_ghost_lock_funding("lock123", "txid123", 0)
-            .unwrap();
-        let fetched = db.get_ghost_lock("lock123").unwrap().unwrap();
+            .expect("LOW-STOR-8: Failed to update ghost lock funding");
+        let fetched = db
+            .get_ghost_lock("lock123")
+            .expect("LOW-STOR-8: Failed to get ghost lock after funding")
+            .expect("LOW-STOR-8: Ghost lock should exist");
         assert_eq!(fetched.state, GhostLockState::Active);
         assert_eq!(fetched.funding_txid, Some("txid123".to_string()));
 
         // Get by owner
-        let locks = db.get_ghost_locks_by_owner("ghost1abc").unwrap();
+        let locks = db
+            .get_ghost_locks_by_owner("ghost1abc")
+            .expect("LOW-STOR-8: Failed to get locks by owner");
         assert_eq!(locks.len(), 1);
 
         // Get balance
-        let balance = db.get_ghost_lock_balance("ghost1abc").unwrap();
+        let balance = db
+            .get_ghost_lock_balance("ghost1abc")
+            .expect("LOW-STOR-8: Failed to get lock balance");
         assert_eq!(balance, 10_000_000);
     }
 
     #[test]
     fn test_peer_operations() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let now = chrono::Utc::now().timestamp();
 
         let peer = PeerRecord {
@@ -5239,20 +5395,26 @@ mod tests {
             protocol_version: Some(1),
         };
 
-        db.upsert_peer(&peer).unwrap();
+        db.upsert_peer(&peer)
+            .expect("LOW-STOR-8: Failed to upsert peer");
 
-        let fetched = db.get_peer("peer123").unwrap().unwrap();
+        let fetched = db
+            .get_peer("peer123")
+            .expect("LOW-STOR-8: Failed to get peer")
+            .expect("LOW-STOR-8: Peer should exist");
         assert_eq!(fetched.address, "192.168.1.1");
         assert_eq!(fetched.connection_count, 5);
 
-        let active = db.get_active_peers(10).unwrap();
+        let active = db
+            .get_active_peers(10)
+            .expect("LOW-STOR-8: Failed to get active peers");
         assert_eq!(active.len(), 1);
     }
 
     #[test]
     fn test_node_validation() {
         // L-1 and L-4: Test validation on node fields
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let now = chrono::Utc::now().timestamp();
 
         // Valid node should succeed
@@ -5272,7 +5434,8 @@ mod tests {
             total_blocks_found: 0,
             payout_address: None,
         };
-        db.upsert_node(&valid_node).unwrap();
+        db.upsert_node(&valid_node)
+            .expect("LOW-STOR-8: Failed to upsert valid node");
 
         // L-1: display_name too long
         let long_name_node = NodeRecord {
@@ -5281,7 +5444,10 @@ mod tests {
         };
         let result = db.upsert_node(&long_name_node);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("L-1"));
+        assert!(result
+            .expect_err("LOW-STOR-8: Long display name should fail")
+            .to_string()
+            .contains("L-1"));
 
         // L-1: public_address too long
         let long_addr_node = NodeRecord {
@@ -5292,7 +5458,10 @@ mod tests {
         };
         let result = db.upsert_node(&long_addr_node);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("L-1"));
+        assert!(result
+            .expect_err("LOW-STOR-8: Long public address should fail")
+            .to_string()
+            .contains("L-1"));
 
         // L-4: capabilities too large
         let large_caps_node = NodeRecord {
@@ -5303,7 +5472,10 @@ mod tests {
         };
         let result = db.upsert_node(&large_caps_node);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("L-4"));
+        assert!(result
+            .expect_err("LOW-STOR-8: Large capabilities should fail")
+            .to_string()
+            .contains("L-4"));
 
         // L-4: capabilities invalid JSON
         let invalid_json_node = NodeRecord {
@@ -5314,12 +5486,15 @@ mod tests {
         };
         let result = db.upsert_node(&invalid_json_node);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("L-4"));
+        assert!(result
+            .expect_err("LOW-STOR-8: Invalid JSON capabilities should fail")
+            .to_string()
+            .contains("L-4"));
     }
 
     #[test]
     fn test_wraith_round_operations() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let now = chrono::Utc::now().timestamp();
 
         let round = WraithRoundRecord {
@@ -5340,23 +5515,32 @@ mod tests {
             updated_at: now,
         };
 
-        db.insert_wraith_round(&round).unwrap();
+        db.insert_wraith_round(&round)
+            .expect("LOW-STOR-8: Failed to insert wraith round");
 
-        let fetched = db.get_wraith_round("wraith123").unwrap().unwrap();
+        let fetched = db
+            .get_wraith_round("wraith123")
+            .expect("LOW-STOR-8: Failed to get wraith round")
+            .expect("LOW-STOR-8: Wraith round should exist");
         assert_eq!(fetched.phase, WraithPhase::Registration);
 
         db.update_wraith_round_phase("wraith123", WraithPhase::Split)
-            .unwrap();
-        let fetched = db.get_wraith_round("wraith123").unwrap().unwrap();
+            .expect("LOW-STOR-8: Failed to update wraith round phase");
+        let fetched = db
+            .get_wraith_round("wraith123")
+            .expect("LOW-STOR-8: Failed to get wraith round after update")
+            .expect("LOW-STOR-8: Wraith round should exist");
         assert_eq!(fetched.phase, WraithPhase::Split);
 
-        let active = db.get_active_wraith_rounds().unwrap();
+        let active = db
+            .get_active_wraith_rounds()
+            .expect("LOW-STOR-8: Failed to get active wraith rounds");
         assert_eq!(active.len(), 1);
     }
 
     #[test]
     fn test_reconciliation_operations() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let now = chrono::Utc::now().timestamp();
 
         let batch = ReconciliationRecord {
@@ -5373,24 +5557,33 @@ mod tests {
             finalized_at: None,
         };
 
-        db.insert_reconciliation_batch(&batch).unwrap();
+        db.insert_reconciliation_batch(&batch)
+            .expect("LOW-STOR-8: Failed to insert reconciliation batch");
 
-        let fetched = db.get_reconciliation_batch("batch123").unwrap().unwrap();
+        let fetched = db
+            .get_reconciliation_batch("batch123")
+            .expect("LOW-STOR-8: Failed to get reconciliation batch")
+            .expect("LOW-STOR-8: Reconciliation batch should exist");
         assert_eq!(fetched.participant_count, 10);
 
         db.update_reconciliation_l1_submitted("batch123", "txid456", 800100, 800244)
-            .unwrap();
-        let fetched = db.get_reconciliation_batch("batch123").unwrap().unwrap();
+            .expect("LOW-STOR-8: Failed to update reconciliation L1 submitted");
+        let fetched = db
+            .get_reconciliation_batch("batch123")
+            .expect("LOW-STOR-8: Failed to get reconciliation batch after update")
+            .expect("LOW-STOR-8: Reconciliation batch should exist");
         assert_eq!(fetched.status, ReconciliationStatus::Submitted);
         assert_eq!(fetched.l1_txid, Some("txid456".to_string()));
 
-        let pending = db.get_pending_reconciliation_batches().unwrap();
+        let pending = db
+            .get_pending_reconciliation_batches()
+            .expect("LOW-STOR-8: Failed to get pending reconciliation batches");
         assert_eq!(pending.len(), 1);
     }
 
     #[test]
     fn test_payout_history_pagination() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let now = chrono::Utc::now().timestamp();
 
         // Create test rounds with payouts
@@ -5409,7 +5602,8 @@ mod tests {
                 subsidy_sats: Some(312500000),
                 tx_fees_sats: Some(1000000),
             };
-            db.create_round(&round).unwrap();
+            db.create_round(&round)
+                .expect("LOW-STOR-8: Failed to create round");
 
             // Add some payouts for each round
             let miner_payout = PayoutRecord {
@@ -5425,7 +5619,8 @@ mod tests {
                 created_at: now,
                 confirmed_at: Some(now),
             };
-            db.insert_payout(&miner_payout).unwrap();
+            db.insert_payout(&miner_payout)
+                .expect("LOW-STOR-8: Failed to insert miner payout");
 
             let node_payout = PayoutRecord {
                 id: None,
@@ -5440,26 +5635,33 @@ mod tests {
                 created_at: now,
                 confirmed_at: Some(now),
             };
-            db.insert_payout(&node_payout).unwrap();
+            db.insert_payout(&node_payout)
+                .expect("LOW-STOR-8: Failed to insert node payout");
         }
 
         // Test basic pagination
         let query = PayoutHistoryQuery::with_limit(3);
-        let history = db.query_payout_history(query).unwrap();
+        let history = db
+            .query_payout_history(query)
+            .expect("LOW-STOR-8: Failed to query payout history");
         assert_eq!(history.len(), 3);
         // Results should be ordered by height descending
         assert!(history[0].block_height >= history[1].block_height);
 
         // Test offset
         let query = PayoutHistoryQuery::with_limit(2).with_offset(2);
-        let history = db.query_payout_history(query).unwrap();
+        let history = db
+            .query_payout_history(query)
+            .expect("LOW-STOR-8: Failed to query payout history with offset");
         assert_eq!(history.len(), 2);
 
         // Test height filters
         let query = PayoutHistoryQuery::with_limit(10)
             .with_min_height(800002)
             .with_max_height(800003);
-        let history = db.query_payout_history(query).unwrap();
+        let history = db
+            .query_payout_history(query)
+            .expect("LOW-STOR-8: Failed to query payout history with height filters");
         assert_eq!(history.len(), 2);
         for summary in &history {
             assert!(summary.block_height >= 800002);
@@ -5468,7 +5670,9 @@ mod tests {
 
         // Test aggregation
         let query = PayoutHistoryQuery::with_limit(1);
-        let history = db.query_payout_history(query).unwrap();
+        let history = db
+            .query_payout_history(query)
+            .expect("LOW-STOR-8: Failed to query payout history for aggregation");
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].miner_count, 1);
         assert_eq!(history[0].node_count, 1);
@@ -5476,18 +5680,20 @@ mod tests {
         assert_eq!(history[0].total_node_sats, 2000000);
 
         // Test round count
-        let count = db.get_payout_round_count(None, None).unwrap();
+        let count = db
+            .get_payout_round_count(None, None)
+            .expect("LOW-STOR-8: Failed to get payout round count");
         assert_eq!(count, 5);
 
         let count = db
             .get_payout_round_count(Some(800002), Some(800003))
-            .unwrap();
+            .expect("LOW-STOR-8: Failed to get payout round count with filters");
         assert_eq!(count, 2);
     }
 
     #[test]
     fn test_withdrawal_atomic_insert_prevents_duplicates() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let now = chrono::Utc::now().timestamp();
 
         // First, create a ghost lock that we can withdraw from
@@ -5511,7 +5717,8 @@ mod tests {
             created_at: now,
             updated_at: now,
         };
-        db.insert_ghost_lock(&lock).unwrap();
+        db.insert_ghost_lock(&lock)
+            .expect("LOW-STOR-8: Failed to insert ghost lock");
 
         // First withdrawal request should succeed
         let withdrawal1 = WithdrawalRequest {
@@ -5528,9 +5735,11 @@ mod tests {
             updated_at: now,
         };
 
-        let result = db.insert_withdrawal_request_atomic(&withdrawal1).unwrap();
+        let result = db
+            .insert_withdrawal_request_atomic(&withdrawal1)
+            .expect("LOW-STOR-8: Failed to insert first withdrawal request");
         assert!(result.is_some(), "First withdrawal should succeed");
-        let first_id = result.unwrap();
+        let first_id = result.expect("LOW-STOR-8: First withdrawal should return ID");
         assert!(first_id > 0);
 
         // Second withdrawal for the same lock should be rejected
@@ -5548,18 +5757,22 @@ mod tests {
             updated_at: now + 1,
         };
 
-        let result = db.insert_withdrawal_request_atomic(&withdrawal2).unwrap();
+        let result = db
+            .insert_withdrawal_request_atomic(&withdrawal2)
+            .expect("LOW-STOR-8: Failed to attempt second withdrawal request");
         assert!(result.is_none(), "Second withdrawal should be rejected");
 
         // Verify only one withdrawal exists
-        let withdrawals = db.get_withdrawals_by_lock("lock_atomic_test").unwrap();
+        let withdrawals = db
+            .get_withdrawals_by_lock("lock_atomic_test")
+            .expect("LOW-STOR-8: Failed to get withdrawals by lock");
         assert_eq!(withdrawals.len(), 1);
         assert_eq!(withdrawals[0].destination_address, "bc1qtest1");
     }
 
     #[test]
     fn test_withdrawal_atomic_allows_after_completion() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let now = chrono::Utc::now().timestamp();
 
         // Create a ghost lock
@@ -5583,7 +5796,8 @@ mod tests {
             created_at: now,
             updated_at: now,
         };
-        db.insert_ghost_lock(&lock).unwrap();
+        db.insert_ghost_lock(&lock)
+            .expect("LOW-STOR-8: Failed to insert ghost lock");
 
         // First withdrawal
         let withdrawal1 = WithdrawalRequest {
@@ -5600,12 +5814,14 @@ mod tests {
             updated_at: now,
         };
 
-        let result = db.insert_withdrawal_request_atomic(&withdrawal1).unwrap();
-        let first_id = result.unwrap();
+        let result = db
+            .insert_withdrawal_request_atomic(&withdrawal1)
+            .expect("LOW-STOR-8: Failed to insert first withdrawal");
+        let first_id = result.expect("LOW-STOR-8: First withdrawal should return ID");
 
         // Mark the first withdrawal as completed
         db.update_withdrawal_status(first_id, WithdrawalStatus::Confirmed)
-            .unwrap();
+            .expect("LOW-STOR-8: Failed to update withdrawal status");
 
         // Now a second withdrawal should succeed (since the first is confirmed)
         let withdrawal2 = WithdrawalRequest {
@@ -5622,7 +5838,9 @@ mod tests {
             updated_at: now + 1,
         };
 
-        let result = db.insert_withdrawal_request_atomic(&withdrawal2).unwrap();
+        let result = db
+            .insert_withdrawal_request_atomic(&withdrawal2)
+            .expect("LOW-STOR-8: Failed to attempt second withdrawal");
         assert!(
             result.is_some(),
             "Second withdrawal should succeed after first is confirmed"
@@ -5631,7 +5849,7 @@ mod tests {
 
     #[test]
     fn test_withdrawal_atomic_blocks_batched() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let now = chrono::Utc::now().timestamp();
 
         // Create a ghost lock
@@ -5655,7 +5873,8 @@ mod tests {
             created_at: now,
             updated_at: now,
         };
-        db.insert_ghost_lock(&lock).unwrap();
+        db.insert_ghost_lock(&lock)
+            .expect("LOW-STOR-8: Failed to insert ghost lock");
 
         // First withdrawal with pending status
         let withdrawal1 = WithdrawalRequest {
@@ -5672,11 +5891,14 @@ mod tests {
             updated_at: now,
         };
 
-        let result = db.insert_withdrawal_request_atomic(&withdrawal1).unwrap();
-        let first_id = result.unwrap();
+        let result = db
+            .insert_withdrawal_request_atomic(&withdrawal1)
+            .expect("LOW-STOR-8: Failed to insert first withdrawal");
+        let first_id = result.expect("LOW-STOR-8: First withdrawal should return ID");
 
         // Mark the first withdrawal as batched
-        db.update_withdrawal_batched(first_id, "batch123").unwrap();
+        db.update_withdrawal_batched(first_id, "batch123")
+            .expect("LOW-STOR-8: Failed to update withdrawal batched");
 
         // Second withdrawal should still be rejected (batched also blocks)
         let withdrawal2 = WithdrawalRequest {
@@ -5693,7 +5915,9 @@ mod tests {
             updated_at: now + 1,
         };
 
-        let result = db.insert_withdrawal_request_atomic(&withdrawal2).unwrap();
+        let result = db
+            .insert_withdrawal_request_atomic(&withdrawal2)
+            .expect("LOW-STOR-8: Failed to attempt second withdrawal");
         assert!(
             result.is_none(),
             "Second withdrawal should be rejected when first is batched"
@@ -5706,17 +5930,26 @@ mod tests {
         // Positive values should succeed
         let result = i64_to_u64_sats(100, "test_field");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 100u64);
+        assert_eq!(
+            result.expect("LOW-STOR-8: 100 should convert"),
+            100u64
+        );
 
         // Zero should succeed
         let result = i64_to_u64_sats(0, "test_field");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), 0u64);
+        assert_eq!(
+            result.expect("LOW-STOR-8: 0 should convert"),
+            0u64
+        );
 
         // Large positive value should succeed
         let result = i64_to_u64_sats(i64::MAX, "test_field");
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), i64::MAX as u64);
+        assert_eq!(
+            result.expect("LOW-STOR-8: i64::MAX should convert"),
+            i64::MAX as u64
+        );
 
         // Negative value should fail
         let result = i64_to_u64_sats(-1, "test_field");
@@ -5736,7 +5969,7 @@ mod tests {
 
     #[test]
     fn test_instant_reservation_persistence() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let current_time = 1700000000000u64;
 
         let reservation = InstantReservationRecord {
@@ -5748,28 +5981,31 @@ mod tests {
         };
 
         // Save reservation
-        db.save_instant_reservation(&reservation).unwrap();
+        db.save_instant_reservation(&reservation)
+            .expect("LOW-STOR-8: Failed to save instant reservation");
 
         // Verify it exists
-        assert!(db.has_instant_reservation(&[1u8; 32]).unwrap());
+        assert!(db
+            .has_instant_reservation(&[1u8; 32])
+            .expect("LOW-STOR-8: Failed to check reservation existence"));
 
         // Get active reservations
         let active = db
             .get_active_reservations_for_lock("lock123", current_time)
-            .unwrap();
+            .expect("LOW-STOR-8: Failed to get active reservations");
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].amount_sats, 50_000);
 
         // Get total reserved
         let total = db
             .get_total_reserved_for_lock("lock123", current_time)
-            .unwrap();
+            .expect("LOW-STOR-8: Failed to get total reserved");
         assert_eq!(total, 50_000);
     }
 
     #[test]
     fn test_instant_reservation_expiry() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let start_time = 1700000000000u64;
 
         let reservation = InstantReservationRecord {
@@ -5780,31 +6016,36 @@ mod tests {
             expires_at: start_time + 30_000,
         };
 
-        db.save_instant_reservation(&reservation).unwrap();
+        db.save_instant_reservation(&reservation)
+            .expect("LOW-STOR-8: Failed to save instant reservation");
 
         // Before expiry - should be active
         let active = db
             .get_active_reservations_for_lock("lock456", start_time + 15_000)
-            .unwrap();
+            .expect("LOW-STOR-8: Failed to get active reservations before expiry");
         assert_eq!(active.len(), 1);
 
         // After expiry - should not be returned
         let active = db
             .get_active_reservations_for_lock("lock456", start_time + 31_000)
-            .unwrap();
+            .expect("LOW-STOR-8: Failed to get active reservations after expiry");
         assert_eq!(active.len(), 0);
 
         // Prune expired
-        let pruned = db.prune_expired_reservations(start_time + 31_000).unwrap();
+        let pruned = db
+            .prune_expired_reservations(start_time + 31_000)
+            .expect("LOW-STOR-8: Failed to prune expired reservations");
         assert_eq!(pruned, 1);
 
         // Should no longer exist
-        assert!(!db.has_instant_reservation(&[2u8; 32]).unwrap());
+        assert!(!db
+            .has_instant_reservation(&[2u8; 32])
+            .expect("LOW-STOR-8: Failed to check reservation existence"));
     }
 
     #[test]
     fn test_instant_reservation_multiple_locks() {
-        let db = Database::in_memory().unwrap();
+        let db = Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database");
         let current_time = 1700000000000u64;
 
         // Create reservations for different locks
@@ -5816,33 +6057,35 @@ mod tests {
                 created_at: current_time,
                 expires_at: current_time + 30_000,
             };
-            db.save_instant_reservation(&reservation).unwrap();
+            db.save_instant_reservation(&reservation)
+                .expect("LOW-STOR-8: Failed to save instant reservation");
         }
 
         // Verify each lock has correct total
         assert_eq!(
             db.get_total_reserved_for_lock("lock0", current_time)
-                .unwrap(),
+                .expect("LOW-STOR-8: Failed to get reserved for lock0"),
             10_000
         );
         assert_eq!(
             db.get_total_reserved_for_lock("lock1", current_time)
-                .unwrap(),
+                .expect("LOW-STOR-8: Failed to get reserved for lock1"),
             20_000
         );
         assert_eq!(
             db.get_total_reserved_for_lock("lock2", current_time)
-                .unwrap(),
+                .expect("LOW-STOR-8: Failed to get reserved for lock2"),
             30_000
         );
 
         // Delete one reservation
-        db.delete_instant_reservation(&[1u8; 32]).unwrap();
+        db.delete_instant_reservation(&[1u8; 32])
+            .expect("LOW-STOR-8: Failed to delete reservation");
 
         // lock1 should now have 0 reserved
         assert_eq!(
             db.get_total_reserved_for_lock("lock1", current_time)
-                .unwrap(),
+                .expect("LOW-STOR-8: Failed to get reserved for lock1 after delete"),
             0
         );
     }

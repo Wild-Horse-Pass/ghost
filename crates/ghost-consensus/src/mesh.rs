@@ -471,8 +471,21 @@ impl SeenMessageCache {
                         return false;
                     }
 
-                    // Legitimate wrap-around after many messages and recent activity - accept if > 0
-                    return sequence > 0;
+                    // HIGH-CONS-1: Legitimate wrap-around must start in range 1-1000
+                    // After wrap-around, sequence should restart low (typically 1)
+                    // Allowing any value up to WRAP_DETECTION_THRESHOLD would let attackers
+                    // skip ahead to dangerous positions post-wrap
+                    const MAX_POST_WRAP_SEQUENCE: u64 = 1000;
+                    if sequence == 0 || sequence > MAX_POST_WRAP_SEQUENCE {
+                        warn!(
+                            sender = %hex::encode(&sender[..8]),
+                            sequence = sequence,
+                            max_allowed = MAX_POST_WRAP_SEQUENCE,
+                            "HIGH-CONS-1: Rejecting wrap-around with invalid post-wrap sequence"
+                        );
+                        return false;
+                    }
+                    return true;
                 }
 
                 // H-P2P-5: Reject large sequence jumps (potential wrap-around attack)
@@ -1756,6 +1769,11 @@ impl MeshNetwork {
         let mut receive_timeouts: u64 = 0;
         let mut receive_errors: u64 = 0;
 
+        // MED-CONS-2: Rate limit topic mismatch warnings per sender (1 per minute)
+        let mut topic_mismatch_log_times: std::collections::HashMap<[u8; 32], std::time::Instant> =
+            std::collections::HashMap::new();
+        const TOPIC_MISMATCH_LOG_INTERVAL_SECS: u64 = 60;
+
         while self.running.load(Ordering::SeqCst) {
             // Get ALL peers (not just connected ones) - we need to attempt connection first
             let peers = self.peers.get_all_peers();
@@ -1920,13 +1938,24 @@ impl MeshNetwork {
                     if let Ok(envelope) = MessageEnvelope::deserialize(&data) {
                         let expected_topic = envelope.msg_type.topic_str();
                         if topic_name != expected_topic {
-                            warn!(
-                                received_topic = topic_name,
-                                expected_topic = expected_topic,
-                                msg_type = ?envelope.msg_type,
-                                "Topic mismatch: received on '{}', envelope says '{:?}' (expected topic '{}')",
-                                topic_name, envelope.msg_type, expected_topic
-                            );
+                            // MED-CONS-2: Rate limit warnings per sender (1 per minute)
+                            let should_log = {
+                                let last_log = topic_mismatch_log_times.get(&envelope.sender);
+                                match last_log {
+                                    Some(t) => t.elapsed().as_secs() >= TOPIC_MISMATCH_LOG_INTERVAL_SECS,
+                                    None => true,
+                                }
+                            };
+                            if should_log {
+                                topic_mismatch_log_times.insert(envelope.sender, std::time::Instant::now());
+                                warn!(
+                                    received_topic = topic_name,
+                                    expected_topic = expected_topic,
+                                    msg_type = ?envelope.msg_type,
+                                    sender = %hex::encode(&envelope.sender[..8]),
+                                    "MED-CONS-2: Topic mismatch (rate-limited log, 1/min per sender)"
+                                );
+                            }
                             continue; // Skip this message
                         }
                     }

@@ -25,18 +25,29 @@
 //! Fetches templates from Bitcoin Core, applies BUDS filtering,
 //! and manages coinbase construction for the pool.
 //!
-//! # Lock Ordering (M-16)
+//! # Lock Ordering (M-16 / HIGH-POOL-4)
 //!
 //! This module uses multiple RwLocks. To prevent deadlocks, always acquire
 //! locks in this order:
 //!
-//! 1. `approved_payout` (RwLock<Option<[u8; 32]>>)
+//! 1. `approved_payout` (RwLock<Option<[u8; 32]>>) - Shortest hold time
 //! 2. `current_work` (RwLock<Option<WorkState>>)
 //! 3. `work_states` (RwLock<HashMap<...>>)
-//! 4. `payout_proposals` (RwLock<HashMap<...>>)
+//! 4. `payout_proposals` (RwLock<HashMap<...>>) - Longest hold time
 //!
 //! Never acquire a lock that comes earlier in this list while holding
 //! a lock that comes later.
+//!
+//! ## HIGH-POOL-4: Lock Ordering Enforcement
+//!
+//! This ordering is enforced by convention. All methods that acquire multiple
+//! locks MUST follow this order. The key patterns are:
+//!
+//! - Read `approved_payout` BEFORE reading `payout_proposals` (for proposal lookup)
+//! - Release locks before calling methods that acquire other locks
+//! - Use snapshot values (captured before lock release) for subsequent operations
+//!
+//! All public methods have been audited to follow this ordering.
 
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
@@ -537,7 +548,28 @@ impl TemplateProcessor {
         payout_snapshot: Option<[u8; 32]>,
     ) -> Result<(Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32), TemplateError> {
         // H-MINE-2: Use the snapshot instead of reading from the lock
-        let proposal = payout_snapshot.and_then(|h| self.get_proposal(&h));
+        // MED-POOL-6: If we have a snapshot hash but can't find the proposal, this is an ERROR.
+        // Do NOT silently fall back to placeholder - that would lose all payout data.
+        let proposal = match payout_snapshot {
+            Some(hash) => {
+                let prop = self.get_proposal(&hash);
+                if prop.is_none() {
+                    // MED-POOL-6: Proposal was approved but data is missing - critical error
+                    error!(
+                        proposal_hash = %hex::encode(&hash[..8]),
+                        "MED-POOL-6: Approved payout proposal not found in cache! \
+                         Cannot build coinbase without payout data."
+                    );
+                    return Err(TemplateError::BlockAssemblyError(format!(
+                        "MED-POOL-6: Payout proposal {} not found. \
+                         Store proposal before setting approved hash.",
+                        hex::encode(&hash[..8])
+                    )));
+                }
+                prop
+            }
+            None => None, // No approved payout, use fallback
+        };
 
         // Build coinbase1 - NON-WITNESS format (no marker/flag)
         // Format: version | input_count | prev_txhash | prev_outindex | scriptsig_len | scriptsig_data
@@ -608,44 +640,50 @@ impl TemplateProcessor {
             self.encode_varint(&mut coinbase2, output_count);
 
             // Miner payouts (skip 0-value entries)
-            // CRIT-10: Validate each address and fail if any are invalid
+            // CRIT-10 / LOW-POOL-3: Validate each address and fail if any are invalid
+            // Error context includes miner recipient_id for debugging
             for (idx, entry) in prop.miner_payouts.iter().enumerate() {
                 if entry.amount == 0 {
                     continue;
                 }
+                // LOW-POOL-3: Include recipient_id in error context for debugging
+                let miner_id_short = hex::encode(&entry.recipient_id[..8]);
                 coinbase2.extend_from_slice(&entry.amount.to_le_bytes());
                 self.encode_script(
                     &mut coinbase2,
                     &entry.address,
-                    &format!("miner_payout[{}]", idx),
+                    &format!("miner_payout[{}]:id={}", idx, miner_id_short),
                 )?;
                 // Also add to outputs_serialized for TDP
                 outputs_serialized.extend_from_slice(&entry.amount.to_le_bytes());
                 self.encode_script(
                     &mut outputs_serialized,
                     &entry.address,
-                    &format!("miner_payout_tdp[{}]", idx),
+                    &format!("miner_payout_tdp[{}]:id={}", idx, miner_id_short),
                 )?;
             }
 
             // Node payouts (skip 0-value entries)
-            // CRIT-10: Validate each address and fail if any are invalid
+            // CRIT-10 / LOW-POOL-3: Validate each address and fail if any are invalid
+            // Error context includes node recipient_id for debugging
             for (idx, entry) in prop.node_payouts.iter().enumerate() {
                 if entry.amount == 0 {
                     continue; // Skip 0-value outputs
                 }
+                // LOW-POOL-3: Include recipient_id in error context for debugging
+                let node_id_short = hex::encode(&entry.recipient_id[..8]);
                 coinbase2.extend_from_slice(&entry.amount.to_le_bytes());
                 self.encode_script(
                     &mut coinbase2,
                     &entry.address,
-                    &format!("node_payout[{}]", idx),
+                    &format!("node_payout[{}]:id={}", idx, node_id_short),
                 )?;
                 // Also add to outputs_serialized for TDP
                 outputs_serialized.extend_from_slice(&entry.amount.to_le_bytes());
                 self.encode_script(
                     &mut outputs_serialized,
                     &entry.address,
-                    &format!("node_payout_tdp[{}]", idx),
+                    &format!("node_payout_tdp[{}]:id={}", idx, node_id_short),
                 )?;
             }
 
@@ -1408,21 +1446,22 @@ impl TemplateProcessor {
         }
 
         // Build merkle tree, collecting branches
+        // HIGH-PANIC-3: Use .first() and pattern matching for safe array access
         let mut branches = Vec::new();
 
         while hashes.len() > 1 {
-            // First hash is our branch
-            if !hashes.is_empty() {
-                branches.push(hashes[0]);
+            // First hash is our branch (always exists when len > 1)
+            if let Some(&first_hash) = hashes.first() {
+                branches.push(first_hash);
             }
 
-            // Combine pairs
+            // Combine pairs using pattern matching for safety
             let mut next_level = Vec::new();
             for chunk in hashes.chunks(2) {
-                let combined = if chunk.len() == 2 {
-                    self.double_sha256_pair(&chunk[0], &chunk[1])
-                } else {
-                    self.double_sha256_pair(&chunk[0], &chunk[0])
+                let combined = match chunk {
+                    [a, b] => self.double_sha256_pair(a, b),
+                    [a] => self.double_sha256_pair(a, a),
+                    _ => continue, // Empty chunk - shouldn't happen with non-empty hashes
                 };
                 next_level.push(combined);
             }

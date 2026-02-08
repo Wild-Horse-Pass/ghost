@@ -292,8 +292,11 @@ impl PeerScore {
         // Capability score
         let capability_score = peer.capabilities.total_shares() as f64 / 15.0;
 
-        // Elder bonus
-        let elder_bonus = if peer.is_elder { 0.2 } else { 0.0 };
+        // LOW-CONS-2: Elder bonus capped at 0.1 to prevent Sybil-boosted elder advantage
+        // A higher bonus (e.g., 0.2) combined with malicious elder registration could give
+        // disproportionate influence in peer selection. Capped to balance legitimate elder
+        // priority while limiting potential Sybil amplification.
+        let elder_bonus = if peer.is_elder { 0.1 } else { 0.0 };
 
         let score = (latency_score * 0.3)
             + (reliability_score * 0.3)

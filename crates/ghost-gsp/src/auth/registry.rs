@@ -227,11 +227,18 @@ impl WalletRegistry {
     /// 1. Schnorr signature is valid
     /// 2. Public key in proof derives to the expected wallet ID
     /// 3. Nonce hasn't been used (replay protection)
+    ///
+    /// MED-RESOURCE-1 FIX: Periodically cleans up old nonces on each verification.
     pub fn verify_proof_for_wallet(
         &self,
         proof: &WalletProof,
         expected_wallet_id: &WalletId,
     ) -> GspResult<()> {
+        // MED-RESOURCE-1 FIX: Probabilistically cleanup old nonces
+        // Run cleanup ~1% of the time to avoid overhead on every request
+        // while still ensuring nonces are eventually cleaned up
+        self.maybe_cleanup_nonces();
+
         // Check nonce hasn't been used (replay protection)
         if self.is_nonce_used(&proof.nonce)? {
             return Err(GspError::NonceReplay);
@@ -244,6 +251,26 @@ impl WalletRegistry {
         self.mark_nonce_used(&proof.nonce, expected_wallet_id)?;
 
         Ok(())
+    }
+
+    /// MED-RESOURCE-1 FIX: Probabilistically cleanup old nonces
+    ///
+    /// Runs cleanup approximately 1% of the time to avoid overhead
+    /// while ensuring nonces are eventually cleaned up.
+    fn maybe_cleanup_nonces(&self) {
+        // Use a simple random check - cleanup ~1% of the time
+        use rand::Rng;
+        let mut rng = rand::thread_rng();
+        if rng.gen_range(0..100) == 0 {
+            if let Ok(deleted) = self.cleanup_old_nonces() {
+                if deleted > 0 {
+                    tracing::debug!(
+                        deleted_nonces = deleted,
+                        "MED-RESOURCE-1: Cleaned up old nonces"
+                    );
+                }
+            }
+        }
     }
 
     /// Get total number of registered wallets

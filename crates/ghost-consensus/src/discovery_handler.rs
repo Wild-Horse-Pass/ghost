@@ -461,13 +461,12 @@ fn validate_peer_address(address: &str) -> bool {
 
     // Must contain host:port format
     // Use rsplit to handle IPv6 addresses like [::1]:8555
+    // CRIT-PANIC-4: Use pattern matching instead of direct indexing for safety
     let parts: Vec<&str> = address_without_protocol.rsplitn(2, ':').collect();
-    if parts.len() != 2 {
-        return false;
-    }
-
-    let port_str = parts[0];
-    let host = parts[1];
+    let (port_str, host) = match parts.as_slice() {
+        [port, host] => (*port, *host),
+        _ => return false,
+    };
 
     // Port must be valid
     let port: u16 = match port_str.parse() {

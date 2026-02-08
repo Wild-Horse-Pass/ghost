@@ -129,14 +129,22 @@ impl TreasuryState {
     /// DEPRECATED: Use get_fee_split_bps for integer arithmetic
     ///
     /// M-5 SECURITY: Takes a reference timestamp for deterministic calculation.
+    /// CRIT-PANIC-5: Use saturating arithmetic and .get() for safe array access.
     pub fn get_fee_split(&self, reference_time: DateTime<Utc>) -> (f64, f64) {
+        // Pre-threshold: return first entry (50/50 split)
+        // Use .get() with fallback to handle potential array access issues
+        let pre_threshold = *DECAY_SCHEDULE.first().unwrap_or(&(0.5, 0.5));
         if self.threshold_reached_at.is_none() {
-            return DECAY_SCHEDULE[0]; // Pre-threshold
+            return pre_threshold;
         }
 
         let years = self.years_since_threshold(reference_time) as usize;
-        let index = (years + 1).min(DECAY_SCHEDULE.len() - 1);
-        DECAY_SCHEDULE[index]
+        // Use saturating_add to prevent overflow, then bound to array length
+        let index = years
+            .saturating_add(1)
+            .min(DECAY_SCHEDULE.len().saturating_sub(1));
+        // Use .get() with fallback to last valid entry (0% treasury, 100% nodes)
+        *DECAY_SCHEDULE.get(index).unwrap_or(&(0.0, 1.0))
     }
 
     /// Get current fee split rates in basis points (treasury_bps, node_bps)
@@ -145,14 +153,21 @@ impl TreasuryState {
     /// Example: (5000, 5000) means 50% to treasury, 50% to nodes
     ///
     /// M-5 SECURITY: Takes a reference timestamp for deterministic calculation.
+    /// CRIT-PANIC-5: Use saturating arithmetic and .get() for safe array access.
     pub fn get_fee_split_bps(&self, reference_time: DateTime<Utc>) -> (u64, u64) {
+        // Pre-threshold: return first entry (50/50 split in bps)
+        let pre_threshold = *DECAY_SCHEDULE_BPS.first().unwrap_or(&(5000, 5000));
         if self.threshold_reached_at.is_none() {
-            return DECAY_SCHEDULE_BPS[0]; // Pre-threshold
+            return pre_threshold;
         }
 
         let years = self.years_since_threshold(reference_time) as usize;
-        let index = (years + 1).min(DECAY_SCHEDULE_BPS.len() - 1);
-        DECAY_SCHEDULE_BPS[index]
+        // Use saturating_add to prevent overflow, then bound to array length
+        let index = years
+            .saturating_add(1)
+            .min(DECAY_SCHEDULE_BPS.len().saturating_sub(1));
+        // Use .get() with fallback to last valid entry (0% treasury, 100% nodes)
+        *DECAY_SCHEDULE_BPS.get(index).unwrap_or(&(0, 10000))
     }
 
     /// Get the current decay year (0 = pre-threshold, 1-5 = decay years)

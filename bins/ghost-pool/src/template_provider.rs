@@ -910,36 +910,35 @@ fn strip_witness_if_present(coinbase: &[u8]) -> anyhow::Result<Vec<u8>> {
 
 /// Read a Bitcoin varint from a byte slice
 /// Returns (value, bytes_consumed)
+/// HIGH-PANIC-1: Use .get() and try_into() for safe byte access
 fn read_varint(data: &[u8]) -> anyhow::Result<(u64, usize)> {
-    if data.is_empty() {
-        return Err(anyhow::anyhow!("Empty data for varint"));
-    }
+    let first = match data.first() {
+        Some(&b) => b,
+        None => return Err(anyhow::anyhow!("Empty data for varint")),
+    };
 
-    let first = data[0];
     match first {
         0..=0xfc => Ok((first as u64, 1)),
         0xfd => {
-            if data.len() < 3 {
-                return Err(anyhow::anyhow!("Truncated varint (fd)"));
-            }
-            let val = u16::from_le_bytes([data[1], data[2]]);
-            Ok((val as u64, 3))
+            let bytes: [u8; 2] = data
+                .get(1..3)
+                .and_then(|s| s.try_into().ok())
+                .ok_or_else(|| anyhow::anyhow!("Truncated varint (fd)"))?;
+            Ok((u16::from_le_bytes(bytes) as u64, 3))
         }
         0xfe => {
-            if data.len() < 5 {
-                return Err(anyhow::anyhow!("Truncated varint (fe)"));
-            }
-            let val = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
-            Ok((val as u64, 5))
+            let bytes: [u8; 4] = data
+                .get(1..5)
+                .and_then(|s| s.try_into().ok())
+                .ok_or_else(|| anyhow::anyhow!("Truncated varint (fe)"))?;
+            Ok((u32::from_le_bytes(bytes) as u64, 5))
         }
         0xff => {
-            if data.len() < 9 {
-                return Err(anyhow::anyhow!("Truncated varint (ff)"));
-            }
-            let val = u64::from_le_bytes([
-                data[1], data[2], data[3], data[4], data[5], data[6], data[7], data[8],
-            ]);
-            Ok((val, 9))
+            let bytes: [u8; 8] = data
+                .get(1..9)
+                .and_then(|s| s.try_into().ok())
+                .ok_or_else(|| anyhow::anyhow!("Truncated varint (ff)"))?;
+            Ok((u64::from_le_bytes(bytes), 9))
         }
     }
 }

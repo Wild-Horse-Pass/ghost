@@ -29,7 +29,8 @@ use std::time::Duration;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tracing::debug;
+use subtle::ConstantTimeEq;
+use tracing::{debug, warn};
 
 use ghost_common::instant::LockSnapshot;
 use ghost_gsp_proto::{
@@ -39,6 +40,12 @@ use ghost_gsp_proto::{
 use crate::error::{GspError, GspResult};
 
 /// Parse lock status from string
+///
+/// MED-ENUM-1 FIX: Unknown status values are logged and return Unknown variant
+/// instead of silently defaulting to Invalid. This provides:
+/// - Visibility into unexpected status values for debugging
+/// - Forward compatibility with new status values from updated backends
+/// - Correct semantics (Unknown is different from explicitly Invalid)
 fn parse_lock_status(status: &str) -> GhostLockStatus {
     match status.to_lowercase().as_str() {
         "pending" => GhostLockStatus::Pending,
@@ -49,7 +56,15 @@ fn parse_lock_status(status: &str) -> GhostLockStatus {
         "recovering" => GhostLockStatus::Recovering,
         "recovered" => GhostLockStatus::Recovered,
         "invalid" => GhostLockStatus::Invalid,
-        _ => GhostLockStatus::Invalid,
+        "unknown" => GhostLockStatus::Unknown,
+        other => {
+            // MED-ENUM-1: Log warning for unknown status values
+            warn!(
+                unknown_status = %other,
+                "MED-ENUM-1: Received unknown lock status from pay node - returning Unknown variant"
+            );
+            GhostLockStatus::Unknown
+        }
     }
 }
 
@@ -255,11 +270,41 @@ impl PayNodeProxy {
     }
 
     /// M-15: Add internal authentication header to a request builder
+    ///
+    /// MED-TIMING-1: Note that this function adds the header for OUTGOING requests.
+    /// The constant-time comparison is needed on the RECEIVING end (pay node side)
+    /// when validating incoming auth headers. This GSP code is the requester,
+    /// not the validator, so timing attacks aren't applicable here.
     fn add_internal_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.internal_secret {
             Some(secret) => request.header(INTERNAL_AUTH_HEADER, secret),
             None => request,
         }
+    }
+
+    /// MED-TIMING-1 FIX: Constant-time comparison for internal auth header validation
+    ///
+    /// When validating auth headers from incoming requests, use this function
+    /// to prevent timing attacks. This is marked #[allow(dead_code)] because
+    /// it's provided for completeness - the actual validation happens on the
+    /// ghost-pay-node side, not in this GSP proxy.
+    #[allow(dead_code)]
+    fn verify_internal_auth_constant_time(received: &str, expected: &str) -> bool {
+        // Convert both strings to bytes for constant-time comparison
+        let received_bytes = received.as_bytes();
+        let expected_bytes = expected.as_bytes();
+
+        // First check lengths in constant time by comparing padded versions
+        // If lengths differ, we still do the comparison to avoid timing leaks
+        if received_bytes.len() != expected_bytes.len() {
+            // Still do a comparison to make timing consistent
+            // Compare against expected to avoid length-based timing
+            let _ = expected_bytes.ct_eq(expected_bytes);
+            return false;
+        }
+
+        // Constant-time comparison using subtle crate
+        received_bytes.ct_eq(expected_bytes).into()
     }
 
     /// Health check - returns true if pay node is responding
@@ -1025,19 +1070,47 @@ impl PayNodeProxy {
                 26280 // Default: ~6 months of blocks remaining
             };
 
-        // Derive mempool status from lock state and UTXO verification
-        // A lock is considered "in mempool" if:
-        // 1. It's in Pending state (not yet confirmed on chain), or
-        // 2. The UTXO state query indicates it's unconfirmed
+        // HIGH-STATE-2 FIX: ALWAYS verify UTXO state from L1 for Active locks
+        // Previously, we only checked UTXO state as a fallback. Now we always check
+        // for Active locks because cached state can become stale if:
+        // - The lock was spent in another transaction
+        // - The funding tx was reorged out
+        // - There's a race between state updates and queries
+        //
+        // For Pending locks, we know they're in mempool without querying.
+        // For Active locks, we MUST verify current L1 state.
         let in_mempool = match lock.status {
             GhostLockStatus::Pending => true,
-            _ => {
-                // Query actual UTXO state to verify mempool status
-                // This catches cases where state is stale or lock just got confirmed
+            GhostLockStatus::Active | GhostLockStatus::InUse => {
+                // HIGH-STATE-2: Always verify L1 state for Active/InUse locks
+                // This is critical for instant payment security
                 match self.get_utxo_state(&lock.lock_id).await {
-                    Ok(utxo_state) => utxo_state.in_mempool,
-                    Err(_) => false, // If query fails, assume not in mempool (conservative)
+                    Ok(utxo_state) => {
+                        if !utxo_state.exists {
+                            // Lock UTXO no longer exists - this is a critical state mismatch
+                            warn!(
+                                lock_id = %lock.lock_id,
+                                cached_status = ?lock.status,
+                                "HIGH-STATE-2: Lock marked Active but UTXO not found on L1"
+                            );
+                        }
+                        utxo_state.in_mempool
+                    }
+                    Err(e) => {
+                        // HIGH-STATE-2: Fail closed - if we can't verify, assume not in mempool
+                        // but log the error for investigation
+                        warn!(
+                            lock_id = %lock.lock_id,
+                            error = %e,
+                            "HIGH-STATE-2: Failed to verify UTXO state for Active lock"
+                        );
+                        false
+                    }
                 }
+            }
+            _ => {
+                // Terminal states (Spent, Recovered, Invalid) or Unknown don't need L1 verification
+                false
             }
         };
 

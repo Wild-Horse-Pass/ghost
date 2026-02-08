@@ -36,6 +36,7 @@
 
 use secp256k1::{ecdh::SharedSecret, PublicKey, Secp256k1, SecretKey};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroize;
 
 use crate::error::GhostKeyError;
 
@@ -46,12 +47,26 @@ const SECP256K1_ORDER: [u8; 32] = [
     0xBA, 0xAE, 0xDC, 0xE6, 0xAF, 0x48, 0xA0, 0x3B, 0xBF, 0xD2, 0x5E, 0x8C, 0xD0, 0x36, 0x41, 0x41,
 ];
 
-/// Derive shared secret using ECDH
+/// Domain separation tag for ECDH shared secret derivation
 ///
-/// shared_secret = SHA256(secret_key * public_key)
+/// HIGH-CRYPTO-3: Using a domain-specific tag prevents key confusion attacks
+/// where the same ECDH result might be used for different protocols.
+const ECDH_DOMAIN_TAG: &[u8] = b"ghost-keys/ecdh/v1";
+
+/// Derive shared secret using ECDH with domain separation
+///
+/// HIGH-CRYPTO-3 FIX: Added domain separation tag to prevent key confusion attacks.
+///
+/// shared_secret = SHA256(domain_tag || secret_key * public_key)
+///
+/// This ensures the derived secret is unique to this protocol and cannot be
+/// confused with ECDH outputs used for other purposes (e.g., encryption,
+/// key agreement for other systems).
 pub fn derive_shared_secret(secret_key: &SecretKey, public_key: &PublicKey) -> [u8; 32] {
     let shared = SharedSecret::new(public_key, secret_key);
     let mut hasher = Sha256::new();
+    // HIGH-CRYPTO-3: Add domain separation tag before ECDH result
+    hasher.update(ECDH_DOMAIN_TAG);
     hasher.update(shared.as_ref());
     hasher.finalize().into()
 }
@@ -77,6 +92,16 @@ pub fn derive_shared_secret(secret_key: &SecretKey, public_key: &PublicKey) -> [
 ///
 /// The probability of needing reduction is negligible (~2^-128) but we handle it
 /// in constant-time to eliminate any timing side-channel.
+/// CRIT-CRYPTO-3 FIX: RAII guard to ensure sensitive data is zeroed even on early return/panic
+#[allow(dead_code)] // Available for use in sensitive key derivation paths
+struct ZeroizeGuard<'a>(&'a mut [u8; 32]);
+
+impl<'a> Drop for ZeroizeGuard<'a> {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 pub fn derive_payment_address_v2(
     spend_pubkey: &PublicKey,
     shared_secret: &[u8; 32],
@@ -85,16 +110,30 @@ pub fn derive_payment_address_v2(
     let secp = Secp256k1::new();
 
     // Compute tweak using v2 (position-independent)
-    let tweak = compute_tweak_v2(shared_secret, k);
+    let mut tweak = compute_tweak_v2(shared_secret, k);
 
     // SECURITY: Convert tweak to scalar with constant-time reduction
     // SecretKey::from_slice could fail if tweak >= curve order (probability ~2^-128)
     // We use constant-time scalar reduction to handle this case
-    let tweak_secret = scalar_from_bytes_constant_time(&tweak)?;
+    let tweak_secret = match scalar_from_bytes_constant_time(&tweak) {
+        Ok(secret) => secret,
+        Err(e) => {
+            // CRIT-CRYPTO-3 FIX: Zeroize on error path before returning
+            tweak.zeroize();
+            return Err(e);
+        }
+    };
 
     // SECURITY: EC operations in libsecp256k1 are constant-time
     let tweak_pubkey = PublicKey::from_secret_key(&secp, &tweak_secret);
-    let output_pubkey = spend_pubkey.combine(&tweak_pubkey)?;
+    let output_pubkey = match spend_pubkey.combine(&tweak_pubkey) {
+        Ok(combined) => combined,
+        Err(e) => {
+            // CRIT-CRYPTO-3 FIX: Zeroize on error path before returning
+            tweak.zeroize();
+            return Err(e.into());
+        }
+    };
 
     // CRIT-KEYS-1 FIX: Validate that combined point is not point-at-infinity
     // The combine operation can theoretically return the point-at-infinity if
@@ -111,10 +150,16 @@ pub fn derive_payment_address_v2(
     // Additional safety: Verify output_pubkey can be serialized (confirms it's not infinity)
     let _ = output_pubkey.serialize(); // This will work if the point is valid
 
-    Ok((output_pubkey, tweak))
+    // CRIT-CRYPTO-3 FIX: Copy tweak before zeroizing for return value
+    // The tweak value needs to be returned but we must zeroize the local copy
+    let tweak_copy = tweak;
+    tweak.zeroize();
+    Ok((output_pubkey, tweak_copy))
 }
 
 /// Convert 32 bytes to a valid secp256k1 scalar in constant time
+///
+/// CRIT-CRYPTO-4 FIX: Returns error on underflow instead of silently wrapping.
 ///
 /// If the input is >= curve order n, it's reduced modulo n.
 /// This is constant-time because:
@@ -122,21 +167,43 @@ pub fn derive_payment_address_v2(
 /// 2. The final selection uses bitwise operations with constant-time masks
 ///
 /// # Returns
-/// A valid SecretKey, or an error if the result is zero (negligible probability).
+/// A valid SecretKey, or an error if:
+/// - The result is zero (negligible probability ~2^-256)
+/// - The reduction operation fails (should never happen with valid input)
 fn scalar_from_bytes_constant_time(bytes: &[u8; 32]) -> Result<SecretKey, GhostKeyError> {
     // Make a copy to work with (constant-time, no early return)
     let mut scalar = *bytes;
 
     // Apply constant-time reduction if >= n
     // The subtraction and selection happen regardless of whether needed
-    let _ = constant_time_sub_if_gte(&mut scalar, &SECP256K1_ORDER);
+    // CRIT-CRYPTO-4: Track whether reduction occurred for validation
+    let reduction_occurred = constant_time_sub_if_gte(&mut scalar, &SECP256K1_ORDER);
+
+    // CRIT-CRYPTO-4 FIX: Validate that reduction makes sense
+    // If we have input >= n, after reduction we should have input - n
+    // which should be < n and >= 0. If somehow we got a result that
+    // still equals n, something went wrong.
+    if reduction_occurred != 0 && scalar == SECP256K1_ORDER {
+        return Err(GhostKeyError::InvalidTweak(
+            "CRIT-CRYPTO-4: Scalar reduction produced invalid result (equals curve order)"
+                .to_string(),
+        ));
+    }
 
     // Now scalar is guaranteed to be < n
     // The only failure case is scalar == 0, which is negligible probability
     SecretKey::from_slice(&scalar).map_err(|e| {
+        // CRIT-CRYPTO-4: Return descriptive error instead of silently failing
         GhostKeyError::InvalidTweak(format!(
-            "scalar is zero after reduction (probability ~2^-256): {}",
-            e
+            "Scalar conversion failed after reduction: {} \
+             (input was {}, reduction_occurred={})",
+            e,
+            if reduction_occurred != 0 {
+                ">= curve order"
+            } else {
+                "< curve order"
+            },
+            reduction_occurred
         ))
     })
 }

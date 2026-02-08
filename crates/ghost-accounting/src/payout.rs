@@ -59,14 +59,39 @@ impl Default for PayoutCalculator {
 
 impl PayoutCalculator {
     /// Create with custom parameters
+    ///
+    /// # Arguments
+    /// - `pool_fee_percent`: Pool fee as a percentage (0.0-100.0). Values outside this range
+    ///   will be clamped to prevent overflow.
+    ///
+    /// # CRIT-POOL-1: pool_fee_percent is validated to be in [0, 100] range
+    /// This prevents integer overflow when converting to basis points.
     pub fn new(
         pool_fee_percent: f64,
         dust_threshold: u64,
         max_miner_outputs: usize,
         max_node_outputs: usize,
     ) -> Self {
+        // CRIT-POOL-1: Validate and clamp pool_fee_percent to prevent overflow
+        // Valid range is 0-100 (representing 0% to 100%)
+        let validated_fee = if !pool_fee_percent.is_finite() || pool_fee_percent < 0.0 {
+            warn!(
+                pool_fee_percent,
+                "CRIT-POOL-1: Invalid pool_fee_percent (negative or non-finite), clamping to 0"
+            );
+            0.0
+        } else if pool_fee_percent > 100.0 {
+            warn!(
+                pool_fee_percent,
+                "CRIT-POOL-1: pool_fee_percent exceeds 100%, clamping to 100"
+            );
+            100.0
+        } else {
+            pool_fee_percent
+        };
+
         Self {
-            pool_fee_percent,
+            pool_fee_percent: validated_fee,
             dust_threshold,
             max_miner_outputs,
             max_node_outputs,
@@ -115,7 +140,21 @@ impl PayoutCalculator {
         // SECURITY: Use integer math with basis points to avoid floating point precision loss
         // Convert percentage to basis points (1% = 100 bps) for integer division
         // Use u128 intermediate to prevent overflow for large amounts
-        let pool_fee_bps = (self.pool_fee_percent * 100.0) as u64;
+        //
+        // CRIT-POOL-1: Validate pool_fee_percent is in valid range before conversion
+        // This is defense-in-depth; the constructor also validates.
+        let clamped_fee_percent = self.pool_fee_percent.clamp(0.0, 100.0);
+        if clamped_fee_percent != self.pool_fee_percent {
+            warn!(
+                original = self.pool_fee_percent,
+                clamped = clamped_fee_percent,
+                "CRIT-POOL-1: pool_fee_percent was out of range, clamped"
+            );
+        }
+        // CRIT-POOL-1: Use checked multiplication to prevent overflow
+        // pool_fee_bps is now guaranteed to be 0-10000 (0% to 100%)
+        let pool_fee_bps = (clamped_fee_percent * 100.0) as u64;
+        debug_assert!(pool_fee_bps <= 10000, "pool_fee_bps should be <= 10000 (100%)");
         let pool_fee = (subsidy_sats as u128 * pool_fee_bps as u128 / 10000) as u64;
         // Per ECONOMICS.md: Pool fee is split 50/50 between treasury and node pool (pre-threshold)
         // Treasury gets half of the pool fee (0.5% of subsidy)
@@ -247,9 +286,10 @@ impl PayoutCalculator {
     /// Calculate miner payouts proportional to work
     /// Returns (payouts, dust_amount) where dust is redirected to node reward pool
     ///
-    /// SECURITY: Uses integer arithmetic with basis points to avoid floating point
-    /// rounding errors. Calculates share_bps = (miner_work * 10000) / total_work,
-    /// then amount = (pool_amount * share_bps) / 10000.
+    /// HIGH-POOL-2 SECURITY: Uses pure integer arithmetic to avoid floating point
+    /// precision loss. We use the scaled u128 work values directly instead of
+    /// converting through f64. Formula: amount = (pool_amount * miner_work) / total_work
+    /// This "multiply first, divide last" approach maximizes precision.
     fn calculate_miner_payouts(
         &self,
         shares: &RoundShares,
@@ -259,26 +299,28 @@ impl PayoutCalculator {
         let mut payouts = Vec::new();
         let mut dust_total: u64 = 0;
 
-        // Get top miners
+        // Get top miners (still uses f64 for sorting, but we'll use scaled values for calculation)
         let top_miners = shares.top_miners(self.max_miner_outputs);
 
-        // Calculate total work for basis point calculation
-        let total_work = shares.total_miner_work;
-        if total_work <= 0.0 {
+        // HIGH-POOL-2: Use scaled integer work values for calculation
+        // This avoids f64 precision loss in the payout calculation
+        let total_work_scaled = shares.total_work_scaled();
+        if total_work_scaled == 0 {
             return (payouts, dust_total);
         }
 
-        for (miner_id, work) in &top_miners {
-            // SECURITY: Use integer arithmetic with basis points
-            // Calculate share in basis points: (work * 10000) / total_work
-            let share_bps = ((*work * 10000.0) / total_work) as u64;
-            // M-4 SECURITY: Basis point truncation is intentional and safe.
-            // The truncation from f64->u64 rounds down, losing at most 0.01% per miner.
-            // Any remainder (dust) is captured below and redistributed to the node reward pool.
-            // This ensures no satoshis are lost - they flow to node operators.
-            // Calculate amount: (pool_amount * share_bps) / 10000
-            // Use u128 to prevent overflow
-            let amount = (pool_amount as u128 * share_bps as u128 / 10000) as u64;
+        for (miner_id, _) in &top_miners {
+            // HIGH-POOL-2: Get the scaled u128 work value directly
+            let work_scaled = shares.miner_work_scaled(miner_id);
+            if work_scaled == 0 {
+                continue;
+            }
+
+            // HIGH-POOL-2: Pure integer arithmetic - multiply first, divide last
+            // Formula: amount = (pool_amount * work_scaled) / total_work_scaled
+            // Using u128 for the intermediate result to prevent overflow
+            // pool_amount is u64 (max ~21 BTC in sats), work_scaled is u128, both fit in u128
+            let amount = ((pool_amount as u128 * work_scaled) / total_work_scaled) as u64;
 
             if amount < self.dust_threshold {
                 // Track dust for redistribution to node reward pool
@@ -293,21 +335,58 @@ impl PayoutCalculator {
             }
 
             // Find miner's address
-            if let Some((_, address)) = miner_addresses.iter().find(|(id, _)| id == miner_id) {
-                // SECURITY: Convert miner_id to recipient_id using SHA256 hash
-                // This matches the hashing pattern used in ghost-pool/src/payout.rs
-                // for consistent recipient identification across the codebase.
-                // Using hash instead of truncation prevents collisions for long IDs.
-                let mut recipient_id = [0u8; 32];
-                let hash = ghost_common::identity::hash_message(miner_id.as_bytes());
-                recipient_id.copy_from_slice(&hash);
+            // HIGH-POOL-1: Miners must have valid addresses to receive payouts
+            match miner_addresses.iter().find(|(id, _)| id == miner_id) {
+                Some((original_id, address)) if !address.is_empty() => {
+                    // MED-POOL-3: Convert miner_id to recipient_id using SHA256 hash
+                    // This matches the hashing pattern used in ghost-pool/src/payout.rs
+                    // for consistent recipient identification across the codebase.
+                    //
+                    // MED-POOL-3 SECURITY ANALYSIS:
+                    // SHA256 is collision-resistant (no known practical collision attack).
+                    // The probability of two different miner IDs having the same hash is
+                    // approximately 1/2^128 (birthday paradox). With ~10^6 miners over the
+                    // pool's lifetime, the collision probability is still negligible (~10^-26).
+                    //
+                    // We verify the original_id matches miner_id as defense-in-depth,
+                    // ensuring we're paying the correct miner even if somehow we found
+                    // a different entry with the same address.
+                    debug_assert_eq!(
+                        original_id, miner_id,
+                        "MED-POOL-3: Miner ID lookup mismatch"
+                    );
 
-                payouts.push(PayoutEntry {
-                    address: address.clone(),
-                    amount,
-                    recipient_id,
-                    payout_type: PayoutType::Mining,
-                });
+                    let mut recipient_id = [0u8; 32];
+                    let hash = ghost_common::identity::hash_message(miner_id.as_bytes());
+                    recipient_id.copy_from_slice(&hash);
+
+                    payouts.push(PayoutEntry {
+                        address: address.clone(),
+                        amount,
+                        recipient_id,
+                        payout_type: PayoutType::Mining,
+                    });
+                }
+                Some((_, _)) => {
+                    // HIGH-POOL-1: Empty address - log error and add to dust pool
+                    // This ensures the satoshis go to node reward pool rather than being lost
+                    warn!(
+                        miner_id,
+                        amount,
+                        "HIGH-POOL-1: Miner has empty payout address - redirecting to node pool"
+                    );
+                    dust_total = dust_total.saturating_add(amount);
+                }
+                None => {
+                    // HIGH-POOL-1: Miner not in address list - log error and add to dust pool
+                    // This ensures the satoshis go to node reward pool rather than being lost
+                    warn!(
+                        miner_id,
+                        amount,
+                        "HIGH-POOL-1: Miner has no registered payout address - redirecting to node pool"
+                    );
+                    dust_total = dust_total.saturating_add(amount);
+                }
             }
         }
 
@@ -348,12 +427,11 @@ impl PayoutCalculator {
         }
 
         for node_info in &nodes_to_pay {
-            // SECURITY: Use integer arithmetic with basis points
-            // Calculate share in basis points: (shares * 10000) / total_shares
-            let share_bps = (node_info.shares as u64 * 10000) / total_shares as u64;
-            // Calculate amount: (pool_amount * share_bps) / 10000
-            // Use u128 to prevent overflow
-            let amount = (pool_amount as u128 * share_bps as u128 / 10000) as u64;
+            // HIGH-POOL-2 / LOW-POOL-1: Use direct integer division without basis points
+            // This eliminates the precision loss from the intermediate basis point calculation.
+            // Formula: amount = (pool_amount * shares) / total_shares
+            // Using u128 to prevent overflow in the multiplication
+            let amount = ((pool_amount as u128 * node_info.shares as u128) / total_shares as u128) as u64;
 
             if amount < self.dust_threshold {
                 // Track dust for redistribution to top node

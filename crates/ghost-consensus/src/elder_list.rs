@@ -30,6 +30,14 @@ use ghost_storage::Database;
 /// Maximum number of elders (from ghost_common::constants)
 pub const ELDER_MAX_COUNT: u32 = 101;
 
+/// CRIT-CONS-3: Maximum pending elder registrations to prevent memory exhaustion
+/// Set to 2x ELDER_MAX_COUNT to allow reasonable pending queue while bounding memory
+pub const MAX_PENDING_REGISTRATIONS: usize = 202;
+
+/// HIGH-CONS-4: Rate limit for elder registration (1 hour in seconds)
+/// A node can only submit one registration request per hour to prevent spam
+pub const REGISTRATION_RATE_LIMIT_SECS: u64 = 60 * 60;
+
 /// M-5: Maximum number of approval signatures to prevent memory exhaustion
 /// Set to 200 to allow headroom beyond ELDER_MAX_COUNT but still bounded
 pub const MAX_APPROVALS: usize = 200;
@@ -138,20 +146,75 @@ pub struct ElderApproval {
     /// Approving elder's node ID
     #[serde(with = "ghost_common::serde_hex::bytes32")]
     pub approver: NodeId,
-    /// Ed25519 signature over (epoch || merkle_root)
+    /// Ed25519 signature over (epoch || merkle_root || prev_merkle_root)
+    /// HIGH-CONS-2: Includes previous epoch's merkle root to prevent replay across epochs
     #[serde(with = "ghost_common::serde_hex::bytes64")]
     pub signature: [u8; 64],
     /// Timestamp of approval (Unix milliseconds)
     pub timestamp: u64,
+    /// HIGH-CONS-2: Previous epoch's merkle root (binds approval to specific transition)
+    /// This field is optional for backwards compatibility during rollout
+    #[serde(default, with = "optional_bytes32")]
+    pub prev_merkle_root: Option<[u8; 32]>,
+}
+
+/// Serde helper for Option<[u8; 32]>
+mod optional_bytes32 {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(value: &Option<[u8; 32]>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(bytes) => hex::encode(bytes).serialize(serializer),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<[u8; 32]>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<String> = Option::deserialize(deserializer)?;
+        match opt {
+            Some(hex_str) => {
+                let bytes = hex::decode(&hex_str).map_err(serde::de::Error::custom)?;
+                if bytes.len() != 32 {
+                    return Err(serde::de::Error::custom("prev_merkle_root must be 32 bytes"));
+                }
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Ok(Some(arr))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 impl ElderApproval {
-    /// Create the message that should be signed for approval
+    /// Create the message that should be signed for approval (legacy - without prev_merkle_root)
+    ///
+    /// DEPRECATED: Use `signing_message_v2` for new approvals
     pub fn signing_message(epoch: u64, merkle_root: &[u8; 32]) -> Vec<u8> {
         let mut msg = Vec::with_capacity(APPROVAL_DOMAIN.len() + 8 + 32);
         msg.extend_from_slice(APPROVAL_DOMAIN);
         msg.extend_from_slice(&epoch.to_le_bytes());
         msg.extend_from_slice(merkle_root);
+        msg
+    }
+
+    /// HIGH-CONS-2: Create the message that should be signed for approval (v2 - with prev_merkle_root)
+    ///
+    /// Includes the previous epoch's merkle root to prevent replay attacks across epochs.
+    /// An approval for epoch N is only valid when transitioning from the specific epoch N-1
+    /// that produced the given prev_merkle_root.
+    pub fn signing_message_v2(epoch: u64, merkle_root: &[u8; 32], prev_merkle_root: &[u8; 32]) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(APPROVAL_DOMAIN.len() + 8 + 32 + 32);
+        msg.extend_from_slice(APPROVAL_DOMAIN);
+        msg.extend_from_slice(&epoch.to_le_bytes());
+        msg.extend_from_slice(merkle_root);
+        msg.extend_from_slice(prev_merkle_root); // HIGH-CONS-2: Bind to specific previous epoch
         msg
     }
 
@@ -191,13 +254,21 @@ impl ElderApproval {
     ///
     /// SEC-SIG-1: Logs errors instead of silently returning false
     /// Also validates that the timestamp is within a reasonable window.
+    ///
+    /// HIGH-CONS-2: If the approval includes prev_merkle_root, it uses v2 verification
+    /// which binds the approval to the specific epoch transition.
     pub fn verify(&self, epoch: u64, merkle_root: &[u8; 32]) -> bool {
         // First validate timestamp to prevent replay attacks
         if !self.is_timestamp_valid() {
             return false;
         }
 
-        let message = Self::signing_message(epoch, merkle_root);
+        // HIGH-CONS-2: Use v2 message format if prev_merkle_root is present
+        let message = match &self.prev_merkle_root {
+            Some(prev) => Self::signing_message_v2(epoch, merkle_root, prev),
+            None => Self::signing_message(epoch, merkle_root),
+        };
+
         match verify_signature(&self.approver, &message, &self.signature) {
             Ok(valid) => valid,
             Err(e) => {
@@ -215,8 +286,15 @@ impl ElderApproval {
     /// Verify signature only (without timestamp validation)
     ///
     /// Use this for historical verification where timestamp is expected to be old.
+    ///
+    /// HIGH-CONS-2: If the approval includes prev_merkle_root, it uses v2 verification.
     pub fn verify_signature_only(&self, epoch: u64, merkle_root: &[u8; 32]) -> bool {
-        let message = Self::signing_message(epoch, merkle_root);
+        // HIGH-CONS-2: Use v2 message format if prev_merkle_root is present
+        let message = match &self.prev_merkle_root {
+            Some(prev) => Self::signing_message_v2(epoch, merkle_root, prev),
+            None => Self::signing_message(epoch, merkle_root),
+        };
+
         match verify_signature(&self.approver, &message, &self.signature) {
             Ok(valid) => valid,
             Err(e) => {
@@ -286,15 +364,21 @@ impl CanonicalElderList {
     /// # L-5: Padding Behavior
     ///
     /// The tree requires a power-of-2 number of leaves for efficient computation.
-    /// When the number of elders is not a power of 2, we pad with zero hashes:
+    /// When the number of elders is not a power of 2, we pad with position-derived hashes:
     ///
     /// - **len=0**: Returns all-zeros hash (empty tree)
     /// - **len=1**: No padding needed (1 is 2^0, a power of 2). The single
     ///   elder's hash IS the merkle root.
     /// - **len=2**: No padding needed (2 is 2^1)
-    /// - **len=3**: Padded to 4 leaves (one zero hash added)
+    /// - **len=3**: Padded to 4 leaves (one position-based hash added)
     /// - **len=5-7**: Padded to 8 leaves
     /// - etc.
+    ///
+    /// # MED-CONS-3: Non-Predictable Padding
+    ///
+    /// Instead of using all-zeros for padding (which is predictable), we use
+    /// H("ghost/merkle-pad/v1" || position) where position is the leaf index.
+    /// This prevents attacks that exploit predictable padding values.
     ///
     /// The condition `n & (n-1) == 0` checks if n is a power of 2:
     /// - 1: 0b0001 & 0b0000 = 0 (power of 2)
@@ -308,13 +392,17 @@ impl CanonicalElderList {
         // Get leaf hashes
         let mut hashes: Vec<[u8; 32]> = elders.iter().map(|e| e.hash()).collect();
 
-        // L-5: Pad to power of 2 if needed
-        // The bit trick `n & (n-1) == 0` is true only for powers of 2 (and 0).
-        // For len=1: 1 & 0 = 0, so no padding (1 is 2^0)
-        // For len=3: 3 & 2 = 2 != 0, so we pad to 4
-        // The `!hashes.is_empty()` guard prevents underflow when len=0.
+        // MED-CONS-3: Pad to power of 2 with position-derived hashes (not zeros)
+        // Using predictable zeros allows attacks that exploit padding values.
+        // Position-based hashes are unique and non-predictable.
+        const PADDING_DOMAIN: &[u8] = b"ghost/merkle-pad/v1";
         while hashes.len() & (hashes.len() - 1) != 0 && !hashes.is_empty() {
-            hashes.push([0u8; 32]);
+            let position = hashes.len();
+            let mut hasher = Sha256::new();
+            hasher.update(PADDING_DOMAIN);
+            hasher.update((position as u64).to_le_bytes());
+            let pad_hash: [u8; 32] = hasher.finalize().into();
+            hashes.push(pad_hash);
         }
 
         // Build merkle tree bottom-up
@@ -609,12 +697,17 @@ impl CanonicalElderList {
 pub const APPROVAL_COLLECTION_TIMEOUT_SECS: u64 = 10 * 60;
 
 /// State for tracking pending list approval collection
+///
+/// HIGH-CONS-3: Uses monotonic Instant for timeout tracking to prevent
+/// clock manipulation attacks. System clock changes cannot extend or
+/// shorten the approval collection window.
 #[derive(Debug, Clone)]
 pub struct PendingListState {
     /// The pending elder list
     pub list: CanonicalElderList,
-    /// When approval collection started (Unix milliseconds)
-    pub started_at: u64,
+    /// HIGH-CONS-3: When approval collection started (monotonic time)
+    /// Using Instant instead of wall-clock time prevents clock manipulation attacks
+    started_instant: std::time::Instant,
     /// Number of retry attempts for this transition
     pub retry_count: u32,
 }
@@ -624,24 +717,30 @@ impl PendingListState {
     pub fn new(list: CanonicalElderList) -> Self {
         Self {
             list,
-            started_at: chrono::Utc::now().timestamp_millis() as u64,
+            started_instant: std::time::Instant::now(),
             retry_count: 0,
         }
     }
 
-    /// Check if this pending state has timed out
+    /// HIGH-CONS-3: Check if this pending state has timed out using monotonic time
+    ///
+    /// Uses std::time::Instant which is immune to system clock changes.
+    /// An attacker cannot extend or shorten the timeout by manipulating the clock.
     pub fn is_timed_out(&self) -> bool {
-        let now = chrono::Utc::now().timestamp_millis() as u64;
-        let elapsed_ms = now.saturating_sub(self.started_at);
-        elapsed_ms > APPROVAL_COLLECTION_TIMEOUT_SECS * 1000
+        let elapsed = self.started_instant.elapsed();
+        elapsed.as_secs() > APPROVAL_COLLECTION_TIMEOUT_SECS
     }
 
-    /// Get remaining time before timeout (milliseconds)
+    /// HIGH-CONS-3: Get remaining time before timeout (milliseconds) using monotonic time
     pub fn remaining_ms(&self) -> u64 {
-        let now = chrono::Utc::now().timestamp_millis() as u64;
-        let elapsed_ms = now.saturating_sub(self.started_at);
+        let elapsed_ms = self.started_instant.elapsed().as_millis() as u64;
         let timeout_ms = APPROVAL_COLLECTION_TIMEOUT_SECS * 1000;
         timeout_ms.saturating_sub(elapsed_ms)
+    }
+
+    /// Reset the timer (for retry)
+    pub fn reset_timer(&mut self) {
+        self.started_instant = std::time::Instant::now();
     }
 }
 
@@ -653,6 +752,8 @@ pub struct ElderListManager {
     pending_list: RwLock<Option<PendingListState>>,
     /// Pending registration requests
     pending_registrations: RwLock<HashMap<NodeId, ElderRegistrationRequest>>,
+    /// HIGH-CONS-4: Rate limiting for registration requests (node_id -> last request time)
+    registration_rate_limits: RwLock<HashMap<NodeId, std::time::Instant>>,
 }
 
 /// A request to register as an elder
@@ -682,6 +783,7 @@ impl ElderListManager {
             current_list: RwLock::new(Arc::new(genesis_list)),
             pending_list: RwLock::new(None),
             pending_registrations: RwLock::new(HashMap::new()),
+            registration_rate_limits: RwLock::new(HashMap::new()),
         }
     }
 
@@ -691,6 +793,7 @@ impl ElderListManager {
             current_list: RwLock::new(Arc::new(list)),
             pending_list: RwLock::new(None),
             pending_registrations: RwLock::new(HashMap::new()),
+            registration_rate_limits: RwLock::new(HashMap::new()),
         }
     }
 
@@ -735,9 +838,55 @@ impl ElderListManager {
             return Err(GhostError::Config("Already an elder".to_string()));
         }
 
+        // HIGH-CONS-4: Rate limit registration requests (1 per hour per node)
+        {
+            let rate_limits = self.registration_rate_limits.read();
+            if let Some(last_request) = rate_limits.get(&candidate) {
+                let elapsed = last_request.elapsed();
+                if elapsed.as_secs() < REGISTRATION_RATE_LIMIT_SECS {
+                    let remaining = REGISTRATION_RATE_LIMIT_SECS - elapsed.as_secs();
+                    warn!(
+                        candidate = %hex::encode(&candidate[..8]),
+                        remaining_secs = remaining,
+                        "HIGH-CONS-4: Registration rate limited (1 per hour)"
+                    );
+                    return Err(GhostError::Config(format!(
+                        "HIGH-CONS-4: Registration rate limited. Try again in {} minutes",
+                        remaining / 60
+                    )));
+                }
+            }
+        }
+
         // Check capacity
         if !current.has_capacity() {
             return Err(GhostError::Config("Elder list at capacity".to_string()));
+        }
+
+        // CRIT-CONS-3: Limit pending registrations to prevent memory exhaustion
+        {
+            let pending = self.pending_registrations.read();
+            if pending.len() >= MAX_PENDING_REGISTRATIONS {
+                // LRU eviction: find and remove oldest registration before allowing new one
+                drop(pending); // Release read lock
+                let mut pending_write = self.pending_registrations.write();
+                if pending_write.len() >= MAX_PENDING_REGISTRATIONS {
+                    // Find oldest by requested_at timestamp
+                    if let Some(oldest_candidate) = pending_write
+                        .iter()
+                        .min_by_key(|(_, req)| req.requested_at)
+                        .map(|(id, _)| *id)
+                    {
+                        warn!(
+                            evicted = %hex::encode(&oldest_candidate[..8]),
+                            current_count = pending_write.len(),
+                            max = MAX_PENDING_REGISTRATIONS,
+                            "CRIT-CONS-3: Evicting oldest pending registration (LRU)"
+                        );
+                        pending_write.remove(&oldest_candidate);
+                    }
+                }
+            }
         }
 
         // Verify PoW proof meets minimum difficulty
@@ -777,6 +926,11 @@ impl ElderListManager {
         self.pending_registrations
             .write()
             .insert(candidate, request);
+
+        // HIGH-CONS-4: Record registration time for rate limiting
+        self.registration_rate_limits
+            .write()
+            .insert(candidate, std::time::Instant::now());
 
         info!(
             candidate = hex::encode(&candidate[..8]),
@@ -940,6 +1094,53 @@ impl ElderListManager {
         pending.retain(|_, req| now - req.requested_at < max_age_ms);
     }
 
+    /// LOW-CONS-4: Cleanup timed-out pending lists and stale rate limit entries
+    ///
+    /// Call this periodically (e.g., every 60 seconds) to prevent memory growth from:
+    /// 1. Timed-out pending lists that were never finalized or explicitly cancelled
+    /// 2. Stale rate limit entries for nodes that haven't attempted registration recently
+    ///
+    /// Returns the number of items cleaned up.
+    pub fn cleanup_stale_state(&self) -> usize {
+        let mut cleaned = 0;
+
+        // LOW-CONS-4: Clean up timed-out pending list
+        {
+            let mut pending = self.pending_list.write();
+            if let Some(ref state) = *pending {
+                if state.is_timed_out() {
+                    info!(
+                        epoch = state.list.epoch,
+                        retry_count = state.retry_count,
+                        "LOW-CONS-4: Cleaning up timed-out pending list"
+                    );
+                    *pending = None;
+                    cleaned += 1;
+                }
+            }
+        }
+
+        // Clean up stale rate limit entries (older than 2x the rate limit period)
+        // This prevents unbounded growth of the rate_limits map
+        {
+            let mut rate_limits = self.registration_rate_limits.write();
+            let before = rate_limits.len();
+            let max_age = std::time::Duration::from_secs(REGISTRATION_RATE_LIMIT_SECS * 2);
+            rate_limits.retain(|_, instant| instant.elapsed() < max_age);
+            let removed = before - rate_limits.len();
+            if removed > 0 {
+                debug!(
+                    removed,
+                    remaining = rate_limits.len(),
+                    "LOW-CONS-4: Cleaned up stale rate limit entries"
+                );
+            }
+            cleaned += removed;
+        }
+
+        cleaned
+    }
+
     // =========================================================================
     // L-12: PENDING LIST MANAGEMENT WITH TIMEOUT
     // =========================================================================
@@ -1053,8 +1254,8 @@ impl ElderListManager {
             ));
         }
 
-        // Reset the timer and increment retry count
-        state.started_at = chrono::Utc::now().timestamp_millis() as u64;
+        // HIGH-CONS-3: Reset the timer using monotonic time and increment retry count
+        state.reset_timer();
         state.retry_count += 1;
 
         // Clear old approvals to start fresh
@@ -1213,6 +1414,7 @@ impl ElderListManager {
                             approver,
                             signature,
                             timestamp: r.approved_at,
+                            prev_merkle_root: None, // Historic approvals may not have this
                         })
                     })
                     .collect();
@@ -1431,6 +1633,7 @@ mod tests {
             approver: identity.node_id(),
             signature,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            prev_merkle_root: None, // Legacy test - not testing epoch binding
         };
 
         // Use verify_signature_only for tests to avoid timestamp validation issues
@@ -1458,6 +1661,7 @@ mod tests {
                 approver: identity.node_id(),
                 signature: identity.sign(&message),
                 timestamp: now,
+                prev_merkle_root: None, // Legacy test
             };
             list.add_approval(approval);
         }
@@ -1469,6 +1673,7 @@ mod tests {
             approver: identities[6].node_id(),
             signature: identities[6].sign(&message),
             timestamp: now,
+            prev_merkle_root: None, // Legacy test
         };
         list.add_approval(approval);
         assert!(list.has_sufficient_approvals(&previous_elders));
@@ -1583,6 +1788,7 @@ mod tests {
             approver: identity.node_id(),
             signature: identity.sign(&message),
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            prev_merkle_root: None, // Legacy test
         };
 
         // Need to create a new list with the approval since current() returns Arc
@@ -1729,6 +1935,7 @@ mod tests {
             approver: identity.node_id(),
             signature,
             timestamp: now,
+            prev_merkle_root: None, // Legacy test
         };
 
         // Current timestamp should be valid
@@ -1742,6 +1949,7 @@ mod tests {
             approver: identity.node_id(),
             signature,
             timestamp: now - 15_000, // 15 seconds ago (beyond 10s limit)
+            prev_merkle_root: None, // Legacy test
         };
         assert!(
             !old_approval.is_timestamp_valid(),
@@ -1753,6 +1961,7 @@ mod tests {
             approver: identity.node_id(),
             signature,
             timestamp: now + 15_000, // 15 seconds in future (beyond 10s limit)
+            prev_merkle_root: None, // Legacy test
         };
         assert!(
             !future_approval.is_timestamp_valid(),

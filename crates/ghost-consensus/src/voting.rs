@@ -435,6 +435,17 @@ impl VotingSession {
 
     /// Add a vote to the session
     pub fn add_vote(&mut self, vote: Vote) -> VoteResult {
+        // MED-CONS-1: Check timeout FIRST before processing any vote
+        // This prevents late votes from being accepted after the session should have closed
+        if self.is_timed_out() {
+            debug!(
+                round_id = self.round_id,
+                voter = %hex::encode(&vote.voter[..8]),
+                "MED-CONS-1: Rejecting vote - session has timed out"
+            );
+            return VoteResult::SessionTimedOut;
+        }
+
         // Check if already decided
         if self.result.is_some() {
             return VoteResult::AlreadyDecided;
@@ -527,11 +538,22 @@ impl VotingSession {
 
         // Use ceiling division: (total * 67 + 99) / 100 to round up
         // For 4 nodes: (4 * 67 + 99) / 100 = 367 / 100 = 3
-        // SEC-VOTE-8: Use checked_mul to detect overflow
-        let threshold = (total as u64)
-            .checked_mul(BFT_THRESHOLD_PERCENT)
-            .map(|v| v.div_ceil(100) as u32)
-            .unwrap_or(total); // Fallback: require all voters if overflow
+        // CRIT-CONS-1 SECURITY: Return None (no decision) on overflow instead of falling back to unanimous
+        // Falling back to 100% threshold on overflow is dangerous because:
+        // - It changes consensus requirements unexpectedly
+        // - An attacker might craft extreme voter sets to exploit this
+        // - Any overflow indicates an invalid state that should not produce a decision
+        let threshold = match (total as u64).checked_mul(BFT_THRESHOLD_PERCENT) {
+            Some(v) => v.div_ceil(100) as u32,
+            None => {
+                error!(
+                    voter_count = self.eligible_voters.len(),
+                    "CRIT-CONS-1: Integer overflow in quorum calculation - refusing to decide"
+                );
+                // Return None (no decision) - this is safer than picking an arbitrary threshold
+                return None;
+            }
+        };
 
         let approvals = self.votes.values().filter(|v| v.approve).count() as u32;
         let rejections = self.votes.values().filter(|v| !v.approve).count() as u32;
@@ -613,6 +635,16 @@ impl VotingSession {
     /// - But if we only had exactly threshold votes and one was removed, the
     ///   decision is invalidated
     ///
+    /// # CRIT-CONS-2: TOCTOU Prevention
+    ///
+    /// This method takes `&mut self`, providing exclusive access to the VotingSession.
+    /// The result validation is performed atomically by:
+    /// 1. Taking ownership of the result (Option::take())
+    /// 2. Computing new state (counts, threshold) once
+    /// 3. Either restoring the result or leaving it as None
+    ///
+    /// This ensures no intermediate state is visible to callers.
+    ///
     /// Returns true if the voter had a vote that was removed.
     pub fn invalidate_voter(&mut self, node_id: &NodeId) -> bool {
         // Remove from eligible voters
@@ -628,31 +660,35 @@ impl VotingSession {
                 "3.2 SECURITY: Invalidated vote from banned voter"
             );
 
-            // HIGH-8: Recalculate decision after vote removal
-            // If there was a previous decision, check if it's still valid
-            if self.result.is_some() {
-                // Get current counts and new threshold
+            // CRIT-CONS-2: Atomic result validation
+            // Take ownership of the result to prevent TOCTOU race.
+            // This ensures we operate on a consistent snapshot and either
+            // restore the result or leave it as None - no intermediate state.
+            if let Some(prev_result) = self.result.take() {
+                // Get current counts and new threshold ONCE (single snapshot)
                 let (approvals, rejections, total) = self.vote_counts();
                 let new_threshold = self.threshold();
 
                 // Check if the decision is still valid with the new threshold
-                let decision_still_valid = match &self.result {
-                    Some(ConsensusResult::Approved { .. }) => approvals >= new_threshold,
-                    Some(ConsensusResult::Rejected { .. }) => rejections >= new_threshold,
-                    Some(ConsensusResult::Timeout { .. }) => {
+                let decision_still_valid = match &prev_result {
+                    ConsensusResult::Approved { .. } => approvals >= new_threshold,
+                    ConsensusResult::Rejected { .. } => rejections >= new_threshold,
+                    ConsensusResult::Timeout { .. } => {
                         // Timeout decisions remain valid - they indicate the session
                         // timed out, which is still true
                         true
                     }
-                    Some(ConsensusResult::Error(_)) => {
+                    ConsensusResult::Error(_) => {
                         // Error decisions remain valid - they indicate an error occurred
                         // which is still true regardless of voter changes
                         true
                     }
-                    None => true, // No decision to validate
                 };
 
-                if !decision_still_valid {
+                if decision_still_valid {
+                    // Restore the result - it's still valid
+                    self.result = Some(prev_result);
+                } else {
                     tracing::warn!(
                         round_id = self.round_id,
                         voter = hex::encode(&node_id[..8]),
@@ -660,9 +696,9 @@ impl VotingSession {
                         rejections = rejections,
                         total = total,
                         new_threshold = new_threshold,
-                        "HIGH-8: Decision invalidated after removing decisive vote"
+                        "CRIT-CONS-2: Decision invalidated after removing decisive vote"
                     );
-                    self.result = None;
+                    // Result stays as None (already taken)
                 }
             }
         }
@@ -758,6 +794,8 @@ pub enum VoteResult {
     Decided(ConsensusResult),
     /// Session already decided
     AlreadyDecided,
+    /// MED-CONS-1: Session has timed out, vote rejected
+    SessionTimedOut,
     /// Voter not eligible
     NotEligible,
     /// Duplicate vote from same voter (same decision)

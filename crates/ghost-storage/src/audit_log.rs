@@ -626,13 +626,13 @@ mod tests {
     use super::*;
 
     fn test_db() -> Arc<Database> {
-        Arc::new(Database::in_memory().unwrap())
+        Arc::new(Database::in_memory().expect("MED-STOR-2: Failed to create in-memory database"))
     }
 
     #[test]
     fn test_append_and_query() {
         let db = test_db();
-        let log = AuditLog::new(db).unwrap();
+        let log = AuditLog::new(db).expect("LOW-STOR-8: Failed to create audit log");
 
         // Append entry
         let id = log
@@ -642,12 +642,14 @@ mod tests {
                 Some("block123"),
                 serde_json::json!({"height": 800000}),
             )
-            .unwrap();
+            .expect("LOW-STOR-8: Failed to append audit entry");
 
         assert!(id > 0);
 
         // Query by type
-        let entries = log.query_by_type(AuditEventType::BlockFound, 10).unwrap();
+        let entries = log
+            .query_by_type(AuditEventType::BlockFound, 10)
+            .expect("LOW-STOR-8: Failed to query by type");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].actor, "miner1");
     }
@@ -655,7 +657,7 @@ mod tests {
     #[test]
     fn test_chain_verification() {
         let db = test_db();
-        let log = AuditLog::new(db).unwrap();
+        let log = AuditLog::new(db).expect("LOW-STOR-8: Failed to create audit log");
 
         // Add several entries
         for i in 0..5 {
@@ -665,11 +667,13 @@ mod tests {
                 None,
                 serde_json::json!({}),
             )
-            .unwrap();
+            .expect("LOW-STOR-8: Failed to append audit entry");
         }
 
         // Verify chain
-        let verification = log.verify_chain().unwrap();
+        let verification = log
+            .verify_chain()
+            .expect("LOW-STOR-8: Failed to verify chain");
         assert!(verification.is_valid);
         assert_eq!(verification.total_entries, 5);
         assert!(verification.broken_at_id.is_none());
@@ -678,7 +682,7 @@ mod tests {
     #[test]
     fn test_query_by_time() {
         let db = test_db();
-        let log = AuditLog::new(db).unwrap();
+        let log = AuditLog::new(db).expect("LOW-STOR-8: Failed to create audit log");
 
         // Add entry
         log.append(
@@ -687,18 +691,20 @@ mod tests {
             None,
             serde_json::json!({"key": "value"}),
         )
-        .unwrap();
+        .expect("LOW-STOR-8: Failed to append audit entry");
 
         // Query with wide time range
         let now = chrono::Utc::now().timestamp();
-        let entries = log.query_by_time(now - 3600, now + 3600, 100).unwrap();
+        let entries = log
+            .query_by_time(now - 3600, now + 3600, 100)
+            .expect("LOW-STOR-8: Failed to query by time");
         assert_eq!(entries.len(), 1);
     }
 
     #[test]
     fn test_log_convenience_method() {
         let db = test_db();
-        let log = AuditLog::new(db).unwrap();
+        let log = AuditLog::new(db).expect("LOW-STOR-8: Failed to create audit log");
 
         #[derive(Serialize)]
         struct BlockDetails {
@@ -713,7 +719,7 @@ mod tests {
 
         let id = log
             .log(AuditEventType::BlockFound, "system", Some("block"), details)
-            .unwrap();
+            .expect("LOW-STOR-8: Failed to log audit entry");
 
         assert!(id > 0);
     }

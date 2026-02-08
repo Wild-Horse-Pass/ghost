@@ -323,6 +323,38 @@ impl PayoutProposalCreator {
         // which could lead to incorrect payout consensus.
         self.validate_block_exists_and_difficulty(&data.block_hash, data.block_height)?;
 
+        // MED-POOL-1: Validate subsidy matches expected for height
+        let expected_subsidy = ghost_common::rpc::calculate_block_subsidy(data.block_height, None);
+        if data.subsidy_sats != expected_subsidy {
+            // Allow some tolerance for signet/testnet where subsidy may differ
+            // But log it as a warning for mainnet auditing
+            warn!(
+                height = data.block_height,
+                expected = expected_subsidy,
+                actual = data.subsidy_sats,
+                "MED-POOL-1: Subsidy mismatch - may be normal for signet/testnet"
+            );
+            // On mainnet, this would be a critical error. For now, log but don't fail
+            // to allow signet/testnet operation.
+        }
+
+        // MED-POOL-2: Sanity check TX fees - reject absurdly high values
+        // 100 BTC (10 billion sats) is an unreasonable fee amount that would indicate
+        // either an attack or a serious bug in fee calculation.
+        const MAX_REASONABLE_FEES: u64 = 100 * 100_000_000; // 100 BTC in sats
+        if data.tx_fees_sats > MAX_REASONABLE_FEES {
+            error!(
+                tx_fees = data.tx_fees_sats,
+                max_reasonable = MAX_REASONABLE_FEES,
+                height = data.block_height,
+                "MED-POOL-2 CRITICAL: TX fees exceed sanity limit - rejecting payout"
+            );
+            return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                "MED-POOL-2: TX fees {} sats exceed sanity limit {} sats",
+                data.tx_fees_sats, MAX_REASONABLE_FEES
+            )));
+        }
+
         let now = chrono::Utc::now().timestamp() as u64;
 
         // Calculate fee distribution using treasury decay schedule
@@ -472,7 +504,7 @@ impl PayoutProposalCreator {
             self.config.treasury_address.clone().unwrap_or_default()
         });
 
-        // HIGH-MINE-3: Validate treasury address using Bitcoin library
+        // HIGH-MINE-3 / HIGH-POOL-3: Validate treasury address using Bitcoin library
         // Instead of just checking length (22-34 bytes), we validate the script
         // is a well-formed Bitcoin script pubkey.
         //
@@ -480,21 +512,31 @@ impl PayoutProposalCreator {
         // - Invalid script opcodes
         // - Malformed witness programs
         // - Non-standard or unspendable outputs
+        // - HIGH-POOL-3: OP_RETURN scripts (which are unspendable!)
         if !treasury_address.is_empty() {
             // Parse as ScriptBuf to validate structure
             let script = bitcoin::ScriptBuf::from(treasury_address.clone());
 
-            // Check if it's a valid output script type
+            // HIGH-POOL-3: Explicitly reject OP_RETURN - treasury funds must be spendable!
+            if script.is_op_return() {
+                return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                    "HIGH-POOL-3: Treasury address is OP_RETURN - funds would be UNSPENDABLE! \
+                     Script (hex): {}. Treasury must use a spendable output type.",
+                    hex::encode(&treasury_address)
+                )));
+            }
+
+            // Check if it's a valid SPENDABLE output script type
+            // HIGH-POOL-3: Only allow script types with valid spend paths
             let is_valid = script.is_p2pkh()
                 || script.is_p2sh()
                 || script.is_p2wpkh()
                 || script.is_p2wsh()
-                || script.is_p2tr()
-                || script.is_op_return(); // Allow OP_RETURN for provably unspendable (though unusual for treasury)
+                || script.is_p2tr();
 
             if !is_valid {
                 return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
-                    "HIGH-MINE-3: Treasury address script is not a valid Bitcoin output type. \
+                    "HIGH-POOL-3: Treasury address script is not a valid spendable output type. \
                      Script (hex): {}. Expected P2PKH, P2SH, P2WPKH, P2WSH, or P2TR.",
                     hex::encode(&treasury_address)
                 )));
@@ -505,8 +547,7 @@ impl PayoutProposalCreator {
                     else if script.is_p2sh() { "P2SH" }
                     else if script.is_p2wpkh() { "P2WPKH" }
                     else if script.is_p2wsh() { "P2WSH" }
-                    else if script.is_p2tr() { "P2TR" }
-                    else { "OP_RETURN" },
+                    else { "P2TR" },
                 script_len = treasury_address.len(),
                 "Validated treasury address script"
             );
@@ -1010,27 +1051,30 @@ impl PayoutProposalCreator {
         let payouts = merged_payouts;
 
         // Add dust to the top node's payout (first in sorted order = highest capability shares)
-        if dust_total > 0 && !payouts.is_empty() {
-            // payouts is now immutable, need to make it mutable again
+        // CRIT-PANIC-2: Use .first_mut() instead of direct indexing for defensive coding
+        if dust_total > 0 {
             let mut payouts = payouts;
-            payouts[0].amount = payouts[0].amount.saturating_add(dust_total);
-            info!(
-                dust_total,
-                top_node = %hex::encode(&payouts[0].recipient_id[..8]),
-                nodes_affected = node_shares.len() - payouts.len(),
-                "Node dust redistributed to top node"
-            );
+            if let Some(top_payout) = payouts.first_mut() {
+                top_payout.amount = top_payout.amount.saturating_add(dust_total);
+                info!(
+                    dust_total,
+                    top_node = %hex::encode(&top_payout.recipient_id[..8]),
+                    nodes_affected = node_shares.len().saturating_sub(payouts.len()),
+                    "Node dust redistributed to top node"
+                );
+                return Ok(payouts);
+            } else {
+                // SECURITY NOTE: This case occurs when ALL nodes have payouts below dust threshold
+                // AND none have valid payout addresses. The dust cannot be redistributed because
+                // there are no eligible recipients. The caller (create_proposal) handles this by
+                // redirecting the entire augmented_node_pool to treasury when node_payouts is empty.
+                // This is NOT lost - it's explicitly handled at the proposal level.
+                debug!(
+                    dust_total,
+                    "No eligible node payouts - dust will be handled at proposal level"
+                );
+            }
             return Ok(payouts);
-        } else if dust_total > 0 {
-            // SECURITY NOTE: This case occurs when ALL nodes have payouts below dust threshold
-            // AND none have valid payout addresses. The dust cannot be redistributed because
-            // there are no eligible recipients. The caller (create_proposal) handles this by
-            // redirecting the entire augmented_node_pool to treasury when node_payouts is empty.
-            // This is NOT lost - it's explicitly handled at the proposal level.
-            debug!(
-                dust_total,
-                "No eligible node payouts - dust will be handled at proposal level"
-            );
         }
 
         Ok(payouts)
@@ -1082,10 +1126,22 @@ impl PayoutProposalCreator {
     ///
     /// Miners provide their payout address during Stratum authorize,
     /// which is stored in the miners table via update_miner_address().
+    ///
+    /// MED-POOL-5: Validates the address is a valid Bitcoin address format.
     fn get_miner_address(&self, miner_id: &str) -> GhostResult<Vec<u8>> {
         // Look up miner's payout address from the miners table
         if let Some(address_str) = self.db.get_miner_payout_address(miner_id)? {
             if !address_str.is_empty() {
+                // MED-POOL-5: Validate the address is a valid Bitcoin address
+                if let Err(e) = address_str.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>() {
+                    warn!(
+                        miner_id,
+                        address = %address_str,
+                        error = %e,
+                        "MED-POOL-5: Miner has invalid payout address - treating as empty"
+                    );
+                    return Ok(Vec::new());
+                }
                 // Address is stored as bech32 string, return as bytes
                 return Ok(address_str.into_bytes());
             }
@@ -1102,12 +1158,24 @@ impl PayoutProposalCreator {
     /// Get node's payout address from database
     ///
     /// Nodes set their payout address in configuration or via registration.
+    ///
+    /// MED-POOL-5: Validates the address is a valid Bitcoin address format.
     fn get_node_address(&self, node_id: &NodeId) -> GhostResult<Vec<u8>> {
         let node_id_hex = hex::encode(node_id);
 
         // Look up node's payout address from the nodes table
         if let Some(address_str) = self.db.get_node_payout_address(&node_id_hex)? {
             if !address_str.is_empty() {
+                // MED-POOL-5: Validate the address is a valid Bitcoin address
+                if let Err(e) = address_str.parse::<bitcoin::Address<bitcoin::address::NetworkUnchecked>>() {
+                    warn!(
+                        node_id = %node_id_hex,
+                        address = %address_str,
+                        error = %e,
+                        "MED-POOL-5: Node has invalid payout address - treating as empty"
+                    );
+                    return Ok(Vec::new());
+                }
                 // Address is stored as bech32 string, return as bytes
                 return Ok(address_str.into_bytes());
             }
