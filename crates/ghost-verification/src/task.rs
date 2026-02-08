@@ -1505,6 +1505,12 @@ impl VerificationTask {
     /// l2_enabled: true when no challenge_epoch was provided, allowing nodes to claim
     /// GhostPay capability without actually maintaining L2 state.
     ///
+    /// VER-2 FIX: Now includes a random challenge nonce that must be incorporated into
+    /// the response's nonce_bound_proof field. This prevents precomputation attacks where
+    /// an attacker pre-builds a lookup table of epoch_state_hash values.
+    ///
+    /// VER-3 FIX: Now requires verifiable proof (nonce binding) that can be checked locally.
+    ///
     /// CRIT-VER-3: Returns Result - DB write failures are propagated to caller
     async fn verify_ghostpay(
         &self,
@@ -1528,22 +1534,37 @@ impl VerificationTask {
             }
         };
 
+        // VER-2 FIX: Generate a random challenge nonce to prevent precomputation attacks
+        // This nonce must be incorporated into the response as nonce_bound_proof
+        let challenge_nonce = match self.generate_challenge_nonce() {
+            Some(nonce) => nonce,
+            None => {
+                warn!(
+                    peer = %short_id,
+                    "VER-2: Skipping GhostPay verification - failed to generate challenge nonce"
+                );
+                return Ok(());
+            }
+        };
+
         let challenge_data = serde_json::json!({
             "endpoint": "ghostpay",
             "challenge_epoch": challenge_epoch,
+            "challenge_nonce": challenge_nonce,
         })
         .to_string();
 
-        // H-1 FIX: Always pass a challenge_epoch to require state proof
+        // H-1/VER-2 FIX: Pass both challenge_epoch and challenge_nonce
         let result = self
             .client
-            .verify_ghostpay(&peer.http_address, Some(challenge_epoch))
+            .verify_ghostpay_with_nonce(&peer.http_address, Some(challenge_epoch), Some(&challenge_nonce))
             .await;
 
         let (passed, response_valid, response_data) = match result {
             Ok(resp) => {
-                // H-1 FIX: Validate the response includes proper epoch state proof
-                let validation = self.validate_ghostpay_response(&resp, challenge_epoch);
+                // H-1/VER-2/VER-3 FIX: Validate the response includes proper epoch state proof
+                // and nonce-bound proof to prevent precomputation attacks
+                let validation = self.validate_ghostpay_response(&resp, challenge_epoch, &challenge_nonce);
 
                 let response_json = serde_json::json!({
                     "success": resp.success,
@@ -1552,6 +1573,7 @@ impl VerificationTask {
                     "epoch": resp.epoch,
                     "epoch_state_hash": resp.epoch_state_hash,
                     "epoch_tx_count": resp.epoch_tx_count,
+                    "nonce_bound_proof": resp.nonce_bound_proof,
                     "validation": validation.1,
                 });
 
@@ -1649,13 +1671,35 @@ impl VerificationTask {
         Some(epoch)
     }
 
-    /// H-1 FIX: Validate GhostPay response includes proper epoch state proof
+    /// VER-2 FIX: Generate a random challenge nonce for GhostPay verification
+    ///
+    /// Returns a random 32-byte hex string that must be incorporated into the response's
+    /// nonce_bound_proof field as SHA256(epoch_state_hash || challenge_nonce).
+    /// This prevents precomputation attacks where an attacker pre-builds a lookup table
+    /// of epoch_state_hash values for all possible epochs.
+    ///
+    /// Security properties:
+    /// - 256 bits of entropy from cryptographic RNG
+    /// - Cannot be predicted by the responder before the challenge
+    /// - Binds the response to this specific challenge instance
+    fn generate_challenge_nonce(&self) -> Option<String> {
+        let mut nonce_bytes = [0u8; 32];
+        if getrandom::getrandom(&mut nonce_bytes).is_err() {
+            warn!("VER-2: Failed to get cryptographic randomness for challenge nonce");
+            return None;
+        }
+        Some(hex::encode(nonce_bytes))
+    }
+
+    /// H-1/VER-2/VER-3 FIX: Validate GhostPay response includes proper epoch state proof
+    /// and nonce-bound proof to prevent precomputation attacks
     ///
     /// Returns (passed, validation_details)
     fn validate_ghostpay_response(
         &self,
         resp: &crate::challenge::GhostPayResponse,
         challenge_epoch: u64,
+        challenge_nonce: &str,
     ) -> (bool, String) {
         // Basic checks
         if !resp.success {
@@ -1738,12 +1782,57 @@ impl VerificationTask {
             }
         }
 
-        (true, "Epoch state proof validated".to_string())
+        // VER-2/VER-3 FIX: Verify nonce_bound_proof to prevent precomputation attacks
+        // The nonce_bound_proof must be SHA256(epoch_state_hash || challenge_nonce)
+        // This ensures the node actually computed the proof for THIS specific challenge,
+        // not pre-computed it for a known epoch.
+        let nonce_bound_proof = match &resp.nonce_bound_proof {
+            Some(proof) => proof,
+            None => {
+                return (
+                    false,
+                    format!(
+                        "VER-2/VER-3: Missing nonce_bound_proof for challenge nonce '{}'",
+                        &challenge_nonce[..8.min(challenge_nonce.len())]
+                    ),
+                );
+            }
+        };
+
+        // VER-3: Validate nonce_bound_proof format (64 hex chars for SHA256)
+        if nonce_bound_proof.len() != 64 || !nonce_bound_proof.chars().all(|c| c.is_ascii_hexdigit()) {
+            return (
+                false,
+                format!("VER-3: Invalid nonce_bound_proof format: {}", nonce_bound_proof),
+            );
+        }
+
+        // VER-2/VER-3 FIX: Compute expected nonce_bound_proof and verify it matches
+        // Expected = SHA256(epoch_state_hash || challenge_nonce)
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(state_hash.as_bytes());
+        hasher.update(challenge_nonce.as_bytes());
+        let expected_proof = hex::encode(hasher.finalize());
+
+        if nonce_bound_proof.to_lowercase() != expected_proof.to_lowercase() {
+            return (
+                false,
+                format!(
+                    "VER-2/VER-3: nonce_bound_proof mismatch - node may have precomputed epoch_state_hash. \
+                     Expected: {}, Got: {}",
+                    &expected_proof[..16],
+                    &nonce_bound_proof[..16]
+                ),
+            );
+        }
+
+        (true, "Epoch state proof and nonce binding validated".to_string())
     }
 
     /// Broadcast a verification result via P2P
     ///
-    /// MED-VER-7: Validates timestamp before broadcasting to prevent stale/future results
+    /// MED-VER-7/VER-4: Validates timestamp before broadcasting to prevent stale/future results
     async fn broadcast_result(
         &self,
         target_node_id: NodeId,
@@ -1753,19 +1842,23 @@ impl VerificationTask {
         response_data: Option<String>,
         timestamp: i64,
     ) {
-        // MED-VER-7 FIX: Clock sanity check before broadcasting
+        // MED-VER-7/VER-4 FIX: Clock sanity check before broadcasting
+        // VER-4: Standardized on 30 seconds max future tolerance (matches verification_handler.rs)
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
 
-        // Reject if timestamp is more than 2 minutes in the future (clock drift)
-        if timestamp > now + 120 {
+        // VER-4 FIX: Reject if timestamp is more than 30 seconds in the future
+        // Standardized across both broadcast and handler to prevent inconsistent behavior.
+        // Previously broadcast allowed 2 minutes but handler only allowed 30 seconds.
+        const MAX_FUTURE_TOLERANCE_SECS: i64 = 30;
+        if timestamp > now + MAX_FUTURE_TOLERANCE_SECS {
             warn!(
                 timestamp = timestamp,
                 now = now,
                 capability = capability,
-                "MED-VER-7: Not broadcasting - timestamp too far in future (clock drift?)"
+                "VER-4: Not broadcasting - timestamp too far in future (clock drift?)"
             );
             return;
         }

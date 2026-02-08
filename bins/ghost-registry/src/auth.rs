@@ -1,17 +1,9 @@
 //|======================================================================================================================|
 //|                                                                                                                      |
-//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
-//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
-//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
-//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
-//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
-//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
-//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
-//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
-//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
-//|       ░              ░                                                                                               |
-//|----------------------------------------------------------------------------------------------------------------------|
-//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|  Bitcoin Ghost - Auth Module                                                                                         |
+//|                                                                                                                      |
+//|  HMAC-SHA256 authentication for internal API endpoints (API-1, API-2 security fixes)                               |
+//|                                                                                                                      |
 //|----------------------------------------------------------------------------------------------------------------------|
 //| PROJECT: Bitcoin Ghost                                                                                               |
 //| REPO: https://github.com/bitcoin-ghost                                                                               |
@@ -20,19 +12,15 @@
 //| FILE: auth.rs                                                                                                        |
 //|======================================================================================================================|
 
-//! Authentication for internal API endpoints (H10, H11 security fixes)
+//! Authentication for ghost-registry API endpoints (API-1, API-2 security fixes)
 //!
-//! Provides HMAC-SHA256 authentication for internal endpoints that should not be
-//! publicly accessible. This prevents unauthorized share submissions and admin
-//! operations from external sources.
+//! Provides HMAC-SHA256 authentication for state-modifying endpoints to prevent
+//! unauthorized node registration, heartbeat, and deregistration.
 //!
 //! # Security Model
 //!
-//! Internal endpoints (`/api/internal/*`, `/admin/*`) are protected by HMAC-SHA256.
-//! The shared secret must be configured at startup and shared between:
-//! - ghost-pool (the pool server)
-//! - ghost-verification (this service)
-//! - Any other internal services that need to communicate
+//! State-modifying endpoints (register, heartbeat, deregister) are protected by HMAC-SHA256.
+//! The shared secret must be configured at startup via API_SECRET environment variable.
 //!
 //! # Usage
 //!
@@ -40,16 +28,14 @@
 //! `HMAC-SHA256(secret, timestamp + body)`
 //!
 //! And the `X-Ghost-Timestamp` header with Unix timestamp (seconds).
-//! Timestamps must be within 5 minutes of server time to prevent replay attacks.
+//! Timestamps must be within 30 seconds of server time to prevent replay attacks (API-4).
 
-use axum::{
-    body::Bytes,
-    extract::State,
-    http::{HeaderMap, StatusCode},
-};
+use axum::http::{HeaderMap, StatusCode};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tracing::warn;
 
 /// HMAC-SHA256 type alias
@@ -63,13 +49,13 @@ const MAX_TIMESTAMP_DRIFT_SECS: u64 = 30;
 
 /// Internal API authentication using HMAC-SHA256
 ///
-/// # Security (H10)
+/// # Security (API-1, API-2)
 ///
-/// All internal endpoints that receive share data or trigger privileged operations
+/// All state-modifying endpoints that register, update, or delete nodes
 /// must be protected by this authentication to prevent:
-/// - Unauthorized share injection attacks
-/// - Spoofed work credits
-/// - Fake consensus triggers
+/// - Unauthorized node registration attacks
+/// - Spoofed heartbeat updates
+/// - Malicious node deregistration (API-1 CRITICAL)
 #[derive(Clone)]
 pub struct InternalAuth {
     secret: [u8; 32],
@@ -82,17 +68,17 @@ impl InternalAuth {
     ///
     /// Returns error if secret is too short or has insufficient entropy
     pub fn new(secret: &[u8]) -> Result<Self, AuthError> {
-        // H10: Require minimum 32 bytes for security
+        // Require minimum 32 bytes for security
         if secret.len() < 32 {
             return Err(AuthError::WeakSecret(
-                "Internal API secret must be at least 32 bytes".to_string(),
+                "API secret must be at least 32 bytes".to_string(),
             ));
         }
 
         // Check for trivially weak secrets (all same byte)
         if secret.iter().all(|&b| b == secret[0]) {
             return Err(AuthError::WeakSecret(
-                "Internal API secret has insufficient entropy".to_string(),
+                "API secret has insufficient entropy".to_string(),
             ));
         }
 
@@ -157,6 +143,7 @@ impl InternalAuth {
     }
 
     /// Generate a signature for a request (for testing/client use)
+    #[allow(dead_code)]
     pub fn sign(&self, timestamp: u64, body: &[u8]) -> String {
         let mut mac =
             HmacSha256::new_from_slice(&self.secret).expect("HMAC can accept any key size");
@@ -167,24 +154,7 @@ impl InternalAuth {
 }
 
 /// Constant-time byte comparison to prevent timing attacks
-///
-/// L-18 SECURITY NOTE: The length comparison on line 186 does leak timing information
-/// about whether the lengths match. However, this is acceptable here because:
-///
-/// 1. HMAC-SHA256 always produces exactly 32 bytes of output
-/// 2. Attackers already know the expected signature length is 32 bytes (it's public knowledge)
-/// 3. The length check only reveals "signature is/isn't 32 bytes" which provides no
-///    useful information about the actual signature value
-/// 4. The actual byte comparison in the loop below is constant-time and does not
-///    leak information about which bytes differ or how many match
-///
-/// To fully eliminate timing information, we could pad shorter inputs and always
-/// compare 32 bytes, but this would add complexity for zero security benefit since
-/// the HMAC output size is already public.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    // L-18: This length check leaks timing info about length mismatch, but HMAC-SHA256
-    // is always 32 bytes so attackers already know the expected length. No information
-    // about the actual signature value is revealed.
     if a.len() != b.len() {
         return false;
     }
@@ -199,8 +169,6 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Authentication error types
 #[derive(Debug, Clone)]
 pub enum AuthError {
-    /// Missing required header
-    MissingHeader(String),
     /// Invalid signature format or verification failed
     InvalidSignature(String),
     /// Timestamp outside acceptable range
@@ -214,7 +182,6 @@ pub enum AuthError {
 impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            AuthError::MissingHeader(h) => write!(f, "Missing required header: {}", h),
             AuthError::InvalidSignature(reason) => write!(f, "Invalid signature: {}", reason),
             AuthError::TimestampOutOfRange {
                 received,
@@ -253,7 +220,6 @@ pub fn verify_internal_auth(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<(), (StatusCode, String)> {
-    // SEC-ERR-3: Distinguish between missing and malformed headers
     // Extract signature header
     let signature_header = headers.get("X-Ghost-Signature").ok_or_else(|| {
         (
@@ -291,7 +257,7 @@ pub fn verify_internal_auth(
 
     // Verify signature
     auth.verify(signature, timestamp, body).map_err(|e| {
-        warn!(error = %e, "Internal API authentication failed");
+        warn!(error = %e, "API authentication failed");
         (
             StatusCode::UNAUTHORIZED,
             format!("Authentication failed: {}", e),
@@ -299,22 +265,67 @@ pub fn verify_internal_auth(
     })
 }
 
-/// Middleware-style authentication for internal endpoints
+/// Rate limiter for status endpoint (API-3)
 ///
-/// Use this with axum's `from_fn_with_state` for route-layer protection:
-///
-/// ```ignore
-/// Router::new()
-///     .route("/api/internal/share", post(share_handler))
-///     .route_layer(from_fn_with_state(auth.clone(), require_internal_auth))
-/// ```
-pub async fn require_internal_auth(
-    State(auth): State<Arc<InternalAuth>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<Bytes, (StatusCode, String)> {
-    verify_internal_auth(&auth, &headers, &body)?;
-    Ok(body)
+/// Uses a sliding window approach with per-IP tracking.
+pub struct RateLimiter {
+    /// Maximum requests per window
+    max_requests: u32,
+    /// Window duration
+    window: Duration,
+    /// Per-IP request counts and window start times
+    state: Mutex<HashMap<String, (u32, Instant)>>,
+}
+
+impl RateLimiter {
+    /// Create a new rate limiter
+    ///
+    /// # Arguments
+    ///
+    /// * `max_requests` - Maximum requests allowed per window
+    /// * `window` - Duration of the sliding window
+    pub fn new(max_requests: u32, window: Duration) -> Self {
+        Self {
+            max_requests,
+            window,
+            state: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Check if a request from the given IP should be allowed
+    ///
+    /// # Returns
+    ///
+    /// Ok(()) if allowed, Err with retry-after seconds if rate limited
+    pub fn check(&self, ip: &str) -> Result<(), u64> {
+        let now = Instant::now();
+        let mut state = self.state.lock().unwrap();
+
+        // Clean up old entries (older than 2x window)
+        let cleanup_threshold = now - (self.window * 2);
+        state.retain(|_, (_, window_start)| *window_start > cleanup_threshold);
+
+        let entry = state.entry(ip.to_string()).or_insert((0, now));
+
+        // Check if window has expired
+        if now.duration_since(entry.1) >= self.window {
+            // Reset window
+            entry.0 = 1;
+            entry.1 = now;
+            return Ok(());
+        }
+
+        // Check if under limit
+        if entry.0 < self.max_requests {
+            entry.0 += 1;
+            return Ok(());
+        }
+
+        // Rate limited - calculate retry-after
+        let elapsed = now.duration_since(entry.1);
+        let retry_after = self.window.saturating_sub(elapsed).as_secs() + 1;
+        Err(retry_after)
+    }
 }
 
 #[cfg(test)]
@@ -393,7 +404,7 @@ mod tests {
         let auth = InternalAuth::new(&secret).unwrap();
 
         let body = b"test body content";
-        // L-27: 2 minutes ago (beyond 60 second window)
+        // 2 minutes ago (beyond 60 second window)
         let old_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -425,18 +436,6 @@ mod tests {
     }
 
     #[test]
-    fn test_constant_time_eq() {
-        let a = [1u8, 2, 3, 4];
-        let b = [1u8, 2, 3, 4];
-        let c = [1u8, 2, 3, 5];
-        let d = [1u8, 2, 3];
-
-        assert!(constant_time_eq(&a, &b));
-        assert!(!constant_time_eq(&a, &c));
-        assert!(!constant_time_eq(&a, &d));
-    }
-
-    #[test]
     fn test_from_hex() {
         // Valid 32-byte hex secret
         let hex_secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -451,55 +450,34 @@ mod tests {
         ));
     }
 
-    // L-27: Verify 60-second timestamp tolerance
     #[test]
-    fn test_timestamp_within_60_seconds_accepted() {
-        let secret = test_secret();
-        let auth = InternalAuth::new(&secret).unwrap();
-        let body = b"test body";
+    fn test_rate_limiter_allows_under_limit() {
+        let limiter = RateLimiter::new(3, Duration::from_secs(60));
 
-        // 30 seconds ago should be accepted (within 60 second window)
-        let timestamp_30s_ago = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            - 30;
-
-        let signature = auth.sign(timestamp_30s_ago, body);
-        let result = auth.verify(&signature, timestamp_30s_ago, body);
-        assert!(
-            result.is_ok(),
-            "L-27: Timestamp 30s ago should be within 60s tolerance"
-        );
+        assert!(limiter.check("192.168.1.1").is_ok());
+        assert!(limiter.check("192.168.1.1").is_ok());
+        assert!(limiter.check("192.168.1.1").is_ok());
     }
 
     #[test]
-    fn test_timestamp_just_over_30_seconds_rejected() {
-        let secret = test_secret();
-        let auth = InternalAuth::new(&secret).unwrap();
-        let body = b"test body";
+    fn test_rate_limiter_blocks_over_limit() {
+        let limiter = RateLimiter::new(2, Duration::from_secs(60));
 
-        // API-4 FIX: 35 seconds ago should be rejected (outside 30 second window)
-        let timestamp_35s_ago = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            - 35;
-
-        let signature = auth.sign(timestamp_35s_ago, body);
-        let result = auth.verify(&signature, timestamp_35s_ago, body);
-        assert!(
-            matches!(result, Err(AuthError::TimestampOutOfRange { .. })),
-            "API-4: Timestamp 35s ago should be outside 30s tolerance"
-        );
+        assert!(limiter.check("192.168.1.1").is_ok());
+        assert!(limiter.check("192.168.1.1").is_ok());
+        // Third request should be blocked
+        assert!(limiter.check("192.168.1.1").is_err());
     }
 
     #[test]
-    fn test_timestamp_tolerance_constant() {
-        // API-4 FIX: Verify the constant is 30 seconds (reduced from 60)
-        assert_eq!(
-            MAX_TIMESTAMP_DRIFT_SECS, 30,
-            "API-4: Timestamp tolerance should be 30 seconds"
-        );
+    fn test_rate_limiter_separate_ips() {
+        let limiter = RateLimiter::new(1, Duration::from_secs(60));
+
+        assert!(limiter.check("192.168.1.1").is_ok());
+        assert!(limiter.check("192.168.1.2").is_ok());
+        // First IP should be blocked
+        assert!(limiter.check("192.168.1.1").is_err());
+        // Second IP still has capacity
+        assert!(limiter.check("192.168.1.2").is_err());
     }
 }

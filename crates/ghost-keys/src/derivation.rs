@@ -273,6 +273,27 @@ pub fn compute_tweak_v2(shared_secret: &[u8; 32], k: u32) -> [u8; 32] {
 /// LOW-CRYPTO-4 FIX: Explicitly zeroizes all sensitive material after use.
 /// The tweak bytes and the derived tweak_secret are both cleared to prevent
 /// secret key material from lingering in memory.
+///
+/// # CRYPT-4: Security Note on non_secure_erase()
+///
+/// The `secp256k1::SecretKey::non_secure_erase()` method is documented as "best-effort"
+/// and may not provide cryptographic guarantees. Specifically:
+///
+/// 1. The compiler may optimize away the overwrite if it determines the memory is not read afterward
+/// 2. The memory may have been copied elsewhere (registers, stack, etc.) before erasure
+/// 3. The underlying libsecp256k1 implementation uses memset which may not be guaranteed secure
+///
+/// To provide defense-in-depth, we:
+/// 1. First call `non_secure_erase()` to trigger the library's cleanup
+/// 2. Then overwrite the secret key with a deterministic dummy value
+/// 3. Then zeroize the dummy value
+///
+/// This multi-layer approach increases the likelihood that the original secret material
+/// is overwritten, even if one layer is optimized away. However, complete memory zeroing
+/// cannot be absolutely guaranteed in any language without OS-level support.
+///
+/// For maximum security, consider using hardware security modules (HSMs) for production
+/// key material.
 pub fn derive_spend_key(
     spend_secret: &SecretKey,
     tweak: &[u8; 32],
@@ -282,11 +303,24 @@ pub fn derive_spend_key(
     let mut tweak_secret = SecretKey::from_slice(&tweak_bytes)?;
     let result = spend_secret.add_tweak(&secp256k1::Scalar::from(tweak_secret))?;
 
-    // LOW-CRYPTO-4 FIX: Zeroize all sensitive material after use
-    // 1. Zeroize the tweak bytes
+    // LOW-CRYPTO-4 + CRYPT-4 FIX: Multi-layer zeroization for defense-in-depth
+
+    // 1. Zeroize the tweak bytes using zeroize crate (has compiler barriers)
     tweak_bytes.zeroize();
-    // 2. Erase the SecretKey using secp256k1's built-in method
-    //    Note: non_secure_erase() is provided by secp256k1 for this purpose
+
+    // 2. First pass: Use secp256k1's built-in erase method
+    tweak_secret.non_secure_erase();
+
+    // 3. CRYPT-4 FIX: Second pass - overwrite with deterministic dummy value
+    //    This provides additional protection against compiler optimization of non_secure_erase
+    let mut dummy_bytes = [0x55u8; 32]; // 0x55 = 01010101 pattern, clearly distinguishable
+    // Create dummy key (this will overwrite tweak_secret's memory location)
+    if let Ok(dummy_key) = SecretKey::from_slice(&dummy_bytes) {
+        tweak_secret = dummy_key;
+    }
+
+    // 4. Third pass: Zeroize the dummy bytes and erase the dummy key
+    dummy_bytes.zeroize();
     tweak_secret.non_secure_erase();
 
     Ok(result)

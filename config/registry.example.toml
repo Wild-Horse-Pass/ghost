@@ -67,8 +67,8 @@ check_interval_secs = 30
 max_load_percent = 80
 # Rate limit: minimum seconds between registrations from same node
 registration_rate_limit_secs = 300
-# Maximum timestamp drift allowed (seconds)
-max_timestamp_drift_secs = 60
+# Maximum timestamp drift allowed (seconds) - API-4: reduced to 30s to minimize replay window
+max_timestamp_drift_secs = 30
 
 [database]
 # SQLite database path

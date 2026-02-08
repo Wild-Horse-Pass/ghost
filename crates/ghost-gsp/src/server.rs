@@ -124,18 +124,24 @@ fn is_valid_trusted_proxy(ip: &std::net::IpAddr) -> bool {
     }
 }
 
-/// C-2: Trusted proxy configuration for secure IP extraction.
+/// C-2/PAY-2: Trusted proxy configuration for secure IP extraction.
 ///
 /// Only requests from trusted proxy IPs will have X-Forwarded-For/X-Real-IP headers
 /// honored. This prevents IP spoofing attacks where attackers set fake headers.
 ///
-/// Load from GHOST_TRUSTED_PROXIES env var (comma-separated IPs) or use defaults.
+/// Load from environment variables (comma-separated IPs):
+/// - TRUSTED_PROXY_IPS (preferred, as specified in PAY-2 fix)
+/// - GHOST_TRUSTED_PROXIES (legacy, for backward compatibility)
 ///
 /// L-21 FIX: Validates that configured proxy IPs are not reserved/special addresses.
 fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
     use std::net::IpAddr;
 
-    if let Ok(proxies_str) = std::env::var("GHOST_TRUSTED_PROXIES") {
+    // PAY-2: Check TRUSTED_PROXY_IPS first (preferred), then GHOST_TRUSTED_PROXIES (legacy)
+    let proxies_str = std::env::var("TRUSTED_PROXY_IPS")
+        .or_else(|_| std::env::var("GHOST_TRUSTED_PROXIES"));
+
+    if let Ok(proxies_str) = proxies_str {
         let proxies: Vec<IpAddr> = proxies_str
             .split(',')
             .filter_map(|s| {
@@ -172,6 +178,10 @@ fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
                 "::1".parse().expect("L-1: Valid hardcoded IPv6 localhost"),
             ]
         } else {
+            tracing::info!(
+                proxy_count = proxies.len(),
+                "PAY-2: Loaded trusted proxy IPs from environment"
+            );
             proxies
         }
     } else {
@@ -413,6 +423,16 @@ pub struct GspConfig {
 
     /// M-4: Maximum request body size in bytes (default: 1MB)
     pub max_body_size: usize,
+
+    /// PAY-2: Trusted proxy IPs for X-Forwarded-For header validation.
+    /// Only requests from these IPs will have X-Forwarded-For/X-Real-IP trusted.
+    /// Loaded from TRUSTED_PROXY_IPS environment variable (comma-separated).
+    pub trusted_proxy_ips: Vec<std::net::IpAddr>,
+
+    /// PAY-2: Number of trusted proxies in the chain for X-Forwarded-For parsing.
+    /// Default is 1. For multi-proxy setups (CDN -> LB -> App), set to number of proxies.
+    /// Loaded from GHOST_TRUSTED_PROXY_COUNT environment variable.
+    pub trusted_proxy_count: usize,
 }
 
 impl Default for GspConfig {
@@ -434,6 +454,9 @@ impl Default for GspConfig {
             rate_limit_rpm: 60,
             max_ws_connections: 1000,
             max_body_size: 1024 * 1024, // M-4: 1MB default body limit
+            // PAY-2: Load trusted proxies from environment, default to localhost only
+            trusted_proxy_ips: get_trusted_proxies(),
+            trusted_proxy_count: get_trusted_proxy_count(),
         }
     }
 }
@@ -656,6 +679,19 @@ impl GspState {
     /// Get current connection count
     pub fn connection_count(&self) -> usize {
         self.connection_count.load(Ordering::SeqCst)
+    }
+
+    /// PAY-2: Check if an IP is a trusted proxy
+    ///
+    /// Returns true if the given IP is in the configured trusted_proxy_ips list.
+    /// Used by get_client_ip() to determine whether to trust X-Forwarded-For headers.
+    pub fn is_trusted_proxy(&self, ip: &std::net::IpAddr) -> bool {
+        self.config.trusted_proxy_ips.contains(ip)
+    }
+
+    /// PAY-2: Get the trusted proxy count for multi-proxy chain parsing
+    pub fn trusted_proxy_count(&self) -> usize {
+        self.config.trusted_proxy_count
     }
 
     /// Start the reorg bridge to forward chain events to WebSocket subscribers
@@ -935,5 +971,136 @@ mod tests {
         assert_eq!(state.connection_count(), 1);
         assert!(state.try_add_connection()); // Now 2 again
         assert_eq!(state.connection_count(), 2);
+    }
+
+    // PAY-2: Trusted proxy validation tests
+    #[test]
+    fn test_pay2_default_config_has_localhost_proxies() {
+        let config = GspConfig::default();
+        // Default should trust localhost
+        assert!(
+            config.trusted_proxy_ips.contains(&"127.0.0.1".parse().unwrap()),
+            "PAY-2: Default config should trust 127.0.0.1"
+        );
+        assert!(
+            config.trusted_proxy_ips.contains(&"::1".parse().unwrap()),
+            "PAY-2: Default config should trust ::1"
+        );
+    }
+
+    #[test]
+    fn test_pay2_default_proxy_count_is_one() {
+        let config = GspConfig::default();
+        assert_eq!(
+            config.trusted_proxy_count, 1,
+            "PAY-2: Default trusted proxy count should be 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pay2_state_is_trusted_proxy() {
+        let mut config = create_test_config();
+        config.trusted_proxy_ips = vec![
+            "10.0.0.1".parse().unwrap(),
+            "192.168.1.1".parse().unwrap(),
+        ];
+        let state = GspState::new(config).unwrap();
+
+        // Should recognize configured proxies
+        assert!(
+            state.is_trusted_proxy(&"10.0.0.1".parse().unwrap()),
+            "PAY-2: Should trust configured proxy 10.0.0.1"
+        );
+        assert!(
+            state.is_trusted_proxy(&"192.168.1.1".parse().unwrap()),
+            "PAY-2: Should trust configured proxy 192.168.1.1"
+        );
+
+        // Should NOT trust non-configured IPs
+        assert!(
+            !state.is_trusted_proxy(&"8.8.8.8".parse().unwrap()),
+            "PAY-2: Should NOT trust unconfigured IP 8.8.8.8"
+        );
+        assert!(
+            !state.is_trusted_proxy(&"127.0.0.1".parse().unwrap()),
+            "PAY-2: Should NOT trust localhost when not configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pay2_trusted_proxy_count_getter() {
+        let mut config = create_test_config();
+        config.trusted_proxy_count = 3;
+        let state = GspState::new(config).unwrap();
+
+        assert_eq!(
+            state.trusted_proxy_count(),
+            3,
+            "PAY-2: trusted_proxy_count() should return configured value"
+        );
+    }
+
+    #[test]
+    fn test_pay2_is_valid_trusted_proxy_rejects_special_ips() {
+        // Unspecified
+        assert!(
+            !is_valid_trusted_proxy(&"0.0.0.0".parse().unwrap()),
+            "PAY-2: Should reject 0.0.0.0"
+        );
+        // Link-local
+        assert!(
+            !is_valid_trusted_proxy(&"169.254.1.1".parse().unwrap()),
+            "PAY-2: Should reject link-local 169.254.x.x"
+        );
+        // Multicast
+        assert!(
+            !is_valid_trusted_proxy(&"224.0.0.1".parse().unwrap()),
+            "PAY-2: Should reject multicast 224.x.x.x"
+        );
+        // Broadcast
+        assert!(
+            !is_valid_trusted_proxy(&"255.255.255.255".parse().unwrap()),
+            "PAY-2: Should reject broadcast 255.255.255.255"
+        );
+        // Documentation addresses
+        assert!(
+            !is_valid_trusted_proxy(&"192.0.2.1".parse().unwrap()),
+            "PAY-2: Should reject TEST-NET-1 192.0.2.x"
+        );
+        assert!(
+            !is_valid_trusted_proxy(&"198.51.100.1".parse().unwrap()),
+            "PAY-2: Should reject TEST-NET-2 198.51.100.x"
+        );
+        assert!(
+            !is_valid_trusted_proxy(&"203.0.113.1".parse().unwrap()),
+            "PAY-2: Should reject TEST-NET-3 203.0.113.x"
+        );
+    }
+
+    #[test]
+    fn test_pay2_is_valid_trusted_proxy_accepts_valid_ips() {
+        // Localhost
+        assert!(
+            is_valid_trusted_proxy(&"127.0.0.1".parse().unwrap()),
+            "PAY-2: Should accept localhost 127.0.0.1"
+        );
+        // Private networks
+        assert!(
+            is_valid_trusted_proxy(&"10.0.0.1".parse().unwrap()),
+            "PAY-2: Should accept private 10.x.x.x"
+        );
+        assert!(
+            is_valid_trusted_proxy(&"172.16.0.1".parse().unwrap()),
+            "PAY-2: Should accept private 172.16.x.x"
+        );
+        assert!(
+            is_valid_trusted_proxy(&"192.168.1.1".parse().unwrap()),
+            "PAY-2: Should accept private 192.168.x.x"
+        );
+        // Public IPs (for cloud proxy scenarios)
+        assert!(
+            is_valid_trusted_proxy(&"8.8.8.8".parse().unwrap()),
+            "PAY-2: Should accept public IP 8.8.8.8"
+        );
     }
 }

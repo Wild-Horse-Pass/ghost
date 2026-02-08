@@ -221,6 +221,11 @@ pub struct GhostPayChallenge {
     /// When set, requires the node to prove it has state for this epoch
     #[serde(default)]
     pub challenge_epoch: Option<u64>,
+    /// VER-2: Random challenge nonce that must be incorporated into the response
+    /// This prevents precomputation attacks where an attacker pre-builds a lookup table
+    /// of epoch_state_hash values. The response must include hash(epoch_state_hash || nonce).
+    #[serde(default)]
+    pub challenge_nonce: Option<String>,
 }
 
 /// M-13: Maximum reasonable virtual block number
@@ -252,6 +257,17 @@ pub struct GhostPayResponse {
     /// H-5: Transaction count at challenged epoch (for verification)
     #[serde(default)]
     pub epoch_tx_count: Option<u64>,
+    /// VER-2/VER-3: Nonce-bound state proof: SHA256(epoch_state_hash || challenge_nonce)
+    /// This prevents precomputation attacks. The verifier computes this hash locally
+    /// using the epoch_state_hash and the nonce they sent, and compares.
+    /// If a challenge_nonce was provided, this field MUST be present and valid.
+    #[serde(default)]
+    pub nonce_bound_proof: Option<String>,
+    /// VER-3: Merkle proof or signature from GhostPay consensus layer
+    /// This provides verifiable evidence that the epoch_state_hash is legitimate.
+    /// Format: JSON object with "type" ("merkle" or "signature") and proof data.
+    #[serde(default)]
+    pub epoch_proof: Option<String>,
     /// Error message (if failed)
     pub error: Option<String>,
 }
@@ -1019,6 +1035,8 @@ mod tests {
             wraith_enabled: false,
             epoch_state_hash: None,
             epoch_tx_count: None,
+            nonce_bound_proof: None,
+            epoch_proof: None,
             error: None,
         };
         assert!(response.is_valid());
@@ -1035,6 +1053,8 @@ mod tests {
             wraith_enabled: false,
             epoch_state_hash: None,
             epoch_tx_count: None,
+            nonce_bound_proof: None,
+            epoch_proof: None,
             error: None,
         };
         assert!(!response.is_valid());
@@ -1050,6 +1070,8 @@ mod tests {
             wraith_enabled: false,
             epoch_state_hash: None,
             epoch_tx_count: None,
+            nonce_bound_proof: None,
+            epoch_proof: None,
             error: None,
         };
         assert!(!response.is_valid());

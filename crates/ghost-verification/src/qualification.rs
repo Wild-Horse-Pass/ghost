@@ -214,22 +214,48 @@ impl QualifiedCapabilityProvider {
     /// Cap at 1M nodes to prevent overflow and unreasonable scaling
     const MAX_NETWORK_SIZE: usize = 1_000_000;
 
-    /// MED-VER-6: Calculate scaled unique challenger requirement based on network size
+    /// VER-8/MED-VER-6: Calculate scaled unique challenger requirement based on network size
     ///
-    /// Scales logarithmically with total node count to balance Sybil resistance
-    /// with practical achievability:
-    /// - 10-50 nodes: 10 unique challengers (base)
+    /// Scales with total node count to balance Sybil resistance with practical achievability:
+    ///
+    /// **VER-8 FIX**: For small networks, the minimum is now: max(3, min(10, network_size / 3))
+    /// This ensures verification is possible even in small bootstrap networks while still
+    /// providing meaningful Sybil resistance.
+    ///
+    /// Scaling behavior:
+    /// - 3-9 nodes: 3 unique challengers (minimum viable Sybil resistance)
+    /// - 10-29 nodes: 3-9 unique challengers (scales with network_size / 3)
+    /// - 30-50 nodes: 10 unique challengers (base threshold)
     /// - 100 nodes: 13 unique challengers
     /// - 500 nodes: 19 unique challengers
     /// - 1000 nodes: 23 unique challengers
     /// - 5000+ nodes: 50 unique challengers (cap)
     ///
-    /// Formula: min(MAX, BASE + sqrt(network_size / 10))
+    /// Formula for large networks: min(MAX, BASE + sqrt(network_size / 10))
+    /// Formula for small networks: max(3, min(10, network_size / 3))
     ///
     /// MED-VER-5 FIX: Added bounds check to prevent integer overflow.
     /// Network size is capped at 1M nodes.
     fn scaled_min_unique_challengers(&self, network_size: usize) -> u32 {
-        if network_size <= 10 {
+        // VER-8 FIX: For very small networks, scale down the requirement
+        // to make verification achievable during network bootstrap.
+        // Minimum is 3 to provide some Sybil resistance.
+        const ABSOLUTE_MINIMUM: u32 = 3;
+
+        if network_size < ABSOLUTE_MINIMUM as usize {
+            // Network too small for meaningful verification
+            return ABSOLUTE_MINIMUM;
+        }
+
+        // VER-8 FIX: For small networks (< 30 nodes), use network_size / 3
+        // This allows a 9-node network to require 3 challengers,
+        // and a 27-node network to require 9 challengers.
+        if network_size < 30 {
+            let small_net_min = (network_size / 3).max(ABSOLUTE_MINIMUM as usize);
+            return (small_net_min as u32).min(BASE_MIN_UNIQUE_CHALLENGERS);
+        }
+
+        if network_size <= 50 {
             return BASE_MIN_UNIQUE_CHALLENGERS;
         }
 
@@ -364,9 +390,9 @@ impl QualifiedCapabilityProvider {
             return NodeCapabilities::default(); // 0 shares if uptime < 95%
         }
 
-        // MED-VER-6 + M-7 FIX: Calculate scaled unique challenger requirement
-        // M-7: Use cached fallback on DB failure instead of returning empty capabilities
-        let network_size = self.get_network_size_with_fallback();
+        // VER-5 FIX: Reuse network_size from earlier query instead of calling again
+        // The network_size variable was already set before the diagnostic log above.
+        // Previously this queried get_network_size_with_fallback() twice unnecessarily.
         let min_unique = self.scaled_min_unique_challengers(network_size);
 
         // M-16 FIX: Get qualified capabilities with per-capability pass rates
@@ -499,15 +525,19 @@ impl QualifiedCapabilityProvider {
             .get_ghostpay_unique_challengers(node_id_hex, since)
             .unwrap_or(0);
 
-        // Get qualified capabilities from database
-        // AUTH4-L3: Use archive_pass_rate as the baseline
+        // VER-1 FIX: Get qualified capabilities with per-capability pass rates
+        // Each capability type has its own threshold (e.g., GhostPay is 90%, Archive is 95%)
+        // Previously used archive_pass_rate for ALL capabilities, which was incorrect.
         let mut caps = self
             .db
-            .get_qualified_capabilities(
+            .get_qualified_capabilities_with_rates(
                 node_id_hex,
                 since,
                 self.config.min_challenges,
                 self.config.archive_pass_rate,
+                self.config.ghostpay_pass_rate,
+                self.config.stratum_pass_rate,
+                self.config.policy_pass_rate,
             )
             .unwrap_or_default();
 
@@ -862,23 +892,55 @@ mod tests {
 
     #[test]
     fn test_scaled_min_unique_challengers() {
-        // MEDIUM-1/MEDIUM-2 verification: Test that scaled_min_unique_challengers
+        // MEDIUM-1/MEDIUM-2/VER-8 verification: Test that scaled_min_unique_challengers
         // returns appropriate values based on network size
         let db = Arc::new(Database::in_memory().unwrap());
         let provider = QualifiedCapabilityProvider::new(db);
 
-        // Small networks: base requirement (10)
+        // VER-8 FIX: Very small networks (< 3) use absolute minimum (3)
         assert_eq!(
             provider.scaled_min_unique_challengers(0),
-            BASE_MIN_UNIQUE_CHALLENGERS
+            3, // Absolute minimum for Sybil resistance
+            "Network size 0 should give absolute minimum (3)"
         );
+        assert_eq!(
+            provider.scaled_min_unique_challengers(2),
+            3, // Absolute minimum
+            "Network size 2 should give absolute minimum (3)"
+        );
+
+        // VER-8 FIX: Small networks (3-29) use network_size / 3
         assert_eq!(
             provider.scaled_min_unique_challengers(5),
-            BASE_MIN_UNIQUE_CHALLENGERS
+            3, // 5/3 = 1, clamped to min 3
+            "Network size 5 should give 3"
         );
         assert_eq!(
-            provider.scaled_min_unique_challengers(10),
-            BASE_MIN_UNIQUE_CHALLENGERS
+            provider.scaled_min_unique_challengers(9),
+            3, // 9/3 = 3
+            "Network size 9 should give 3"
+        );
+        assert_eq!(
+            provider.scaled_min_unique_challengers(15),
+            5, // 15/3 = 5
+            "Network size 15 should give 5"
+        );
+        assert_eq!(
+            provider.scaled_min_unique_challengers(27),
+            9, // 27/3 = 9
+            "Network size 27 should give 9"
+        );
+
+        // Medium networks (30-50) use base requirement (10)
+        assert_eq!(
+            provider.scaled_min_unique_challengers(30),
+            BASE_MIN_UNIQUE_CHALLENGERS,
+            "Network size 30 should give base (10)"
+        );
+        assert_eq!(
+            provider.scaled_min_unique_challengers(50),
+            BASE_MIN_UNIQUE_CHALLENGERS,
+            "Network size 50 should give base (10)"
         );
 
         // Larger networks: scaled requirement

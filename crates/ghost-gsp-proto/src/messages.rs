@@ -333,6 +333,9 @@ pub enum ServerMessage {
     },
 
     /// Payment status response
+    ///
+    /// PAY-3 FIX: Added version field for optimistic locking. Clients should include
+    /// this version when making state changes to detect concurrent modifications.
     PaymentStatus {
         /// Payment ID
         payment_id: String,
@@ -340,6 +343,10 @@ pub enum ServerMessage {
         status: PaymentStatus,
         /// Confirmations if confirmed
         confirmations: Option<u32>,
+        /// PAY-3 FIX: Version for optimistic locking (detects concurrent modifications)
+        /// Clients should echo this value in subsequent state change requests
+        #[serde(skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
     },
 
     /// Payment received notification (push)

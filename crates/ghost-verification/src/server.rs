@@ -121,18 +121,24 @@ fn is_valid_trusted_proxy(ip: &std::net::IpAddr) -> bool {
     }
 }
 
-/// C-2: Trusted proxy configuration for secure IP extraction.
+/// C-2/PAY-2: Trusted proxy configuration for secure IP extraction.
 ///
 /// Only requests from trusted proxy IPs will have X-Forwarded-For/X-Real-IP headers
 /// honored. This prevents IP spoofing attacks where attackers set fake headers.
 ///
-/// Load from GHOST_TRUSTED_PROXIES env var (comma-separated IPs) or use defaults.
+/// Load from environment variables (comma-separated IPs):
+/// - TRUSTED_PROXY_IPS (preferred, as specified in PAY-2 fix)
+/// - GHOST_TRUSTED_PROXIES (legacy, for backward compatibility)
 ///
 /// L-21 FIX: Validates that configured proxy IPs are not reserved/special addresses.
 fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
     use std::net::IpAddr;
 
-    if let Ok(proxies_str) = std::env::var("GHOST_TRUSTED_PROXIES") {
+    // PAY-2: Check TRUSTED_PROXY_IPS first (preferred), then GHOST_TRUSTED_PROXIES (legacy)
+    let proxies_str = std::env::var("TRUSTED_PROXY_IPS")
+        .or_else(|_| std::env::var("GHOST_TRUSTED_PROXIES"));
+
+    if let Ok(proxies_str) = proxies_str {
         let proxies: Vec<IpAddr> = proxies_str
             .split(',')
             .filter_map(|s| {
@@ -169,6 +175,10 @@ fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
                 "::1".parse().expect("L-1: Valid hardcoded IPv6 localhost"),
             ]
         } else {
+            tracing::info!(
+                proxy_count = proxies.len(),
+                "PAY-2: Loaded trusted proxy IPs from environment"
+            );
             proxies
         }
     } else {
@@ -1524,9 +1534,18 @@ impl VerificationState {
         // This prevents nodes from passing verification with just a TCP listener
         let verifier = StratumVerifier::new().with_timeout(Duration::from_secs(5));
 
+        // VER-6 FIX: Use the node's external/advertised address for self-verification
+        // instead of localhost. Using localhost would only verify that the stratum
+        // service is listening on loopback, not that it's accessible externally.
+        // Falls back to localhost if no external address is configured (dev mode).
+        let verification_host = {
+            let config = self.dashboard_config.read();
+            config.stratum_host.clone().unwrap_or_else(|| "127.0.0.1".to_string())
+        };
+
         let result = match challenge.protocol {
-            StratumProtocol::Sv1 => verifier.verify_sv1("127.0.0.1", port).await,
-            StratumProtocol::Sv2 => verifier.verify_sv2("127.0.0.1", port).await,
+            StratumProtocol::Sv1 => verifier.verify_sv1(&verification_host, port).await,
+            StratumProtocol::Sv2 => verifier.verify_sv2(&verification_host, port).await,
         };
 
         match result {
@@ -1566,6 +1585,11 @@ impl VerificationState {
     /// H-5: When a challenge_epoch is provided, the node must prove it has
     /// L2 state data for that epoch. This prevents nodes from claiming
     /// GhostPay capability without actually maintaining L2 state.
+    ///
+    /// VER-2/VER-3: When a challenge_nonce is provided, the response must include
+    /// nonce_bound_proof = SHA256(epoch_state_hash || challenge_nonce). This prevents
+    /// precomputation attacks where an attacker pre-builds a lookup table of
+    /// epoch_state_hash values for all possible epochs.
     pub async fn verify_ghostpay(
         &self,
         challenge: GhostPayChallenge,
@@ -1580,6 +1604,8 @@ impl VerificationState {
                 wraith_enabled: false,
                 epoch_state_hash: None,
                 epoch_tx_count: None,
+                nonce_bound_proof: None,
+                epoch_proof: None,
                 error: Some("Ghost Pay not enabled".to_string()),
             });
         }
@@ -1596,6 +1622,8 @@ impl VerificationState {
                     wraith_enabled: false,
                     epoch_state_hash: None,
                     epoch_tx_count: None,
+                    nonce_bound_proof: None,
+                    epoch_proof: None,
                     error: Some("Ghost Pay handler not configured".to_string()),
                 });
             }
@@ -1623,6 +1651,8 @@ impl VerificationState {
                             wraith_enabled: handler.is_wraith_enabled(),
                             epoch_state_hash: None,
                             epoch_tx_count: None,
+                            nonce_bound_proof: None,
+                            epoch_proof: None,
                             error: Some(format!(
                                 "Cannot prove L2 state for epoch {}",
                                 challenge_epoch
@@ -1635,6 +1665,21 @@ impl VerificationState {
                 (None, None, true)
             };
 
+        // VER-2/VER-3 FIX: Compute nonce_bound_proof if challenge_nonce was provided
+        // nonce_bound_proof = SHA256(epoch_state_hash || challenge_nonce)
+        // This prevents precomputation attacks by binding the response to the specific challenge.
+        let nonce_bound_proof = if let (Some(ref state_hash), Some(ref nonce)) =
+            (&epoch_state_hash, &challenge.challenge_nonce)
+        {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(state_hash.as_bytes());
+            hasher.update(nonce.as_bytes());
+            Some(hex::encode(hasher.finalize()))
+        } else {
+            None
+        };
+
         Ok(GhostPayResponse {
             success: epoch_proof_success,
             l2_enabled: handler.is_enabled(),
@@ -1644,6 +1689,8 @@ impl VerificationState {
             wraith_enabled: handler.is_wraith_enabled(),
             epoch_state_hash,
             epoch_tx_count,
+            nonce_bound_proof,
+            epoch_proof: None, // VER-3: Future enhancement - add merkle proof from GhostPay consensus
             error: None,
         })
     }

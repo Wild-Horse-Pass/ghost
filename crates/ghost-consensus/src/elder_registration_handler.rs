@@ -1164,6 +1164,9 @@ impl ElderRegistrationHandler {
         // H-4 SECURITY: Invoke transition callback to sync VoterEligibility
         // This is CRITICAL - without this, the VoteHandler will not recognize
         // the new elders as valid voters.
+        // CONS-3 FIX: Return error if callback not set in production. The callback
+        // is mandatory because epoch transitions without VoterEligibility sync will
+        // cause consensus failures where valid elder votes are rejected.
         {
             let callback_guard = self.transition_callback.read();
             if let Some(ref callback) = *callback_guard {
@@ -1173,11 +1176,16 @@ impl ElderRegistrationHandler {
                     "H-4: Transition callback invoked to sync voter eligibility"
                 );
             } else {
-                warn!(
-                    epoch,
-                    "H-4 WARNING: No transition callback set - VoterEligibility may be out of sync! \
-                     Call set_transition_callback() or manually sync VoteHandler::set_canonical_elder_list()"
-                );
+                // CONS-3 FIX: Fail the epoch transition if callback is not set.
+                // This is a configuration error that must be fixed before mainnet.
+                // The transition callback MUST be set via with_transition_callback()
+                // to ensure VoteHandler recognizes new elders.
+                return Err(GhostError::Config(format!(
+                    "CONS-3 CRITICAL: Cannot complete epoch {} transition - no transition callback set. \
+                     VoterEligibility will be out of sync and new elders will not be recognized as valid voters. \
+                     Call ElderRegistrationHandler::with_transition_callback() during construction.",
+                    epoch
+                )));
             }
         }
 

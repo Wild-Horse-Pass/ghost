@@ -1024,6 +1024,9 @@ pub struct GhostPayQuery {
     pub unsigned: Option<bool>,
     /// H-5: Challenge epoch to verify L2 state for (cryptographic verification)
     pub challenge_epoch: Option<u64>,
+    /// VER-2: Challenge nonce for precomputation prevention
+    /// When provided, response must include nonce_bound_proof = SHA256(epoch_state_hash || challenge_nonce)
+    pub challenge_nonce: Option<String>,
 }
 
 /// Ghost Pay verification handler
@@ -1046,6 +1049,7 @@ async fn ghostpay_handler(
         },
         address: query.address,
         challenge_epoch: query.challenge_epoch,
+        challenge_nonce: query.challenge_nonce,
     };
 
     // Sign by default unless explicitly disabled
@@ -1087,6 +1091,8 @@ async fn ghostpay_handler(
                         wraith_enabled: false,
                         epoch_state_hash: None,
                         epoch_tx_count: None,
+                        nonce_bound_proof: None,
+                        epoch_proof: None,
                         error: Some(e.to_string()),
                     }
                 })),

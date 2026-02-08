@@ -461,27 +461,30 @@ impl RegistryDb {
         )?;
 
         let nodes = stmt
-            .query_map(params![region_to_string(region), Self::MAX_QUERY_RESULTS], |row| {
-                Ok(PoolNode {
-                    node_id: row.get(0)?,
-                    host: row.get(1)?,
-                    sv1_port: row.get(2)?,
-                    sv2_port: row.get(3)?,
-                    region: string_to_region(&row.get::<_, String>(4)?),
-                    latitude: row.get(5)?,
-                    longitude: row.get(6)?,
-                    max_miners: row.get(7)?,
-                    miner_count: row.get(8)?,
-                    load_percent: row.get(9)?,
-                    cpu_percent: row.get(10)?,
-                    memory_percent: row.get(11)?,
-                    healthy: row.get(12)?,
-                    accepting_miners: row.get(13)?,
-                    excluded_for_load: row.get(14)?,
-                    registered_at: parse_datetime(&row.get::<_, String>(15)?),
-                    last_heartbeat: parse_datetime(&row.get::<_, String>(16)?),
-                })
-            })?
+            .query_map(
+                params![region_to_string(region), Self::MAX_QUERY_RESULTS],
+                |row| {
+                    Ok(PoolNode {
+                        node_id: row.get(0)?,
+                        host: row.get(1)?,
+                        sv1_port: row.get(2)?,
+                        sv2_port: row.get(3)?,
+                        region: string_to_region(&row.get::<_, String>(4)?),
+                        latitude: row.get(5)?,
+                        longitude: row.get(6)?,
+                        max_miners: row.get(7)?,
+                        miner_count: row.get(8)?,
+                        load_percent: row.get(9)?,
+                        cpu_percent: row.get(10)?,
+                        memory_percent: row.get(11)?,
+                        healthy: row.get(12)?,
+                        accepting_miners: row.get(13)?,
+                        excluded_for_load: row.get(14)?,
+                        registered_at: parse_datetime(&row.get::<_, String>(15)?),
+                        last_heartbeat: parse_datetime(&row.get::<_, String>(16)?),
+                    })
+                },
+            )?
             .collect::<SqliteResult<Vec<_>>>()?;
 
         Ok(nodes)

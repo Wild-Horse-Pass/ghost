@@ -2406,6 +2406,7 @@ dependencies = [
  "clap",
  "ghost-common",
  "hex",
+ "hmac",
  "hyper",
  "hyper-util",
  "libc",
@@ -2448,6 +2449,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 1.0.69",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]

@@ -24,7 +24,7 @@ check_interval_secs = 30
 max_load_percent = 80
 resume_load_percent = 70
 registration_rate_limit_secs = 300
-max_timestamp_drift_secs = 60
+max_timestamp_drift_secs = 30
 
 [database]
 path = "/home/defenwycke/dev/projects/ghost/data/registry/registry.db"

@@ -40,7 +40,7 @@ use chacha20poly1305::{
 };
 use hkdf::Hkdf;
 use sha2::Sha256;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::GhostKeyError;
 
@@ -325,15 +325,23 @@ fn derive_metadata_nonce(
 /// # Returns
 ///
 /// Fixed 80-byte ciphertext on success
+///
+/// # CRYPT-3 FIX: Key Zeroization on All Paths
+///
+/// The encryption key is wrapped in `Zeroizing<[u8; 32]>` from the moment of derivation.
+/// This ensures the key is automatically zeroized when the function returns, whether
+/// due to success, error, or panic. Previous implementation could leak the key if
+/// encryption failed before the manual zeroization call.
 pub fn encrypt_metadata(
     metadata: &PaymentMetadata,
     shared_secret: &[u8],
     ephemeral_pubkey: &[u8],
 ) -> Result<[u8; METADATA_CIPHERTEXT_SIZE], GhostKeyError> {
-    let key = derive_metadata_key(shared_secret, ephemeral_pubkey)?;
+    // CRYPT-3 FIX: Wrap key in Zeroizing immediately to ensure zeroization on all paths
+    let key = Zeroizing::new(derive_metadata_key(shared_secret, ephemeral_pubkey)?);
     let nonce_bytes = derive_metadata_nonce(shared_secret, ephemeral_pubkey)?;
 
-    let cipher = ChaCha20Poly1305::new_from_slice(&key)
+    let cipher = ChaCha20Poly1305::new_from_slice(&*key)
         .map_err(|e| GhostKeyError::CryptoError(format!("Failed to create cipher: {}", e)))?;
 
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -343,9 +351,8 @@ pub fn encrypt_metadata(
         .encrypt(nonce, plaintext.as_ref())
         .map_err(|e| GhostKeyError::CryptoError(format!("Encryption failed: {}", e)))?;
 
-    // Zeroize sensitive intermediate data
-    let mut key_copy = key;
-    key_copy.zeroize();
+    // CRYPT-3 FIX: No manual zeroization needed - Zeroizing wrapper handles it on drop
+    // The key will be zeroized when this function returns (success or error)
 
     // Convert to fixed-size array
     let mut result = [0u8; METADATA_CIPHERTEXT_SIZE];
@@ -375,15 +382,22 @@ pub fn encrypt_metadata(
 /// # Returns
 ///
 /// Decrypted PaymentMetadata on success
+///
+/// # CRYPT-3 FIX: Key Zeroization on All Paths
+///
+/// The decryption key is wrapped in `Zeroizing<[u8; 32]>` from the moment of derivation.
+/// This ensures the key is automatically zeroized when the function returns, whether
+/// due to success, error, or panic.
 pub fn decrypt_metadata(
     ciphertext: &[u8; METADATA_CIPHERTEXT_SIZE],
     shared_secret: &[u8],
     ephemeral_pubkey: &[u8],
 ) -> Result<PaymentMetadata, GhostKeyError> {
-    let key = derive_metadata_key(shared_secret, ephemeral_pubkey)?;
+    // CRYPT-3 FIX: Wrap key in Zeroizing immediately to ensure zeroization on all paths
+    let key = Zeroizing::new(derive_metadata_key(shared_secret, ephemeral_pubkey)?);
     let nonce_bytes = derive_metadata_nonce(shared_secret, ephemeral_pubkey)?;
 
-    let cipher = ChaCha20Poly1305::new_from_slice(&key)
+    let cipher = ChaCha20Poly1305::new_from_slice(&*key)
         .map_err(|e| GhostKeyError::CryptoError(format!("Failed to create cipher: {}", e)))?;
 
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -392,9 +406,7 @@ pub fn decrypt_metadata(
         GhostKeyError::CryptoError("Decryption failed: authentication error".to_string())
     })?;
 
-    // Zeroize sensitive intermediate data
-    let mut key_copy = key;
-    key_copy.zeroize();
+    // CRYPT-3 FIX: No manual key zeroization needed - Zeroizing wrapper handles it on drop
 
     // Convert to fixed-size array
     if plaintext.len() != METADATA_PLAINTEXT_SIZE {

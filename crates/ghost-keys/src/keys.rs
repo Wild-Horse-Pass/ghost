@@ -316,11 +316,91 @@ impl GhostKeys {
     ///
     /// M-15 FIX: Returns Zeroizing wrappers to ensure the secret bytes are
     /// automatically zeroized when dropped by the caller.
+    ///
+    /// # CRYPT-1 Security Warning: Proper Secret Handling
+    ///
+    /// **CRITICAL**: The returned secrets are wrapped in `Zeroizing<[u8; 32]>` which
+    /// automatically zeroizes memory when dropped. However, callers MUST follow these rules:
+    ///
+    /// 1. **Do NOT clone the inner bytes** - Cloning defeats zeroization. The copy won't be zeroized.
+    /// 2. **Use briefly, drop quickly** - Minimize the lifetime of these secrets in memory.
+    /// 3. **Do NOT convert to String/Vec** - String/Vec may reallocate, leaving copies behind.
+    /// 4. **Prefer `with_secrets()` callback API** - Use [`with_secrets()`] when possible for
+    ///    guaranteed cleanup even on panics.
+    ///
+    /// # Example - Correct Usage
+    ///
+    /// ```ignore
+    /// // GOOD: Use the callback API for guaranteed cleanup
+    /// keys.with_secrets(|scan, spend| {
+    ///     // Use scan and spend here
+    ///     // They are automatically zeroized when this closure returns
+    /// });
+    ///
+    /// // ACCEPTABLE: Brief use with immediate drop
+    /// let (scan, spend) = keys.export_secrets();
+    /// let result = compute_something(&*scan, &*spend);
+    /// drop(scan);
+    /// drop(spend);
+    /// ```
+    ///
+    /// # Example - Incorrect Usage
+    ///
+    /// ```ignore
+    /// // BAD: Converting to Vec creates unzeroized copy
+    /// let (scan, _) = keys.export_secrets();
+    /// let scan_vec = scan.to_vec(); // This copy won't be zeroized!
+    ///
+    /// // BAD: Storing in long-lived struct
+    /// struct LongLived {
+    ///     secrets: (Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>),
+    /// }
+    /// ```
     pub fn export_secrets(&self) -> (Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>) {
         (
             Zeroizing::new(self.scan_secret.secret_bytes()),
             Zeroizing::new(self.spend_secret.secret_bytes()),
         )
+    }
+
+    /// Access secret keys via callback with guaranteed zeroization
+    ///
+    /// # CRYPT-1 FIX: Callback-based API for secure secret access
+    ///
+    /// This is the preferred way to access secret key bytes. The callback pattern
+    /// ensures that:
+    /// 1. Secrets are automatically zeroized when the callback returns (even on panic)
+    /// 2. Callers cannot accidentally hold references beyond their intended lifetime
+    /// 3. The borrow checker prevents escaping references to secret data
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - Callback function that receives references to scan and spend secret bytes
+    ///
+    /// # Returns
+    ///
+    /// Whatever the callback returns
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let result = keys.with_secrets(|scan_bytes, spend_bytes| {
+    ///     // Compute something with the secrets
+    ///     derive_address(scan_bytes, spend_bytes)
+    /// });
+    /// // At this point, the secret bytes have been zeroized
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// If the callback panics, the secrets are still zeroized before the panic propagates.
+    pub fn with_secrets<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&[u8; 32], &[u8; 32]) -> R,
+    {
+        let scan = Zeroizing::new(self.scan_secret.secret_bytes());
+        let spend = Zeroizing::new(self.spend_secret.secret_bytes());
+        f(&*scan, &*spend)
     }
 
     /// Export as a public-facing structure
@@ -465,10 +545,87 @@ pub struct GhostKeysPublicExport {
 /// M-SAFE-1: Uses zeroize crate's safe implementation instead of unsafe
 /// as_bytes_mut(). The Zeroize trait for String safely overwrites the
 /// string's bytes using compiler barriers to prevent optimization.
-#[derive(Clone, Serialize, Deserialize)]
+///
+/// CRYPT-2 FIX: Uses Zeroizing<String> wrapper to ensure hex strings are
+/// automatically zeroized even if copied during construction. This prevents
+/// secret key material from lingering in memory after intermediate operations.
 pub struct GhostKeysExport {
-    pub scan_secret: String,
-    pub spend_secret: String,
+    /// Scan secret key as hex (wrapped in Zeroizing for automatic cleanup)
+    scan_secret: Zeroizing<String>,
+    /// Spend secret key as hex (wrapped in Zeroizing for automatic cleanup)
+    spend_secret: Zeroizing<String>,
+}
+
+impl GhostKeysExport {
+    /// Get the scan secret hex string
+    ///
+    /// # Security Warning
+    ///
+    /// The returned reference should be used briefly. Do not store or clone
+    /// the string, as this would create unzeroized copies.
+    pub fn scan_secret(&self) -> &str {
+        &self.scan_secret
+    }
+
+    /// Get the spend secret hex string
+    ///
+    /// # Security Warning
+    ///
+    /// The returned reference should be used briefly. Do not store or clone
+    /// the string, as this would create unzeroized copies.
+    pub fn spend_secret(&self) -> &str {
+        &self.spend_secret
+    }
+
+    /// Create from raw hex strings (takes ownership)
+    ///
+    /// The strings are immediately wrapped in Zeroizing for protection.
+    pub fn new(scan_secret: String, spend_secret: String) -> Self {
+        Self {
+            scan_secret: Zeroizing::new(scan_secret),
+            spend_secret: Zeroizing::new(spend_secret),
+        }
+    }
+}
+
+/// Clone implementation that maintains Zeroizing wrapper
+impl Clone for GhostKeysExport {
+    fn clone(&self) -> Self {
+        Self {
+            scan_secret: Zeroizing::new((*self.scan_secret).clone()),
+            spend_secret: Zeroizing::new((*self.spend_secret).clone()),
+        }
+    }
+}
+
+/// Custom Serialize that unwraps Zeroizing for JSON compatibility
+impl Serialize for GhostKeysExport {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("GhostKeysExport", 2)?;
+        state.serialize_field("scan_secret", &*self.scan_secret)?;
+        state.serialize_field("spend_secret", &*self.spend_secret)?;
+        state.end()
+    }
+}
+
+/// Custom Deserialize that wraps strings in Zeroizing
+impl<'de> Deserialize<'de> for GhostKeysExport {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Helper {
+            scan_secret: String,
+            spend_secret: String,
+        }
+        let helper = Helper::deserialize(deserializer)?;
+        Ok(Self::new(helper.scan_secret, helper.spend_secret))
+    }
 }
 
 /// Custom Debug that redacts secrets
@@ -481,22 +638,16 @@ impl std::fmt::Debug for GhostKeysExport {
     }
 }
 
-/// 4.8 SECURITY: Zeroize secret strings when export is dropped
-/// M-SAFE-1 FIX: Use zeroize crate's safe Zeroize trait implementation
-impl Drop for GhostKeysExport {
-    fn drop(&mut self) {
-        // Use zeroize crate's safe implementation for String
-        // This uses volatile writes with compiler barriers internally
-        self.scan_secret.zeroize();
-        self.spend_secret.zeroize();
-    }
-}
+// Note: No explicit Drop needed - Zeroizing<String> handles zeroization automatically
 
 impl From<&GhostKeys> for GhostKeysExport {
     fn from(keys: &GhostKeys) -> Self {
+        // CRYPT-2 FIX: Wrap hex strings in Zeroizing immediately during construction
+        // This ensures that even if the struct construction fails or is interrupted,
+        // the secret material will be zeroized
         Self {
-            scan_secret: hex::encode(keys.scan_secret.secret_bytes()),
-            spend_secret: hex::encode(keys.spend_secret.secret_bytes()),
+            scan_secret: Zeroizing::new(hex::encode(keys.scan_secret.secret_bytes())),
+            spend_secret: Zeroizing::new(hex::encode(keys.spend_secret.secret_bytes())),
         }
     }
 }
@@ -505,9 +656,10 @@ impl TryFrom<GhostKeysExport> for GhostKeys {
     type Error = GhostKeyError;
 
     fn try_from(export: GhostKeysExport) -> Result<Self, Self::Error> {
-        let mut scan_bytes = hex::decode(&export.scan_secret)
+        // CRYPT-2 FIX: Use accessor methods to get references to the Zeroizing-wrapped strings
+        let mut scan_bytes = hex::decode(export.scan_secret())
             .map_err(|e| GhostKeyError::InvalidSecretKey(e.to_string()))?;
-        let mut spend_bytes = hex::decode(&export.spend_secret)
+        let mut spend_bytes = hex::decode(export.spend_secret())
             .map_err(|e| GhostKeyError::InvalidSecretKey(e.to_string()))?;
 
         if scan_bytes.len() != 32 || spend_bytes.len() != 32 {
@@ -577,5 +729,69 @@ mod tests {
 
         assert_eq!(keys.scan_pubkey(), imported.scan_pubkey());
         assert_eq!(keys.spend_pubkey(), imported.spend_pubkey());
+    }
+
+    /// CRYPT-1: Test the callback-based secret access API
+    #[test]
+    fn test_with_secrets_callback() {
+        let keys = GhostKeys::generate();
+        let expected_scan = keys.scan_secret().secret_bytes();
+        let expected_spend = keys.spend_secret().secret_bytes();
+
+        // Verify callback receives correct secret bytes
+        let result = keys.with_secrets(|scan, spend| {
+            assert_eq!(*scan, expected_scan);
+            assert_eq!(*spend, expected_spend);
+            42 // Return a value to verify callback works
+        });
+
+        assert_eq!(result, 42);
+    }
+
+    /// CRYPT-1: Test that with_secrets returns the callback's result
+    #[test]
+    fn test_with_secrets_returns_result() {
+        let keys = GhostKeys::generate();
+
+        let sum = keys.with_secrets(|scan, spend| {
+            // Compute something with the secrets
+            let scan_sum: u32 = scan.iter().map(|&b| b as u32).sum();
+            let spend_sum: u32 = spend.iter().map(|&b| b as u32).sum();
+            scan_sum + spend_sum
+        });
+
+        // Just verify we got a result (the sum will be non-zero for random keys)
+        assert!(sum > 0);
+    }
+
+    /// CRYPT-2: Test GhostKeysExport accessor methods
+    #[test]
+    fn test_ghost_keys_export_accessors() {
+        let keys = GhostKeys::generate();
+        let export = GhostKeysExport::from(&keys);
+
+        // Verify accessors return the same values as direct hex encoding
+        let expected_scan_hex = hex::encode(keys.scan_secret().secret_bytes());
+        let expected_spend_hex = hex::encode(keys.spend_secret().secret_bytes());
+
+        assert_eq!(export.scan_secret(), expected_scan_hex);
+        assert_eq!(export.spend_secret(), expected_spend_hex);
+    }
+
+    /// CRYPT-2: Test GhostKeysExport serialization roundtrip
+    #[test]
+    fn test_ghost_keys_export_serde() {
+        let keys = GhostKeys::generate();
+        let export = GhostKeysExport::from(&keys);
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&export).unwrap();
+
+        // Deserialize back
+        let recovered: GhostKeysExport = serde_json::from_str(&json).unwrap();
+
+        // Verify values match
+        assert_eq!(export.scan_secret(), recovered.scan_secret());
+        assert_eq!(export.spend_secret(), recovered.spend_secret());
     }
 }

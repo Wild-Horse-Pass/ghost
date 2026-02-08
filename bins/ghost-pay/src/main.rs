@@ -369,11 +369,19 @@ fn is_valid_trusted_proxy(ip: &std::net::IpAddr) -> bool {
     }
 }
 
-/// Get trusted proxy IPs from GHOST_TRUSTED_PROXIES env var or use defaults
+/// PAY-2: Get trusted proxy IPs from environment or use defaults
+///
+/// Load from environment variables (comma-separated IPs):
+/// - TRUSTED_PROXY_IPS (preferred, as specified in PAY-2 fix)
+/// - GHOST_TRUSTED_PROXIES (legacy, for backward compatibility)
 fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
     use std::net::IpAddr;
 
-    if let Ok(proxies_str) = std::env::var("GHOST_TRUSTED_PROXIES") {
+    // PAY-2: Check TRUSTED_PROXY_IPS first (preferred), then GHOST_TRUSTED_PROXIES (legacy)
+    let proxies_str = std::env::var("TRUSTED_PROXY_IPS")
+        .or_else(|_| std::env::var("GHOST_TRUSTED_PROXIES"));
+
+    if let Ok(proxies_str) = proxies_str {
         let proxies: Vec<IpAddr> = proxies_str
             .split(',')
             .filter_map(|s| {
@@ -391,6 +399,10 @@ fn get_trusted_proxies() -> Vec<std::net::IpAddr> {
                 "::1".parse().expect("L-1: Valid hardcoded IPv6 localhost"),
             ]
         } else {
+            tracing::info!(
+                proxy_count = proxies.len(),
+                "PAY-2: Loaded trusted proxy IPs from environment"
+            );
             proxies
         }
     } else {

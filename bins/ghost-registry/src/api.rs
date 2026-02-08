@@ -22,12 +22,14 @@
 
 //! HTTP API endpoints for node registration and management
 
+use crate::auth::{verify_internal_auth, InternalAuth, RateLimiter};
 use crate::config::HealthConfig;
 use crate::db::{PoolNode, RegistryDb};
 use crate::health_checker::HealthChecker;
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    body::Bytes,
+    extract::{ConnectInfo, Path, State},
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{delete, get, post},
     Json, Router,
@@ -37,6 +39,7 @@ use chrono::Utc;
 use ghost_common::config::Region;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
@@ -46,6 +49,10 @@ pub struct AppState {
     pub db: Arc<RegistryDb>,
     pub health_checker: Arc<HealthChecker>,
     pub health_config: HealthConfig,
+    /// API-2: HMAC authentication for state-modifying endpoints
+    pub internal_auth: Arc<InternalAuth>,
+    /// API-3: Rate limiter for status endpoint
+    pub rate_limiter: Arc<RateLimiter>,
 }
 
 /// Node registration request (matches ghost-pool registry.rs)
@@ -83,7 +90,6 @@ pub struct NodeHeartbeat {
 }
 
 /// Node deregistration request
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeDeregistration {
     pub node_id: String,
@@ -142,10 +148,30 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 }
 
 /// Handle node registration
+///
+/// API-2: Protected by HMAC authentication
 async fn handle_register(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<NodeRegistration>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> impl IntoResponse {
+    // API-2: Verify HMAC authentication first
+    if let Err((status, msg)) = verify_internal_auth(&state.internal_auth, &headers, &body) {
+        warn!(error = %msg, "Registration rejected: HMAC authentication failed");
+        return (status, Json(ApiResponse::error(msg)));
+    }
+
+    // Parse the request body
+    let req: NodeRegistration = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::error(format!("Invalid request body: {}", e))),
+            );
+        }
+    };
+
     // Validate timestamp (prevent replay attacks)
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -161,7 +187,7 @@ async fn handle_register(
         );
     }
 
-    // Verify signature
+    // Verify node signature (proves node has private key)
     let message = format!(
         "ghost:register:{}:{}:{}:{}:{}",
         req.node_id, req.host, req.sv1_port, req.sv2_port, req.timestamp
@@ -184,7 +210,8 @@ async fn handle_register(
     if let Ok(Some(existing)) = state.db.get_node(&req.node_id) {
         let since_registered = (Utc::now() - existing.registered_at).num_seconds();
         if since_registered < state.health_config.registration_rate_limit_secs as i64 {
-            let seconds_remaining = state.health_config.registration_rate_limit_secs as i64 - since_registered;
+            let seconds_remaining =
+                state.health_config.registration_rate_limit_secs as i64 - since_registered;
             debug!(
                 node_id = %req.node_id,
                 seconds_remaining = seconds_remaining,
@@ -246,10 +273,30 @@ async fn handle_register(
 }
 
 /// Handle node heartbeat
+///
+/// API-2: Protected by HMAC authentication
 async fn handle_heartbeat(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<NodeHeartbeat>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> impl IntoResponse {
+    // API-2: Verify HMAC authentication first
+    if let Err((status, msg)) = verify_internal_auth(&state.internal_auth, &headers, &body) {
+        warn!(error = %msg, "Heartbeat rejected: HMAC authentication failed");
+        return (status, Json(ApiResponse::error(msg)));
+    }
+
+    // Parse the request body
+    let req: NodeHeartbeat = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiResponse::error(format!("Invalid request body: {}", e))),
+            );
+        }
+    };
+
     // Validate timestamp
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -265,7 +312,7 @@ async fn handle_heartbeat(
         );
     }
 
-    // Verify signature
+    // Verify node signature (proves node has private key)
     let message = format!(
         "ghost:heartbeat:{}:{}:{}:{}",
         req.node_id, req.miner_count, req.load_percent, req.timestamp
@@ -337,16 +384,58 @@ async fn handle_heartbeat(
 }
 
 /// Handle node deregistration
+///
+/// API-1 CRITICAL: Protected by HMAC authentication
+/// Previously allowed unauthenticated deletion - now requires valid HMAC signature
 async fn handle_deregister(
     State(state): State<Arc<AppState>>,
     Path(node_id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> impl IntoResponse {
-    // Note: In production, you'd want to verify a signature here too
-    // For now we allow deletion by node_id
+    // API-1 CRITICAL: Verify HMAC authentication - prevents unauthorized node deletion
+    if let Err((status, msg)) = verify_internal_auth(&state.internal_auth, &headers, &body) {
+        warn!(
+            node_id = %node_id,
+            error = %msg,
+            "API-1: Deregistration rejected - HMAC authentication failed"
+        );
+        return (status, Json(ApiResponse::error(msg)));
+    }
+
+    // Optionally parse body for node signature verification
+    // For deregistration, we accept an optional NodeDeregistration body with node signature
+    if !body.is_empty() {
+        if let Ok(req) = serde_json::from_slice::<NodeDeregistration>(&body) {
+            // Verify the node_id in path matches body
+            if req.node_id != node_id {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiResponse::error("Node ID mismatch between path and body")),
+                );
+            }
+
+            // Verify node signature (proves node has private key)
+            let message = format!("ghost:deregister:{}:{}", req.node_id, req.timestamp);
+            if let Err(e) = verify_signature(&req.node_id, &message, &req.signature) {
+                warn!(
+                    node_id = %req.node_id,
+                    error = %e,
+                    "Invalid deregistration signature"
+                );
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(ApiResponse::error(format!("Invalid node signature: {}", e))),
+                );
+            }
+        }
+        // If body parsing fails, we still proceed with HMAC-authenticated request
+        // This allows admin tools to deregister nodes without node signature
+    }
 
     match state.db.delete_node(&node_id) {
         Ok(true) => {
-            info!(node_id = %node_id, "Node deregistered");
+            info!(node_id = %node_id, "Node deregistered (authenticated)");
             (StatusCode::OK, Json(ApiResponse::ok()))
         }
         Ok(false) => (
@@ -440,9 +529,33 @@ struct NodeStatusResponse {
 }
 
 /// Handle list nodes (admin endpoint)
-async fn handle_list_nodes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+///
+/// API-3: Rate limited to prevent network topology enumeration abuse
+async fn handle_list_nodes(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    // API-3: Apply rate limiting
+    let ip = addr.ip().to_string();
+    if let Err(retry_after) = state.rate_limiter.check(&ip) {
+        warn!(
+            ip = %ip,
+            retry_after = retry_after,
+            "API-3: Rate limited list nodes request"
+        );
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ApiResponse::error(format!(
+                "Rate limited. Retry after {} seconds.",
+                retry_after
+            ))),
+        );
+    }
+
     match state.db.get_all_nodes() {
         Ok(nodes) => {
+            // API-3: Return limited information for unauthenticated requests
+            // Only return node count and regions, not full details
             let response = nodes
                 .into_iter()
                 .map(|n| NodeSummary {

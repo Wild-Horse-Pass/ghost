@@ -1241,13 +1241,12 @@ async fn handle_get_payment_status(
                 .and_then(|v| v.as_u64())
                 .map(|c| c as u32);
 
-            // CRIT-RACE-2 FIX: Extract version for optimistic locking
+            // PAY-3 FIX: Extract version for optimistic locking and return to client.
             // Clients must include this version when making state changes
             // to detect concurrent modifications.
-            let _version = result
+            let version = result
                 .get("version")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+                .and_then(|v| v.as_u64());
 
             let status = match status_str {
                 "preparing" => PaymentStatus::Preparing,
@@ -1266,6 +1265,7 @@ async fn handle_get_payment_status(
                 payment_id: payment_id.to_string(),
                 status,
                 confirmations,
+                version,
             }))
         }
         Err(e) => {

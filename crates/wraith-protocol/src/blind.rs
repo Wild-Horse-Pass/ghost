@@ -388,17 +388,42 @@ pub struct SigningNonce {
 /// SecretKey doesn't implement Zeroize directly, but we can overwrite
 /// its internal representation by calling non_secure_erase() and then
 /// replacing with a dummy key to ensure the original bytes are cleared.
+///
+/// # CRYPT-5 FIX: Panic Safety in Drop
+///
+/// The dummy key creation uses a constant value `[1u8; 32]` which is guaranteed
+/// to be a valid secp256k1 secret key (it's non-zero and less than the curve order).
+/// We use `expect()` instead of `if let Ok()` to make it explicit that this cannot
+/// fail in practice, while still providing a clear panic message in the impossible
+/// case of failure.
+///
+/// Panicking in Drop is generally undesirable, but:
+/// 1. The dummy value [1u8; 32] is mathematically guaranteed to be valid
+/// 2. Silent failure would leave secret material in memory (worse than panic)
+/// 3. If this ever panics, it indicates a fundamental issue with secp256k1 library
 impl Drop for SigningNonce {
     fn drop(&mut self) {
         // First, erase using secp256k1's built-in method
         self.secret_nonce.non_secure_erase();
-        // Then overwrite with a deterministic dummy value
-        // This provides defense-in-depth against compiler optimizations
+
+        // CRYPT-5 FIX: Use explicit dummy value with expect() for guaranteed overwrite
+        // The value [1u8; 32] is always valid:
+        // - It's non-zero (required for secp256k1 secret keys)
+        // - It's much smaller than the curve order n (starts with 0xFF...)
+        // - SecretKey::from_slice only fails for value == 0 or value >= n
         let mut dummy = [1u8; 32];
-        if let Ok(dummy_key) = SecretKey::from_slice(&dummy) {
-            self.secret_nonce = dummy_key;
-        }
+        let dummy_key = SecretKey::from_slice(&dummy).expect(
+            "CRYPT-5: dummy value [1u8; 32] is always a valid secp256k1 secret key \
+             (non-zero and less than curve order). If this panics, the secp256k1 \
+             library has a fundamental bug."
+        );
+        self.secret_nonce = dummy_key;
+
+        // Zeroize the dummy bytes (defense-in-depth)
         dummy.zeroize();
+
+        // Final erase pass on the dummy key
+        self.secret_nonce.non_secure_erase();
     }
 }
 

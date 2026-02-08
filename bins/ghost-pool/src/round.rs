@@ -444,29 +444,50 @@ impl RoundManager {
             return Err(ShareError::RoundFull);
         }
 
-        // M-5 SECURITY: Enforce maximum share percentage by REJECTING excess shares
+        // M-5 & MINE-1 SECURITY: Enforce maximum share percentage by REJECTING excess shares
         // This prevents a single miner from dominating a round (e.g., >10% of total work)
-        // Previous behavior only logged; now we enforce by rejecting the share.
-        if round.total_miner_work > 0.0 {
-            let current_miner_work = round.miner_shares.get(miner_id).copied().unwrap_or(0.0);
-            let new_miner_work = current_miner_work + work;
-            let new_total_work = round.total_miner_work + work;
-            let new_share_percent = new_miner_work / new_total_work;
+        //
+        // MINE-1 FIX: The cap check now runs on ALL shares, including the first share in a
+        // new round. Previously, when total_miner_work == 0.0, the check was skipped entirely,
+        // allowing a single miner to rapidly submit many shares before anyone else and bypass
+        // the cap.
+        //
+        // The fix:
+        // 1. Always calculate the share percentage (mathematically correct: first share = 100%)
+        // 2. Only enforce the cap AFTER a minimum work threshold is reached
+        //
+        // The threshold exists because:
+        // - The first share is by definition 100% of work, which is mathematically correct
+        // - We need multiple miners' shares before the percentage becomes meaningful
+        // - This prevents rejecting legitimate early shares in a new round
+        //
+        // The threshold is set to 10x the share difficulty, meaning we need roughly 10 shares
+        // worth of work before enforcement begins. This gives the pool time to receive shares
+        // from multiple miners while still protecting against rapid spam from a single miner.
+        const MIN_WORK_FOR_CAP_ENFORCEMENT: f64 = 10_000.0; // ~10x default share difficulty
 
-            if new_share_percent > self.config.max_miner_share_percent {
-                // M-5: REJECT shares that exceed the cap instead of just logging
-                warn!(
-                    miner_id,
-                    current_percent = new_share_percent * 100.0,
-                    max_percent = self.config.max_miner_share_percent * 100.0,
-                    "M-5: Rejecting share - miner exceeds share cap"
-                );
-                return Err(ShareError::MinerShareCapExceeded {
-                    miner_id: miner_id.to_string(),
-                    current_percent: new_share_percent * 100.0,
-                    max_percent: self.config.max_miner_share_percent * 100.0,
-                });
-            }
+        let current_miner_work = round.miner_shares.get(miner_id).copied().unwrap_or(0.0);
+        let new_miner_work = current_miner_work + work;
+        let new_total_work = round.total_miner_work + work;
+        let new_share_percent = new_miner_work / new_total_work;
+
+        // Only enforce the cap after minimum work threshold to allow round startup
+        if new_total_work >= MIN_WORK_FOR_CAP_ENFORCEMENT
+            && new_share_percent > self.config.max_miner_share_percent
+        {
+            // M-5: REJECT shares that exceed the cap instead of just logging
+            warn!(
+                miner_id,
+                current_percent = new_share_percent * 100.0,
+                max_percent = self.config.max_miner_share_percent * 100.0,
+                total_work = new_total_work,
+                "M-5: Rejecting share - miner exceeds share cap"
+            );
+            return Err(ShareError::MinerShareCapExceeded {
+                miner_id: miner_id.to_string(),
+                current_percent: new_share_percent * 100.0,
+                max_percent: self.config.max_miner_share_percent * 100.0,
+            });
         }
 
         round.add_miner_work(miner_id, work);
@@ -895,6 +916,33 @@ impl RoundManager {
             return Err(ShareError::RoundFull);
         }
 
+        // MINE-1 FIX: Enforce maximum share percentage by REJECTING excess shares
+        // This applies to both submit_share() and record_share() paths to prevent
+        // any single miner from dominating a round.
+        const MIN_WORK_FOR_CAP_ENFORCEMENT: f64 = 10_000.0;
+
+        let current_miner_work = round.miner_shares.get(miner_id).copied().unwrap_or(0.0);
+        let new_miner_work = current_miner_work + work;
+        let new_total_work = round.total_miner_work + work;
+        let new_share_percent = new_miner_work / new_total_work;
+
+        if new_total_work >= MIN_WORK_FOR_CAP_ENFORCEMENT
+            && new_share_percent > self.config.max_miner_share_percent
+        {
+            warn!(
+                miner_id,
+                current_percent = new_share_percent * 100.0,
+                max_percent = self.config.max_miner_share_percent * 100.0,
+                total_work = new_total_work,
+                "MINE-1: Rejecting share - miner exceeds share cap"
+            );
+            return Err(ShareError::MinerShareCapExceeded {
+                miner_id: miner_id.to_string(),
+                current_percent: new_share_percent * 100.0,
+                max_percent: self.config.max_miner_share_percent * 100.0,
+            });
+        }
+
         // Add miner work
         round.add_miner_work(miner_id, work);
 
@@ -1278,6 +1326,7 @@ mod tests {
         let config = RoundConfig {
             network_difficulty: 1_000_000.0,
             max_work_multiplier: 1.0, // Work cannot exceed network difficulty
+            max_miner_share_percent: 1.0, // 100% cap (no limit) for this H8-focused test
             ..Default::default()
         };
         let manager = RoundManager::new(node_id, config);
@@ -1529,7 +1578,10 @@ mod tests {
         // Verify round 1 has the entry
         {
             let submitted = manager.submitted_shares.read();
-            assert!(submitted.contains_key(&1), "Round 1 should have submitted shares");
+            assert!(
+                submitted.contains_key(&1),
+                "Round 1 should have submitted shares"
+            );
         }
 
         // Start new rounds until round 1 is cleaned up
@@ -1545,5 +1597,152 @@ mod tests {
                 "Round 1 submitted shares should be cleaned up"
             );
         }
+    }
+
+    #[test]
+    fn test_mine_1_share_cap_enforced_after_threshold() {
+        // MINE-1 SECURITY TEST: Verify share cap is enforced after minimum work threshold
+        // Previously, the cap check was skipped entirely when total_miner_work == 0.0,
+        // allowing a single miner to rapidly submit shares and dominate the round.
+        let node_id = [1u8; 32];
+        let config = RoundConfig {
+            max_miner_share_percent: 0.40, // 40% cap for testing
+            ..Default::default()
+        };
+        let manager = RoundManager::new(node_id, config);
+        manager.start_round(100);
+
+        // The MIN_WORK_FOR_CAP_ENFORCEMENT constant is 10_000.0
+        // We need to get total work above this threshold to test enforcement
+
+        // Add shares from multiple miners to get above threshold while staying under cap
+        // Each miner contributes ~33% which is under 40% cap
+        let _ = manager.record_share("miner1", 4000.0, node_id);
+        let _ = manager.record_share("miner2", 4000.0, node_id);
+        let _ = manager.record_share("miner3", 4000.0, node_id);
+
+        // Total work is now 12000.0, above MIN_WORK_FOR_CAP_ENFORCEMENT (10000.0)
+        // Each miner has 33.3% of work, under 40% cap
+
+        // Now miner1 tries to submit more work that would push them over 40% cap
+        // miner1 currently at 4000/12000 = 33.3%
+        // Adding 3000 more: (4000+3000)/(12000+3000) = 7000/15000 = 46.7% > 40% cap
+        let result = manager.record_share("miner1", 3000.0, node_id);
+        assert!(
+            matches!(result, Err(ShareError::MinerShareCapExceeded { .. })),
+            "Miner exceeding cap should be rejected after threshold, got {:?}",
+            result
+        );
+
+        // Verify miner1's share percentage is still at the pre-rejection level
+        let m1_pct = manager.miner_share_percent("miner1");
+        assert!(
+            (m1_pct - (4000.0 / 12000.0)).abs() < 0.01,
+            "miner1 should still have original percentage, got {}",
+            m1_pct
+        );
+    }
+
+    #[test]
+    fn test_mine_1_early_shares_allowed_before_threshold() {
+        // MINE-1: Verify that early shares are NOT rejected before threshold
+        // This ensures legitimate early shares in a new round aren't blocked
+        let node_id = [1u8; 32];
+        let config = RoundConfig {
+            max_miner_share_percent: 0.10, // 10% cap
+            ..Default::default()
+        };
+        let manager = RoundManager::new(node_id, config);
+        manager.start_round(100);
+
+        // First share in a new round - should be accepted even though it's 100% of work
+        let result = manager.record_share("miner1", 1000.0, node_id);
+        assert!(
+            result.is_ok(),
+            "First share should be accepted even at 100%, got {:?}",
+            result
+        );
+
+        // Second share from same miner - total work still below threshold (2000 < 10000)
+        let result = manager.record_share("miner1", 1000.0, node_id);
+        assert!(
+            result.is_ok(),
+            "Second share should be accepted while below threshold, got {:?}",
+            result
+        );
+
+        // Continue adding until close to threshold but not over
+        let _ = manager.record_share("miner1", 1000.0, node_id); // 3000 total
+        let _ = manager.record_share("miner1", 1000.0, node_id); // 4000 total
+        let _ = manager.record_share("miner1", 1000.0, node_id); // 5000 total
+        let _ = manager.record_share("miner1", 1000.0, node_id); // 6000 total
+        let _ = manager.record_share("miner1", 1000.0, node_id); // 7000 total
+        let _ = manager.record_share("miner1", 1000.0, node_id); // 8000 total
+        let _ = manager.record_share("miner1", 1000.0, node_id); // 9000 total
+
+        // Still below threshold, miner1 has 100% but should be allowed
+        let result = manager.record_share("miner1", 500.0, node_id);
+        assert!(
+            result.is_ok(),
+            "Share should be accepted when total below threshold, got {:?}",
+            result
+        );
+
+        // Now at 9500 total work - still below 10000 threshold
+        // Add another share to push over threshold
+        let result = manager.record_share("miner1", 1000.0, node_id);
+        // Now total is 10500, which is above threshold
+        // But miner1 has 100% which is > 10% cap
+        // This share should be REJECTED because we're now above threshold
+        assert!(
+            matches!(result, Err(ShareError::MinerShareCapExceeded { .. })),
+            "Share should be rejected when threshold exceeded and cap violated, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_mine_1_cap_not_enforced_if_under_percentage() {
+        // MINE-1: Verify that shares under the percentage cap are accepted
+        // even after the work threshold is reached
+        let node_id = [1u8; 32];
+        let config = RoundConfig {
+            max_miner_share_percent: 0.50, // 50% cap for easier testing
+            ..Default::default()
+        };
+        let manager = RoundManager::new(node_id, config);
+        manager.start_round(100);
+
+        // Add work from multiple miners to get above threshold
+        let _ = manager.record_share("miner1", 4000.0, node_id);
+        let _ = manager.record_share("miner2", 4000.0, node_id);
+        let _ = manager.record_share("miner3", 4000.0, node_id);
+
+        // Total: 12000 (above 10000 threshold)
+        // Each miner has 33.3% of work, well under 50% cap
+
+        // miner1 adds more work, would be at 5000/13000 = 38.5%, still under 50%
+        let result = manager.record_share("miner1", 1000.0, node_id);
+        assert!(
+            result.is_ok(),
+            "Share under cap should be accepted, got {:?}",
+            result
+        );
+
+        // miner1 adds more, would be at 6000/14000 = 42.9%, still under 50%
+        let result = manager.record_share("miner1", 1000.0, node_id);
+        assert!(
+            result.is_ok(),
+            "Share under cap should be accepted, got {:?}",
+            result
+        );
+
+        // miner1 at 6000, trying to add 4000 more = 10000/18000 = 55.5% > 50%
+        let result = manager.record_share("miner1", 4000.0, node_id);
+        assert!(
+            matches!(result, Err(ShareError::MinerShareCapExceeded { .. })),
+            "Share exceeding cap should be rejected, got {:?}",
+            result
+        );
     }
 }

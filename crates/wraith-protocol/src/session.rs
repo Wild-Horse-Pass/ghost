@@ -45,12 +45,19 @@ use crate::{
 /// from before the restart are still valid. Callers MUST:
 /// 1. Call `requires_persistence_warning()` on startup and handle accordingly
 /// 2. Either use persistent storage or ensure all pre-restart sessions are expired
+///
+/// CRYPT-6 FIX: The registry now tracks process start time and logs a warning
+/// if the process has been running less than the session timeout when
+/// acknowledge_in_memory_mode() is called. This helps detect potential
+/// replay attack windows after restarts.
 #[derive(Debug)]
 pub struct SessionRegistry {
     /// Set of session IDs that have been seen
     seen_sessions: HashSet<[u8; 32]>,
     /// Whether the caller has acknowledged the in-memory limitation
     persistence_acknowledged: bool,
+    /// CRYPT-6 FIX: Process start time for runtime warning check
+    process_start: Instant,
 }
 
 impl Default for SessionRegistry {
@@ -68,6 +75,7 @@ impl SessionRegistry {
         Self {
             seen_sessions: HashSet::new(),
             persistence_acknowledged: false,
+            process_start: Instant::now(),
         }
     }
 
@@ -97,7 +105,28 @@ impl SessionRegistry {
     /// Calling this without ensuring the above conditions could allow replay attacks
     /// from sessions that existed before the restart. This is enforced by requiring
     /// explicit acknowledgment - all registry methods will error until this is called.
+    ///
+    /// CRYPT-6 FIX: If called before the default session timeout has elapsed since
+    /// process start, logs a warning about potential replay attack window.
     pub fn acknowledge_in_memory_mode(&mut self) {
+        // CRYPT-6 FIX: Check if process has been running long enough for old sessions
+        // to have expired. Default session timeout is typically the longest phase timeout.
+        let process_uptime = self.process_start.elapsed();
+        let session_timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS as u64);
+
+        if process_uptime < session_timeout {
+            let remaining_secs = (session_timeout - process_uptime).as_secs();
+            tracing::warn!(
+                process_uptime_secs = process_uptime.as_secs(),
+                session_timeout_secs = DEFAULT_TIMEOUT_SECS,
+                remaining_risk_window_secs = remaining_secs,
+                "CRYPT-6 WARNING: SessionRegistry acknowledged before session timeout elapsed. \
+                 If the previous process was recently running, sessions from before restart \
+                 may still be valid for {} more seconds. Replay attacks are possible in this window.",
+                remaining_secs
+            );
+        }
+
         tracing::warn!(
             "SessionRegistry: Acknowledging in-memory mode. \
              Ensure all pre-restart sessions have expired to prevent replay attacks."

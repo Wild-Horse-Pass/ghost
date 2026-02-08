@@ -376,6 +376,11 @@ async fn main() -> Result<()> {
     info!("Pay node URL: {}", pay_node_url);
 
     // Build GSP configuration
+    // PAY-2 FIX: trusted_proxy_ips and trusted_proxy_count are loaded from environment
+    // via GspConfig::default() values. The binary uses env vars:
+    // - TRUSTED_PROXY_IPS or GHOST_TRUSTED_PROXIES (comma-separated IPs)
+    // - GHOST_TRUSTED_PROXY_COUNT (integer, default 1)
+    let default_config = GspConfig::default();
     let gsp_config = GspConfig {
         listen_addr,
         network,
@@ -386,6 +391,8 @@ async fn main() -> Result<()> {
         rate_limit_rpm: config_file.server.rate_limit_rpm,
         max_ws_connections: config_file.server.max_ws_connections,
         max_body_size: config_file.server.max_body_size,
+        trusted_proxy_ips: default_config.trusted_proxy_ips,
+        trusted_proxy_count: default_config.trusted_proxy_count,
     };
 
     // Create and run GSP server

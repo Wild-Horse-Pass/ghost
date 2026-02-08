@@ -632,19 +632,41 @@ impl VerificationClient {
     /// H-1 FIX: Now accepts challenge_epoch parameter to require epoch state proof.
     /// When challenge_epoch is provided, the response must include epoch_state_hash
     /// to prove the node actually has L2 state data.
+    ///
+    /// VER-2 FIX: Now accepts challenge_nonce parameter to prevent precomputation attacks.
+    /// When challenge_nonce is provided, the response must include nonce_bound_proof
+    /// which is SHA256(epoch_state_hash || challenge_nonce).
     pub async fn verify_ghostpay(
         &self,
         node_address: &str,
         challenge_epoch: Option<u64>,
     ) -> GhostResult<GhostPayResponse> {
-        // H-1 FIX: Always include challenge_epoch in the request
-        let path = match challenge_epoch {
-            Some(epoch) => format!("/verify/ghostpay?unsigned=true&challenge_epoch={}", epoch),
-            None => "/verify/ghostpay?unsigned=true".to_string(),
-        };
+        self.verify_ghostpay_with_nonce(node_address, challenge_epoch, None).await
+    }
+
+    /// VER-2 FIX: Verify GhostPay capability with challenge nonce
+    ///
+    /// The challenge_nonce is a random 32-byte hex string that must be incorporated
+    /// into the response's nonce_bound_proof field as SHA256(epoch_state_hash || nonce).
+    /// This prevents attackers from precomputing a lookup table of epoch_state_hash values.
+    pub async fn verify_ghostpay_with_nonce(
+        &self,
+        node_address: &str,
+        challenge_epoch: Option<u64>,
+        challenge_nonce: Option<&str>,
+    ) -> GhostResult<GhostPayResponse> {
+        // H-1/VER-2 FIX: Include both challenge_epoch and challenge_nonce in the request
+        let mut params = vec!["unsigned=true".to_string()];
+        if let Some(epoch) = challenge_epoch {
+            params.push(format!("challenge_epoch={}", epoch));
+        }
+        if let Some(nonce) = challenge_nonce {
+            params.push(format!("challenge_nonce={}", nonce));
+        }
+        let path = format!("/verify/ghostpay?{}", params.join("&"));
         let url = self.build_url(node_address, &path)?;
 
-        debug!(url = %url, challenge_epoch = ?challenge_epoch, "Verifying GhostPay capability");
+        debug!(url = %url, challenge_epoch = ?challenge_epoch, challenge_nonce = ?challenge_nonce, "Verifying GhostPay capability");
 
         let response = self.client.get(&url).send().await.map_err(|e| {
             debug!("GhostPay verification request failed: {}", e);

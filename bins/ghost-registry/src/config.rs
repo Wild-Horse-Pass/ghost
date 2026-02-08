@@ -55,6 +55,17 @@ pub struct ServerConfig {
     pub tls_key_path: Option<PathBuf>,
     /// CRIT-API-1: Allowed CORS origins (comma-separated https:// URLs)
     pub cors_allowed_origins: Option<String>,
+    /// API-2: API secret for HMAC authentication (hex-encoded, 32+ bytes)
+    /// Can use ${API_SECRET} for environment variable
+    #[serde(default)]
+    pub api_secret: Option<String>,
+    /// API-3: Rate limit for status endpoint (requests per minute per IP)
+    #[serde(default = "default_status_rate_limit")]
+    pub status_rate_limit_per_min: u32,
+}
+
+fn default_status_rate_limit() -> u32 {
+    10
 }
 
 impl Default for ServerConfig {
@@ -66,6 +77,33 @@ impl Default for ServerConfig {
             tls_cert_path: None,
             tls_key_path: None,
             cors_allowed_origins: None,
+            api_secret: None, // API-2: Must be set via API_SECRET env var
+            status_rate_limit_per_min: 10, // API-3: Rate limit
+        }
+    }
+}
+
+impl ServerConfig {
+    /// Resolve environment variables in configuration
+    pub fn resolve_env(&mut self) {
+        // Resolve ${VAR} or $VAR patterns in api_secret
+        if let Some(ref secret) = self.api_secret {
+            if let Some(inner) = secret.strip_prefix("${").and_then(|s| s.strip_suffix('}')) {
+                if let Ok(value) = std::env::var(inner) {
+                    self.api_secret = Some(value);
+                }
+            } else if let Some(var_name) = secret.strip_prefix('$') {
+                if let Ok(value) = std::env::var(var_name) {
+                    self.api_secret = Some(value);
+                }
+            }
+        }
+
+        // Also check for API_SECRET env var directly if not set in config
+        if self.api_secret.is_none() {
+            if let Ok(value) = std::env::var("API_SECRET") {
+                self.api_secret = Some(value);
+            }
         }
     }
 }
@@ -179,7 +217,8 @@ impl Default for HealthConfig {
             max_load_percent: 80,
             resume_load_percent: 70,
             registration_rate_limit_secs: 300, // 5 minutes
-            max_timestamp_drift_secs: 60,
+            // API-4 FIX: Reduced from 60 to 30 seconds to minimize replay attack window
+            max_timestamp_drift_secs: 30,
         }
     }
 }

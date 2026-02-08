@@ -28,6 +28,7 @@
 //! Run with: ghost-registry --config registry.toml
 
 mod api;
+mod auth;
 mod cloudflare;
 mod config;
 mod db;
@@ -48,10 +49,7 @@ use tracing::{error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 /// LOW-API-1: Security headers middleware for all HTTP responses
-async fn security_headers_middleware(
-    request: axum::extract::Request,
-    next: Next,
-) -> Response {
+async fn security_headers_middleware(request: axum::extract::Request, next: Next) -> Response {
     let mut response = next.run(request).await;
 
     let headers = response.headers_mut();
@@ -71,19 +69,18 @@ async fn security_headers_middleware(
         "content-security-policy",
         HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
     );
-    headers.insert(
-        "referrer-policy",
-        HeaderValue::from_static("no-referrer"),
-    );
+    headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
 
     response
 }
 
 use api::{build_router, AppState};
+use auth::{InternalAuth, RateLimiter};
 use cloudflare::CloudflareClient;
 use config::RegistryServiceConfig;
 use db::RegistryDb;
 use health_checker::HealthChecker;
+use std::time::Duration;
 
 /// Ghost Registry - Pool Node Registry and DNS Load Balancer
 #[derive(Parser, Debug)]
@@ -141,6 +138,39 @@ async fn main() -> Result<()> {
     // Resolve environment variables in Cloudflare config
     config.cloudflare.resolve_env();
 
+    // API-2: Resolve environment variables in server config (for API_SECRET)
+    config.server.resolve_env();
+
+    // API-2 CRITICAL: Require API_SECRET at startup - fail if missing
+    let api_secret = config.server.api_secret.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "API-2 SECURITY: API_SECRET environment variable is required. \
+             Set API_SECRET to a 64-character hex string (32 bytes). \
+             Generate with: openssl rand -hex 32"
+        )
+    })?;
+
+    // Create InternalAuth from the secret
+    let internal_auth = Arc::new(InternalAuth::from_hex(api_secret).map_err(|e| {
+        anyhow::anyhow!(
+            "API-2 SECURITY: Invalid API_SECRET: {}. \
+             Must be a 64-character hex string (32 bytes). \
+             Generate with: openssl rand -hex 32",
+            e
+        )
+    })?);
+    info!("API-2: HMAC authentication configured for state-modifying endpoints");
+
+    // API-3: Create rate limiter for status endpoint
+    let rate_limiter = Arc::new(RateLimiter::new(
+        config.server.status_rate_limit_per_min,
+        Duration::from_secs(60),
+    ));
+    info!(
+        "API-3: Rate limiter configured ({} req/min per IP)",
+        config.server.status_rate_limit_per_min
+    );
+
     // Override listen address if specified
     if let Some(listen) = args.listen {
         config.server.listen = listen;
@@ -193,6 +223,8 @@ async fn main() -> Result<()> {
         db,
         health_checker,
         health_config: config.health.clone(),
+        internal_auth,
+        rate_limiter,
     });
 
     // CRIT-API-2: Build CORS layer with explicit allowed origins (no Any)
@@ -219,9 +251,9 @@ async fn main() -> Result<()> {
         if origins.is_empty() {
             warn!("CRIT-API-2: No valid CORS origins configured, using secure defaults");
             CorsLayer::new()
-                .allow_origin(AllowOrigin::list([
-                    "https://bitcoinghost.org".parse().unwrap(),
-                ]))
+                .allow_origin(AllowOrigin::list(["https://bitcoinghost.org"
+                    .parse()
+                    .unwrap()]))
                 .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
                 .allow_headers([axum::http::header::CONTENT_TYPE])
         } else {
@@ -237,9 +269,9 @@ async fn main() -> Result<()> {
     } else {
         warn!("CRIT-API-2: No CORS origins configured, using secure defaults");
         CorsLayer::new()
-            .allow_origin(AllowOrigin::list([
-                "https://bitcoinghost.org".parse().unwrap(),
-            ]))
+            .allow_origin(AllowOrigin::list(["https://bitcoinghost.org"
+                .parse()
+                .unwrap()]))
             .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
             .allow_headers([axum::http::header::CONTENT_TYPE])
     };
@@ -253,7 +285,10 @@ async fn main() -> Result<()> {
         .layer(cors)
         .layer(DefaultBodyLimit::max(config.server.max_body_size));
 
-    info!("H-9: Request body limit set to {} bytes", config.server.max_body_size);
+    info!(
+        "H-9: Request body limit set to {} bytes",
+        config.server.max_body_size
+    );
 
     // Parse listen address
     let addr: SocketAddr = config.server.listen.parse()?;
@@ -294,15 +329,19 @@ async fn main() -> Result<()> {
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to install CTRL+C handler");
-            info!("Shutdown signal received");
-            let _ = shutdown_tx.send(());
-        })
-        .await?;
+    // API-3: Use into_make_service_with_connect_info to enable IP-based rate limiting
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install CTRL+C handler");
+        info!("Shutdown signal received");
+        let _ = shutdown_tx.send(());
+    })
+    .await?;
 
     info!("Ghost Registry shutdown complete");
     Ok(())

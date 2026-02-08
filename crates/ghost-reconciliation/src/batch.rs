@@ -334,11 +334,6 @@ impl Batch {
     }
 }
 
-impl Default for Batch {
-    fn default() -> Self {
-        Self::new().expect("System RNG should be available for Batch::new()")
-    }
-}
 
 /// Domain separator for Ghost settlement merkle trees
 const MERKLE_DOMAIN: &[u8] = b"GhostSettlementMerkle";
