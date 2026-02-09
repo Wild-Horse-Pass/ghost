@@ -366,13 +366,24 @@ impl WsState {
     /// AUTH4-L4: Monitors broadcast failures and logs dropped events.
     /// This provides backpressure awareness without requiring the metrics crate.
     pub fn broadcast(&self, event: WsEvent) {
+        // Check subscriber count first to distinguish "no subscribers" from "buffer full"
+        let subscriber_count = self.tx.receiver_count();
+
+        if subscriber_count == 0 {
+            // No subscribers - silently drop (this is expected when no clients connected)
+            return;
+        }
+
         match self.tx.send(event) {
-            Ok(subscriber_count) => {
-                debug!(subscribers = subscriber_count, "WebSocket event broadcast");
+            Ok(sent_to) => {
+                debug!(subscribers = sent_to, "WebSocket event broadcast");
             }
             Err(_) => {
-                // This happens when there are no subscribers or buffer is full
-                warn!("WebSocket broadcast buffer overflow - event dropped");
+                // Buffer is full with active subscribers - this is actual backpressure
+                warn!(
+                    subscribers = subscriber_count,
+                    "WebSocket broadcast buffer overflow - event dropped"
+                );
             }
         }
     }
