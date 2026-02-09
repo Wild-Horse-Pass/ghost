@@ -1359,6 +1359,7 @@ impl TemplateProcessor {
     /// 2. BUDS policy tier allowance
     /// 3. Minimum fee rate threshold
     /// 4. Duplicate TXID detection (prevents double-inclusion attacks)
+    /// 5. Fee-rate sorting (highest paying first, respecting dependencies)
     fn filter_transactions(
         &self,
         transactions: &[TemplateTransaction],
@@ -1370,7 +1371,10 @@ impl TemplateProcessor {
         // Track seen TXIDs to detect duplicates
         let mut seen_txids: HashSet<String> = HashSet::with_capacity(transactions.len());
 
-        for tx in transactions {
+        // Track which original indices were kept (for dependency resolution)
+        let mut kept_indices: HashSet<usize> = HashSet::new();
+
+        for (idx, tx) in transactions.iter().enumerate() {
             // Check for duplicate TXIDs (prevents double-inclusion attacks)
             if !seen_txids.insert(tx.txid.clone()) {
                 warn!(
@@ -1408,7 +1412,19 @@ impl TemplateProcessor {
                 // Additional policy checks
                 let fee_rate = tx.fee as f64 / (tx.weight as f64 / 4.0);
                 if fee_rate >= self.config.min_fee_rate {
-                    kept.push(tx.clone());
+                    // Check if all dependencies were kept (depends is u32, kept_indices is usize)
+                    let deps_satisfied = tx.depends.iter().all(|&dep| kept_indices.contains(&(dep as usize)));
+                    if deps_satisfied {
+                        kept_indices.insert(idx);
+                        kept.push(tx.clone());
+                    } else {
+                        // Dependency was filtered out, must reject this tx too
+                        removed_fees += tx.fee;
+                        debug!(
+                            txid = %tx.txid,
+                            "Transaction rejected: dependency was filtered"
+                        );
+                    }
                 } else {
                     removed_fees += tx.fee;
                 }
@@ -1422,6 +1438,10 @@ impl TemplateProcessor {
             }
         }
 
+        // Sort by fee rate while respecting dependencies
+        // Separate independent txs from those with dependencies
+        let kept = self.sort_by_fee_rate_safe(kept);
+
         let stats = FilterStats {
             original: original_count,
             kept: kept.len(),
@@ -1430,6 +1450,42 @@ impl TemplateProcessor {
         };
 
         (kept, stats)
+    }
+
+    /// Sort transactions by fee rate while respecting dependencies.
+    ///
+    /// Strategy:
+    /// 1. Independent transactions (no depends): Sort by fee rate descending
+    /// 2. Dependent transactions (CPFP chains): Keep in original order
+    ///
+    /// This maximizes fee revenue for independent txs while maintaining
+    /// validity for CPFP chains. The original order from Bitcoin Core already
+    /// respects dependency ordering, so we preserve it for dependent txs.
+    fn sort_by_fee_rate_safe(&self, transactions: Vec<TemplateTransaction>) -> Vec<TemplateTransaction> {
+        if transactions.len() <= 1 {
+            return transactions;
+        }
+
+        // Partition: independent (no deps) vs dependent (has deps)
+        // Note: transactions with depends field set are part of CPFP chains
+        // and must maintain their relative ordering with parents
+        let (mut independent, dependent): (Vec<_>, Vec<_>) = transactions
+            .into_iter()
+            .partition(|tx| tx.depends.is_empty());
+
+        // Sort independent transactions by fee rate (highest first)
+        independent.sort_by(|a, b| {
+            let rate_a = a.fee as f64 / (a.weight.max(1) as f64 / 4.0);
+            let rate_b = b.fee as f64 / (b.weight.max(1) as f64 / 4.0);
+            rate_b.partial_cmp(&rate_a).unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // Combine: independent (sorted by fee rate) first, then dependent (original order)
+        // Dependent txs are already in valid order from Bitcoin Core's getblocktemplate
+        let mut result = independent;
+        result.extend(dependent);
+
+        result
     }
 
     /// Build merkle branches for stratum
