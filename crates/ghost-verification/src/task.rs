@@ -613,6 +613,50 @@ impl VerificationTask {
         })
     }
 
+    /// Create a new verification task configured for HTTP (non-TLS) connections
+    /// with cryptographic identity binding.
+    ///
+    /// This should ONLY be used on signet/testnet where TLS is not configured.
+    /// For mainnet, use `new_with_identity()` which requires HTTPS.
+    ///
+    /// # Security Warning
+    /// Using HTTP instead of HTTPS allows man-in-the-middle attacks.
+    /// Only use this for testing networks.
+    pub fn new_for_signet(
+        db: Arc<Database>,
+        identity: &ghost_common::identity::NodeIdentity,
+        peer_provider: Arc<dyn PeerProvider>,
+    ) -> Result<Self, VerificationTaskError> {
+        use crate::client::VerificationClientConfig;
+        use ghost_common::constants::VERIFICATION_TIMEOUT_SECS;
+
+        // Use HTTP for signet/testnet where TLS is not configured
+        let config = VerificationClientConfig {
+            use_https: false,
+            timeout: std::time::Duration::from_secs(VERIFICATION_TIMEOUT_SECS),
+            danger_accept_invalid_certs: false,
+            is_mainnet: false,
+        };
+
+        let client = VerificationClient::with_config(config)
+            .map_err(|e| VerificationTaskError::ClientInit(e.to_string()))?;
+
+        // H-1: Derive node_id from identity for cryptographic binding
+        let our_node_id = identity.node_id();
+
+        Ok(Self {
+            client,
+            db,
+            our_node_id,
+            identity_verified: true, // H-1: Cryptographically verified via identity
+            peer_provider,
+            config: VerificationTaskConfig::default(),
+            broadcast_tx: None,
+            rpc: None,
+            challenge_tracker: std::sync::Mutex::new(ChallengeTracker::new()),
+        })
+    }
+
     /// H-1 FIX: Create a verification task with cryptographic identity binding
     ///
     /// This constructor verifies that `our_node_id` matches the public key derived

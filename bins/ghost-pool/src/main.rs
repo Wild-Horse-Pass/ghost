@@ -2030,11 +2030,23 @@ async fn main() -> Result<()> {
         ghost_verification::task::verification_broadcast_channel(100);
 
     // C-3: Handle Result from VerificationTask::new() instead of panicking
-    match VerificationTask::new(
-        Arc::clone(&db),
-        identity.node_id(),
-        peer_provider as Arc<dyn PeerProvider>,
-    ) {
+    // Use HTTPS on mainnet, HTTP on signet/testnet (where TLS is typically not configured)
+    let is_mainnet = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
+    let verification_result = if is_mainnet {
+        VerificationTask::new_with_identity(
+            Arc::clone(&db),
+            &identity,
+            peer_provider as Arc<dyn PeerProvider>,
+        )
+    } else {
+        // Signet/testnet: Use HTTP since TLS is typically not configured
+        VerificationTask::new_for_signet(
+            Arc::clone(&db),
+            &identity,
+            peer_provider as Arc<dyn PeerProvider>,
+        )
+    };
+    match verification_result {
         Ok(verification_task) => {
             let verification_task = verification_task
                 .with_rpc(Arc::clone(&rpc))
