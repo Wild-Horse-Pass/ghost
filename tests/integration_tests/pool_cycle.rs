@@ -154,7 +154,7 @@ fn test_share_submission() {
     }
 
     // Test various difficulty levels
-    let shares = vec![
+    let shares = [
         Share {
             miner_id: "miner_1".to_string(),
             difficulty: 1.0,

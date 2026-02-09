@@ -419,7 +419,7 @@ impl MpcHandler {
         {
             let db_vote = DbMpcVote {
                 contribution_position: pending.message.elder_position,
-                voter_node_id: hex::encode(&msg.voter),
+                voter_node_id: hex::encode(msg.voter),
                 approve: msg.approve,
                 signature: msg.signature.to_vec(),
                 voted_at: msg.timestamp,
@@ -448,7 +448,7 @@ impl MpcHandler {
             // Save contribution to database
             let record = MpcContributionRecord {
                 elder_position: msg.elder_position,
-                contributor_node_id: hex::encode(&msg.candidate),
+                contributor_node_id: hex::encode(msg.candidate),
                 prev_params_hash: msg.prev_params_hash,
                 new_params_hash: msg.new_params_hash,
                 contribution_proof: msg.contribution_proof.clone(),

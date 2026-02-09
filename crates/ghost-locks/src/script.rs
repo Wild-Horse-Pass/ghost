@@ -707,7 +707,7 @@ mod tests {
         // Simulated P2TR should fail
         let fake_p2tr = Builder::new()
             .push_opcode(OP_PUSHNUM_1)
-            .push_slice(&[0u8; 32])
+            .push_slice([0u8; 32])
             .into_script();
         assert!(validate_no_p2tr(&fake_p2tr).is_err());
     }

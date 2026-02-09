@@ -201,7 +201,7 @@ fn test_012_load_identity_fails_for_wrong_length() {
     let key_path = dir.path().join("wrong_len.key");
 
     // Write wrong length (not 32 or 44 bytes)
-    std::fs::write(&key_path, &[0u8; 16]).unwrap();
+    std::fs::write(&key_path, [0u8; 16]).unwrap();
 
     let result = NodeIdentity::load(&key_path);
     assert!(result.is_err());

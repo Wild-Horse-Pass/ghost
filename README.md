@@ -1,12 +1,40 @@
-# Bitcoin Ghost v1.5
+# Bitcoin Ghost
 
-> **NOT READY FOR MAINNET** - This software is currently in development and testing. Use signet or regtest only. Mainnet use is not recommended at this time.
+<div align="center">
+
+```
+ ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓
+▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒
+▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░
+▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░
+░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░
+░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░
+▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░
+ ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░
+ ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░
+      ░              ░
+```
+
+**Incentivized Bitcoin Nodes • Decentralized Mining • Private L2 Payments**
+
+[![Build Status](https://github.com/bitcoin-ghost/ghost/actions/workflows/ci.yml/badge.svg)](https://github.com/bitcoin-ghost/ghost/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-1.6.0-green.svg)](Cargo.toml)
+
+[Website](https://bitcoinghost.org) • [Documentation](docs/) • [Whitepaper](https://bitcoinghost.org/whitepaper)
+
+</div>
 
 ---
 
 ## What is Bitcoin Ghost?
 
-**Bitcoin Ghost** is a **Bitcoin node derivative** that incentivises running a node, implements a decentralised network of mining pools, and adds L2 private and fast payments.
+**Bitcoin Ghost** transforms Bitcoin node operation from an altruistic contribution into a compensated service. It is a complete ecosystem that:
+
+- **Pays node operators** through cryptographic verification challenges
+- **Decentralizes mining** across a network of pool operators using ZK-BFT consensus
+- **Enables instant payments** via an L2 layer with sub-second finality
+- **Preserves privacy** through Silent Payments, CoinJoin mixing, and off-chain transactions
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -51,147 +79,95 @@
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+---
+
 ## Key Features
-
-### Full-Stack Bitcoin Node
-
-| Feature | Description |
-|---------|-------------|
-| **Ghost Core** | Bitcoin Core fork with Silent Payments, enhanced RPC, and native Ghost protocol support |
-| **Ghost Node** | Verification layer for node runner incentives with challenge-response proofs |
-| **Silent Payments** | BIP-352 implementation for receiver address privacy |
-
-### Decentralized Mining Pool
-
-| Feature | Description |
-|---------|-------------|
-| **Stratum V2** | Modern mining protocol with improved security, efficiency, and job negotiation |
-| **ZK-BFT Consensus** | Zero-knowledge Byzantine fault tolerance - cryptographic proofs replace trust |
-| **ZK State Proofs** | State root transitions verified via ZK proofs - fully trustless consensus |
-| **BUDS Classification** | Transaction filtering based on Bitcoin Use-case Differentiation System |
-| **Node Finder** | Discover and test latency to all available pool nodes |
-
-### Fast, Safe & Private Payments
-
-| Feature | Description |
-|---------|-------------|
-| **Ghost Pay L2** | Instant off-chain payments with periodic L1 settlement |
-| **Full ZK-BFT** | Zero-knowledge proofs for state transitions - validators verify proofs, never re-execute |
-| **Instant Finality** | Sub-second payment confirmation with cryptographic guarantees |
-| **Ghost Keys** | Silent Payment-style addresses - share once, receive unlimited times privately |
-| **Ghost Locks** | P2TR outputs with timelocked recovery paths - your funds are always safe |
-| **Wraith Protocol** | Two-phase CoinJoin mixing for transaction graph obfuscation |
 
 ### Node Runner Incentives
 
 | Feature | Description |
 |---------|-------------|
-| **Verification Rewards** | Earn by proving you're running a valid node |
-| **Challenge-Response** | Cryptographic proofs of block data |
-| **Stake Weight** | Higher participation = higher rewards |
-| **Pool Revenue Share** | Node operators share in pool profits |
+| **Verification Rewards** | Earn Bitcoin by proving you run a valid full node |
+| **5-4-3-2-1 Share System** | More capabilities = higher rewards (Archive +5, GhostPay +4, Mining +3, BitcoinPure +2, Elder +1) |
+| **Challenge-Response Proofs** | Cryptographic verification of block data and node capabilities |
+| **Pool Revenue Share** | Node operators share in mining pool profits |
 
-## Architecture
+### Decentralized Mining Pool
 
-### Core Components
+| Feature | Description |
+|---------|-------------|
+| **ZK-BFT Consensus** | Zero-knowledge proofs replace trust - validators verify proofs, never re-execute |
+| **Stratum V2** | Modern mining protocol with improved security and job negotiation |
+| **BUDS Classification** | Transaction filtering based on Bitcoin Use-case Differentiation System |
+| **No Single Point of Failure** | Fully distributed pool with BFT fault tolerance |
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              CORE LIBRARIES                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐   │
-│  │ ghost-common  │ │ghost-consensus│ │ghost-accounting│ │ ghost-storage │   │
-│  │ Config, Types │ │ BFT Engine    │ │ Shares, Payouts│ │ SQLite Layer  │   │
-│  └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘   │
-│                                                                              │
-│  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐   │
-│  │  ghost-buds   │ │ ghost-policy  │ │ghost-template │ │ghost-verific- │   │
-│  │ Tx Classif.   │ │ Mining Rules  │ │ Block Builder │ │ ation HTTP API│   │
-│  └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘   │
-│                                                                              │
-│  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ ┌───────────────┐   │
-│  │  ghost-keys   │ │ ghost-locks   │ │wraith-protocol│ │ ghost-gsp     │   │
-│  │ Silent Pays   │ │ Timelock UTXO │ │ CoinJoin Mix  │ │ Light Wallet  │   │
-│  └───────────────┘ └───────────────┘ └───────────────┘ └───────────────┘   │
-│                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+### Private & Instant Payments
 
-### Binary Applications
+| Feature | Description |
+|---------|-------------|
+| **Ghost Pay L2** | Off-chain payments with sub-second finality and periodic L1 settlement |
+| **Ghost Keys** | BIP-352 Silent Payments - share one address, receive unlimited payments privately |
+| **Ghost Locks** | P2TR outputs with timelocked recovery - your funds are always recoverable |
+| **Wraith Protocol** | Two-phase CoinJoin mixing for transaction graph privacy |
 
-| Binary | Description |
-|--------|-------------|
-| `ghost-node` | Full Bitcoin node with Ghost enhancements |
-| `ghost-qt` | Desktop wallet with full node (Qt GUI) |
-| `ghost-pool` | Decentralized mining pool node |
-| `ghost-pay` | L2 payment node for instant off-chain transfers |
-| `ghost-gsp` | Ghost Service Provider for light wallets |
-| `ghost-cli` | Administration CLI for pool management |
-| `ghost-wallet-cli` | Command-line wallet |
-| `ghost-wallet-tui` | Terminal UI wallet |
-| `ghost-light-wallet` | Lightweight wallet (connects to GSP) |
-| `translator` | SV1 to SV2 protocol bridge for legacy miners |
+---
 
 ## Quick Start
 
 ### Prerequisites
 
-- Rust (stable toolchain)
-- Bitcoin Core or Ghost Core
-- SQLite 3.35+
+- **Rust** 1.75+ (stable toolchain)
+- **Bitcoin Core** 27.0+ or Ghost Core
+- **SQLite** 3.35+
+- **Linux/macOS** (Windows via WSL2)
 
-### Build
+### Installation
 
 ```bash
-# Clone repository
+# Clone the repository
 git clone https://github.com/bitcoin-ghost/ghost.git
 cd ghost
 
-# Build all binaries
+# Initialize submodules
+git submodule update --init --recursive
+
+# Build all binaries (release mode)
 cargo build --release
 
-# Run tests
+# Verify the build
 cargo test --workspace
 ```
 
-### Run a Full Node
+### Run a Full Node (Earn Rewards)
 
 ```bash
-# Start Ghost Core (Bitcoin fork)
-./ghost-core/bin/ghostd -signet
+# 1. Start Ghost Core (Bitcoin fork with Ghost features)
+./ghost-core/bin/ghostd -daemon
 
-# Or start the enhanced node
-./target/release/ghost-node --network signet --rpc-url http://127.0.0.1:38332
-```
-
-### Run a Mining Pool Node
-
-```bash
-# Generate node identity
+# 2. Generate your node identity
 ./target/release/ghost-cli key generate --output ~/.ghost/node.key
 
-# Start the pool node
-./target/release/ghost-pool --config examples/ghost.toml
+# 3. Start the Ghost node (connects to mining pool network)
+./target/release/ghost-pool --config /etc/ghost/pool.toml
 
-# Check status
+# 4. Check your node status and earnings
 ./target/release/ghost-cli status
 ```
 
-### Run a Light Wallet
+### Run a Light Wallet (Send & Receive)
 
 ```bash
-# Initialize wallet
-./target/release/ghost-wallet-cli init
+# Initialize a new wallet
+./target/release/ghost-light-wallet-cli init
+
+# Get your Silent Payment receive address
+./target/release/ghost-light-wallet-cli receive
 
 # Check balance
-./target/release/ghost-wallet-cli balance --refresh
+./target/release/ghost-light-wallet-cli balance --refresh
 
-# Receive address
-./target/release/ghost-wallet-cli receive
-
-# Send payment
-./target/release/ghost-wallet-cli send <recipient> <amount>
+# Send a payment
+./target/release/ghost-light-wallet-cli send <recipient_address> <amount_sats>
 ```
 
 ### Docker Deployment
@@ -199,189 +175,222 @@ cargo test --workspace
 ```bash
 cd docker
 cp .env.example .env
-# Edit .env with your settings
+# Edit .env with your configuration
 
-# Start full stack
+# Start the full stack
 docker-compose up -d
 
-# Start with monitoring
+# Start with monitoring (Prometheus + Grafana)
 docker-compose --profile monitoring up -d
 ```
 
+---
+
 ## Configuration
 
-See `examples/ghost.toml` for a complete configuration example.
-
-Key settings:
+Create `/etc/ghost/pool.toml` (or use `examples/ghost.toml`):
 
 ```toml
 [bitcoin]
 rpc_host = "127.0.0.1"
-rpc_port = 38332      # Signet
-network = "signet"
+rpc_port = 8332          # Mainnet (38332 for signet)
+rpc_user = "your_rpc_user"
+rpc_password = "your_rpc_password"
+network = "main"
 
 [network]
-sv2_port = 34255      # Stratum V2 miners
-sv1_port = 3333       # Stratum V1 (via translator)
-http_port = 8080      # API
+sv2_port = 34255         # Stratum V2 miners
+sv1_port = 3333          # Stratum V1 (via translator)
+http_port = 8080         # REST API
 
 [pool]
-treasury_address = "tb1q..."
+treasury_address = "bc1q..."
 treasury_fee_percent = 1.0
 
 [policy]
-profile = "permissive"  # bitcoin_pure, permissive, full_open
+profile = "permissive"   # bitcoin_pure, permissive, full_open
 
 [verification]
 enabled = true
-reward_pool_sats = 100000000  # 1 BTC daily reward pool
 ```
 
-## BUDS Policy Tiers
+---
 
-The **Bitcoin Use-case Differentiation System** classifies transactions:
+## Architecture
 
-| Tier | Description | Examples |
-|------|-------------|----------|
-| **T0** | Core financial | Standard payments, consolidations |
-| **T1** | Extended financial | Multisig, timelocks, HTLCs |
-| **T2** | Data anchoring | Small OP_RETURN (<80 bytes) |
-| **T3** | Heavy data | Inscriptions, large witness data |
+### Core Components
 
-Policy profiles:
-- `bitcoin_pure` - T0 only (financial transactions)
-- `permissive` - T0 + T1 + T2 (default)
-- `full_open` - All tiers allowed
+| Crate | Purpose |
+|-------|---------|
+| `ghost-common` | Shared types, configuration, node identity |
+| `ghost-consensus` | ZK-BFT consensus engine, P2P mesh network |
+| `ghost-accounting` | Share tracking, payout calculations |
+| `ghost-verification` | Node capability verification, challenge system |
+| `ghost-zkp` | Zero-knowledge proof generation and verification |
+| `ghost-storage` | SQLite database layer with encrypted sensitive fields |
+
+### Payment Layer
+
+| Crate | Purpose |
+|-------|---------|
+| `ghost-keys` | BIP-352 Silent Payment key derivation |
+| `ghost-locks` | P2TR timelocked recovery outputs |
+| `ghost-pay` | L2 instant payment channels |
+| `wraith-protocol` | CoinJoin mixing coordination |
+| `ghost-reconciliation` | L1 settlement and on-chain finalization |
+
+### Wallet Infrastructure
+
+| Crate | Purpose |
+|-------|---------|
+| `ghost-gsp` | Ghost Service Provider for light wallets |
+| `ghost-light-wallet` | Light wallet library (connects to GSP) |
+| `ghost-gsp-proto` | WebSocket protocol for GSP communication |
+
+### Binaries
+
+| Binary | Purpose |
+|--------|---------|
+| `ghost-pool` | Main pool node - mining, consensus, payouts |
+| `ghost-pay` | L2 payment server |
+| `ghost-gsp` | Light wallet backend service |
+| `translator` | SV1 to SV2 protocol bridge |
+| `ghost-cli` | Administration and status CLI |
+| `ghost-light-wallet-cli` | Command-line wallet |
+| `ghost-light-wallet-tui` | Terminal UI wallet |
+
+---
 
 ## Network Ports
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
 | 34255 | TCP | Stratum V2 miners |
-| 3333 | TCP | Stratum V1 miners |
-| 8080 | TCP | HTTP API |
+| 3333 | TCP | Stratum V1 miners (via translator) |
+| 8080 | HTTP | REST API |
 | 8555-8562 | TCP | P2P consensus mesh |
-| 8900 | TCP | GSP WebSocket |
-| 8800 | TCP | Ghost Pay API |
+| 8800 | HTTP | Ghost Pay L2 API |
+| 8900 | WebSocket | GSP light wallet connections |
+
+---
+
+## BUDS Policy System
+
+The **Bitcoin Use-case Differentiation System** classifies transactions into tiers:
+
+| Tier | Category | Examples | Policy |
+|------|----------|----------|--------|
+| **T0** | Core Financial | Standard P2PKH/P2WPKH payments, consolidations | Always included |
+| **T1** | Extended Financial | Multisig, timelocks, HTLCs, Lightning | Default included |
+| **T2** | Data Anchoring | Small OP_RETURN (<80 bytes), commitments | Configurable |
+| **T3** | Heavy Data | Inscriptions, large witness, stamps | Opt-in only |
+
+**Policy Profiles:**
+- `bitcoin_pure` - T0 only (maximally conservative)
+- `permissive` - T0 + T1 + T2 (recommended default)
+- `full_open` - All tiers (no filtering)
+
+---
 
 ## Documentation
 
 ### Getting Started
-- [Wallet Overview](docs/wallets/README.md) - Choose the right wallet
-- [Light Wallet](docs/wallets/LIGHT_WALLET.md) - Quick setup, minimal resources
-- [Full Node Wallet](docs/wallets/FULL_NODE_WALLET.md) - Maximum privacy and control
+- [Wallet Overview](docs/wallets/README.md) - Choose the right wallet for your needs
+- [Getting Started Guide](docs/protocols/GETTING_STARTED.md) - Step-by-step setup
+- [Technical Manual](docs/TECHNICAL_MANUAL.md) - Complete reference
 
 ### Protocol Documentation
-- [Ghost Keys](docs/protocols/GHOST_KEYS.md) - Silent Payment addresses
-- [Ghost Locks](docs/protocols/GHOST_LOCKS.md) - Timelocked recovery outputs
+- [Ghost Keys](docs/protocols/GHOST_KEYS.md) - Silent Payment implementation
+- [Ghost Locks](docs/protocols/GHOST_LOCKS.md) - Timelocked recovery system
 - [Ghost Pay](docs/protocols/GHOST_PAY.md) - L2 payment network
 - [Wraith Protocol](docs/protocols/WRAITH_PROTOCOL.md) - CoinJoin mixing
-
-### API Reference
-- [RPC Commands](docs/RPC_COMMANDS.md) - Full RPC documentation
-- [API Endpoints](docs/API_ENDPOINTS.md) - HTTP API reference
+- [Consensus](docs/protocols/CONSENSUS.md) - ZK-BFT consensus details
+- [Node Capabilities](docs/protocols/NODE_CAPABILITIES.md) - 5-4-3-2-1 verification system
 
 ### Operations
-- [Deployment Runbook](docs/DEPLOYMENT_RUNBOOK.md) - Production deployment
-- [Security Audit](docs/SECURITY_AUDIT.md) - Security review
-- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues
+- [Deployment Runbook](docs/DEPLOYMENT_RUNBOOK.md) - Production deployment guide
+- [API Endpoints](docs/API_ENDPOINTS.md) - HTTP API reference
+- [RPC Commands](docs/RPC_COMMANDS.md) - Full RPC documentation
+- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
 
-## Project Structure
+---
 
-```
-ghost/
-├── ghost-core/        # Bitcoin Core fork with Ghost features
-├── crates/            # Library crates
-│   ├── ghost-common/      # Shared types, config, identity
-│   ├── ghost-buds/        # Transaction classification
-│   ├── ghost-policy/      # Mining policy enforcement
-│   ├── ghost-storage/     # SQLite database layer
-│   ├── ghost-consensus/   # BFT consensus engine
-│   ├── ghost-accounting/  # Share tracking, payouts
-│   ├── ghost-verification/# HTTP API, node verification
-│   ├── ghost-template/    # Block template construction
-│   ├── ghost-keys/        # Silent Payment keys
-│   ├── ghost-locks/       # Timelocked P2TR outputs
-│   ├── ghost-gsp/         # Light wallet server
-│   ├── ghost-gsp-proto/   # GSP protocol definitions
-│   ├── ghost-light-wallet/# Light wallet library
-│   ├── wraith-protocol/   # CoinJoin mixing
-│   └── ghost-reconciliation/ # L1 settlement
-├── bins/              # Binary applications
-│   ├── ghost-node/        # Enhanced full node
-│   ├── ghost-qt/          # Desktop wallet (Qt)
-│   ├── ghost-pool/        # Mining pool node
-│   ├── ghost-pay/         # L2 payment node
-│   ├── ghost-gsp/         # GSP server
-│   ├── ghost-cli/         # Admin CLI
-│   ├── ghost-wallet-cli/  # Command-line wallet
-│   ├── ghost-wallet-tui/  # Terminal UI wallet
-│   ├── ghost-light-wallet-cli/ # Light wallet CLI
-│   ├── ghost-light-wallet-tui/ # Light wallet TUI
-│   └── translator/        # SV1↔SV2 bridge
-├── docker/            # Docker deployment
-├── docs/              # Documentation
-├── examples/          # Example configurations
-└── tests/             # Integration tests
-```
+## Security
 
-## Why Bitcoin Ghost?
+Bitcoin Ghost has undergone extensive security auditing:
 
-### For Node Operators
-- **Earn rewards** for running a full node through verification challenges
-- **Share in pool revenue** as a decentralized pool operator
-- **Support the network** while being compensated
+- **14 rounds** of comprehensive security remediation
+- **Zero critical vulnerabilities** in release
+- **Continuous fuzzing** via cargo-fuzz
+- **Dependency auditing** via cargo-audit
 
-### For Miners
-- **Decentralized pool** - no single point of failure
-- **Fair payouts** - BFT consensus ensures accurate share tracking
-- **Modern protocol** - Stratum V2 with full job negotiation
+Security features:
+- **P2WSH quantum-safe architecture** for future-proofing
+- **Encrypted database fields** for sensitive data
+- **Rate limiting** on all public APIs
+- **Trusted proxy validation** for IP-based protections
+- **Secure key rotation** with dual-signature proofs
 
-### For Users
-- **Privacy-first** - Silent Payments, CoinJoin, and off-chain transactions
-- **Instant payments** - L2 layer for immediate transfers
-- **Self-custodial** - Ghost Locks ensure you always control your funds
+Report security issues to: security@bitcoinghost.org
+
+---
 
 ## Development
 
 ### Running Tests
 
 ```bash
-# All tests
+# Full test suite
 cargo test --workspace
 
 # Specific crate
 cargo test -p ghost-consensus
 
 # Integration tests
-cargo test --test integration
+cargo test --test '*'
 ```
 
 ### Code Quality
 
 ```bash
-# Format code
+# Format
 cargo fmt --all
 
-# Lint
-cargo clippy --all-targets --all-features
+# Lint (must pass with zero warnings)
+cargo clippy --workspace -- -D warnings
 
-# Check documentation
-cargo doc --no-deps --workspace
+# Security audit
+cargo audit
+
+# Generate documentation
+cargo doc --no-deps --workspace --open
 ```
+
+---
+
+## Contributing
+
+Contributions are welcome. Please:
+
+1. Fork the repository
+2. Create a feature branch
+3. Ensure all tests pass and clippy is clean
+4. Submit a pull request
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
+
+---
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
 
-## Contributing
-
-Contributions welcome! Please read our contributing guidelines and submit pull requests.
-
-## Security
-
-For security issues, please email security@bitcoinghost.org or see [SECURITY_AUDIT.md](docs/SECURITY_AUDIT.md).
-
 ---
 
-> **Remember:** This software is not yet production-ready. Test on signet before considering mainnet deployment.
+<div align="center">
+
+**Bitcoin Ghost** - *Making node operation profitable, mining decentralized, and payments private.*
+
+[Website](https://bitcoinghost.org) • [GitHub](https://github.com/bitcoin-ghost) • [Documentation](docs/)
+
+</div>

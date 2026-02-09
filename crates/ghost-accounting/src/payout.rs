@@ -614,7 +614,7 @@ mod tests {
         let mut caps = NodeCapabilities::default();
         caps.archive_mode = true;
         caps.public_mining = true;
-        shares.register_node([1u8; 32], caps.clone());
+        shares.register_node([1u8; 32], caps);
 
         caps.ghost_pay = true;
         shares.register_node([2u8; 32], caps);
@@ -671,8 +671,8 @@ mod tests {
         // Add nodes with varying shares
         let mut caps = NodeCapabilities::default();
         caps.archive_mode = true;
-        shares.register_node([1u8; 32], caps.clone());
-        shares.register_node([2u8; 32], caps.clone());
+        shares.register_node([1u8; 32], caps);
+        shares.register_node([2u8; 32], caps);
         shares.register_node([3u8; 32], caps);
 
         for _ in 0..7 {

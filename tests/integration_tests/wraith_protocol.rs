@@ -565,7 +565,7 @@ fn test_463_session_state_variants() {
 #[test]
 fn test_464_phase_ordering() {
     // Real Phase from wraith-protocol
-    let phases = vec![Phase::Split, Phase::Merge];
+    let phases = [Phase::Split, Phase::Merge];
 
     assert_eq!(phases.len(), 2);
 }

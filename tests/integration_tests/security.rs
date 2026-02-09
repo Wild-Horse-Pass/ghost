@@ -349,7 +349,7 @@ fn test_644_commitment_secret_protected() {
     let manager = CommitmentManager::generate();
 
     // The secret should be usable but not directly exposed
-    let commitment = manager.commit(&vec![0xab; 22]);
+    let commitment = manager.commit(&[0xab; 22]);
 
     // Can verify
     assert!(manager.verify(&commitment));

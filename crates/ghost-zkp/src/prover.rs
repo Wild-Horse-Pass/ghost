@@ -322,8 +322,8 @@ impl BlockProver {
 
         // Include transaction hashes
         for tx in &witness.transitions {
-            hasher.update(&tx.sender_balance_before.to_le_bytes());
-            hasher.update(&tx.recipient_balance_before.to_le_bytes());
+            hasher.update(tx.sender_balance_before.to_le_bytes());
+            hasher.update(tx.recipient_balance_before.to_le_bytes());
             hasher.update(tx.amount.to_le_bytes());
         }
 

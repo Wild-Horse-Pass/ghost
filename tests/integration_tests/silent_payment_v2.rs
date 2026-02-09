@@ -50,7 +50,7 @@ fn test_sp2_001_tweak_uses_domain_separator() {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(DOMAIN_SEPARATOR_V2);
-    hasher.update(&shared_secret);
+    hasher.update(shared_secret);
     hasher.update(0u32.to_le_bytes());
     let expected: [u8; 32] = hasher.finalize().into();
 
