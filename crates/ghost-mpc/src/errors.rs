@@ -75,12 +75,6 @@ pub enum MpcError {
     RandomFailure(String),
 }
 
-impl From<bincode::Error> for MpcError {
-    fn from(err: bincode::Error) -> Self {
-        MpcError::Serialization(err.to_string())
-    }
-}
-
 impl From<std::io::Error> for MpcError {
     fn from(err: std::io::Error) -> Self {
         MpcError::Io(err.to_string())

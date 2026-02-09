@@ -85,9 +85,3 @@ pub enum ZkError {
 
 /// Result type for ZK operations
 pub type ZkResult<T> = Result<T, ZkError>;
-
-impl From<bincode::Error> for ZkError {
-    fn from(e: bincode::Error) -> Self {
-        ZkError::SerializationError(e.to_string())
-    }
-}

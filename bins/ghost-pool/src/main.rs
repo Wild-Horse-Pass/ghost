@@ -1724,6 +1724,48 @@ async fn main() -> Result<()> {
     });
     info!("Rate limit cleanup task started (60s interval)");
 
+    // Start elder registration handler cleanup task
+    // Periodically cleans up expired state (rate limiters, pending proposals, approved registrations)
+    let elder_handler_for_cleanup = Arc::clone(&elder_registration_handler);
+    let mut elder_cleanup_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    elder_handler_for_cleanup.cleanup();
+                }
+                _ = elder_cleanup_shutdown.recv() => {
+                    tracing::info!("Elder registration cleanup task shutting down");
+                    break;
+                }
+            }
+        }
+    });
+    info!("Elder registration cleanup task started (60s interval)");
+
+    // Start elder registration proposal check task
+    // Periodically checks for approved registrations ready to propose to the network
+    let elder_handler_for_proposals = Arc::clone(&elder_registration_handler);
+    let mut elder_proposal_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    if let Err(e) = elder_handler_for_proposals.check_pending_proposals().await {
+                        tracing::warn!(error = %e, "Elder proposal check failed");
+                    }
+                }
+                _ = elder_proposal_shutdown.recv() => {
+                    tracing::info!("Elder registration proposal check task shutting down");
+                    break;
+                }
+            }
+        }
+    });
+    info!("Elder registration proposal check task started (30s interval)");
+
     // Clone ws_state for event handlers before moving verification_state
     let _verification_state_for_ws = Arc::clone(&verification_state);
 

@@ -56,7 +56,6 @@ hyper-util = { workspace = true }
 # TLS (CRIT-API-1)
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
-rustls-pemfile = { workspace = true }
 hyper = { workspace = true }
 
 # HTTP client (for Cloudflare API)
