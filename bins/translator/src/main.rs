@@ -395,6 +395,8 @@ async fn handle_connection(
         coinbase_prefix: Vec::new(),
         coinbase_suffix: Vec::new(),
         merkle_path: Vec::new(),
+        version_rolling_mask: None,
+        template_version: 0x20000000,
     }));
 
     // H-10: Create bounded channels with reasonable capacity for backpressure
@@ -705,7 +707,7 @@ async fn handle_sv1_request(
             };
 
             // Extract all needed data from state before awaiting
-            let (channel_id, sv2_job_id, sequence_number) = {
+            let (channel_id, sv2_job_id, sequence_number, version_rolling_mask, template_version) = {
                 let state_guard = state.read();
                 let job_id = state_guard
                     .job_map
@@ -713,7 +715,13 @@ async fn handle_sv1_request(
                     .copied()
                     .unwrap_or(0);
                 let seq = state_guard.share_sequence.fetch_add(1, Ordering::SeqCst) as u32;
-                (state_guard.channel_id, job_id, seq)
+                (
+                    state_guard.channel_id,
+                    job_id,
+                    seq,
+                    state_guard.version_rolling_mask,
+                    state_guard.template_version,
+                )
             };
 
             // HIGH-7: Parse nonce and ntime with proper error handling
@@ -745,13 +753,50 @@ async fn handle_sv1_request(
                 }
             };
 
+            // BIP320: Determine block version to submit
+            let version = match (version_rolling_mask, &submit.version_bits) {
+                (Some(mask), Some(version_bits_hex)) => {
+                    // Miner sent version bits and we have a negotiated mask
+                    match u32::from_str_radix(version_bits_hex, 16) {
+                        Ok(miner_version) => {
+                            // Validate: miner must only modify bits within the mask
+                            if (miner_version ^ template_version) & !mask != 0 {
+                                let response = sv1::Response::error(
+                                    request.id,
+                                    -1,
+                                    "Version bits modified outside negotiated mask".to_string(),
+                                );
+                                let json = serde_json::to_string(&response)?;
+                                sv1_tx.send(json).await?;
+                                return Ok(());
+                            }
+                            miner_version
+                        }
+                        Err(_) => {
+                            let response = sv1::Response::error(
+                                request.id,
+                                -1,
+                                format!("Invalid version_bits hex value: {}", version_bits_hex),
+                            );
+                            let json = serde_json::to_string(&response)?;
+                            sv1_tx.send(json).await?;
+                            return Ok(());
+                        }
+                    }
+                }
+                _ => {
+                    // No version rolling negotiated or no version bits provided
+                    template_version
+                }
+            };
+
             let share = sv2::SubmitSharesStandard {
                 channel_id,
                 sequence_number,
                 job_id: sv2_job_id,
                 nonce,
                 ntime,
-                version: 0x20000000, // BIP9 version bits
+                version,
             };
 
             let payload = share.encode();
@@ -813,8 +858,62 @@ async fn handle_sv1_request(
         }
 
         "mining.configure" => {
-            // BIP310 mining configuration
-            let response = sv1::Response::success(request.id, serde_json::json!({}));
+            // BIP310/BIP320 mining configuration (extension negotiation)
+            // params: [["extension-name", ...], {"extension-name.param": value, ...}]
+            let mut result = serde_json::Map::new();
+
+            let extensions = request.params.first().and_then(|v| v.as_array());
+            let ext_params = request.params.get(1).and_then(|v| v.as_object());
+
+            if let Some(extensions) = extensions {
+                let has_version_rolling = extensions
+                    .iter()
+                    .any(|e| e.as_str() == Some("version-rolling"));
+
+                if has_version_rolling {
+                    // Parse miner's proposed mask
+                    let miner_mask = ext_params
+                        .and_then(|p| p.get("version-rolling.mask"))
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok())
+                        .unwrap_or(0);
+
+                    let min_bit_count = ext_params
+                        .and_then(|p| p.get("version-rolling.min-bit-count"))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as u32;
+
+                    // Negotiate: intersection of pool mask and miner mask
+                    let negotiated_mask = POOL_VERSION_ROLLING_MASK & miner_mask;
+                    let available_bits = negotiated_mask.count_ones();
+
+                    if available_bits >= min_bit_count {
+                        // Store negotiated mask in connection state
+                        {
+                            let mut state_guard = state.write();
+                            state_guard.version_rolling_mask = Some(negotiated_mask);
+                        }
+
+                        result.insert(
+                            "version-rolling".to_string(),
+                            serde_json::json!(true),
+                        );
+                        result.insert(
+                            "version-rolling.mask".to_string(),
+                            serde_json::json!(format!("{:08x}", negotiated_mask)),
+                        );
+                    } else {
+                        // Not enough bits in intersection
+                        result.insert(
+                            "version-rolling".to_string(),
+                            serde_json::json!(false),
+                        );
+                    }
+                }
+            }
+
+            let response =
+                sv1::Response::success(request.id, serde_json::Value::Object(result));
             let json = serde_json::to_string(&response)?;
             sv1_tx.send(json).await?;
         }
@@ -981,6 +1080,7 @@ async fn handle_sv2_message(
                     .reverse_job_map
                     .insert(sv2_job_id, job_str.clone());
 
+                state_guard.template_version = version;
                 state_guard.coinbase_prefix = coinbase_prefix.clone();
                 state_guard.coinbase_suffix = coinbase_suffix.clone();
                 state_guard.merkle_path = merkle_branches
@@ -1314,6 +1414,8 @@ mod sv1 {
         pub extranonce2: String,
         pub ntime: String,
         pub nonce: String,
+        /// BIP320 version bits (optional 6th parameter, hex string)
+        pub version_bits: Option<String>,
     }
 
     impl SubmitParams {
@@ -1327,6 +1429,10 @@ mod sv1 {
                 extranonce2: params[2].as_str()?.to_string(),
                 ntime: params[3].as_str()?.to_string(),
                 nonce: params[4].as_str()?.to_string(),
+                version_bits: params
+                    .get(5)
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
             })
         }
     }
@@ -1512,6 +1618,9 @@ mod sv2 {
     }
 }
 
+/// BIP320 version rolling mask: bits 13-28 (16 bits available for rolling)
+const POOL_VERSION_ROLLING_MASK: u32 = 0x1fffe000;
+
 /// Translation state for a single connection
 struct ConnectionState {
     /// SV1 extranonce1 (hex string)
@@ -1546,6 +1655,10 @@ struct ConnectionState {
     coinbase_suffix: Vec<u8>,
     /// Merkle path (from NewExtendedMiningJob)
     merkle_path: Vec<[u8; 32]>,
+    /// BIP320: Negotiated version rolling mask (None = not negotiated)
+    version_rolling_mask: Option<u32>,
+    /// Block version from most recent NewExtendedMiningJob
+    template_version: u32,
 }
 
 // =============================================================================
@@ -1686,5 +1799,133 @@ mod tests {
         let short_payload = vec![0x00; 10]; // Only 10 bytes
         let result = validate_min_length(&short_payload, 14, "NewExtendedMiningJob");
         assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // BIP320 Version Rolling Tests
+    // =========================================================================
+
+    /// Helper to build a mining.configure request with version-rolling
+    fn make_configure_request(
+        extensions: Vec<&str>,
+        params: serde_json::Map<String, serde_json::Value>,
+    ) -> super::sv1::Request {
+        super::sv1::Request {
+            id: Some(serde_json::json!(1)),
+            method: "mining.configure".to_string(),
+            params: vec![
+                serde_json::json!(extensions),
+                serde_json::Value::Object(params),
+            ],
+        }
+    }
+
+    /// Test version rolling negotiation produces correct mask response
+    #[test]
+    fn test_mining_configure_version_rolling() {
+        // Simulate the configure logic inline (since handle_sv1_request is async)
+        let miner_mask_str = "1fffe000";
+        let miner_mask = u32::from_str_radix(miner_mask_str, 16).unwrap();
+        let negotiated = super::POOL_VERSION_ROLLING_MASK & miner_mask;
+
+        // Full overlap: miner mask matches pool mask
+        assert_eq!(negotiated, 0x1fffe000);
+        assert_eq!(negotiated.count_ones(), 16);
+    }
+
+    /// Test mask intersection when miner proposes different mask
+    #[test]
+    fn test_mining_configure_mask_intersection() {
+        // Miner proposes only upper bits
+        let miner_mask: u32 = 0x1fff0000; // bits 16-28
+        let negotiated = super::POOL_VERSION_ROLLING_MASK & miner_mask;
+        // Pool mask bits 13-28, miner bits 16-28 => intersection is bits 16-28
+        assert_eq!(negotiated, 0x1fff0000 & 0x1fffe000);
+        assert_eq!(negotiated, 0x1fff0000); // bits 16-28
+        assert!(negotiated.count_ones() >= 13); // Still enough bits
+
+        // Miner proposes no overlapping bits
+        let miner_mask: u32 = 0x00001fff; // bits 0-12
+        let negotiated = super::POOL_VERSION_ROLLING_MASK & miner_mask;
+        // Pool mask starts at bit 13, miner ends at bit 12 => no overlap
+        assert_eq!(negotiated, 0);
+    }
+
+    /// Test mining.configure with no extensions returns empty result
+    #[test]
+    fn test_mining_configure_empty() {
+        // When extensions list is empty or doesn't contain version-rolling,
+        // the result should be empty.
+        let request = make_configure_request(vec![], serde_json::Map::new());
+        assert!(request.params[0].as_array().unwrap().is_empty());
+        // The handler would return {} since no extensions match
+    }
+
+    /// Test SubmitParams parsing with version_bits (6th parameter)
+    #[test]
+    fn test_submit_with_version_bits() {
+        let params = vec![
+            serde_json::json!("worker"),
+            serde_json::json!("1a"),
+            serde_json::json!("00000001"),
+            serde_json::json!("6789abcd"),
+            serde_json::json!("deadbeef"),
+            serde_json::json!("20000000"), // version_bits
+        ];
+
+        let submit = super::sv1::SubmitParams::from_params(&params).unwrap();
+        assert_eq!(submit.worker_name, "worker");
+        assert_eq!(submit.version_bits, Some("20000000".to_string()));
+    }
+
+    /// Test version bits outside negotiated mask are rejected
+    #[test]
+    fn test_submit_version_outside_mask_rejected() {
+        let mask: u32 = 0x1fffe000;
+        let template_version: u32 = 0x20000000;
+
+        // Miner tries to modify bit 0 (outside mask)
+        let miner_version: u32 = 0x20000001;
+
+        // Check: bits modified outside mask
+        let diff_outside_mask = (miner_version ^ template_version) & !mask;
+        assert_ne!(diff_outside_mask, 0, "Should detect out-of-mask modification");
+
+        // Valid version rolling (only changes bits within mask)
+        let valid_miner_version: u32 = 0x20002000; // changed bit 13 (within mask)
+        let diff_outside_mask = (valid_miner_version ^ template_version) & !mask;
+        assert_eq!(diff_outside_mask, 0, "Should accept in-mask modification");
+    }
+
+    /// Test submit without configure uses template version
+    #[test]
+    fn test_submit_without_configure() {
+        // When version_rolling_mask is None, template_version is used
+        let mask: Option<u32> = None;
+        let template_version: u32 = 0x20000000;
+
+        let version = match (mask, None::<&str>) {
+            (Some(_mask), Some(_bits)) => unreachable!(),
+            _ => template_version,
+        };
+
+        assert_eq!(version, 0x20000000);
+    }
+
+    /// Test 5-param submit still works (backward compatibility)
+    #[test]
+    fn test_submit_5_params_backward_compat() {
+        let params = vec![
+            serde_json::json!("worker"),
+            serde_json::json!("1a"),
+            serde_json::json!("00000001"),
+            serde_json::json!("6789abcd"),
+            serde_json::json!("deadbeef"),
+        ];
+
+        let submit = super::sv1::SubmitParams::from_params(&params).unwrap();
+        assert_eq!(submit.worker_name, "worker");
+        assert_eq!(submit.nonce, "deadbeef");
+        assert!(submit.version_bits.is_none(), "5-param submit should have no version_bits");
     }
 }

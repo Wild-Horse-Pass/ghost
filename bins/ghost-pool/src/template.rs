@@ -1374,6 +1374,9 @@ impl TemplateProcessor {
         // Track which original indices were kept (for dependency resolution)
         let mut kept_indices: HashSet<usize> = HashSet::new();
 
+        // Map original 0-based index -> filtered array position (for CPFP sorting)
+        let mut original_to_filtered: HashMap<usize, usize> = HashMap::new();
+
         for (idx, tx) in transactions.iter().enumerate() {
             // Check for duplicate TXIDs (prevents double-inclusion attacks)
             if !seen_txids.insert(tx.txid.clone()) {
@@ -1412,9 +1415,14 @@ impl TemplateProcessor {
                 // Additional policy checks
                 let fee_rate = tx.fee as f64 / (tx.weight as f64 / 4.0);
                 if fee_rate >= self.config.min_fee_rate {
-                    // Check if all dependencies were kept (depends is u32, kept_indices is usize)
-                    let deps_satisfied = tx.depends.iter().all(|&dep| kept_indices.contains(&(dep as usize)));
+                    // Check if all dependencies were kept
+                    // depends values are 1-indexed (Bitcoin Core GBT convention),
+                    // kept_indices are 0-indexed, so subtract 1
+                    let deps_satisfied = tx.depends.iter().all(|&dep| {
+                        dep > 0 && kept_indices.contains(&((dep - 1) as usize))
+                    });
                     if deps_satisfied {
+                        original_to_filtered.insert(idx, kept.len());
                         kept_indices.insert(idx);
                         kept.push(tx.clone());
                     } else {
@@ -1438,9 +1446,8 @@ impl TemplateProcessor {
             }
         }
 
-        // Sort by fee rate while respecting dependencies
-        // Separate independent txs from those with dependencies
-        let kept = self.sort_by_fee_rate_safe(kept);
+        // Sort by package fee rate while respecting dependencies
+        let kept = self.sort_by_package_fee_rate(kept, &original_to_filtered);
 
         let stats = FilterStats {
             original: original_count,
@@ -1452,38 +1459,196 @@ impl TemplateProcessor {
         (kept, stats)
     }
 
-    /// Sort transactions by fee rate while respecting dependencies.
+    /// Sort transactions by package fee rate while respecting dependencies.
     ///
-    /// Strategy:
-    /// 1. Independent transactions (no depends): Sort by fee rate descending
-    /// 2. Dependent transactions (CPFP chains): Keep in original order
-    ///
-    /// This maximizes fee revenue for independent txs while maintaining
-    /// validity for CPFP chains. The original order from Bitcoin Core already
-    /// respects dependency ordering, so we preserve it for dependent txs.
-    fn sort_by_fee_rate_safe(&self, transactions: Vec<TemplateTransaction>) -> Vec<TemplateTransaction> {
+    /// CPFP-aware algorithm:
+    /// 1. Fast path: if no dependent txs, sort by individual fee rate (zero overhead)
+    /// 2. Build dependency graph from `depends` field (remapped to filtered indices)
+    /// 3. Find connected components (clusters) via union-find
+    /// 4. Compute package fee rate per cluster: sum(fees) / sum(vbytes)
+    /// 5. Sort clusters by package fee rate descending
+    /// 6. Within each cluster, topological sort (parents before children)
+    /// 7. Flatten into final transaction list
+    fn sort_by_package_fee_rate(
+        &self,
+        transactions: Vec<TemplateTransaction>,
+        original_to_filtered: &HashMap<usize, usize>,
+    ) -> Vec<TemplateTransaction> {
         if transactions.len() <= 1 {
             return transactions;
         }
 
-        // Partition: independent (no deps) vs dependent (has deps)
-        // Note: transactions with depends field set are part of CPFP chains
-        // and must maintain their relative ordering with parents
-        let (mut independent, dependent): (Vec<_>, Vec<_>) = transactions
-            .into_iter()
-            .partition(|tx| tx.depends.is_empty());
+        // Fast path: if no transactions have dependencies, simple fee-rate sort
+        let has_deps = transactions.iter().any(|tx| !tx.depends.is_empty());
+        if !has_deps {
+            let mut sorted = transactions;
+            sorted.sort_by(|a, b| {
+                let rate_a = a.fee as f64 / (a.weight.max(1) as f64 / 4.0);
+                let rate_b = b.fee as f64 / (b.weight.max(1) as f64 / 4.0);
+                rate_b.partial_cmp(&rate_a).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            return sorted;
+        }
 
-        // Sort independent transactions by fee rate (highest first)
-        independent.sort_by(|a, b| {
-            let rate_a = a.fee as f64 / (a.weight.max(1) as f64 / 4.0);
-            let rate_b = b.fee as f64 / (b.weight.max(1) as f64 / 4.0);
+        let n = transactions.len();
+
+        // Build adjacency: for each tx, find its parent indices in the filtered array
+        // depends values are 1-indexed original positions
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+        let mut parents: Vec<Vec<usize>> = vec![Vec::new(); n];
+        for (i, tx) in transactions.iter().enumerate() {
+            for &dep in &tx.depends {
+                if dep == 0 {
+                    continue;
+                }
+                let orig_idx = (dep - 1) as usize;
+                if let Some(&filtered_idx) = original_to_filtered.get(&orig_idx) {
+                    if filtered_idx < n {
+                        children[filtered_idx].push(i);
+                        parents[i].push(filtered_idx);
+                    }
+                }
+            }
+        }
+
+        // Union-Find to group connected components
+        let mut uf_parent: Vec<usize> = (0..n).collect();
+        let mut uf_rank: Vec<usize> = vec![0; n];
+
+        fn uf_find(parent: &mut [usize], x: usize) -> usize {
+            if parent[x] != x {
+                parent[x] = uf_find(parent, parent[x]);
+            }
+            parent[x]
+        }
+
+        fn uf_union(parent: &mut [usize], rank: &mut [usize], a: usize, b: usize) {
+            let ra = uf_find(parent, a);
+            let rb = uf_find(parent, b);
+            if ra == rb {
+                return;
+            }
+            if rank[ra] < rank[rb] {
+                parent[ra] = rb;
+            } else if rank[ra] > rank[rb] {
+                parent[rb] = ra;
+            } else {
+                parent[rb] = ra;
+                rank[ra] += 1;
+            }
+        }
+
+        // Union parent-child pairs
+        for (i, tx) in transactions.iter().enumerate() {
+            for &dep in &tx.depends {
+                if dep == 0 {
+                    continue;
+                }
+                let orig_idx = (dep - 1) as usize;
+                if let Some(&filtered_idx) = original_to_filtered.get(&orig_idx) {
+                    if filtered_idx < n {
+                        uf_union(&mut uf_parent, &mut uf_rank, i, filtered_idx);
+                    }
+                }
+            }
+        }
+
+        // Group indices by their component root
+        let mut components: HashMap<usize, Vec<usize>> = HashMap::new();
+        for i in 0..n {
+            let root = uf_find(&mut uf_parent, i);
+            components.entry(root).or_default().push(i);
+        }
+
+        // Build clusters with topological ordering and package fee rates
+        struct TxCluster {
+            tx_indices: Vec<usize>, // Indices into filtered array, topological order
+            total_fee: u64,
+            total_weight: u64,
+        }
+
+        let mut clusters: Vec<TxCluster> = Vec::with_capacity(components.len());
+
+        for members in components.values() {
+            let total_fee: u64 = members.iter().map(|&i| transactions[i].fee).sum();
+            let total_weight: u64 = members.iter().map(|&i| transactions[i].weight).sum();
+
+            if members.len() == 1 {
+                // Single-tx cluster, no topo sort needed
+                clusters.push(TxCluster {
+                    tx_indices: members.clone(),
+                    total_fee,
+                    total_weight,
+                });
+                continue;
+            }
+
+            // Topological sort within cluster using Kahn's algorithm
+            let member_set: HashSet<usize> = members.iter().copied().collect();
+            let mut in_degree: HashMap<usize, usize> = HashMap::new();
+            for &m in members {
+                in_degree.insert(m, 0);
+            }
+            for &m in members {
+                for &child in &children[m] {
+                    if member_set.contains(&child) {
+                        *in_degree.entry(child).or_insert(0) += 1;
+                    }
+                }
+            }
+
+            let mut queue: std::collections::VecDeque<usize> = std::collections::VecDeque::new();
+            for &m in members {
+                if in_degree[&m] == 0 {
+                    queue.push_back(m);
+                }
+            }
+
+            let mut topo_order = Vec::with_capacity(members.len());
+            while let Some(node) = queue.pop_front() {
+                topo_order.push(node);
+                for &child in &children[node] {
+                    if let Some(deg) = in_degree.get_mut(&child) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            queue.push_back(child);
+                        }
+                    }
+                }
+            }
+
+            // If topo_order is incomplete (cycle), fall back to original order
+            if topo_order.len() < members.len() {
+                let mut fallback = members.clone();
+                fallback.sort();
+                clusters.push(TxCluster {
+                    tx_indices: fallback,
+                    total_fee,
+                    total_weight,
+                });
+            } else {
+                clusters.push(TxCluster {
+                    tx_indices: topo_order,
+                    total_fee,
+                    total_weight,
+                });
+            }
+        }
+
+        // Sort clusters by package fee rate (sat/vB) descending
+        clusters.sort_by(|a, b| {
+            let rate_a = a.total_fee as f64 / (a.total_weight.max(1) as f64 / 4.0);
+            let rate_b = b.total_fee as f64 / (b.total_weight.max(1) as f64 / 4.0);
             rate_b.partial_cmp(&rate_a).unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // Combine: independent (sorted by fee rate) first, then dependent (original order)
-        // Dependent txs are already in valid order from Bitcoin Core's getblocktemplate
-        let mut result = independent;
-        result.extend(dependent);
+        // Flatten clusters into final transaction list
+        let mut result = Vec::with_capacity(n);
+        for cluster in clusters {
+            for idx in cluster.tx_indices {
+                result.push(transactions[idx].clone());
+            }
+        }
 
         result
     }
@@ -2728,6 +2893,180 @@ mod tests {
             "Error should mention coinbase_extra being too long: {}",
             error
         );
+    }
+
+    /// Helper to create a TemplateTransaction for sorting tests
+    fn make_tx(txid: &str, fee: u64, weight: u64, depends: Vec<u32>) -> TemplateTransaction {
+        TemplateTransaction {
+            data: String::new(),
+            txid: txid.to_string(),
+            hash: "00".repeat(32),
+            depends,
+            fee,
+            sigops: 0,
+            weight,
+        }
+    }
+
+    /// Helper to create a TemplateProcessor for sorting tests
+    fn test_processor() -> TemplateProcessor {
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive())
+    }
+
+    /// Test that CPFP package with high package fee rate sorts above lower independent txs
+    #[test]
+    fn test_cpfp_package_sorted_by_package_fee_rate() {
+        let processor = test_processor();
+
+        // Independent tx: 50 sat/vB (fee=5000, weight=400 => vB=100)
+        let tx_ind = make_tx("ind", 5000, 400, vec![]);
+
+        // CPFP pair: parent has low fee, child pays for both
+        // Parent (original idx 1): fee=100, weight=400 => 1 sat/vB alone
+        // Child (original idx 2): fee=14900, weight=200 => depends on parent
+        // Package rate: (100+14900) / ((400+200)/4) = 15000/150 = 100 sat/vB
+        let tx_parent = make_tx("parent", 100, 400, vec![]);
+        let tx_child = make_tx("child", 14900, 200, vec![2]); // depends on parent (1-indexed: idx 1 = dep 2)
+
+        // Simulate: original indices [0=ind, 1=parent, 2=child], all kept
+        // After filtering: ind->0, parent->1, child->2
+        let mut original_to_filtered = HashMap::new();
+        original_to_filtered.insert(0, 0);
+        original_to_filtered.insert(1, 1);
+        original_to_filtered.insert(2, 2);
+
+        let txs = vec![tx_ind, tx_parent, tx_child];
+        let result = processor.sort_by_package_fee_rate(txs, &original_to_filtered);
+
+        // CPFP package (100 sat/vB) should come before independent tx (50 sat/vB)
+        assert_eq!(result.len(), 3);
+        // The CPFP package (parent+child) should be first
+        assert!(
+            result[0].txid == "parent" || result[0].txid == "child",
+            "First tx should be from the CPFP package, got: {}",
+            result[0].txid
+        );
+        // Parent must come before child within the package
+        let parent_pos = result.iter().position(|t| t.txid == "parent").unwrap();
+        let child_pos = result.iter().position(|t| t.txid == "child").unwrap();
+        assert!(
+            parent_pos < child_pos,
+            "Parent must precede child in output"
+        );
+        // Independent tx should be last
+        assert_eq!(result[2].txid, "ind");
+    }
+
+    /// Test that with no dependent txs, simple fee rate sort is used (fast path)
+    #[test]
+    fn test_independent_only_fast_path() {
+        let processor = test_processor();
+
+        let tx_a = make_tx("a", 1000, 400, vec![]); // 10 sat/vB
+        let tx_b = make_tx("b", 5000, 400, vec![]); // 50 sat/vB
+        let tx_c = make_tx("c", 3000, 400, vec![]); // 30 sat/vB
+
+        let original_to_filtered = HashMap::new();
+        let txs = vec![tx_a, tx_b, tx_c];
+        let result = processor.sort_by_package_fee_rate(txs, &original_to_filtered);
+
+        assert_eq!(result[0].txid, "b"); // 50 sat/vB
+        assert_eq!(result[1].txid, "c"); // 30 sat/vB
+        assert_eq!(result[2].txid, "a"); // 10 sat/vB
+    }
+
+    /// Test that parents always precede children in CPFP chain output
+    #[test]
+    fn test_cpfp_chain_topological_order() {
+        let processor = test_processor();
+
+        // Chain: grandparent -> parent -> child
+        // Original indices: 0, 1, 2
+        let tx_gp = make_tx("grandparent", 100, 400, vec![]);
+        let tx_p = make_tx("parent", 100, 400, vec![1]); // depends on grandparent (1-indexed)
+        let tx_c = make_tx("child", 10000, 400, vec![2]); // depends on parent (1-indexed)
+
+        let mut original_to_filtered = HashMap::new();
+        original_to_filtered.insert(0, 0);
+        original_to_filtered.insert(1, 1);
+        original_to_filtered.insert(2, 2);
+
+        let txs = vec![tx_gp, tx_p, tx_c];
+        let result = processor.sort_by_package_fee_rate(txs, &original_to_filtered);
+
+        let gp_pos = result.iter().position(|t| t.txid == "grandparent").unwrap();
+        let p_pos = result.iter().position(|t| t.txid == "parent").unwrap();
+        let c_pos = result.iter().position(|t| t.txid == "child").unwrap();
+        assert!(gp_pos < p_pos, "Grandparent must precede parent");
+        assert!(p_pos < c_pos, "Parent must precede child");
+    }
+
+    /// Test mixed independent transactions and CPFP packages sort correctly
+    #[test]
+    fn test_mixed_independent_and_packages() {
+        let processor = test_processor();
+
+        // Independent tx: 20 sat/vB
+        let tx_ind1 = make_tx("ind1", 2000, 400, vec![]);
+        // CPFP pair: package rate = (100+3900)/((400+400)/4) = 4000/200 = 20 sat/vB
+        let tx_parent = make_tx("parent", 100, 400, vec![]);
+        let tx_child = make_tx("child", 3900, 400, vec![2]); // depends on parent at original idx 1
+        // Independent tx: 10 sat/vB
+        let tx_ind2 = make_tx("ind2", 1000, 400, vec![]);
+
+        let mut original_to_filtered = HashMap::new();
+        original_to_filtered.insert(0, 0);
+        original_to_filtered.insert(1, 1);
+        original_to_filtered.insert(2, 2);
+        original_to_filtered.insert(3, 3);
+
+        let txs = vec![tx_ind1, tx_parent, tx_child, tx_ind2];
+        let result = processor.sort_by_package_fee_rate(txs, &original_to_filtered);
+
+        assert_eq!(result.len(), 4);
+
+        // ind2 (10 sat/vB) should be last
+        assert_eq!(result[3].txid, "ind2");
+
+        // Parent must precede child
+        let parent_pos = result.iter().position(|t| t.txid == "parent").unwrap();
+        let child_pos = result.iter().position(|t| t.txid == "child").unwrap();
+        assert!(parent_pos < child_pos);
+    }
+
+    /// Test single transaction edge case
+    #[test]
+    fn test_single_transaction() {
+        let processor = test_processor();
+        let tx = make_tx("only", 1000, 400, vec![]);
+        let original_to_filtered = HashMap::new();
+        let result = processor.sort_by_package_fee_rate(vec![tx], &original_to_filtered);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].txid, "only");
+    }
+
+    /// Test that 1-based depends values are correctly mapped
+    #[test]
+    fn test_depends_indexing_1_based() {
+        let processor = test_processor();
+
+        // Original array: [A at idx 0, B at idx 1]
+        // B depends on A. In GBT, A is at position 1 (1-indexed), so depends=[1]
+        let tx_a = make_tx("a", 100, 400, vec![]);
+        let tx_b = make_tx("b", 10000, 200, vec![1]); // depends on position 1 = original idx 0
+
+        let mut original_to_filtered = HashMap::new();
+        original_to_filtered.insert(0, 0);
+        original_to_filtered.insert(1, 1);
+
+        let txs = vec![tx_a, tx_b];
+        let result = processor.sort_by_package_fee_rate(txs, &original_to_filtered);
+
+        // They should form a package; A must come before B
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].txid, "a");
+        assert_eq!(result[1].txid, "b");
     }
 
     /// H-MINE-3-TEST-2: Test that runtime script_len validation works
