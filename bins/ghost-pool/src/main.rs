@@ -991,65 +991,33 @@ async fn main() -> Result<()> {
     );
 
     // ZK consensus handlers (optional feature)
+    // DEFERRED INITIALIZATION: ZK parameter generation is memory-intensive and can take minutes.
+    // We spawn it in a background task so the node can start serving immediately.
     #[cfg(feature = "zk-consensus")]
     {
         use ghost_consensus::{ZkPayoutVoteHandler, ZkVoteHandler};
-        use ghost_zkp::{BlockProver, BlockVerifier, PayoutProver, PayoutVerifier};
 
-        // Check production mode and load trusted params
-        if ghost_zkp::is_production_mode() {
+        // Check production mode early (this is fast)
+        let is_production = ghost_zkp::is_production_mode();
+        let is_mainnet = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
+
+        // MAINNET SECURITY: ZK consensus on mainnet REQUIRES trusted setup
+        if is_mainnet && !is_production {
+            return Err(anyhow::anyhow!(
+                "MAINNET SECURITY: ZK consensus on mainnet requires trusted setup parameters. \
+                 Either:\n  \
+                 1. Complete MPC ceremony and build with --features zk-production\n  \
+                 2. Disable ZK consensus by building without --features zk-consensus\n\n\
+                 Running ZK consensus with test parameters on mainnet would allow proof forgery."
+            ));
+        }
+
+        if is_production {
             ghost_zkp::load_trusted_params()?;
             info!("ZK consensus using PRODUCTION parameters from MPC ceremony");
         } else {
-            // MAINNET SECURITY: ZK consensus on mainnet REQUIRES trusted setup
-            if config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet {
-                return Err(anyhow::anyhow!(
-                    "MAINNET SECURITY: ZK consensus on mainnet requires trusted setup parameters. \
-                     Either:\n  \
-                     1. Complete MPC ceremony and build with --features zk-production\n  \
-                     2. Disable ZK consensus by building without --features zk-consensus\n\n\
-                     Running ZK consensus with test parameters on mainnet would allow proof forgery."
-                ));
-            }
             warn!("ZK consensus using TEST parameters - NOT SECURE FOR MAINNET");
         }
-
-        // Initialize block prover/verifier with Groth16 setup (for L2 blocks)
-        // Using 100 max txs and depth 20 for the state tree
-        // L-25: Use proper error handling instead of expect()
-        let block_prover = Arc::new(
-            BlockProver::new_with_setup_and_state_transitions(100, 20).map_err(|e| {
-                anyhow::anyhow!(
-                    "L-25: Failed to initialize ZK block prover with Groth16 setup: {}. \
-                     This may indicate insufficient memory or corrupted parameters.",
-                    e
-                )
-            })?,
-        );
-        let block_verifier = Arc::new(if let Some(vk) = block_prover.prepared_verifying_key() {
-            BlockVerifier::new_with_groth16_vk(&block_prover.verification_key(), vk).map_err(
-                |e| {
-                    anyhow::anyhow!(
-                        "L-25: Failed to create ZK block verifier with prepared VK: {}",
-                        e
-                    )
-                },
-            )?
-        } else {
-            BlockVerifier::new(&block_prover.verification_key())
-                .map_err(|e| anyhow::anyhow!("L-25: Failed to create ZK block verifier: {}", e))?
-        });
-
-        // Initialize payout prover/verifier with Groth16 setup
-        // L-25: Use proper error handling instead of expect()
-        let payout_prover = Arc::new(PayoutProver::default_params_with_setup().map_err(|e| {
-            anyhow::anyhow!(
-                "L-25: Failed to initialize ZK payout prover with Groth16 setup: {}. \
-                     This may indicate insufficient memory or corrupted parameters.",
-                e
-            )
-        })?);
-        let payout_verifier = Arc::new(PayoutVerifier::for_prover(&payout_prover));
 
         // Create broadcast callbacks for ZK handlers
         let mesh_for_zk_block = Arc::clone(&mesh);
@@ -1060,21 +1028,14 @@ async fn main() -> Result<()> {
         let zk_payout_broadcast: ghost_consensus::zk_payout_handler::ZkPayoutBroadcastFn =
             Arc::new(move |msg_type, payload| mesh_for_zk_payout.broadcast_sync(msg_type, payload));
 
-        // Create ZK vote handler for L2 block consensus
+        // Create ZK handlers WITHOUT verifiers initially - they'll be set when params are ready
         let zk_vote_handler = Arc::new(
             ZkVoteHandler::new(Arc::clone(&identity))
-                .with_verifier(ghost_consensus::zk_vote_handler::create_block_verifier(
-                    Arc::clone(&block_verifier),
-                ))
                 .with_broadcaster(zk_block_broadcast),
         );
 
-        // Create ZK payout vote handler
         let zk_payout_handler = Arc::new(
             ZkPayoutVoteHandler::new(Arc::clone(&identity))
-                .with_verifier(ghost_consensus::zk_payout_handler::create_payout_verifier(
-                    Arc::clone(&payout_verifier),
-                ))
                 .with_broadcaster(zk_payout_broadcast)
                 .with_ban_manager(Arc::clone(&ban_manager)),
         );
@@ -1089,17 +1050,76 @@ async fn main() -> Result<()> {
         zk_vote_handler.set_validators(validators.clone());
         zk_payout_handler.set_validators(validators);
 
-        // Register ZK handlers with mesh
+        // Register ZK handlers with mesh (they'll work without verifiers, just can't verify proofs yet)
         mesh.register_handler(Arc::clone(&zk_vote_handler)
             as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
         mesh.register_handler(Arc::clone(&zk_payout_handler)
             as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
 
-        info!(
-            "ZK consensus handlers registered (block_verifier={}, payout_verifier={})",
-            block_verifier.has_groth16_vk(),
-            payout_verifier.has_groth16_vk()
-        );
+        info!("ZK consensus handlers registered (verifiers initializing in background...)");
+
+        // Spawn background task to generate ZK parameters
+        // This is memory-intensive and can take several minutes
+        let zk_vote_handler_for_init = Arc::clone(&zk_vote_handler);
+        let zk_payout_handler_for_init = Arc::clone(&zk_payout_handler);
+        tokio::spawn(async move {
+            use ghost_zkp::{BlockProver, BlockVerifier, PayoutProver, PayoutVerifier};
+
+            info!("ZK parameter generation starting in background...");
+            let start = std::time::Instant::now();
+
+            // Generate block prover/verifier (memory intensive)
+            match BlockProver::new_with_setup_and_state_transitions(100, 20) {
+                Ok(block_prover) => {
+                    let block_prover = Arc::new(block_prover);
+                    match if let Some(vk) = block_prover.prepared_verifying_key() {
+                        BlockVerifier::new_with_groth16_vk(&block_prover.verification_key(), vk)
+                    } else {
+                        BlockVerifier::new(&block_prover.verification_key())
+                    } {
+                        Ok(block_verifier) => {
+                            let block_verifier = Arc::new(block_verifier);
+                            zk_vote_handler_for_init.set_verifier(
+                                ghost_consensus::zk_vote_handler::create_block_verifier(block_verifier),
+                            );
+                            info!(
+                                elapsed_secs = start.elapsed().as_secs(),
+                                "ZK block verifier initialized"
+                            );
+                        }
+                        Err(e) => {
+                            error!(error = %e, "Failed to create ZK block verifier");
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to generate ZK block prover parameters");
+                }
+            }
+
+            // Generate payout prover/verifier
+            match PayoutProver::default_params_with_setup() {
+                Ok(payout_prover) => {
+                    let payout_prover = Arc::new(payout_prover);
+                    let payout_verifier = Arc::new(PayoutVerifier::for_prover(&payout_prover));
+                    zk_payout_handler_for_init.set_verifier(
+                        ghost_consensus::zk_payout_handler::create_payout_verifier(payout_verifier),
+                    );
+                    info!(
+                        elapsed_secs = start.elapsed().as_secs(),
+                        "ZK payout verifier initialized"
+                    );
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to generate ZK payout prover parameters");
+                }
+            }
+
+            info!(
+                total_secs = start.elapsed().as_secs(),
+                "ZK parameter generation complete"
+            );
+        });
     }
 
     // MPC ceremony integration (optional feature)
@@ -1167,6 +1187,50 @@ async fn main() -> Result<()> {
         // Register MPC handler with mesh
         mesh.register_handler(Arc::clone(&mpc_handler)
             as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
+
+        // Wire up the registration approved callback to trigger MPC contributions
+        // When a new elder is approved, they should generate their MPC contribution
+        let ceremony_manager_for_callback = Arc::clone(&ceremony_manager);
+        let mesh_for_mpc_callback = Arc::clone(&mesh);
+        let identity_for_mpc = Arc::clone(&identity);
+        let registration_approved_callback: ghost_consensus::RegistrationApprovedCallback =
+            Arc::new(move |candidate, elder_position| {
+                // Only generate contribution if we are the approved candidate
+                if candidate == identity_for_mpc.node_id() {
+                    info!(
+                        elder_position,
+                        "MPC: We were approved as elder, generating contribution"
+                    );
+                    // Generate MPC contribution (async operation, spawn task)
+                    let cm = Arc::clone(&ceremony_manager_for_callback);
+                    let mesh = Arc::clone(&mesh_for_mpc_callback);
+                    let contributor_id = hex::encode(candidate);
+                    tokio::spawn(async move {
+                        match cm.generate_contribution(&contributor_id) {
+                            Ok((_new_params, contribution)) => {
+                                info!(
+                                    position = elder_position,
+                                    "MPC contribution generated, broadcasting to network"
+                                );
+                                // Serialize and broadcast the contribution
+                                if let Ok(payload) = serde_json::to_vec(&contribution) {
+                                    if let Err(e) = mesh.broadcast_sync(
+                                        ghost_consensus::message::MessageType::MpcContribution,
+                                        payload,
+                                    ) {
+                                        warn!(error = %e, "Failed to broadcast MPC contribution");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!(error = %e, "Failed to generate MPC contribution");
+                            }
+                        }
+                    });
+                }
+            });
+        elder_registration_handler.set_registration_approved_callback(registration_approved_callback);
+        info!("MPC ceremony callback wired to elder registration handler");
 
         info!(
             "MPC ceremony handler initialized (contributions={}, ossified={})",

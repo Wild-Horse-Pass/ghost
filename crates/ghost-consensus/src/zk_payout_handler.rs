@@ -37,7 +37,7 @@ use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use ghost_common::error::GhostResult;
 use ghost_common::identity::NodeIdentity;
@@ -188,8 +188,8 @@ pub struct ZkPayoutVoteHandler {
     broadcast_fn: Option<ZkPayoutBroadcastFn>,
     /// Consensus callback
     consensus_callback: Option<ZkPayoutConsensusCallback>,
-    /// ZK proof verification function
-    verify_fn: Option<ZkPayoutVerifyFn>,
+    /// ZK proof verification function (uses RwLock for deferred initialization)
+    verify_fn: RwLock<Option<ZkPayoutVerifyFn>>,
     /// Configuration
     config: ZkPayoutVoteHandlerConfig,
     /// Rate limiter for incoming messages (P2P-C3)
@@ -215,7 +215,7 @@ impl ZkPayoutVoteHandler {
             pending_proposals: RwLock::new(HashMap::new()),
             broadcast_fn: None,
             consensus_callback: None,
-            verify_fn: None,
+            verify_fn: RwLock::new(None),
             config,
             rate_limiter,
             ban_manager: None,
@@ -275,10 +275,16 @@ impl ZkPayoutVoteHandler {
         self
     }
 
-    /// Set ZK verification function
-    pub fn with_verifier(mut self, f: ZkPayoutVerifyFn) -> Self {
-        self.verify_fn = Some(f);
+    /// Set ZK verification function (builder pattern)
+    pub fn with_verifier(self, f: ZkPayoutVerifyFn) -> Self {
+        *self.verify_fn.write() = Some(f);
         self
+    }
+
+    /// Set ZK verification function (for deferred initialization)
+    pub fn set_verifier(&self, f: ZkPayoutVerifyFn) {
+        *self.verify_fn.write() = Some(f);
+        info!("ZK payout verifier set (deferred initialization complete)");
     }
 
     /// Set validators
@@ -410,7 +416,8 @@ impl ZkPayoutVoteHandler {
     /// Verify the ZK proof and vote
     fn verify_and_vote(&self, epoch: u64, proposal: &ZkPayoutProposalMessage) -> GhostResult<()> {
         // Verify the ZK proof
-        let proof_valid = if let Some(ref verify) = self.verify_fn {
+        let verify_fn = self.verify_fn.read();
+        let proof_valid = if let Some(ref verify) = *verify_fn {
             verify(
                 &proposal.proof,
                 proposal.total_available,
@@ -420,8 +427,8 @@ impl ZkPayoutVoteHandler {
             )
         } else {
             // SECURITY: No verifier configured - REJECT all proofs
-            // Fail-closed is mandatory for mainnet security
-            error!("SECURITY: No ZK payout verifier configured - rejecting proof");
+            // Fail-closed is mandatory for mainnet security (verifier may still be initializing)
+            warn!("ZK payout verifier not yet initialized - rejecting proof (will retry when ready)");
             false
         };
 

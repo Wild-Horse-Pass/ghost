@@ -102,7 +102,9 @@ ratatui = { workspace = true, optional = true }
 crossterm = { version = "0.27", optional = true }
 
 [features]
-default = []
+# Both ZK consensus and MPC ceremony enabled by default
+# ZK parameter generation is deferred to background task to avoid blocking startup
+default = ["zk-consensus", "mpc-ceremony"]
 tui = ["ratatui", "crossterm"]
 # Enable ZK consensus for block/payout proofs
 zk-consensus = ["ghost-consensus/zk-consensus", "ghost-zkp"]

@@ -239,7 +239,8 @@ pub struct ElderRegistrationHandler {
     /// This callback MUST update VoterEligibility when elder list changes.
     transition_callback: RwLock<Option<TransitionCallback>>,
     /// Callback invoked when a registration is approved (for MPC integration)
-    registration_approved_callback: Option<RegistrationApprovedCallback>,
+    /// Uses interior mutability for Arc compatibility (like transition_callback)
+    registration_approved_callback: RwLock<Option<RegistrationApprovedCallback>>,
     /// Shared ban manager
     ban_manager: Option<Arc<BanManager>>,
     /// Rate limiter
@@ -270,7 +271,7 @@ impl ElderRegistrationHandler {
             db,
             broadcast_fn: None,
             transition_callback: RwLock::new(None),
-            registration_approved_callback: None,
+            registration_approved_callback: RwLock::new(None),
             ban_manager: None,
             rate_limiter: RateLimiter::new(RATE_LIMIT_MAX_TOKENS, RATE_LIMIT_REFILL_RATE),
             pending_proposals: RwLock::new(HashMap::new()),
@@ -332,8 +333,9 @@ impl ElderRegistrationHandler {
     }
 
     /// Set the registration approved callback (for MPC integration)
-    pub fn set_registration_approved_callback(&mut self, callback: RegistrationApprovedCallback) {
-        self.registration_approved_callback = Some(callback);
+    /// Uses interior mutability for Arc compatibility
+    pub fn set_registration_approved_callback(&self, callback: RegistrationApprovedCallback) {
+        *self.registration_approved_callback.write() = Some(callback);
     }
 
     /// Check if a node is banned
@@ -526,9 +528,33 @@ impl ElderRegistrationHandler {
             "Stored elder registration request"
         );
 
-        // 8. If we are an elder, cast our vote
+        // 8. Handle voting or genesis auto-promotion
+        let current_epoch = self.current_epoch();
+        let elder_count = self.elder_list_manager.read().current().elder_count();
+
         if self.is_elder(&self.identity.node_id()) {
+            // Normal case: we are an elder, cast our vote
             self.cast_registration_vote(&msg, true, None).await?;
+        } else if current_epoch == 0 && elder_count == 0 {
+            // Genesis bootstrap: auto-approve first elder without BFT voting
+            // This breaks the catch-22 where no elders exist to vote on first registrations
+            info!(
+                candidate = %short_candidate,
+                "Genesis bootstrap: auto-approving first elder registration (epoch 0, 0 elders)"
+            );
+
+            // Calculate the new elder position (will be elder #1)
+            let new_elder_position = 1u32;
+
+            // Notify MPC ceremony of approved registration (if callback set)
+            if let Some(ref callback) = *self.registration_approved_callback.read() {
+                callback(msg.candidate, new_elder_position);
+            }
+
+            // Schedule the list proposal
+            self.approved_registrations
+                .write()
+                .insert(msg.candidate, Instant::now());
         }
 
         Ok(())
@@ -808,7 +834,7 @@ impl ElderRegistrationHandler {
 
             // Notify MPC ceremony of approved registration (if callback set)
             // This allows the new elder to generate their MPC contribution
-            if let Some(ref callback) = self.registration_approved_callback {
+            if let Some(ref callback) = *self.registration_approved_callback.read() {
                 callback(msg.candidate, new_elder_position);
             }
 
