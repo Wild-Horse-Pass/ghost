@@ -485,21 +485,22 @@ impl StratumVerifier {
 
         let connect_latency = start.elapsed();
 
-        // C-1 FIX: Generate a proper Noise NK initiator ephemeral key
-        // Noise NK handshake format: 32-byte ephemeral public key
-        // We generate random bytes for the ephemeral key (real implementation
-        // would use proper X25519 key generation)
-        let mut initiator_ephemeral = [0u8; 32];
-        if getrandom::getrandom(&mut initiator_ephemeral).is_err() {
+        // C-1 FIX: Generate a proper Noise NK initiator message
+        // Noise NK initiator message format: 64 bytes total
+        // - 32 bytes: ephemeral public key (e)
+        // - 32 bytes: encrypted payload (AEAD ciphertext, can be empty for handshake initiation)
+        // SRI Pool expects the full 64-byte message before responding
+        let mut initiator_message = [0u8; 64];
+        if getrandom::getrandom(&mut initiator_message).is_err() {
             return Err(GhostError::Internal(
-                "C-1: Failed to generate ephemeral key for SV2 handshake".to_string(),
+                "C-1: Failed to generate Noise NK initiator message".to_string(),
             ));
         }
 
         let (mut reader, mut writer) = stream.into_split();
 
-        // Send the initiator ephemeral key
-        let write_result = timeout(self.timeout, writer.write_all(&initiator_ephemeral)).await;
+        // Send the complete Noise NK initiator message (64 bytes)
+        let write_result = timeout(self.timeout, writer.write_all(&initiator_message)).await;
 
         if write_result.is_err() {
             // C-1 FIX: Write failure means protocol validation failed

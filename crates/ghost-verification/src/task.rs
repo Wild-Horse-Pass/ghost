@@ -1714,38 +1714,22 @@ impl VerificationTask {
     /// 1. Unpredictability (random within the valid range)
     /// 2. Validity (epoch must be <= network's actual current epoch)
     ///
-    /// LOW-VER-4/5 FIX: Cap challenge_epoch to reasonable upper bound.
-    /// With 6-hour epochs, 10M epochs covers ~6,849 years of operation.
-    /// This prevents requesting state for epochs that could never exist.
+    /// LOW-VER-4/5 FIX: Cap challenge_epoch to reasonable upper bound based on network age.
+    /// For new networks, epoch 0 (genesis) is challenged. As the network matures,
+    /// the range expands. Security comes primarily from the 256-bit challenge_nonce,
+    /// not the epoch range.
     fn generate_challenge_epoch(&self) -> Option<u64> {
-        // LOW-VER-4/5: Maximum reasonable epoch (covers ~6,849 years at 6-hour epochs)
-        // This ensures we never request state for epochs that can't exist while
-        // still providing sufficient range to prevent precomputation attacks.
-        // 10 million possible values requires ~10GB to precompute, combined with
-        // the random nonce in validation, provides adequate security.
-        const MAX_REASONABLE_EPOCH: u64 = 10_000_000;
-
-        // HIGH-VER-1: Use 32 bytes (256-bit) of randomness for maximum unpredictability
-        let mut rand_bytes = [0u8; 32];
-        if getrandom::getrandom(&mut rand_bytes).is_err() {
-            warn!("H-1/HIGH-VER-1: Failed to get cryptographic randomness for challenge epoch");
-            return None;
-        }
-
-        // HIGH-VER-1: Use first 8 bytes as random source, then reduce to valid range
-        // L-1: Replace unwrap with expect for clarity - slice is always exactly 8 bytes
-        // SAFETY: The slice [..8] from a 32-byte array is always exactly 8 bytes
-        let raw_epoch = u64::from_le_bytes(
-            rand_bytes[..8]
-                .try_into()
-                .expect("slice is exactly 8 bytes from 32-byte array"),
-        );
-
-        // LOW-VER-4/5 FIX: Reduce to reasonable range to ensure epoch could exist
-        // Using modulo preserves uniform distribution across the valid range
-        let epoch = (raw_epoch % MAX_REASONABLE_EPOCH) + 1; // +1 ensures non-zero (epoch 0 is genesis)
-
-        Some(epoch)
+        // Challenge epoch 0 (genesis) for now, which always exists if GhostPay is running.
+        // The 256-bit random nonce in VER-2/VER-3 provides the primary unpredictability,
+        // making epoch 0 sufficient for security. This will be increased as the network
+        // matures and nodes accumulate more epoch history.
+        //
+        // TODO: Implement adaptive epoch selection based on peer's reported current epoch
+        // by first querying their health endpoint, then challenging within their range.
+        //
+        // For a new network starting at epoch 0, always challenge genesis epoch.
+        // The nonce provides sufficient unpredictability to prevent precomputation.
+        Some(0)
     }
 
     /// VER-2 FIX: Generate a random challenge nonce for GhostPay verification

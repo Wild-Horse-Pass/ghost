@@ -2234,6 +2234,7 @@ dependencies = [
  "getrandom 0.2.17",
  "ghost-common",
  "ghost-storage",
+ "ghost-zkp",
  "group",
  "hex",
  "pairing",

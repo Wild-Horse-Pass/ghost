@@ -26,6 +26,7 @@ pairing = "0.23"
 # Internal crates
 ghost-common = { path = "../ghost-common" }
 ghost-storage = { path = "../ghost-storage" }
+ghost-zkp = { path = "../ghost-zkp" }
 
 # Cryptography
 sha2 = "0.10"

@@ -551,7 +551,7 @@ impl MessageHandler for MpcHandler {
                 self.handle_params_response(msg, envelope.sender)?;
             }
             _ => {
-                warn!(msg_type = ?envelope.msg_type, "MpcHandler received unexpected message type");
+                // Handlers receive all message types - silently ignore non-MPC messages
             }
         }
         Ok(())

@@ -212,6 +212,34 @@ impl CeremonyManager {
         self.block_params.read().is_some()
     }
 
+    /// Ensure genesis parameters are initialized
+    ///
+    /// If no parameters are loaded, generates and initializes genesis parameters
+    /// using the ZK circuit's dummy circuit. This is called automatically by
+    /// the first elder during the MPC ceremony bootstrap.
+    ///
+    /// Returns Ok(true) if genesis was just initialized, Ok(false) if already initialized.
+    pub fn ensure_genesis_initialized(&self) -> MpcResult<bool> {
+        if self.has_current_params() {
+            return Ok(false);
+        }
+
+        // Generate genesis parameters using dummy circuit
+        use bellperson::groth16::generate_random_parameters;
+        use ghost_zkp::circuit::BlockCircuit;
+        use blstrs::Scalar as Fr;
+        use rand::rngs::OsRng;
+
+        tracing::info!("MPC: Generating genesis parameters with dummy circuit...");
+        let dummy_circuit = BlockCircuit::<Fr>::dummy(10);
+        let genesis_params = generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut OsRng)
+            .map_err(|e| MpcError::Internal(format!("Failed to generate genesis params: {:?}", e)))?;
+
+        self.initialize_genesis(genesis_params)?;
+        tracing::info!("MPC: Genesis parameters initialized successfully");
+        Ok(true)
+    }
+
     /// Get current block parameters for proving
     pub fn block_params(&self) -> Option<Arc<Parameters<Bls12>>> {
         self.block_params.read().clone()

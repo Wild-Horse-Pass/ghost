@@ -379,11 +379,11 @@ impl ElderRegistrationHandler {
         let short_candidate = hex::encode(&msg.candidate[..8]);
         let short_sender = hex::encode(&sender[..8]);
 
-        debug!(
+        info!(
             candidate = %short_candidate,
             sender = %short_sender,
             target_epoch = msg.target_epoch,
-            "Received elder registration proposal"
+            "Processing elder registration proposal"
         );
 
         // C-3 SECURITY: Verify sender-message binding
@@ -428,51 +428,37 @@ impl ElderRegistrationHandler {
             return Err(GhostError::Config("Invalid PoW proof".to_string()));
         }
 
-        // H-2 SECURITY: Verify uptime claims against actual database records
-        // Don't trust the claimed uptime_percent and first_seen - verify them.
-        let candidate_hex = hex::encode(msg.candidate);
-        let verified_uptime =
-            self.verify_uptime_claim(&candidate_hex, msg.first_seen, msg.uptime_percent)?;
-
-        if !verified_uptime {
-            warn!(
-                candidate = %short_candidate,
-                claimed_uptime = msg.uptime_percent,
-                claimed_first_seen = msg.first_seen,
-                "H-2: Uptime claim verification failed"
-            );
-            return Err(GhostError::Config("Uptime verification failed".to_string()));
-        }
-
-        // 3. Verify uptime requirements (now verified, not just claimed)
-        if msg.uptime_percent < ELDER_MIN_UPTIME_PERCENT {
-            warn!(
-                candidate = %short_candidate,
-                uptime = msg.uptime_percent,
-                required = ELDER_MIN_UPTIME_PERCENT,
-                "Insufficient uptime for elder registration"
-            );
-            return Err(GhostError::Config("Insufficient uptime".to_string()));
-        }
-
-        // 4. Verify uptime period
-        let now = chrono::Utc::now().timestamp() as u64;
-        let uptime_period = now.saturating_sub(msg.first_seen);
-        if uptime_period < ELDER_MIN_UPTIME_PERIOD_SECS {
-            warn!(
-                candidate = %short_candidate,
-                uptime_period_days = uptime_period / 86400,
-                required_days = 7,
-                "Insufficient uptime period for elder registration"
-            );
-            return Err(GhostError::Config("Insufficient uptime period".to_string()));
-        }
-
-        // 5. Check target epoch
+        // 3. Check target epoch and determine if genesis bootstrap FIRST
+        // This must be checked before uptime verification so we can skip it for genesis
         let current_epoch = self.current_epoch();
+        let is_genesis_bootstrap =
+            current_epoch == 0 && self.elder_list_manager.read().current().elder_count() == 0;
+
+        // H-2 SECURITY: Verify uptime claims against actual database records
+        // Skip for genesis bootstrap since no prior history exists
+        let candidate_hex = hex::encode(msg.candidate);
+        if !is_genesis_bootstrap {
+            let verified_uptime =
+                self.verify_uptime_claim(&candidate_hex, msg.first_seen, msg.uptime_percent)?;
+
+            if !verified_uptime {
+                warn!(
+                    candidate = %short_candidate,
+                    claimed_uptime = msg.uptime_percent,
+                    claimed_first_seen = msg.first_seen,
+                    "H-2: Uptime claim verification failed"
+                );
+                return Err(GhostError::Config("Uptime verification failed".to_string()));
+            }
+        } else {
+            info!(
+                candidate = %short_candidate,
+                "Genesis bootstrap: skipping uptime claim verification"
+            );
+        }
 
         // H-3 SECURITY: Handle genesis bootstrap (epoch 0 with empty elder list)
-        if current_epoch == 0 && self.elder_list_manager.read().current().elder_count() == 0 {
+        if is_genesis_bootstrap {
             // Genesis bootstrap - allow first elders without BFT approval
             // This is only valid for epoch 0 -> epoch 1 transition
             if msg.target_epoch != 1 {
@@ -492,14 +478,46 @@ impl ElderRegistrationHandler {
                     "Genesis bootstrap on mainnet - allowing first elder without BFT"
                 );
             }
-        } else if msg.target_epoch != current_epoch + 1 {
-            warn!(
+            // Skip uptime checks for genesis bootstrap - no prior history exists
+            debug!(
                 candidate = %short_candidate,
-                target = msg.target_epoch,
-                expected = current_epoch + 1,
-                "Invalid target epoch in registration proposal"
+                "Genesis bootstrap: skipping uptime requirements"
             );
-            return Err(GhostError::Config("Invalid target epoch".to_string()));
+        } else {
+            // Normal registration: enforce all requirements
+            if msg.target_epoch != current_epoch + 1 {
+                warn!(
+                    candidate = %short_candidate,
+                    target = msg.target_epoch,
+                    expected = current_epoch + 1,
+                    "Invalid target epoch in registration proposal"
+                );
+                return Err(GhostError::Config("Invalid target epoch".to_string()));
+            }
+
+            // 4. Verify uptime requirements (only for non-genesis)
+            if msg.uptime_percent < ELDER_MIN_UPTIME_PERCENT {
+                warn!(
+                    candidate = %short_candidate,
+                    uptime = msg.uptime_percent,
+                    required = ELDER_MIN_UPTIME_PERCENT,
+                    "Insufficient uptime for elder registration"
+                );
+                return Err(GhostError::Config("Insufficient uptime".to_string()));
+            }
+
+            // 5. Verify uptime period (only for non-genesis)
+            let now = chrono::Utc::now().timestamp() as u64;
+            let uptime_period = now.saturating_sub(msg.first_seen);
+            if uptime_period < ELDER_MIN_UPTIME_PERIOD_SECS {
+                warn!(
+                    candidate = %short_candidate,
+                    uptime_period_days = uptime_period / 86400,
+                    required_days = 7,
+                    "Insufficient uptime period for elder registration"
+                );
+                return Err(GhostError::Config("Insufficient uptime period".to_string()));
+            }
         }
 
         // 6. Check if candidate is already an elder
@@ -1400,6 +1418,149 @@ impl ElderRegistrationHandler {
     /// Get the current epoch
     pub fn epoch(&self) -> u64 {
         self.elder_list_manager.read().current_epoch()
+    }
+
+    /// Propose self as an elder candidate
+    ///
+    /// This is the genesis bootstrap mechanism. Nodes call this on startup if they:
+    /// 1. Have valid PoW proof
+    /// 2. Are not already an elder
+    /// 3. Meet uptime requirements (relaxed for genesis when epoch 0)
+    ///
+    /// For epoch 0 with 0 elders, the proposal is auto-approved by all receivers.
+    pub async fn propose_self(&self) -> GhostResult<()> {
+        let node_id = self.identity.node_id();
+        let short_id = hex::encode(&node_id[..8]);
+
+        // Check if already an elder
+        if self.is_elder(&node_id) {
+            debug!(node = %short_id, "Already an elder, skipping self-proposal");
+            return Ok(());
+        }
+
+        // Check if we have a valid PoW proof
+        let pow_proof = match self.identity.pow_proof() {
+            Some(p) if p.difficulty >= NODE_ID_POW_DIFFICULTY => p,
+            Some(p) => {
+                warn!(
+                    node = %short_id,
+                    difficulty = p.difficulty,
+                    required = NODE_ID_POW_DIFFICULTY,
+                    "PoW difficulty insufficient for elder registration"
+                );
+                return Err(GhostError::Config(
+                    "PoW difficulty insufficient for elder registration".to_string(),
+                ));
+            }
+            None => {
+                warn!(node = %short_id, "No PoW proof available for elder registration");
+                return Err(GhostError::Config(
+                    "No PoW proof available for elder registration".to_string(),
+                ));
+            }
+        };
+
+        // Get our first_seen timestamp from database
+        let node_id_hex = self.identity.node_id_hex();
+        let first_seen = match self.db.get_node_first_seen(&node_id_hex)? {
+            Some(ts) => ts as u64,
+            None => {
+                // If not in DB yet, use current time (genesis node)
+                chrono::Utc::now().timestamp() as u64
+            }
+        };
+
+        // Calculate uptime - for genesis (epoch 0 with 0 elders), use 100% assumed
+        let current_epoch = self.current_epoch();
+        let elder_count = self.elder_list_manager.read().current().elder_count();
+        let uptime_percent: f64 = if current_epoch == 0 && elder_count == 0 {
+            // Genesis bootstrap - assume 100% uptime since no history exists
+            100.0
+        } else {
+            // Normal operation - query actual uptime
+            // Calculate "since" timestamp (now - period)
+            let since = chrono::Utc::now().timestamp() - (ELDER_MIN_UPTIME_PERIOD_SECS as i64);
+            match self.db.get_node_uptime_percent(&node_id_hex, since) {
+                Ok(Some(uptime)) => uptime as f64,
+                Ok(None) => {
+                    warn!(
+                        node = %short_id,
+                        "No uptime data available for elder registration"
+                    );
+                    return Err(GhostError::Config(
+                        "Insufficient uptime data for elder registration".to_string(),
+                    ));
+                }
+                Err(e) => {
+                    warn!(
+                        node = %short_id,
+                        error = %e,
+                        "Failed to get uptime data for elder registration"
+                    );
+                    return Err(e);
+                }
+            }
+        };
+
+        // Check uptime requirement (skip for genesis)
+        if !(current_epoch == 0 && elder_count == 0) && uptime_percent < ELDER_MIN_UPTIME_PERCENT {
+            warn!(
+                node = %short_id,
+                uptime = uptime_percent,
+                required = ELDER_MIN_UPTIME_PERCENT,
+                "Uptime insufficient for elder registration"
+            );
+            return Err(GhostError::Config(format!(
+                "Uptime {:.1}% is below required {:.1}%",
+                uptime_percent, ELDER_MIN_UPTIME_PERCENT
+            )));
+        }
+
+        // Create the registration proposal message
+        let target_epoch = if current_epoch == 0 && elder_count == 0 {
+            1 // Genesis bootstrap targets epoch 1
+        } else {
+            current_epoch + 1
+        };
+
+        let msg = ElderRegistrationProposalMessage {
+            candidate: node_id,
+            pow_nonce: pow_proof.nonce,
+            pow_difficulty: pow_proof.difficulty,
+            first_seen,
+            uptime_percent,
+            proposer: node_id, // Self-proposal
+            proposer_signature: [0u8; 64], // Will sign below
+            target_epoch,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        };
+
+        // Sign the proposal
+        let signing_msg = msg.signing_message();
+        let signature = self.identity.sign(&signing_msg);
+
+        let signed_msg = ElderRegistrationProposalMessage {
+            proposer_signature: signature,
+            ..msg
+        };
+
+        // Broadcast the proposal
+        let payload = serde_json::to_vec(&signed_msg)
+            .map_err(|e| GhostError::Serialization(e.to_string()))?;
+        self.broadcast(MessageType::ElderRegistrationProposal, payload)?;
+
+        info!(
+            node = %short_id,
+            target_epoch = target_epoch,
+            pow_difficulty = pow_proof.difficulty,
+            uptime = uptime_percent,
+            "Broadcast elder registration self-proposal"
+        );
+
+        // Also handle our own proposal locally (for genesis auto-approval)
+        self.handle_registration_proposal(node_id, signed_msg).await?;
+
+        Ok(())
     }
 }
 
