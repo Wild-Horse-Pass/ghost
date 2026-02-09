@@ -19,7 +19,7 @@
 
 [![Build Status](https://github.com/bitcoin-ghost/ghost/actions/workflows/ci.yml/badge.svg)](https://github.com/bitcoin-ghost/ghost/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.7.0-green.svg)](Cargo.toml)
+[![Version](https://img.shields.io/badge/version-1.7.1-green.svg)](Cargo.toml)
 
 [Website](https://bitcoinghost.org) • [Documentation](docs/) • [Whitepaper](https://bitcoinghost.org/whitepaper)
 
