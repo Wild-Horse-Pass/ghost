@@ -505,6 +505,46 @@ fn validate_peer_address(address: &str) -> bool {
     true
 }
 
+/// Default discovery port for P2P mesh
+const DEFAULT_DISCOVERY_PORT: u16 = 8559;
+
+/// Normalize a peer address by adding the default discovery port if missing
+///
+/// This handles configs that specify just an IP without a port (e.g., "83.136.251.162")
+/// and normalizes them to include the discovery port (e.g., "83.136.251.162:8559").
+fn normalize_peer_address(address: &str) -> String {
+    if address.is_empty() {
+        return address.to_string();
+    }
+
+    // Strip protocol prefix if present
+    let address_without_protocol = if let Some(pos) = address.find("://") {
+        &address[pos + 3..]
+    } else {
+        address
+    };
+
+    // Check if address already has a port
+    // For IPv6 like [::1]:8555, check after the closing bracket
+    // For IPv4 like 1.2.3.4:8555, check for colon
+    let has_port = if address_without_protocol.starts_with('[') {
+        // IPv6 in bracket notation
+        address_without_protocol.contains("]:")
+    } else {
+        // IPv4 or hostname - count colons
+        // If exactly one colon, it's host:port
+        // If zero colons, no port
+        // If more than one, it's IPv6 without port
+        address_without_protocol.matches(':').count() == 1
+    };
+
+    if has_port {
+        address.to_string()
+    } else {
+        format!("{}:{}", address, DEFAULT_DISCOVERY_PORT)
+    }
+}
+
 /// Callback for connecting to newly discovered peers
 pub type ConnectCallback = Arc<dyn Fn(String) + Send + Sync>;
 
@@ -749,10 +789,29 @@ impl DiscoveryHandler {
             return Ok(()); // Reject spoofed messages
         }
 
+        // Pre-compute our normalized address for comparisons
+        let our_normalized = normalize_peer_address(&self.public_address);
+
         // Add the sender as a known peer
         // SEC-P2P-3/H-P2P-4: Validate address before accepting
         if !discovery_msg.public_address.is_empty() {
-            if !validate_peer_address(&discovery_msg.public_address) {
+            // Silently ignore our own address being advertised back to us
+            // This is normal behavior in gossip protocols
+            if discovery_msg.public_address == self.public_address
+                || envelope.sender == self.node_id
+            {
+                return Ok(());
+            }
+
+            // Normalize address: add default discovery port (8559) if missing
+            let normalized_address = normalize_peer_address(&discovery_msg.public_address);
+
+            // Also check normalized form against our own address
+            if normalized_address == our_normalized {
+                return Ok(());
+            }
+
+            if !validate_peer_address(&normalized_address) {
                 warn!(
                     sender = %sender_id_hex,
                     address = %discovery_msg.public_address,
@@ -774,12 +833,12 @@ impl DiscoveryHandler {
 
                     // CRIT-CONS-5: Atomic check-and-set for address ownership
                     // Check if address is already owned BEFORE any modifications
-                    match owners.get(&discovery_msg.public_address) {
+                    match owners.get(&normalized_address) {
                         Some(&existing_owner) if existing_owner != envelope.sender => {
                             // CRIT-CONS-5: Address already claimed by a DIFFERENT node - REJECT
                             warn!(
                                 sender = %sender_id_hex,
-                                address = %discovery_msg.public_address,
+                                address = %normalized_address,
                                 existing_owner = %hex::encode(&existing_owner[..8]),
                                 "CRIT-CONS-5: Rejecting address hijacking attempt - address already owned"
                             );
@@ -794,8 +853,8 @@ impl DiscoveryHandler {
                             // CRIT-CONS-5: Address is free - claim it atomically
                             // BOTH inserts happen while holding BOTH locks
                             let is_new = !addresses.contains_key(&envelope.sender);
-                            addresses.insert(envelope.sender, discovery_msg.public_address.clone());
-                            owners.insert(discovery_msg.public_address.clone(), envelope.sender);
+                            addresses.insert(envelope.sender, normalized_address.clone());
+                            owners.insert(normalized_address.clone(), envelope.sender);
                             (is_new, is_new)
                         }
                     }
@@ -805,7 +864,7 @@ impl DiscoveryHandler {
                 if is_new {
                     info!(
                         node_id = %sender_id_hex,
-                        address = %discovery_msg.public_address,
+                        address = %normalized_address,
                         "Discovered new peer from gossip"
                     );
                 }
@@ -813,7 +872,7 @@ impl DiscoveryHandler {
                 // Connect callback outside the lock to avoid holding locks during I/O
                 if should_connect {
                     if let Some(ref callback) = self.connect_callback {
-                        callback(discovery_msg.public_address.clone());
+                        callback(normalized_address.clone());
                     }
                 }
             }
@@ -837,11 +896,19 @@ impl DiscoveryHandler {
                 continue;
             }
 
+            // Normalize address: add default discovery port if missing
+            let peer_normalized = normalize_peer_address(&peer_info.public_address);
+
+            // Silently skip our own address in peer lists
+            if peer_normalized == our_normalized {
+                continue;
+            }
+
             // SEC-P2P-4/H-P2P-4: Validate addresses from peer list
-            if !validate_peer_address(&peer_info.public_address) {
+            if !validate_peer_address(&peer_normalized) {
                 warn!(
                     sender = %sender_id_hex,
-                    peer_address = %peer_info.public_address,
+                    peer_address = %peer_normalized,
                     "Rejecting invalid address from peer list"
                 );
                 continue;
@@ -850,11 +917,11 @@ impl DiscoveryHandler {
             // H-P2P-4: Check for address hijacking
             {
                 let owners = self.address_owners.read();
-                if let Some(&existing_owner) = owners.get(&peer_info.public_address) {
+                if let Some(&existing_owner) = owners.get(&peer_normalized) {
                     if existing_owner != peer_info.node_id {
                         warn!(
                             sender = %sender_id_hex,
-                            peer_address = %peer_info.public_address,
+                            peer_address = %peer_normalized,
                             claimed_by = %hex::encode(&peer_info.node_id[..8]),
                             owned_by = %hex::encode(&existing_owner[..8]),
                             "H-P2P-4: Rejecting gossiped address already claimed by different node"
@@ -868,14 +935,14 @@ impl DiscoveryHandler {
             {
                 let mut addresses = self.known_addresses.write();
                 let mut owners = self.address_owners.write();
-                addresses.insert(peer_info.node_id, peer_info.public_address.clone());
-                owners.insert(peer_info.public_address.clone(), peer_info.node_id);
+                addresses.insert(peer_info.node_id, peer_normalized.clone());
+                owners.insert(peer_normalized.clone(), peer_info.node_id);
             }
             new_peers += 1;
 
             // Try to connect
             if let Some(ref callback) = self.connect_callback {
-                callback(peer_info.public_address);
+                callback(peer_normalized);
             }
         }
 
