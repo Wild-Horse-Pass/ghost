@@ -135,10 +135,9 @@ impl<F: PrimeField> Circuit<F> for BlockCircuit<F> {
             self.new_state_root.ok_or(SynthesisError::AssignmentMissing)
         })?;
 
-        // Allocate tx_count as a witness (not public input - verifier knows block contents)
-        let _tx_count = AllocatedNum::alloc(cs.namespace(|| "tx_count"), || {
-            Ok(F::from(self.tx_count as u64))
-        })?;
+        // Note: tx_count is metadata used in the circuit logic (is_real_tx check)
+        // but does not need to be allocated as a witness variable since
+        // it's determined by the circuit structure itself
 
         // 2.3 HIGH: Only full ZK mode - state transitions are cryptographically verified
         self.synthesize_with_state_transitions(cs, &prev_root, &new_root)?;

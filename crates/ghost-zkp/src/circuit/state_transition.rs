@@ -295,10 +295,22 @@ fn hash_leaf<F: PrimeField, CS: ConstraintSystem<F>>(
     mut cs: CS,
     balance: &AllocatedNum<F>,
 ) -> Result<AllocatedNum<F>, SynthesisError> {
-    // Allocate the domain separator as a constant
+    // Domain separator constant value
+    let domain_sep_value = F::from(0x4c454146u64);
+
+    // Allocate the domain separator
     let domain_sep = AllocatedNum::alloc(cs.namespace(|| "leaf_domain_sep"), || {
-        Ok(F::from(0x4c454146u64))
+        Ok(domain_sep_value)
     })?;
+
+    // Constrain domain_sep to equal the constant value
+    // This is required for Groth16 parameter generation to succeed
+    cs.enforce(
+        || "domain_sep_equals_constant",
+        |lc| lc + domain_sep.get_variable(),
+        |lc| lc + CS::one(),
+        |lc| lc + (domain_sep_value, CS::one()),
+    );
 
     // Hash balance with domain separator
     mimc_hash(cs.namespace(|| "hash_leaf"), balance, &domain_sep)
