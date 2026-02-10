@@ -5623,6 +5623,117 @@ impl Database {
     }
 }
 
+// =============================================================================
+// L2 STATE QUERIES (GhostPay Verification)
+// =============================================================================
+
+/// L2 state summary for verification
+#[derive(Debug, Clone)]
+pub struct L2StateInfo {
+    /// Current L2 block height
+    pub height: u64,
+    /// Current epoch (height / 2160)
+    pub epoch: u64,
+    /// State root hash at current height (hex)
+    pub state_root: String,
+    /// Timestamp of latest block
+    pub timestamp: i64,
+}
+
+impl Database {
+    /// Get the latest L2 state from block_proposers table
+    ///
+    /// Returns the most recent block proposer record which contains:
+    /// - L2 block height
+    /// - State root hash
+    /// - Timestamp
+    ///
+    /// Used by GhostPay verification to prove L2 capability.
+    pub fn get_latest_l2_state(&self) -> GhostResult<Option<L2StateInfo>> {
+        self.with_connection(|conn| {
+            let result = conn.query_row(
+                "SELECT height, state_root, timestamp FROM block_proposers
+                 ORDER BY height DESC LIMIT 1",
+                [],
+                |row| {
+                    let h: i64 = row.get(0)?;
+                    let state_root: String = row.get(1)?;
+                    let timestamp: i64 = row.get(2)?;
+                    Ok((h, state_root, timestamp))
+                },
+            );
+
+            match result {
+                Ok((h, state_root, timestamp)) => {
+                    // Validate height is non-negative
+                    if h < 0 {
+                        return Err(GhostError::Database(format!(
+                            "Invalid negative L2 height: {}",
+                            h
+                        )));
+                    }
+                    let height = h as u64;
+                    // Epoch = height / 2160 (L2 blocks per epoch)
+                    let epoch = height / 2160;
+                    Ok(Some(L2StateInfo {
+                        height,
+                        epoch,
+                        state_root,
+                        timestamp,
+                    }))
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(GhostError::Database(e.to_string())),
+            }
+        })
+    }
+
+    /// Get L2 state at a specific epoch
+    ///
+    /// Returns the block proposer record at the last block of the specified epoch.
+    /// Epoch N ends at block height ((N + 1) * 2160 - 1).
+    pub fn get_l2_state_at_epoch(&self, epoch: u64) -> GhostResult<Option<L2StateInfo>> {
+        // Find the highest block in this epoch
+        // Epoch N contains blocks [N * 2160, (N+1) * 2160 - 1]
+        let epoch_start = epoch.saturating_mul(2160);
+        let epoch_end = epoch.saturating_add(1).saturating_mul(2160).saturating_sub(1);
+
+        self.with_connection(|conn| {
+            let result = conn.query_row(
+                "SELECT height, state_root, timestamp FROM block_proposers
+                 WHERE height >= ?1 AND height <= ?2
+                 ORDER BY height DESC LIMIT 1",
+                params![epoch_start as i64, epoch_end as i64],
+                |row| {
+                    let h: i64 = row.get(0)?;
+                    let state_root: String = row.get(1)?;
+                    let timestamp: i64 = row.get(2)?;
+                    Ok((h, state_root, timestamp))
+                },
+            );
+
+            match result {
+                Ok((h, state_root, timestamp)) => {
+                    if h < 0 {
+                        return Err(GhostError::Database(format!(
+                            "Invalid negative L2 height: {}",
+                            h
+                        )));
+                    }
+                    Ok(Some(L2StateInfo {
+                        height: h as u64,
+                        epoch,
+                        state_root,
+                        timestamp,
+                    }))
+                }
+                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                Err(e) => Err(GhostError::Database(e.to_string())),
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

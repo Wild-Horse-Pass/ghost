@@ -57,9 +57,8 @@ use ghost_consensus::voting::VotingManager;
 use ghost_policy::PolicyProfile;
 use ghost_storage::Database;
 use ghost_verification::{
-    start_server, BlockFoundNotification, GhostPayL2Handler, PeerProvider,
-    QualifiedCapabilityProvider, RpcArchiveHandler, VerifiablePeer, VerificationState,
-    VerificationTask,
+    start_server, BlockFoundNotification, PeerProvider, QualifiedCapabilityProvider,
+    RpcArchiveHandler, VerifiablePeer, VerificationState, VerificationTask,
 };
 
 use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler, SoloBlockFoundData};
@@ -1343,59 +1342,9 @@ async fn main() -> Result<()> {
         verification_state = verification_state.with_archive_handler(archive_handler);
     }
 
-    // Configure GhostPay handler if ghost_pay enabled
-    if let Some(ref gp_config) = config.ghost_pay {
-        if gp_config.enabled {
-            // Calculate virtual blocks from time since startup
-            let startup_time = std::time::Instant::now();
-            let virtual_block_secs = gp_config.virtual_block_secs;
-            let epoch_blocks = gp_config.epoch_blocks;
-            let wraith_enabled = gp_config.wraith_enabled;
-
-            let ghostpay_handler = GhostPayL2Handler::new(
-                true, // enabled
-                move || {
-                    // Virtual block = elapsed seconds / virtual_block_secs
-                    startup_time.elapsed().as_secs() / virtual_block_secs.max(1)
-                },
-                move || {
-                    // Epoch = virtual_block / epoch_blocks
-                    let virtual_block =
-                        startup_time.elapsed().as_secs() / virtual_block_secs.max(1);
-                    virtual_block / epoch_blocks.max(1)
-                },
-                |_address| {
-                    // No real L2 balances tracked - return 0
-                    // In a full implementation, this would query the L2 state
-                    Ok(0u64)
-                },
-                wraith_enabled,
-            )
-            .with_epoch_proof(move |epoch| {
-                // H-5: Provide epoch proof for verification challenges
-                // Generate deterministic state hash based on epoch number
-                // This allows verification while full L2 state tracking is developed.
-                // The state_hash is SHA256(epoch || "ghost_l2_state") for determinism.
-                use sha2::{Digest, Sha256};
-                let mut hasher = Sha256::new();
-                hasher.update(epoch.to_le_bytes());
-                hasher.update(b"ghost_l2_state");
-                let hash_bytes = hasher.finalize();
-                let state_hash = hex::encode(hash_bytes);
-
-                Some(ghost_verification::EpochProof {
-                    epoch,
-                    state_hash,
-                    tx_count: epoch * 10 + 1, // Synthetic tx count: 1, 11, 21, 31...
-                })
-            });
-            verification_state = verification_state.with_ghostpay_handler(ghostpay_handler);
-            info!(
-                "GhostPay handler configured (virtual_block_secs={}, epoch_blocks={})",
-                virtual_block_secs, epoch_blocks
-            );
-        }
-    }
+    // Note: GhostPay verification is now handled directly by ghost-pay on port 8800.
+    // The verification client routes GhostPay challenges to ghost-pay instead of ghost-pool,
+    // so no stub handler is needed here. Ghost-pay queries its own L2 database for real state.
 
     // Pass database and RPC to verification state for API endpoints
     verification_state = verification_state.with_database((*db).clone());

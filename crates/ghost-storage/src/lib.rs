@@ -45,5 +45,6 @@ pub use audit_log::*;
 pub use database::*;
 pub use encryption::*;
 pub use models::*;
+pub use queries::L2StateInfo;
 pub use snapshot::*;
 // Note: queries module adds methods to Database via impl blocks

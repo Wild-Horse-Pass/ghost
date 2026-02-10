@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use axum::{
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
     routing::{get, post},
     Json, Router,
@@ -1039,6 +1039,8 @@ async fn main() -> Result<()> {
         // Status endpoints
         .route("/api/v1/status", get(get_status))
         .route("/health", get(health_check))
+        // GhostPay verification endpoint for node capability challenges
+        .route("/verify/ghostpay", get(verify_ghostpay))
         .with_state(state.clone());
 
     // L-14 SECURITY: Read CORS origins from environment variable with secure defaults.
@@ -1886,6 +1888,238 @@ async fn health_check(State(state): State<Arc<AppState>>) -> impl axum::response
     }
 
     (StatusCode::OK, "OK".to_string())
+}
+
+// ============================================================================
+// GhostPay Verification Endpoint
+// ============================================================================
+
+/// Query parameters for GhostPay verification
+#[derive(Debug, Deserialize)]
+struct GhostPayVerifyQuery {
+    /// Epoch to challenge (if not provided, uses current)
+    challenge_epoch: Option<u64>,
+    /// Random nonce for binding proof (256-bit hex string)
+    challenge_nonce: Option<String>,
+    /// Skip signature (for verification client) - not used since ghost-pay doesn't sign
+    #[serde(default)]
+    #[allow(dead_code)]
+    unsigned: Option<bool>,
+}
+
+/// L2 block state from ghost-pay's blocks table
+struct L2BlockState {
+    height: u64,
+    epoch_id: u64,
+    state_root: String,
+}
+
+/// L2 blocks database path
+/// The L2 blocks are stored in a separate database with a simpler schema.
+/// This is the standard XDG data directory for ghost-pay.
+const L2_BLOCKS_DB_PATH: &str = "/home/ghost/.local/share/ghost-pay/ghost-pay.db";
+
+/// Get latest L2 block from ghost-pay's blocks table
+/// Opens a direct connection to the L2 blocks database (separate from ghost-storage).
+fn get_latest_l2_block() -> Result<Option<L2BlockState>, String> {
+    let conn = match rusqlite::Connection::open_with_flags(
+        L2_BLOCKS_DB_PATH,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(c) => c,
+        Err(e) => return Err(format!("Failed to open L2 blocks database: {}", e)),
+    };
+
+    let result = conn.query_row(
+        "SELECT height, epoch_id, state_root FROM blocks ORDER BY height DESC LIMIT 1",
+        [],
+        |row| {
+            let height: i64 = row.get(0)?;
+            let epoch_id: i64 = row.get(1)?;
+            let state_root: String = row.get(2)?;
+            Ok((height, epoch_id, state_root))
+        },
+    );
+
+    match result {
+        Ok((height, epoch_id, state_root)) => {
+            if height < 0 || epoch_id < 0 {
+                return Err("Invalid negative height or epoch".to_string());
+            }
+            Ok(Some(L2BlockState {
+                height: height as u64,
+                epoch_id: epoch_id as u64,
+                state_root,
+            }))
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Database query error: {}", e)),
+    }
+}
+
+/// Get L2 block state at a specific epoch from ghost-pay's blocks table
+fn get_l2_block_at_epoch(epoch: u64) -> Result<Option<L2BlockState>, String> {
+    let conn = match rusqlite::Connection::open_with_flags(
+        L2_BLOCKS_DB_PATH,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(c) => c,
+        Err(e) => return Err(format!("Failed to open L2 blocks database: {}", e)),
+    };
+
+    let result = conn.query_row(
+        "SELECT height, epoch_id, state_root FROM blocks WHERE epoch_id = ?1 ORDER BY height DESC LIMIT 1",
+        [epoch as i64],
+        |row| {
+            let height: i64 = row.get(0)?;
+            let epoch_id: i64 = row.get(1)?;
+            let state_root: String = row.get(2)?;
+            Ok((height, epoch_id, state_root))
+        },
+    );
+
+    match result {
+        Ok((height, epoch_id, state_root)) => {
+            if height < 0 || epoch_id < 0 {
+                return Err("Invalid negative height or epoch".to_string());
+            }
+            Ok(Some(L2BlockState {
+                height: height as u64,
+                epoch_id: epoch_id as u64,
+                state_root,
+            }))
+        }
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(format!("Database query error: {}", e)),
+    }
+}
+
+/// GhostPay verification response
+///
+/// Returns real L2 state from the database for verification challenges.
+/// This endpoint is used by the verification system to prove GhostPay capability.
+async fn verify_ghostpay(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<GhostPayVerifyQuery>,
+) -> impl axum::response::IntoResponse {
+    // Get latest L2 state from ghost-pay's blocks table (separate L2 database)
+    let current_state = match get_latest_l2_block() {
+        Ok(Some(info)) => info,
+        Ok(None) => {
+            // No L2 blocks yet - return failure response
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": {
+                        "success": false,
+                        "l2_enabled": false,
+                        "virtual_block": null,
+                        "epoch": null,
+                        "balance_sats": null,
+                        "wraith_enabled": false,
+                        "epoch_state_hash": null,
+                        "epoch_tx_count": null,
+                        "nonce_bound_proof": null,
+                        "epoch_proof": null,
+                        "error": "No L2 blocks in database"
+                    }
+                })),
+            );
+        }
+        Err(e) => {
+            error!("Failed to get L2 state: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "signed": false,
+                    "response": {
+                        "success": false,
+                        "l2_enabled": false,
+                        "error": format!("Database error: {}", e)
+                    }
+                })),
+            );
+        }
+    };
+
+    // Determine which epoch to prove
+    let challenge_epoch = query.challenge_epoch.unwrap_or(current_state.epoch_id);
+
+    // Get state for challenged epoch (may be different from current)
+    let epoch_state = if challenge_epoch == current_state.epoch_id {
+        current_state.state_root.clone()
+    } else {
+        match get_l2_block_at_epoch(challenge_epoch) {
+            Ok(Some(info)) => info.state_root,
+            Ok(None) => {
+                // Requested epoch doesn't exist
+                return (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "signed": false,
+                        "response": {
+                            "success": false,
+                            "l2_enabled": true,
+                            "virtual_block": current_state.height,
+                            "epoch": current_state.epoch_id,
+                            "error": format!("Epoch {} not found (current epoch: {})", challenge_epoch, current_state.epoch_id)
+                        }
+                    })),
+                );
+            }
+            Err(e) => {
+                error!("Failed to get epoch state: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "signed": false,
+                        "response": {
+                            "success": false,
+                            "l2_enabled": true,
+                            "error": format!("Database error: {}", e)
+                        }
+                    })),
+                );
+            }
+        }
+    };
+
+    // Compute nonce-bound proof if nonce provided
+    // nonce_bound_proof = SHA256(epoch_state_hash || challenge_nonce)
+    let nonce_bound_proof = if let Some(ref nonce) = query.challenge_nonce {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(epoch_state.as_bytes());
+        hasher.update(nonce.as_bytes());
+        Some(hex::encode(hasher.finalize()))
+    } else {
+        None
+    };
+
+    // Check if Wraith protocol is enabled (has active sessions)
+    let wraith_enabled = !state.sessions.read().is_empty();
+
+    // Return success response with real L2 state
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "signed": false,
+            "response": {
+                "success": true,
+                "l2_enabled": true,
+                "virtual_block": current_state.height,
+                "epoch": current_state.epoch_id,
+                "balance_sats": null,
+                "wraith_enabled": wraith_enabled,
+                "epoch_state_hash": epoch_state,
+                "epoch_tx_count": null,
+                "nonce_bound_proof": nonce_bound_proof,
+                "epoch_proof": null,
+                "error": null
+            }
+        })),
+    )
 }
 
 // ============================================================================

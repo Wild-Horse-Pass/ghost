@@ -280,6 +280,33 @@ impl SignedVerificationBroadcast {
     }
 }
 
+/// Transform a host:port address to use GhostPay port (8800)
+///
+/// GhostPay runs on port 8800, separate from ghost-pool on port 8080.
+/// This function transforms "host:8080" to "host:8800" for GhostPay verification.
+fn transform_to_ghostpay_port(address: &str) -> String {
+    // Handle IPv6 addresses: [::1]:8080 -> [::1]:8800
+    if address.starts_with('[') {
+        if let Some(bracket_pos) = address.rfind(']') {
+            if address[bracket_pos..].contains(':') {
+                let host = &address[..bracket_pos + 1];
+                return format!("{}:8800", host);
+            }
+        }
+        // No port found, append 8800
+        return format!("{}:8800", address);
+    }
+
+    // Handle IPv4 addresses: 192.168.1.1:8080 -> 192.168.1.1:8800
+    if let Some(colon_pos) = address.rfind(':') {
+        let host = &address[..colon_pos];
+        return format!("{}:8800", host);
+    }
+
+    // No port found, append 8800
+    format!("{}:8800", address)
+}
+
 /// Channel for broadcasting verification results
 pub type VerificationBroadcastSender = mpsc::Sender<VerificationBroadcast>;
 pub type VerificationBroadcastReceiver = mpsc::Receiver<VerificationBroadcast>;
@@ -1622,11 +1649,15 @@ impl VerificationTask {
         })
         .to_string();
 
+        // GhostPay runs on port 8800, not 8080 (ghost-pool)
+        // Transform the http_address from host:8080 to host:8800
+        let ghostpay_address = transform_to_ghostpay_port(&peer.http_address);
+
         // H-1/VER-2 FIX: Pass both challenge_epoch and challenge_nonce
         let result = self
             .client
             .verify_ghostpay_with_nonce(
-                &peer.http_address,
+                &ghostpay_address,
                 Some(challenge_epoch),
                 Some(&challenge_nonce),
             )

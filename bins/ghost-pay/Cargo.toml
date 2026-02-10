@@ -81,3 +81,6 @@ scrypt = "0.11"
 getrandom = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
+
+# Database (for direct queries on ghost-pay's blocks table)
+rusqlite = { workspace = true }

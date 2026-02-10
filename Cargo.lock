@@ -2291,6 +2291,7 @@ dependencies = [
  "hmac",
  "http",
  "parking_lot",
+ "rusqlite",
  "scrypt",
  "serde",
  "serde_json",
