@@ -325,21 +325,6 @@ fn i64_to_u64(value: i64, field_name: &str) -> Result<u64, rusqlite::Error> {
     Ok(value as u64)
 }
 
-/// LOW-STOR-1: Safely convert u64 to i64 for SQLite storage, rejecting values > i64::MAX
-///
-/// SQLite stores all integers as signed i64. This validates that u64 values
-/// (epochs, timestamps, heights) can safely fit in i64 before INSERT.
-fn u64_to_i64(value: u64, field_name: &str) -> Result<i64, GhostError> {
-    i64::try_from(value).map_err(|_| {
-        GhostError::InvalidInput(format!(
-            "{} value {} exceeds i64::MAX ({}), cannot store in SQLite",
-            field_name,
-            value,
-            i64::MAX
-        ))
-    })
-}
-
 // =============================================================================
 // SHARE QUERIES
 // =============================================================================
@@ -4298,595 +4283,6 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))
         })
     }
-
-    // ==========================================================================
-    // P2P-C1/C2/C3: CANONICAL ELDER LIST QUERIES
-    // ==========================================================================
-
-    /// Store a canonical elder list for an epoch
-    ///
-    /// LOW-STOR-1: Validates epoch and activated_at fit in i64 before INSERT
-    pub fn store_canonical_elder_list(
-        &self,
-        epoch: u64,
-        merkle_root: &str,
-        elder_count: u32,
-        activated_at: u64,
-    ) -> GhostResult<()> {
-        // LOW-STOR-1: Validate u64->i64 conversion before INSERT
-        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
-        let activated_at_i64 = u64_to_i64(activated_at, "activated_at")?;
-
-        self.with_connection(|conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO canonical_elder_lists (epoch, merkle_root, elder_count, activated_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![epoch_i64, merkle_root, elder_count, activated_at_i64],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(())
-        })
-    }
-
-    /// Get a canonical elder list by epoch
-    ///
-    /// LOW-STOR-1: Validates epoch fits in i64 before query
-    pub fn get_canonical_elder_list(
-        &self,
-        epoch: u64,
-    ) -> GhostResult<Option<CanonicalElderListRecord>> {
-        // LOW-STOR-1: Validate u64->i64 conversion before query
-        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
-
-        self.with_connection(|conn| {
-            let result = conn.query_row(
-                "SELECT epoch, merkle_root, elder_count, activated_at, created_at
-                     FROM canonical_elder_lists WHERE epoch = ?1",
-                [epoch_i64],
-                |row| {
-                    // M-10 FIX: Use safe conversions
-                    Ok(CanonicalElderListRecord {
-                        epoch: i64_to_u64(row.get::<_, i64>(0)?, "epoch")?,
-                        merkle_root: row.get(1)?,
-                        elder_count: i64_to_u32_count(row.get::<_, i64>(2)?, "elder_count")?,
-                        activated_at: i64_to_u64(row.get::<_, i64>(3)?, "activated_at")?,
-                        created_at: i64_to_u64(row.get::<_, i64>(4)?, "created_at")?,
-                    })
-                },
-            );
-
-            match result {
-                Ok(record) => Ok(Some(record)),
-                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                Err(e) => Err(GhostError::Database(e.to_string())),
-            }
-        })
-    }
-
-    /// Get the current (latest) canonical elder list
-    pub fn get_current_canonical_elder_list(
-        &self,
-    ) -> GhostResult<Option<CanonicalElderListRecord>> {
-        self.with_connection(|conn| {
-            let result = conn.query_row(
-                "SELECT epoch, merkle_root, elder_count, activated_at, created_at
-                     FROM canonical_elder_lists ORDER BY epoch DESC LIMIT 1",
-                [],
-                |row| {
-                    // M-10 FIX: Use safe conversions
-                    Ok(CanonicalElderListRecord {
-                        epoch: i64_to_u64(row.get::<_, i64>(0)?, "epoch")?,
-                        merkle_root: row.get(1)?,
-                        elder_count: i64_to_u32_count(row.get::<_, i64>(2)?, "elder_count")?,
-                        activated_at: i64_to_u64(row.get::<_, i64>(3)?, "activated_at")?,
-                        created_at: i64_to_u64(row.get::<_, i64>(4)?, "created_at")?,
-                    })
-                },
-            );
-
-            match result {
-                Ok(record) => Ok(Some(record)),
-                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                Err(e) => Err(GhostError::Database(e.to_string())),
-            }
-        })
-    }
-
-    /// Store an elder entry for an epoch
-    ///
-    /// LOW-STOR-1: Validates epoch, registered_epoch, pow_nonce, and first_seen fit in i64
-    #[allow(clippy::too_many_arguments)]
-    pub fn store_elder_entry(
-        &self,
-        epoch: u64,
-        node_id: &str,
-        registered_epoch: u64,
-        pow_nonce: u64,
-        pow_difficulty: u32,
-        first_seen: u64,
-        uptime_at_registration: f64,
-        position: u32,
-    ) -> GhostResult<()> {
-        // LOW-STOR-1: Validate u64->i64 conversions before INSERT
-        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
-        let registered_epoch_i64 = u64_to_i64(registered_epoch, "registered_epoch")?;
-        let pow_nonce_i64 = u64_to_i64(pow_nonce, "pow_nonce")?;
-        let first_seen_i64 = u64_to_i64(first_seen, "first_seen")?;
-
-        self.with_connection(|conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO elder_entries
-                 (epoch, node_id, registered_epoch, pow_nonce, pow_difficulty, first_seen, uptime_at_registration, position)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                rusqlite::params![
-                    epoch_i64,
-                    node_id,
-                    registered_epoch_i64,
-                    pow_nonce_i64,
-                    pow_difficulty,
-                    first_seen_i64,
-                    uptime_at_registration,
-                    position
-                ],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(())
-        })
-    }
-
-    /// Get all elder entries for an epoch
-    ///
-    /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
-    /// LOW-STOR-1: Validates epoch fits in i64 before query
-    pub fn get_elder_entries_for_epoch(&self, epoch: u64) -> GhostResult<Vec<ElderEntryRecord>> {
-        // LOW-STOR-1: Validate u64->i64 conversion before query
-        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
-
-        self.with_connection(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT epoch, node_id, registered_epoch, pow_nonce, pow_difficulty,
-                            first_seen, uptime_at_registration, position
-                     FROM elder_entries WHERE epoch = ?1 ORDER BY position ASC LIMIT ?2",
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // M-10 FIX: Use safe conversions
-            let entries = stmt
-                .query_map(params![epoch_i64, Self::MAX_QUERY_RESULTS], |row| {
-                    Ok(ElderEntryRecord {
-                        epoch: i64_to_u64(row.get::<_, i64>(0)?, "epoch")?,
-                        node_id: row.get(1)?,
-                        registered_epoch: i64_to_u64(row.get::<_, i64>(2)?, "registered_epoch")?,
-                        pow_nonce: i64_to_u64(row.get::<_, i64>(3)?, "pow_nonce")?,
-                        pow_difficulty: i64_to_u32_count(row.get::<_, i64>(4)?, "pow_difficulty")?,
-                        first_seen: i64_to_u64(row.get::<_, i64>(5)?, "first_seen")?,
-                        uptime_at_registration: row.get(6)?,
-                        position: i64_to_u32_count(row.get::<_, i64>(7)?, "position")?,
-                    })
-                })
-                .map_err(|e| GhostError::Database(e.to_string()))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            Ok(entries)
-        })
-    }
-
-    /// Store an elder approval (BFT signature)
-    ///
-    /// LOW-STOR-4: Validates signature size before INSERT
-    /// LOW-STOR-1: Validates epoch and approved_at fit in i64
-    pub fn store_elder_approval(
-        &self,
-        epoch: u64,
-        approver_node_id: &str,
-        signature: &str,
-        approved_at: u64,
-    ) -> GhostResult<()> {
-        // LOW-STOR-4: Validate signature size before INSERT
-        if signature.len() > MAX_SIGNATURE_SIZE {
-            return Err(GhostError::InvalidInput(format!(
-                "Signature too large: {} chars (max {} chars)",
-                signature.len(),
-                MAX_SIGNATURE_SIZE
-            )));
-        }
-
-        // LOW-STOR-1: Validate u64->i64 conversions before INSERT
-        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
-        let approved_at_i64 = u64_to_i64(approved_at, "approved_at")?;
-
-        self.with_connection(|conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO elder_approvals (epoch, approver_node_id, signature, approved_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![epoch_i64, approver_node_id, signature, approved_at_i64],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(())
-        })
-    }
-
-    /// Get all approvals for an epoch
-    ///
-    /// LOW-STOR-1: Validates epoch fits in i64 before query
-    pub fn get_elder_approvals_for_epoch(
-        &self,
-        epoch: u64,
-    ) -> GhostResult<Vec<ElderApprovalRecord>> {
-        // LOW-STOR-1: Validate u64->i64 conversion before query
-        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
-
-        self.with_connection(|conn| {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT epoch, approver_node_id, signature, approved_at
-                     FROM elder_approvals WHERE epoch = ?1",
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // M-10 FIX: Use safe conversions
-            let approvals = stmt
-                .query_map([epoch_i64], |row| {
-                    Ok(ElderApprovalRecord {
-                        epoch: i64_to_u64(row.get::<_, i64>(0)?, "epoch")?,
-                        approver_node_id: row.get(1)?,
-                        signature: row.get(2)?,
-                        approved_at: i64_to_u64(row.get::<_, i64>(3)?, "approved_at")?,
-                    })
-                })
-                .map_err(|e| GhostError::Database(e.to_string()))?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            Ok(approvals)
-        })
-    }
-
-    /// Count approvals for an epoch
-    ///
-    /// LOW-STOR-1: Validates epoch fits in i64 before query
-    pub fn count_elder_approvals(&self, epoch: u64) -> GhostResult<u32> {
-        // LOW-STOR-1: Validate u64->i64 conversion before query
-        let epoch_i64 = u64_to_i64(epoch, "epoch")?;
-
-        self.with_connection(|conn| {
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM elder_approvals WHERE epoch = ?1",
-                    [epoch_i64],
-                    |row| row.get(0),
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-            // M-10 FIX: Use safe conversion
-            i64_to_u32_count(count, "elder_approval_count")
-                .map_err(|e| GhostError::Database(e.to_string()))
-        })
-    }
-
-    /// Create an elder registration request
-    ///
-    /// LOW-STOR-1: Validates pow_nonce, first_seen, and target_epoch fit in i64
-    pub fn create_elder_registration_request(
-        &self,
-        candidate_node_id: &str,
-        pow_nonce: u64,
-        pow_difficulty: u32,
-        first_seen: u64,
-        uptime_percent: f64,
-        target_epoch: u64,
-    ) -> GhostResult<i64> {
-        // LOW-STOR-1: Validate u64->i64 conversions before INSERT
-        let pow_nonce_i64 = u64_to_i64(pow_nonce, "pow_nonce")?;
-        let first_seen_i64 = u64_to_i64(first_seen, "first_seen")?;
-        let target_epoch_i64 = u64_to_i64(target_epoch, "target_epoch")?;
-
-        self.with_connection(|conn| {
-            let now = chrono::Utc::now().timestamp_millis();
-            conn.execute(
-                "INSERT INTO elder_registration_requests
-                 (candidate_node_id, pow_nonce, pow_difficulty, first_seen, uptime_percent, target_epoch, requested_at, status)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'pending')",
-                rusqlite::params![
-                    candidate_node_id,
-                    pow_nonce_i64,
-                    pow_difficulty,
-                    first_seen_i64,
-                    uptime_percent,
-                    target_epoch_i64,
-                    now
-                ],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(conn.last_insert_rowid())
-        })
-    }
-
-    /// Get a pending elder registration request
-    pub fn get_elder_registration_request(
-        &self,
-        candidate_node_id: &str,
-    ) -> GhostResult<Option<ElderRegistrationRequestRecord>> {
-        self.with_connection(|conn| {
-            let result = conn.query_row(
-                "SELECT id, candidate_node_id, pow_nonce, pow_difficulty, first_seen,
-                            uptime_percent, target_epoch, requested_at, status
-                     FROM elder_registration_requests
-                     WHERE candidate_node_id = ?1 AND status = 'pending'",
-                [candidate_node_id],
-                |row| {
-                    // M-10 FIX: Use safe conversions
-                    Ok(ElderRegistrationRequestRecord {
-                        id: row.get(0)?,
-                        candidate_node_id: row.get(1)?,
-                        pow_nonce: i64_to_u64(row.get::<_, i64>(2)?, "pow_nonce")?,
-                        pow_difficulty: i64_to_u32_count(row.get::<_, i64>(3)?, "pow_difficulty")?,
-                        first_seen: i64_to_u64(row.get::<_, i64>(4)?, "first_seen")?,
-                        uptime_percent: row.get(5)?,
-                        target_epoch: i64_to_u64(row.get::<_, i64>(6)?, "target_epoch")?,
-                        requested_at: i64_to_u64(row.get::<_, i64>(7)?, "requested_at")?,
-                        status: row.get(8)?,
-                    })
-                },
-            );
-
-            match result {
-                Ok(record) => Ok(Some(record)),
-                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                Err(e) => Err(GhostError::Database(e.to_string())),
-            }
-        })
-    }
-
-    /// Record a vote on an elder registration request
-    pub fn record_elder_registration_vote(
-        &self,
-        request_id: i64,
-        voter_node_id: &str,
-        approve: bool,
-        rejection_reason: Option<&str>,
-        signature: &str,
-    ) -> GhostResult<()> {
-        self.with_connection(|conn| {
-            let now = chrono::Utc::now().timestamp_millis();
-            conn.execute(
-                "INSERT OR REPLACE INTO elder_registration_votes
-                 (request_id, voter_node_id, approve, rejection_reason, signature, voted_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![
-                    request_id,
-                    voter_node_id,
-                    approve as i64,
-                    rejection_reason,
-                    signature,
-                    now
-                ],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(())
-        })
-    }
-
-    /// Count approvals for an elder registration request
-    pub fn count_elder_registration_approvals(&self, request_id: i64) -> GhostResult<(u32, u32)> {
-        self.with_connection(|conn| {
-            let approvals: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM elder_registration_votes WHERE request_id = ?1 AND approve = 1",
-                    [request_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            let rejections: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM elder_registration_votes WHERE request_id = ?1 AND approve = 0",
-                    [request_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // M-10 FIX: Use safe conversions
-            Ok((
-                i64_to_u32_count(approvals, "registration_approvals")
-                    .map_err(|e| GhostError::Database(e.to_string()))?,
-                i64_to_u32_count(rejections, "registration_rejections")
-                    .map_err(|e| GhostError::Database(e.to_string()))?,
-            ))
-        })
-    }
-
-    /// Update elder registration request status
-    pub fn update_elder_registration_status(
-        &self,
-        request_id: i64,
-        status: &str,
-    ) -> GhostResult<()> {
-        self.with_connection(|conn| {
-            conn.execute(
-                "UPDATE elder_registration_requests SET status = ?1 WHERE id = ?2",
-                rusqlite::params![status, request_id],
-            )
-            .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(())
-        })
-    }
-
-    /// C-2 SECURITY: Atomically check threshold and mark registration as approved
-    ///
-    /// This method prevents the TOCTOU race condition in elder registration approval.
-    /// Without this, two concurrent threads could both see the threshold reached
-    /// and both attempt to mark as approved, leading to duplicate epoch transitions.
-    ///
-    /// Returns:
-    /// - `Ok(Some((approvals, total_elders)))` if threshold was reached AND status was updated
-    /// - `Ok(None)` if threshold not reached or already approved/rejected
-    /// - `Err(...)` on database error
-    ///
-    /// # Arguments
-    /// * `request_id` - The registration request ID
-    /// * `threshold_percent` - BFT threshold percentage (e.g., 67)
-    /// * `total_elders` - Current number of elders
-    pub fn check_and_approve_registration_atomic(
-        &self,
-        request_id: i64,
-        threshold_percent: u32,
-        total_elders: usize,
-    ) -> GhostResult<Option<(u32, usize)>> {
-        self.transaction(|tx| {
-            // Step 1: Check current status (within transaction)
-            let current_status: String = tx
-                .query_row(
-                    "SELECT status FROM elder_registration_requests WHERE id = ?1",
-                    [request_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // If already approved or rejected, nothing to do
-            if current_status != "pending" {
-                return Ok(None);
-            }
-
-            // Step 2: Count approvals (within transaction)
-            let approvals: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM elder_registration_votes WHERE request_id = ?1 AND approve = 1",
-                    [request_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // Step 3: Calculate threshold
-            let threshold = ((total_elders as u32) * threshold_percent)
-                .div_ceil(100)
-                .max(1) as i64;
-
-            // Step 4: If threshold reached, atomically mark as approved
-            if approvals >= threshold {
-                tx.execute(
-                    "UPDATE elder_registration_requests SET status = 'approved' WHERE id = ?1 AND status = 'pending'",
-                    [request_id],
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-                // Double-check it was us who did the update (could have been a concurrent tx)
-                let changes = tx.changes();
-                if changes > 0 {
-                    return Ok(Some((
-                        i64_to_u32_count(approvals, "approvals")
-                            .map_err(|e| GhostError::Database(e.to_string()))?,
-                        total_elders,
-                    )));
-                }
-            }
-
-            Ok(None)
-        })
-    }
-
-    /// C-2 SECURITY: Atomically check rejection threshold and mark as rejected
-    ///
-    /// Similar to `check_and_approve_registration_atomic` but for rejections.
-    ///
-    /// Returns:
-    /// - `Ok(true)` if rejection threshold was reached AND status was updated
-    /// - `Ok(false)` if threshold not reached or already approved/rejected
-    pub fn check_and_reject_registration_atomic(
-        &self,
-        request_id: i64,
-        threshold_percent: u32,
-        total_elders: usize,
-    ) -> GhostResult<bool> {
-        self.transaction(|tx| {
-            // Check current status
-            let current_status: String = tx
-                .query_row(
-                    "SELECT status FROM elder_registration_requests WHERE id = ?1",
-                    [request_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            if current_status != "pending" {
-                return Ok(false);
-            }
-
-            // Count rejections
-            let rejections: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM elder_registration_votes WHERE request_id = ?1 AND approve = 0",
-                    [request_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-            // If rejections > (total - threshold), it's mathematically impossible to reach approval
-            let approval_threshold = ((total_elders as u32) * threshold_percent)
-                .div_ceil(100)
-                .max(1) as usize;
-            let rejection_threshold = total_elders.saturating_sub(approval_threshold) + 1;
-
-            if rejections as usize >= rejection_threshold {
-                tx.execute(
-                    "UPDATE elder_registration_requests SET status = 'rejected' WHERE id = ?1 AND status = 'pending'",
-                    [request_id],
-                )
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-
-                return Ok(tx.changes() > 0);
-            }
-
-            Ok(false)
-        })
-    }
-}
-
-/// Record for a canonical elder list
-#[derive(Debug, Clone)]
-pub struct CanonicalElderListRecord {
-    pub epoch: u64,
-    pub merkle_root: String,
-    pub elder_count: u32,
-    pub activated_at: u64,
-    pub created_at: u64,
-}
-
-/// Record for an elder entry in an epoch
-#[derive(Debug, Clone)]
-pub struct ElderEntryRecord {
-    pub epoch: u64,
-    pub node_id: String,
-    pub registered_epoch: u64,
-    pub pow_nonce: u64,
-    pub pow_difficulty: u32,
-    pub first_seen: u64,
-    pub uptime_at_registration: f64,
-    pub position: u32,
-}
-
-/// Record for an elder approval
-#[derive(Debug, Clone)]
-pub struct ElderApprovalRecord {
-    pub epoch: u64,
-    pub approver_node_id: String,
-    pub signature: String,
-    pub approved_at: u64,
-}
-
-/// Record for an elder registration request
-#[derive(Debug, Clone)]
-pub struct ElderRegistrationRequestRecord {
-    pub id: i64,
-    pub candidate_node_id: String,
-    pub pow_nonce: u64,
-    pub pow_difficulty: u32,
-    pub first_seen: u64,
-    pub uptime_percent: f64,
-    pub target_epoch: u64,
-    pub requested_at: u64,
-    pub status: String,
 }
 
 // =============================================================================
@@ -5462,6 +4858,118 @@ impl Database {
                 None => Ok(None),
             }
         })
+    }
+
+    // =========================================================================
+    // ELDER STATUS (MPC-BASED)
+    // =========================================================================
+    // Elder status is determined by MPC contribution.
+    // If a node contributed to the MPC ceremony (position 1-101), they are an elder.
+    // This replaces the complex canonical elder list system.
+
+    /// Check if a node is an elder (MPC contributor)
+    ///
+    /// A node is an elder if they have contributed to the MPC ceremony.
+    /// Elder status grants +1 share in node rewards (if 95% uptime met).
+    pub fn is_mpc_elder(&self, node_id: &str) -> GhostResult<bool> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM mpc_contributions WHERE contributor_node_id = ?1",
+                    params![node_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count > 0)
+        })
+    }
+
+    /// Get a node's elder position (MPC contribution position)
+    ///
+    /// Returns the position (1-101) if the node is an elder, None otherwise.
+    pub fn get_mpc_elder_position(&self, node_id: &str) -> GhostResult<Option<u32>> {
+        self.with_connection(|conn| {
+            let result: Option<i64> = conn
+                .query_row(
+                    "SELECT elder_position FROM mpc_contributions WHERE contributor_node_id = ?1",
+                    params![node_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match result {
+                Some(pos) => {
+                    let position = i64_to_u32_count(pos, "elder_position")
+                        .map_err(|e| GhostError::Database(e.to_string()))?;
+                    Ok(Some(position))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Get all MPC elders (contributors)
+    ///
+    /// Returns list of (node_id, position) for all MPC contributors.
+    pub fn get_all_mpc_elders(&self) -> GhostResult<Vec<(String, u32)>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT contributor_node_id, elder_position FROM mpc_contributions
+                     ORDER BY elder_position ASC",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    let node_id: String = row.get(0)?;
+                    let position: i64 = row.get(1)?;
+                    Ok((node_id, position))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut elders = Vec::new();
+            for row in rows {
+                let (node_id, pos) = row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let position = i64_to_u32_count(pos, "elder_position")
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                elders.push((node_id, position));
+            }
+            Ok(elders)
+        })
+    }
+
+    /// Get count of MPC elders
+    pub fn get_mpc_elder_count(&self) -> GhostResult<u32> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM mpc_contributions",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            i64_to_u32_count(count, "mpc_elder_count")
+                .map_err(|e| GhostError::Database(e.to_string()))
+        })
+    }
+
+    /// Get all MPC elder node IDs as parsed 32-byte arrays
+    ///
+    /// Returns a HashSet of NodeId bytes for all MPC contributors.
+    /// Used by VoteHandler to determine eligible voters for BFT consensus.
+    pub fn get_mpc_elder_node_ids(&self) -> GhostResult<std::collections::HashSet<[u8; 32]>> {
+        let elders = self.get_all_mpc_elders()?;
+        let mut node_ids = std::collections::HashSet::new();
+        for (node_id_hex, _position) in &elders {
+            if let Ok(bytes) = hex::decode(node_id_hex) {
+                if let Ok(id) = <[u8; 32]>::try_from(bytes.as_slice()) {
+                    node_ids.insert(id);
+                }
+            }
+        }
+        Ok(node_ids)
     }
 }
 

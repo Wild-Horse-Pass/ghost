@@ -1994,6 +1994,27 @@ fn get_l2_block_at_epoch(epoch: u64) -> Result<Option<L2BlockState>, String> {
     }
 }
 
+/// Get the number of L2 blocks in a specific epoch
+fn get_epoch_tx_count(epoch: u64) -> Result<u64, String> {
+    let conn = match rusqlite::Connection::open_with_flags(
+        L2_BLOCKS_DB_PATH,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(c) => c,
+        Err(e) => return Err(format!("Failed to open L2 blocks database: {}", e)),
+    };
+
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM blocks WHERE epoch_id = ?1",
+            [epoch as i64],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to count epoch blocks: {}", e))?;
+
+    Ok(count as u64)
+}
+
 /// GhostPay verification response
 ///
 /// Returns real L2 state from the database for verification challenges.
@@ -2100,6 +2121,9 @@ async fn verify_ghostpay(
     // Check if Wraith protocol is enabled (has active sessions)
     let wraith_enabled = !state.sessions.read().is_empty();
 
+    // Get L2 block count for challenged epoch
+    let epoch_tx_count = get_epoch_tx_count(challenge_epoch).unwrap_or(0);
+
     // Return success response with real L2 state
     (
         StatusCode::OK,
@@ -2113,7 +2137,7 @@ async fn verify_ghostpay(
                 "balance_sats": null,
                 "wraith_enabled": wraith_enabled,
                 "epoch_state_hash": epoch_state,
-                "epoch_tx_count": null,
+                "epoch_tx_count": epoch_tx_count,
                 "nonce_bound_proof": nonce_bound_proof,
                 "epoch_proof": null,
                 "error": null
