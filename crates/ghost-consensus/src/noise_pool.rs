@@ -242,10 +242,17 @@ impl NoiseConnectionPool {
     ) -> Result<Arc<NoiseConnection>, NoiseError> {
         debug!(peer = %peer_addr, "Establishing Noise connection (initiator)");
 
-        // Connect TCP
-        let stream = TcpStream::connect(peer_addr)
-            .await
-            .map_err(NoiseError::Io)?;
+        // Connect TCP with timeout to avoid hanging on unreachable peers
+        let stream = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            TcpStream::connect(peer_addr),
+        )
+        .await
+        .map_err(|_| NoiseError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("Connection to {} timed out", peer_addr),
+        )))?
+        .map_err(NoiseError::Io)?;
 
         // Perform Noise handshake as initiator
         let (transport, peer_key) = self.manager.wrap_initiator(stream).await?;

@@ -28,7 +28,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 /// H-5: Maximum size for challenge_data and response_data fields (10 KB)
 /// This prevents memory exhaustion attacks from malicious oversized messages
@@ -70,12 +70,11 @@ impl VerificationResultHandler {
 
     /// Handle an incoming verification result message
     async fn handle_verification_result(&self, envelope: &MessageEnvelope) -> GhostResult<()> {
-        // Log entry point at info level for P2P debugging
         let envelope_sender_hex = hex::encode(envelope.sender);
-        info!(
+        debug!(
             sender = %&envelope_sender_hex[..8],
             payload_len = envelope.payload.len(),
-            "DIAG: VerificationResultHandler received message"
+            "VerificationResultHandler received message"
         );
 
         // Deserialize the verification result message
@@ -142,12 +141,12 @@ impl VerificationResultHandler {
             return Ok(());
         }
 
-        info!(
+        debug!(
             challenger = %short_challenger,
             target = %short_target,
             capability = %msg.capability.as_str(),
             passed = msg.passed,
-            "DIAG: Parsed verification result from P2P"
+            "Parsed verification result from P2P"
         );
 
         // Verify that the envelope sender matches the challenger (prevent spoofing)
@@ -333,12 +332,12 @@ impl VerificationResultHandler {
             }
         }
 
-        info!(
+        debug!(
             challenger = %short_challenger,
             target = %short_target,
             capability = %msg.capability.as_str(),
             passed = msg.passed,
-            "DIAG: Successfully stored verification result in database"
+            "Stored verification result in database"
         );
 
         Ok(())

@@ -1311,7 +1311,7 @@ impl TemplateProcessor {
         // Create work state
         // Note: template.coinbasevalue from Bitcoin Core = subsidy + all tx fees
         // We store just the tx fees separately for payout calculations
-        let prev_hash = self.reverse_hex(&template.previousblockhash).map_err(|e| {
+        let prev_hash = self.to_stratum_prev_hash(&template.previousblockhash).map_err(|e| {
             error!(error = %e, hash = %template.previousblockhash, "Invalid previousblockhash from Bitcoin RPC");
             e
         })?;
@@ -1657,34 +1657,45 @@ impl TemplateProcessor {
     ///
     /// Validates all transaction hashes before building the merkle tree.
     /// Transactions with invalid hashes are logged and skipped.
+    ///
+    /// Stratum merkle branches algorithm:
+    /// - Coinbase is at position 0 (miner computes this)
+    /// - We provide the hashes needed to compute path from coinbase to root
+    /// - At each level: first hash is the sibling of coinbase path, rest get paired
     fn build_merkle_branches(&self, transactions: &[TemplateTransaction]) -> Vec<[u8; 32]> {
         if transactions.is_empty() {
             return Vec::new();
         }
 
         // Get transaction hashes, validating each one
+        // IMPORTANT: These are txids (double SHA256 of non-witness tx), NOT tx.hash (wtxid)
+        // For merkle tree, we need txids. Bitcoin Core's getblocktemplate provides txid field.
         let mut hashes: Vec<[u8; 32]> = Vec::with_capacity(transactions.len());
         for tx in transactions {
-            match hex::decode(&tx.hash) {
+            // Use txid, not hash (wtxid). Txid is the one used in merkle tree.
+            match hex::decode(&tx.txid) {
                 Ok(bytes) if bytes.len() == 32 => {
                     let mut hash = [0u8; 32];
-                    hash.copy_from_slice(&bytes);
+                    // Bitcoin txids from RPC are in display order (big-endian)
+                    // For merkle tree computation, we need internal order (little-endian)
+                    // So we reverse the bytes
+                    for (i, &b) in bytes.iter().enumerate() {
+                        hash[31 - i] = b;
+                    }
                     hashes.push(hash);
                 }
                 Ok(bytes) => {
                     warn!(
                         txid = %tx.txid,
-                        hash = %tx.hash,
                         len = bytes.len(),
-                        "Skipping transaction with invalid hash length (expected 32 bytes)"
+                        "Skipping transaction with invalid txid length (expected 32 bytes)"
                     );
                 }
                 Err(e) => {
                     warn!(
                         txid = %tx.txid,
-                        hash = %tx.hash,
                         error = %e,
-                        "Skipping transaction with invalid hex in hash"
+                        "Skipping transaction with invalid hex in txid"
                     );
                 }
             }
@@ -1692,27 +1703,32 @@ impl TemplateProcessor {
 
         // If all transactions had invalid hashes, return empty
         if hashes.is_empty() {
-            warn!("All transactions had invalid hashes, merkle branches will be empty");
+            warn!("All transactions had invalid txids, merkle branches will be empty");
             return Vec::new();
         }
 
-        // Build merkle tree, collecting branches
-        // HIGH-PANIC-3: Use .first() and pattern matching for safe array access
+        // Build merkle branches for Stratum
+        // Algorithm: At each level, the first hash is the branch (sibling of coinbase path),
+        // and we combine the REMAINING hashes into pairs for the next level.
         let mut branches = Vec::new();
 
-        while hashes.len() > 1 {
-            // First hash is our branch (always exists when len > 1)
-            if let Some(&first_hash) = hashes.first() {
-                branches.push(first_hash);
+        while !hashes.is_empty() {
+            // First hash at this level is the sibling of the coinbase path
+            branches.push(hashes[0]);
+
+            if hashes.len() == 1 {
+                // Only one hash left, we're done
+                break;
             }
 
-            // Combine pairs using pattern matching for safety
+            // Combine the remaining hashes (excluding first) into pairs for next level
+            let remaining = &hashes[1..];
             let mut next_level = Vec::new();
-            for chunk in hashes.chunks(2) {
+            for chunk in remaining.chunks(2) {
                 let combined = match chunk {
                     [a, b] => self.double_sha256_pair(a, b),
-                    [a] => self.double_sha256_pair(a, a),
-                    _ => continue, // Empty chunk - shouldn't happen with non-empty hashes
+                    [a] => self.double_sha256_pair(a, a), // Odd one out, hash with itself
+                    _ => continue,
                 };
                 next_level.push(combined);
             }
@@ -1877,9 +1893,44 @@ impl TemplateProcessor {
         bytes
     }
 
+    /// Convert block hash to Stratum V1 prev_hash format
+    ///
+    /// Stratum V1 uses a specific format for prev_hash:
+    /// - The 32-byte hash is split into 8 chunks of 4 bytes each
+    /// - Each 4-byte chunk is byte-reversed
+    ///
+    /// Input: RPC display format (big-endian hex, e.g., "0000...abc123")
+    /// Output: Stratum format (8 chunks, each chunk byte-reversed)
+    fn to_stratum_prev_hash(&self, hex: &str) -> anyhow::Result<String> {
+        if hex.len() != 64 {
+            return Err(anyhow::anyhow!(
+                "Invalid prev_hash length: {} (expected 64)",
+                hex.len()
+            ));
+        }
+
+        // Decode to bytes
+        let bytes: Vec<u8> = (0..32)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16))
+            .collect::<Result<Vec<u8>, _>>()
+            .map_err(|e| anyhow::anyhow!("Invalid hex in prev_hash: {}", e))?;
+
+        // Split into 8 chunks of 4 bytes, reverse each chunk
+        let mut result = String::with_capacity(64);
+        for chunk in bytes.chunks(4) {
+            // Reverse the 4 bytes in this chunk
+            for &byte in chunk.iter().rev() {
+                result.push_str(&format!("{:02x}", byte));
+            }
+        }
+
+        Ok(result)
+    }
+
     /// Reverse a hex string (for block hashes)
     ///
     /// Returns an error if the hex string is malformed (odd length or invalid hex characters).
+    #[allow(dead_code)]
     fn reverse_hex(&self, hex: &str) -> anyhow::Result<String> {
         // SEC-ERR-1: Validate hex string before parsing
         if !hex.len().is_multiple_of(2) {

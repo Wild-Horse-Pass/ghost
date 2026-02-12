@@ -5624,6 +5624,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "stratum-apps",
  "thiserror 1.0.69",
  "tokio",
  "tracing",

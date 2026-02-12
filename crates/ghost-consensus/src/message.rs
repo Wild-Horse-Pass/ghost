@@ -1026,10 +1026,13 @@ pub struct ElderListApprovalMessage {
     /// Merkle root being approved
     #[serde(with = "ghost_common::serde_hex::bytes32")]
     pub merkle_root: [u8; 32],
+    /// Previous epoch's merkle root (required for epoch > 0 to prevent replay attacks)
+    #[serde(with = "ghost_common::serde_hex::option_bytes32", default)]
+    pub prev_merkle_root: Option<[u8; 32]>,
     /// Approver's node ID (must be an elder in current epoch)
     #[serde(with = "ghost_common::serde_hex::bytes32")]
     pub approver: NodeId,
-    /// Approver's signature over (epoch || merkle_root)
+    /// Approver's signature over (epoch || merkle_root || prev_merkle_root)
     #[serde(with = "ghost_common::serde_hex::bytes64")]
     pub signature: [u8; 64],
     /// Timestamp (Unix milliseconds)
@@ -1037,16 +1040,29 @@ pub struct ElderListApprovalMessage {
 }
 
 impl ElderListApprovalMessage {
-    /// Get the message to be signed
+    // Domain separator - MUST match ElderApproval::signing_message* in elder_list.rs
+    const APPROVAL_DOMAIN: &'static [u8] = b"ghost/elder-approval/v1";
+
+    /// Get the message to be signed (v1, for genesis epoch 0 only)
     pub fn signing_message(epoch: u64, merkle_root: &[u8; 32]) -> Vec<u8> {
-        let mut msg = Vec::with_capacity(48); // 8 + 8 + 32
-        msg.extend_from_slice(b"ElderListApproval/v1");
+        let mut msg = Vec::with_capacity(Self::APPROVAL_DOMAIN.len() + 8 + 32);
+        msg.extend_from_slice(Self::APPROVAL_DOMAIN);
         msg.extend_from_slice(&epoch.to_le_bytes());
         msg.extend_from_slice(merkle_root);
         msg
     }
 
-    /// Create a new approval message
+    /// Get the message to be signed (v2, for epoch > 0 with chain binding)
+    pub fn signing_message_v2(epoch: u64, merkle_root: &[u8; 32], prev_merkle_root: &[u8; 32]) -> Vec<u8> {
+        let mut msg = Vec::with_capacity(Self::APPROVAL_DOMAIN.len() + 8 + 32 + 32);
+        msg.extend_from_slice(Self::APPROVAL_DOMAIN);
+        msg.extend_from_slice(&epoch.to_le_bytes());
+        msg.extend_from_slice(merkle_root);
+        msg.extend_from_slice(prev_merkle_root);
+        msg
+    }
+
+    /// Create a new approval message (v1, for genesis)
     pub fn new(
         epoch: u64,
         merkle_root: [u8; 32],
@@ -1058,6 +1074,27 @@ impl ElderListApprovalMessage {
         Self {
             epoch,
             merkle_root,
+            prev_merkle_root: None,
+            approver,
+            signature,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        }
+    }
+
+    /// Create a new approval message with chain binding (v2, for epoch > 0)
+    pub fn new_with_prev(
+        epoch: u64,
+        merkle_root: [u8; 32],
+        prev_merkle_root: [u8; 32],
+        approver: NodeId,
+        sign_fn: impl FnOnce(&[u8]) -> [u8; 64],
+    ) -> Self {
+        let message = Self::signing_message_v2(epoch, &merkle_root, &prev_merkle_root);
+        let signature = sign_fn(&message);
+        Self {
+            epoch,
+            merkle_root,
+            prev_merkle_root: Some(prev_merkle_root),
             approver,
             signature,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
@@ -1067,8 +1104,12 @@ impl ElderListApprovalMessage {
     /// Verify the approver's signature
     ///
     /// SEC-SIG-6: Logs errors instead of silently returning false
+    /// Uses v2 message format if prev_merkle_root is present, v1 for genesis
     pub fn verify_signature(&self) -> bool {
-        let message = Self::signing_message(self.epoch, &self.merkle_root);
+        let message = match &self.prev_merkle_root {
+            Some(prev) => Self::signing_message_v2(self.epoch, &self.merkle_root, prev),
+            None => Self::signing_message(self.epoch, &self.merkle_root),
+        };
         match ghost_common::identity::verify_signature(&self.approver, &message, &self.signature) {
             Ok(valid) => valid,
             Err(e) => {

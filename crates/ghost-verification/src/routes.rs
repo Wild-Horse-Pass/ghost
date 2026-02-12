@@ -307,6 +307,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             "/api/v1/settings/ghostpay_payout_address",
             get(api_settings_ghostpay_payout_address_handler),
         )
+        // MPC ceremony endpoints
+        .route("/api/v1/mpc/params", get(api_mpc_params_handler))
+        .route("/api/v1/mpc/status", get(api_mpc_status_handler))
+        .route("/api/v1/mpc/contributors", get(api_mpc_contributors_handler))
         // Swarm endpoints
         .route("/api/v1/swarm/sync", get(api_swarm_sync_handler))
         .route(
@@ -3876,6 +3880,109 @@ async fn share_batch_handler(
             )
         }
     }
+}
+
+// ============================================================================
+// MPC Ceremony Endpoints
+// ============================================================================
+
+/// MPC params handler - serves current MPC parameters file for P2P sync
+async fn api_mpc_params_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Get MPC params path from home directory
+    let params_path = std::path::PathBuf::from(
+        std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
+    ).join(".ghost/mpc_params/block_params_current.bin");
+
+    if !params_path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"error": "MPC params not available"}).to_string().into_bytes(),
+        );
+    }
+
+    match std::fs::read(&params_path) {
+        Ok(data) => {
+            debug!(size = data.len(), "Serving MPC params");
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                data,
+            )
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to read MPC params file");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({"error": "Failed to read params"}).to_string().into_bytes(),
+            )
+        }
+    }
+}
+
+/// MPC status handler - returns ceremony status
+async fn api_mpc_status_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Get contribution count from database if available
+    let (contribution_count, is_ossified) = if let Some(ref db) = state.database {
+        let count = db.get_mpc_elder_count().unwrap_or(0);
+        (count, count >= 101)
+    } else {
+        (0, false)
+    };
+
+    // Check if params file exists
+    let params_path = std::path::PathBuf::from(
+        std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
+    ).join(".ghost/mpc_params/block_params_current.bin");
+    let has_params = params_path.exists();
+
+    Json(serde_json::json!({
+        "contribution_count": contribution_count,
+        "max_contributors": 101,
+        "is_ossified": is_ossified,
+        "has_params": has_params,
+        "node_id": state.node_id
+    }))
+}
+
+/// MPC contributors handler - returns list of MPC contributors (elders)
+/// Used by new nodes to sync the contributor list during startup
+async fn api_mpc_contributors_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Get contributors from database
+    let contributors = if let Some(ref db) = state.database {
+        // Get all MPC contributions and return full records for sync
+        let mut contributors = Vec::new();
+        for position in 1..=101u32 {
+            if let Ok(Some(record)) = db.get_mpc_contribution(position) {
+                // Return all fields needed for MpcContributionRecord
+                contributors.push(serde_json::json!({
+                    "position": position,
+                    "node_id": record.contributor_node_id,
+                    "prev_params_hash": hex::encode(&record.prev_params_hash),
+                    "new_params_hash": hex::encode(&record.new_params_hash),
+                    "epoch": record.epoch,
+                    "created_at": record.created_at,
+                }));
+            } else {
+                break; // No more contributions
+            }
+        }
+        contributors
+    } else {
+        Vec::new()
+    };
+
+    Json(serde_json::json!({
+        "contributors": contributors,
+        "count": contributors.len()
+    }))
 }
 
 #[cfg(test)]

@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 16;
+const SCHEMA_VERSION: u32 = 18;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -108,6 +108,14 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
 
     if current_version < 16 {
         migrate_v16(conn)?;
+    }
+
+    if current_version < 17 {
+        migrate_v17(conn)?;
+    }
+
+    if current_version < 18 {
+        migrate_v18(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -1117,14 +1125,15 @@ fn migrate_v13(conn: &Connection) -> GhostResult<()> {
 
         -- MPC verification votes for contributions
         -- Current elders vote to approve each contribution
+        -- NOTE: No FK constraint because votes are saved before contribution is applied
+        -- (pending contributions are tracked in memory until BFT approval)
         CREATE TABLE IF NOT EXISTS mpc_verification_votes (
             contribution_position INTEGER NOT NULL,
             voter_node_id TEXT NOT NULL,
             approve INTEGER NOT NULL,
             signature BLOB NOT NULL,
             voted_at INTEGER NOT NULL,
-            PRIMARY KEY (contribution_position, voter_node_id),
-            FOREIGN KEY (contribution_position) REFERENCES mpc_contributions(elder_position) ON DELETE CASCADE
+            PRIMARY KEY (contribution_position, voter_node_id)
         );
         CREATE INDEX IF NOT EXISTS idx_mpc_votes_position ON mpc_verification_votes(contribution_position);
 
@@ -1247,6 +1256,68 @@ fn migrate_v16(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("HIGH-RACE-1 FIX: Added accepted instant payments table with atomic double-spend prevention");
+    Ok(())
+}
+
+/// Migration v17: Add prev_merkle_root column to elder_approvals
+///
+/// Chain binding for elder list approvals - prevents replay attacks by
+/// binding each approval to the previous epoch's merkle root.
+fn migrate_v17(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v17: Adding prev_merkle_root to elder_approvals");
+
+    conn.execute_batch(
+        r#"
+        -- Add prev_merkle_root column for chain binding (C-1 security)
+        ALTER TABLE elder_approvals ADD COLUMN prev_merkle_root TEXT;
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added prev_merkle_root column to elder_approvals for chain binding");
+    Ok(())
+}
+
+/// Migration v18: Remove FK constraint from mpc_verification_votes
+///
+/// The FK constraint causes a chicken-and-egg problem: votes can't be saved
+/// until the contribution is in the DB, but contributions aren't saved until
+/// they receive enough votes. Recreate the table without the FK.
+fn migrate_v18(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v18: Removing FK from mpc_verification_votes");
+
+    // SQLite doesn't support DROP CONSTRAINT, so we recreate the table
+    conn.execute_batch(
+        r#"
+        -- Backup existing data
+        CREATE TABLE IF NOT EXISTS mpc_verification_votes_backup AS
+        SELECT * FROM mpc_verification_votes;
+
+        -- Drop old table
+        DROP TABLE IF EXISTS mpc_verification_votes;
+
+        -- Recreate without FK constraint
+        CREATE TABLE mpc_verification_votes (
+            contribution_position INTEGER NOT NULL,
+            voter_node_id TEXT NOT NULL,
+            approve INTEGER NOT NULL,
+            signature BLOB NOT NULL,
+            voted_at INTEGER NOT NULL,
+            PRIMARY KEY (contribution_position, voter_node_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_mpc_votes_position ON mpc_verification_votes(contribution_position);
+
+        -- Restore data
+        INSERT OR IGNORE INTO mpc_verification_votes
+        SELECT * FROM mpc_verification_votes_backup;
+
+        -- Drop backup
+        DROP TABLE IF EXISTS mpc_verification_votes_backup;
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Removed FK constraint from mpc_verification_votes table");
     Ok(())
 }
 

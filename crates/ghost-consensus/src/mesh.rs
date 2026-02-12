@@ -57,7 +57,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tmq::{publish, subscribe, Context, Multipart};
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Shared ZMQ context for all sockets (libzmq handles threading internally)
 static ZMQ_CONTEXT: Lazy<Context> = Lazy::new(Context::new);
@@ -226,6 +226,9 @@ pub struct MeshNetwork {
     validation_stats: RwLock<ValidationStats>,
     /// C-1: Noise Protocol connection pool for encrypted P2P communication
     noise_pool: Option<Arc<NoiseConnectionPool>>,
+    /// Live node capabilities (updated after MPC contribution succeeds)
+    /// Initialized from config.capabilities, then mutated via update_elder_status()
+    capabilities: RwLock<ghost_common::types::NodeCapabilities>,
 }
 
 /// Message identifier for deduplication
@@ -337,6 +340,20 @@ const MAX_WRAP_AROUND_GAP_SECS: u64 = 3600;
 /// without having sent MIN_MESSAGES_BEFORE_WRAP messages.
 /// Set to 10x MAX_SEQUENCE_JUMP to allow some legitimate variance while blocking attacks.
 const MAX_CUMULATIVE_DISTANCE_BEFORE_WRAP: u64 = MAX_SEQUENCE_JUMP * 10;
+
+/// OUT-OF-ORDER TOLERANCE: Allow messages that are slightly behind highest_seq.
+///
+/// This handles multi-transport scenarios where messages sent via Noise (encrypted TCP)
+/// may arrive after messages sent via ZMQ (fast UDP-like), even if they were sent first.
+/// The Noise handshake (~100-500ms) can cause MPC contributions to arrive after
+/// health pings that were sent later but used the faster ZMQ path.
+///
+/// A tolerance of 10 allows sequences within 10 of highest_seq to be accepted.
+/// This is secure because:
+/// 1. Real replay attacks use OLD sequences (hours/days old), not off-by-10
+/// 2. The message deduplication cache still prevents exact duplicates
+/// 3. Timestamp validation provides additional replay protection
+const SEQUENCE_TOLERANCE_WINDOW: u64 = 10;
 
 /// M-2/H-P2P-5/H-7: Sequence state tracking with wrap-around protection
 /// Handles the case where sequence numbers wrap from MAX back to 1,
@@ -504,10 +521,39 @@ impl SeenMessageCache {
                     return true;
                 }
 
-                // Normal case: sequence must be strictly greater
-                if sequence <= state.highest_seq {
-                    // Replay or duplicate - reject
+                // Normal case: Allow sequences within tolerance window of highest_seq.
+                // This handles out-of-order delivery from mixed Noise/ZMQ transports.
+                //
+                // Messages sent via Noise (MPC, Elder, etc.) may arrive after
+                // messages sent via ZMQ (HealthPing), even when sent first,
+                // due to Noise handshake latency.
+                let tolerance_floor = state.highest_seq.saturating_sub(SEQUENCE_TOLERANCE_WINDOW);
+                if sequence < tolerance_floor {
+                    // Sequence is too far behind - likely a replay attack
+                    debug!(
+                        sender = %hex::encode(&sender[..8]),
+                        sequence = sequence,
+                        highest_seq = state.highest_seq,
+                        tolerance_floor = tolerance_floor,
+                        "Rejecting sequence outside tolerance window"
+                    );
                     return false;
+                }
+
+                // If sequence is within tolerance but <= highest, it's out-of-order
+                // but still acceptable (not a replay). Accept but don't update highest.
+                if sequence <= state.highest_seq {
+                    // Out-of-order but within tolerance - accept
+                    state.message_count = state.message_count.saturating_add(1);
+                    state.last_message_time = now_secs;
+                    // Note: We don't update highest_seq or cumulative_distance for out-of-order
+                    debug!(
+                        sender = %hex::encode(&sender[..8]),
+                        sequence = sequence,
+                        highest_seq = state.highest_seq,
+                        "Accepting out-of-order sequence within tolerance"
+                    );
+                    return true;
                 }
 
                 // H-P2P-5: Reject large sequence jumps
@@ -601,8 +647,15 @@ impl SeenMessageCache {
                     return sequence > 0 && sequence <= MAX_POST_WRAP_SEQUENCE;
                 }
 
-                if sequence <= state.highest_seq {
+                // Apply same tolerance window as validate_and_update_sequence
+                let tolerance_floor = state.highest_seq.saturating_sub(SEQUENCE_TOLERANCE_WINDOW);
+                if sequence < tolerance_floor {
                     return false;
+                }
+
+                // Sequences within tolerance but <= highest are accepted (out-of-order)
+                if sequence <= state.highest_seq {
+                    return true;
                 }
 
                 let jump = sequence - state.highest_seq;
@@ -926,6 +979,7 @@ impl MeshNetwork {
         };
 
         Ok(Self {
+            capabilities: RwLock::new(config.capabilities),
             identity,
             config: config.clone(),
             peers,
@@ -1009,6 +1063,20 @@ impl MeshNetwork {
         self.handlers.write().push(handler);
     }
 
+    /// Update elder status in live capabilities
+    ///
+    /// Called after MPC contribution succeeds so health pings
+    /// immediately reflect the new elder status (+1 share).
+    pub fn update_elder_status(&self, is_elder: bool) {
+        let mut caps = self.capabilities.write();
+        caps.elder_status = is_elder;
+        info!(
+            elder_status = is_elder,
+            total_shares = caps.total_shares(),
+            "Updated live capabilities: elder_status"
+        );
+    }
+
     /// Get peer manager
     pub fn peers(&self) -> &Arc<PeerManager> {
         &self.peers
@@ -1030,7 +1098,7 @@ impl MeshNetwork {
 
     /// Get next sequence number
     /// M-14: Uses saturating arithmetic to prevent overflow
-    fn next_sequence(&self) -> u64 {
+    pub fn next_sequence(&self) -> u64 {
         loop {
             let current = self.sequence.load(Ordering::SeqCst);
             // M-14: Prevent overflow by wrapping around if we approach MAX
@@ -1135,6 +1203,28 @@ impl MeshNetwork {
             msg_type,
             self.identity.node_id(),
             payload_bytes,
+            sequence,
+            signature,
+        ))
+    }
+
+    /// Create a message envelope from pre-serialized payload bytes
+    pub fn create_envelope_raw(
+        &self,
+        msg_type: MessageType,
+        payload: Vec<u8>,
+    ) -> GhostResult<MessageEnvelope> {
+        let sequence = self.next_sequence();
+
+        // Sign the payload + sequence (must match create_envelope for P2P4-M1 verification)
+        let mut signed_data = payload.clone();
+        signed_data.extend_from_slice(&sequence.to_le_bytes());
+        let signature = self.identity.sign(&signed_data);
+
+        Ok(MessageEnvelope::new(
+            msg_type,
+            self.identity.node_id(),
+            payload,
             sequence,
             signature,
         ))
@@ -1332,6 +1422,12 @@ impl MeshNetwork {
         let peers = self.peers.get_connected_peers(60);
         let mut result = BroadcastResult::default();
 
+        info!(
+            msg_type = ?envelope.msg_type,
+            peer_count = peers.len(),
+            "Starting encrypted broadcast"
+        );
+
         // Serialize once for all peers
         let data = envelope
             .serialize()
@@ -1379,13 +1475,13 @@ impl MeshNetwork {
                     }
                 }
                 Err(e) => {
-                    debug!(peer = %peer.node_id_short(), error = %e, "Noise connection failed");
+                    warn!(peer = %peer.node_id_short(), peer_addr = %noise_addr, error = %e, "Noise connection failed");
                     result.failed += 1;
                 }
             }
         }
 
-        debug!(
+        info!(
             msg_type = ?envelope.msg_type,
             success = result.success,
             failed = result.failed,
@@ -1443,12 +1539,20 @@ impl MeshNetwork {
     }
 
     /// Send a message to a specific peer
+    ///
+    /// Automatically routes messages through Noise encryption for sensitive message types
+    /// (MPC, Elder, Payout, ZK, etc.) or ZMQ for broadcast messages (Discovery, HealthPing).
     pub async fn send_to_peer(&self, peer: &Peer, envelope: &MessageEnvelope) -> GhostResult<()> {
         if !self.running.load(Ordering::SeqCst) {
             return Err(GhostError::NotRunning("Mesh network not running".into()));
         }
 
-        // Serialize the envelope
+        // Route sensitive messages through Noise encryption
+        if self.should_use_noise(envelope.msg_type) {
+            return self.send_encrypted(peer, envelope).await;
+        }
+
+        // Serialize the envelope for ZMQ
         let data = envelope
             .serialize()
             .map_err(|e| GhostError::Serialization(e.to_string()))?;
@@ -1461,7 +1565,7 @@ impl MeshNetwork {
             msg_type = ?envelope.msg_type,
             endpoint = %endpoint,
             bytes = data.len(),
-            "Sending message to peer"
+            "Sending message to peer via ZMQ"
         );
 
         // M-8: Use try_send with explicit backpressure handling
@@ -1553,11 +1657,10 @@ impl MeshNetwork {
                 let mut stats = self.validation_stats.write();
                 stats.record(&Err(e.clone()));
 
-                // Log ALL validation failures for diagnostics
-                info!(
+                debug!(
                     error = %e,
                     data_len = data.len(),
-                    "DIAG: Message validation failed"
+                    "Message validation failed"
                 );
                 return Err(GhostError::P2PMessage(e.to_string()));
             }
@@ -1569,15 +1672,13 @@ impl MeshNetwork {
             stats.record(&Ok(envelope.clone()));
         }
 
-        // Log verification messages for P2P debugging
-        if matches!(envelope.msg_type, MessageType::VerificationResult) {
-            let sender_hex = hex::encode(envelope.sender);
-            info!(
-                sender = %&sender_hex[..8],
-                msg_type = ?envelope.msg_type,
-                "DIAG: Message validated successfully"
-            );
-        }
+        let sender_hex = hex::encode(envelope.sender);
+        debug!(
+            sender = %&sender_hex[..8],
+            msg_type = ?envelope.msg_type,
+            sequence = envelope.sequence,
+            "Message validated"
+        );
 
         // H-5 SECURITY: Atomically check for duplicate and mark as seen
         // This prevents TOCTOU race conditions where two threads could both
@@ -1588,11 +1689,11 @@ impl MeshNetwork {
         };
 
         if self.check_duplicate_and_mark(msg_id) {
-            tracing::trace!(
+            trace!(
                 sender = %hex::encode(&envelope.sender[..8]),
                 msg_type = ?envelope.msg_type,
                 sequence = envelope.sequence,
-                "Ignoring duplicate message"
+                "Duplicate message dropped"
             );
             return Ok(());
         }
@@ -1602,9 +1703,14 @@ impl MeshNetwork {
 
         // Dispatch to handlers
         let handlers = self.handlers.read().clone();
+        debug!(
+            handler_count = handlers.len(),
+            msg_type = ?envelope.msg_type,
+            "Dispatching to handlers"
+        );
         for handler in handlers {
             if let Err(e) = handler.handle_message(envelope.clone()).await {
-                error!(error = %e, "Handler error");
+                error!(error = %e, msg_type = ?envelope.msg_type, "Handler error");
             }
         }
 
@@ -1811,6 +1917,7 @@ impl MeshNetwork {
             (topics::ZK_PAYOUT_PROPOSAL, "zk_payout_proposal"),
             (topics::ZK_PAYOUT_VOTE, "zk_payout_vote"),
             (topics::VERIFICATION, "verification"),
+            (topics::MPC, "mpc"), // MPC ceremony messages
         ];
 
         for (topic, name) in additional_topics {
@@ -1819,7 +1926,7 @@ impl MeshNetwork {
             })?;
         }
 
-        info!("DIAG: SUB socket created with reconnection support (ivl=100ms, max=5000ms)");
+        debug!("SUB socket created with reconnection support (ivl=100ms, max=5000ms)");
 
         // Track which peers we've attempted to connect to
         let mut connected_addresses: std::collections::HashSet<String> =
@@ -1925,7 +2032,7 @@ impl MeshNetwork {
                     info!(
                         host = %host,
                         total_connected = connected_addresses.len() + 1,
-                        "DIAG: SUB socket connected to peer on all ports (libzmq handles reconnection)"
+                        "SUB socket connected to peer on all ports"
                     );
                     connected_addresses.insert(host.clone());
                     // P2P4-L6: Reset backoff on success
@@ -1949,13 +2056,13 @@ impl MeshNetwork {
             // Log stats every 30 seconds
             if last_stats_log.elapsed() > std::time::Duration::from_secs(30) {
                 let total_received = self.messages_received.load(Ordering::Relaxed);
-                info!(
+                debug!(
                     connected_peers = connected_addresses.len(),
                     receive_attempts,
                     receive_timeouts,
                     receive_errors,
                     total_received,
-                    "DIAG: SUB socket stats"
+                    "SUB socket stats"
                 );
                 last_stats_log = std::time::Instant::now();
             }
@@ -1989,6 +2096,7 @@ impl MeshNetwork {
                         ("elder", topics::ELDER),
                         ("payout", topics::PAYOUT_PROPOSAL),
                         ("verify", topics::VERIFICATION),
+                        ("mpc", topics::MPC), // MPC ceremony messages
                     ];
 
                     let (topic_name, data): (&str, Vec<u8>) = {
@@ -1998,6 +2106,13 @@ impl MeshNetwork {
                                 found = Some((*name, raw_data[topic_bytes.len()..].to_vec()));
                                 break;
                             }
+                        }
+                        if found.is_none() && !raw_data.is_empty() {
+                            debug!(
+                                prefix_bytes = ?&raw_data[..raw_data.len().min(10)],
+                                data_len = raw_data.len(),
+                                "Unknown topic prefix"
+                            );
                         }
                         found.unwrap_or(("unknown", raw_data))
                     };
@@ -2050,10 +2165,19 @@ impl MeshNetwork {
 
                     // Log verification messages for P2P debugging
                     if topic_name == "verify" {
-                        info!(
+                        debug!(
                             topic = topic_name,
                             data_len = data.len(),
-                            "DIAG: SUB received verification message"
+                            "SUB received verification message"
+                        );
+                    }
+
+                    // Log MPC messages for ceremony debugging
+                    if topic_name == "mpc" {
+                        debug!(
+                            topic = topic_name,
+                            data_len = data.len(),
+                            "SUB received MPC message"
                         );
                     }
 
@@ -2140,7 +2264,7 @@ impl MeshNetwork {
                 public_address: self.config.public_address.clone(),
                 block_height: 0, // Would track actual height
                 round_id: 0,     // Would track current round
-                capabilities: self.config.capabilities,
+                capabilities: *self.capabilities.read(),
                 miner_count: self.peers.peer_count() as u32,
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
                 pow_proof,
@@ -2627,40 +2751,47 @@ mod tests {
 
     #[test]
     fn test_sequence_monotonicity_validation() {
-        // H-P2P-4: Test that old sequence numbers are rejected
+        // H-P2P-4: Test sequence validation with tolerance window
+        // SEQUENCE_TOLERANCE_WINDOW = 10 allows out-of-order delivery within 10 sequences
         let mut cache = SeenMessageCache::new(100);
         let sender = [1u8; 32];
 
-        // Insert message with sequence 10
+        // Insert message with sequence 100 (use higher values to test tolerance)
         let id1 = MessageId {
             sender,
-            sequence: 10,
+            sequence: 100,
         };
         cache.insert(id1, 1000);
-        cache.update_highest_seq(&sender, 10);
+        cache.update_highest_seq(&sender, 100);
 
-        // Sequence 11 should be valid (greater than highest)
-        assert!(cache.is_sequence_valid(&sender, 11));
+        // Sequence 101 should be valid (greater than highest)
+        assert!(cache.is_sequence_valid(&sender, 101));
 
-        // Sequence 10 should be invalid (equal to highest - replay)
-        assert!(!cache.is_sequence_valid(&sender, 10));
+        // Sequence 100 should be valid (equal to highest, within tolerance)
+        assert!(cache.is_sequence_valid(&sender, 100));
 
-        // Sequence 5 should be invalid (less than highest - old message replay)
-        assert!(!cache.is_sequence_valid(&sender, 5));
+        // Sequence 95 should be valid (within tolerance: 100 - 10 = 90)
+        assert!(cache.is_sequence_valid(&sender, 95));
 
-        // Insert message with sequence 20, update highest
+        // Sequence 85 should be invalid (outside tolerance: 100 - 10 = 90, 85 < 90)
+        assert!(!cache.is_sequence_valid(&sender, 85));
+
+        // Insert message with sequence 200, update highest
         let id2 = MessageId {
             sender,
-            sequence: 20,
+            sequence: 200,
         };
         cache.insert(id2, 1001);
-        cache.update_highest_seq(&sender, 20);
+        cache.update_highest_seq(&sender, 200);
 
-        // Sequence 15 should now be invalid (less than new highest of 20)
-        assert!(!cache.is_sequence_valid(&sender, 15));
+        // Sequence 195 should be valid (within tolerance: 200 - 10 = 190)
+        assert!(cache.is_sequence_valid(&sender, 195));
 
-        // Sequence 21 should be valid
-        assert!(cache.is_sequence_valid(&sender, 21));
+        // Sequence 180 should be invalid (outside tolerance: 200 - 10 = 190, 180 < 190)
+        assert!(!cache.is_sequence_valid(&sender, 180));
+
+        // Sequence 201 should be valid
+        assert!(cache.is_sequence_valid(&sender, 201));
     }
 
     #[test]
@@ -2690,8 +2821,9 @@ mod tests {
 
     #[test]
     fn test_mesh_deduplication_with_sequence_check() {
-        // H-P2P-4/H-5: Integration test - MeshNetwork should reject old sequences
+        // H-P2P-4/H-5: Integration test - MeshNetwork sequence validation with tolerance
         // Using the new atomic check_duplicate_and_mark method
+        // SEQUENCE_TOLERANCE_WINDOW = 10 allows out-of-order delivery
         let identity = Arc::new(NodeIdentity::generate());
         let mut config = MeshConfig::default();
         // Disable noise for test
@@ -2701,10 +2833,10 @@ mod tests {
 
         let sender = [1u8; 32];
 
-        // First message with sequence 10 should not be duplicate
+        // First message with sequence 100 should not be duplicate
         let msg1 = MessageId {
             sender,
-            sequence: 10,
+            sequence: 100,
         };
         // H-5: Use atomic check_duplicate_and_mark (returns false if not duplicate)
         assert!(
@@ -2712,27 +2844,36 @@ mod tests {
             "First message should not be duplicate"
         );
 
-        // Same message should now be duplicate
+        // Same message should now be duplicate (in seen cache)
         assert!(
             mesh.check_duplicate_and_mark(msg1),
             "Same message should be duplicate"
         );
 
-        // Message with sequence 5 (old) should be rejected as duplicate
-        // even though we haven't seen this exact (sender, seq) pair
+        // Message with sequence 95 (within tolerance: 100-10=90) should be accepted
+        let msg_within_tolerance = MessageId {
+            sender,
+            sequence: 95,
+        };
+        assert!(
+            !mesh.check_duplicate_and_mark(msg_within_tolerance),
+            "Sequence within tolerance should be accepted (out-of-order delivery)"
+        );
+
+        // Message with sequence 80 (outside tolerance: 100-10=90) should be rejected
         let msg_old = MessageId {
             sender,
-            sequence: 5,
+            sequence: 80,
         };
         assert!(
             mesh.check_duplicate_and_mark(msg_old),
-            "Old sequence should be rejected"
+            "Old sequence outside tolerance should be rejected"
         );
 
-        // Message with sequence 11 (new) should not be duplicate
+        // Message with sequence 101 (new) should not be duplicate
         let msg_new = MessageId {
             sender,
-            sequence: 11,
+            sequence: 101,
         };
         assert!(
             !mesh.check_duplicate_and_mark(msg_new),

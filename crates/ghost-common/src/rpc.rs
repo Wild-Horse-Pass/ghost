@@ -1365,6 +1365,15 @@ pub struct BlockchainInfo {
     pub chainwork: String,
     pub size_on_disk: u64,
     pub pruned: bool,
+    // Additional fields that may be present in newer Bitcoin Core versions
+    #[serde(default)]
+    pub bits: Option<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub signet_challenge: Option<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// Block header

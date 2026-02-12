@@ -262,27 +262,39 @@ Response:
 
 ### What It Means
 
-Be among the first 101 nodes to register:
-- Historical significance
-- Network bootstrapping reward
+Be among the first 101 nodes to contribute to the MPC ceremony:
+- MPC ceremony participation reward
+- Network bootstrapping significance
 - Limited availability (only 101 ever)
 
 ### Requirements
 
 | Requirement | Value |
 |-------------|-------|
-| Registration | Among first 101 |
+| MPC Contribution | Among first 101 contributors |
 | Status | Still active |
 | Uptime | Meet gatekeeper (95%) |
 
+### How Elder Status Is Assigned
+
+Elder status is assigned through MPC ceremony contribution order:
+
+```
+Assignment:
+├── Position 1: Genesis node auto-approves locally
+├── Positions 2-101: Require 67% BFT approval from existing contributors
+├── Positions are permanent and non-transferable
+└── If an elder goes offline, the position is lost forever
+```
+
 ### Verification
 
-No active verification needed - status is historical:
+No active verification needed - status is determined by `mpc_contributions` table:
 
 ```
 Verification:
-├── Check elder registry
-├── Confirm node ID matches
+├── Check mpc_contributions table for node's contribution
+├── Confirm contribution position is 1-101
 ├── Confirm still meeting uptime
 └── No challenges required
 ```
@@ -397,8 +409,8 @@ public_mining = true
 policy_enabled = true
 policy_profile = "bitcoin_pure"
 
-# Elder status (cannot be configured, assigned at registration)
-# elder_number = 42  # Read-only
+# Elder status (cannot be configured, assigned by MPC contribution order)
+# elder_number = 42  # Read-only, from mpc_contributions table
 ```
 
 ## Monitoring

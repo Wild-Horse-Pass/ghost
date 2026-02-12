@@ -850,11 +850,13 @@ Example:
 - Node B enters top 100 → Gets 50,000 sats + current block share
 ```
 
-### 9.4 Elder System
+### 9.4 Elder System (MPC-Based)
 
-- **Max Elders**: 101
-- **Assignment**: FIFO by registration timestamp
-- **Ordering**: SHA256(timestamp || node_id) for deterministic ordering
+- **Max Elders**: 101 (matches MPC ceremony contributor limit)
+- **Assignment**: First 101 nodes to contribute to the MPC ceremony, ordered by contribution position
+- **Genesis**: Position 1 auto-approves locally on the genesis node
+- **Subsequent Positions**: Require 67% BFT approval from existing MPC contributors
+- **Permanent**: Elder positions are non-transferable; if an elder goes offline, the position is lost forever
 - **Revocation**: 67% BFT vote if offline ≥7 continuous days
 - **Burned Slots**: Revoked elder numbers are NEVER reassigned
 

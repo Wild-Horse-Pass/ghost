@@ -36,8 +36,6 @@
 
 pub mod ban_manager;
 pub mod discovery_handler;
-pub mod elder_list;
-pub mod elder_registration_handler;
 pub mod encrypted_proposal;
 pub mod epoch;
 pub mod health_handler;
@@ -63,8 +61,6 @@ pub mod mpc_handler;
 
 pub use ban_manager::*;
 pub use discovery_handler::*;
-pub use elder_list::*;
-pub use elder_registration_handler::*;
 pub use encrypted_proposal::*;
 pub use epoch::*;
 pub use health_handler::*;

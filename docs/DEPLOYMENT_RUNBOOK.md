@@ -12,7 +12,8 @@ This runbook provides step-by-step instructions for deploying Bitcoin Ghost in p
 6. [Network Ports](#network-ports)
 7. [Monitoring](#monitoring)
 8. [Troubleshooting](#troubleshooting)
-9. [Maintenance](#maintenance)
+9. [MPC Ceremony](#mpc-ceremony)
+10. [Maintenance](#maintenance)
 
 ---
 
@@ -676,6 +677,79 @@ cp /var/lib/ghost/data/ghost.db.backup /var/lib/ghost/data/ghost.db
 
 # Start service
 sudo systemctl start ghost-pool
+```
+
+---
+
+## MPC Ceremony
+
+### Overview
+
+The MPC (Multi-Party Computation) ceremony generates ZK proof parameters. The first 101 nodes to contribute become elders. Only one honest participant is needed for security (1-of-N).
+
+### Genesis Node Startup
+
+**Only VM1 (genesis node) runs with the `--genesis` flag.** This generates the initial parameters and claims position 1.
+
+```bash
+# VM1 only
+ghost-pool --config /etc/ghost/config.toml --genesis
+```
+
+### Startup Order (Critical)
+
+1. Start VM1 (genesis node) first
+2. Wait 60 seconds for genesis parameters to initialize
+3. Start VM2, VM3, VM4 **without** `--genesis`
+
+```bash
+# VM2-4 (non-genesis nodes)
+ghost-pool --config /etc/ghost/config.toml
+```
+
+**Warning**: If all nodes run with `--genesis`, they each independently generate genesis params and all try to claim position 1, causing UNIQUE constraint failures.
+
+VM2-4 have systemd drop-in overrides at `/etc/systemd/system/ghost-pool.service.d/` that ensure the `--genesis` flag is not present.
+
+### MPC State Wipe
+
+To reset MPC state on a node (e.g., after a failed ceremony or for testing):
+
+```bash
+# 1. Stop the service
+sudo systemctl stop ghost-pool
+
+# 2. Wait for process to fully exit
+sleep 5
+sudo kill -9 $(pgrep ghost-pool) 2>/dev/null
+
+# 3. Wipe the database (runs as ghost user)
+sudo rm -f /home/ghost/.ghost/ghost.db
+
+# 4. Wipe MPC parameters
+sudo rm -rf /home/ghost/.ghost/mpc_params/
+
+# 5. Restart the service
+sudo systemctl start ghost-pool
+```
+
+**Note**: The database path is `/home/ghost/.ghost/ghost.db` (NOT `/root/.ghost/ghost.db`) because the service runs as the `ghost` user.
+
+### MPC Parameter Lifecycle
+
+```
+Genesis node starts with --genesis
+├── Generates initial parameters (position 1)
+├── Parameters stored in /home/ghost/.ghost/mpc_params/
+└── Broadcasts availability to peers
+
+Other nodes start without --genesis
+├── Discover existing ceremony via P2P
+├── Fetch parameters from /api/v1/mpc/contributors
+├── Contribute (requires 67% BFT approval from existing contributors)
+└── Updated parameters stored locally
+
+After 101 contributions → parameters ossify permanently
 ```
 
 ---

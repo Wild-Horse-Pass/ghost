@@ -35,6 +35,9 @@ path = "src/main.rs"
 [dependencies]
 ghost-common = { workspace = true }
 
+# SV2 protocol with Noise encryption
+stratum-apps = { path = "../../sv2-apps/stratum-apps", features = ["network", "core"] }
+
 # Async runtime
 tokio = { workspace = true }
 

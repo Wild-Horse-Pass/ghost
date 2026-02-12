@@ -85,6 +85,43 @@ pub mod bytes64 {
     }
 }
 
+/// Serialize/deserialize Option<[u8; 32]> as optional hex string
+pub mod option_bytes32 {
+    use super::*;
+
+    pub fn serialize<S>(bytes: &Option<[u8; 32]>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match bytes {
+            Some(b) => serializer.serialize_some(&hex::encode(b)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<[u8; 32]>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt: Option<String> = Option::deserialize(deserializer)?;
+        match opt {
+            Some(s) => {
+                let bytes = hex::decode(&s).map_err(serde::de::Error::custom)?;
+                if bytes.len() != 32 {
+                    return Err(serde::de::Error::custom(format!(
+                        "expected 32 bytes, got {}",
+                        bytes.len()
+                    )));
+                }
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Ok(Some(arr))
+            }
+            None => Ok(None),
+        }
+    }
+}
+
 /// Serialize/deserialize Vec<[u8; 32]> as vec of hex strings
 pub mod vec_bytes32 {
     use super::*;

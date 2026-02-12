@@ -151,7 +151,10 @@ impl CeremonyManager {
     }
 
     /// Load current parameters from disk
-    fn load_current_params(&self) -> MpcResult<()> {
+    ///
+    /// This loads the params that were saved to disk (e.g., after syncing from network).
+    /// Call this after fetching params from another node.
+    pub fn load_current_params(&self) -> MpcResult<()> {
         self.files.ensure_dir()?;
 
         let block_path = self.files.current_block_params_path();
@@ -190,6 +193,23 @@ impl CeremonyManager {
     /// Get the current contribution count
     pub fn contribution_count(&self) -> u32 {
         self.state.read().contribution_count
+    }
+
+    /// Sync the contribution count from network peers
+    ///
+    /// This is used when a node joins the network and fetches existing params.
+    /// The contribution count determines the next position number.
+    /// Only updates if the network count is higher (to prevent rollbacks).
+    pub fn sync_contribution_count(&self, network_count: u32) {
+        let mut state = self.state.write();
+        if network_count > state.contribution_count {
+            info!(
+                local_count = state.contribution_count,
+                network_count = network_count,
+                "MPC: Syncing contribution count from network"
+            );
+            state.contribution_count = network_count;
+        }
     }
 
     /// Check if the ceremony has ossified
@@ -322,6 +342,70 @@ impl CeremonyManager {
             prev_hash = %hex::encode(contribution.prev_params_hash),
             new_hash = %hex::encode(contribution.new_params_hash),
             "Generated MPC contribution"
+        );
+
+        Ok((new_params, contribution))
+    }
+
+    /// Generate a contribution at a specific position
+    ///
+    /// Unlike `generate_contribution()` which uses the in-memory state.contribution_count,
+    /// this method accepts an externally-determined position. The caller should query the
+    /// database for the current count to avoid stale in-memory state (e.g., when multiple
+    /// nodes start simultaneously and the in-memory count hasn't been updated from P2P sync).
+    ///
+    /// # Arguments
+    ///
+    /// * `contributor_id` - The node ID of the new elder
+    /// * `position` - The position number (should be db_count + 1)
+    pub fn generate_contribution_at_position(
+        &self,
+        contributor_id: &str,
+        position: u32,
+    ) -> MpcResult<(Parameters<Bls12>, MpcContribution)> {
+        let state = self.state.read();
+
+        if state.is_ossified {
+            return Err(MpcError::CeremonyOssified(state.contribution_count));
+        }
+
+        // 3.9 SECURITY: Check time-based ossification (30 days from genesis)
+        if state.should_time_ossify() {
+            drop(state);
+            self.ossify()?;
+            return Err(MpcError::CeremonyOssified(self.contribution_count()));
+        }
+
+        if position > MAX_CEREMONY_CONTRIBUTORS {
+            return Err(MpcError::CeremonyOssified(state.contribution_count));
+        }
+
+        // Get current parameters
+        let current_params = self.block_params.read();
+        let params = current_params.as_ref().ok_or_else(|| {
+            MpcError::Internal("No current parameters loaded for contribution".into())
+        })?;
+
+        // 4.22: Get ceremony_id for binding proofs to this ceremony
+        let ceremony_id = state.ceremony_id;
+        drop(state); // Release read lock before generating
+
+        // Generate the contribution
+        let mut rng = OsRng;
+        let (new_params, contribution) = generate_contribution(
+            params.as_ref(),
+            &ceremony_id,
+            position,
+            contributor_id,
+            &mut rng,
+        )?;
+
+        info!(
+            position = position,
+            contributor = contributor_id,
+            prev_hash = %hex::encode(contribution.prev_params_hash),
+            new_hash = %hex::encode(contribution.new_params_hash),
+            "Generated MPC contribution (DB-driven position)"
         );
 
         Ok((new_params, contribution))

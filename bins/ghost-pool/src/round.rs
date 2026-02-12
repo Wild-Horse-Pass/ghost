@@ -728,6 +728,28 @@ impl RoundManager {
         }
     }
 
+    /// Update an existing node's capabilities (e.g. after elder status changes)
+    ///
+    /// Updates both the node registry and the current active round.
+    pub fn update_node_capabilities(&self, node_id: NodeId, capabilities: NodeCapabilities) {
+        self.nodes.write().insert(node_id, capabilities);
+
+        // Also update in current round so payout calculations use fresh caps
+        let round_id = *self.current_round.read();
+        if round_id > 0 {
+            if let Some(round) = self.rounds.write().get_mut(&round_id) {
+                round.register_node(node_id, capabilities);
+            }
+        }
+
+        info!(
+            node = %hex::encode(&node_id[..4]),
+            total_shares = capabilities.total_shares(),
+            elder = capabilities.elder_status,
+            "Updated node capabilities"
+        );
+    }
+
     /// End current round and prepare payout data
     pub fn end_round(&self) -> Option<RoundSummary> {
         let round_id = *self.current_round.read();
@@ -811,6 +833,16 @@ impl RoundManager {
         let mut diff = self.difficulty.write();
         diff.share_difficulty = share_difficulty;
         info!(difficulty = share_difficulty, "Updated share difficulty");
+    }
+
+    /// Get current network difficulty
+    pub fn network_difficulty(&self) -> f64 {
+        self.difficulty.read().network_difficulty
+    }
+
+    /// Get current share difficulty
+    pub fn share_difficulty(&self) -> f64 {
+        self.difficulty.read().share_difficulty
     }
 
     /// Record a share forwarded from SRI (already validated by SRI)

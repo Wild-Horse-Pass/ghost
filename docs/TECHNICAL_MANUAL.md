@@ -439,7 +439,7 @@ Three-layer defense:
 pub struct VotingSession {
     round_id: RoundId,
     proposal_hash: [u8; 32],
-    eligible_voters: HashSet<NodeId>,  // From canonical elder list
+    eligible_voters: HashSet<NodeId>,  // All participating nodes
     votes: HashMap<NodeId, Vote>,
     timeout_ms: u64,
 }
@@ -545,38 +545,22 @@ pub struct MeshConfig {
 }
 ```
 
-## 4.8 Canonical Elder List
+## 4.8 Elder System (MPC-Based)
 
-### Elder Entry
+Elders are the first 101 nodes to contribute to the MPC ceremony. Elder status
+is determined by the `mpc_contributions` table, not a separate registration system.
 
-```rust
-pub struct ElderEntry {
-    node_id: NodeId,
-    registered_epoch: u64,
-    pow_nonce: u64,
-    pow_difficulty: u32,
-    first_seen: u64,
-    uptime_at_registration: f64,
-}
-```
+### How It Works
 
-### Registration Requirements
+1. **Genesis**: Position 1 auto-approves locally on the genesis node (`--genesis` flag)
+2. **Positions 2-101**: Each new contributor requires 67% BFT approval from existing MPC contributors
+3. **Positions are permanent**: Non-transferable; if an elder goes offline, the position is lost forever
+4. **101 max**: Hard cap matches the MPC ceremony contributor limit
 
-1. Valid PoW proof (nonce verifies against node ID)
-2. 95%+ uptime over 7 days
-3. >67% approval from previous epoch's elders
+### Elder Status in Capabilities
 
-### List Structure
-
-```rust
-pub struct CanonicalElderList {
-    epoch: u64,
-    elders: Vec<ElderEntry>,
-    merkle_root: [u8; 32],
-    approval_signatures: Vec<ElderApproval>,
-    activated_at: u64,
-}
-```
+Elder status grants +1 share in the 5-4-3-2-1 system. All nodes participate in BFT consensus
+regardless of elder status — elder status does NOT grant special voting power.
 
 ---
 
@@ -922,12 +906,12 @@ Proves payout distribution:
 
 ### Rolling MPC Architecture
 
-Parameters improve as elders contribute:
+Parameters improve as MPC contributors participate:
 
-- Elder 1: Genesis parameters
-- Elders 2-100: Each contribution activates immediately
-- Elder 101: Parameters **ossify permanently**
-- Elders 102+: No contribution (ceremony closed)
+- Contributor 1: Genesis parameters (auto-approved on genesis node)
+- Contributors 2-100: Each contribution activates immediately (requires 67% BFT approval)
+- Contributor 101: Parameters **ossify permanently**
+- Contributors 102+: No contribution (ceremony closed)
 
 **1-of-N Security**: Only ONE honest participant needed.
 
@@ -1019,7 +1003,7 @@ Nodes earn shares based on **verified** capabilities:
 | Ghost Pay | +4 | L2 payment network operation |
 | Public Mining | +3 | Open Stratum port to miners |
 | Bitcoin Pure | +2 | BUDS policy enforcement |
-| Elder Status | +1 | First 101 nodes (non-renewable) |
+| Elder Status | +1 | First 101 MPC contributors (non-renewable) |
 
 **Maximum**: 15 shares per node
 
@@ -1263,9 +1247,13 @@ CREATE TABLE policy_challenges (
 );
 ```
 
-## 11.3 Elder Tables
+## 11.3 Elder Tables (Legacy)
 
-### canonical_elder_lists
+These tables were part of the old registration-based elder system and remain in the schema
+for migration integrity. The current MPC-based elder system uses the `mpc_contributions`
+table instead (see Section 7.3).
+
+### canonical_elder_lists (legacy)
 ```sql
 CREATE TABLE canonical_elder_lists (
     epoch INTEGER PRIMARY KEY,
@@ -1276,7 +1264,7 @@ CREATE TABLE canonical_elder_lists (
 );
 ```
 
-### elder_entries
+### elder_entries (legacy)
 ```sql
 CREATE TABLE elder_entries (
     id INTEGER PRIMARY KEY,
@@ -1430,7 +1418,7 @@ curl http://localhost:8800/api/v1/stats
 |------|------------|
 | **BFT** | Byzantine Fault Tolerant - consensus that tolerates 1/3 malicious nodes |
 | **BUDS** | Bitcoin Unidentified Dust Spam - transaction classification system |
-| **Elder** | First 101 registered nodes with special status |
+| **Elder** | First 101 MPC ceremony contributors with +1 share bonus |
 | **Ghost ID** | Silent payment address (scan + spend pubkeys) |
 | **Ghost Lock** | P2TR output with recovery timelock |
 | **GSP** | Ghost Service Provider - light wallet backend |

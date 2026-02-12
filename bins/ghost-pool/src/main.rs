@@ -38,7 +38,7 @@ use clap::Parser;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{broadcast, Semaphore};
-use tracing::{error, info, warn, Level};
+use tracing::{debug, error, info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use ghost_common::config::{MiningMode, NodeConfig};
@@ -167,6 +167,10 @@ struct Args {
     /// Show node identity and exit
     #[arg(long)]
     show_identity: bool,
+
+    /// Initialize MPC genesis (only use on first node in network)
+    #[arg(long)]
+    genesis: bool,
 
     /// Show node status in load balancer and exit
     #[arg(long)]
@@ -620,8 +624,7 @@ async fn main() -> Result<()> {
         elder_status: false,
     };
 
-    // Register node with database and check if we should be an elder
-    // First 101 nodes to register become elders automatically
+    // Register node with database
     let node_id_hex = identity.node_id_hex();
     let public_address = config.network.public_address.as_deref();
     let display_name = config.identity.display_name.as_deref();
@@ -633,28 +636,31 @@ async fn main() -> Result<()> {
         capabilities.bitcoin_pure
     );
 
-    match db.register_node_with_elder_check(
+    // Register node in database (for tracking/discovery purposes)
+    if let Err(e) = db.register_node_with_elder_check(
         &node_id_hex,
         public_address,
         display_name,
         &capabilities_str,
     ) {
-        Ok((is_elder, elder_order)) => {
-            capabilities.elder_status = is_elder;
-            if is_elder {
-                info!("Node registered as Elder #{}", elder_order.unwrap_or(0));
-            } else {
-                info!(
-                    "Node registered (non-elder, {} elders already exist)",
-                    db.get_elder_count().unwrap_or(0)
-                );
-            }
+        warn!("Failed to register node: {} - continuing anyway", e);
+    }
+
+    // Check MPC-based elder status
+    // Elder = MPC contributor (position 1-101 in the ceremony)
+    match db.get_mpc_elder_position(&node_id_hex) {
+        Ok(Some(position)) => {
+            capabilities.elder_status = true;
+            info!("Node is MPC Elder #{}", position);
+        }
+        Ok(None) => {
+            info!(
+                "Node is not an MPC elder ({} MPC contributors exist)",
+                db.get_mpc_elder_count().unwrap_or(0)
+            );
         }
         Err(e) => {
-            warn!(
-                "Failed to register node for elder check: {} - defaulting to non-elder",
-                e
-            );
+            warn!("Failed to check MPC elder status: {} - defaulting to non-elder", e);
         }
     }
 
@@ -804,6 +810,7 @@ async fn main() -> Result<()> {
             .with_broadcaster(broadcast_fn)
             .with_executor(execute_fn)
             .with_ban_manager(Arc::clone(&ban_manager))
+            .with_database(Arc::clone(&db))
             .with_rate_limiter_persistence(rate_limiter_path),
     );
     // Start the background persistence task (persists every 60 seconds)
@@ -918,77 +925,6 @@ async fn main() -> Result<()> {
     mesh.register_handler(Arc::clone(&discovery_handler)
         as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
 
-    // === CANONICAL ELDER LIST INITIALIZATION (P2P-C1/C2/C3) ===
-    // Load or create the canonical elder list manager from database
-    let elder_list_manager = match ghost_consensus::ElderListManager::load_from_database(&db) {
-        Ok(manager) if manager.current_epoch() > 0 => {
-            info!(
-                epoch = manager.current_epoch(),
-                elder_count = manager.current().elder_count(),
-                "Loaded canonical elder list from database"
-            );
-            Arc::new(parking_lot::RwLock::new(manager))
-        }
-        Ok(_) | Err(_) => {
-            // Genesis bootstrap - create epoch 0 with empty list
-            // First nodes to register become elders via the normal node registration process
-            let genesis = ghost_consensus::CanonicalElderList::genesis(vec![]);
-            let manager = ghost_consensus::ElderListManager::with_list(genesis);
-            if let Err(e) = manager.save_current_to_database(&db) {
-                warn!(error = %e, "Failed to save genesis elder list to database");
-            }
-            info!("Created genesis elder list (epoch 0, empty)");
-            Arc::new(parking_lot::RwLock::new(manager))
-        }
-    };
-
-    // Create broadcast callback for elder registration handler
-    let mesh_for_elder_broadcast = Arc::clone(&mesh);
-    let elder_broadcast_fn: ghost_consensus::elder_registration_handler::ElderBroadcastFn =
-        Arc::new(
-            move |msg_type: ghost_consensus::MessageType, payload: Vec<u8>| {
-                mesh_for_elder_broadcast.broadcast_sync(msg_type, payload)
-            },
-        );
-
-    // M-1 SECURITY FIX: Set up transition callback BEFORE Arc wrapping
-    // This callback updates VoteHandler's eligible voters when epoch transitions occur
-    let vh_for_elder_transition = Arc::clone(&vote_handler);
-    let transition_callback: ghost_consensus::elder_registration_handler::TransitionCallback =
-        Arc::new(move |new_list: &ghost_consensus::CanonicalElderList| {
-            // Update eligible voters in VoteHandler from the new canonical list
-            vh_for_elder_transition.set_canonical_elder_list(new_list.clone());
-            info!(
-                epoch = new_list.epoch,
-                elder_count = new_list.elder_count(),
-                "M-1: Updated VoteHandler with new canonical elder list"
-            );
-        });
-
-    // Create the elder registration handler with transition callback set BEFORE Arc wrapping
-    let elder_handler = ghost_consensus::ElderRegistrationHandler::new(
-        Arc::clone(&identity),
-        Arc::clone(&elder_list_manager),
-        Arc::clone(&db),
-    )
-    .with_broadcaster(elder_broadcast_fn)
-    .with_ban_manager(Arc::clone(&ban_manager));
-
-    // M-1: Set callback before Arc wrapping (required because set_transition_callback takes &mut self)
-    elder_handler.set_transition_callback(transition_callback);
-
-    let elder_registration_handler = Arc::new(elder_handler);
-
-    // Register elder registration handler with mesh
-    mesh.register_handler(Arc::clone(&elder_registration_handler)
-        as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
-
-    info!(
-        "Elder registration handler initialized (epoch {}, {} elders)",
-        elder_list_manager.read().current_epoch(),
-        elder_list_manager.read().current().elder_count()
-    );
-
     // ZK consensus handlers (optional feature)
     // DEFERRED INITIALIZATION: ZK parameter generation is memory-intensive and can take minutes.
     // We spawn it in a background task so the node can start serving immediately.
@@ -1039,13 +975,8 @@ async fn main() -> Result<()> {
                 .with_ban_manager(Arc::clone(&ban_manager)),
         );
 
-        // Initialize validators from elder list
-        let validators: std::collections::HashSet<_> = elder_list_manager
-            .read()
-            .current()
-            .get_eligible_voters()
-            .into_iter()
-            .collect();
+        // Initialize validators from MPC elders in DB
+        let validators = db.get_mpc_elder_node_ids().unwrap_or_default();
         zk_vote_handler.set_validators(validators.clone());
         zk_payout_handler.set_validators(validators);
 
@@ -1165,15 +1096,41 @@ async fn main() -> Result<()> {
         };
 
         // Create broadcast callback for MPC handler
-        let mesh_for_mpc = Arc::clone(&mesh);
+        // Uses async Noise relay: sync closure queues messages, background task
+        // routes them through mesh.broadcast() which uses Noise encryption
+        let (mpc_tx, mut mpc_rx) = tokio::sync::mpsc::channel::<(
+            ghost_consensus::message::MessageType,
+            Vec<u8>,
+        )>(64);
+        let mesh_for_mpc_relay = Arc::clone(&mesh);
+        tokio::spawn(async move {
+            while let Some((msg_type, payload)) = mpc_rx.recv().await {
+                match mesh_for_mpc_relay.create_envelope_raw(msg_type, payload) {
+                    Ok(envelope) => {
+                        if let Err(e) = mesh_for_mpc_relay.broadcast(envelope).await {
+                            tracing::warn!(error = %e, "MPC Noise broadcast failed");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "MPC envelope creation failed");
+                    }
+                }
+            }
+        });
         let mpc_broadcast: ghost_consensus::mpc_handler::MpcBroadcastFn =
-            Arc::new(move |msg_type, payload| mesh_for_mpc.broadcast_sync(msg_type, payload));
+            Arc::new(move |msg_type, payload| {
+                mpc_tx.try_send((msg_type, payload)).map_err(|e| {
+                    ghost_common::error::GhostError::Internal(format!(
+                        "MPC broadcast channel error: {}",
+                        e
+                    ))
+                })
+            });
 
         // Create MPC handler
         let mpc_handler = Arc::new(
             MpcHandler::new(
                 Arc::clone(&identity),
-                Arc::clone(&elder_list_manager),
                 Arc::clone(&db),
             )
             .with_broadcaster(mpc_broadcast)
@@ -1187,55 +1144,433 @@ async fn main() -> Result<()> {
         mesh.register_handler(Arc::clone(&mpc_handler)
             as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
 
-        // Wire up the registration approved callback to trigger MPC contributions
-        // When a new elder is approved, they should generate their MPC contribution
-        let ceremony_manager_for_callback = Arc::clone(&ceremony_manager);
-        let mesh_for_mpc_callback = Arc::clone(&mesh);
+        // Auto-contribute to MPC ceremony on startup
+        // Any node can contribute - first 101 become elders
+        // Only the genesis node (--genesis flag) can create initial parameters
+        let ceremony_manager_for_startup = Arc::clone(&ceremony_manager);
+        let mesh_for_mpc_startup = Arc::clone(&mesh);
         let identity_for_mpc = Arc::clone(&identity);
-        let registration_approved_callback: ghost_consensus::RegistrationApprovedCallback =
-            Arc::new(move |candidate, elder_position| {
-                // Only generate contribution if we are the approved candidate
-                if candidate == identity_for_mpc.node_id() {
-                    info!(
-                        elder_position,
-                        "MPC: We were approved as elder, generating contribution"
+        let db_for_mpc = Arc::clone(&db);
+        let round_manager_for_mpc = Arc::clone(&round_manager);
+        let initial_capabilities = capabilities; // Copy for MPC task to update after elder promotion
+        let is_genesis_node = args.genesis;
+        let seed_nodes_for_mpc = config.network.seed_nodes.clone();
+
+        tokio::spawn(async move {
+            // Wait a bit for network to stabilize
+            tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
+
+            let node_id_hex = hex::encode(identity_for_mpc.node_id());
+
+            // Check if ceremony is ossified
+            if ceremony_manager_for_startup.is_ossified() {
+                info!("MPC ceremony is ossified (101 contributors reached)");
+                return;
+            }
+
+            // Check if we've already contributed
+            if db_for_mpc.is_mpc_elder(&node_id_hex).unwrap_or(false) {
+                let position = db_for_mpc.get_mpc_elder_position(&node_id_hex).unwrap_or(None);
+                info!(position = ?position, "Already an MPC contributor (elder)");
+                return;
+            }
+
+            // Retry loop: attempt contribution up to 5 times with 30s intervals.
+            // This handles race conditions where multiple nodes try the same position
+            // simultaneously — the loser retries at the next position.
+            // Cache the signed message so retries broadcast the same hash (votes accumulate).
+            let mut cached_msg: Option<(ghost_consensus::message::MpcContributionMessage, u32)> = None;
+            for attempt in 1..=5u32 {
+                // Re-check if we became an elder (e.g., via P2P sync of our own contribution)
+                if db_for_mpc.is_mpc_elder(&node_id_hex).unwrap_or(false) {
+                    let position = db_for_mpc.get_mpc_elder_position(&node_id_hex).unwrap_or(None);
+                    info!(position = ?position, "Now an MPC contributor (elder)");
+                    // Update live capabilities so health pings reflect elder status
+                    mesh_for_mpc_startup.update_elder_status(true);
+                    let mut updated_caps = initial_capabilities;
+                    updated_caps.elder_status = true;
+                    round_manager_for_mpc.update_node_capabilities(
+                        identity_for_mpc.node_id(),
+                        updated_caps,
                     );
-                    // Generate MPC contribution (async operation, spawn task)
-                    let cm = Arc::clone(&ceremony_manager_for_callback);
-                    let mesh = Arc::clone(&mesh_for_mpc_callback);
-                    let contributor_id = hex::encode(candidate);
-                    tokio::spawn(async move {
-                        // Ensure genesis parameters are initialized before first contribution
-                        if let Err(e) = cm.ensure_genesis_initialized() {
-                            warn!(error = %e, "Failed to initialize MPC genesis");
+                    return;
+                }
+
+                // Ensure we have parameters loaded
+                if !ceremony_manager_for_startup.has_current_params() {
+                    // Use DB to determine if this is truly genesis or if we need to fetch
+                    let db_count = db_for_mpc.get_mpc_elder_count().unwrap_or(0) as u32;
+
+                    if db_count == 0 && is_genesis_node {
+                        // Truly the first node — no contributors exist anywhere, create genesis
+                        info!("MPC: Genesis node with empty DB - creating initial parameters");
+                        if let Err(e) = ceremony_manager_for_startup.ensure_genesis_initialized() {
+                            warn!(error = %e, "Failed to initialize MPC genesis parameters");
                             return;
                         }
+                    } else {
+                        // Either DB already has contributors (synced from peers) or not genesis node
+                        // In both cases, fetch params from network
+                        if db_count > 0 {
+                            info!(db_count, "MPC: DB has contributors but no local params, fetching from network...");
+                        } else {
+                            info!("MPC: No genesis parameters found, fetching from network...");
+                        }
 
-                        match cm.generate_contribution(&contributor_id) {
-                            Ok((_new_params, contribution)) => {
-                                info!(
-                                    position = elder_position,
-                                    "MPC contribution generated, broadcasting to network"
-                                );
-                                // Serialize and broadcast the contribution
-                                if let Ok(payload) = serde_json::to_vec(&contribution) {
-                                    if let Err(e) = mesh.broadcast_sync(
-                                        ghost_consensus::message::MessageType::MpcContribution,
-                                        payload,
-                                    ) {
-                                        warn!(error = %e, "Failed to broadcast MPC contribution");
+                        // Try to fetch params from seed nodes
+                        let params_dir = ceremony_manager_for_startup.params_dir().clone();
+                        let mut fetched = false;
+
+                        for fetch_attempt in 1..=20 {
+                            // Try each seed node
+                            for seed in &seed_nodes_for_mpc {
+                                // Extract host from seed (format: "host:port")
+                                let host = seed.split(':').next().unwrap_or(seed);
+                                let url = format!("http://{}:8080/api/v1/mpc/params", host);
+
+                                debug!(url = %url, "MPC: Trying to fetch params from peer");
+
+                                match reqwest::Client::new()
+                                    .get(&url)
+                                    .timeout(std::time::Duration::from_secs(60))
+                                    .send()
+                                    .await
+                                {
+                                    Ok(response) if response.status().is_success() => {
+                                        match response.bytes().await {
+                                            Ok(data) if data.len() > 1000 => {
+                                                // Save params to disk
+                                                let _ = std::fs::create_dir_all(&params_dir);
+                                                let params_path = params_dir.join("block_params_v0.bin");
+                                                let current_path = params_dir.join("block_params_current.bin");
+
+                                                if let Err(e) = std::fs::write(&params_path, &data) {
+                                                    warn!(error = %e, "MPC: Failed to save fetched params");
+                                                    continue;
+                                                }
+
+                                                // Create symlink to current
+                                                let _ = std::fs::remove_file(&current_path);
+                                                if let Err(e) = std::os::unix::fs::symlink(&params_path, &current_path) {
+                                                    warn!(error = %e, "MPC: Failed to create params symlink");
+                                                }
+
+                                                info!(size = data.len(), peer = %host, "MPC: Fetched genesis params from peer!");
+                                                fetched = true;
+                                                break;
+                                            }
+                                            Ok(data) => {
+                                                debug!(size = data.len(), "MPC: Response too small, peer may not have params");
+                                            }
+                                            Err(e) => {
+                                                debug!(error = %e, peer = %host, "MPC: Failed to read response body");
+                                            }
+                                        }
+                                    }
+                                    Ok(response) => {
+                                        debug!(status = %response.status(), peer = %host, "MPC: Peer returned non-success status");
+                                    }
+                                    Err(e) => {
+                                        debug!(error = %e, peer = %host, "MPC: Failed to fetch from peer");
                                     }
                                 }
                             }
-                            Err(e) => {
-                                warn!(error = %e, "Failed to generate MPC contribution");
+
+                            if fetched {
+                                // Also fetch MPC status to sync contribution count
+                                for seed in &seed_nodes_for_mpc {
+                                    let host = seed.split(':').next().unwrap_or(seed);
+                                    let status_url = format!("http://{}:8080/api/v1/mpc/status", host);
+
+                                    if let Ok(response) = reqwest::Client::new()
+                                        .get(&status_url)
+                                        .timeout(std::time::Duration::from_secs(10))
+                                        .send()
+                                        .await
+                                    {
+                                        if let Ok(status) = response.json::<serde_json::Value>().await {
+                                            if let Some(count) = status.get("contribution_count").and_then(|c| c.as_u64()) {
+                                                info!(contribution_count = count, "MPC: Synced contribution count from peer");
+                                                ceremony_manager_for_startup.sync_contribution_count(count as u32);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                // Fetch and sync MPC contributors list (needed for vote validation)
+                                for seed in &seed_nodes_for_mpc {
+                                    let host = seed.split(':').next().unwrap_or(seed);
+                                    let contributors_url = format!("http://{}:8080/api/v1/mpc/contributors", host);
+
+                                    if let Ok(response) = reqwest::Client::new()
+                                        .get(&contributors_url)
+                                        .timeout(std::time::Duration::from_secs(10))
+                                        .send()
+                                        .await
+                                    {
+                                        if let Ok(data) = response.json::<serde_json::Value>().await {
+                                            if let Some(contributors) = data.get("contributors").and_then(|c| c.as_array()) {
+                                                let mut synced_count = 0;
+                                                for contrib in contributors {
+                                                    let position = contrib.get("position").and_then(|p| p.as_u64()).unwrap_or(0) as u32;
+                                                    let node_id = contrib.get("node_id").and_then(|n| n.as_str()).unwrap_or("");
+                                                    let prev_hash_hex = contrib.get("prev_params_hash").and_then(|h| h.as_str()).unwrap_or("");
+                                                    let new_hash_hex = contrib.get("new_params_hash").and_then(|h| h.as_str()).unwrap_or("");
+                                                    let epoch = contrib.get("epoch").and_then(|e| e.as_u64()).unwrap_or(0);
+                                                    let created_at = contrib.get("created_at").and_then(|c| c.as_u64()).unwrap_or(0);
+
+                                                    if position == 0 || node_id.is_empty() {
+                                                        continue;
+                                                    }
+
+                                                    let prev_hash: [u8; 32] = hex::decode(prev_hash_hex)
+                                                        .ok()
+                                                        .and_then(|b| b.try_into().ok())
+                                                        .unwrap_or([0u8; 32]);
+                                                    let new_hash: [u8; 32] = hex::decode(new_hash_hex)
+                                                        .ok()
+                                                        .and_then(|b| b.try_into().ok())
+                                                        .unwrap_or([0u8; 32]);
+
+                                                    let record = ghost_storage::queries::MpcContributionRecord {
+                                                        elder_position: position,
+                                                        contributor_node_id: node_id.to_string(),
+                                                        prev_params_hash: prev_hash,
+                                                        new_params_hash: new_hash,
+                                                        contribution_proof: Vec::new(),
+                                                        epoch,
+                                                        created_at,
+                                                    };
+
+                                                    if db_for_mpc.save_mpc_contribution(&record).is_ok() {
+                                                        synced_count += 1;
+                                                    }
+                                                }
+                                                if synced_count > 0 {
+                                                    info!(count = synced_count, "MPC: Synced contributor records from peer");
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Load fetched params into ceremony manager
+                                if let Err(e) = ceremony_manager_for_startup.load_current_params() {
+                                    warn!(error = %e, "MPC: Failed to load fetched params");
+                                    fetched = false;
+                                } else {
+                                    info!("MPC: Loaded fetched params into ceremony manager");
+                                }
+                                break;
+                            }
+
+                            if fetch_attempt % 4 == 0 {
+                                info!(fetch_attempt, "MPC: Still trying to fetch params (attempt {}/20)...", fetch_attempt);
+                            }
+
+                            tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
+                        }
+
+                        if !fetched || !ceremony_manager_for_startup.has_current_params() {
+                            warn!("MPC: Failed to fetch genesis parameters from network. Use --genesis on the first node.");
+                            return;
+                        }
+                    }
+                }
+
+                // Determine position from DB (authoritative source, not stale in-memory state)
+                let db_count = db_for_mpc.get_mpc_elder_count().unwrap_or(0) as u32;
+                let next_position = db_count + 1;
+
+                info!(attempt, db_count, next_position, "MPC: Attempting to contribute to ceremony");
+
+                // Cache the signed message so retries broadcast the same hash.
+                // Regenerate only on first attempt or when db_count changes (position shifted).
+                let need_generate = match &cached_msg {
+                    Some((_, cached_db_count)) => *cached_db_count != db_count,
+                    None => true,
+                };
+
+                if need_generate {
+                    match ceremony_manager_for_startup.generate_contribution_at_position(&node_id_hex, next_position) {
+                        Ok((new_params, contribution)) => {
+                            let position = contribution.position;
+                            info!(
+                                position = position,
+                                "MPC contribution generated for position {}",
+                                position,
+                            );
+
+                            // Genesis case: auto-apply when DB has no contributors
+                            if db_count == 0 {
+                                info!("MPC genesis: Auto-applying first contribution (no existing contributors to vote)");
+                                if let Err(e) = ceremony_manager_for_startup.apply_contribution(new_params, &contribution) {
+                                    warn!(error = %e, "Failed to apply genesis contribution");
+                                } else {
+                                    let proof_bytes = serde_json::to_vec(&contribution.proof).unwrap_or_default();
+                                    let record = ghost_storage::queries::MpcContributionRecord {
+                                        elder_position: position,
+                                        contributor_node_id: node_id_hex.clone(),
+                                        prev_params_hash: contribution.prev_params_hash,
+                                        new_params_hash: contribution.new_params_hash,
+                                        contribution_proof: proof_bytes,
+                                        epoch: 0,
+                                        created_at: contribution.timestamp,
+                                    };
+                                    if let Err(e) = db_for_mpc.save_mpc_contribution(&record) {
+                                        warn!(error = %e, "Failed to save genesis contribution to database");
+                                    } else {
+                                        info!("MPC genesis contribution applied - we are now Elder #1");
+                                        // Update live capabilities so health pings reflect elder status
+                                        mesh_for_mpc_startup.update_elder_status(true);
+                                        let mut updated_caps = initial_capabilities;
+                                        updated_caps.elder_status = true;
+                                        round_manager_for_mpc.update_node_capabilities(
+                                            identity_for_mpc.node_id(),
+                                            updated_caps,
+                                        );
+                                    }
+                                }
+                            }
+
+                            // Build and sign the broadcast message
+                            let proof_bytes = serde_json::to_vec(&contribution.proof).unwrap_or_default();
+
+                            let candidate: [u8; 32] = hex::decode(&contribution.contributor)
+                                .ok()
+                                .and_then(|b| b.try_into().ok())
+                                .unwrap_or_else(|| identity_for_mpc.node_id());
+
+                            let mut msg = ghost_consensus::message::MpcContributionMessage {
+                                candidate,
+                                elder_position: contribution.position,
+                                prev_params_hash: contribution.prev_params_hash,
+                                new_params_hash: contribution.new_params_hash,
+                                contribution_proof: proof_bytes,
+                                signature: [0u8; 64],
+                                timestamp: contribution.timestamp,
+                            };
+
+                            let signing_message = msg.signing_message();
+                            msg.signature = identity_for_mpc.sign(&signing_message);
+
+                            cached_msg = Some((msg, db_count));
+
+                            // If this was genesis (auto-applied), broadcast and we're done
+                            if db_count == 0 {
+                                if let Some((ref cached, _)) = cached_msg {
+                                    match mesh_for_mpc_startup.broadcast_message(
+                                        ghost_consensus::message::MessageType::MpcContribution,
+                                        cached,
+                                    ).await {
+                                        Ok(sent) => info!(sent = sent, "MPC genesis contribution broadcast via Noise"),
+                                        Err(e) => warn!(error = %e, "Failed to broadcast MPC genesis contribution"),
+                                    }
+                                }
+                                return;
                             }
                         }
-                    });
+                        Err(e) => {
+                            info!(error = %e, attempt, "Could not generate MPC contribution, will retry");
+                        }
+                    }
+                } else {
+                    info!(attempt, db_count, "MPC: Rebroadcasting cached contribution (same position)");
                 }
-            });
-        elder_registration_handler.set_registration_approved_callback(registration_approved_callback);
-        info!("MPC ceremony callback wired to elder registration handler");
+
+                // Broadcast (or rebroadcast) the cached message
+                if let Some((ref cached, _)) = cached_msg {
+                    match mesh_for_mpc_startup.broadcast_message(
+                        ghost_consensus::message::MessageType::MpcContribution,
+                        cached,
+                    ).await {
+                        Ok(sent) => {
+                            info!(sent = sent, attempt, "MPC contribution broadcast via Noise");
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to broadcast MPC contribution");
+                        }
+                    }
+                }
+
+                // Wait before retry, then sync contributor list from peers
+                // This picks up approvals that happened on other nodes (e.g., genesis approved us)
+                if attempt < 5 {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+
+                    // Sync contributors from peers to detect if our contribution was approved
+                    for seed in &seed_nodes_for_mpc {
+                        let host = seed.split(':').next().unwrap_or(seed);
+                        let contributors_url = format!("http://{}:8080/api/v1/mpc/contributors", host);
+
+                        if let Ok(response) = reqwest::Client::new()
+                            .get(&contributors_url)
+                            .timeout(std::time::Duration::from_secs(10))
+                            .send()
+                            .await
+                        {
+                            if let Ok(data) = response.json::<serde_json::Value>().await {
+                                if let Some(contributors) = data.get("contributors").and_then(|c| c.as_array()) {
+                                    for contrib in contributors {
+                                        let position = contrib.get("position").and_then(|p| p.as_u64()).unwrap_or(0) as u32;
+                                        let node_id = contrib.get("node_id").and_then(|n| n.as_str()).unwrap_or("");
+                                        let prev_hash_hex = contrib.get("prev_params_hash").and_then(|h| h.as_str()).unwrap_or("");
+                                        let new_hash_hex = contrib.get("new_params_hash").and_then(|h| h.as_str()).unwrap_or("");
+                                        let epoch = contrib.get("epoch").and_then(|e| e.as_u64()).unwrap_or(0);
+                                        let created_at = contrib.get("created_at").and_then(|c| c.as_u64()).unwrap_or(0);
+
+                                        if position == 0 || node_id.is_empty() {
+                                            continue;
+                                        }
+
+                                        let prev_hash: [u8; 32] = hex::decode(prev_hash_hex)
+                                            .ok()
+                                            .and_then(|b| b.try_into().ok())
+                                            .unwrap_or([0u8; 32]);
+                                        let new_hash: [u8; 32] = hex::decode(new_hash_hex)
+                                            .ok()
+                                            .and_then(|b| b.try_into().ok())
+                                            .unwrap_or([0u8; 32]);
+
+                                        let record = ghost_storage::queries::MpcContributionRecord {
+                                            elder_position: position,
+                                            contributor_node_id: node_id.to_string(),
+                                            prev_params_hash: prev_hash,
+                                            new_params_hash: new_hash,
+                                            contribution_proof: Vec::new(),
+                                            epoch,
+                                            created_at,
+                                        };
+
+                                        let _ = db_for_mpc.save_mpc_contribution(&record);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Final check after all attempts
+            if db_for_mpc.is_mpc_elder(&node_id_hex).unwrap_or(false) {
+                let position = db_for_mpc.get_mpc_elder_position(&node_id_hex).unwrap_or(None);
+                info!(position = ?position, "MPC contribution succeeded after retries");
+                // Update live capabilities so health pings reflect elder status
+                mesh_for_mpc_startup.update_elder_status(true);
+                let mut updated_caps = initial_capabilities;
+                updated_caps.elder_status = true;
+                round_manager_for_mpc.update_node_capabilities(
+                    identity_for_mpc.node_id(),
+                    updated_caps,
+                );
+            } else {
+                warn!("MPC: Failed to contribute after 5 attempts. Node will not be an elder.");
+            }
+        });
+        info!("MPC auto-contribution task scheduled (15s delay)");
 
         info!(
             "MPC ceremony handler initialized (contributions={}, ossified={})",
@@ -1760,69 +2095,6 @@ async fn main() -> Result<()> {
         }
     });
     info!("Rate limit cleanup task started (60s interval)");
-
-    // Start elder registration handler cleanup task
-    // Periodically cleans up expired state (rate limiters, pending proposals, approved registrations)
-    let elder_handler_for_cleanup = Arc::clone(&elder_registration_handler);
-    let mut elder_cleanup_shutdown = shutdown_tx.subscribe();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    elder_handler_for_cleanup.cleanup();
-                }
-                _ = elder_cleanup_shutdown.recv() => {
-                    tracing::info!("Elder registration cleanup task shutting down");
-                    break;
-                }
-            }
-        }
-    });
-    info!("Elder registration cleanup task started (60s interval)");
-
-    // Start elder registration proposal check task
-    // Periodically checks for approved registrations ready to propose to the network
-    let elder_handler_for_proposals = Arc::clone(&elder_registration_handler);
-    let mut elder_proposal_shutdown = shutdown_tx.subscribe();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    if let Err(e) = elder_handler_for_proposals.check_pending_proposals().await {
-                        tracing::warn!(error = %e, "Elder proposal check failed");
-                    }
-                }
-                _ = elder_proposal_shutdown.recv() => {
-                    tracing::info!("Elder registration proposal check task shutting down");
-                    break;
-                }
-            }
-        }
-    });
-    info!("Elder registration proposal check task started (30s interval)");
-
-    // Start elder self-proposal task
-    // After mesh connections establish, propose self as elder if eligible
-    // This is the genesis bootstrap mechanism - first nodes auto-approve each other
-    let elder_handler_for_self_proposal = Arc::clone(&elder_registration_handler);
-    tokio::spawn(async move {
-        // Wait for mesh connections to establish
-        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-
-        // Propose self as elder (handles eligibility checks internally)
-        match elder_handler_for_self_proposal.propose_self().await {
-            Ok(()) => {
-                tracing::info!("Elder self-proposal submitted successfully");
-            }
-            Err(e) => {
-                // Log at warn level during genesis bootstrap so we can debug
-                tracing::warn!(error = %e, "Elder self-proposal failed");
-            }
-        }
-    });
-    info!("Elder self-proposal task scheduled (10s delay)");
 
     // Clone ws_state for event handlers before moving verification_state
     let _verification_state_for_ws = Arc::clone(&verification_state);

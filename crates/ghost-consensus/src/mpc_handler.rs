@@ -34,7 +34,8 @@
 //! 1. New elder generates MPC contribution after registration approval
 //! 2. Contribution is broadcast to network
 //! 3. Current elders verify and vote on contribution
-//! 4. When >67% approve, contribution is applied (params updated)
+//! 4. Bootstrap (positions 1-3): genesis node approves alone
+//!    Normal (position 4+): 75% (3/4) of elders must approve
 //! 5. At elder 101, ceremony ossifies permanently
 //!
 //! ## Security Properties
@@ -49,7 +50,7 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::identity::NodeIdentity;
@@ -57,15 +58,19 @@ use ghost_common::types::NodeId;
 use ghost_storage::queries::{MpcContributionRecord, MpcVerificationVote as DbMpcVote};
 use ghost_storage::Database;
 
-use crate::elder_list::ElderListManager;
 use crate::mesh::MessageHandler;
 use crate::message::{
     MessageEnvelope, MessageType, MpcContributionMessage, MpcParametersRequestMessage,
     MpcParametersResponseMessage, MpcVerificationVoteMessage,
 };
 
-/// BFT threshold for MPC contribution approval (67%)
-const MPC_BFT_THRESHOLD_PERCENT: u32 = 67;
+/// BFT threshold for MPC contribution approval (75% = 3/4)
+const MPC_BFT_THRESHOLD_PERCENT: u32 = 75;
+
+/// Minimum number of MPC contributors before BFT voting kicks in.
+/// During bootstrap (< 3 contributors), the genesis node can approve alone.
+/// Once 3 elders exist, 75% (ceil(3*75/100)=3) approval is required.
+const MPC_BFT_BOOTSTRAP_COUNT: u32 = 3;
 
 /// Rate limiting for MPC messages
 const RATE_LIMIT_MAX_TOKENS: u32 = 10;
@@ -147,8 +152,6 @@ struct PendingContribution {
 pub struct MpcHandler {
     /// Our node's identity
     identity: Arc<NodeIdentity>,
-    /// Elder list manager for checking elder status
-    elder_manager: Arc<RwLock<ElderListManager>>,
     /// Database for storing contributions and votes
     db: Arc<Database>,
     /// Broadcast function for sending messages
@@ -169,12 +172,10 @@ impl MpcHandler {
     /// Create a new MPC handler
     pub fn new(
         identity: Arc<NodeIdentity>,
-        elder_manager: Arc<RwLock<ElderListManager>>,
         db: Arc<Database>,
     ) -> Self {
         Self {
             identity,
-            elder_manager,
             db,
             broadcaster: None,
             params_callback: None,
@@ -209,13 +210,24 @@ impl MpcHandler {
         *self.is_ossified.read()
     }
 
-    /// Get current contribution count
+    /// Get current contribution count from database
+    ///
+    /// This queries the database directly to ensure we have the latest count,
+    /// since contributions can be applied outside this handler (e.g., during startup).
     pub fn contribution_count(&self) -> u32 {
-        *self.contribution_count.read()
+        // Use database as single source of truth
+        self.mpc_contributor_count()
     }
 
     /// Handle an incoming MPC contribution
     fn handle_contribution(&self, msg: MpcContributionMessage, sender: NodeId) -> GhostResult<()> {
+        debug!(
+            position = msg.elder_position,
+            sender = %hex::encode(&sender[..8]),
+            candidate = %hex::encode(&msg.candidate[..8]),
+            "handle_contribution() entry"
+        );
+
         // Rate limit
         if !self.rate_limiter.check_and_consume(&sender) {
             debug!(sender = %hex::encode(&sender[..8]), "MPC contribution rate limited");
@@ -273,19 +285,40 @@ impl MpcHandler {
             "Received MPC contribution"
         );
 
-        // If we're an elder, verify and vote
-        if self.is_elder() {
+        // Check for genesis case: first contribution is auto-approved
+        let contributor_count = self.mpc_contributor_count();
+        if contributor_count == 0 && msg.elder_position == 1 {
+            info!("MPC genesis: Auto-approving first contribution (no existing contributors to vote)");
+            self.apply_contribution(&contribution_hash)?;
+            return Ok(());
+        }
+
+        // If we're an MPC contributor, verify and vote on new contributions
+        if self.is_mpc_contributor() {
             self.verify_and_vote(&msg)?;
         }
 
         Ok(())
     }
 
-    /// Check if we are a current elder
-    fn is_elder(&self) -> bool {
-        let elder_manager = self.elder_manager.read();
-        let current_list = elder_manager.current();
-        current_list.is_elder(&self.identity.node_id())
+    /// Check if we are an MPC contributor (elder)
+    ///
+    /// Elder status is determined by MPC contribution, not the old canonical elder list.
+    /// If you contributed to the MPC ceremony, you're an elder.
+    fn is_mpc_contributor(&self) -> bool {
+        let node_id_hex = hex::encode(self.identity.node_id());
+        self.db.is_mpc_elder(&node_id_hex).unwrap_or(false)
+    }
+
+    /// Check if a node is an MPC contributor
+    fn is_node_mpc_contributor(&self, node_id: &NodeId) -> bool {
+        let node_id_hex = hex::encode(node_id);
+        self.db.is_mpc_elder(&node_id_hex).unwrap_or(false)
+    }
+
+    /// Get the current MPC contributor count
+    fn mpc_contributor_count(&self) -> u32 {
+        self.db.get_mpc_elder_count().unwrap_or(0)
     }
 
     /// Verify a contribution and cast our vote
@@ -349,6 +382,48 @@ impl MpcHandler {
             "Cast MPC verification vote"
         );
 
+        // CRITICAL: Also count our own vote locally and check threshold
+        // Without this, our vote only goes to peers but doesn't trigger
+        // the approval threshold on this node
+        let contribution_hash = msg.contribution_hash();
+        let should_apply = {
+            let mut pending = self.pending_contributions.write();
+            if let Some(contribution) = pending.get_mut(&contribution_hash) {
+                if valid {
+                    contribution.approval_count += 1;
+                } else {
+                    contribution.rejection_count += 1;
+                }
+
+                // Check if we have BFT threshold
+                let contributor_count = self.mpc_contributor_count();
+                let threshold = if contributor_count < MPC_BFT_BOOTSTRAP_COUNT {
+                    1 // Bootstrap phase: genesis node alone can approve positions 1-3
+                } else {
+                    // Normal BFT: 75% of MPC contributors (3/4 minimum)
+                    (contributor_count * MPC_BFT_THRESHOLD_PERCENT).div_ceil(100)
+                };
+
+                info!(
+                    approvals = contribution.approval_count,
+                    rejections = contribution.rejection_count,
+                    mpc_contributors = contributor_count,
+                    threshold = threshold,
+                    "Self-vote counted for MPC contribution"
+                );
+
+                contribution.approval_count >= threshold
+            } else {
+                false
+            }
+        };
+
+        // Apply if threshold reached
+        if should_apply {
+            info!(position = msg.elder_position, "MPC contribution threshold met, applying");
+            self.apply_contribution(&contribution_hash)?;
+        }
+
         Ok(())
     }
 
@@ -372,16 +447,13 @@ impl MpcHandler {
             return Ok(());
         }
 
-        // Verify voter is an elder
-        {
-            let elder_manager = self.elder_manager.read();
-            if !elder_manager.current().is_elder(&msg.voter) {
-                warn!(
-                    voter = %hex::encode(&msg.voter[..8]),
-                    "MPC vote from non-elder"
-                );
-                return Ok(());
-            }
+        // Verify voter is an MPC contributor (elder)
+        if !self.is_node_mpc_contributor(&msg.voter) {
+            warn!(
+                voter = %hex::encode(&msg.voter[..8]),
+                "MPC vote from non-contributor (not an elder)"
+            );
+            return Ok(());
         }
 
         // Update pending contribution
@@ -395,12 +467,18 @@ impl MpcHandler {
                 }
 
                 // Check if we have BFT threshold
-                let elder_count = self.elder_manager.read().current().elder_count() as u32;
-                let threshold = (elder_count * MPC_BFT_THRESHOLD_PERCENT).div_ceil(100);
+                let contributor_count = self.mpc_contributor_count();
+                let threshold = if contributor_count < MPC_BFT_BOOTSTRAP_COUNT {
+                    1 // Bootstrap phase: genesis node alone can approve
+                } else {
+                    // Normal BFT: 75% of MPC contributors (3/4 minimum)
+                    (contributor_count * MPC_BFT_THRESHOLD_PERCENT).div_ceil(100)
+                };
 
                 debug!(
                     approvals = contribution.approval_count,
                     rejections = contribution.rejection_count,
+                    mpc_contributors = contributor_count,
                     threshold = threshold,
                     "MPC vote counted"
                 );
@@ -528,10 +606,40 @@ impl MpcHandler {
 #[async_trait]
 impl MessageHandler for MpcHandler {
     async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+        // Log entry for MPC message types only
+        if matches!(
+            envelope.msg_type,
+            MessageType::MpcContribution
+                | MessageType::MpcVerificationVote
+                | MessageType::MpcParametersRequest
+                | MessageType::MpcParametersResponse
+        ) {
+            debug!(
+                msg_type = ?envelope.msg_type,
+                sender = %hex::encode(&envelope.sender[..8]),
+                payload_len = envelope.payload.len(),
+                "MpcHandler received MPC message"
+            );
+        }
+
         match envelope.msg_type {
             MessageType::MpcContribution => {
-                let msg: MpcContributionMessage = serde_json::from_slice(&envelope.payload)
-                    .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                let msg: MpcContributionMessage = match serde_json::from_slice(&envelope.payload) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        error!(
+                            error = %e,
+                            payload_preview = %String::from_utf8_lossy(&envelope.payload[..envelope.payload.len().min(200)]),
+                            "MpcContribution deserialization failed"
+                        );
+                        return Err(GhostError::Serialization(e.to_string()));
+                    }
+                };
+                debug!(
+                    position = msg.elder_position,
+                    candidate = %hex::encode(&msg.candidate[..8]),
+                    "MpcContribution deserialized"
+                );
                 self.handle_contribution(msg, envelope.sender)?;
             }
             MessageType::MpcVerificationVote => {
