@@ -126,6 +126,15 @@ struct Args {
     /// All authenticated endpoints require X-Ghost-Signature header with HMAC-SHA256
     #[arg(long, env = "GHOST_PAY_API_SECRET")]
     api_secret: Option<String>,
+
+    /// TLS certificate PEM file path (enables HTTPS)
+    /// When provided, --tls-key is also required.
+    #[arg(long)]
+    tls_cert: Option<std::path::PathBuf>,
+
+    /// TLS private key PEM file path (required with --tls-cert)
+    #[arg(long)]
+    tls_key: Option<std::path::PathBuf>,
 }
 
 // =============================================================================
@@ -727,6 +736,10 @@ fn pubkey_hex_to_p2tr_address(pubkey_hex: &str, network: Network) -> String {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    // Extract TLS config before args is moved into AppState
+    let tls_cert_path = args.tls_cert.clone();
+    let tls_key_path = args.tls_key.clone();
+
     // Setup logging
     let level = match args.log_level.to_lowercase().as_str() {
         "trace" => Level::TRACE,
@@ -957,23 +970,44 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Graceful shutdown: broadcast channel signals all background tasks to stop
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
     // Spawn background scanner
     let state_clone = Arc::clone(&state);
+    let mut shutdown_rx = shutdown_tx.subscribe();
     tokio::spawn(async move {
-        run_scanner(state_clone, scanner_rx).await;
+        tokio::select! {
+            _ = run_scanner(state_clone, scanner_rx) => {}
+            _ = shutdown_rx.recv() => {
+                info!("Scanner shutting down");
+            }
+        }
     });
 
     // Spawn session coordinator
     let state_clone = Arc::clone(&state);
+    let mut shutdown_rx = shutdown_tx.subscribe();
     tokio::spawn(async move {
-        run_session_coordinator(state_clone).await;
+        tokio::select! {
+            _ = run_session_coordinator(state_clone) => {}
+            _ = shutdown_rx.recv() => {
+                info!("Session coordinator shutting down");
+            }
+        }
     });
 
     // Spawn L1 settlement loop (only if treasury address is configured)
     if treasury_configured {
         let state_clone = Arc::clone(&state);
+        let mut shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {
-            run_settlement_loop(state_clone).await;
+            tokio::select! {
+                _ = run_settlement_loop(state_clone) => {}
+                _ = shutdown_rx.recv() => {
+                    info!("Settlement loop shutting down");
+                }
+            }
         });
         info!("L1 settlement loop enabled");
     }
@@ -1084,10 +1118,17 @@ async fn main() -> Result<()> {
 
     // Spawn background task to clean up rate limiter state
     let governor_limiter = governor_conf.limiter().clone();
+    let mut shutdown_rx = shutdown_tx.subscribe();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            governor_limiter.retain_recent();
+            tokio::select! {
+                _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                    governor_limiter.retain_recent();
+                }
+                _ = shutdown_rx.recv() => {
+                    break;
+                }
+            }
         }
     });
 
@@ -1127,15 +1168,108 @@ async fn main() -> Result<()> {
     // Parse listen address
     let addr: SocketAddr = state.config.api_listen.parse()?;
 
-    info!("Ghost Pay API listening on {}", addr);
+    // Build TLS config for HTTPS
+    let has_explicit_cert = tls_cert_path.is_some();
+    let tls_cfg = ghost_common::config::TlsConfig {
+        cert_path: tls_cert_path,
+        key_path: tls_key_path,
+    };
+    let tls_config = match ghost_common::tls::build_server_config(&tls_cfg) {
+        Ok(tls) => {
+            if has_explicit_cert {
+                info!("Ghost Pay API starting on {} (HTTPS, operator cert)", addr);
+            } else {
+                info!("Ghost Pay API starting on {} (HTTPS, self-signed)", addr);
+            }
+            Some(tls)
+        }
+        Err(e) => {
+            if has_explicit_cert {
+                // Operator explicitly provided cert/key that failed to load -- hard error
+                return Err(anyhow::anyhow!("Failed to build TLS config: {}", e));
+            }
+            warn!(error = %e, "Failed to generate self-signed cert, using plain HTTP");
+            None
+        }
+    };
 
-    // Start server
+    // Start server with graceful shutdown
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await?;
+    let shutdown_signal = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to install CTRL+C handler");
+        info!("Received shutdown signal, starting graceful shutdown...");
+    };
+
+    match tls_config {
+        Some(tls) => {
+            let tls_acceptor = tokio_rustls::TlsAcceptor::from(tls);
+            let mut make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+
+            // We need to handle graceful shutdown manually for TLS
+            let shutdown = tokio::signal::ctrl_c();
+            tokio::pin!(shutdown);
+
+            loop {
+                tokio::select! {
+                    accept_result = listener.accept() => {
+                        let (tcp_stream, remote_addr) = accept_result?;
+                        let acceptor = tls_acceptor.clone();
+
+                        let tower_service = {
+                            use tower::Service;
+                            match make_service.call(remote_addr).await {
+                                Ok(s) => s,
+                                Err(_) => continue,
+                            }
+                        };
+
+                        let hyper_service = hyper_util::service::TowerToHyperService::new(tower_service);
+
+                        tokio::spawn(async move {
+                            let tls_stream = match acceptor.accept(tcp_stream).await {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    tracing::debug!(error = %e, "TLS handshake failed");
+                                    return;
+                                }
+                            };
+                            let io = hyper_util::rt::TokioIo::new(tls_stream);
+                            if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                                hyper_util::rt::TokioExecutor::new(),
+                            )
+                            .serve_connection(io, hyper_service)
+                            .await
+                            {
+                                tracing::debug!(error = %e, "Connection error");
+                            }
+                        });
+                    }
+                    _ = &mut shutdown => {
+                        info!("Received shutdown signal, starting graceful shutdown...");
+                        break;
+                    }
+                }
+            }
+        }
+        None => {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown_signal)
+            .await?;
+        }
+    }
+
+    // Signal all background tasks to stop
+    info!("HTTP server stopped, signaling background tasks...");
+    let _ = shutdown_tx.send(());
+
+    // Give background tasks time to finish in-flight work
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    info!("Ghost Pay shutdown complete");
 
     Ok(())
 }
@@ -3247,5 +3381,271 @@ fn parse_rpc_url(url: &str, network: Network) -> (String, u16) {
         (host, port)
     } else {
         (stripped.to_string(), default_port)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // derive_encryption_key tests
+    // =========================================================================
+
+    #[test]
+    fn test_derive_encryption_key_deterministic() {
+        let password = "test-password-123";
+        let salt = [0xABu8; 32];
+
+        let key1 = derive_encryption_key(password, &salt).expect("first derivation failed");
+        let key2 = derive_encryption_key(password, &salt).expect("second derivation failed");
+
+        assert_eq!(key1, key2, "same password and salt must produce same key");
+        assert_ne!(key1, [0u8; 32], "derived key must not be all zeros");
+    }
+
+    #[test]
+    fn test_derive_encryption_key_different_passwords_produce_different_keys() {
+        let salt = [0x01u8; 32];
+
+        let key_a = derive_encryption_key("password-a", &salt).expect("derivation a failed");
+        let key_b = derive_encryption_key("password-b", &salt).expect("derivation b failed");
+
+        assert_ne!(key_a, key_b, "different passwords must produce different keys");
+    }
+
+    #[test]
+    fn test_derive_encryption_key_different_salts_produce_different_keys() {
+        let password = "same-password";
+        let salt_a = [0x01u8; 32];
+        let salt_b = [0x02u8; 32];
+
+        let key_a = derive_encryption_key(password, &salt_a).expect("derivation a failed");
+        let key_b = derive_encryption_key(password, &salt_b).expect("derivation b failed");
+
+        assert_ne!(key_a, key_b, "different salts must produce different keys");
+    }
+
+    #[test]
+    fn test_derive_encryption_key_empty_password() {
+        let salt = [0xFFu8; 32];
+        let key = derive_encryption_key("", &salt).expect("empty password derivation failed");
+        assert_ne!(key, [0u8; 32], "derived key from empty password must not be all zeros");
+    }
+
+    // =========================================================================
+    // encrypt_keys / decrypt_keys roundtrip tests
+    // =========================================================================
+
+    #[test]
+    fn test_encrypt_decrypt_roundtrip() {
+        let plaintext = b"secret key material for ghost pay";
+        let password = "strong-encryption-password";
+
+        let encrypted = encrypt_keys(plaintext, password).expect("encryption failed");
+        let decrypted = decrypt_keys(&encrypted, password).expect("decryption failed");
+
+        assert_eq!(decrypted, plaintext, "roundtrip must recover original plaintext");
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_roundtrip_empty_plaintext() {
+        let plaintext = b"";
+        let password = "password";
+
+        let encrypted = encrypt_keys(plaintext, password).expect("encryption failed");
+        let decrypted = decrypt_keys(&encrypted, password).expect("decryption failed");
+
+        assert_eq!(decrypted, plaintext, "roundtrip with empty plaintext must work");
+    }
+
+    #[test]
+    fn test_encrypt_produces_different_ciphertexts() {
+        let plaintext = b"same data each time";
+        let password = "password";
+
+        let encrypted1 = encrypt_keys(plaintext, password).expect("encryption 1 failed");
+        let encrypted2 = encrypt_keys(plaintext, password).expect("encryption 2 failed");
+
+        // Random salt and nonce mean ciphertexts differ even for same input
+        assert_ne!(
+            encrypted1, encrypted2,
+            "two encryptions of same data must produce different ciphertexts"
+        );
+    }
+
+    #[test]
+    fn test_decrypt_with_wrong_password_fails() {
+        let plaintext = b"secret data";
+        let encrypted = encrypt_keys(plaintext, "correct-password").expect("encryption failed");
+
+        let result = decrypt_keys(&encrypted, "wrong-password");
+        assert!(result.is_err(), "decryption with wrong password must fail");
+    }
+
+    #[test]
+    fn test_decrypt_truncated_data_fails() {
+        // Minimum size is SALT_SIZE + NONCE_SIZE + 16 (auth tag)
+        let too_short = vec![0u8; SALT_SIZE + NONCE_SIZE + 15];
+        let result = decrypt_keys(&too_short, "password");
+        assert!(result.is_err(), "decryption of truncated data must fail");
+    }
+
+    #[test]
+    fn test_encrypted_format_has_expected_prefix_size() {
+        let plaintext = b"test";
+        let password = "pw";
+        let encrypted = encrypt_keys(plaintext, password).expect("encryption failed");
+
+        // Encrypted output: salt (32) + nonce (12) + ciphertext (plaintext + 16 tag)
+        let expected_len = SALT_SIZE + NONCE_SIZE + plaintext.len() + 16;
+        assert_eq!(
+            encrypted.len(),
+            expected_len,
+            "encrypted data must be salt + nonce + ciphertext + tag"
+        );
+    }
+
+    // =========================================================================
+    // safe_block_height_u64 tests
+    // =========================================================================
+
+    #[test]
+    fn test_safe_block_height_u64_zero() {
+        let result = safe_block_height_u64(0).expect("0 should be valid");
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_safe_block_height_u64_typical_height() {
+        let result = safe_block_height_u64(850_000).expect("typical height should be valid");
+        assert_eq!(result, 850_000);
+    }
+
+    #[test]
+    fn test_safe_block_height_u64_max_u32() {
+        let result = safe_block_height_u64(u32::MAX as u64).expect("u32::MAX should be valid");
+        assert_eq!(result, u32::MAX);
+    }
+
+    #[test]
+    fn test_safe_block_height_u64_overflow() {
+        let result = safe_block_height_u64(u32::MAX as u64 + 1);
+        assert!(result.is_err(), "u32::MAX + 1 must be rejected");
+    }
+
+    #[test]
+    fn test_safe_block_height_u64_u64_max() {
+        let result = safe_block_height_u64(u64::MAX);
+        assert!(result.is_err(), "u64::MAX must be rejected");
+    }
+
+    // =========================================================================
+    // safe_block_height_i64 tests
+    // =========================================================================
+
+    #[test]
+    fn test_safe_block_height_i64_zero() {
+        let result = safe_block_height_i64(0).expect("0 should be valid");
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_safe_block_height_i64_typical_height() {
+        let result = safe_block_height_i64(850_000).expect("typical height should be valid");
+        assert_eq!(result, 850_000);
+    }
+
+    #[test]
+    fn test_safe_block_height_i64_negative() {
+        let result = safe_block_height_i64(-1);
+        assert!(result.is_err(), "negative height must be rejected");
+    }
+
+    #[test]
+    fn test_safe_block_height_i64_large_negative() {
+        let result = safe_block_height_i64(i64::MIN);
+        assert!(result.is_err(), "i64::MIN must be rejected");
+    }
+
+    #[test]
+    fn test_safe_block_height_i64_max_u32() {
+        let result = safe_block_height_i64(u32::MAX as i64).expect("u32::MAX should be valid");
+        assert_eq!(result, u32::MAX);
+    }
+
+    #[test]
+    fn test_safe_block_height_i64_overflow() {
+        let result = safe_block_height_i64(u32::MAX as i64 + 1);
+        assert!(result.is_err(), "u32::MAX + 1 as i64 must be rejected");
+    }
+
+    // =========================================================================
+    // hex_to_32bytes tests
+    // =========================================================================
+
+    #[test]
+    fn test_hex_to_32bytes_valid_64_char_hex() {
+        let hex_str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+        let result = hex_to_32bytes(hex_str);
+        let expected: [u8; 32] = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_hex_to_32bytes_all_zeros() {
+        let hex_str = "0000000000000000000000000000000000000000000000000000000000000000";
+        let result = hex_to_32bytes(hex_str);
+        assert_eq!(result, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_hex_to_32bytes_all_ff() {
+        let hex_str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        let result = hex_to_32bytes(hex_str);
+        assert_eq!(result, [0xFFu8; 32]);
+    }
+
+    #[test]
+    fn test_hex_to_32bytes_short_input() {
+        // 4 hex chars = 2 bytes; should zero-pad the remaining 30 bytes
+        let hex_str = "abcd";
+        let result = hex_to_32bytes(hex_str);
+        let mut expected = [0u8; 32];
+        expected[0] = 0xAB;
+        expected[1] = 0xCD;
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_hex_to_32bytes_long_input_truncated() {
+        // 66 hex chars = 33 bytes; should only take the first 32 bytes
+        let hex_str =
+            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+        let result = hex_to_32bytes(hex_str);
+        let expected: [u8; 32] = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
+        ];
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_hex_to_32bytes_invalid_hex() {
+        // Invalid hex chars should result in all zeros (fallback)
+        let result = hex_to_32bytes("not-valid-hex!!");
+        assert_eq!(result, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_hex_to_32bytes_empty_string() {
+        // Empty string: 0 bytes decoded, zero-padded result
+        let result = hex_to_32bytes("");
+        assert_eq!(result, [0u8; 32]);
     }
 }

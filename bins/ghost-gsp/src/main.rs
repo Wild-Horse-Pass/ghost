@@ -101,6 +101,14 @@ struct Args {
     /// Log level (trace, debug, info, warn, error)
     #[arg(short, long, default_value = "info")]
     log_level: String,
+
+    /// TLS certificate PEM file path (enables HTTPS)
+    #[arg(long)]
+    tls_cert: Option<std::path::PathBuf>,
+
+    /// TLS private key PEM file path (required with --tls-cert)
+    #[arg(long)]
+    tls_key: Option<std::path::PathBuf>,
 }
 
 /// Configuration file format
@@ -375,6 +383,30 @@ async fn main() -> Result<()> {
     info!("Data directory: {}", data_dir.display());
     info!("Pay node URL: {}", pay_node_url);
 
+    // Build TLS config for HTTPS
+    let has_explicit_cert = args.tls_cert.is_some();
+    let tls_cfg = ghost_common::config::TlsConfig {
+        cert_path: args.tls_cert,
+        key_path: args.tls_key,
+    };
+    let tls_server_config = match ghost_common::tls::build_server_config(&tls_cfg) {
+        Ok(tls) => {
+            if has_explicit_cert {
+                info!("TLS configured with operator-provided certificate");
+            } else {
+                info!("TLS configured with self-signed certificate (development only)");
+            }
+            Some(tls)
+        }
+        Err(e) => {
+            if has_explicit_cert {
+                return Err(anyhow::anyhow!("Failed to build TLS config: {}", e));
+            }
+            tracing::warn!(error = %e, "Failed to generate self-signed cert, using plain HTTP");
+            None
+        }
+    };
+
     // Build GSP configuration
     // PAY-2 FIX: trusted_proxy_ips and trusted_proxy_count are loaded from environment
     // via GspConfig::default() values. The binary uses env vars:
@@ -393,6 +425,7 @@ async fn main() -> Result<()> {
         max_body_size: config_file.server.max_body_size,
         trusted_proxy_ips: default_config.trusted_proxy_ips,
         trusted_proxy_count: default_config.trusted_proxy_count,
+        tls_config: tls_server_config,
     };
 
     // Create and run GSP server

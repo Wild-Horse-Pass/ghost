@@ -93,31 +93,12 @@ pub fn generate_address(
             let ghost_id = master_key.ghost_id();
             Ok(PaymentAddress::ghost_pay(&ghost_id))
         }
-        AddressType::SilentPayment => {
-            // Generate Silent Payment address (BIP-352)
-            // This uses the Ghost Keys' scan and spend pubkeys
-            let ghost_id = master_key.ghost_id();
-            Ok(PaymentAddress {
-                address: format!("sp1{}", ghost_id), // Simplified - actual SP has different encoding
-                address_type: AddressType::SilentPayment,
-                index: None,
-                label: None,
-                created_at: chrono::Utc::now().timestamp(),
-            })
-        }
-        AddressType::Taproot => {
-            // Generate standard Taproot address
-            // In production, this would use proper BIP-86 derivation
-            let pubkey = master_key.auth_pubkey();
-            let address = format!("bc1p{}", hex::encode(&pubkey[..20]));
-            Ok(PaymentAddress {
-                address,
-                address_type: AddressType::Taproot,
-                index: Some(0),
-                label: None,
-                created_at: chrono::Utc::now().timestamp(),
-            })
-        }
+        AddressType::SilentPayment => Err(crate::error::LightWalletError::Internal(
+            "BIP-352 Silent Payment address generation not yet implemented".into(),
+        )),
+        AddressType::Taproot => Err(crate::error::LightWalletError::Internal(
+            "BIP-86 Taproot address derivation not yet implemented".into(),
+        ))
     }
 }
 
@@ -175,5 +156,33 @@ mod tests {
 
         assert!(is_my_address(&key, &ghost_id));
         assert!(!is_my_address(&key, "random_address"));
+    }
+
+    #[test]
+    fn test_silent_payment_address_returns_error() {
+        let key = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
+        let result = generate_address(&key, AddressType::SilentPayment);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("BIP-352"),
+            "Error should mention BIP-352, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_taproot_address_returns_error() {
+        let key = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
+        let result = generate_address(&key, AddressType::Taproot);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("BIP-86"),
+            "Error should mention BIP-86, got: {}",
+            err
+        );
     }
 }

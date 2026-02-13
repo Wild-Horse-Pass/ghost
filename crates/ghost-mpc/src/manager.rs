@@ -899,4 +899,134 @@ mod tests {
         let result = manager.record_commitment(commitment);
         assert!(matches!(result, Err(MpcError::CeremonyOssified(_))));
     }
+
+    // ========================================================================
+    // Crypto lifecycle tests
+    // ========================================================================
+
+    #[test]
+    fn test_genesis_initialization() {
+        let (manager, _temp) = create_test_manager();
+
+        // First init should succeed
+        let result = manager.ensure_genesis_initialized();
+        assert!(result.is_ok(), "Genesis init failed: {:?}", result.err());
+        assert!(result.unwrap(), "Should report genesis was just initialized");
+        assert!(manager.has_current_params());
+        assert_eq!(manager.contribution_count(), 0);
+
+        // Second init should be idempotent (returns false = already initialized)
+        let result2 = manager.ensure_genesis_initialized();
+        assert!(result2.is_ok());
+        assert!(!result2.unwrap(), "Second init should return false (already initialized)");
+    }
+
+    #[test]
+    fn test_full_contribution_lifecycle() {
+        let (manager, _temp) = create_test_manager();
+
+        // Initialize genesis
+        manager.ensure_genesis_initialized().unwrap();
+        let genesis_hash = manager.current_params_hash();
+        assert_ne!(genesis_hash, [0u8; 32], "Genesis hash should not be zero");
+
+        // Generate a contribution
+        let (new_params, contribution) = manager.generate_contribution("node1").unwrap();
+        assert_eq!(contribution.position, 1);
+        assert_eq!(contribution.prev_params_hash, genesis_hash);
+        assert_ne!(contribution.new_params_hash, genesis_hash);
+
+        // Verify the contribution
+        let valid = manager.verify_contribution(&new_params, &contribution).unwrap();
+        assert!(valid, "Valid contribution should verify");
+
+        // Apply the contribution
+        manager.apply_contribution(new_params, &contribution).unwrap();
+        assert_eq!(manager.contribution_count(), 1);
+        assert_eq!(manager.current_params_hash(), contribution.new_params_hash);
+    }
+
+    #[test]
+    fn test_multiple_contributions() {
+        let (manager, _temp) = create_test_manager();
+        manager.ensure_genesis_initialized().unwrap();
+
+        let mut prev_hash = manager.current_params_hash();
+
+        // Apply 3 sequential contributions
+        for i in 0..3 {
+            let contributor = format!("node{}", i + 1);
+            let (new_params, contribution) = manager.generate_contribution(&contributor).unwrap();
+
+            assert_eq!(contribution.position, (i + 1) as u32);
+            assert_eq!(contribution.prev_params_hash, prev_hash);
+
+            let valid = manager.verify_contribution(&new_params, &contribution).unwrap();
+            assert!(valid, "Contribution {} should verify", i + 1);
+
+            manager.apply_contribution(new_params, &contribution).unwrap();
+            assert_eq!(manager.contribution_count(), (i + 1) as u32);
+
+            prev_hash = manager.current_params_hash();
+        }
+
+        assert_eq!(manager.contribution_count(), 3);
+    }
+
+    #[test]
+    fn test_invalid_position_rejected() {
+        let (manager, _temp) = create_test_manager();
+        manager.ensure_genesis_initialized().unwrap();
+
+        // Generate a valid contribution at position 1
+        let (new_params, mut contribution) = manager.generate_contribution("node1").unwrap();
+        assert_eq!(contribution.position, 1);
+
+        // Tamper with position
+        contribution.position = 5;
+
+        // Verification should reject wrong position
+        let result = manager.verify_contribution(&new_params, &contribution);
+        assert!(matches!(result, Err(MpcError::InvalidPosition(5, 1))));
+    }
+
+    #[test]
+    fn test_contribution_after_ossification_rejected() {
+        let (manager, _temp) = create_test_manager();
+        manager.ensure_genesis_initialized().unwrap();
+
+        // Ossify the ceremony
+        manager.ossify().unwrap();
+        assert!(manager.is_ossified());
+
+        // Attempting to generate a contribution should fail
+        let result = manager.generate_contribution("node1");
+        assert!(matches!(result, Err(MpcError::CeremonyOssified(_))));
+    }
+
+    #[test]
+    fn test_commitment_bound_contribution() {
+        let (manager, _temp) = create_test_manager();
+        manager.ensure_genesis_initialized().unwrap();
+
+        // Create and record a commitment
+        let commitment = manager.create_commitment("node1").unwrap();
+        let commitment_hash = manager.record_commitment(commitment).unwrap();
+        assert!(manager.has_pending_commitments());
+
+        // Generate contribution bound to the commitment
+        let (new_params, contribution) = manager
+            .generate_contribution_with_commitment("node1", commitment_hash)
+            .unwrap();
+        assert_eq!(contribution.commitment_hash, Some(commitment_hash));
+
+        // Apply contribution — commitment should be fulfilled
+        manager.apply_contribution(new_params, &contribution).unwrap();
+        assert!(!manager.has_pending_commitments(), "Commitment should be fulfilled after apply");
+
+        // Fulfilled commitments should be tracked
+        let fulfilled = manager.get_fulfilled_commitments();
+        assert_eq!(fulfilled.len(), 1);
+        assert_eq!(fulfilled[0], commitment_hash);
+    }
 }

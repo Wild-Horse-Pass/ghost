@@ -326,6 +326,22 @@ impl RoundShares {
         miners
     }
 
+    /// Get top N miners by scaled u128 work (for payout calculations)
+    ///
+    /// Returns work as pre-scaled u128 integers, eliminating f64 precision loss
+    /// at the RoundShares→PayoutHandler boundary.
+    pub fn top_miners_scaled(&self, n: usize) -> Vec<(&str, u128)> {
+        let mut miners: Vec<_> = self
+            .miner_shares_scaled
+            .iter()
+            .map(|(id, work)| (id.as_str(), *work))
+            .collect();
+
+        miners.sort_by(|a, b| b.1.cmp(&a.1));
+        miners.truncate(n);
+        miners
+    }
+
     /// Get top 100 nodes by shares received
     pub fn top_100_nodes(&self) -> Vec<&NodeShareInfo> {
         self.node_shares.values().filter(|n| n.in_top_100).collect()

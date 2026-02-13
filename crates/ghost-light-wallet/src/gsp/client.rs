@@ -33,7 +33,8 @@ use tracing::{debug, error, info, warn};
 
 use ghost_common::instant::LockSnapshot;
 use ghost_gsp_proto::{
-    ClientMessage, InstantCapability, LockStateSnapshot, ServerMessage, SessionToken, WalletId,
+    ClientMessage, InstantCapability, LockStateSnapshot, PreparedPayment, ServerMessage,
+    SessionToken, WalletId,
 };
 
 /// Balance information from GSP
@@ -47,10 +48,32 @@ pub struct GspBalance {
     pub locked: u64,
 }
 
+/// Payment submission result from GSP
+#[derive(Debug, Clone)]
+pub struct PaymentSubmitResult {
+    /// Payment ID
+    pub payment_id: String,
+    /// Transaction ID if broadcast
+    pub txid: Option<String>,
+}
+
 use crate::error::{LightWalletError, WalletResult};
 
 /// Callback for lock state updates
 pub type LockStateCallback = Arc<dyn Fn(String, LockStateSnapshot) + Send + Sync>;
+
+/// Shared callback/response state for the read task
+#[derive(Clone)]
+struct ReadCallbacks {
+    pending_instant_checks: Arc<
+        RwLock<std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>>,
+    >,
+    lock_state_callbacks: Arc<RwLock<std::collections::HashMap<String, LockStateCallback>>>,
+    lock_snapshots: Arc<RwLock<std::collections::HashMap<String, LockStateSnapshot>>>,
+    pending_balance: Arc<RwLock<Option<tokio::sync::oneshot::Sender<GspBalance>>>>,
+    pending_prepare: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PreparedPayment>>>>,
+    pending_submit: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PaymentSubmitResult>>>>,
+}
 
 /// GSP client for WebSocket communication
 #[derive(Clone)]
@@ -80,6 +103,15 @@ pub struct GspClient {
 
     /// Last known lock state snapshots (for caching)
     lock_snapshots: Arc<RwLock<std::collections::HashMap<String, LockStateSnapshot>>>,
+
+    /// Pending balance response channel
+    pending_balance: Arc<RwLock<Option<tokio::sync::oneshot::Sender<GspBalance>>>>,
+
+    /// Pending payment preparation response channel
+    pending_prepare: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PreparedPayment>>>>,
+
+    /// Pending payment submission response channel
+    pending_submit: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PaymentSubmitResult>>>>,
 }
 
 impl GspClient {
@@ -102,6 +134,9 @@ impl GspClient {
         let pending_instant_checks = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let lock_state_callbacks = Arc::new(RwLock::new(std::collections::HashMap::new()));
         let lock_snapshots = Arc::new(RwLock::new(std::collections::HashMap::new()));
+        let pending_balance = Arc::new(RwLock::new(None));
+        let pending_prepare = Arc::new(RwLock::new(None));
+        let pending_submit = Arc::new(RwLock::new(None));
 
         // Spawn write task
         let connected_clone = connected.clone();
@@ -109,18 +144,15 @@ impl GspClient {
 
         // Spawn read task
         let connected_clone = connected.clone();
-        let session_clone = session_token.clone();
-        let pending_checks_clone = pending_instant_checks.clone();
-        let callbacks_clone = lock_state_callbacks.clone();
-        let snapshots_clone = lock_snapshots.clone();
-        tokio::spawn(Self::read_task(
-            read,
-            connected_clone,
-            session_clone,
-            pending_checks_clone,
-            callbacks_clone,
-            snapshots_clone,
-        ));
+        let callbacks = ReadCallbacks {
+            pending_instant_checks: pending_instant_checks.clone(),
+            lock_state_callbacks: lock_state_callbacks.clone(),
+            lock_snapshots: lock_snapshots.clone(),
+            pending_balance: pending_balance.clone(),
+            pending_prepare: pending_prepare.clone(),
+            pending_submit: pending_submit.clone(),
+        };
+        tokio::spawn(Self::read_task(read, connected_clone, callbacks));
 
         info!(url = url, "Connected to GSP");
 
@@ -133,6 +165,9 @@ impl GspClient {
             pending_instant_checks,
             lock_state_callbacks,
             lock_snapshots,
+            pending_balance,
+            pending_prepare,
+            pending_submit,
         })
     }
 
@@ -166,26 +201,13 @@ impl GspClient {
     async fn read_task(
         mut read: futures_util::stream::SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
         connected: Arc<RwLock<bool>>,
-        _session_token: Arc<RwLock<Option<SessionToken>>>,
-        pending_instant_checks: Arc<
-            RwLock<
-                std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>,
-            >,
-        >,
-        lock_state_callbacks: Arc<RwLock<std::collections::HashMap<String, LockStateCallback>>>,
-        lock_snapshots: Arc<RwLock<std::collections::HashMap<String, LockStateSnapshot>>>,
+        cb: ReadCallbacks,
     ) {
         while let Some(result) = read.next().await {
             match result {
                 Ok(Message::Text(text)) => match serde_json::from_str::<ServerMessage>(&text) {
                     Ok(msg) => {
-                        Self::handle_server_message_with_callbacks(
-                            msg,
-                            &pending_instant_checks,
-                            &lock_state_callbacks,
-                            &lock_snapshots,
-                        )
-                        .await;
+                        Self::handle_server_message_with_callbacks(msg, &cb).await;
                     }
                     Err(e) => {
                         warn!("Failed to parse server message: {}", e);
@@ -251,17 +273,76 @@ impl GspClient {
     }
 
     /// Handle incoming server message with callbacks for instant payments
-    async fn handle_server_message_with_callbacks(
-        msg: ServerMessage,
-        pending_instant_checks: &Arc<
-            RwLock<
-                std::collections::HashMap<String, tokio::sync::oneshot::Sender<InstantCapability>>,
-            >,
-        >,
-        lock_state_callbacks: &Arc<RwLock<std::collections::HashMap<String, LockStateCallback>>>,
-        lock_snapshots: &Arc<RwLock<std::collections::HashMap<String, LockStateSnapshot>>>,
-    ) {
+    async fn handle_server_message_with_callbacks(msg: ServerMessage, cb: &ReadCallbacks) {
         match msg {
+            // Handle balance update - resolve pending balance request if any
+            ServerMessage::BalanceUpdate {
+                confirmed,
+                unconfirmed,
+                locked,
+            } => {
+                if let Some(sender) = cb.pending_balance.write().take() {
+                    let _ = sender.send(GspBalance {
+                        confirmed,
+                        unconfirmed,
+                        locked,
+                    });
+                } else {
+                    info!(
+                        confirmed = confirmed,
+                        unconfirmed = unconfirmed,
+                        locked = locked,
+                        "Balance update received (no pending request)"
+                    );
+                }
+            }
+
+            // Handle payment prepared - resolve pending prepare request if any
+            ServerMessage::PaymentPrepared {
+                success,
+                payment,
+                error,
+            } => {
+                if let Some(sender) = cb.pending_prepare.write().take() {
+                    if success {
+                        if let Some(prepared) = payment {
+                            let _ = sender.send(prepared);
+                        }
+                        // If success but no payment, sender is dropped and receiver gets RecvError
+                    }
+                    // If !success, sender is dropped and receiver gets RecvError
+                    // The error is logged below
+                }
+                if let Some(err) = error {
+                    warn!(error = err, "Payment preparation failed");
+                }
+            }
+
+            // Handle payment submitted - resolve pending submit request if any
+            ServerMessage::PaymentSubmitted {
+                success,
+                payment_id,
+                txid,
+                error,
+            } => {
+                if let Some(sender) = cb.pending_submit.write().take() {
+                    if success {
+                        let _ = sender.send(PaymentSubmitResult {
+                            payment_id: payment_id.clone(),
+                            txid,
+                        });
+                    }
+                    // If !success, sender is dropped and receiver gets RecvError
+                }
+                if let Some(err) = error {
+                    warn!(
+                        payment_id = payment_id,
+                        error = err,
+                        "Payment submission failed"
+                    );
+                }
+            }
+
             // Handle instant capability result
             ServerMessage::InstantCapabilityResult {
                 lock_id,
@@ -292,7 +373,7 @@ impl GspClient {
                 };
 
                 // Send to waiting request
-                if let Some(tx) = pending_instant_checks.write().remove(&lock_id) {
+                if let Some(tx) = cb.pending_instant_checks.write().remove(&lock_id) {
                     let _ = tx.send(capability);
                 }
             }
@@ -300,7 +381,7 @@ impl GspClient {
             // Handle lock state subscription confirmed
             ServerMessage::LockStateSubscribed { lock_id, snapshot } => {
                 info!(lock_id = lock_id, "Lock state subscription confirmed");
-                lock_snapshots.write().insert(lock_id, snapshot);
+                cb.lock_snapshots.write().insert(lock_id, snapshot);
             }
 
             // Handle real-time lock state update
@@ -317,12 +398,12 @@ impl GspClient {
                 );
 
                 // Update cached snapshot
-                lock_snapshots
+                cb.lock_snapshots
                     .write()
                     .insert(lock_id.clone(), snapshot.clone());
 
                 // Notify callback if registered
-                if let Some(callback) = lock_state_callbacks.read().get(&lock_id) {
+                if let Some(callback) = cb.lock_state_callbacks.read().get(&lock_id) {
                     callback(lock_id, snapshot);
                 }
             }
@@ -408,15 +489,23 @@ impl GspClient {
 
     /// Get balance from GSP
     pub async fn get_balance(&self) -> WalletResult<GspBalance> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.pending_balance.write() = Some(tx);
+
         self.send_message(ClientMessage::GetBalance).await?;
 
-        // In a real implementation, we'd wait for the response
-        // For now, return placeholder
-        Ok(GspBalance {
-            confirmed: 0,
-            unconfirmed: 0,
-            locked: 0,
-        })
+        match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
+            Ok(Ok(balance)) => Ok(balance),
+            Ok(Err(_)) => Err(LightWalletError::GspError(
+                "Balance channel closed".to_string(),
+            )),
+            Err(_) => {
+                *self.pending_balance.write() = None;
+                Err(LightWalletError::GspError(
+                    "Balance request timed out".to_string(),
+                ))
+            }
+        }
     }
 
     /// Get UTXOs
@@ -434,6 +523,58 @@ impl GspClient {
     /// Get Ghost Locks
     pub async fn get_ghost_locks(&self) -> WalletResult<()> {
         self.send_message(ClientMessage::GetGhostLocks).await
+    }
+
+    /// Prepare a payment through the GSP
+    ///
+    /// Sends the prepare request and waits for the GSP to return a PreparedPayment.
+    pub async fn prepare_payment_request(
+        &self,
+        msg: ClientMessage,
+    ) -> WalletResult<PreparedPayment> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.pending_prepare.write() = Some(tx);
+
+        self.send_message(msg).await?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+            Ok(Ok(prepared)) => Ok(prepared),
+            Ok(Err(_)) => Err(LightWalletError::GspError(
+                "Payment preparation channel closed - GSP may have returned an error".to_string(),
+            )),
+            Err(_) => {
+                *self.pending_prepare.write() = None;
+                Err(LightWalletError::GspError(
+                    "Payment preparation timed out".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Submit a signed payment to the GSP
+    ///
+    /// Sends the submission request and waits for the GSP to confirm.
+    pub async fn submit_payment_request(
+        &self,
+        msg: ClientMessage,
+    ) -> WalletResult<PaymentSubmitResult> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.pending_submit.write() = Some(tx);
+
+        self.send_message(msg).await?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(_)) => Err(LightWalletError::GspError(
+                "Payment submission channel closed - GSP may have returned an error".to_string(),
+            )),
+            Err(_) => {
+                *self.pending_submit.write() = None;
+                Err(LightWalletError::GspError(
+                    "Payment submission timed out".to_string(),
+                ))
+            }
+        }
     }
 
     // =========================================================================

@@ -1616,18 +1616,21 @@ impl VerificationTask {
     ) -> Result<(), String> {
         let short_id = &peer_id_hex[..8];
 
-        // H-1 FIX: Generate a random challenge epoch to verify the node has L2 state
-        // Use cryptographic randomness to prevent pre-computation attacks
-        let challenge_epoch = match self.generate_challenge_epoch() {
-            Some(epoch) => epoch,
-            None => {
+        // Probe peer's current epoch to select a random challenge within their range.
+        // This prevents nodes from pre-caching only genesis state and passing verification.
+        let peer_epoch = match self.client.probe_ghostpay_epoch(&peer.http_address).await {
+            Ok(epoch) => epoch,
+            Err(e) => {
                 warn!(
                     peer = %short_id,
-                    "H-1: Skipping GhostPay verification - failed to generate challenge epoch"
+                    error = %e,
+                    "GhostPay epoch probe failed - falling back to epoch 0"
                 );
-                return Ok(());
+                0
             }
         };
+
+        let challenge_epoch = Self::generate_challenge_epoch_for_peer(peer_epoch);
 
         // VER-2 FIX: Generate a random challenge nonce to prevent precomputation attacks
         // This nonce must be incorporated into the response as nonce_bound_proof
@@ -1734,33 +1737,24 @@ impl VerificationTask {
         Ok(())
     }
 
-    /// H-1 FIX: Generate a random challenge epoch for GhostPay verification
+    /// Generate a random challenge epoch within a peer's known epoch range.
     ///
-    /// Returns a random epoch number within a reasonable range. Uses cryptographic
-    /// randomness to prevent nodes from pre-computing responses.
-    ///
-    /// HIGH-VER-1: Use random epoch within a realistic range.
-    /// Previously used 1-1M range which could be pre-computed in ~1TB of storage.
-    /// Now uses cryptographic randomness modulo MAX_REASONABLE_EPOCH to ensure:
-    /// 1. Unpredictability (random within the valid range)
-    /// 2. Validity (epoch must be <= network's actual current epoch)
-    ///
-    /// LOW-VER-4/5 FIX: Cap challenge_epoch to reasonable upper bound based on network age.
-    /// For new networks, epoch 0 (genesis) is challenged. As the network matures,
-    /// the range expands. Security comes primarily from the 256-bit challenge_nonce,
-    /// not the epoch range.
-    fn generate_challenge_epoch(&self) -> Option<u64> {
-        // Challenge epoch 0 (genesis) for now, which always exists if GhostPay is running.
-        // The 256-bit random nonce in VER-2/VER-3 provides the primary unpredictability,
-        // making epoch 0 sufficient for security. This will be increased as the network
-        // matures and nodes accumulate more epoch history.
-        //
-        // TODO: Implement adaptive epoch selection based on peer's reported current epoch
-        // by first querying their health endpoint, then challenging within their range.
-        //
-        // For a new network starting at epoch 0, always challenge genesis epoch.
-        // The nonce provides sufficient unpredictability to prevent precomputation.
-        Some(0)
+    /// If peer_epoch == 0 (genesis only), returns 0.
+    /// Otherwise, returns a cryptographically random epoch in [0, peer_epoch].
+    /// Combined with the 256-bit challenge nonce, this ensures nodes must maintain
+    /// full L2 state history to pass verification, not just genesis.
+    fn generate_challenge_epoch_for_peer(peer_epoch: u64) -> u64 {
+        if peer_epoch == 0 {
+            return 0;
+        }
+
+        let mut bytes = [0u8; 8];
+        if getrandom::getrandom(&mut bytes).is_err() {
+            // Fallback to epoch 0 if RNG fails (should not happen)
+            return 0;
+        }
+        let random_val = u64::from_le_bytes(bytes);
+        random_val % (peer_epoch + 1)
     }
 
     /// VER-2 FIX: Generate a random challenge nonce for GhostPay verification
@@ -2161,6 +2155,43 @@ mod tests {
             result.unwrap_err().contains("too far in the future"),
             "Error should mention future timestamp"
         );
+    }
+
+    #[test]
+    fn test_generate_challenge_epoch_for_peer_zero() {
+        // Peer at epoch 0 (genesis only) must always return 0
+        for _ in 0..100 {
+            assert_eq!(VerificationTask::generate_challenge_epoch_for_peer(0), 0);
+        }
+    }
+
+    #[test]
+    fn test_generate_challenge_epoch_for_peer_range() {
+        // Peer at epoch 100: all results must be in [0, 100]
+        let peer_epoch = 100u64;
+        let mut seen_nonzero = false;
+        for _ in 0..1000 {
+            let epoch = VerificationTask::generate_challenge_epoch_for_peer(peer_epoch);
+            assert!(epoch <= peer_epoch, "epoch {} exceeds peer_epoch {}", epoch, peer_epoch);
+            if epoch > 0 {
+                seen_nonzero = true;
+            }
+        }
+        assert!(seen_nonzero, "Should have seen non-zero epochs in 1000 trials with peer_epoch=100");
+    }
+
+    #[test]
+    fn test_generate_challenge_epoch_for_peer_one() {
+        // Peer at epoch 1: results must be 0 or 1
+        let mut seen_zero = false;
+        let mut seen_one = false;
+        for _ in 0..100 {
+            let epoch = VerificationTask::generate_challenge_epoch_for_peer(1);
+            assert!(epoch <= 1);
+            if epoch == 0 { seen_zero = true; }
+            if epoch == 1 { seen_one = true; }
+        }
+        assert!(seen_zero && seen_one, "Should see both 0 and 1 for peer_epoch=1");
     }
 
     #[test]

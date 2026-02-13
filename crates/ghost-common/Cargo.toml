@@ -53,6 +53,11 @@ secrecy = { workspace = true }
 zeroize = { workspace = true }
 # L-8: Random temp file suffix to prevent temp file attacks
 getrandom = { workspace = true }
+# TLS for HTTP servers (CRIT-API-1)
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+rcgen = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

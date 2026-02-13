@@ -28,6 +28,7 @@ use axum::middleware::Next;
 use axum::response::Response;
 use ghost_common::constants::{SV1_STRATUM_PORT, SV2_STRATUM_PORT};
 use ghost_common::error::{GhostError, GhostResult};
+use ghost_common::metrics::Metrics;
 use ghost_common::identity::NodeIdentity;
 use ghost_common::rpc::BitcoinRpc;
 use ghost_common::types::NodeCapabilities;
@@ -824,6 +825,8 @@ pub struct VerificationState {
     /// This prevents attackers from enabling debug endpoints at runtime to gain
     /// access to sensitive system information.
     debug_endpoints_frozen: AtomicBool,
+    /// Prometheus metrics (optional - only present when running as ghost-pool)
+    pub metrics: Option<Arc<Metrics>>,
 }
 
 /// Archive handler trait
@@ -937,6 +940,7 @@ impl VerificationState {
             restart_signal: Arc::new(AtomicBool::new(false)),
             // L-28: Debug endpoints flag frozen from DashboardConfig
             debug_endpoints_frozen: AtomicBool::new(debug_enabled),
+            metrics: None,
         }
     }
 
@@ -1358,6 +1362,12 @@ impl VerificationState {
         self
     }
 
+    /// Set Prometheus metrics instance
+    pub fn with_metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
     /// Get WebSocket state for broadcasting events
     pub fn ws(&self) -> &Arc<WsState> {
         &self.ws_state
@@ -1691,14 +1701,22 @@ impl VerificationState {
     }
 }
 
-/// Start verification server
+/// Start verification server with optional TLS.
+///
+/// When `tls_config` is `Some`, the server listens over HTTPS using the provided
+/// `rustls::ServerConfig`. When `None`, the server operates over plain HTTP
+/// (suitable for development behind a reverse proxy or on localhost).
 ///
 /// # VF-C2: Mandatory Internal API Authentication
 ///
 /// By default, the server requires internal API authentication to be configured.
 /// If `internal_auth` is None and `require_internal_auth` is true, startup fails.
 /// Use `allow_insecure_internal_api(true)` to bypass this check in dev environments.
-pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResult<()> {
+pub async fn start_server(
+    state: Arc<VerificationState>,
+    port: u16,
+    tls_config: Option<Arc<rustls::ServerConfig>>,
+) -> GhostResult<()> {
     // VF-C2: Validate internal API auth requirement
     if state.require_internal_auth && state.internal_auth.is_none() {
         return Err(GhostError::Config(
@@ -1857,24 +1875,108 @@ pub async fn start_server(state: Arc<VerificationState>, port: u16) -> GhostResu
         .layer(DefaultBodyLimit::max(1024 * 1024)); // 1MB limit
 
     let addr = format!("0.0.0.0:{}", port);
-    info!(
-        address = %addr,
-        rate_limit = "HIGH-VER-5: 20 burst / 5 per sec (NodeId/IP keyed)",
-        "Starting verification server with tightened rate limits"
-    );
 
     let listener = TcpListener::bind(&addr)
         .await
         .map_err(|e| GhostError::Internal(format!("Failed to bind: {}", e)))?;
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .await
-    .map_err(|e| GhostError::Internal(format!("Server error: {}", e)))?;
+    match tls_config {
+        Some(tls) => {
+            info!(
+                address = %addr,
+                rate_limit = "HIGH-VER-5: 20 burst / 5 per sec (NodeId/IP keyed)",
+                "Starting verification server with HTTPS (TLS enabled)"
+            );
+
+            let tls_acceptor = tokio_rustls::TlsAcceptor::from(tls);
+            // Wrap the TCP listener to produce TLS streams that axum can serve.
+            // We accept TCP, perform the TLS handshake, then feed the TLS stream
+            // into hyper via hyper-util.
+            let app = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+            serve_tls(listener, tls_acceptor, app).await?;
+        }
+        None => {
+            info!(
+                address = %addr,
+                rate_limit = "HIGH-VER-5: 20 burst / 5 per sec (NodeId/IP keyed)",
+                "Starting verification server (plain HTTP - no TLS)"
+            );
+
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+            .map_err(|e| GhostError::Internal(format!("Server error: {}", e)))?;
+        }
+    }
 
     Ok(())
+}
+
+/// Accept TLS connections and serve them with the given axum service.
+///
+/// Each incoming TCP connection is upgraded to TLS via `tls_acceptor`, then
+/// served by hyper using the axum-generated service. Failed TLS handshakes
+/// are logged and dropped without affecting other connections.
+async fn serve_tls(
+    listener: TcpListener,
+    tls_acceptor: tokio_rustls::TlsAcceptor,
+    mut make_service: axum::extract::connect_info::IntoMakeServiceWithConnectInfo<
+        axum::Router,
+        std::net::SocketAddr,
+    >,
+) -> GhostResult<()> {
+    use hyper_util::service::TowerToHyperService;
+    use tower::Service;
+
+    loop {
+        let (tcp_stream, remote_addr) = listener
+            .accept()
+            .await
+            .map_err(|e| GhostError::Internal(format!("Accept error: {}", e)))?;
+
+        let acceptor = tls_acceptor.clone();
+
+        // Get a service instance for this connection (injects ConnectInfo)
+        let tower_service = match make_service.call(remote_addr).await {
+            Ok(s) => s,
+            Err(e) => {
+                // Infallible in practice, but handle gracefully
+                tracing::warn!(error = ?e, "Failed to build service for connection");
+                continue;
+            }
+        };
+
+        // Wrap the tower::Service as a hyper::Service for hyper-util
+        let hyper_service = TowerToHyperService::new(tower_service);
+
+        tokio::spawn(async move {
+            // TLS handshake
+            let tls_stream = match acceptor.accept(tcp_stream).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        remote = %remote_addr,
+                        "TLS handshake failed"
+                    );
+                    return;
+                }
+            };
+
+            // Serve the connection using hyper
+            let io = hyper_util::rt::TokioIo::new(tls_stream);
+            if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                hyper_util::rt::TokioExecutor::new(),
+            )
+            .serve_connection(io, hyper_service)
+            .await
+            {
+                tracing::debug!(error = %e, remote = %remote_addr, "TLS connection error");
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1946,7 +2048,7 @@ mod tests {
         ));
 
         // Should fail because require_internal_auth is true but internal_auth is None
-        let result = start_server(state, 0).await;
+        let result = start_server(state, 0, None).await;
         assert!(result.is_err());
 
         let err_msg = result.unwrap_err().to_string();

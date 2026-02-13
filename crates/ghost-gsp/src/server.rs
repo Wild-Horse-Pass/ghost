@@ -430,6 +430,10 @@ pub struct GspConfig {
     /// Default is 1. For multi-proxy setups (CDN -> LB -> App), set to number of proxies.
     /// Loaded from GHOST_TRUSTED_PROXY_COUNT environment variable.
     pub trusted_proxy_count: usize,
+
+    /// Optional TLS configuration for HTTPS.
+    /// When Some, the server listens over HTTPS. When None, plain HTTP.
+    pub tls_config: Option<std::sync::Arc<rustls::ServerConfig>>,
 }
 
 impl Default for GspConfig {
@@ -454,6 +458,7 @@ impl Default for GspConfig {
             // PAY-2: Load trusted proxies from environment, default to localhost only
             trusted_proxy_ips: get_trusted_proxies(),
             trusted_proxy_count: get_trusted_proxy_count(),
+            tls_config: None,
         }
     }
 }
@@ -845,9 +850,10 @@ impl GspServer {
             .with_state(state)
     }
 
-    /// Run the server
+    /// Run the server (with optional TLS)
     pub async fn run(self) -> GspResult<()> {
         let addr = self.state.config.listen_addr;
+        let tls_config = self.state.config.tls_config.clone();
 
         info!("GSP server starting on {}", addr);
         info!("Network: {:?}", self.state.config.network);
@@ -857,11 +863,69 @@ impl GspServer {
             GspError::InvalidBindAddress(format!("Failed to bind to {}: {}", addr, e))
         })?;
 
-        axum::serve(listener, self.router)
-            .await
-            .map_err(|e| GspError::Internal(e.to_string()))?;
+        match tls_config {
+            Some(tls) => {
+                info!("GSP server using HTTPS (TLS enabled)");
+                let tls_acceptor = tokio_rustls::TlsAcceptor::from(tls);
+                Self::serve_tls(listener, tls_acceptor, self.router).await?;
+            }
+            None => {
+                info!("GSP server using plain HTTP (no TLS)");
+                axum::serve(listener, self.router)
+                    .await
+                    .map_err(|e| GspError::Internal(e.to_string()))?;
+            }
+        }
 
         Ok(())
+    }
+
+    /// Accept TLS connections and serve them with the axum router.
+    async fn serve_tls(
+        listener: tokio::net::TcpListener,
+        tls_acceptor: tokio_rustls::TlsAcceptor,
+        router: Router,
+    ) -> GspResult<()> {
+        loop {
+            let (tcp_stream, remote_addr) = listener.accept().await.map_err(|e| {
+                GspError::Internal(format!("Accept error: {}", e))
+            })?;
+
+            let acceptor = tls_acceptor.clone();
+            let app = router.clone();
+
+            tokio::spawn(async move {
+                let tls_stream = match acceptor.accept(tcp_stream).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::debug!(error = %e, remote = %remote_addr, "TLS handshake failed");
+                        return;
+                    }
+                };
+
+                // Build a one-shot service from the router for this connection
+                let service = app
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>();
+                let mut make_svc = service;
+
+                use tower::Service;
+                let svc = match make_svc.call(remote_addr).await {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+
+                let hyper_service = hyper_util::service::TowerToHyperService::new(svc);
+                let io = hyper_util::rt::TokioIo::new(tls_stream);
+                if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                    hyper_util::rt::TokioExecutor::new(),
+                )
+                .serve_connection(io, hyper_service)
+                .await
+                {
+                    tracing::debug!(error = %e, remote = %remote_addr, "TLS connection error");
+                }
+            });
+        }
     }
 
     /// Get shared state reference

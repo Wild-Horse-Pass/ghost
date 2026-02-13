@@ -670,9 +670,14 @@ fn deserialize_scalar(bytes: &[u8]) -> MpcResult<Scalar> {
 }
 
 fn scalar_from_hash(hash: &[u8; 32]) -> Scalar {
-    // Reduce hash modulo scalar field order
-    // Use from_bytes_le which handles reduction
-    Scalar::from_bytes_le(hash).unwrap_or(Scalar::ONE)
+    // Reduce hash into the BLS12-381 scalar field.
+    // The scalar field modulus is ~2^255, so raw 32-byte values fail from_bytes_le ~50% of the time.
+    // We clear the top 2 bits to guarantee the value is < 2^254, which is always below the modulus.
+    // This avoids the previous Scalar::ONE fallback which broke Schnorr proof security.
+    let mut reduced = *hash;
+    reduced[31] &= 0x3F; // Clear top 2 bits of the most significant byte (LE format)
+    Scalar::from_bytes_le(&reduced)
+        .expect("scalar_from_hash: value with top 2 bits cleared must be in range")
 }
 
 #[cfg(test)]
@@ -725,6 +730,32 @@ mod tests {
         assert!(!schnorr_verify(generator, &public_key, &wrong_ceremony_id, &proof).unwrap());
         // Verification with correct ceremony_id should pass
         assert!(schnorr_verify(generator, &public_key, &ceremony_id, &proof).unwrap());
+    }
+
+    #[test]
+    fn test_scalar_from_hash_never_fails() {
+        // Verify that all-0xFF input does NOT produce Scalar::ONE (the old broken fallback)
+        let max_hash = [0xFF; 32];
+        let result = scalar_from_hash(&max_hash);
+        assert_ne!(result, Scalar::ONE, "0xFF hash must not produce Scalar::ONE");
+
+        // Verify 100 random inputs all produce non-zero scalars
+        use rand::RngCore;
+        let mut rng = OsRng;
+        for _ in 0..100 {
+            let mut hash = [0u8; 32];
+            rng.fill_bytes(&mut hash);
+            let scalar = scalar_from_hash(&hash);
+            assert_ne!(scalar, Scalar::ZERO, "scalar_from_hash should never produce zero for random input");
+        }
+    }
+
+    #[test]
+    fn test_scalar_from_hash_deterministic() {
+        let hash = [0x42; 32];
+        let a = scalar_from_hash(&hash);
+        let b = scalar_from_hash(&hash);
+        assert_eq!(a, b, "scalar_from_hash must be deterministic");
     }
 
     #[test]

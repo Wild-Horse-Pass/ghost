@@ -24,7 +24,7 @@
 
 use tracing::info;
 
-use ghost_gsp_proto::{ClientMessage, PaymentMode, PaymentStatus, PreparedPayment};
+use ghost_gsp_proto::{ClientMessage, PaymentMode, PreparedPayment};
 
 use crate::error::{LightWalletError, WalletResult};
 use crate::gsp::GspClient;
@@ -136,30 +136,15 @@ pub async fn prepare_payment(
         encrypted_metadata: request.encrypted_metadata.clone(),
     };
 
-    // In a real implementation, we'd send this and wait for response
-    // For now, return a placeholder
-    let _ = msg;
-    let _ = client;
+    let prepared = client.prepare_payment_request(msg).await?;
 
-    // Placeholder - actual implementation would parse GSP response
-    Ok(PreparedPayment {
-        payment_id: "placeholder".to_string(),
-        mode: request.mode,
-        recipient_address: request.recipient.clone(),
-        original_recipient: request.recipient.clone(),
-        amount_sats: request.amount_sats,
-        fee_sats: 1000, // Placeholder fee
-        total_sats: request.amount_sats + 1000,
-        sighash: String::new(),
-        signing_method: "schnorr".to_string(),
-        expires_at: chrono::Utc::now().timestamp() + 300,
-        status: PaymentStatus::PendingSignature,
-        inputs: vec![],
-        outputs: vec![],
-        memo: request.memo.clone(),
-        encrypted_metadata: request.encrypted_metadata.clone(),
-        ephemeral_pubkey: None, // Would come from GSP response
-    })
+    info!(
+        payment_id = prepared.payment_id,
+        fee = prepared.fee_sats,
+        "Payment prepared successfully"
+    );
+
+    Ok(prepared)
 }
 
 /// Sign a prepared payment and submit to GSP
@@ -197,13 +182,15 @@ pub async fn sign_and_submit(
         public_key: hex::encode(public_key),
     };
 
-    // In a real implementation, we'd send this and wait for confirmation
-    let _ = msg;
-    let _ = client;
+    let result = client.submit_payment_request(msg).await?;
 
-    info!(payment_id = prepared.payment_id, "Payment submitted");
+    info!(
+        payment_id = result.payment_id,
+        txid = ?result.txid,
+        "Payment submitted successfully"
+    );
 
-    Ok(prepared.payment_id.clone())
+    Ok(result.payment_id)
 }
 
 /// Estimate fee for a payment

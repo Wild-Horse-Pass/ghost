@@ -43,6 +43,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use ghost_common::config::{MiningMode, NodeConfig};
 use ghost_common::identity::NodeIdentity;
+use ghost_common::metrics::Metrics;
 use ghost_common::rpc::BitcoinRpc;
 use ghost_common::signer::SignerConfig;
 use ghost_common::types::{ConsensusResult, NodeCapabilities};
@@ -669,12 +670,17 @@ async fn main() -> Result<()> {
     // Create identity Arc
     let identity = Arc::new(identity);
 
+    // Prometheus metrics
+    let metrics = Metrics::default_metrics();
+
     // Initialize round manager with mining mode
     let round_config = RoundConfig {
         mining_mode,
         ..Default::default()
     };
-    let round_manager = Arc::new(RoundManager::new(identity.node_id(), round_config));
+    let mut round_manager_inner = RoundManager::new(identity.node_id(), round_config);
+    round_manager_inner.set_metrics(Arc::clone(&metrics));
+    let round_manager = Arc::new(round_manager_inner);
 
     // Register our own node's capabilities so we're included in node reward calculations
     // This is critical - without this, our shares won't be counted for node rewards
@@ -1825,6 +1831,7 @@ async fn main() -> Result<()> {
     let identity_for_block = Arc::clone(&identity);
     let db_for_block = Arc::clone(&db);
     let solo_payout_address_for_block = config.network.solo_payout_address.clone();
+    let metrics_for_block = Arc::clone(&metrics);
     verification_state = verification_state.with_block_found_handler(move |notification: BlockFoundNotification| {
         let round_id = rm_for_block.current_round_id();
         let is_solo_mode = rm_for_block.is_solo_mode();
@@ -1910,7 +1917,7 @@ async fn main() -> Result<()> {
             }
         } else {
             // Pool mode: proportional distribution to all miners
-            let miner_work = rm_for_block.get_miner_work(round_id);
+            let miner_work = rm_for_block.get_miner_work_scaled(round_id);
 
             // PO4-M2: Capture treasury address snapshot to prevent TOCTOU issues
             let treasury_address_snapshot = payout_for_block.get_treasury_address_snapshot();
@@ -1934,6 +1941,7 @@ async fn main() -> Result<()> {
             match payout_for_block.handle_block_found(block_data) {
                 Ok(proposal_hash) => {
                     if proposal_hash != [0u8; 32] {
+                        metrics_for_block.payouts_total.inc();
                         info!(
                             round = round_id,
                             hash = %hex::encode(&proposal_hash[..8]),
@@ -1942,6 +1950,7 @@ async fn main() -> Result<()> {
                     }
                 }
                 Err(e) => {
+                    metrics_for_block.payout_errors_total.inc();
                     error!(error = %e, round = round_id, "Failed to create payout proposal");
                 }
             }
@@ -1949,6 +1958,9 @@ async fn main() -> Result<()> {
 
         Ok(())
     });
+
+    // Wire Prometheus metrics to verification state
+    verification_state = verification_state.with_metrics(Arc::clone(&metrics));
 
     let verification_state = Arc::new(verification_state);
 
@@ -2100,8 +2112,19 @@ async fn main() -> Result<()> {
     let _verification_state_for_ws = Arc::clone(&verification_state);
 
     let http_port = config.network.http_port;
+    // Build TLS config for HTTPS on the verification server
+    let tls_server_config = match ghost_common::tls::build_server_config(&config.network.tls) {
+        Ok(tls) => {
+            info!("TLS configured for verification server on port {}", http_port);
+            Some(tls)
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to build TLS config, verification server will use plain HTTP");
+            None
+        }
+    };
     tokio::spawn(async move {
-        if let Err(e) = start_server(verification_state, http_port).await {
+        if let Err(e) = start_server(verification_state, http_port, tls_server_config).await {
             error!(error = %e, "Verification server error");
         }
     });
@@ -2733,7 +2756,7 @@ async fn main() -> Result<()> {
                         }
                     } else {
                         // Pool mode: proportional distribution to all miners
-                        let miner_work = rm_for_events.get_miner_work(round_id);
+                        let miner_work = rm_for_events.get_miner_work_scaled(round_id);
                         let winning_node_id = identity_for_events.node_id();
 
                         // PO4-M2: Capture treasury address snapshot

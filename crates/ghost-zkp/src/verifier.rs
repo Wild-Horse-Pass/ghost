@@ -517,7 +517,7 @@ mod tests {
         }
 
         let mut tree = BalanceTree::from_balances(tree_depth, initial_balances);
-        let prev_root = tree.root();
+        let prev_root = tree.root().expect("Root should compute");
 
         // Apply each payment and collect witnesses + intermediate roots
         let mut transitions = Vec::with_capacity(tx_count);
@@ -531,10 +531,10 @@ mod tests {
                 .expect("Payment should succeed");
             transitions.push(witness);
             // Record the root AFTER this payment is applied
-            intermediate_roots.push(tree.root());
+            intermediate_roots.push(tree.root().expect("Root should compute"));
         }
 
-        let new_root = tree.root();
+        let new_root = tree.root().expect("Root should compute");
 
         BlockWitnessV2::new_with_roots(
             1,

@@ -135,6 +135,8 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 # TLS (CRIT-API-1)
 tokio-rustls = "0.26"
 rustls = "0.23"
+rustls-pemfile = "2.1"
+rcgen = "0.13"
 
 # Logging
 tracing = "0.1"

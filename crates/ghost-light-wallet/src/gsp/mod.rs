@@ -25,5 +25,5 @@
 mod client;
 mod failover;
 
-pub use client::GspClient;
+pub use client::{GspBalance, GspClient, PaymentSubmitResult};
 pub use failover::{GspEndpoint, GspFailover};

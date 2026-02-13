@@ -26,6 +26,7 @@
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
@@ -286,6 +287,8 @@ pub struct RoundManager {
     /// L-8: Counter for automatic rate limit cleanup
     /// Cleanup is triggered every RATE_LIMIT_CLEANUP_INTERVAL shares
     shares_since_cleanup: std::sync::atomic::AtomicU64,
+    /// Prometheus metrics (optional)
+    metrics: Option<Arc<ghost_common::metrics::Metrics>>,
 }
 
 impl RoundManager {
@@ -312,7 +315,13 @@ impl RoundManager {
             current_template_id: RwLock::new(None),
             recent_template_ids: RwLock::new(Vec::new()),
             shares_since_cleanup: std::sync::atomic::AtomicU64::new(0),
+            metrics: None,
         }
+    }
+
+    /// Set Prometheus metrics instance
+    pub fn set_metrics(&mut self, metrics: Arc<ghost_common::metrics::Metrics>) {
+        self.metrics = Some(metrics);
     }
 
     /// Subscribe to round events
@@ -495,6 +504,12 @@ impl RoundManager {
         // Increment node shares (for our node since we received this)
         round.increment_node_shares(&self.our_node_id);
 
+        // Instrument metrics
+        if let Some(ref m) = self.metrics {
+            m.shares_total.inc();
+            m.shares_valid.inc();
+        }
+
         debug!(
             round_id = round_id,
             miner = %miner_id,
@@ -512,6 +527,10 @@ impl RoundManager {
         // Check if this is a block
         let is_block = diff_calc.is_valid_block(difficulty);
         if is_block {
+            if let Some(ref m) = self.metrics {
+                m.blocks_found_total.inc();
+            }
+
             info!(
                 round_id = round_id,
                 miner = %miner_id,
@@ -1038,6 +1057,23 @@ impl RoundManager {
             .get(&round_id)
             .map(|r| {
                 r.top_miners(200) // Get top 200 miners
+                    .into_iter()
+                    .map(|(id, work)| (id.to_string(), work))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get miner work as pre-scaled u128 integers (for payout calculations)
+    ///
+    /// Returns work values already scaled by WORK_SCALE, eliminating the f64→u128
+    /// conversion that introduces bounded imprecision (~1-2 sats per miner per block).
+    pub fn get_miner_work_scaled(&self, round_id: RoundId) -> Vec<(String, u128)> {
+        let rounds = self.rounds.read();
+        rounds
+            .get(&round_id)
+            .map(|r| {
+                r.top_miners_scaled(200)
                     .into_iter()
                     .map(|(id, work)| (id.to_string(), work))
                     .collect()

@@ -168,6 +168,9 @@ impl NodeConfig {
         // Validate storage configuration
         self.validate_storage(&mut result);
 
+        // Validate signer configuration
+        self.validate_signer(&mut result);
+
         // Validate Ghost Pay configuration (if enabled)
         if let Some(ref gp) = self.ghost_pay {
             self.validate_ghost_pay(gp, &mut result);
@@ -252,6 +255,26 @@ impl NodeConfig {
                 "MAINNET SECURITY: At least one seed node is REQUIRED for mainnet. \
                  Configure seed_nodes in [network] section with valid peer addresses. \
                  Without seed nodes, this node cannot discover the P2P network and will be isolated.",
+            );
+        }
+
+        // MAINNET REQUIREMENT 4: TLS certificates must be operator-provided
+        // Self-signed certificates are not acceptable for mainnet because they provide
+        // no chain of trust. Clients have no way to verify they are connecting to the
+        // legitimate node rather than a MITM attacker.
+        if self.network.tls.cert_path.is_none() {
+            result.add_error(
+                "network.tls.cert_path",
+                "MAINNET SECURITY: TLS certificate path is REQUIRED for mainnet. \
+                 Self-signed certificates are not allowed on mainnet. \
+                 Configure tls.cert_path and tls.key_path in [network] section.",
+            );
+        }
+        if self.network.tls.cert_path.is_some() && self.network.tls.key_path.is_none() {
+            result.add_error(
+                "network.tls.key_path",
+                "MAINNET SECURITY: TLS key path is REQUIRED when cert_path is set. \
+                 Configure tls.key_path in [network] section.",
             );
         }
     }
@@ -608,6 +631,23 @@ impl NodeConfig {
         }
     }
 
+    fn validate_signer(&self, result: &mut ConfigValidationResult) {
+        if let Some(ref signer) = self.identity.signer {
+            if signer.is_hsm() {
+                result.add_error(
+                    "identity.signer",
+                    "HSM signer is not yet implemented. Use type = \"local\".",
+                );
+            }
+            if signer.is_kms() {
+                result.add_error(
+                    "identity.signer",
+                    "KMS signer is not yet implemented. Use type = \"local\".",
+                );
+            }
+        }
+    }
+
     fn validate_ghost_pay(&self, gp: &GhostPayConfig, result: &mut ConfigValidationResult) {
         if !gp.enabled {
             return;
@@ -835,6 +875,24 @@ impl BitcoinNetwork {
     }
 }
 
+/// TLS configuration for HTTP servers
+///
+/// Controls HTTPS for the verification (8080), Ghost Pay (8800), and GSP (8900) servers.
+/// P2P mesh (ports 8555-8562) uses Noise protocol and does NOT need TLS.
+///
+/// If neither `cert_path` nor `key_path` is set, a self-signed certificate is
+/// automatically generated at startup. For mainnet, operator-provided certificates
+/// are REQUIRED (see `validate_mainnet_security`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TlsConfig {
+    /// Path to PEM-encoded certificate file. If unset, a self-signed cert is auto-generated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cert_path: Option<PathBuf>,
+    /// Path to PEM-encoded private key file. Required if `cert_path` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_path: Option<PathBuf>,
+}
+
 /// Network configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NetworkConfig {
@@ -906,6 +964,14 @@ pub struct NetworkConfig {
     /// refuse to start on mainnet with noise_enabled = false.
     #[serde(default = "default_noise_enabled")]
     pub noise_enabled: bool,
+    /// TLS configuration for HTTP servers (verification, Ghost Pay, GSP)
+    ///
+    /// When configured with cert/key paths, HTTPS is enabled for all HTTP servers.
+    /// When not configured, a self-signed certificate is auto-generated.
+    ///
+    /// **MAINNET REQUIREMENT**: `tls.cert_path` MUST be set for mainnet (no self-signed).
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 fn default_noise_enabled() -> bool {
@@ -929,6 +995,7 @@ impl Default for NetworkConfig {
             solo_payout_address: None,
             internal_api_secret: None,
             noise_enabled: true,
+            tls: TlsConfig::default(),
         }
     }
 }
@@ -1507,5 +1574,146 @@ mod tests {
             .errors
             .iter()
             .any(|e| e.field == "network.seed_nodes"));
+    }
+
+    #[test]
+    fn test_hsm_signer_rejected_at_config_validation() {
+        let mut config = NodeConfig::default();
+        config.identity.signer = Some(SignerConfig::Hsm {
+            library_path: None,
+            slot: 0,
+            pin_env: "HSM_PIN".to_string(),
+            key_label: None,
+        });
+
+        let result = config.validate();
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.field == "identity.signer" && e.message.contains("HSM")));
+    }
+
+    #[test]
+    fn test_kms_signer_rejected_at_config_validation() {
+        let mut config = NodeConfig::default();
+        config.identity.signer = Some(SignerConfig::Kms {
+            key_id: "test-key".to_string(),
+            region: "us-east-1".to_string(),
+            provider: crate::signer::KmsProvider::Aws,
+        });
+
+        let result = config.validate();
+        assert!(result
+            .errors
+            .iter()
+            .any(|e| e.field == "identity.signer" && e.message.contains("KMS")));
+    }
+
+    #[test]
+    fn test_local_signer_passes_config_validation() {
+        let mut config = NodeConfig::default();
+        config.identity.signer = Some(SignerConfig::Local {
+            key_path: std::path::PathBuf::from("~/.ghost/node.key"),
+        });
+
+        let result = config.validate();
+        assert!(!result
+            .errors
+            .iter()
+            .any(|e| e.field == "identity.signer"));
+    }
+
+    #[test]
+    fn test_mainnet_requires_tls_cert() {
+        let mut config = NodeConfig::default();
+        config.bitcoin.network = BitcoinNetwork::Mainnet;
+        config.network.noise_enabled = true;
+        config.network.internal_api_secret =
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
+        config.network.seed_nodes = vec!["seed1.bitcoinghost.org:8559".to_string()];
+        // No TLS cert configured
+        config.network.tls = TlsConfig::default();
+
+        let result = config.validate();
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.field == "network.tls.cert_path"
+                    && e.message.contains("MAINNET SECURITY")),
+            "Mainnet should require TLS cert_path"
+        );
+    }
+
+    #[test]
+    fn test_mainnet_tls_cert_without_key_errors() {
+        let mut config = NodeConfig::default();
+        config.bitcoin.network = BitcoinNetwork::Mainnet;
+        config.network.noise_enabled = true;
+        config.network.internal_api_secret =
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
+        config.network.seed_nodes = vec!["seed1.bitcoinghost.org:8559".to_string()];
+        config.network.tls = TlsConfig {
+            cert_path: Some(PathBuf::from("/etc/ghost/cert.pem")),
+            key_path: None, // Missing key
+        };
+
+        let result = config.validate();
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.field == "network.tls.key_path"
+                    && e.message.contains("MAINNET SECURITY")),
+            "Mainnet should require TLS key_path when cert_path is set"
+        );
+    }
+
+    #[test]
+    fn test_mainnet_with_tls_cert_and_key_passes() {
+        let mut config = NodeConfig::default();
+        config.bitcoin.network = BitcoinNetwork::Mainnet;
+        config.network.noise_enabled = true;
+        config.network.internal_api_secret =
+            Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
+        config.network.seed_nodes = vec!["seed1.bitcoinghost.org:8559".to_string()];
+        config.network.tls = TlsConfig {
+            cert_path: Some(PathBuf::from("/etc/ghost/cert.pem")),
+            key_path: Some(PathBuf::from("/etc/ghost/key.pem")),
+        };
+
+        let result = config.validate();
+        // Should not have TLS errors
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|e| e.field.starts_with("network.tls")),
+            "Mainnet with cert and key should not have TLS errors"
+        );
+    }
+
+    #[test]
+    fn test_signet_allows_no_tls_cert() {
+        let mut config = NodeConfig::default();
+        config.bitcoin.network = BitcoinNetwork::Signet;
+        config.network.tls = TlsConfig::default(); // No cert
+
+        let result = config.validate();
+        // Should not have TLS errors on non-mainnet
+        assert!(
+            !result
+                .errors
+                .iter()
+                .any(|e| e.field.starts_with("network.tls")),
+            "Signet should not require TLS cert"
+        );
+    }
+
+    #[test]
+    fn test_tls_config_default() {
+        let tls = TlsConfig::default();
+        assert!(tls.cert_path.is_none());
+        assert!(tls.key_path.is_none());
     }
 }

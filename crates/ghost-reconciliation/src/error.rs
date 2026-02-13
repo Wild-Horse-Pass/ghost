@@ -154,6 +154,10 @@ pub enum ReconciliationError {
     #[error("Merkle proof too large: {size} > {max}")]
     ProofTooLarge { size: usize, max: usize },
 
+    /// L1 broadcast failed
+    #[error("L1 broadcast failed: {0}")]
+    BroadcastFailed(String),
+
     /// Internal error for unexpected conditions
     #[error("Internal error: {details}")]
     InternalError { details: String },

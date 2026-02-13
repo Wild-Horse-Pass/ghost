@@ -84,3 +84,8 @@ sha2 = { workspace = true }
 
 # Database (for direct queries on ghost-pay's blocks table)
 rusqlite = { workspace = true }
+
+# TLS for HTTPS (CRIT-API-1)
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+hyper-util = { workspace = true }

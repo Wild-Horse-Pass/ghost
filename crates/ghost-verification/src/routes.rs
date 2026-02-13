@@ -321,7 +321,9 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // These endpoints can expose sensitive system information or trigger
         // destructive operations (updates, cache clearing, backup import).
         // Auth endpoint (returns empty token for dashboard compatibility)
-        .route("/auth/token", get(api_auth_token_handler));
+        .route("/auth/token", get(api_auth_token_handler))
+        // Prometheus metrics endpoint
+        .route("/metrics", get(metrics_handler));
 
     // Internal/admin endpoints with HMAC authentication (AUTH4-1 fix)
     // CRIT-6: All config POST endpoints moved here to require authentication
@@ -3883,12 +3885,41 @@ async fn share_batch_handler(
 }
 
 // ============================================================================
+// Prometheus Metrics Endpoint
+// ============================================================================
+
+/// Prometheus metrics handler - returns metrics in exposition format
+async fn metrics_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    if let Some(ref metrics) = state.metrics {
+        (
+            StatusCode::OK,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            )],
+            metrics.render(),
+        )
+    } else {
+        (
+            StatusCode::NOT_FOUND,
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/plain; version=0.0.4; charset=utf-8",
+            )],
+            "# No metrics available\n".to_string(),
+        )
+    }
+}
+
+// ============================================================================
 // MPC Ceremony Endpoints
 // ============================================================================
 
 /// MPC params handler - serves current MPC parameters file for P2P sync
 async fn api_mpc_params_handler(
-    State(state): State<Arc<VerificationState>>,
+    State(_state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
     // Get MPC params path from home directory
     let params_path = std::path::PathBuf::from(

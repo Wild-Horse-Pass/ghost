@@ -83,5 +83,11 @@ pub enum ZkError {
     MissingVerificationKey(String),
 }
 
+impl From<crate::circuit::mimc::FieldConversionError> for ZkError {
+    fn from(e: crate::circuit::mimc::FieldConversionError) -> Self {
+        ZkError::FieldConversionError(e.to_string())
+    }
+}
+
 /// Result type for ZK operations
 pub type ZkResult<T> = Result<T, ZkError>;

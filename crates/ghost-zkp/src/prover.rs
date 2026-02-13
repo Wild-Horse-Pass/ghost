@@ -480,13 +480,12 @@ impl BlockProver {
                 // Last transition outputs the final new_root
                 witness.new_state_root
             } else {
-                // Fallback: this will likely cause circuit verification to fail
-                // but allows compilation/testing of circuits without roots
-                warn!(
-                    "Missing intermediate root for transition {}. Circuit may not verify.",
-                    i
-                );
-                witness.new_state_root
+                return Err(ZkError::InvalidWitness(format!(
+                    "Missing intermediate root for transition {} (have {} roots for {} transitions)",
+                    i,
+                    witness.intermediate_roots.len(),
+                    witness.transitions.len()
+                )));
             };
             let output_root = bytes_to_field(&output_root_bytes)?;
 
@@ -577,7 +576,7 @@ mod tests {
         }
 
         let mut tree = BalanceTree::from_balances(tree_depth, initial_balances);
-        let prev_root = tree.root();
+        let prev_root = tree.root().expect("Root should compute");
 
         // Apply each payment and collect witnesses + intermediate roots
         let mut transitions = Vec::with_capacity(tx_count);
@@ -591,10 +590,10 @@ mod tests {
                 .expect("Payment should succeed");
             transitions.push(witness);
             // Record the root AFTER this payment is applied
-            intermediate_roots.push(tree.root());
+            intermediate_roots.push(tree.root().expect("Root should compute"));
         }
 
-        let new_root = tree.root();
+        let new_root = tree.root().expect("Root should compute");
 
         BlockWitnessV2::new_with_roots(
             1,
@@ -759,6 +758,27 @@ mod tests {
 
         let result = prover.prove_v2(&witness);
         assert!(result.is_err(), "Invalid witness should be rejected");
+    }
+
+    #[test]
+    fn test_missing_intermediate_root_returns_error() {
+        let prover = BlockProver::new_with_state_transitions(2, 10).unwrap();
+
+        // Create a witness with 2 transitions but NO intermediate roots.
+        // The first transition (i=0) is not the last, so it hits the error path.
+        let mut witness = create_test_witness(2, 10);
+        witness.intermediate_roots.clear();
+
+        let result = prover.prove_v2(&witness);
+        assert!(result.is_err(), "Should reject witness with missing intermediate roots");
+
+        let err = result.unwrap_err();
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("Missing intermediate root"),
+            "Error should mention missing intermediate root, got: {}",
+            err_msg
+        );
     }
 
     #[test]

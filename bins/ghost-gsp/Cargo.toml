@@ -37,6 +37,7 @@ path = "src/main.rs"
 # Workspace crates
 ghost-gsp = { path = "../../crates/ghost-gsp" }
 ghost-gsp-proto = { path = "../../crates/ghost-gsp-proto" }
+ghost-common = { path = "../../crates/ghost-common" }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full"] }

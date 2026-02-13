@@ -869,38 +869,6 @@ impl Transport {
         Ok(())
     }
 
-    /// Get our anonymous address for this transport
-    pub async fn get_our_address(&self, port: u16) -> Result<AnonymousAddress, TransportError> {
-        match self.config.transport_type {
-            TransportType::Tcp => {
-                // Would need to determine public IP - for now return placeholder
-                Ok(AnonymousAddress::Tcp(format!("0.0.0.0:{}", port)))
-            }
-            TransportType::Tor => {
-                if let Some(ref onion) = self.config.tor.onion_address {
-                    Ok(AnonymousAddress::Onion(format!("{}:{}", onion, port)))
-                } else {
-                    Err(TransportError::NotAvailable(
-                        "Tor hidden service not configured".into(),
-                    ))
-                }
-            }
-            TransportType::I2p => {
-                let session = self.i2p_session.read();
-                if let Some(ref sess) = *session {
-                    Ok(AnonymousAddress::I2p(format!(
-                        "{}:{}",
-                        sess.b32_address, port
-                    )))
-                } else {
-                    Err(TransportError::NotAvailable(
-                        "I2P session not initialized".into(),
-                    ))
-                }
-            }
-        }
-    }
-
     /// Get the transport configuration
     pub fn config(&self) -> &TransportConfig {
         &self.config

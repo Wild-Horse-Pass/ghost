@@ -44,7 +44,9 @@ use ghost_common::identity::NodeIdentity;
 use ghost_common::types::NodeId;
 use ghost_consensus::{EpochTracker, SettlerRole, SETTLEMENT_TIMEOUT_SECS};
 
-// Note: ReconciliationError and BatchExecutor will be used when settlement execution is implemented
+use crate::broadcaster::L1Broadcaster;
+use crate::error::{ReconciliationError, ReconciliationResult};
+use crate::executor::BatchExecutor;
 
 /// Settlement coordinator state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +117,10 @@ pub struct SettlementCoordinator {
     on_complete: Option<SettlementCallback>,
     /// Maximum concurrent settlements
     max_concurrent: usize,
+    /// Batch executor for settlement execution
+    executor: Option<RwLock<BatchExecutor>>,
+    /// L1 broadcaster for submitting settlement transactions
+    broadcaster: Option<Arc<dyn L1Broadcaster>>,
 }
 
 impl SettlementCoordinator {
@@ -126,6 +132,8 @@ impl SettlementCoordinator {
             settlements: RwLock::new(HashMap::new()),
             on_complete: None,
             max_concurrent: 3,
+            executor: None,
+            broadcaster: None,
         }
     }
 
@@ -138,6 +146,18 @@ impl SettlementCoordinator {
     /// Set maximum concurrent settlements
     pub fn with_max_concurrent(mut self, max: usize) -> Self {
         self.max_concurrent = max;
+        self
+    }
+
+    /// Attach a batch executor for settlement execution
+    pub fn with_executor(mut self, executor: BatchExecutor) -> Self {
+        self.executor = Some(RwLock::new(executor));
+        self
+    }
+
+    /// Attach an L1 broadcaster for submitting settlement transactions
+    pub fn with_broadcaster(mut self, broadcaster: Arc<dyn L1Broadcaster>) -> Self {
+        self.broadcaster = Some(broadcaster);
         self
     }
 
@@ -324,6 +344,86 @@ impl SettlementCoordinator {
     pub fn verify_settler(&self, settler_id: &NodeId, epoch: u64) -> GhostResult<bool> {
         let role = self.epoch_tracker.is_settler(settler_id, epoch)?;
         Ok(role != SettlerRole::NotSettler)
+    }
+
+    /// Execute settlement for an epoch using the attached executor and broadcaster.
+    ///
+    /// This method orchestrates the full settlement flow:
+    /// 1. Check if there are enough pending settlements to form a batch
+    /// 2. Form a batch from pending settlements
+    /// 3. Build the L1 reconciliation transaction
+    /// 4. Broadcast to L1 via the attached broadcaster
+    /// 5. Update coordinator and executor state
+    ///
+    /// Requires both `with_executor()` and `with_broadcaster()` to have been called.
+    pub fn execute_settlement(
+        &self,
+        epoch: u64,
+        fee_rate: u64,
+    ) -> ReconciliationResult<()> {
+        let executor_lock = self.executor.as_ref().ok_or_else(|| {
+            ReconciliationError::InvalidState("No executor configured".into())
+        })?;
+        let broadcaster = self.broadcaster.as_ref().ok_or_else(|| {
+            ReconciliationError::InvalidState("No broadcaster configured".into())
+        })?;
+
+        // 1. Check if batch should be formed
+        let mut exec = executor_lock.write();
+        if !exec.should_form_batch() {
+            debug!(epoch, "No batch to form - insufficient pending settlements");
+            return Ok(());
+        }
+
+        // 2. Form batch
+        let batch = exec.form_batch()?;
+        let batch_id_hex = batch.id_hex();
+        info!(epoch, batch_id = %batch_id_hex, "Formed settlement batch");
+
+        // Use a monotonic batch counter for coordinator tracking
+        let batch_seq = batch.settlement_count() as u32;
+        let _ = self.mark_in_progress(epoch, batch_seq);
+
+        // 3. Build transaction
+        let batch_tx = match exec.build_transaction(&batch, fee_rate) {
+            Ok(tx) => tx,
+            Err(e) => {
+                let _ = self.mark_failed(epoch, e.to_string());
+                return Err(e);
+            }
+        };
+
+        // 4. Broadcast to L1
+        let tx_bytes = bitcoin::consensus::encode::serialize(&batch_tx.transaction);
+        let tx_hex = hex::encode(&tx_bytes);
+
+        match broadcaster.broadcast(&tx_hex) {
+            Ok(txid_str) => {
+                // Parse txid for executor tracking
+                let txid: bitcoin::Txid = txid_str.parse().map_err(|e| {
+                    ReconciliationError::L1TransactionError(format!(
+                        "Invalid txid returned from broadcast: {}",
+                        e
+                    ))
+                })?;
+
+                exec.mark_submitted(&batch_id_hex, txid)?;
+                let _ = self.mark_completed(epoch);
+
+                info!(
+                    epoch,
+                    batch_id = %batch_id_hex,
+                    txid = %txid_str,
+                    "Settlement broadcast successful"
+                );
+                Ok(())
+            }
+            Err(e) => {
+                exec.cancel_batch(&batch_id_hex)?;
+                let _ = self.mark_failed(epoch, e.clone());
+                Err(ReconciliationError::BroadcastFailed(e))
+            }
+        }
     }
 
     /// Cleanup old completed settlements
@@ -616,5 +716,291 @@ mod tests {
         assert!(coordinator.get_status(3).is_some());
         assert!(coordinator.get_status(4).is_some());
         assert!(coordinator.get_status(0).is_none());
+    }
+
+    // ========================================================================
+    // Phase 5: Coordinator → Executor wiring tests
+    // ========================================================================
+
+    #[test]
+    fn test_coordinator_with_executor_builder() {
+        let (identity, epoch_tracker) = setup_test();
+
+        let executor = BatchExecutor::new(bitcoin::Network::Regtest, "bcrt1qtest".to_string());
+
+        let coordinator = SettlementCoordinator::new(identity.clone(), epoch_tracker)
+            .with_executor(executor);
+
+        assert!(coordinator.executor.is_some());
+        assert!(coordinator.broadcaster.is_none());
+        assert_eq!(coordinator.node_id(), identity.node_id());
+    }
+
+    #[test]
+    fn test_coordinator_with_broadcaster_builder() {
+        use crate::broadcaster::L1Broadcaster;
+
+        struct TestBroadcaster;
+        impl L1Broadcaster for TestBroadcaster {
+            fn broadcast(&self, _tx_hex: &str) -> Result<String, String> {
+                Ok("0000000000000000000000000000000000000000000000000000000000000001"
+                    .to_string())
+            }
+            fn get_block_height(&self) -> Result<u64, String> {
+                Ok(100)
+            }
+            fn is_confirmed(&self, _txid: &str) -> Result<Option<u32>, String> {
+                Ok(None)
+            }
+        }
+
+        let (identity, epoch_tracker) = setup_test();
+        let broadcaster: Arc<dyn L1Broadcaster> = Arc::new(TestBroadcaster);
+
+        let coordinator = SettlementCoordinator::new(identity, epoch_tracker)
+            .with_broadcaster(broadcaster);
+
+        assert!(coordinator.broadcaster.is_some());
+        assert!(coordinator.executor.is_none());
+    }
+
+    #[test]
+    fn test_coordinator_full_builder_chain() {
+        use crate::broadcaster::L1Broadcaster;
+
+        struct TestBroadcaster;
+        impl L1Broadcaster for TestBroadcaster {
+            fn broadcast(&self, _tx_hex: &str) -> Result<String, String> {
+                Ok("0000000000000000000000000000000000000000000000000000000000000001"
+                    .to_string())
+            }
+            fn get_block_height(&self) -> Result<u64, String> {
+                Ok(100)
+            }
+            fn is_confirmed(&self, _txid: &str) -> Result<Option<u32>, String> {
+                Ok(None)
+            }
+        }
+
+        let (identity, epoch_tracker) = setup_test();
+        let executor = BatchExecutor::new(bitcoin::Network::Regtest, "bcrt1qtest".to_string());
+        let broadcaster: Arc<dyn L1Broadcaster> = Arc::new(TestBroadcaster);
+
+        let coordinator = SettlementCoordinator::new(identity, epoch_tracker)
+            .with_executor(executor)
+            .with_broadcaster(broadcaster)
+            .with_max_concurrent(5);
+
+        assert!(coordinator.executor.is_some());
+        assert!(coordinator.broadcaster.is_some());
+        assert_eq!(coordinator.max_concurrent, 5);
+    }
+
+    #[test]
+    fn test_execute_settlement_no_executor() {
+        let (identity, epoch_tracker) = setup_test();
+        let coordinator = SettlementCoordinator::new(identity, epoch_tracker);
+
+        let result = coordinator.execute_settlement(0, 1);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ReconciliationError::InvalidState(msg) => {
+                assert!(msg.contains("No executor configured"));
+            }
+            other => panic!("Expected InvalidState, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_execute_settlement_no_broadcaster() {
+        let (identity, epoch_tracker) = setup_test();
+        let executor = BatchExecutor::new(bitcoin::Network::Regtest, "bcrt1qtest".to_string());
+
+        let coordinator = SettlementCoordinator::new(identity, epoch_tracker)
+            .with_executor(executor);
+
+        let result = coordinator.execute_settlement(0, 1);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ReconciliationError::InvalidState(msg) => {
+                assert!(msg.contains("No broadcaster configured"));
+            }
+            other => panic!("Expected InvalidState, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_execute_settlement_nothing_pending() {
+        use crate::broadcaster::L1Broadcaster;
+
+        struct TestBroadcaster;
+        impl L1Broadcaster for TestBroadcaster {
+            fn broadcast(&self, _tx_hex: &str) -> Result<String, String> {
+                panic!("Should not be called when nothing to settle");
+            }
+            fn get_block_height(&self) -> Result<u64, String> {
+                Ok(100)
+            }
+            fn is_confirmed(&self, _txid: &str) -> Result<Option<u32>, String> {
+                Ok(None)
+            }
+        }
+
+        let (identity, epoch_tracker) = setup_test();
+        let executor = BatchExecutor::new(bitcoin::Network::Regtest, "bcrt1qtest".to_string());
+        let broadcaster: Arc<dyn L1Broadcaster> = Arc::new(TestBroadcaster);
+
+        let coordinator = SettlementCoordinator::new(identity, epoch_tracker)
+            .with_executor(executor)
+            .with_broadcaster(broadcaster);
+
+        // Nothing pending, should return Ok(()) without calling broadcaster
+        let result = coordinator.execute_settlement(0, 1);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_execute_settlement_broadcast_failure() {
+        use crate::broadcaster::L1Broadcaster;
+        use crate::executor::ReconciliationInput;
+        use crate::settlement::Settlement;
+
+        struct FailingBroadcaster;
+        impl L1Broadcaster for FailingBroadcaster {
+            fn broadcast(&self, _tx_hex: &str) -> Result<String, String> {
+                Err("Connection refused".to_string())
+            }
+            fn get_block_height(&self) -> Result<u64, String> {
+                Ok(100)
+            }
+            fn is_confirmed(&self, _txid: &str) -> Result<Option<u32>, String> {
+                Ok(None)
+            }
+        }
+
+        let (identity, epoch_tracker) = setup_test();
+        let treasury_addr = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
+        let mut executor =
+            BatchExecutor::new(bitcoin::Network::Regtest, treasury_addr.to_string());
+
+        // Add 10 settlements (minimum batch size) with matching inputs
+        let output_addr = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
+        for i in 0..10u8 {
+            let settlement = Settlement::new(
+                format!("ghost1user{}", i),
+                [i; 32],
+                output_addr.to_string(),
+                10_000,
+            )
+            .unwrap();
+            #[allow(deprecated)]
+            executor.add_settlement(settlement).unwrap();
+
+            let input = ReconciliationInput {
+                txid: format!(
+                    "000000000000000000000000000000000000000000000000000000000000{:04x}",
+                    i
+                )
+                .parse()
+                .unwrap(),
+                vout: 0,
+                amount: 20_000,
+                ghost_id: format!("ghost1user{}", i),
+                lock_id: Some([i; 32]),
+            };
+            executor.add_input(input);
+        }
+
+        let broadcaster: Arc<dyn L1Broadcaster> = Arc::new(FailingBroadcaster);
+
+        let coordinator = SettlementCoordinator::new(identity, epoch_tracker)
+            .with_executor(executor)
+            .with_broadcaster(broadcaster);
+
+        let result = coordinator.execute_settlement(0, 1);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ReconciliationError::BroadcastFailed(msg) => {
+                assert!(msg.contains("Connection refused"));
+            }
+            other => panic!("Expected BroadcastFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_execute_settlement_success() {
+        use crate::broadcaster::L1Broadcaster;
+        use crate::executor::ReconciliationInput;
+        use crate::settlement::Settlement;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct SuccessBroadcaster {
+            was_called: AtomicBool,
+        }
+        impl L1Broadcaster for SuccessBroadcaster {
+            fn broadcast(&self, _tx_hex: &str) -> Result<String, String> {
+                self.was_called.store(true, Ordering::SeqCst);
+                Ok("a000000000000000000000000000000000000000000000000000000000000001"
+                    .to_string())
+            }
+            fn get_block_height(&self) -> Result<u64, String> {
+                Ok(100)
+            }
+            fn is_confirmed(&self, _txid: &str) -> Result<Option<u32>, String> {
+                Ok(None)
+            }
+        }
+
+        let (identity, epoch_tracker) = setup_test();
+        let treasury_addr = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
+        let mut executor =
+            BatchExecutor::new(bitcoin::Network::Regtest, treasury_addr.to_string());
+
+        // Add 10 settlements with matching inputs
+        let output_addr = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
+        for i in 0..10u8 {
+            let settlement = Settlement::new(
+                format!("ghost1user{}", i),
+                [i; 32],
+                output_addr.to_string(),
+                10_000,
+            )
+            .unwrap();
+            #[allow(deprecated)]
+            executor.add_settlement(settlement).unwrap();
+
+            let input = ReconciliationInput {
+                txid: format!(
+                    "000000000000000000000000000000000000000000000000000000000000{:04x}",
+                    i
+                )
+                .parse()
+                .unwrap(),
+                vout: 0,
+                amount: 20_000,
+                ghost_id: format!("ghost1user{}", i),
+                lock_id: Some([i; 32]),
+            };
+            executor.add_input(input);
+        }
+
+        let broadcaster = Arc::new(SuccessBroadcaster {
+            was_called: AtomicBool::new(false),
+        });
+        let broadcaster_clone = broadcaster.clone();
+
+        let coordinator = SettlementCoordinator::new(identity, epoch_tracker)
+            .with_executor(executor)
+            .with_broadcaster(broadcaster_clone as Arc<dyn L1Broadcaster>);
+
+        let result = coordinator.execute_settlement(0, 1);
+        assert!(result.is_ok(), "Settlement should succeed: {:?}", result.err());
+
+        // Verify broadcaster was actually called
+        assert!(broadcaster.was_called.load(Ordering::SeqCst));
+
+        // Verify executor has no more pending settlements
+        let exec = coordinator.executor.as_ref().unwrap().read();
+        assert_eq!(exec.pending_count(), 0);
     }
 }

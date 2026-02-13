@@ -44,6 +44,7 @@ pub mod sanitize;
 pub mod serde_hex;
 pub mod signer;
 pub mod template_verifier;
+pub mod tls;
 pub mod types;
 pub mod zmq;
 

@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 
 use blstrs::Scalar as Fr;
-use tracing::warn;
 
 use crate::circuit::mimc::{bytes_to_field, field_to_bytes, mimc_hash_native};
 use crate::errors::{ZkError, ZkResult};
@@ -76,31 +75,31 @@ impl BalanceTree {
     }
 
     /// Get merkle proof for a leaf
-    pub fn get_proof(&self, index: u64) -> MerkleProof {
+    pub fn get_proof(&self, index: u64) -> ZkResult<MerkleProof> {
         let mut siblings = Vec::with_capacity(self.depth);
         let mut current_index = index;
 
         for level in 0..self.depth {
             // Sibling is at index XOR 1
             let sibling_index = current_index ^ 1;
-            let sibling_hash = self.get_node_hash(level, sibling_index);
+            let sibling_hash = self.get_node_hash(level, sibling_index)?;
             siblings.push(sibling_hash);
 
             // Move to parent
             current_index /= 2;
         }
 
-        MerkleProof::new(index, siblings)
+        Ok(MerkleProof::new(index, siblings))
     }
 
     /// Update a leaf and return the new root
-    pub fn update(&mut self, index: u64, new_balance: u64) -> [u8; 32] {
+    pub fn update(&mut self, index: u64, new_balance: u64) -> ZkResult<[u8; 32]> {
         self.set_balance(index, new_balance);
         self.root()
     }
 
     /// Get current merkle root
-    pub fn root(&self) -> [u8; 32] {
+    pub fn root(&self) -> ZkResult<[u8; 32]> {
         self.get_node_hash(self.depth, 0)
     }
 
@@ -131,14 +130,14 @@ impl BalanceTree {
         }
 
         // Get sender proof against current state
-        let sender_merkle_proof = self.get_proof(sender_index);
+        let sender_merkle_proof = self.get_proof(sender_index)?;
 
         // Update sender balance
         let sender_balance_after = sender_balance_before - amount;
         self.set_balance(sender_index, sender_balance_after);
 
         // Get recipient proof against intermediate state (after sender update)
-        let recipient_merkle_proof = self.get_proof(recipient_index);
+        let recipient_merkle_proof = self.get_proof(recipient_index)?;
 
         // Update recipient balance
         let recipient_balance_after =
@@ -164,15 +163,15 @@ impl BalanceTree {
     /// Get hash of a node at a given level and index
     ///
     /// Level 0 = leaves, Level depth = root
-    fn get_node_hash(&self, level: usize, index: u64) -> [u8; 32] {
+    fn get_node_hash(&self, level: usize, index: u64) -> ZkResult<[u8; 32]> {
         if level == 0 {
             // Leaf node: hash the balance
             let balance = self.get_balance(index);
-            self.hash_leaf(balance)
+            Ok(self.hash_leaf(balance))
         } else {
             // Internal node: hash children
-            let left = self.get_node_hash(level - 1, index * 2);
-            let right = self.get_node_hash(level - 1, index * 2 + 1);
+            let left = self.get_node_hash(level - 1, index * 2)?;
+            let right = self.get_node_hash(level - 1, index * 2 + 1)?;
             self.hash_pair(&left, &right)
         }
     }
@@ -193,37 +192,10 @@ impl BalanceTree {
     ///
     /// Uses MiMC to match the circuit implementation:
     /// H(left, right)
-    ///
-    /// SECURITY: Invalid field elements now cause an error to be logged and
-    /// the computation returns a deterministic fallback. In production, merkle
-    /// trees should only contain valid field elements from hash outputs.
-    fn hash_pair(&self, left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-        let left_field = match bytes_to_field::<Fr>(left) {
-            Ok(f) => f,
-            Err(e) => {
-                warn!("Invalid left bytes in hash_pair: {}. This indicates corrupted merkle tree data.", e);
-                // Return a deterministic error hash to prevent silent failures
-                return self.error_hash(b"invalid_left");
-            }
-        };
-        let right_field = match bytes_to_field::<Fr>(right) {
-            Ok(f) => f,
-            Err(e) => {
-                warn!("Invalid right bytes in hash_pair: {}. This indicates corrupted merkle tree data.", e);
-                return self.error_hash(b"invalid_right");
-            }
-        };
-        let hash = mimc_hash_native(left_field, right_field);
-        field_to_bytes(hash)
-    }
-
-    /// Generate a deterministic error hash for corrupted data detection
-    fn error_hash(&self, context: &[u8]) -> [u8; 32] {
-        use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
-        hasher.update(b"ghost-zkp-error-hash-v1");
-        hasher.update(context);
-        hasher.finalize().into()
+    fn hash_pair(&self, left: &[u8; 32], right: &[u8; 32]) -> ZkResult<[u8; 32]> {
+        let left_field = bytes_to_field::<Fr>(left)?;
+        let right_field = bytes_to_field::<Fr>(right)?;
+        Ok(field_to_bytes(mimc_hash_native(left_field, right_field)))
     }
 
     /// Get the number of non-zero accounts
@@ -328,8 +300,8 @@ mod tests {
         assert_eq!(tree.total_balance(), 0);
 
         // Root should be deterministic for empty tree
-        let root1 = tree.root();
-        let root2 = tree.root();
+        let root1 = tree.root().unwrap();
+        let root2 = tree.root().unwrap();
         assert_eq!(root1, root2);
     }
 
@@ -351,9 +323,9 @@ mod tests {
     fn test_update_changes_root() {
         let mut tree = BalanceTree::new(10);
 
-        let root1 = tree.root();
-        tree.update(0, 1000);
-        let root2 = tree.root();
+        let root1 = tree.root().unwrap();
+        tree.update(0, 1000).unwrap();
+        let root2 = tree.root().unwrap();
 
         assert_ne!(root1, root2, "Root should change after update");
     }
@@ -365,7 +337,7 @@ mod tests {
         tree.set_balance(0, 1000);
         tree.set_balance(5, 500);
 
-        let proof = tree.get_proof(0);
+        let proof = tree.get_proof(0).unwrap();
 
         assert_eq!(proof.leaf_index, 0);
         assert_eq!(proof.depth(), 4);
@@ -375,7 +347,7 @@ mod tests {
         let computed_root = proof
             .compute_root(leaf_hash)
             .expect("compute_root should succeed");
-        assert_eq!(computed_root, tree.root());
+        assert_eq!(computed_root, tree.root().unwrap());
     }
 
     #[test]
@@ -385,7 +357,7 @@ mod tests {
         tree.set_balance(0, 1000); // Sender
         tree.set_balance(1, 500); // Recipient
 
-        let initial_root = tree.root();
+        let initial_root = tree.root().unwrap();
 
         let witness = tree.apply_payment(0, 1, 100).unwrap();
 
@@ -400,7 +372,7 @@ mod tests {
         assert_eq!(tree.get_balance(1), 600);
 
         // Root should change
-        assert_ne!(initial_root, tree.root());
+        assert_ne!(initial_root, tree.root().unwrap());
     }
 
     #[test]
@@ -495,7 +467,7 @@ mod tests {
 
         // Get proofs for each
         for &index in &[0u64, 3, 7, 15] {
-            let proof = tree.get_proof(index);
+            let proof = tree.get_proof(index).unwrap();
             let balance = tree.get_balance(index);
             let leaf_hash = tree.hash_leaf(balance);
             let computed_root = proof
@@ -504,7 +476,7 @@ mod tests {
 
             assert_eq!(
                 computed_root,
-                tree.root(),
+                tree.root().unwrap(),
                 "Proof for index {} should verify",
                 index
             );
@@ -537,21 +509,37 @@ mod tests {
             .with_balance(1, 500)
             .build();
 
-        let original_root = tree.root();
+        let original_root = tree.root().unwrap();
 
         let (witness, new_tree) = tree.apply_payment_copy(0, 1, 100).unwrap();
 
         // Original tree unchanged
-        assert_eq!(tree.root(), original_root);
+        assert_eq!(tree.root().unwrap(), original_root);
         assert_eq!(tree.get_balance(0), 1000);
 
         // New tree updated
-        assert_ne!(new_tree.root(), original_root);
+        assert_ne!(new_tree.root().unwrap(), original_root);
         assert_eq!(new_tree.get_balance(0), 900);
         assert_eq!(new_tree.get_balance(1), 600);
 
         // Witness correct
         assert_eq!(witness.sender_balance_before, 1000);
         assert_eq!(witness.recipient_balance_before, 500);
+    }
+
+    #[test]
+    fn test_hash_pair_invalid_field_returns_error() {
+        let tree = BalanceTree::new(4);
+
+        // Create bytes larger than the BLS12-381 scalar field modulus
+        // The modulus is ~0x73eda753..., so 0xFF...FF will exceed it
+        let invalid_bytes = [0xFF; 32];
+        let valid_bytes = [0x01; 32];
+
+        let result = tree.hash_pair(&invalid_bytes, &valid_bytes);
+        assert!(result.is_err(), "Should reject bytes exceeding field modulus");
+
+        let result = tree.hash_pair(&valid_bytes, &invalid_bytes);
+        assert!(result.is_err(), "Should reject bytes exceeding field modulus (right)");
     }
 }

@@ -130,8 +130,9 @@ pub struct BlockFoundData {
     pub subsidy_sats: u64,
     /// Transaction fees (satoshis)
     pub tx_fees_sats: u64,
-    /// Miner work distribution: (miner_id, work_fraction)
-    pub miner_work: Vec<(String, f64)>,
+    /// Miner work distribution: (miner_id, scaled_work_u128)
+    /// Values are pre-scaled integers from RoundShares, eliminating f64 precision loss
+    pub miner_work: Vec<(String, u128)>,
     /// Node share distribution: (node_id, capability_shares)
     /// Capability shares follow the 5-4-3-2-1 scheme per ECONOMICS.md
     pub node_shares: Vec<(NodeId, i32)>,
@@ -777,46 +778,18 @@ impl PayoutProposalCreator {
     /// to prevent precision loss in payout calculations.
     fn calculate_miner_payouts(
         &self,
-        miner_work: &[(String, f64)],
+        miner_work: &[(String, u128)],
         total_sats: u64,
     ) -> GhostResult<(Vec<PayoutEntry>, u64)> {
-        // 3.3 SECURITY: Scale factor for integer arithmetic (10^12)
-        // This provides 12 decimal places of precision, more than enough for work calculations
-        const WORK_SCALE: u128 = 1_000_000_000_000;
-
         let mut payouts = Vec::new();
         let mut dust_total: u64 = 0;
 
-        // 3.3 SECURITY: Convert float work values to scaled integers immediately
-        // This prevents any floating point precision issues in subsequent calculations
-        // L-5 SECURITY: Add explicit bounds check before f64 to u128 conversion
-        // to prevent undefined behavior from out-of-range values.
+        // Work values arrive as pre-scaled u128 from RoundShares, no f64 conversion needed.
+        // Filter out zero-work entries.
         let scaled_work: Vec<(String, u128)> = miner_work
             .iter()
-            .filter(|(_, w)| *w > 0.0 && w.is_finite())
-            .filter_map(|(id, w)| {
-                let scaled = *w * WORK_SCALE as f64;
-                // L-5/M-13: Check bounds before conversion
-                // u128::MAX is ~3.4e38, so we check against a safe maximum.
-                //
-                // M-13: The bound must accommodate legitimate high-hashrate miners.
-                // Analysis: A mega-pool with 30% of network hashrate (~1.5e20 H/s)
-                // accumulating work over a day would generate ~1.3e25 work.
-                // With WORK_SCALE=1e12, this becomes ~1.3e37 scaled.
-                // We set MAX_SAFE_SCALED to 1e37 to accommodate this while
-                // maintaining safety margin from u128::MAX (~3.4e38).
-                const MAX_SAFE_SCALED: f64 = 1e37; // Safe for high-hashrate miners (M-13)
-                if !(0.0..=MAX_SAFE_SCALED).contains(&scaled) || !scaled.is_finite() {
-                    warn!(
-                        miner_id = %id,
-                        work = *w,
-                        scaled_work = scaled,
-                        "L-5: Rejecting miner work with out-of-bounds scaled value"
-                    );
-                    return None;
-                }
-                Some((id.clone(), scaled as u128))
-            })
+            .filter(|(_, w)| *w > 0)
+            .cloned()
             .collect();
 
         let total_work: u128 = scaled_work.iter().map(|(_, w)| w).sum();
@@ -1573,7 +1546,7 @@ mod tests {
             winning_node_id: [1u8; 32],
             subsidy_sats: 625_000_000, // 6.25 BTC
             tx_fees_sats: 10_000_000,  // 0.1 BTC
-            miner_work: vec![("miner1".to_string(), 100.0), ("miner2".to_string(), 50.0)],
+            miner_work: vec![("miner1".to_string(), 100_000_000_000_000u128), ("miner2".to_string(), 50_000_000_000_000u128)],
             node_shares: vec![([1u8; 32], 10), ([2u8; 32], 5)],
             treasury_state: TreasuryState::new(),
         };
@@ -1605,7 +1578,7 @@ mod tests {
             winning_node_id: [1u8; 32],
             subsidy_sats: 312_500_000, // 3.125 BTC
             tx_fees_sats: 10_000_000,  // 0.1 BTC
-            miner_work: vec![("miner1".to_string(), 100.0)],
+            miner_work: vec![("miner1".to_string(), 100_000_000_000_000u128)],
             node_shares: vec![([1u8; 32], 5)],
             treasury_state,
         };

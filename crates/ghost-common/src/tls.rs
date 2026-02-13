@@ -1,0 +1,156 @@
+//! TLS configuration helpers for HTTP servers
+//!
+//! Provides `build_server_config` which returns an `Arc<rustls::ServerConfig>` suitable
+//! for wrapping TCP listeners with TLS.
+//!
+//! When operator-provided PEM cert/key files are present they are loaded; otherwise
+//! a self-signed Ed25519 certificate is generated automatically (suitable for
+//! development and testnets only -- mainnet validation rejects this path).
+
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
+
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+
+use crate::config::TlsConfig;
+
+/// Build a `rustls::ServerConfig` for HTTPS.
+///
+/// * If `tls.cert_path` and `tls.key_path` are both set, the PEM files are loaded.
+/// * Otherwise a self-signed Ed25519 certificate is generated on the fly.
+///
+/// # Errors
+///
+/// Returns an error if PEM files are missing / malformed, or if rustls
+/// rejects the certificate / key combination.
+pub fn build_server_config(
+    tls: &TlsConfig,
+) -> Result<Arc<rustls::ServerConfig>, Box<dyn std::error::Error + Send + Sync>> {
+    let (certs, key) = if let (Some(cert_path), Some(key_path)) = (&tls.cert_path, &tls.key_path) {
+        load_pem_files(cert_path, key_path)?
+    } else {
+        generate_self_signed()?
+    };
+
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)?;
+
+    Ok(Arc::new(config))
+}
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+/// Load PEM-encoded certificate chain and private key from disk.
+fn load_pem_files(
+    cert_path: &Path,
+    key_path: &Path,
+) -> Result<
+    (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    let cert_data = fs::read(cert_path).map_err(|e| {
+        format!(
+            "Failed to read TLS certificate from {}: {}",
+            cert_path.display(),
+            e
+        )
+    })?;
+    let key_data = fs::read(key_path).map_err(|e| {
+        format!(
+            "Failed to read TLS private key from {}: {}",
+            key_path.display(),
+            e
+        )
+    })?;
+
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &cert_data[..])
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to parse PEM certificates: {}", e))?;
+
+    if certs.is_empty() {
+        return Err("No certificates found in PEM file".into());
+    }
+
+    let key = rustls_pemfile::private_key(&mut &key_data[..])
+        .map_err(|e| format!("Failed to parse PEM private key: {}", e))?
+        .ok_or("No private key found in PEM file")?;
+
+    Ok((certs, key))
+}
+
+/// Generate a self-signed Ed25519 certificate (for development / testnets).
+fn generate_self_signed() -> Result<
+    (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    use rcgen::{CertificateParams, KeyPair, PKCS_ED25519};
+
+    let key_pair = KeyPair::generate_for(&PKCS_ED25519)?;
+
+    let mut params = CertificateParams::new(vec!["localhost".to_string()])?;
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "Ghost Node");
+
+    let cert = params.self_signed(&key_pair)?;
+
+    let cert_der = CertificateDer::from(cert.der().to_vec());
+    let key_der =
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der().to_vec()));
+
+    tracing::info!("TLS: Generated self-signed Ed25519 certificate for development use");
+
+    Ok((vec![cert_der], key_der))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_server_config_self_signed() {
+        // With no cert/key paths, should generate a self-signed cert and succeed
+        let tls = TlsConfig::default();
+        let result = build_server_config(&tls);
+        assert!(
+            result.is_ok(),
+            "Self-signed TLS config should succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_build_server_config_missing_cert_file() {
+        let tls = TlsConfig {
+            cert_path: Some("/nonexistent/cert.pem".into()),
+            key_path: Some("/nonexistent/key.pem".into()),
+        };
+        let result = build_server_config(&tls);
+        assert!(result.is_err(), "Should fail with missing cert file");
+    }
+
+    #[test]
+    fn test_build_server_config_only_cert_no_key() {
+        // When only cert_path is set but key_path is None, should fall through
+        // to self-signed generation (both must be Some to use PEM loading)
+        let tls = TlsConfig {
+            cert_path: Some("/some/cert.pem".into()),
+            key_path: None,
+        };
+        let result = build_server_config(&tls);
+        assert!(
+            result.is_ok(),
+            "With only cert_path, should fall back to self-signed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_generate_self_signed_produces_valid_config() {
+        let (certs, _key) = generate_self_signed().expect("Self-signed generation should succeed");
+        assert_eq!(certs.len(), 1, "Should produce exactly one certificate");
+        assert!(!certs[0].is_empty(), "Certificate DER should not be empty");
+    }
+}

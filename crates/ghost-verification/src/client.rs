@@ -695,6 +695,38 @@ impl VerificationClient {
         Ok(result)
     }
 
+    /// Probe a peer's current GhostPay epoch without issuing a challenge.
+    ///
+    /// Calls the GhostPay verification endpoint with `unsigned=true` and no challenge
+    /// parameters. The response's `epoch` field indicates the peer's current epoch,
+    /// which is then used to select a random challenge epoch in range [0, peer_epoch].
+    pub async fn probe_ghostpay_epoch(&self, node_address: &str) -> GhostResult<u64> {
+        let path = "/verify/ghostpay?unsigned=true";
+        let url = self.build_url(node_address, path)?;
+
+        debug!(url = %url, "Probing GhostPay current epoch");
+
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            debug!("GhostPay epoch probe failed: {}", e);
+            GhostError::VerificationTimeout("GhostPay epoch probe failed".to_string())
+        })?;
+
+        let wrapper: serde_json::Value = response.json().await.map_err(|e| {
+            debug!("GhostPay epoch probe parse error: {}", e);
+            GhostError::InvalidVerificationResponse("Invalid GhostPay probe response".to_string())
+        })?;
+
+        // Extract epoch from the response (nested under "response")
+        let epoch = wrapper
+            .get("response")
+            .and_then(|r| r.get("epoch"))
+            .and_then(|e| e.as_u64())
+            .unwrap_or(0);
+
+        debug!(epoch = epoch, "GhostPay epoch probe result");
+        Ok(epoch)
+    }
+
     /// Run full verification suite
     pub async fn verify_all_capabilities(
         &self,
