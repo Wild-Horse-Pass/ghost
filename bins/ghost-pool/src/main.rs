@@ -2112,16 +2112,26 @@ async fn main() -> Result<()> {
     let _verification_state_for_ws = Arc::clone(&verification_state);
 
     let http_port = config.network.http_port;
-    // Build TLS config for HTTPS on the verification server
-    let tls_server_config = match ghost_common::tls::build_server_config(&config.network.tls) {
-        Ok(tls) => {
-            info!("TLS configured for verification server on port {}", http_port);
-            Some(tls)
+    // Build TLS config for HTTPS on the verification server.
+    // Only enable TLS when the operator explicitly provides cert/key paths OR on mainnet.
+    // On signet/testnet without explicit certs, use plain HTTP to match the verification
+    // client which uses HTTP for peer challenges (self-signed certs aren't trusted).
+    let has_explicit_tls = config.network.tls.cert_path.is_some();
+    let is_mainnet_tls = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
+    let tls_server_config = if has_explicit_tls || is_mainnet_tls {
+        match ghost_common::tls::build_server_config(&config.network.tls) {
+            Ok(tls) => {
+                info!("TLS configured for verification server on port {}", http_port);
+                Some(tls)
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to build TLS config, verification server will use plain HTTP");
+                None
+            }
         }
-        Err(e) => {
-            warn!(error = %e, "Failed to build TLS config, verification server will use plain HTTP");
-            None
-        }
+    } else {
+        info!("Verification server using plain HTTP (no TLS cert configured)");
+        None
     };
     tokio::spawn(async move {
         if let Err(e) = start_server(verification_state, http_port, tls_server_config).await {
