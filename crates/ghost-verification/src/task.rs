@@ -362,9 +362,11 @@ fn build_test_transaction() -> Option<String> {
     let rand_amount = u64::from_le_bytes(rng_bytes[8..16].try_into().unwrap_or([0u8; 8]));
     let amount = 10_000 + (rand_amount % 90_000);
 
-    // HIGH-VER-3: Expanded script type variety to test more policy scenarios
-    // Now includes: P2WPKH, P2TR, OP_RETURN, P2WSH, P2SH multisig, and timelocked outputs
-    let script_type = rng_bytes[16] % 8; // Expanded from 4 to 8 types
+    // Generate ONLY T0-class scripts (standard financial transactions).
+    // The challenge expects exactly T0 classification, so we must not include
+    // OP_RETURN (T2), timelocked scripts (T2), or legacy P2PK (T1/T2).
+    // Valid T0 types: P2WPKH, P2TR, P2WSH, P2SH
+    let script_type = rng_bytes[16] % 4;
     let output_script = match script_type {
         0 => {
             // P2WPKH: OP_0 <20-byte-hash>
@@ -385,16 +387,7 @@ fn build_test_transaction() -> Option<String> {
                 .into_script()
         }
         2 => {
-            // OP_RETURN with random 40-byte data
-            let mut op_return_data = [0u8; 40];
-            op_return_data.copy_from_slice(&rng_bytes[18..58]);
-            Builder::new()
-                .push_opcode(bitcoin::opcodes::all::OP_RETURN)
-                .push_slice(op_return_data)
-                .into_script()
-        }
-        3 => {
-            // P2WSH (2-of-2 multisig witness hash)
+            // P2WSH: OP_0 <32-byte-script-hash>
             let mut script_hash = [0u8; 32];
             script_hash.copy_from_slice(&rng_bytes[17..49]);
             Builder::new()
@@ -402,55 +395,14 @@ fn build_test_transaction() -> Option<String> {
                 .push_slice(script_hash)
                 .into_script()
         }
-        4 => {
-            // HIGH-VER-3: P2SH multisig (2-of-3)
-            // <OP_2> <pubkey1> <pubkey2> <pubkey3> <OP_3> <OP_CHECKMULTISIG>
+        _ => {
+            // P2SH: OP_HASH160 <20-byte-hash> OP_EQUAL
             let mut script_hash = [0u8; 20];
             script_hash.copy_from_slice(&rng_bytes[17..37]);
             Builder::new()
                 .push_opcode(bitcoin::opcodes::all::OP_HASH160)
                 .push_slice(script_hash)
                 .push_opcode(bitcoin::opcodes::all::OP_EQUAL)
-                .into_script()
-        }
-        5 => {
-            // HIGH-VER-3: Timelocked P2WPKH (CLTV)
-            // This creates a simple timelock script structure for testing
-            let mut pubkey_hash = [0u8; 20];
-            pubkey_hash.copy_from_slice(&rng_bytes[17..37]);
-            // Future block height for timelock
-            let locktime =
-                u32::from_le_bytes([rng_bytes[37], rng_bytes[38], rng_bytes[39], rng_bytes[40]])
-                    % 1_000_000;
-            Builder::new()
-                .push_int(locktime as i64)
-                .push_opcode(bitcoin::opcodes::all::OP_CLTV)
-                .push_opcode(bitcoin::opcodes::all::OP_DROP)
-                .push_int(0)
-                .push_slice(pubkey_hash)
-                .into_script()
-        }
-        6 => {
-            // HIGH-VER-3: Large OP_RETURN (73 bytes - max for fixed array push_slice)
-            let mut op_return_data = [0u8; 73];
-            if rng_bytes.len() >= 64 {
-                op_return_data[..64].copy_from_slice(&rng_bytes[..64]);
-            }
-            Builder::new()
-                .push_opcode(bitcoin::opcodes::all::OP_RETURN)
-                .push_slice(op_return_data)
-                .into_script()
-        }
-        _ => {
-            // HIGH-VER-3: P2PK (legacy pay-to-pubkey)
-            let mut pubkey = [0u8; 33]; // Compressed pubkey
-            if rng_bytes.len() >= 50 {
-                pubkey.copy_from_slice(&rng_bytes[17..50]);
-                pubkey[0] = 0x02; // Ensure valid compressed pubkey prefix
-            }
-            Builder::new()
-                .push_slice(pubkey)
-                .push_opcode(bitcoin::opcodes::all::OP_CHECKSIG)
                 .into_script()
         }
     };
