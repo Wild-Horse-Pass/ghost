@@ -2057,7 +2057,7 @@ impl MeshNetwork {
             if last_stats_log.elapsed() > std::time::Duration::from_secs(30) {
                 let total_received = self.messages_received.load(Ordering::Relaxed);
                 debug!(
-                    connected_peers = connected_addresses.len(),
+                    zmq_connections = connected_addresses.len(),
                     receive_attempts,
                     receive_timeouts,
                     receive_errors,
@@ -2317,8 +2317,8 @@ impl MeshNetwork {
     /// Get mesh statistics
     pub fn stats(&self) -> MeshStats {
         MeshStats {
-            total_peers: self.peers.peer_count(),
-            connected_peers: self.peers.connected_count(),
+            peer_entries: self.peers.peer_count(),
+            zmq_connections: self.peers.connected_count(),
             elder_peers: self.peers.get_elder_peers().len(),
             messages_sent: self.messages_sent.load(Ordering::Relaxed),
             messages_received: self.messages_received.load(Ordering::Relaxed),
@@ -2425,8 +2425,8 @@ impl MeshNetwork {
 
         info!(
             msg_type = ?msg_type,
-            total_peers = total_peers,
-            connected_peers = connected_count,
+            peer_entries = total_peers,
+            zmq_connections = connected_count,
             "Broadcasting message"
         );
 
@@ -2466,10 +2466,14 @@ impl MeshNetwork {
 }
 
 /// Mesh network statistics
+///
+/// Note: `peer_entries` and `zmq_connections` count ZMQ subscriber entries,
+/// not unique physical nodes. Each node may have multiple entries across
+/// different port groups (share, discovery, etc).
 #[derive(Debug, Clone, Default)]
 pub struct MeshStats {
-    pub total_peers: usize,
-    pub connected_peers: usize,
+    pub peer_entries: usize,
+    pub zmq_connections: usize,
     pub elder_peers: usize,
     pub messages_sent: u64,
     pub messages_received: u64,

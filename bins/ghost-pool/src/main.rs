@@ -2532,8 +2532,8 @@ async fn main() -> Result<()> {
                         capability = %broadcast.capability,
                         passed = broadcast.passed,
                         sent_to = sent,
-                        total_peers = peer_count,
-                        connected_peers = connected_count,
+                        peer_entries = peer_count,
+                        zmq_connections = connected_count,
                         "DIAG: Verification result broadcast complete"
                     );
                 }
