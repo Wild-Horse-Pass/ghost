@@ -132,6 +132,9 @@ pub struct MeshConfig {
     ///
     /// Default: false (gradual rollout mode)
     pub noise_required: bool,
+    /// Node's payout address for node reward distribution
+    /// Broadcast in health pings so peers know where to send node reward payouts
+    pub payout_address: Option<String>,
 }
 
 /// Default Noise port for encrypted TCP connections
@@ -158,6 +161,7 @@ impl Default for MeshConfig {
             // - Snooping on consensus votes, share submissions, and payouts
             // Fallback mode should ONLY be used during development/testing.
             noise_required: true,
+            payout_address: None,
         }
     }
 }
@@ -2268,6 +2272,7 @@ impl MeshNetwork {
                 miner_count: self.peers.peer_count() as u32,
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
                 pow_proof,
+                payout_address: self.config.payout_address.clone(),
             };
 
             match self.create_envelope(

@@ -845,9 +845,11 @@ async fn handle_submit_solution(
     info!("Computed merkle root: {}", hex::encode(merkle_root));
 
     // Build the 80-byte block header
+    // Use the RPC display-format hash (not the Stratum word-reversed prev_hash)
+    // because build_block_header converts to Bitcoin internal byte order.
     let header = build_block_header(
         solution.version,
-        &work_state.prev_hash,
+        &work_state.template.previousblockhash,
         &merkle_root,
         solution.header_timestamp,
         &work_state.nbits,
@@ -1038,8 +1040,9 @@ fn build_block_header(
     header[0..4].copy_from_slice(&version.to_le_bytes());
 
     // Previous block hash (32 bytes)
-    // Note: work_state.prev_hash is already in little-endian (internal) byte order
-    let prev_hash_bytes =
+    // Input is RPC display format (big-endian hex). Bitcoin block headers store
+    // the prev_hash in internal byte order (full 32-byte reversal of display).
+    let mut prev_hash_bytes =
         hex::decode(prev_hash_hex).map_err(|e| anyhow::anyhow!("Invalid prev_hash hex: {}", e))?;
     if prev_hash_bytes.len() != 32 {
         return Err(anyhow::anyhow!(
@@ -1047,6 +1050,7 @@ fn build_block_header(
             prev_hash_bytes.len()
         ));
     }
+    prev_hash_bytes.reverse();
     header[4..36].copy_from_slice(&prev_hash_bytes);
 
     // Merkle root (32 bytes, already in internal byte order)
@@ -1239,8 +1243,9 @@ fn create_new_template(
         coinbase_tx_version: 2, // Standard coinbase version
         coinbase_prefix,
         coinbase_tx_input_sequence: 0xffffffff,
-        // Total coinbase value (subsidy + fees) - SRI Pool validates outputs sum matches this
-        coinbase_tx_value_remaining: get_block_subsidy(work_state.height) + work_state.total_fees,
+        // Ghost-pool provides ALL coinbase outputs (payouts, treasury, OP_RETURN).
+        // Set value_remaining to 0 so SRI does not add its own payout outputs.
+        coinbase_tx_value_remaining: 0,
         coinbase_tx_outputs_count: work_state.coinbase_outputs_count,
         coinbase_tx_outputs: coinbase_outputs, // Ghost's outputs (BFT payouts, treasury)
         coinbase_tx_locktime: 0,
@@ -1255,9 +1260,11 @@ fn create_set_new_prev_hash(
 ) -> anyhow::Result<SetNewPrevHash<'static>> {
     use stratum_apps::stratum_core::binary_sv2::U256;
 
-    // Parse prev_hash from hex string to bytes
-    let prev_hash_bytes = hex::decode(&work_state.prev_hash)
+    // Parse prev_hash from RPC display format and convert to Bitcoin internal byte order
+    // (full 32-byte reversal). SV2 U256 expects little-endian = internal byte order.
+    let mut prev_hash_bytes = hex::decode(&work_state.template.previousblockhash)
         .map_err(|e| anyhow::anyhow!("Invalid prev_hash hex: {}", e))?;
+    prev_hash_bytes.reverse();
 
     let prev_hash: U256<'static> = prev_hash_bytes
         .try_into()
@@ -1319,6 +1326,7 @@ fn nbits_to_target_u256(nbits: u32) -> stratum_apps::stratum_core::binary_sv2::U
 }
 
 /// Get block subsidy for a given height
+#[cfg(test)]
 fn get_block_subsidy(height: u64) -> u64 {
     let halvings = height / 210_000;
     if halvings >= 64 {

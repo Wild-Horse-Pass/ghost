@@ -214,22 +214,21 @@ impl std::fmt::Debug for VotingSession {
 impl VotingSession {
     /// Create a new voting session
     ///
-    /// CRIT-CONS-2 SECURITY: This constructor MUST enforce MIN_VOTERS_FOR_BFT to prevent
+    /// CRIT-CONS-2 SECURITY: This constructor MUST enforce a minimum voter count to prevent
     /// Byzantine control.
     ///
     /// This is the core constructor. new_for_testing delegates here.
     ///
-    /// H-5 SECURITY: Enforces MIN_VOTERS_FOR_BFT (7) to ensure proper BFT guarantees.
-    /// BFT requires n >= 3f+1, so for f=2 Byzantine nodes, we need n >= 7.
-    /// Creating a voting session with fewer voters would allow Byzantine nodes to
-    /// control the outcome (e.g., with 4 voters and 2 Byzantine, they have 50% control).
+    /// H-5 SECURITY: `min_voters` controls the BFT threshold.
+    /// BFT requires n >= 3f+1. Mainnet uses 7 (f=2), non-mainnet can use 3 (f=1).
+    /// The constant MIN_VOTERS_FOR_BFT (7) is the mainnet default.
     ///
     /// MED-CONS-1 SECURITY: Timeout must be >= MIN_TIMEOUT_MS (1 second), otherwise error.
     /// Values below this are REJECTED (not clamped) to prevent DoS via zero timeout.
     ///
     /// # Errors
     ///
-    /// - Returns `GhostError::InsufficientVoters` if fewer than MIN_VOTERS_FOR_BFT (7)
+    /// - Returns `GhostError::InsufficientVoters` if fewer than `min_voters`
     /// - Returns `GhostError::Config` if timeout_ms < MIN_TIMEOUT_MS
     pub(crate) fn new(
         round_id: RoundId,
@@ -237,19 +236,20 @@ impl VotingSession {
         vote_type: VoteType,
         eligible_voters: HashSet<NodeId>,
         timeout_ms: u64,
+        min_voters: usize,
     ) -> Result<Self, GhostError> {
         // CRIT-CONS-2 SECURITY: This validation is the security gate for all voting sessions.
         // Every VotingSession MUST go through this check - no bypasses allowed.
-        if eligible_voters.len() < Self::MIN_VOTERS_FOR_BFT {
+        if eligible_voters.len() < min_voters {
             error!(
                 round_id,
                 voters = eligible_voters.len(),
-                required = Self::MIN_VOTERS_FOR_BFT,
+                required = min_voters,
                 "CRIT-CONS-2: Cannot create voting session: BFT requires at least {} eligible voters",
-                Self::MIN_VOTERS_FOR_BFT
+                min_voters
             );
             return Err(GhostError::InsufficientVoters {
-                required: Self::MIN_VOTERS_FOR_BFT,
+                required: min_voters,
                 available: eligible_voters.len(),
             });
         }
@@ -322,6 +322,7 @@ impl VotingSession {
             vote_type,
             eligible_voters,
             timeout_ms,
+            Self::MIN_VOTERS_FOR_BFT,
         )
     }
 
@@ -986,7 +987,7 @@ mod tests {
             eligible.insert([i as u8; 32]);
         }
 
-        VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000)
+        VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000, VotingSession::MIN_VOTERS_FOR_BFT)
             .expect("Test session should have enough voters")
     }
 
@@ -1078,10 +1079,11 @@ mod tests {
             VoteType::PayoutApproval,
             eligible.clone(),
             5000,
+            VotingSession::MIN_VOTERS_FOR_BFT,
         )
         .expect("Session should have enough voters");
         let mut session2 =
-            VotingSession::new(200, proposal_hash, VoteType::PayoutApproval, eligible, 5000)
+            VotingSession::new(200, proposal_hash, VoteType::PayoutApproval, eligible, 5000, VotingSession::MIN_VOTERS_FOR_BFT)
                 .expect("Session should have enough voters");
 
         // Sign vote for round 100
@@ -1126,6 +1128,7 @@ mod tests {
             VoteType::PayoutApproval,
             eligible,
             5000,
+            VotingSession::MIN_VOTERS_FOR_BFT,
         )
         .expect("Session should have enough voters");
 
@@ -1180,6 +1183,7 @@ mod tests {
             VoteType::PayoutApproval,
             eligible,
             5000,
+            VotingSession::MIN_VOTERS_FOR_BFT,
         )
         .expect("Session should have enough voters");
 
@@ -1255,6 +1259,7 @@ mod tests {
             VoteType::PayoutApproval,
             eligible,
             5000,
+            VotingSession::MIN_VOTERS_FOR_BFT,
         )
         .expect("Session should have enough voters");
 
@@ -1282,7 +1287,7 @@ mod tests {
             eligible.insert(id);
         }
 
-        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000)
+        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000, VotingSession::MIN_VOTERS_FOR_BFT)
             .expect("Session should have enough voters");
 
         // 67% of 10,000 = 6,700
@@ -1302,7 +1307,7 @@ mod tests {
             small_eligible.insert([i as u8; 32]);
         }
         let result =
-            VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, small_eligible, 5000);
+            VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, small_eligible, 5000, VotingSession::MIN_VOTERS_FOR_BFT);
 
         // H-5: Should reject with InsufficientVoters error
         assert!(
@@ -1346,6 +1351,7 @@ mod tests {
             VoteType::PayoutApproval,
             eligible,
             5000,
+            VotingSession::MIN_VOTERS_FOR_BFT,
         )
         .expect("Session should have enough voters");
         session.set_ban_manager(ban_manager.clone());
@@ -1401,6 +1407,7 @@ mod tests {
             VoteType::PayoutApproval,
             eligible,
             5000,
+            VotingSession::MIN_VOTERS_FOR_BFT,
         )
         .expect("Session should have enough voters");
 
@@ -1433,7 +1440,7 @@ mod tests {
             eligible.insert([i as u8; 32]);
         }
 
-        let result = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 0);
+        let result = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 0, VotingSession::MIN_VOTERS_FOR_BFT);
 
         // MED-CONS-1: Invalid timeouts are now rejected, not clamped
         assert!(result.is_err(), "Zero timeout should be rejected");
@@ -1454,7 +1461,7 @@ mod tests {
             eligible.insert([i as u8; 32]);
         }
 
-        let result = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 500);
+        let result = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 500, VotingSession::MIN_VOTERS_FOR_BFT);
 
         // MED-CONS-1: Invalid timeouts are now rejected, not clamped
         assert!(
@@ -1478,7 +1485,7 @@ mod tests {
             eligible.insert([i as u8; 32]);
         }
 
-        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000)
+        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000, VotingSession::MIN_VOTERS_FOR_BFT)
             .expect("Session should have enough voters");
 
         assert_eq!(

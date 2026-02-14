@@ -614,6 +614,7 @@ impl NodeConfig {
                 }
             }
         }
+
     }
 
     fn validate_storage(&self, result: &mut ConfigValidationResult) {
@@ -1257,6 +1258,11 @@ pub struct PoolConfig {
     pub min_payout_sats: u64,
     /// Payout frequency (blocks)
     pub payout_interval_blocks: u64,
+    /// Payout address for node rewards (5-4-3-2-1 capability shares)
+    /// Broadcast in health pings so peers know where to send node reward payouts.
+    /// Must be a valid bech32 address for the configured network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_payout_address: Option<String>,
 }
 
 impl PoolConfig {
@@ -1304,6 +1310,7 @@ impl Default for PoolConfig {
             treasury_fee_percent: 2.0, // 2% pool fee
             min_payout_sats: 100_000,  // 0.001 BTC minimum
             payout_interval_blocks: 100,
+            node_payout_address: None,
         }
     }
 }

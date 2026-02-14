@@ -53,7 +53,7 @@ use ghost_consensus::health_handler::HealthPingHandler;
 use ghost_consensus::mesh::{MeshConfig, MeshNetwork};
 use ghost_consensus::message::MessageType;
 use ghost_consensus::verification_handler::VerificationResultHandler;
-use ghost_consensus::vote_handler::{BroadcastFn, ExecuteFn, VoteHandler};
+use ghost_consensus::vote_handler::{BroadcastFn, ExecuteFn, VoteHandler, VoteHandlerConfig};
 use ghost_consensus::voting::VotingManager;
 use ghost_policy::PolicyProfile;
 use ghost_storage::Database;
@@ -648,6 +648,15 @@ async fn main() -> Result<()> {
         warn!("Failed to register node: {} - continuing anyway", e);
     }
 
+    // Set local node's payout address for node reward distribution
+    if let Some(ref addr) = config.pool.node_payout_address {
+        if let Err(e) = db.update_node_payout_address(&node_id_hex, addr) {
+            warn!("Failed to set node payout address: {} - continuing anyway", e);
+        } else {
+            info!(address = %addr, "Node payout address configured");
+        }
+    }
+
     // Check MPC-based elder status
     // Elder = MPC contributor (position 1-101 in the ceremony)
     match db.get_mpc_elder_position(&node_id_hex) {
@@ -675,8 +684,12 @@ async fn main() -> Result<()> {
     let metrics = Metrics::default_metrics();
 
     // Initialize round manager with mining mode
+    // On non-mainnet networks (signet/testnet/regtest), disable the per-miner share cap
+    // since there may be only one miner and the 10% cap wastes ~80% of hash power.
+    let is_mainnet_round = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
     let round_config = RoundConfig {
         mining_mode,
+        max_miner_share_percent: if is_mainnet_round { 0.10 } else { 1.0 },
         ..Default::default()
     };
     let mut round_manager_inner = RoundManager::new(identity.node_id(), round_config);
@@ -727,6 +740,7 @@ async fn main() -> Result<()> {
         noise_port: ghost_consensus::mesh::DEFAULT_NOISE_PORT,
         noise_keypair_path: Some(noise_keypair_path),
         noise_required: config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet,
+        payout_address: config.pool.node_payout_address.clone(),
         ..Default::default()
     };
     // M-2: Use try_new() to properly handle Noise initialization failures
@@ -814,9 +828,14 @@ async fn main() -> Result<()> {
     // Create vote handler with callbacks and shared ban manager
     // 4.5 SECURITY: Rate limiter persistence is now enabled by default to prevent
     // attackers from bypassing rate limits by triggering node restarts.
+    // BFT voter threshold: mainnet requires 7 (f=2), non-mainnet allows 3 (f=1)
     let rate_limiter_path = data_dir.join("rate_limiter.json");
+    let vote_config = VoteHandlerConfig {
+        min_voters_for_bft: if is_mainnet_round { 7 } else { 3 },
+        ..VoteHandlerConfig::default()
+    };
     let vote_handler = Arc::new(
-        VoteHandler::new(Arc::clone(&identity), Arc::clone(&voting_manager))
+        VoteHandler::with_config(Arc::clone(&identity), Arc::clone(&voting_manager), vote_config)
             .with_broadcaster(broadcast_fn)
             .with_executor(execute_fn)
             .with_ban_manager(Arc::clone(&ban_manager))
@@ -1989,7 +2008,30 @@ async fn main() -> Result<()> {
             }
         } else {
             // Pool mode: proportional distribution to all miners
-            let miner_work = rm_for_block.get_miner_work_scaled(round_id);
+            // Query miner work from database (source of truth, not ephemeral memory)
+            let miner_work = {
+                use ghost_accounting::shares::WORK_SCALE;
+                let db_work = db_for_block.get_round_miners(round_id).unwrap_or_default();
+                // Also check previous round (handle timing race: round may have
+                // changed between block found and this handler running)
+                let db_work = if db_work.is_empty() && round_id > 0 {
+                    db_for_block.get_round_miners(round_id - 1).unwrap_or_default()
+                } else {
+                    db_work
+                };
+                if db_work.is_empty() {
+                    // Fall back to in-memory data (defense in depth)
+                    warn!(round = round_id, "No miner work in DB, falling back to in-memory data");
+                    rm_for_block.get_miner_work_scaled(round_id)
+                } else {
+                    // Convert f64 work to u128 using WORK_SCALE (top 200 miners)
+                    db_work
+                        .into_iter()
+                        .take(200)
+                        .map(|(id, w)| (id, (w * WORK_SCALE as f64) as u128))
+                        .collect()
+                }
+            };
 
             // PO4-M2: Capture treasury address snapshot to prevent TOCTOU issues
             let treasury_address_snapshot = payout_for_block.get_treasury_address_snapshot();
@@ -2932,7 +2974,26 @@ async fn main() -> Result<()> {
                         }
                     } else {
                         // Pool mode: proportional distribution to all miners
-                        let miner_work = rm_for_events.get_miner_work_scaled(round_id);
+                        // Query miner work from database (source of truth, not ephemeral memory)
+                        let miner_work = {
+                            use ghost_accounting::shares::WORK_SCALE;
+                            let db_work = db_for_events.get_round_miners(round_id).unwrap_or_default();
+                            let db_work = if db_work.is_empty() && round_id > 0 {
+                                db_for_events.get_round_miners(round_id - 1).unwrap_or_default()
+                            } else {
+                                db_work
+                            };
+                            if db_work.is_empty() {
+                                warn!(round = round_id, "No miner work in DB, falling back to in-memory data");
+                                rm_for_events.get_miner_work_scaled(round_id)
+                            } else {
+                                db_work
+                                    .into_iter()
+                                    .take(200)
+                                    .map(|(id, w)| (id, (w * WORK_SCALE as f64) as u128))
+                                    .collect()
+                            }
+                        };
                         let winning_node_id = identity_for_events.node_id();
 
                         // PO4-M2: Capture treasury address snapshot

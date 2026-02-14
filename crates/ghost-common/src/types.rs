@@ -344,6 +344,9 @@ pub struct HealthPing {
     /// Proves computational work was done to create this identity
     #[serde(default)]
     pub pow_proof: Option<(u64, u32)>,
+    /// Node's payout address for node reward distribution
+    #[serde(default)]
+    pub payout_address: Option<String>,
 }
 
 /// Errors for treasury address validation

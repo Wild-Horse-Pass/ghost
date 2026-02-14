@@ -297,9 +297,41 @@ impl PayoutProposalCreator {
 
         // Query Bitcoin Core for the block header
         // This will fail if the block doesn't exist
+        //
+        // The SRI webhook can fire BEFORE SubmitSolution submits the block to
+        // Bitcoin Core. Exponential backoff bridges this race: 5 retries with
+        // delays of 1s, 2s, 4s, 8s, 16s = 31s max total wait. Valid blocks
+        // typically appear within 1-2s; invalid blocks correctly fail all retries.
         let header = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(async { rpc.get_block_header(&block_hash_hex).await })
+            tokio::runtime::Handle::current().block_on(async {
+                match rpc.get_block_header(&block_hash_hex).await {
+                    Ok(h) => Ok(h),
+                    Err(first_err) => {
+                        let max_retries = 5u32;
+                        let mut delay_secs = 1u64;
+                        let mut last_err = first_err;
+                        for attempt in 1..=max_retries {
+                            warn!(
+                                block_hash = %block_hash_hex,
+                                error = %last_err,
+                                attempt,
+                                max_retries,
+                                delay_secs,
+                                "getblockheader failed, retrying (block may still be propagating)"
+                            );
+                            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+                            match rpc.get_block_header(&block_hash_hex).await {
+                                Ok(h) => return Ok(h),
+                                Err(e) => {
+                                    last_err = e;
+                                    delay_secs = (delay_secs * 2).min(16);
+                                }
+                            }
+                        }
+                        Err(last_err)
+                    }
+                }
+            })
         })?;
 
         // Verify the block is at the expected height (within reasonable tolerance)
@@ -861,12 +893,17 @@ impl PayoutProposalCreator {
             let hash = ghost_common::identity::hash_message(miner_id.as_bytes());
             recipient_id.copy_from_slice(&hash);
 
-            payouts.push(PayoutEntry {
-                address,
-                amount,
-                recipient_id,
-                payout_type: PayoutType::Mining,
-            });
+            // Check if we already have a payout to this address (multiple workers, same address)
+            if let Some(existing) = payouts.iter_mut().find(|p| p.address == address) {
+                existing.amount = existing.amount.saturating_add(amount);
+            } else {
+                payouts.push(PayoutEntry {
+                    address,
+                    amount,
+                    recipient_id,
+                    payout_type: PayoutType::Mining,
+                });
+            }
             allocated_total = allocated_total.saturating_add(amount);
         }
 

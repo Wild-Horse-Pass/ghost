@@ -525,6 +525,9 @@ pub struct VoteHandlerConfig {
     pub rate_limit_max_tokens: u32,
     /// Rate limit refill rate (tokens per second)
     pub rate_limit_refill_rate: u32,
+    /// Minimum number of voters required for BFT consensus.
+    /// Mainnet: 7 (f=2), non-mainnet: 3 (f=1, allows 3-4 node setups).
+    pub min_voters_for_bft: usize,
 }
 
 impl Default for VoteHandlerConfig {
@@ -535,6 +538,7 @@ impl Default for VoteHandlerConfig {
             max_pending_proposals: DEFAULT_MAX_PENDING_PROPOSALS,
             rate_limit_max_tokens: RATE_LIMIT_MAX_TOKENS,
             rate_limit_refill_rate: RATE_LIMIT_REFILL_RATE,
+            min_voters_for_bft: VotingSession::MIN_VOTERS_FOR_BFT,
         }
     }
 }
@@ -942,6 +946,7 @@ impl VoteHandler {
                 VoteType::PayoutApproval,
                 voters,
                 self.config.vote_timeout_ms,
+                self.config.min_voters_for_bft,
             ) {
                 Ok(session) => session,
                 Err(e) => {
