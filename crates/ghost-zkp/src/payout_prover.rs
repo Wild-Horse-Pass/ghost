@@ -192,7 +192,12 @@ impl PayoutProver {
     /// # Arguments
     /// * `max_miners` - Maximum number of miners (affects circuit size)
     /// * `max_nodes` - Maximum number of nodes (affects circuit size)
+    /// # CRIT-CRYPTO-1: Production Guard
+    ///
+    /// This function is disabled when the `zk-production` feature is enabled.
+    /// Attempting to call it in production will return an error.
     #[instrument(skip_all, fields(max_miners, max_nodes))]
+    #[cfg(not(feature = "zk-production"))]
     pub fn new_with_setup(max_miners: usize, max_nodes: usize) -> ZkResult<Self> {
         warn!(
             "SECURITY WARNING: Using random trusted setup. \
@@ -246,6 +251,17 @@ impl PayoutProver {
             params: Some(Arc::new(params)),
             prepared_vk: Some(Arc::new(prepared_vk)),
         })
+    }
+
+    /// CRIT-CRYPTO-1: Production guard - returns error when zk-production feature is enabled
+    #[cfg(feature = "zk-production")]
+    pub fn new_with_setup(_max_miners: usize, _max_nodes: usize) -> ZkResult<Self> {
+        Err(ZkError::SetupError(
+            "SECURITY: new_with_setup() is disabled in production builds. \
+             Use new_with_params() with MPC-generated parameters from a trusted setup ceremony. \
+             See docs/ZK_TRUSTED_SETUP.md for ceremony requirements."
+                .to_string(),
+        ))
     }
 
     /// Create with default parameters (no Groth16 setup)

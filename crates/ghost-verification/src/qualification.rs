@@ -656,15 +656,18 @@ impl QualifiedCapabilityProvider {
                 .get_ghostpay_unique_challengers(node_id_hex, since)
                 .unwrap_or(0);
 
-            // Get qualified capabilities
-            // AUTH4-L3: Use archive_pass_rate as the baseline
+            // Get qualified capabilities with per-capability pass rates
+            // Each capability type has its own threshold (e.g., GhostPay is 90%, Archive is 95%)
             let mut caps = self
                 .db
-                .get_qualified_capabilities(
+                .get_qualified_capabilities_with_rates(
                     node_id_hex,
                     since,
                     self.config.min_challenges,
                     self.config.archive_pass_rate,
+                    self.config.ghostpay_pass_rate,
+                    self.config.stratum_pass_rate,
+                    self.config.policy_pass_rate,
                 )
                 .unwrap_or_default();
 

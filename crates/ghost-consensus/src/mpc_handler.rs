@@ -132,14 +132,18 @@ impl RateLimiter {
     }
 }
 
+/// Maximum age for pending contributions before cleanup (30 minutes)
+const PENDING_CONTRIBUTION_TIMEOUT_SECS: u64 = 30 * 60;
+
 /// Pending contribution awaiting verification
 #[derive(Clone)]
 struct PendingContribution {
     message: MpcContributionMessage,
-    #[allow(dead_code)] // Reserved for timeout handling
     received_at: Instant,
     approval_count: u32,
     rejection_count: u32,
+    /// Track which voters have already voted (prevents duplicate vote inflation)
+    voters: std::collections::HashSet<NodeId>,
 }
 
 /// MPC ceremony handler
@@ -268,6 +272,9 @@ impl MpcHandler {
                 debug!("Duplicate MPC contribution, ignoring");
                 return Ok(());
             }
+            // Clean up stale pending contributions before inserting
+            pending.retain(|_, c| c.received_at.elapsed().as_secs() < PENDING_CONTRIBUTION_TIMEOUT_SECS);
+
             pending.insert(
                 contribution_hash,
                 PendingContribution {
@@ -275,6 +282,7 @@ impl MpcHandler {
                     received_at: Instant::now(),
                     approval_count: 0,
                     rejection_count: 0,
+                    voters: std::collections::HashSet::new(),
                 },
             );
         }
@@ -323,12 +331,49 @@ impl MpcHandler {
 
     /// Verify a contribution and cast our vote
     fn verify_and_vote(&self, msg: &MpcContributionMessage) -> GhostResult<()> {
-        // For now, we verify the proof structurally
-        // Full cryptographic verification would require loading the actual params
-        let valid = !msg.contribution_proof.is_empty()
+        // Structural validation: proof exists, hashes are non-zero and different
+        let structurally_valid = !msg.contribution_proof.is_empty()
             && msg.prev_params_hash != [0u8; 32]
             && msg.new_params_hash != [0u8; 32]
             && msg.prev_params_hash != msg.new_params_hash;
+
+        // Hash chain validation: verify prev_params_hash matches the latest contribution
+        // This prevents contributions that don't chain from the current ceremony state
+        let chain_valid = if msg.elder_position == 1 {
+            // Genesis contribution has no predecessor to validate against
+            true
+        } else {
+            // Check that prev_params_hash matches new_params_hash of the previous contribution
+            match self.db.get_mpc_contribution(msg.elder_position - 1) {
+                Ok(Some(prev)) => {
+                    if prev.new_params_hash != msg.prev_params_hash {
+                        warn!(
+                            position = msg.elder_position,
+                            expected = %hex::encode(&prev.new_params_hash[..8]),
+                            got = %hex::encode(&msg.prev_params_hash[..8]),
+                            "MPC contribution prev_params_hash does not chain from previous contribution"
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                }
+                Ok(None) => {
+                    warn!(
+                        position = msg.elder_position,
+                        prev_position = msg.elder_position - 1,
+                        "Cannot verify hash chain: previous contribution not found"
+                    );
+                    false
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to look up previous MPC contribution for chain verification");
+                    false
+                }
+            }
+        };
+
+        let valid = structurally_valid && chain_valid;
 
         // Sign and broadcast vote
         let signing_msg = {
@@ -456,10 +501,19 @@ impl MpcHandler {
             return Ok(());
         }
 
-        // Update pending contribution
+        // Update pending contribution (with duplicate vote prevention)
         let should_apply = {
             let mut pending = self.pending_contributions.write();
             if let Some(contribution) = pending.get_mut(&msg.contribution_hash) {
+                // Reject duplicate votes from the same voter
+                if !contribution.voters.insert(msg.voter) {
+                    debug!(
+                        voter = %hex::encode(&msg.voter[..8]),
+                        "Duplicate MPC vote from same voter, ignoring"
+                    );
+                    return Ok(());
+                }
+
                 if msg.approve {
                     contribution.approval_count += 1;
                 } else {

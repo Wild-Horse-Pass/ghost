@@ -46,79 +46,98 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
     );
 
     // Run migrations sequentially
+    // Each migration sets the schema version immediately after completing.
+    // This prevents a crash mid-migration from re-running non-idempotent
+    // ALTER TABLE statements (which would fail with "duplicate column name").
     if current_version < 1 {
         migrate_v1(conn)?;
+        set_schema_version(conn, 1)?;
     }
 
     if current_version < 2 {
         migrate_v2(conn)?;
+        set_schema_version(conn, 2)?;
     }
 
     if current_version < 3 {
         migrate_v3(conn)?;
+        set_schema_version(conn, 3)?;
     }
 
     if current_version < 4 {
         migrate_v4(conn)?;
+        set_schema_version(conn, 4)?;
     }
 
     if current_version < 5 {
         migrate_v5(conn)?;
+        set_schema_version(conn, 5)?;
     }
 
     if current_version < 6 {
         migrate_v6(conn)?;
+        set_schema_version(conn, 6)?;
     }
 
     if current_version < 7 {
         migrate_v7(conn)?;
+        set_schema_version(conn, 7)?;
     }
 
     if current_version < 8 {
         migrate_v8(conn)?;
+        set_schema_version(conn, 8)?;
     }
 
     if current_version < 9 {
         migrate_v9(conn)?;
+        set_schema_version(conn, 9)?;
     }
 
     if current_version < 10 {
         migrate_v10(conn)?;
+        set_schema_version(conn, 10)?;
     }
 
     if current_version < 11 {
         migrate_v11(conn)?;
+        set_schema_version(conn, 11)?;
     }
 
     if current_version < 12 {
         migrate_v12(conn)?;
+        set_schema_version(conn, 12)?;
     }
 
     if current_version < 13 {
         migrate_v13(conn)?;
+        set_schema_version(conn, 13)?;
     }
 
     if current_version < 14 {
         migrate_v14(conn)?;
+        set_schema_version(conn, 14)?;
     }
 
     if current_version < 15 {
         migrate_v15(conn)?;
+        set_schema_version(conn, 15)?;
     }
 
     if current_version < 16 {
         migrate_v16(conn)?;
+        set_schema_version(conn, 16)?;
     }
 
     if current_version < 17 {
         migrate_v17(conn)?;
+        set_schema_version(conn, 17)?;
     }
 
     if current_version < 18 {
         migrate_v18(conn)?;
+        set_schema_version(conn, 18)?;
     }
-
-    set_schema_version(conn, SCHEMA_VERSION)?;
 
     info!("Database migrations complete");
     Ok(())

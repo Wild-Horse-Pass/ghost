@@ -2210,6 +2210,48 @@ async fn main() -> Result<()> {
     });
     info!("Share pruning task started (hourly, 24h retention)");
 
+    // Periodic database maintenance — prune health_pings, uptime_samples, challenges,
+    // verifications, votes + WAL checkpoint + VACUUM. Runs every hour.
+    let db_for_maintenance = Arc::clone(&db);
+    let mut maintenance_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        const MAINTENANCE_INTERVAL_SECS: u64 = 3600;
+
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(MAINTENANCE_INTERVAL_SECS));
+        // Skip the first immediate tick — let the node fully start up first
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let config = ghost_storage::database::MaintenanceConfig::default();
+                    match db_for_maintenance.run_maintenance(config) {
+                        Ok(result) => {
+                            tracing::info!(
+                                shares = result.shares_deleted,
+                                rounds = result.rounds_deleted,
+                                pings = result.pings_deleted,
+                                votes = result.votes_deleted,
+                                uptime = result.uptime_deleted,
+                                challenges = result.challenges_deleted.total(),
+                                verifications = result.verifications_deleted,
+                                db_size_mb = result.db_size_bytes / (1024 * 1024),
+                                "Database maintenance complete"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Database maintenance failed");
+                        }
+                    }
+                }
+                _ = maintenance_shutdown.recv() => {
+                    tracing::info!("Database maintenance task shutting down");
+                    break;
+                }
+            }
+        }
+    });
+    info!("Database maintenance task started (hourly)");
+
     // Clone ws_state for event handlers before moving verification_state
     let _verification_state_for_ws = Arc::clone(&verification_state);
 
@@ -2341,6 +2383,7 @@ async fn main() -> Result<()> {
         // 100 concurrent connections is sufficient for a healthy P2P mesh while preventing
         // DoS attacks that exhaust file descriptors or memory.
         let noise_connection_limit = Arc::new(Semaphore::new(100));
+        let mut noise_shutdown = shutdown_tx.subscribe();
 
         tokio::spawn(async move {
             use tokio::net::TcpListener;
@@ -2372,7 +2415,15 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                match listener.accept().await {
+                let accept_result = tokio::select! {
+                    result = listener.accept() => result,
+                    _ = noise_shutdown.recv() => {
+                        tracing::info!("Noise listener shutting down");
+                        return;
+                    }
+                };
+
+                match accept_result {
                     Ok((stream, addr)) => {
                         let pool = Arc::clone(&noise_pool_clone);
                         let mesh = Arc::clone(&mesh_for_noise);
@@ -2493,35 +2544,42 @@ async fn main() -> Result<()> {
     // the Noise handshake timeout and connection backoff.
     let mesh_for_discovery = Arc::clone(&mesh);
     let discovery_for_broadcast = Arc::clone(&discovery_handler);
+    let mut discovery_shutdown = shutdown_tx.subscribe();
     tokio::spawn(async move {
         // Wait for mesh to establish connections
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
 
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
-            // Get the discovery message with our known peers
-            let discovery_msg = discovery_for_broadcast.get_discovery_message();
+            tokio::select! {
+                _ = interval.tick() => {
+                    // Get the discovery message with our known peers
+                    let discovery_msg = discovery_for_broadcast.get_discovery_message();
 
-            // Broadcast it
-            match mesh_for_discovery
-                .broadcast_message(ghost_consensus::MessageType::Discovery, &discovery_msg)
-                .await
-            {
-                Ok(sent) => {
-                    if sent > 0 {
-                        tracing::debug!(
-                            sent = sent,
-                            known_peers = discovery_msg.known_peers.len(),
-                            "Broadcast discovery message"
-                        );
+                    // Broadcast it
+                    match mesh_for_discovery
+                        .broadcast_message(ghost_consensus::MessageType::Discovery, &discovery_msg)
+                        .await
+                    {
+                        Ok(sent) => {
+                            if sent > 0 {
+                                tracing::debug!(
+                                    sent = sent,
+                                    known_peers = discovery_msg.known_peers.len(),
+                                    "Broadcast discovery message"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::debug!(error = %e, "Failed to broadcast discovery");
+                        }
                     }
                 }
-                Err(e) => {
-                    tracing::debug!(error = %e, "Failed to broadcast discovery");
+                _ = discovery_shutdown.recv() => {
+                    tracing::info!("Discovery broadcast task shutting down");
+                    break;
                 }
             }
-
-            // Broadcast every 30 seconds
-            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
         }
     });
 
@@ -2559,10 +2617,16 @@ async fn main() -> Result<()> {
                 .with_rpc(Arc::clone(&rpc))
                 .with_broadcast(verification_tx);
 
+            let mut verification_shutdown = shutdown_tx.subscribe();
             tokio::spawn(async move {
                 // Wait for mesh to establish connections before starting verification
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                verification_task.run().await;
+                tokio::select! {
+                    _ = verification_task.run() => {}
+                    _ = verification_shutdown.recv() => {
+                        tracing::info!("Verification task shutting down");
+                    }
+                }
             });
             info!("Verification task started (5 minute interval)");
         }
@@ -3088,6 +3152,9 @@ fn expand_path(path: &std::path::Path) -> Result<PathBuf> {
 /// Load configuration from file
 fn load_config(path: &std::path::Path) -> Result<NodeConfig> {
     let config = if path.exists() {
+        // Check config file permissions (warns if world-readable)
+        ghost_common::config::validate_config_permissions(path);
+
         let content = std::fs::read_to_string(path)?;
         let config: NodeConfig = toml::from_str(&content)?;
         config
