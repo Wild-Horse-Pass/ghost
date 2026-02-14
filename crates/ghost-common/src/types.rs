@@ -256,6 +256,9 @@ pub struct ShareProof {
     /// Used to validate share is for current or recent template
     #[serde(default)]
     pub template_id: Option<[u8; 32]>,
+    /// Payout address for the miner (needed by remote nodes that haven't seen this miner)
+    #[serde(default)]
+    pub payout_address: Option<String>,
 }
 
 /// Payout proposal for consensus

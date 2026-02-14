@@ -33,6 +33,7 @@ use tracing::{debug, info, warn};
 use ghost_accounting::shares::{DifficultyCalculator, RoundShares};
 use ghost_common::config::MiningMode;
 use ghost_common::types::{NodeCapabilities, NodeId, RoundId, ShareProof};
+use ghost_storage::Database;
 
 /// Round manager configuration
 #[derive(Debug, Clone)]
@@ -745,6 +746,59 @@ impl RoundManager {
                 round.register_node(node_id, capabilities);
             }
         }
+    }
+
+    /// Reload the latest round's miner work from the database on startup.
+    ///
+    /// This restores pre-restart share data so miners don't lose credit for work
+    /// submitted before the pool restarted. Only the latest round is reloaded —
+    /// older rounds are either already paid or abandoned.
+    pub fn reload_from_db(&self, db: &Database) {
+        let max_round_id = match db.get_max_round_id() {
+            Ok(0) => {
+                info!("No shares in database, starting fresh");
+                return;
+            }
+            Ok(id) => id,
+            Err(e) => {
+                warn!(error = %e, "Failed to query max round_id from database");
+                return;
+            }
+        };
+
+        // Set current_round so start_round() increments to N+1
+        *self.current_round.write() = max_round_id;
+
+        // Load aggregated miner work for the latest round
+        let miners = match db.get_round_miners(max_round_id) {
+            Ok(m) => m,
+            Err(e) => {
+                warn!(error = %e, round_id = max_round_id, "Failed to load round miners from database");
+                return;
+            }
+        };
+
+        if miners.is_empty() {
+            info!(round_id = max_round_id, "No valid miner work found for latest round");
+            return;
+        }
+
+        // Rebuild the RoundShares for this round
+        let mut round_shares = RoundShares::new(max_round_id, 0);
+        let mut total_work = 0.0f64;
+        for (miner_id, work) in &miners {
+            round_shares.add_miner_work(miner_id, *work);
+            total_work += work;
+        }
+
+        self.rounds.write().insert(max_round_id, round_shares);
+
+        info!(
+            round_id = max_round_id,
+            miner_count = miners.len(),
+            total_work = total_work,
+            "Reloaded share data from database"
+        );
     }
 
     /// Update an existing node's capabilities (e.g. after elder status changes)
@@ -1584,6 +1638,7 @@ mod tests {
             timestamp: 0,
             received_by: node_id,
             template_id: Some(template_id),
+            payout_address: None,
         };
 
         // First submission should succeed

@@ -185,9 +185,9 @@ impl ProposalContent {
         if current_size < target_size {
             let padding_size = target_size - current_size;
             self.padding = vec![0u8; padding_size];
-            // Fill with random-looking but deterministic data
-            for (i, byte) in self.padding.iter_mut().enumerate() {
-                *byte = (i as u8).wrapping_mul(0x5D).wrapping_add(0x3A);
+            // Fill with cryptographically random bytes for genuine size obfuscation
+            if let Err(e) = getrandom::getrandom(&mut self.padding) {
+                warn!("Failed to generate random padding, using zeros: {}", e);
             }
         }
     }

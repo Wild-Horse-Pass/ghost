@@ -325,15 +325,19 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // Prometheus metrics endpoint
         .route("/metrics", get(metrics_handler));
 
+    // Localhost-only endpoints: SRI Pool share webhook (no HMAC required)
+    // SRI Pool runs on localhost and doesn't support HMAC auth headers.
+    // These are protected by a localhost-only middleware instead.
+    let localhost_router = Router::new()
+        .route("/api/internal/share", post(share_notification_handler))
+        .route("/api/internal/shares", post(share_batch_handler))
+        .layer(middleware::from_fn(localhost_only_middleware));
+
     // Internal/admin endpoints with HMAC authentication (AUTH4-1 fix)
     // CRIT-6: All config POST endpoints moved here to require authentication
     let internal_router = Router::new()
         // Admin endpoints for testing
         .route("/admin/test-consensus", post(admin_test_consensus_handler))
-        // Internal API for SRI Pool share notifications
-        .route("/api/internal/share", post(share_notification_handler))
-        // Internal API for SRI Pool batch share notifications (native webhook)
-        .route("/api/internal/shares", post(share_batch_handler))
         // Internal API for dashboard config updates (triggers graceful restart)
         .route(
             "/api/internal/config/update",
@@ -440,7 +444,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
     };
 
     // Merge routers
-    public_router.merge(internal_router).with_state(state)
+    public_router
+        .merge(localhost_router)
+        .merge(internal_router)
+        .with_state(state)
 }
 
 /// Middleware to verify HMAC authentication for internal endpoints
@@ -476,6 +483,28 @@ async fn internal_auth_middleware(
 
     // Reconstruct request with body and continue
     let request = axum::http::Request::from_parts(parts, axum::body::Body::from(body_bytes));
+
+    Ok(next.run(request).await)
+}
+
+/// Middleware that restricts access to localhost (127.0.0.1/::1) connections only.
+/// Used for SRI Pool share webhook endpoints that don't support HMAC auth.
+async fn localhost_only_middleware(
+    request: axum::extract::Request,
+    next: Next,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    let is_localhost = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().is_loopback())
+        .unwrap_or(false);
+
+    if !is_localhost {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Share webhook only accessible from localhost".to_string(),
+        ));
+    }
 
     Ok(next.run(request).await)
 }

@@ -66,6 +66,7 @@ use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler, SoloBlockF
 use ghost_pool::registry::RegistryClient;
 use ghost_pool::reorg::{ReorgConfig, ReorgHandler};
 use ghost_pool::round::{RoundConfig, RoundEvent, RoundManager};
+use ghost_pool::share_handler::ShareProofHandler;
 use ghost_pool::template::{TemplateConfig, TemplateEvent, TemplateProcessor};
 use ghost_pool::template_provider::{TdpConfig, TemplateDistributionServer};
 use ghost_pool::treasury::TreasuryState;
@@ -686,6 +687,9 @@ async fn main() -> Result<()> {
     // This is critical - without this, our shares won't be counted for node rewards
     round_manager.register_node(identity.node_id(), capabilities);
 
+    // Reload pre-restart share data from database so miners don't lose credit
+    round_manager.reload_from_db(&db);
+
     // Initialize template processor with treasury and pool payout addresses from config
     // Pool payout address defaults to treasury address if not explicitly configured separately
     let template_config = TemplateConfig {
@@ -722,7 +726,7 @@ async fn main() -> Result<()> {
         noise_enabled: config.network.noise_enabled,
         noise_port: ghost_consensus::mesh::DEFAULT_NOISE_PORT,
         noise_keypair_path: Some(noise_keypair_path),
-        noise_required: false, // Allow fallback during migration
+        noise_required: config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet,
         ..Default::default()
     };
     // M-2: Use try_new() to properly handle Noise initialization failures
@@ -929,6 +933,15 @@ async fn main() -> Result<()> {
         .with_connect_callback(connect_callback),
     );
     mesh.register_handler(Arc::clone(&discovery_handler)
+        as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
+
+    // Register share proof handler for cross-node share propagation
+    let share_proof_handler = Arc::new(ShareProofHandler::new(
+        Arc::clone(&round_manager),
+        Arc::clone(&db),
+        identity.node_id(),
+    ));
+    mesh.register_handler(Arc::clone(&share_proof_handler)
         as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
 
     // ZK consensus handlers (optional feature)
@@ -1757,6 +1770,36 @@ async fn main() -> Result<()> {
     });
     verification_state = verification_state.with_test_proposal_fn(test_proposal_fn);
 
+    // Share broadcast relay: sync callback → async Noise broadcast
+    // Follows the MPC relay pattern (main.rs:1107-1134)
+    let (share_broadcast_tx, mut share_broadcast_rx) =
+        tokio::sync::mpsc::channel::<ghost_common::types::ShareProof>(256);
+    let mesh_for_shares_relay = Arc::clone(&mesh);
+    tokio::spawn(async move {
+        while let Some(proof) = share_broadcast_rx.recv().await {
+            let msg = ghost_consensus::message::ShareProofMessage { proof };
+            match serde_json::to_vec(&msg) {
+                Ok(payload) => {
+                    match mesh_for_shares_relay
+                        .create_envelope_raw(MessageType::ShareProof, payload)
+                    {
+                        Ok(envelope) => {
+                            if let Err(e) = mesh_for_shares_relay.smart_broadcast(envelope).await {
+                                tracing::warn!(error = %e, "Share proof broadcast failed");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Share proof envelope creation failed");
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Share proof serialization failed");
+                }
+            }
+        }
+    });
+
     // Configure share recorder callback for SRI Pool share notifications
     let rm_for_shares = Arc::clone(&round_manager);
     let identity_for_shares = Arc::clone(&identity);
@@ -1813,6 +1856,35 @@ async fn main() -> Result<()> {
                     );
                 }
             }
+        }
+
+        // Broadcast share proof to other nodes via P2P
+        // Uses SHA256(miner_id) as the 32-byte miner identifier for the proof
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(share.miner_id.as_bytes());
+        let miner_hash: [u8; 32] = hasher.finalize().into();
+
+        let mut share_hash_bytes = [0u8; 32];
+        if let Ok(decoded) = hex::decode(&share.share_hash) {
+            let len = decoded.len().min(32);
+            share_hash_bytes[..len].copy_from_slice(&decoded[..len]);
+        }
+
+        let proof = ghost_common::types::ShareProof {
+            round_id,
+            miner_id: miner_hash,
+            difficulty: share.work,
+            work: share.work,
+            share_hash: share_hash_bytes,
+            timestamp: share.timestamp,
+            received_by: identity_for_shares.node_id(),
+            template_id: rm_for_shares.current_template_id(),
+            payout_address: share.payout_address.clone(),
+        };
+
+        if let Err(e) = share_broadcast_tx.try_send(proof) {
+            tracing::warn!(error = %e, "Share broadcast channel full or closed");
         }
 
         tracing::debug!(
@@ -2108,6 +2180,36 @@ async fn main() -> Result<()> {
     });
     info!("Rate limit cleanup task started (60s interval)");
 
+    // Periodic share pruning — delete shares older than 24 hours, run every hour
+    let db_for_pruning = Arc::clone(&db);
+    let mut share_prune_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        const PRUNE_INTERVAL_SECS: u64 = 3600;
+        const SHARE_RETENTION_SECS: i64 = 24 * 3600;
+
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(PRUNE_INTERVAL_SECS));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    match db_for_pruning.delete_old_shares(SHARE_RETENTION_SECS) {
+                        Ok(0) => {}
+                        Ok(count) => {
+                            tracing::info!(deleted = count, "Pruned old shares from database");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Failed to prune old shares");
+                        }
+                    }
+                }
+                _ = share_prune_shutdown.recv() => {
+                    tracing::info!("Share pruning task shutting down");
+                    break;
+                }
+            }
+        }
+    });
+    info!("Share pruning task started (hourly, 24h retention)");
+
     // Clone ws_state for event handlers before moving verification_state
     let _verification_state_for_ws = Arc::clone(&verification_state);
 
@@ -2119,7 +2221,7 @@ async fn main() -> Result<()> {
     let has_explicit_tls = config.network.tls.cert_path.is_some();
     let is_mainnet_tls = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
     let tls_server_config = if has_explicit_tls || is_mainnet_tls {
-        match ghost_common::tls::build_server_config(&config.network.tls) {
+        match ghost_common::tls::build_server_config_for_network(&config.network.tls, is_mainnet_tls) {
             Ok(tls) => {
                 info!("TLS configured for verification server on port {}", http_port);
                 Some(tls)

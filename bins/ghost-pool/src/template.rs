@@ -2080,10 +2080,12 @@ impl TemplateProcessor {
         }
 
         // 2. Validate previous block hash matches template
-        // Header bytes 4-36 contain previousblockhash (little-endian)
+        // Header bytes 4-36 contain previousblockhash in word-reversed (stratum) format:
+        // each 4-byte word is individually byte-reversed relative to RPC display order.
+        // To recover RPC display order (big-endian), reverse each 4-byte chunk.
         let prev_hash_from_header: String = header[4..36]
-            .iter()
-            .rev()
+            .chunks(4)
+            .flat_map(|chunk| chunk.iter().rev())
             .map(|b| format!("{:02x}", b))
             .collect();
 
@@ -2253,9 +2255,10 @@ impl TemplateProcessor {
         }
 
         // 2. Validate previous block hash matches template
+        // Header stores prev_hash in word-reversed format; recover RPC display order
         let prev_hash_from_header: String = header[4..36]
-            .iter()
-            .rev()
+            .chunks(4)
+            .flat_map(|chunk| chunk.iter().rev())
             .map(|b| format!("{:02x}", b))
             .collect();
 
@@ -3148,5 +3151,44 @@ mod tests {
             "200-byte coinbase_extra should work at runtime: {:?}",
             result.err()
         );
+    }
+
+    /// Test that prev_hash word-reversal in block header round-trips correctly
+    #[test]
+    fn test_prev_hash_word_reversal_round_trip() {
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        let processor =
+            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive());
+
+        // RPC display order (big-endian)
+        let rpc_hash = "00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72f8fc440";
+
+        // Convert to stratum word-reversed format
+        let stratum = processor.to_stratum_prev_hash(rpc_hash).unwrap();
+
+        // Decode stratum hex to bytes (as stored in header bytes 4-36)
+        let header_bytes: Vec<u8> = (0..32)
+            .map(|i| u8::from_str_radix(&stratum[i * 2..i * 2 + 2], 16).unwrap())
+            .collect();
+
+        // Recover RPC display order by reversing each 4-byte chunk
+        let recovered: String = header_bytes
+            .chunks(4)
+            .flat_map(|chunk| chunk.iter().rev())
+            .map(|b| format!("{:02x}", b))
+            .collect();
+
+        assert_eq!(recovered, rpc_hash,
+            "Word-reversal round-trip should recover original RPC hash");
+
+        // Verify that full byte reversal does NOT recover the original
+        let wrong_reversal: String = header_bytes
+            .iter()
+            .rev()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+
+        assert_ne!(wrong_reversal, rpc_hash,
+            "Full byte reversal should NOT match RPC hash (that was the bug)");
     }
 }

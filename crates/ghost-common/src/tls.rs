@@ -18,17 +18,41 @@ use crate::config::TlsConfig;
 /// Build a `rustls::ServerConfig` for HTTPS.
 ///
 /// * If `tls.cert_path` and `tls.key_path` are both set, the PEM files are loaded.
-/// * Otherwise a self-signed Ed25519 certificate is generated on the fly.
+/// * Otherwise a self-signed Ed25519 certificate is generated on the fly
+///   (development/testnets only).
+///
+/// When `is_mainnet` is true, self-signed certificate generation is rejected.
+/// Mainnet nodes MUST provide operator-managed TLS certificates.
 ///
 /// # Errors
 ///
-/// Returns an error if PEM files are missing / malformed, or if rustls
-/// rejects the certificate / key combination.
+/// Returns an error if:
+/// - PEM files are missing / malformed
+/// - rustls rejects the certificate / key combination
+/// - `is_mainnet` is true and no cert/key paths are provided
 pub fn build_server_config(
     tls: &TlsConfig,
 ) -> Result<Arc<rustls::ServerConfig>, Box<dyn std::error::Error + Send + Sync>> {
+    build_server_config_for_network(tls, false)
+}
+
+/// Build a `rustls::ServerConfig` with mainnet enforcement.
+///
+/// Same as [`build_server_config`] but accepts `is_mainnet` to reject
+/// self-signed certificates on mainnet.
+pub fn build_server_config_for_network(
+    tls: &TlsConfig,
+    is_mainnet: bool,
+) -> Result<Arc<rustls::ServerConfig>, Box<dyn std::error::Error + Send + Sync>> {
     let (certs, key) = if let (Some(cert_path), Some(key_path)) = (&tls.cert_path, &tls.key_path) {
         load_pem_files(cert_path, key_path)?
+    } else if is_mainnet {
+        return Err(
+            "Mainnet requires operator-provided TLS certificates. \
+             Self-signed certificates are not allowed on mainnet. \
+             Set tls.cert_path and tls.key_path in your configuration."
+                .into(),
+        );
     } else {
         generate_self_signed()?
     };
@@ -152,5 +176,29 @@ mod tests {
         let (certs, _key) = generate_self_signed().expect("Self-signed generation should succeed");
         assert_eq!(certs.len(), 1, "Should produce exactly one certificate");
         assert!(!certs[0].is_empty(), "Certificate DER should not be empty");
+    }
+
+    #[test]
+    fn test_mainnet_rejects_self_signed() {
+        let tls = TlsConfig::default();
+        let result = build_server_config_for_network(&tls, true);
+        assert!(result.is_err(), "Mainnet must reject self-signed TLS");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Mainnet"),
+            "Error should mention mainnet: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_non_mainnet_allows_self_signed() {
+        let tls = TlsConfig::default();
+        let result = build_server_config_for_network(&tls, false);
+        assert!(
+            result.is_ok(),
+            "Non-mainnet should allow self-signed: {:?}",
+            result.err()
+        );
     }
 }

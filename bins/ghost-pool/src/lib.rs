@@ -77,5 +77,8 @@ pub mod template_provider;
 /// Treasury and fee distribution state.
 pub mod treasury;
 
+/// P2P share proof handling for cross-node share propagation.
+pub mod share_handler;
+
 /// Input validation utilities for security.
 pub mod validation;

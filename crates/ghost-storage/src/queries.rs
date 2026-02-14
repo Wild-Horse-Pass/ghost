@@ -466,6 +466,50 @@ impl Database {
         })
     }
 
+    /// Get the highest round_id from the shares table
+    ///
+    /// Returns 0 if no shares exist (fresh install).
+    pub fn get_max_round_id(&self) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let max_id: u64 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(round_id), 0) FROM shares",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(max_id)
+        })
+    }
+
+    /// Delete shares older than `retention_secs` seconds
+    ///
+    /// Uses the existing `idx_shares_timestamp` index for efficient deletion.
+    /// Returns the number of deleted rows.
+    /// Enforces a minimum retention of 1 hour to prevent accidental wipe.
+    pub fn delete_old_shares(&self, retention_secs: i64) -> GhostResult<usize> {
+        // Guard: minimum 1 hour retention to prevent accidental wipe
+        let retention_secs = retention_secs.max(3600);
+
+        let cutoff_ms = {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            now_ms - (retention_secs * 1000)
+        };
+
+        self.with_connection(|conn| {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM shares WHERE timestamp < ?1",
+                    params![cutoff_ms],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(deleted)
+        })
+    }
+
     /// Minimum query length for miner search (DB-H1)
     /// Prevents expensive full-table scans with very short queries
     pub const MIN_MINER_SEARCH_LENGTH: usize = 3;
@@ -6133,5 +6177,77 @@ mod tests {
                 .expect("LOW-STOR-8: Failed to get reserved for lock1 after delete"),
             0
         );
+    }
+
+    #[test]
+    fn test_share_pruning_and_max_round_id() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+
+        // Empty table: max round_id should be 0
+        let max = db.get_max_round_id().expect("Failed to get max round id");
+        assert_eq!(max, 0);
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+
+        // Insert old share (48 hours ago)
+        let old_share = ShareRecord {
+            id: None,
+            round_id: 1,
+            miner_id: "miner_old".to_string(),
+            difficulty: 1000.0,
+            work: 1000.0,
+            share_hash: "hash_old".to_string(),
+            timestamp: now_ms - (48 * 3600 * 1000),
+            received_by: "node1".to_string(),
+            valid: true,
+        };
+        db.insert_share(&old_share).expect("Failed to insert old share");
+
+        // Insert recent share (30 minutes ago — well within the 1h minimum retention)
+        let recent_share = ShareRecord {
+            id: None,
+            round_id: 5,
+            miner_id: "miner_recent".to_string(),
+            difficulty: 2000.0,
+            work: 2000.0,
+            share_hash: "hash_recent".to_string(),
+            timestamp: now_ms - (30 * 60 * 1000),
+            received_by: "node1".to_string(),
+            valid: true,
+        };
+        db.insert_share(&recent_share).expect("Failed to insert recent share");
+
+        // Max round_id should be 5
+        let max = db.get_max_round_id().expect("Failed to get max round id");
+        assert_eq!(max, 5);
+
+        // Prune with 24h retention — should delete only the old share
+        let deleted = db
+            .delete_old_shares(24 * 3600)
+            .expect("Failed to delete old shares");
+        assert_eq!(deleted, 1);
+
+        // Recent share should remain
+        let remaining = db
+            .get_shares_by_round(5)
+            .expect("Failed to get shares by round");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].miner_id, "miner_recent");
+
+        // Old share should be gone
+        let old = db
+            .get_shares_by_round(1)
+            .expect("Failed to get old shares");
+        assert_eq!(old.len(), 0);
+
+        // Minimum retention guard: even with 0 seconds, enforces 1 hour minimum
+        // The recent share (30 min old) should survive
+        let deleted = db
+            .delete_old_shares(0)
+            .expect("Failed to prune with minimum guard");
+        assert_eq!(deleted, 0, "Recent share should survive minimum retention guard");
     }
 }

@@ -351,12 +351,25 @@ impl PayoutProver {
             cs.num_constraints()
         );
 
-        // Generate proof bytes (real Groth16 if params available, otherwise simulated)
+        // Generate proof bytes
         let proof_bytes = if let Some(ref params) = self.params {
             self.generate_groth16_proof(circuit, params)?
         } else {
-            warn!("Groth16 parameters not available, using simulated proof");
-            self.generate_simulated_proof(witness, cs.num_constraints())
+            // In test builds, fall back to simulated proofs for convenience.
+            // In release builds, Groth16 parameters are REQUIRED — refuse to produce a proof.
+            #[cfg(test)]
+            {
+                warn!("Groth16 parameters not available, using simulated proof (test mode)");
+                self.generate_simulated_proof(witness, cs.num_constraints())
+            }
+            #[cfg(not(test))]
+            {
+                return Err(ZkError::ProvingError(
+                    "Groth16 parameters not loaded — cannot generate proof. \
+                     Load MPC-generated parameters via new_with_params() before proving."
+                        .to_string(),
+                ));
+            }
         };
 
         info!(
@@ -413,6 +426,7 @@ impl PayoutProver {
     }
 
     /// Generate a simulated proof (for testing when Groth16 params aren't available)
+    #[cfg(test)]
     fn generate_simulated_proof(&self, witness: &PayoutWitness, num_constraints: usize) -> Vec<u8> {
         let mut hasher = Sha256::new();
 
