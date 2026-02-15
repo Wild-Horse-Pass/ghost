@@ -317,7 +317,11 @@ impl PayoutProposalCreator {
                         Err(e) => last_err = Some(e),
                     }
                 }
-                Err(last_err.unwrap())
+                Err(last_err.unwrap_or_else(|| {
+                    ghost_common::error::GhostError::Internal(
+                        "All RPC attempts failed with no error captured".to_string(),
+                    )
+                }))
             })
         })?;
 

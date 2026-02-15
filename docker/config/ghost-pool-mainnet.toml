@@ -32,6 +32,7 @@ internal_api_secret = "${INTERNAL_API_SECRET}"
 
 # H-13: REQUIRED for mainnet - must be true for encrypted P2P communication
 noise_enabled = true
+noise_required = true
 
 [network.p2p]
 share_propagation = 8555
