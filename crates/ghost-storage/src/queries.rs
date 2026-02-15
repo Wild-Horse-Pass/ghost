@@ -1180,7 +1180,7 @@ impl Database {
 
                 // Log warning if node could have been elder but lacks PoW
                 if !is_elder && !has_valid_pow && elder_count < max_elders {
-                    tracing::warn!(
+                    tracing::debug!(
                         node_id = %&node_id[..8.min(node_id.len())],
                         "Node not eligible for elder status: missing or invalid proof-of-work"
                     );

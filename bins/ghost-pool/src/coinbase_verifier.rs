@@ -35,6 +35,7 @@
 //! Before submitting any block, we verify the actual coinbase matches
 //! this commitment exactly.
 
+use bitcoin::address::NetworkUnchecked;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tracing::{debug, error};
@@ -97,6 +98,16 @@ pub struct CoinbaseCommitment {
 /// CRITICAL: Both from_proposal() and compute_outputs_hash() MUST use this same domain.
 const COINBASE_OUTPUTS_DOMAIN: &[u8] = b"CoinbaseOutputs/v1";
 
+/// Convert bech32 address string bytes to script pubkey bytes.
+/// PayoutEntry.address stores bech32 strings as raw bytes;
+/// this converts them to match the script pubkey format in actual coinbase outputs.
+fn address_to_script_pubkey(address_bytes: &[u8]) -> Option<Vec<u8>> {
+    let addr_str = std::str::from_utf8(address_bytes).ok()?;
+    let addr = addr_str.parse::<bitcoin::Address<NetworkUnchecked>>().ok()?;
+    let script = addr.assume_checked().script_pubkey();
+    Some(script.as_bytes().to_vec())
+}
+
 impl CoinbaseCommitment {
     /// Create a commitment from an approved payout proposal
     ///
@@ -132,26 +143,33 @@ impl CoinbaseCommitment {
         hasher.update((output_count as u32).to_le_bytes());
 
         // Hash miner payouts (order-sensitive) - same format as compute_outputs_hash
+        // M-28: Convert bech32 address strings to script pubkeys to match actual coinbase encoding
         for payout in &proposal.miner_payouts {
+            let script = address_to_script_pubkey(&payout.address)
+                .unwrap_or_else(|| payout.address.clone());
             hasher.update(payout.amount.to_le_bytes());
-            hasher.update((payout.address.len() as u32).to_le_bytes());
-            hasher.update(&payout.address);
+            hasher.update((script.len() as u32).to_le_bytes());
+            hasher.update(&script);
             total_value = total_value.saturating_add(payout.amount);
         }
 
         // Hash node payouts (order-sensitive) - same format as compute_outputs_hash
         for payout in &proposal.node_payouts {
+            let script = address_to_script_pubkey(&payout.address)
+                .unwrap_or_else(|| payout.address.clone());
             hasher.update(payout.amount.to_le_bytes());
-            hasher.update((payout.address.len() as u32).to_le_bytes());
-            hasher.update(&payout.address);
+            hasher.update((script.len() as u32).to_le_bytes());
+            hasher.update(&script);
             total_value = total_value.saturating_add(payout.amount);
         }
 
         // Hash treasury output - same format as compute_outputs_hash
         if proposal.treasury_amount > 0 {
+            let treasury_script = address_to_script_pubkey(treasury_address)
+                .unwrap_or_else(|| treasury_address.to_vec());
             hasher.update(proposal.treasury_amount.to_le_bytes());
-            hasher.update((treasury_address.len() as u32).to_le_bytes());
-            hasher.update(treasury_address);
+            hasher.update((treasury_script.len() as u32).to_le_bytes());
+            hasher.update(&treasury_script);
             total_value = total_value.saturating_add(proposal.treasury_amount);
         }
 
@@ -570,6 +588,93 @@ mod tests {
         let commitment2 = CoinbaseCommitment::from_proposal(&proposal2, treasury_addr);
 
         assert_ne!(commitment1.output_hash, commitment2.output_hash);
+    }
+
+    #[test]
+    fn test_commitment_matches_actual_coinbase_outputs() {
+        // M-28: Use real bech32 addresses to verify from_proposal() and
+        // compute_outputs_hash() produce the same hash.
+        // BIP173 test vector: bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4
+        // Script pubkey: 0014 751e76e8199196d454941c45d1b3a323f1433bd6
+        let addr_bech32 = b"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_vec();
+        let addr_script =
+            hex::decode("0014751e76e8199196d454941c45d1b3a323f1433bd6").unwrap();
+
+        // Verify our helper produces the expected script pubkey
+        assert_eq!(
+            address_to_script_pubkey(&addr_bech32).unwrap(),
+            addr_script,
+            "Helper must match known BIP173 test vector"
+        );
+
+        let proposal = PayoutProposal {
+            proposal_hash: [1u8; 32],
+            round_id: 100,
+            block_hash: [2u8; 32],
+            block_height: 800_000,
+            proposer: [3u8; 32],
+            miner_payouts: vec![PayoutEntry {
+                address: addr_bech32.clone(),
+                amount: 100_000_000,
+                recipient_id: [10u8; 32],
+                payout_type: PayoutType::Mining,
+            }],
+            node_payouts: vec![PayoutEntry {
+                address: addr_bech32.clone(),
+                amount: 25_000_000,
+                recipient_id: [20u8; 32],
+                payout_type: PayoutType::NodeReward,
+            }],
+            treasury_amount: 12_500_000,
+            treasury_address: addr_bech32.clone(),
+            tx_fees: 1_000_000,
+            subsidy: 312_500_000,
+            timestamp: 1700000000,
+            tx_fees_unallocated: 0,
+        };
+
+        let commitment = CoinbaseCommitment::from_proposal(&proposal, &addr_bech32);
+
+        // Build CoinbaseOutputs with actual script pubkeys (as the real coinbase would have)
+        let outputs = vec![
+            CoinbaseOutput {
+                value: 100_000_000,
+                script_pubkey: addr_script.clone(),
+            },
+            CoinbaseOutput {
+                value: 25_000_000,
+                script_pubkey: addr_script.clone(),
+            },
+            CoinbaseOutput {
+                value: 12_500_000,
+                script_pubkey: addr_script.clone(),
+            },
+        ];
+
+        // This is the critical assertion: the commitment from bech32 proposal addresses
+        // must match the hash of actual script pubkey coinbase outputs
+        assert!(
+            commitment.verify(&outputs).is_ok(),
+            "M-28: Commitment from bech32 addresses must match script pubkey outputs"
+        );
+    }
+
+    #[test]
+    fn test_address_to_script_pubkey() {
+        // BIP173 test vector
+        let script = address_to_script_pubkey(b"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+        assert!(script.is_some());
+        let script = script.unwrap();
+        // P2WPKH: OP_0 <20-byte-hash> → 0x0014 + 20 bytes = 22 bytes
+        assert_eq!(script.len(), 22);
+        assert_eq!(script[0], 0x00); // witness version 0
+        assert_eq!(script[1], 0x14); // push 20 bytes
+
+        // Invalid address returns None
+        assert!(address_to_script_pubkey(b"not-a-valid-address").is_none());
+
+        // Raw bytes (not UTF-8) return None
+        assert!(address_to_script_pubkey(&[0xff, 0xfe, 0xfd]).is_none());
     }
 
     #[test]
