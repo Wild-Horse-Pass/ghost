@@ -856,6 +856,18 @@ pub enum MiningMode {
     PrivateSolo,
 }
 
+impl MiningMode {
+    /// Returns the default coinbase scriptsig tag for this mining mode.
+    /// Visible on block explorers to identify the pool and its mode.
+    pub fn default_coinbase_tag(&self) -> &'static str {
+        match self {
+            MiningMode::PublicPool => "- G H O S T - PublicPool",
+            MiningMode::PrivatePool => "- G H O S T - PrivatePool",
+            MiningMode::PrivateSolo => "- G H O S T - PrivateSolo",
+        }
+    }
+}
+
 impl BitcoinNetwork {
     pub fn default_rpc_port(&self) -> u16 {
         match self {
@@ -1263,6 +1275,10 @@ pub struct PoolConfig {
     /// Must be a valid bech32 address for the configured network.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_payout_address: Option<String>,
+    /// Optional coinbase scriptsig tag shown on block explorers.
+    /// If not set, auto-derives from mining_mode (e.g. "- G H O S T - PublicPool").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coinbase_extra: Option<String>,
 }
 
 impl PoolConfig {
@@ -1311,6 +1327,7 @@ impl Default for PoolConfig {
             min_payout_sats: 100_000,  // 0.001 BTC minimum
             payout_interval_blocks: 100,
             node_payout_address: None,
+            coinbase_extra: None,
         }
     }
 }

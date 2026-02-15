@@ -705,6 +705,18 @@ async fn main() -> Result<()> {
     // Reload pre-restart share data from database so miners don't lose credit
     round_manager.reload_from_db(&db);
 
+    // Resolve coinbase tag: explicit config overrides mode-based default
+    let coinbase_tag = config.pool.coinbase_extra
+        .clone()
+        .unwrap_or_else(|| mining_mode.default_coinbase_tag().to_string());
+
+    // Write tag file so SRI pool service can pick it up via ExecStartPre
+    let tag_path = data_dir.join("coinbase_tag");
+    if let Err(e) = std::fs::write(&tag_path, &coinbase_tag) {
+        warn!(error = %e, "Failed to write coinbase tag file");
+    }
+    info!(tag = %coinbase_tag, "Coinbase tag: {}", coinbase_tag);
+
     // Initialize template processor with treasury and pool payout addresses from config
     // Pool payout address defaults to treasury address if not explicitly configured separately
     let template_config = TemplateConfig {
@@ -713,6 +725,7 @@ async fn main() -> Result<()> {
         network: config.bitcoin.network,
         mining_mode,
         solo_payout_address: config.network.solo_payout_address.clone(),
+        coinbase_extra: coinbase_tag,
         ..Default::default()
     };
     let template_processor = Arc::new(
