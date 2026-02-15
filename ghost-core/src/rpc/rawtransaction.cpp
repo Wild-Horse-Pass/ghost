@@ -9,6 +9,8 @@
 #include <consensus/amount.h>
 #include <consensus/validation.h>
 #include <core_io.h>
+#include <haze/block_reconstruct.h>
+#include <haze/stripped_block.h>
 #include <index/txindex.h>
 #include <key_io.h>
 #include <node/blockstorage.h>
@@ -389,6 +391,27 @@ static RPCHelpMan getrawtransaction()
         return result;
     }
 
+    const bool is_hazed = chainman.m_blockman.IsHazeMode();
+
+    if (is_hazed) {
+        // Hazed mode: no undo data, transaction already fetched via index.
+        // Add haze indicators to the output.
+        TxToJSON(*tx, hash_block, result, chainman.ActiveChainstate());
+
+        // Add haze status at tx level
+        UniValue haze_status(UniValue::VOBJ);
+        haze_status.pushKV("mode", "hazed");
+        UniValue fields(UniValue::VARR);
+        fields.push_back("witness");
+        fields.push_back("scriptsig");
+        fields.push_back("op_return_data");
+        fields.push_back("coinbase");
+        haze_status.pushKV("fields_stripped", std::move(fields));
+        result.pushKV("haze_status", std::move(haze_status));
+        return result;
+    }
+
+    // Full archive mode: read undo + block for prevout information
     CBlockUndo blockUndo;
     CBlock block;
 

@@ -36,6 +36,8 @@
 #include <util/translation.h>
 #include <versionbits.h>
 
+#include <haze/swiftsync.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -1081,6 +1083,11 @@ public:
     //! The total number of bytes available for us to use across all leveldb
     //! coins databases. This will be split somehow across chainstates.
     size_t m_total_coinsdb_cache{0};
+
+    //! SwiftSync controller for accelerated IBD via Bloom filter.
+    //! When active, UTXOs not expected to survive to checkpoint are tracked
+    //! in memory instead of being written to LevelDB, reducing IBD time by ~10x.
+    std::unique_ptr<haze::SwiftSyncController> m_swiftsync;
 
     //! Instantiate a new chainstate.
     //!

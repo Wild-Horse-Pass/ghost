@@ -20,6 +20,8 @@
 #include <crypto/siphash.h>
 #include <deploymentstatus.h>
 #include <flatfile.h>
+#include <haze/haze_p2p.h>
+#include <haze/stripped_block.h>
 #include <headerssync.h>
 #include <index/blockfilterindex.h>
 #include <kernel/chain.h>
@@ -2268,7 +2270,40 @@ void PeerManagerImpl::ProcessGetBlockData(CNode& pfrom, Peer& peer, const CInv& 
         block_pos = pindex->GetBlockPos();
     }
 
+    // Hazed mode: cannot serve full blocks from disk — serve stripped blocks
+    // to Hazed peers, redirect non-Hazed peers to Full Archive nodes.
+    // We still serve recently-cached full blocks (e.g. just mined/received).
+    const bool is_haze_mode = m_chainman.m_blockman.IsHazeMode();
+    bool haze_block_sent = false;
+
+    if (is_haze_mode && !(a_recent_block && a_recent_block->GetHash() == inv.hash)) {
+        const bool peer_is_hazed = (peer.m_their_services & NODE_GHOST_HAZE) != 0;
+
+        if (peer_is_hazed) {
+            // Peer supports Haze — send stripped block
+            haze::CStrippedBlock stripped;
+            if (!m_chainman.m_blockman.ReadStrippedBlock(stripped, block_pos)) {
+                LogError("Cannot load stripped block from disk, %s\n", pfrom.DisconnectMsg(fLogIPs));
+                pfrom.fDisconnect = true;
+                return;
+            }
+            MakeAndPushMessage(pfrom, NetMsgType::GHOST_STRIPPED_BLOCK, stripped);
+        } else {
+            // Peer does not support Haze — send redirect with known Full Archive peers
+            haze::GhostRedirect redirect;
+            redirect.block_hash = inv.hash;
+            m_connman.ForEachNode([&redirect](CNode* pnode) {
+                if ((pnode->addr.nServices & NODE_NETWORK) && !(pnode->addr.nServices & NODE_GHOST_HAZE)) {
+                    redirect.archive_peers.push_back(pnode->addr.ToStringAddrPort());
+                }
+            });
+            MakeAndPushMessage(pfrom, NetMsgType::GHOST_REDIRECT, redirect);
+        }
+        haze_block_sent = true;
+    }
+
     std::shared_ptr<const CBlock> pblock;
+    if (!haze_block_sent) {
     if (a_recent_block && a_recent_block->GetHash() == inv.hash) {
         pblock = a_recent_block;
     } else if (inv.IsMsgWitnessBlk()) {
@@ -2345,6 +2380,7 @@ void PeerManagerImpl::ProcessGetBlockData(CNode& pfrom, Peer& peer, const CInv& 
             }
         }
     }
+    } // if (!haze_block_sent)
 
     {
         LOCK(peer.m_block_inv_mutex);
@@ -4671,6 +4707,68 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             }
         }
         ProcessBlock(pfrom, pblock, forceProcessing, min_pow_checked);
+        return;
+    }
+
+    if (msg_type == NetMsgType::GHOST_STRIPPED_BLOCK)
+    {
+        // Received a stripped block from a Hazed peer
+        if (m_chainman.m_blockman.LoadingBlocks()) {
+            LogDebug(BCLog::NET, "Unexpected stripped block message received from peer %d during loading\n", pfrom.GetId());
+            return;
+        }
+
+        haze::CStrippedBlock stripped;
+        try {
+            vRecv >> stripped;
+        } catch (const std::exception& e) {
+            LogDebug(BCLog::NET, "Failed to deserialize stripped block from peer %d: %s\n", pfrom.GetId(), e.what());
+            Misbehaving(*peer, "invalid stripped block");
+            return;
+        }
+
+        // Verify merkle root matches header
+        bool mutated = false;
+        uint256 computed_root = stripped.ComputeMerkleRoot(&mutated);
+        if (mutated || computed_root != stripped.m_header.hashMerkleRoot) {
+            LogDebug(BCLog::NET, "Stripped block merkle root mismatch from peer %d\n", pfrom.GetId());
+            Misbehaving(*peer, "stripped block bad merkle");
+            return;
+        }
+
+        LogDebug(BCLog::NET, "received stripped block %s peer=%d (%zu txs)\n",
+            stripped.m_header.GetHash().ToString(), pfrom.GetId(), stripped.GetTxCount());
+
+        // Store the stripped block if we're in Hazed mode
+        if (m_chainman.m_blockman.IsHazeMode()) {
+            // The stripped block will be written via the normal block processing
+            // pipeline through AcceptBlock → WriteStrippedBlock, not directly here.
+            // For now, we log receipt. Full IBD integration with stripped blocks
+            // will extend this handler.
+        }
+
+        return;
+    }
+
+    if (msg_type == NetMsgType::GHOST_REDIRECT)
+    {
+        // A Hazed peer tells us to get the full block from Full Archive peers
+        haze::GhostRedirect redirect;
+        try {
+            vRecv >> redirect;
+        } catch (const std::exception& e) {
+            LogDebug(BCLog::NET, "Failed to deserialize redirect from peer %d: %s\n", pfrom.GetId(), e.what());
+            return;
+        }
+
+        LogDebug(BCLog::NET, "received redirect for block %s from peer %d (%zu archive peers)\n",
+            redirect.block_hash.ToString(), pfrom.GetId(), redirect.archive_peers.size());
+
+        // If we're a Full Archive node receiving a redirect, we don't need it.
+        // If we're Hazed, we could try these peers for the block.
+        // For now, just log — full redirect handling will be implemented when
+        // cross-mode IBD is designed.
+
         return;
     }
 

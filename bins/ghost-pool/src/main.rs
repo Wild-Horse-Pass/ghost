@@ -755,7 +755,7 @@ async fn main() -> Result<()> {
         noise_enabled: config.network.noise_enabled,
         noise_port: ghost_consensus::mesh::DEFAULT_NOISE_PORT,
         noise_keypair_path: Some(noise_keypair_path),
-        noise_required: config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet,
+        noise_required: true,
         payout_address: config.pool.node_payout_address.clone(),
         ..Default::default()
     };
@@ -765,13 +765,33 @@ async fn main() -> Result<()> {
     // Initialize consensus voting
     let voting_manager = Arc::new(VotingManager::new(100)); // 100 max sessions
 
-    // Create broadcast callback for vote propagation
-    let mesh_for_broadcast = Arc::clone(&mesh);
-    let broadcast_fn: BroadcastFn = Arc::new(move |msg_type: MessageType, payload: Vec<u8>| {
-        // Clone mesh for async context
-        let mesh = Arc::clone(&mesh_for_broadcast);
-        // Broadcast synchronously (mesh handles async internally)
-        mesh.broadcast_sync(msg_type, payload)
+    // Create broadcast callback for vote propagation via Noise relay
+    let (vote_tx, mut vote_rx) = tokio::sync::mpsc::channel::<(
+        ghost_consensus::message::MessageType,
+        Vec<u8>,
+    )>(64);
+    let mesh_for_vote_relay = Arc::clone(&mesh);
+    tokio::spawn(async move {
+        while let Some((msg_type, payload)) = vote_rx.recv().await {
+            match mesh_for_vote_relay.create_envelope_raw(msg_type, payload) {
+                Ok(envelope) => {
+                    if let Err(e) = mesh_for_vote_relay.broadcast(envelope).await {
+                        tracing::warn!(error = %e, "Vote Noise broadcast failed");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Vote envelope creation failed");
+                }
+            }
+        }
+    });
+    let broadcast_fn: BroadcastFn = Arc::new(move |msg_type, payload| {
+        vote_tx.try_send((msg_type, payload)).map_err(|e| {
+            ghost_common::error::GhostError::Internal(format!(
+                "Vote broadcast channel error: {}",
+                e
+            ))
+        })
     });
 
     // Create execute callback for consensus decisions

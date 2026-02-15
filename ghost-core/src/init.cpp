@@ -93,6 +93,8 @@
 #include <validationinterface.h>
 #include <walletinitinterface.h>
 
+#include <haze/mode_selector.h>
+
 #ifdef ENABLE_GSP
 #include <gsp/gsp.h>
 #endif
@@ -511,6 +513,10 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-blockreconstructionextratxn=<n>", strprintf("Extra transactions to keep in memory for compact block reconstructions (default: %u)", DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-blocksonly", strprintf("Whether to reject transactions from network peers. Disables automatic broadcast and rebroadcast of transactions, unless the source peer has the 'forcerelay' permission. RPC transactions are not affected. (default: %u)", DEFAULT_BLOCKSONLY), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-ghostmode", "Operate in ghost mode: do not request, relay, or announce unconfirmed transactions. Similar to -blocksonly but can be toggled at runtime via RPC (default: 0)", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-hazemode=<mode>", "Set Ghost Haze operating mode: 'hazed' strips witness/scriptSig/OP_RETURN data before writing to disk (~60%% storage reduction); 'full_archive' stores all data unchanged. Choice is permanent for this datadir. (default: interactive prompt on first launch, then persisted)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-haze-status", "Print Ghost Haze status and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-legal-packet", "Generate legal compliance packet JSON and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-exorcist", "Convert existing full archive to hazed format (irreversible) and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-coinstatsindex", strprintf("Maintain coinstats index used by the gettxoutsetinfo RPC (default: %u)", DEFAULT_COINSTATSINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-conf=<file>", strprintf("Specify path to read-only configuration file. Relative paths will be prefixed by datadir location (only useable from command line, not configuration file) (default: %s)", BITCOIN_CONF_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-datadir=<dir>", "Specify data directory", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
@@ -1353,6 +1359,29 @@ static ChainstateLoadResult InitAndLoadChainstate(
     }
     ChainstateManager& chainman = *node.chainman;
     if (chainman.m_interrupt) return {ChainstateLoadStatus::INTERRUPTED, {}};
+
+    // Ghost Haze: detect or select operating mode, initialize Exorcism
+    {
+        const fs::path datadir = args.GetDataDirNet();
+        haze::GhostMode haze_mode = haze::DetectOrSelectMode(datadir, args);
+
+        // Validate mode consistency with existing data files
+        auto consistency_error = haze::ValidateModeConsistency(datadir, haze_mode);
+        if (consistency_error.has_value()) {
+            return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated(*consistency_error)};
+        }
+
+        // Initialize the Exorcism engine with the selected mode
+        chainman.m_blockman.m_ghost_exorcism.Init(haze_mode);
+
+        LogPrintf("Ghost Haze: operating in %s mode\n",
+            haze_mode == haze::GhostMode::HAZED ? "hazed" : "full_archive");
+
+        // Advertise NODE_GHOST_HAZE service bit for Hazed nodes
+        if (haze_mode == haze::GhostMode::HAZED) {
+            g_local_services = ServiceFlags(g_local_services | NODE_GHOST_HAZE);
+        }
+    }
 
     // This is defined and set here instead of inline in validation.h to avoid a hard
     // dependency between validation and index/base, since the latter is not in

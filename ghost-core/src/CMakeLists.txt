@@ -89,6 +89,9 @@ if(WITH_GSP)
   add_subdirectory(gsp)
 endif()
 
+# Ghost Haze: stripped block format, exorcism (strip-before-write), exorcist (archive conversion)
+add_subdirectory(haze)
+
 # Home for common functionality shared by different executables and libraries.
 # Similar to `bitcoin_util` library, but higher-level.
 add_library(bitcoin_common STATIC EXCLUDE_FROM_ALL
@@ -257,6 +260,7 @@ add_library(bitcoin_node STATIC EXCLUDE_FROM_ALL
   rpc/blockchain.cpp
   rpc/external_signer.cpp
   rpc/fees.cpp
+  rpc/haze.cpp
   rpc/mempool.cpp
   rpc/mining.cpp
   rpc/net.cpp
@@ -287,6 +291,7 @@ target_link_libraries(bitcoin_node
     bitcoin_util
     $<TARGET_NAME_IF_EXISTS:bitcoin_zmq>
     $<TARGET_NAME_IF_EXISTS:bitcoin_gsp>
+    bitcoin_haze
     leveldb
     minisketch
     univalue

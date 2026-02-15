@@ -168,7 +168,7 @@ void ScriptToUniv(const CScript& script, UniValue& out, bool include_hex, bool i
     out.pushKV("type", GetTxnOutputType(type));
 }
 
-void TxToUniv(const CTransaction& tx, const uint256& block_hash, UniValue& entry, bool include_hex, const CTxUndo* txundo, TxVerbosity verbosity)
+void TxToUniv(const CTransaction& tx, const uint256& block_hash, UniValue& entry, bool include_hex, const CTxUndo* txundo, TxVerbosity verbosity, bool is_hazed)
 {
     CHECK_NONFATAL(verbosity >= TxVerbosity::SHOW_DETAILS);
 
@@ -193,16 +193,27 @@ void TxToUniv(const CTransaction& tx, const uint256& block_hash, UniValue& entry
         const CTxIn& txin = tx.vin[i];
         UniValue in(UniValue::VOBJ);
         if (tx.IsCoinBase()) {
-            in.pushKV("coinbase", HexStr(txin.scriptSig));
+            if (is_hazed) {
+                in.pushKV("coinbase", "");
+                in.pushKV("coinbase_stripped", true);
+            } else {
+                in.pushKV("coinbase", HexStr(txin.scriptSig));
+            }
         } else {
             in.pushKV("txid", txin.prevout.hash.GetHex());
             in.pushKV("vout", (int64_t)txin.prevout.n);
             UniValue o(UniValue::VOBJ);
             o.pushKV("asm", ScriptToAsmStr(txin.scriptSig, true));
             o.pushKV("hex", HexStr(txin.scriptSig));
+            if (is_hazed) {
+                o.pushKV("stripped", true);
+            }
             in.pushKV("scriptSig", std::move(o));
         }
-        if (!tx.vin[i].scriptWitness.IsNull()) {
+        if (is_hazed) {
+            // Witness data was stripped — indicate it explicitly
+            in.pushKV("txinwitness", "stripped");
+        } else if (!tx.vin[i].scriptWitness.IsNull()) {
             UniValue txinwitness(UniValue::VARR);
             txinwitness.reserve(tx.vin[i].scriptWitness.stack.size());
             for (const auto& item : tx.vin[i].scriptWitness.stack) {
@@ -245,6 +256,12 @@ void TxToUniv(const CTransaction& tx, const uint256& block_hash, UniValue& entry
 
         UniValue o(UniValue::VOBJ);
         ScriptToUniv(txout.scriptPubKey, /*out=*/o, /*include_hex=*/true, /*include_address=*/true);
+        // Mark stripped OP_RETURN outputs: in hazed mode, OP_RETURN payloads
+        // are replaced with OP_RETURN + 0x00
+        if (is_hazed && txout.scriptPubKey.IsUnspendable() &&
+            txout.scriptPubKey.size() >= 1 && txout.scriptPubKey[0] == OP_RETURN) {
+            o.pushKV("stripped", true);
+        }
         out.pushKV("scriptPubKey", std::move(o));
         vout.push_back(std::move(out));
 
@@ -266,5 +283,17 @@ void TxToUniv(const CTransaction& tx, const uint256& block_hash, UniValue& entry
 
     if (include_hex) {
         entry.pushKV("hex", EncodeHexTx(tx)); // The hex-encoded transaction. Used the name "hex" to be consistent with the verbose output of "getrawtransaction".
+    }
+
+    if (is_hazed) {
+        UniValue haze_status(UniValue::VOBJ);
+        haze_status.pushKV("mode", "hazed");
+        UniValue fields(UniValue::VARR);
+        fields.push_back("witness");
+        fields.push_back("scriptsig");
+        fields.push_back("op_return_data");
+        fields.push_back("coinbase");
+        haze_status.pushKV("fields_stripped", std::move(fields));
+        entry.pushKV("haze_status", std::move(haze_status));
     }
 }

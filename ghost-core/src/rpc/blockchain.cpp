@@ -20,6 +20,8 @@
 #include <deploymentstatus.h>
 #include <flatfile.h>
 #include <hash.h>
+#include <haze/block_reconstruct.h>
+#include <haze/stripped_block.h>
 #include <index/blockfilterindex.h>
 #include <index/coinstatsindex.h>
 #include <interfaces/mining.h>
@@ -178,7 +180,7 @@ UniValue blockheaderToJSON(const CBlockIndex& tip, const CBlockIndex& blockindex
     return result;
 }
 
-UniValue blockToJSON(BlockManager& blockman, const CBlock& block, const CBlockIndex& tip, const CBlockIndex& blockindex, TxVerbosity verbosity, const uint256 pow_limit)
+UniValue blockToJSON(BlockManager& blockman, const CBlock& block, const CBlockIndex& tip, const CBlockIndex& blockindex, TxVerbosity verbosity, const uint256 pow_limit, bool is_hazed)
 {
     UniValue result = blockheaderToJSON(tip, blockindex, pow_limit);
 
@@ -199,7 +201,8 @@ UniValue blockToJSON(BlockManager& blockman, const CBlock& block, const CBlockIn
         case TxVerbosity::SHOW_DETAILS_AND_PREVOUT:
             CBlockUndo blockUndo;
             const bool is_not_pruned{WITH_LOCK(::cs_main, return !blockman.IsBlockPruned(blockindex))};
-            bool have_undo{is_not_pruned && WITH_LOCK(::cs_main, return blockindex.nStatus & BLOCK_HAVE_UNDO)};
+            // Hazed nodes don't have undo data
+            bool have_undo{!is_hazed && is_not_pruned && WITH_LOCK(::cs_main, return blockindex.nStatus & BLOCK_HAVE_UNDO)};
             if (have_undo && !blockman.ReadBlockUndo(blockUndo, blockindex)) {
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "Undo data expected but can't be read. This could be due to disk corruption or a conflict with a pruning event.");
             }
@@ -208,13 +211,25 @@ UniValue blockToJSON(BlockManager& blockman, const CBlock& block, const CBlockIn
                 // coinbase transaction (i.e. i == 0) doesn't have undo data
                 const CTxUndo* txundo = (have_undo && i > 0) ? &blockUndo.vtxundo.at(i - 1) : nullptr;
                 UniValue objTx(UniValue::VOBJ);
-                TxToUniv(*tx, /*block_hash=*/uint256(), /*entry=*/objTx, /*include_hex=*/true, txundo, verbosity);
+                TxToUniv(*tx, /*block_hash=*/uint256(), /*entry=*/objTx, /*include_hex=*/true, txundo, verbosity, is_hazed);
                 txs.push_back(std::move(objTx));
             }
             break;
     }
 
     result.pushKV("tx", std::move(txs));
+
+    if (is_hazed) {
+        UniValue haze_status(UniValue::VOBJ);
+        haze_status.pushKV("mode", "hazed");
+        UniValue fields(UniValue::VARR);
+        fields.push_back("witness");
+        fields.push_back("scriptsig");
+        fields.push_back("op_return_data");
+        fields.push_back("coinbase");
+        haze_status.pushKV("fields_stripped", std::move(fields));
+        result.pushKV("haze_status", std::move(haze_status));
+    }
 
     return result;
 }
@@ -827,6 +842,43 @@ static RPCHelpMan getblock()
         }
     }
 
+    const bool is_hazed = chainman.m_blockman.IsHazeMode();
+
+    if (is_hazed) {
+        // Hazed mode: read stripped block from GSB files, reconstruct partial block
+        haze::CStrippedBlock stripped;
+        FlatFilePos pos;
+        {
+            LOCK(cs_main);
+            CheckBlockDataAvailability(chainman.m_blockman, *pblockindex, /*check_for_undo=*/false);
+            pos = pblockindex->GetBlockPos();
+        }
+        if (!chainman.m_blockman.ReadStrippedBlock(stripped, pos)) {
+            throw JSONRPCError(RPC_MISC_ERROR, "Stripped block not found on disk");
+        }
+
+        if (verbosity <= 0) {
+            // Return raw hex of the stripped block data (GSB format)
+            std::vector<std::byte> gsb_data;
+            haze::SerializeGSB(stripped, gsb_data);
+            return HexStr(gsb_data);
+        }
+
+        CBlock block = haze::ReconstructPartialBlock(stripped);
+
+        TxVerbosity tx_verbosity;
+        if (verbosity == 1) {
+            tx_verbosity = TxVerbosity::SHOW_TXID;
+        } else if (verbosity == 2) {
+            tx_verbosity = TxVerbosity::SHOW_DETAILS;
+        } else {
+            tx_verbosity = TxVerbosity::SHOW_DETAILS_AND_PREVOUT;
+        }
+
+        return blockToJSON(chainman.m_blockman, block, *tip, *pblockindex, tx_verbosity, chainman.GetConsensus().powLimit, /*is_hazed=*/true);
+    }
+
+    // Full archive mode: standard path
     const std::vector<std::byte> block_data{GetRawBlockChecked(chainman.m_blockman, *pblockindex)};
 
     if (verbosity <= 0) {

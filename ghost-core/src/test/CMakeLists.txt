@@ -47,6 +47,9 @@ add_executable(test_ghost
   getarg_tests.cpp
   gsp_tests.cpp
   hash_tests.cpp
+  haze_tests.cpp
+  haze_sync_tests.cpp
+  haze_integration_tests.cpp
   headers_sync_chainwork_tests.cpp
   httpserver_tests.cpp
   i2p_tests.cpp

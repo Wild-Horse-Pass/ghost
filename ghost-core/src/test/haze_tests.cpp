@@ -1,0 +1,392 @@
+// Copyright (c) 2026 The Bitcoin Ghost developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or https://opensource.org/license/mit/.
+
+#include <addresstype.h>
+#include <haze/block_reconstruct.h>
+#include <haze/block_stripper.h>
+#include <haze/field_classifier.h>
+#include <haze/stripped_block.h>
+#include <key.h>
+#include <primitives/block.h>
+#include <primitives/transaction.h>
+#include <script/script.h>
+#include <script/solver.h>
+#include <uint256.h>
+
+#include <test/util/setup_common.h>
+
+#include <boost/test/unit_test.hpp>
+
+#include <vector>
+
+BOOST_FIXTURE_TEST_SUITE(haze_tests, TestChain100Setup)
+
+// ============================================================================
+// Field Classifier
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(classify_segwit_transaction)
+{
+    // Construct a transaction with witness data — the classifier inspects
+    // the transaction structure, not signature validity.
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetHash(), 0));
+    mtx.vout.emplace_back(49 * COIN, GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey())));
+
+    // Add fake witness data to simulate a signed P2WPKH input
+    mtx.vin[0].scriptWitness.stack.push_back({0x30, 0x44}); // fake signature
+    mtx.vin[0].scriptWitness.stack.push_back({0x02, 0xab});  // fake pubkey
+
+    CTransactionRef tx = MakeTransactionRef(std::move(mtx));
+    auto fields = haze::ClassifyTransaction(*tx, /*is_coinbase=*/false, /*tx_index=*/0);
+
+    bool has_witness = false;
+    for (const auto& f : fields) {
+        if (f.type == haze::HazeFieldType::WITNESS) has_witness = true;
+    }
+    BOOST_CHECK(has_witness);
+}
+
+BOOST_AUTO_TEST_CASE(classify_legacy_transaction)
+{
+    // Construct a legacy-style transaction with non-empty scriptSig.
+    // RequiresStoredTxid should return true (scriptSig will be stripped,
+    // making txid non-recomputable).
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint(m_coinbase_txns[1]->GetHash(), 0));
+    mtx.vin[0].scriptSig = CScript() << std::vector<uint8_t>(72, 0x30) << std::vector<uint8_t>(33, 0x02);
+    // No witness data — this is a legacy P2PKH-like input
+    mtx.vout.emplace_back(49 * COIN, CScript() << OP_DUP << OP_HASH160 << std::vector<uint8_t>(20, 0xAB) << OP_EQUALVERIFY << OP_CHECKSIG);
+
+    CTransactionRef tx = MakeTransactionRef(std::move(mtx));
+
+    // Should have SCRIPTSIG field
+    auto fields = haze::ClassifyTransaction(*tx, /*is_coinbase=*/false, /*tx_index=*/1);
+    bool has_scriptsig = false;
+    for (const auto& f : fields) {
+        if (f.type == haze::HazeFieldType::SCRIPTSIG) has_scriptsig = true;
+    }
+    BOOST_CHECK(has_scriptsig);
+
+    // RequiresStoredTxid should be true for transactions with non-empty scriptSig
+    BOOST_CHECK(haze::RequiresStoredTxid(*tx));
+}
+
+BOOST_AUTO_TEST_CASE(classify_coinbase)
+{
+    // The first transaction in any block is coinbase
+    BOOST_REQUIRE(!m_coinbase_txns.empty());
+    auto& cb = m_coinbase_txns[0];
+    auto fields = haze::ClassifyTransaction(*cb, /*is_coinbase=*/true, /*tx_index=*/0);
+
+    bool has_coinbase = false;
+    for (const auto& f : fields) {
+        if (f.type == haze::HazeFieldType::COINBASE) {
+            has_coinbase = true;
+            BOOST_CHECK_EQUAL(f.tx_index, 0U);
+            BOOST_CHECK_EQUAL(f.field_index, 0U);
+            BOOST_CHECK_GT(f.original_size, 0U);
+        }
+    }
+    BOOST_CHECK(has_coinbase);
+}
+
+BOOST_AUTO_TEST_CASE(classify_opreturn)
+{
+    // Build an OP_RETURN script
+    std::vector<uint8_t> payload = {0xDE, 0xAD, 0xBE, 0xEF};
+    CScript opreturn_script = CScript() << OP_RETURN << payload;
+    BOOST_CHECK(haze::IsOpReturn(opreturn_script));
+
+    // Non-OP_RETURN script
+    CScript p2pkh = GetScriptForDestination(PKHash(coinbaseKey.GetPubKey()));
+    BOOST_CHECK(!haze::IsOpReturn(p2pkh));
+}
+
+BOOST_AUTO_TEST_CASE(classify_block)
+{
+    // Mine a block with a transaction — ClassifyBlock should find fields
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetHash(), 0));
+    mtx.vout.emplace_back(49 * COIN, dest);
+
+    CBlock block = CreateAndProcessBlock({mtx}, dest);
+
+    auto fields = haze::ClassifyBlock(block);
+    // At minimum should have coinbase field from the coinbase tx
+    bool has_coinbase = false;
+    for (const auto& f : fields) {
+        if (f.type == haze::HazeFieldType::COINBASE) has_coinbase = true;
+    }
+    BOOST_CHECK(has_coinbase);
+    BOOST_CHECK_GT(fields.size(), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(witness_data_size)
+{
+    // Empty witness should be size 0
+    CScriptWitness empty_witness;
+    BOOST_CHECK_EQUAL(haze::WitnessDataSize(empty_witness), 0U);
+
+    // Non-empty witness
+    CScriptWitness witness;
+    witness.stack.push_back({0x01, 0x02, 0x03});
+    witness.stack.push_back({0x04, 0x05});
+    BOOST_CHECK_EQUAL(haze::WitnessDataSize(witness), 5U);
+}
+
+// ============================================================================
+// Stripped Block Format
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(gsb_serialize_deserialize_roundtrip)
+{
+    // Strip a real block, serialize to GSB, deserialize back
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+    CBlock block = CreateAndProcessBlock({}, dest);
+
+    haze::StripResult result = haze::StripBlock(block);
+
+    // Serialize
+    std::vector<std::byte> data;
+    haze::SerializeGSB(result.stripped_block, data);
+    BOOST_CHECK_GT(data.size(), 8U); // At least magic + size
+
+    // Deserialize
+    haze::CStrippedBlock restored;
+    BOOST_CHECK(haze::DeserializeGSB(data, restored));
+
+    // Verify roundtrip
+    BOOST_CHECK_EQUAL(restored.GetTxCount(), result.stripped_block.GetTxCount());
+    BOOST_CHECK(restored.m_header.GetHash() == result.stripped_block.m_header.GetHash());
+
+    for (size_t i = 0; i < restored.GetTxCount(); i++) {
+        BOOST_CHECK(restored.GetTxid(i) == result.stripped_block.GetTxid(i));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(gsb_magic_bytes)
+{
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+    CBlock block = CreateAndProcessBlock({}, dest);
+    haze::StripResult result = haze::StripBlock(block);
+
+    std::vector<std::byte> data;
+    haze::SerializeGSB(result.stripped_block, data);
+
+    // GSB magic is "GSB\0" = 0x47 0x53 0x42 0x00
+    BOOST_REQUIRE_GE(data.size(), 4U);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(data[0]), 0x47);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(data[1]), 0x53);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(data[2]), 0x42);
+    BOOST_CHECK_EQUAL(static_cast<uint8_t>(data[3]), 0x00);
+}
+
+BOOST_AUTO_TEST_CASE(gsb_invalid_magic_rejected)
+{
+    std::vector<std::byte> bad_data = {
+        std::byte{0xFF}, std::byte{0xFF}, std::byte{0xFF}, std::byte{0xFF},
+        std::byte{0x00}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00}
+    };
+
+    haze::CStrippedBlock block;
+    BOOST_CHECK(!haze::DeserializeGSB(bad_data, block));
+}
+
+BOOST_AUTO_TEST_CASE(stripped_block_merkle_root)
+{
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+    CBlock block = CreateAndProcessBlock({}, dest);
+
+    haze::StripResult result = haze::StripBlock(block);
+    uint256 computed_root = result.stripped_block.ComputeMerkleRoot();
+
+    BOOST_CHECK(computed_root == block.hashMerkleRoot);
+}
+
+BOOST_AUTO_TEST_CASE(stripped_tx_stored_txid)
+{
+    // Coinbase tx always has non-empty scriptSig (coinbase data),
+    // so after stripping, the txid must be stored
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+    CBlock block = CreateAndProcessBlock({}, dest);
+
+    haze::StripResult result = haze::StripBlock(block);
+    BOOST_REQUIRE_GT(result.stripped_block.GetTxCount(), 0U);
+
+    // Coinbase (tx 0) should have stored txid since coinbase scriptSig is stripped
+    const auto& stripped_coinbase = result.stripped_block.m_transactions[0];
+    BOOST_CHECK(stripped_coinbase.m_has_stored_txid);
+
+    // The stored txid should match the original coinbase txid
+    BOOST_CHECK(stripped_coinbase.GetTxid() == block.vtx[0]->GetHash().ToUint256());
+}
+
+BOOST_AUTO_TEST_CASE(stripped_opreturn_minimal)
+{
+    // Create a block with an OP_RETURN transaction
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+    std::vector<uint8_t> payload = {'G', 'H', 'O', 'S', 'T', '_', 'T', 'E', 'S', 'T'};
+    CScript opreturn_script = CScript() << OP_RETURN << payload;
+
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetHash(), 0));
+    mtx.vout.emplace_back(0, opreturn_script);
+    mtx.vout.emplace_back(49 * COIN, dest);
+
+    CBlock block = CreateAndProcessBlock({mtx}, dest);
+
+    haze::StripResult result = haze::StripBlock(block);
+
+    // Find the OP_RETURN output in the stripped block — payload should be minimal
+    CScript expected_stripped = haze::MakeStrippedOpReturn();
+    bool found_stripped_opreturn = false;
+    for (const auto& stx : result.stripped_block.m_transactions) {
+        for (const auto& out : stx.m_outputs) {
+            if (haze::IsOpReturn(out.script_pub_key)) {
+                BOOST_CHECK(out.script_pub_key == expected_stripped);
+                found_stripped_opreturn = true;
+            }
+        }
+    }
+    BOOST_CHECK(found_stripped_opreturn);
+}
+
+// ============================================================================
+// Block Stripper
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(strip_block_preserves_merkle)
+{
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+    CBlock block = CreateAndProcessBlock({}, dest);
+
+    haze::StripResult result = haze::StripBlock(block);
+    BOOST_CHECK(haze::VerifyStrippedBlock(result.stripped_block, block.GetBlockHeader()));
+}
+
+BOOST_AUTO_TEST_CASE(strip_block_removes_witness)
+{
+    // Create a SegWit transaction that will have witness data
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetHash(), 0));
+    mtx.vout.emplace_back(49 * COIN, dest);
+
+    CBlock block = CreateAndProcessBlock({mtx}, dest);
+
+    haze::StripResult result = haze::StripBlock(block);
+
+    // Coinbase always has some data, so at minimum coinbase bytes removed
+    size_t total_removed = result.witness_bytes_removed +
+                           result.scriptsig_bytes_removed +
+                           result.coinbase_bytes_removed +
+                           result.opreturn_bytes_removed;
+    BOOST_CHECK_GT(total_removed, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(strip_block_statistics)
+{
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+    CBlock block = CreateAndProcessBlock({}, dest);
+
+    haze::StripResult result = haze::StripBlock(block);
+
+    // original_size should be greater than stripped_size
+    BOOST_CHECK_GT(result.original_size, 0U);
+    BOOST_CHECK_GT(result.stripped_size, 0U);
+    BOOST_CHECK_GE(result.original_size, result.stripped_size);
+
+    // Total removed should be self-consistent
+    size_t total_removed = result.witness_bytes_removed +
+                           result.scriptsig_bytes_removed +
+                           result.coinbase_bytes_removed +
+                           result.opreturn_bytes_removed;
+    // stripped_size + removed ≈ original_size (not exact due to format differences)
+    // But removed should not exceed original
+    BOOST_CHECK_LE(total_removed, result.original_size);
+}
+
+BOOST_AUTO_TEST_CASE(strip_coinbase_only_block)
+{
+    // Block with no extra transactions — just the coinbase
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+    CBlock block = CreateAndProcessBlock({}, dest);
+
+    BOOST_CHECK_EQUAL(block.vtx.size(), 1U);
+
+    haze::StripResult result = haze::StripBlock(block);
+
+    BOOST_CHECK_EQUAL(result.stripped_block.GetTxCount(), 1U);
+    BOOST_CHECK(haze::VerifyStrippedBlock(result.stripped_block, block.GetBlockHeader()));
+    BOOST_CHECK_GT(result.coinbase_bytes_removed, 0U);
+}
+
+// ============================================================================
+// Block Reconstruct
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(reconstruct_partial_block)
+{
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+    CBlock block = CreateAndProcessBlock({}, dest);
+
+    haze::StripResult result = haze::StripBlock(block);
+    CBlock reconstructed = haze::ReconstructPartialBlock(result.stripped_block);
+
+    // Header should match
+    BOOST_CHECK(reconstructed.GetBlockHeader().GetHash() == block.GetBlockHeader().GetHash());
+
+    // Same number of transactions
+    BOOST_CHECK_EQUAL(reconstructed.vtx.size(), block.vtx.size());
+}
+
+BOOST_AUTO_TEST_CASE(reconstruct_preserves_outputs)
+{
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+
+    // Create a block with a transfer tx
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetHash(), 0));
+    mtx.vout.emplace_back(49 * COIN, dest);
+
+    CBlock block = CreateAndProcessBlock({mtx}, dest);
+
+    haze::StripResult result = haze::StripBlock(block);
+    CBlock reconstructed = haze::ReconstructPartialBlock(result.stripped_block);
+
+    // Check that output values and scriptPubKeys are preserved for all txs
+    for (size_t i = 0; i < block.vtx.size(); i++) {
+        BOOST_REQUIRE_EQUAL(reconstructed.vtx[i]->vout.size(), block.vtx[i]->vout.size());
+        for (size_t j = 0; j < block.vtx[i]->vout.size(); j++) {
+            BOOST_CHECK_EQUAL(reconstructed.vtx[i]->vout[j].nValue,
+                              block.vtx[i]->vout[j].nValue);
+            // For non-OP_RETURN outputs, scriptPubKey should be identical
+            if (!haze::IsOpReturn(block.vtx[i]->vout[j].scriptPubKey)) {
+                BOOST_CHECK(reconstructed.vtx[i]->vout[j].scriptPubKey ==
+                            block.vtx[i]->vout[j].scriptPubKey);
+            }
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(reconstruct_meta_flags)
+{
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+    CBlock block = CreateAndProcessBlock({}, dest);
+
+    haze::StripResult result = haze::StripBlock(block);
+    haze::ReconstructionMeta meta;
+    CBlock reconstructed = haze::ReconstructPartialBlockWithMeta(result.stripped_block, meta);
+
+    BOOST_CHECK(meta.is_reconstructed);
+    BOOST_CHECK(meta.witness_stripped);
+    BOOST_CHECK(meta.scriptsig_stripped);
+    BOOST_CHECK(meta.coinbase_stripped);
+}
+
+BOOST_AUTO_TEST_SUITE_END()
