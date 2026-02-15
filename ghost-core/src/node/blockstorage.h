@@ -9,6 +9,7 @@
 #include <chain.h>
 #include <dbwrapper.h>
 #include <flatfile.h>
+#include <haze/exorcism.h>
 #include <kernel/blockmanager_opts.h>
 #include <kernel/chainparams.h>
 #include <kernel/cs_main.h>
@@ -42,6 +43,9 @@ class ChainstateManager;
 namespace Consensus {
 struct Params;
 }
+namespace haze {
+class GhostExorcist;
+} // namespace haze
 namespace util {
 class SignalInterrupt;
 } // namespace util
@@ -139,6 +143,7 @@ class BlockManager
 {
     friend Chainstate;
     friend ChainstateManager;
+    friend class haze::GhostExorcist;
 
 private:
     const CChainParams& GetParams() const { return m_opts.chainparams; }
@@ -257,6 +262,7 @@ private:
 
     const FlatFileSeq m_block_file_seq;
     const FlatFileSeq m_undo_file_seq;
+    const FlatFileSeq m_gsb_file_seq;
 
 public:
     using Options = kernel::BlockManagerOpts;
@@ -337,6 +343,22 @@ public:
      */
     FlatFilePos WriteBlock(const CBlock& block, int nHeight);
 
+    /** Store a stripped block (GSB format) on disk.
+     *
+     * Used in Ghost Haze (Hazed) mode. The block has been validated in RAM
+     * with full data; only structural data is written to persistent storage.
+     *
+     * @param[in]  block   the fully validated block to strip and write
+     * @param[in]  nHeight the height of the block
+     *
+     * @returns in case of success, the position to which the GSB was written
+     *          in case of an error, an empty FlatFilePos
+     */
+    FlatFilePos WriteStrippedBlock(const CBlock& block, int nHeight);
+
+    /** Ghost Exorcism instance for stripping blocks in Hazed mode. */
+    haze::GhostExorcism m_ghost_exorcism;
+
     /** Update blockfile info while processing a block during reindex. The block must be available on disk.
      *
      * @param[in]  block        the block being processed
@@ -402,6 +424,9 @@ public:
     /** Open a block file (blk?????.dat) */
     AutoFile OpenBlockFile(const FlatFilePos& pos, bool fReadOnly) const;
 
+    /** Open a GSB file (gsb?????.dat) */
+    AutoFile OpenGSBFile(const FlatFilePos& pos, bool fReadOnly) const;
+
     /** Translation to a filesystem path */
     fs::path GetBlockPosFilename(const FlatFilePos& pos) const;
 
@@ -410,10 +435,26 @@ public:
      */
     void UnlinkPrunedFiles(const std::set<int>& setFilesToPrune) const;
 
+    /** Whether operating in Ghost Haze (Hazed) mode. */
+    bool IsHazeMode() const { return m_ghost_exorcism.IsActive(); }
+
     /** Functions for disk access for blocks */
     bool ReadBlock(CBlock& block, const FlatFilePos& pos, const std::optional<uint256>& expected_hash) const;
     bool ReadBlock(CBlock& block, const CBlockIndex& index) const;
     bool ReadRawBlock(std::vector<std::byte>& block, const FlatFilePos& pos) const;
+
+    /** Read a stripped block from a GSB file.
+     *
+     * Used in Hazed mode to read structural block data from gsb*.dat files.
+     * The returned CStrippedBlock contains only economic graph data — no
+     * witness, scriptSig, OP_RETURN payloads, or coinbase scriptSig.
+     *
+     * @param[out] block  The stripped block to populate.
+     * @param[in]  pos    File position (from block index).
+     * @return true on success, false on I/O or deserialization error.
+     */
+    bool ReadStrippedBlock(haze::CStrippedBlock& block, const FlatFilePos& pos) const;
+    bool ReadStrippedBlock(haze::CStrippedBlock& block, const CBlockIndex& index) const;
 
     bool ReadBlockUndo(CBlockUndo& blockundo, const CBlockIndex& index) const;
 

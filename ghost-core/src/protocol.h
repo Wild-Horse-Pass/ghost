@@ -264,6 +264,32 @@ inline constexpr const char* WTXIDRELAY{"wtxidrelay"};
  * txreconciliation, as described by BIP 330.
  */
 inline constexpr const char* SENDTXRCNCL{"sendtxrcncl"};
+/**
+ * Request a checkpoint manifest from a peer that advertises NODE_HAZE_CHECKPOINT.
+ */
+inline constexpr const char* GETCHECKPOINT{"getchkpt"};
+/**
+ * Response containing a serialized CheckpointManifest.
+ */
+inline constexpr const char* CHECKPOINT{"chkpt"};
+/**
+ * Request a UTXO chunk by index from a peer serving a checkpoint.
+ */
+inline constexpr const char* GETCHUNK{"getchunk"};
+/**
+ * Response containing UTXO chunk data (index + raw bytes).
+ */
+inline constexpr const char* CHUNK{"chunk"};
+/**
+ * Stripped block message: sent between Hazed nodes instead of full blocks.
+ * Contains a serialized CStrippedBlock (GSB format without file header).
+ */
+inline constexpr const char* GHOST_STRIPPED_BLOCK{"gstripblk"};
+/**
+ * Redirect message: sent by Hazed nodes to non-Hazed peers requesting full blocks.
+ * Contains the requested block hash and a list of known Full Archive peer addresses.
+ */
+inline constexpr const char* GHOST_REDIRECT{"gredirect"};
 }; // namespace NetMsgType
 
 /** All known message types (see above). Keep this in the same order as the list of messages above. */
@@ -303,6 +329,12 @@ inline const std::array ALL_NET_MESSAGE_TYPES{std::to_array<std::string>({
     NetMsgType::CFCHECKPT,
     NetMsgType::WTXIDRELAY,
     NetMsgType::SENDTXRCNCL,
+    NetMsgType::GETCHECKPOINT,
+    NetMsgType::CHECKPOINT,
+    NetMsgType::GETCHUNK,
+    NetMsgType::CHUNK,
+    NetMsgType::GHOST_STRIPPED_BLOCK,
+    NetMsgType::GHOST_REDIRECT,
 })};
 
 /** nServices flags */
@@ -333,6 +365,14 @@ enum ServiceFlags : uint64_t {
     // GSP allows light wallets to query balances, UTXOs, and Ghost Locks without
     // running a full node, while preserving privacy through BIP157/158 compact filters.
     NODE_GSP = (1 << 12),
+
+    // NODE_HAZE_CHECKPOINT means the node can serve Ghost Haze checkpoint data,
+    // including checkpoint manifests and UTXO chunks for accelerated IBD.
+    NODE_HAZE_CHECKPOINT = (1 << 13),
+
+    // NODE_GHOST_HAZE means the node operates in Hazed mode and can send/receive
+    // stripped blocks (GSB format) instead of full blocks.
+    NODE_GHOST_HAZE = (1 << 14),
 
     // Bits 24-31 are reserved for temporary experiments. Just pick a bit that
     // isn't getting used, or one not being used much, and notify the

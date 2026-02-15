@@ -2663,7 +2663,15 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
         if (i > 0) {
             blockundo.vtxundo.emplace_back();
         }
-        UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
+        // SwiftSync: use Bloom-filter-aware coin update during accelerated IBD
+        if (m_chainman.m_swiftsync && m_chainman.m_swiftsync->IsActive() &&
+            pindex->nHeight < m_chainman.m_swiftsync->CheckpointHeight()) {
+            haze::SwiftSyncUpdateCoins(tx, view, *m_chainman.m_swiftsync,
+                                       i == 0 ? undoDummy : blockundo.vtxundo.back(),
+                                       pindex->nHeight);
+        } else {
+            UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
+        }
     }
     const auto time_3{SteadyClock::now()};
     m_chainman.time_connect += time_3 - time_2;
@@ -2672,6 +2680,12 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
              nInputs <= 1 ? 0 : Ticks<MillisecondsDouble>(time_3 - time_2) / (nInputs - 1),
              Ticks<SecondsDouble>(m_chainman.time_connect),
              Ticks<MillisecondsDouble>(m_chainman.time_connect) / m_chainman.num_blocks_total);
+
+    // SwiftSync: deactivate when reaching checkpoint height
+    if (m_chainman.m_swiftsync && m_chainman.m_swiftsync->IsActive() &&
+        pindex->nHeight >= m_chainman.m_swiftsync->CheckpointHeight()) {
+        m_chainman.m_swiftsync->Deactivate();
+    }
 
     CAmount blockReward = nFees + GetBlockSubsidy(pindex->nHeight, params.GetConsensus());
     if (block.vtx[0]->GetValueOut() > blockReward && state.IsValid()) {
@@ -4468,7 +4482,15 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
         if (dbp) {
             blockPos = *dbp;
             m_blockman.UpdateBlockInfo(block, pindex->nHeight, blockPos);
+        } else if (m_blockman.m_ghost_exorcism.IsActive()) {
+            // Ghost Exorcism (Hazed): strip hazeable content, write structural data only
+            blockPos = m_blockman.WriteStrippedBlock(block, pindex->nHeight);
+            if (blockPos.IsNull()) {
+                state.Error(strprintf("%s: Failed to write stripped block to disk", __func__));
+                return false;
+            }
         } else {
+            // Standard path (Full Archive): write full block with all data
             blockPos = m_blockman.WriteBlock(block, pindex->nHeight);
             if (blockPos.IsNull()) {
                 state.Error(strprintf("%s: Failed to find position to write new block to disk", __func__));

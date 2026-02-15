@@ -7,6 +7,9 @@
 #include <arith_uint256.h>
 #include <chain.h>
 #include <consensus/params.h>
+#include <haze/block_stripper.h>
+#include <haze/exorcism.h>
+#include <haze/stripped_block.h>
 #include <consensus/validation.h>
 #include <dbwrapper.h>
 #include <flatfile.h>
@@ -789,6 +792,12 @@ AutoFile BlockManager::OpenUndoFile(const FlatFilePos& pos, bool fReadOnly) cons
     return AutoFile{m_undo_file_seq.Open(pos, fReadOnly), m_obfuscation};
 }
 
+/** Open a GSB file (gsb?????.dat) */
+AutoFile BlockManager::OpenGSBFile(const FlatFilePos& pos, bool fReadOnly) const
+{
+    return AutoFile{m_gsb_file_seq.Open(pos, fReadOnly), m_obfuscation};
+}
+
 fs::path BlockManager::GetBlockPosFilename(const FlatFilePos& pos) const
 {
     return m_block_file_seq.FileName(pos);
@@ -1087,6 +1096,56 @@ bool BlockManager::ReadRawBlock(std::vector<std::byte>& block, const FlatFilePos
     return true;
 }
 
+bool BlockManager::ReadStrippedBlock(haze::CStrippedBlock& block, const FlatFilePos& pos) const
+{
+    if (pos.nPos < STORAGE_HEADER_BYTES) {
+        LogError("Failed for %s while reading stripped block storage header", pos.ToString());
+        return false;
+    }
+    AutoFile filein{OpenGSBFile({pos.nFile, pos.nPos - STORAGE_HEADER_BYTES}, /*fReadOnly=*/true)};
+    if (filein.IsNull()) {
+        LogError("OpenGSBFile failed for %s while reading stripped block", pos.ToString());
+        return false;
+    }
+
+    try {
+        MessageStartChars gsb_start;
+        unsigned int gsb_size;
+
+        filein >> gsb_start >> gsb_size;
+
+        static constexpr MessageStartChars gsb_magic = {0x47, 0x53, 0x42, 0x00};
+        if (gsb_start != gsb_magic) {
+            LogError("GSB magic mismatch for %s: %s versus expected %s while reading stripped block",
+                pos.ToString(), HexStr(gsb_start), HexStr(gsb_magic));
+            return false;
+        }
+
+        if (gsb_size > MAX_SIZE) {
+            LogError("Stripped block data is larger than maximum deserialization size for %s: %u versus %u",
+                pos.ToString(), gsb_size, MAX_SIZE);
+            return false;
+        }
+
+        // Read and deserialize the stripped block
+        std::vector<std::byte> data(gsb_size);
+        filein.read(data);
+        SpanReader reader{data};
+        reader >> block;
+    } catch (const std::exception& e) {
+        LogError("Deserialize or I/O error - %s at %s while reading stripped block", e.what(), pos.ToString());
+        return false;
+    }
+
+    return true;
+}
+
+bool BlockManager::ReadStrippedBlock(haze::CStrippedBlock& block, const CBlockIndex& index) const
+{
+    const FlatFilePos block_pos{WITH_LOCK(cs_main, return index.GetBlockPos())};
+    return ReadStrippedBlock(block, block_pos);
+}
+
 FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
 {
     const unsigned int block_size{static_cast<unsigned int>(GetSerializeSize(TX_WITH_WITNESS(block)))};
@@ -1116,6 +1175,67 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
         m_opts.notifications.fatalError(_("Failed to close file when writing block."));
         return FlatFilePos();
     }
+
+    return pos;
+}
+
+FlatFilePos BlockManager::WriteStrippedBlock(const CBlock& block, int nHeight)
+{
+    // Strip the validated block — hazeable content is removed in memory
+    haze::StripResult strip_result = m_ghost_exorcism.StripValidatedBlock(block);
+
+    // Verify the stripped block's merkle root matches the original header.
+    // This is a critical safety check: if stripping corrupted the txid
+    // computation, the merkle root won't match and we abort.
+    if (!haze::VerifyStrippedBlock(strip_result.stripped_block, block.GetBlockHeader())) {
+        LogError("Ghost Exorcism: stripped block merkle root verification failed for height %d", nHeight);
+        return FlatFilePos();
+    }
+
+    // Compute the serialized size of the stripped block
+    const unsigned int block_size{static_cast<unsigned int>(GetSerializeSize(strip_result.stripped_block))};
+
+    // Find position in the file sequence (shared with blk files for numbering)
+    FlatFilePos pos{FindNextBlockPos(block_size + STORAGE_HEADER_BYTES, nHeight, block.GetBlockTime())};
+    if (pos.IsNull()) {
+        LogError("FindNextBlockPos failed for %s while writing stripped block", pos.ToString());
+        return FlatFilePos();
+    }
+
+    // Open the GSB file for writing
+    AutoFile file{OpenGSBFile(pos, /*fReadOnly=*/false)};
+    if (file.IsNull()) {
+        LogError("OpenGSBFile failed for %s while writing stripped block", pos.ToString());
+        m_opts.notifications.fatalError(_("Failed to write stripped block."));
+        return FlatFilePos();
+    }
+
+    {
+        BufferedWriter fileout{file};
+
+        // Write storage header: GSB magic + block data size
+        // Follows same pattern as blk files (network_magic + size) but uses
+        // GSB magic bytes to identify the file format.
+        static constexpr MessageStartChars gsb_magic = {0x47, 0x53, 0x42, 0x00}; // "GSB\0"
+        fileout << gsb_magic << block_size;
+        pos.nPos += STORAGE_HEADER_BYTES;
+
+        // Write the serialized stripped block
+        fileout << strip_result.stripped_block;
+    }
+
+    if (file.fclose() != 0) {
+        LogError("Failed to close GSB file %s: %s", pos.ToString(), SysErrorString(errno));
+        m_opts.notifications.fatalError(_("Failed to close file when writing stripped block."));
+        return FlatFilePos();
+    }
+
+    LogPrintLevel(BCLog::HAZE, BCLog::Level::Debug,
+        "Wrote stripped block height=%d to gsb%05u.dat pos=%u (%u bytes, %.1f%% of original)\n",
+        nHeight, pos.nFile, pos.nPos, block_size,
+        strip_result.original_size > 0
+            ? static_cast<double>(block_size) / strip_result.original_size * 100.0
+            : 0.0);
 
     return pos;
 }
@@ -1183,6 +1303,7 @@ BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
       m_opts{std::move(opts)},
       m_block_file_seq{FlatFileSeq{m_opts.blocks_dir, "blk", m_opts.fast_prune ? 0x4000 /* 16kB */ : BLOCKFILE_CHUNK_SIZE}},
       m_undo_file_seq{FlatFileSeq{m_opts.blocks_dir, "rev", UNDOFILE_CHUNK_SIZE}},
+      m_gsb_file_seq{FlatFileSeq{m_opts.blocks_dir, "gsb", m_opts.fast_prune ? 0x4000 /* 16kB */ : BLOCKFILE_CHUNK_SIZE}},
       m_interrupt{interrupt}
 {
     m_block_tree_db = std::make_unique<BlockTreeDB>(m_opts.block_tree_db_params);
