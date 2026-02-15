@@ -63,6 +63,7 @@ use ghost_common::config::{BitcoinNetwork, MiningMode};
 use ghost_common::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
 use ghost_common::types::{PayoutProposal, TreasuryAddress};
 use ghost_policy::PolicyProfile;
+use ghost_storage::Database;
 
 // M-28: Import CoinbaseVerifier for pre-submission verification
 use crate::coinbase_verifier::{CoinbaseCommitment, CoinbaseVerificationError, CoinbaseVerifier};
@@ -312,6 +313,8 @@ pub struct TemplateProcessor {
     payout_proposals: RwLock<HashMap<[u8; 32], PayoutProposal>>,
     /// M-28: Coinbase verifier for pre-submission verification
     coinbase_verifier: CoinbaseVerifier,
+    /// Database for persisting payout proposals across restarts
+    db: Option<Arc<Database>>,
 }
 
 impl TemplateProcessor {
@@ -332,6 +335,52 @@ impl TemplateProcessor {
             approved_payout: RwLock::new(None),
             payout_proposals: RwLock::new(HashMap::new()),
             coinbase_verifier: CoinbaseVerifier::new(),
+            db: None,
+        }
+    }
+
+    /// Set the database for persisting payout proposals across restarts
+    pub fn with_database(mut self, db: Arc<Database>) -> Self {
+        self.db = Some(db);
+        self
+    }
+
+    /// Restore approved payout proposal from database on startup
+    ///
+    /// Called after construction to reload any previously approved payout
+    /// so that the next block uses the correct coinbase outputs.
+    pub fn restore_from_db(&self) {
+        let Some(ref db) = self.db else { return };
+
+        match db.get_approved_payout_proposal() {
+            Ok(Some((hash, json))) => {
+                match serde_json::from_str::<PayoutProposal>(&json) {
+                    Ok(proposal) => {
+                        // Restore into in-memory cache
+                        let proposal_hash = proposal.proposal_hash;
+                        self.payout_proposals.write().insert(proposal_hash, proposal);
+
+                        if hash.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&hash);
+                            *self.approved_payout.write() = Some(arr);
+                            info!(
+                                hash = %hex::encode(&arr[..8]),
+                                "Restored approved payout from database"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Failed to deserialize approved payout proposal from database");
+                    }
+                }
+            }
+            Ok(None) => {
+                debug!("No approved payout proposal in database");
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to query approved payout proposal from database");
+            }
         }
     }
 
@@ -340,6 +389,34 @@ impl TemplateProcessor {
         let hash = proposal.proposal_hash;
         let miners = proposal.miner_payouts.len();
         let nodes = proposal.node_payouts.len();
+
+        // Persist to database if available
+        if let Some(ref db) = self.db {
+            match serde_json::to_string(&proposal) {
+                Ok(json) => {
+                    if let Err(e) = db.store_payout_proposal(
+                        &hash,
+                        proposal.round_id,
+                        proposal.block_height,
+                        &json,
+                    ) {
+                        warn!(
+                            hash = %hex::encode(&hash[..8]),
+                            error = %e,
+                            "Failed to persist payout proposal to database"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        hash = %hex::encode(&hash[..8]),
+                        error = %e,
+                        "Failed to serialize payout proposal for database persistence"
+                    );
+                }
+            }
+        }
+
         self.payout_proposals.write().insert(hash, proposal);
         info!(
             hash = %hex::encode(&hash[..8]),
@@ -386,6 +463,17 @@ impl TemplateProcessor {
         let commitment = CoinbaseCommitment::from_proposal(&proposal, &treasury_addr);
         self.coinbase_verifier.set_commitment(commitment);
 
+        // Persist approval to database
+        if let Some(ref db) = self.db {
+            if let Err(e) = db.mark_payout_approved(&proposal_hash) {
+                warn!(
+                    hash = %hex::encode(&proposal_hash[..8]),
+                    error = %e,
+                    "Failed to persist payout approval to database"
+                );
+            }
+        }
+
         *self.approved_payout.write() = Some(proposal_hash);
         info!(
             hash = %hex::encode(&proposal_hash[..8]),
@@ -395,6 +483,13 @@ impl TemplateProcessor {
 
     /// Clear the approved payout (after block is found)
     pub fn clear_approved_payout(&self) {
+        // Clear in database
+        if let Some(ref db) = self.db {
+            if let Err(e) = db.clear_approved_payout() {
+                warn!(error = %e, "Failed to clear approved payout in database");
+            }
+        }
+
         *self.approved_payout.write() = None;
         // M-28: Clear coinbase commitment when payout is cleared
         self.coinbase_verifier.clear_commitment();

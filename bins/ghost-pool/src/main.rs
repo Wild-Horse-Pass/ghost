@@ -53,7 +53,9 @@ use ghost_consensus::health_handler::HealthPingHandler;
 use ghost_consensus::mesh::{MeshConfig, MeshNetwork};
 use ghost_consensus::message::MessageType;
 use ghost_consensus::verification_handler::VerificationResultHandler;
-use ghost_consensus::vote_handler::{BroadcastFn, ExecuteFn, VoteHandler, VoteHandlerConfig};
+use ghost_consensus::vote_handler::{
+    BroadcastFn, ExecuteFn, ProposalStoreFn, VoteHandler, VoteHandlerConfig,
+};
 use ghost_consensus::voting::VotingManager;
 use ghost_policy::PolicyProfile;
 use ghost_storage::Database;
@@ -713,11 +715,12 @@ async fn main() -> Result<()> {
         solo_payout_address: config.network.solo_payout_address.clone(),
         ..Default::default()
     };
-    let template_processor = Arc::new(TemplateProcessor::new(
-        template_config,
-        Arc::clone(&rpc),
-        policy.clone(),
-    ));
+    let template_processor = Arc::new(
+        TemplateProcessor::new(template_config, Arc::clone(&rpc), policy.clone())
+            .with_database(Arc::clone(&db)),
+    );
+    // Restore any previously approved payout proposal from database
+    template_processor.restore_from_db();
 
     // Note: Native stratum server removed - using SRI (Stratum Reference Implementation) via TDP
     // SRI pool connects to ghost-pool's TDP server for templates
@@ -834,10 +837,18 @@ async fn main() -> Result<()> {
         min_voters_for_bft: if is_mainnet_round { 7 } else { 3 },
         ..VoteHandlerConfig::default()
     };
+    // Create proposal store callback so remote nodes store proposal data
+    // in the template processor when proposals arrive via P2P
+    let tp_for_proposal_store = Arc::clone(&template_processor);
+    let proposal_store_fn: ProposalStoreFn = Arc::new(move |proposal| {
+        tp_for_proposal_store.store_proposal(proposal);
+    });
+
     let vote_handler = Arc::new(
         VoteHandler::with_config(Arc::clone(&identity), Arc::clone(&voting_manager), vote_config)
             .with_broadcaster(broadcast_fn)
             .with_executor(execute_fn)
+            .with_proposal_store(proposal_store_fn)
             .with_ban_manager(Arc::clone(&ban_manager))
             .with_database(Arc::clone(&db))
             .with_rate_limiter_persistence(rate_limiter_path),
@@ -1845,14 +1856,27 @@ async fn main() -> Result<()> {
             valid: true, // Already validated by SRI Pool
         };
 
-        if let Err(e) = db_for_shares.insert_share(&share_record) {
-            // Log but don't fail - in-memory tracking is primary, DB is for auditing
-            tracing::warn!(
-                miner_id = %share.miner_id,
-                share_hash = %share.share_hash,
-                error = %e,
-                "Failed to persist share to database"
-            );
+        match db_for_shares.insert_share(&share_record) {
+            Ok(_) => {
+                // Share inserted successfully — update miner cumulative stats
+                if let Err(e) = db_for_shares.increment_miner_stats(&share.miner_id, 1, share.work) {
+                    tracing::warn!(
+                        miner_id = %share.miner_id,
+                        error = %e,
+                        "Failed to increment miner stats"
+                    );
+                }
+            }
+            Err(e) => {
+                // Log but don't fail - in-memory tracking is primary, DB is for auditing
+                // UNIQUE constraint failures are expected (dedup) and don't increment stats
+                tracing::warn!(
+                    miner_id = %share.miner_id,
+                    share_hash = %share.share_hash,
+                    error = %e,
+                    "Failed to persist share to database"
+                );
+            }
         }
 
         // Update miner's payout address in database if provided
@@ -2061,6 +2085,15 @@ async fn main() -> Result<()> {
                             hash = %hex::encode(&proposal_hash[..8]),
                             "Payout proposal submitted for consensus"
                         );
+
+                        // Increment blocks_won for the winning miner
+                        if let Err(e) = db_for_block.increment_miner_blocks_won(&notification.miner_id) {
+                            warn!(
+                                miner_id = %notification.miner_id,
+                                error = %e,
+                                "Failed to increment miner blocks_won"
+                            );
+                        }
                     }
                 }
                 Err(e) => {

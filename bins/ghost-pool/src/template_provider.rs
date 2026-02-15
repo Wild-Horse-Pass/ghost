@@ -527,7 +527,7 @@ async fn handle_tdp_client(
                 };
 
                 let msg_type = protocol_message_type(header.ext_type(), header.msg_type());
-                debug!("Received {:?} from {}", msg_type, peer_addr);
+                info!("Received {:?} from {}", msg_type, peer_addr);
 
                 match msg_type {
                     MessageType::TemplateDistribution => {
@@ -535,13 +535,17 @@ async fn handle_tdp_client(
                         if let Ok(td_msg) =
                             TemplateDistribution::try_from((header.msg_type(), sv2_frame.payload()))
                         {
-                            handle_template_distribution_message(
+                            if let Err(e) = handle_template_distribution_message(
                                 td_msg,
                                 client_id,
                                 &clients,
                                 &template_processor,
                             )
-                            .await?;
+                            .await
+                            {
+                                warn!("Error handling TDP message from {}: {}", peer_addr, e);
+                                // Continue processing — don't kill the connection
+                            }
                         } else {
                             warn!(
                                 "Failed to parse TemplateDistribution message from {}",
@@ -561,7 +565,7 @@ async fn handle_tdp_client(
                 }
             }
             Err(e) => {
-                debug!("TDP read error from {}: {:?}", peer_addr, e);
+                error!("TDP read error from {} (connection lost): {:?}", peer_addr, e);
                 break;
             }
         }

@@ -506,6 +506,10 @@ pub type BroadcastFn = Arc<dyn Fn(MessageType, Vec<u8>) -> GhostResult<()> + Sen
 /// Callback for executing approved proposals
 pub type ExecuteFn = Arc<dyn Fn(ConsensusResult) -> GhostResult<()> + Send + Sync>;
 
+/// Callback for storing proposals in the template processor
+/// Called when proposals arrive via P2P so all nodes have proposal data
+pub type ProposalStoreFn = Arc<dyn Fn(PayoutProposal) + Send + Sync>;
+
 /// Rate limit configuration for P2P messages
 ///
 /// Default: 100 messages burst, 20/second sustained per node
@@ -593,6 +597,9 @@ pub struct VoteHandler {
     rate_limiter_persist_key: Option<[u8; 32]>,
     /// 4.4 SECURITY: Current known best block height for dynamic validation
     known_best_height: RwLock<Option<u64>>,
+    /// Callback to store proposals in the template processor
+    /// Ensures all nodes (not just proposer) have proposal data for coinbase construction
+    proposal_store_fn: Option<ProposalStoreFn>,
 }
 
 impl VoteHandler {
@@ -626,6 +633,7 @@ impl VoteHandler {
             rate_limiter_persist_path: None,
             rate_limiter_persist_key: None,
             known_best_height: RwLock::new(None),
+            proposal_store_fn: None,
         }
     }
 
@@ -879,6 +887,16 @@ impl VoteHandler {
         self
     }
 
+    /// Set proposal store callback
+    ///
+    /// Called when proposals arrive via P2P so all nodes (not just the proposer)
+    /// store proposal data in the template processor. This is required for
+    /// coinbase construction after approval.
+    pub fn with_proposal_store(mut self, f: ProposalStoreFn) -> Self {
+        self.proposal_store_fn = Some(f);
+        self
+    }
+
     /// Set elder nodes
     pub fn set_elders(&self, elders: HashSet<NodeId>) {
         *self.elders.write() = elders;
@@ -904,9 +922,15 @@ impl VoteHandler {
         // Compute proposal hash
         let proposal_hash = compute_proposal_hash(&proposal);
 
-        // Check if we have too many pending proposals (OOM protection)
+        // Dedup + OOM check under a single read lock
         {
             let proposals = self.pending_proposals.read();
+
+            // Already processed this proposal — skip store, rebroadcast, and vote
+            if proposals.contains_key(&proposal_hash) {
+                return Ok(proposal_hash);
+            }
+
             if proposals.len() >= self.config.max_pending_proposals {
                 warn!(
                     count = proposals.len(),
@@ -927,6 +951,11 @@ impl VoteHandler {
         self.pending_proposals
             .write()
             .insert(proposal_hash, pending);
+
+        // Store proposal in template processor so all nodes have data for coinbase
+        if let Some(ref store_fn) = self.proposal_store_fn {
+            store_fn(proposal.clone());
+        }
 
         // Create voting session using MPC elders from DB as eligible voters
         let session = {

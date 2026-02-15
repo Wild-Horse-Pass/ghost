@@ -1613,6 +1613,18 @@ impl Database {
         })
     }
 
+    /// Increment miner's blocks_won counter
+    pub fn increment_miner_blocks_won(&self, miner_id: &str) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE miners SET blocks_won = blocks_won + 1, last_seen = ?1 WHERE miner_id = ?2",
+                params![chrono::Utc::now().timestamp(), miner_id],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
     /// Get node's payout address by ID
     pub fn get_node_payout_address(&self, node_id: &str) -> GhostResult<Option<String>> {
         self.with_connection(|conn| {
@@ -5282,6 +5294,117 @@ impl Database {
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(GhostError::Database(e.to_string())),
             }
+        })
+    }
+
+
+    // =========================================================================
+    // PAYOUT PROPOSAL PERSISTENCE
+    // =========================================================================
+
+    /// Store a payout proposal in the database
+    ///
+    /// Uses INSERT OR REPLACE so re-storing the same proposal (e.g., from P2P)
+    /// is idempotent and won't fail.
+    pub fn store_payout_proposal(
+        &self,
+        hash: &[u8],
+        round_id: u64,
+        height: u64,
+        json: &str,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO payout_proposals (proposal_hash, round_id, block_height, proposal_json)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![hash, round_id as i64, height as i64, json],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Mark a proposal as approved and clear any other approvals
+    ///
+    /// Only one proposal can be approved at a time. This atomically
+    /// clears all other approvals and sets the specified one.
+    pub fn mark_payout_approved(&self, hash: &[u8]) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            // Clear all existing approvals first
+            conn.execute(
+                "UPDATE payout_proposals SET is_approved = 0 WHERE is_approved = 1",
+                [],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            // Mark the target as approved
+            let updated = conn
+                .execute(
+                    "UPDATE payout_proposals SET is_approved = 1 WHERE proposal_hash = ?1",
+                    params![hash],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            if updated == 0 {
+                warn!(
+                    hash = %hex::encode(&hash[..hash.len().min(8)]),
+                    "mark_payout_approved: proposal not found in database"
+                );
+            }
+
+            Ok(())
+        })
+    }
+
+    /// Clear the approved payout (e.g., after a block is found)
+    pub fn clear_approved_payout(&self) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE payout_proposals SET is_approved = 0 WHERE is_approved = 1",
+                [],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get the currently approved payout proposal
+    ///
+    /// Returns the proposal hash and JSON if an approved proposal exists.
+    pub fn get_approved_payout_proposal(&self) -> GhostResult<Option<(Vec<u8>, String)>> {
+        self.with_connection(|conn| {
+            let result = conn
+                .query_row(
+                    "SELECT proposal_hash, proposal_json FROM payout_proposals WHERE is_approved = 1",
+                    [],
+                    |row| {
+                        let hash: Vec<u8> = row.get(0)?;
+                        let json: String = row.get(1)?;
+                        Ok((hash, json))
+                    },
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(result)
+        })
+    }
+
+    /// Clean up old unapproved proposals, keeping at most `keep_count`
+    ///
+    /// Prevents unbounded growth of the payout_proposals table.
+    /// Approved proposals are never deleted by this method.
+    pub fn cleanup_old_proposals(&self, keep_count: u32) -> GhostResult<usize> {
+        self.with_connection(|conn| {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM payout_proposals WHERE is_approved = 0 AND rowid NOT IN (
+                        SELECT rowid FROM payout_proposals WHERE is_approved = 0
+                        ORDER BY created_at DESC LIMIT ?1
+                    )",
+                    params![keep_count],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(deleted)
         })
     }
 }

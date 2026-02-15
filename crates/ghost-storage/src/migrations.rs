@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 18;
+const SCHEMA_VERSION: u32 = 19;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -137,6 +137,11 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
     if current_version < 18 {
         migrate_v18(conn)?;
         set_schema_version(conn, 18)?;
+    }
+
+    if current_version < 19 {
+        migrate_v19(conn)?;
+        set_schema_version(conn, 19)?;
     }
 
     info!("Database migrations complete");
@@ -1337,6 +1342,34 @@ fn migrate_v18(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Removed FK constraint from mpc_verification_votes table");
+    Ok(())
+}
+
+/// Migration v19: Add payout_proposals table for persistence across restarts
+///
+/// Stores BFT-approved payout proposals in SQLite so they survive node restarts.
+/// Without this, approved payouts are lost on restart and the next block uses
+/// fallback coinbase outputs instead of the BFT-approved payout distribution.
+fn migrate_v19(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v19: Adding payout_proposals table");
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS payout_proposals (
+            proposal_hash BLOB PRIMARY KEY NOT NULL,
+            round_id INTEGER NOT NULL,
+            block_height INTEGER NOT NULL,
+            is_approved INTEGER NOT NULL DEFAULT 0,
+            proposal_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_payout_proposals_approved ON payout_proposals(is_approved);
+        CREATE INDEX IF NOT EXISTS idx_payout_proposals_round ON payout_proposals(round_id);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added payout_proposals table for restart persistence");
     Ok(())
 }
 

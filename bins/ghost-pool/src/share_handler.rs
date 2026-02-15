@@ -125,14 +125,26 @@ impl ShareProofHandler {
                     valid: true,
                 };
 
-                if let Err(e) = self.db.insert_share(&share_record) {
-                    // UNIQUE constraint handles dedup — log other errors
-                    if !e.to_string().contains("UNIQUE") {
-                        warn!(
-                            miner = %miner_hex,
-                            error = %e,
-                            "Failed to persist remote share to database"
-                        );
+                match self.db.insert_share(&share_record) {
+                    Ok(_) => {
+                        // Share inserted — update miner cumulative stats
+                        if let Err(e) = self.db.increment_miner_stats(&miner_hex, 1, work) {
+                            warn!(
+                                miner = %miner_hex,
+                                error = %e,
+                                "Failed to increment remote miner stats"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        // UNIQUE constraint handles dedup — log other errors
+                        if !e.to_string().contains("UNIQUE") {
+                            warn!(
+                                miner = %miner_hex,
+                                error = %e,
+                                "Failed to persist remote share to database"
+                            );
+                        }
                     }
                 }
 
