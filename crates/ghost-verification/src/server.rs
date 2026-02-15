@@ -580,17 +580,6 @@ async fn security_headers_middleware(request: axum::extract::Request, next: Next
     response
 }
 
-/// Parse a share hash hex string to [u8; 32]
-/// Returns zeros if the string is invalid or too short
-fn parse_share_hash(hash_str: &str) -> [u8; 32] {
-    let mut result = [0u8; 32];
-    if let Ok(bytes) = hex::decode(hash_str) {
-        let len = bytes.len().min(32);
-        result[..len].copy_from_slice(&bytes[..len]);
-    }
-    result
-}
-
 /// Callback for triggering test consensus proposal
 pub type TestProposalFn = Arc<dyn Fn() -> GhostResult<[u8; 32]> + Send + Sync>;
 
@@ -647,21 +636,6 @@ pub struct ShareBatch {
 /// Callback for recording shares (from SRI Pool notifications)
 pub type RecordShareFn = Arc<dyn Fn(ShareNotification) -> GhostResult<()> + Send + Sync>;
 
-/// Block found notification from SRI Pool (when is_block == true)
-#[derive(Debug, Clone)]
-pub struct BlockFoundNotification {
-    /// Block hash (parsed from share_hash)
-    pub block_hash: [u8; 32],
-    /// Miner ID that found the block
-    pub miner_id: String,
-    /// Share work value
-    pub share_work: f64,
-    /// Timestamp (seconds since epoch)
-    pub timestamp: u64,
-    /// Payout address extracted from user_identity (format: <address>.<worker>)
-    pub payout_address: Option<String>,
-}
-
 /// Parse user_identity string to extract payout address and worker name.
 /// Format: <payout_address>.<worker_name>
 /// Returns (payout_address, worker_name) or (user_identity, "default") if no dot found.
@@ -675,9 +649,6 @@ fn parse_user_identity(user_identity: &str) -> (String, String) {
         (user_identity.to_string(), "default".to_string())
     }
 }
-
-/// Callback for block found events (triggers payout proposal creation)
-pub type BlockFoundFn = Arc<dyn Fn(BlockFoundNotification) -> GhostResult<()> + Send + Sync>;
 
 /// Dashboard configuration state (mutable settings)
 #[derive(Debug, Clone)]
@@ -799,8 +770,6 @@ pub struct VerificationState {
     test_proposal_fn: Option<TestProposalFn>,
     /// Share recording callback (from SRI Pool notifications)
     record_share_fn: Option<RecordShareFn>,
-    /// Block found callback (triggers payout proposal when is_block == true)
-    block_found_fn: Option<BlockFoundFn>,
     /// Internal API authentication (H10/H11 security fix)
     /// When Some, internal endpoints require HMAC-SHA256 authentication
     pub internal_auth: Option<Arc<crate::auth::InternalAuth>>,
@@ -933,7 +902,6 @@ impl VerificationState {
             ws_state: Arc::new(WsState::new()),
             test_proposal_fn: None,
             record_share_fn: None,
-            block_found_fn: None,
             internal_auth: None,
             // VF-C2: Default to requiring internal auth for security
             require_internal_auth: true,
@@ -1027,15 +995,6 @@ impl VerificationState {
         self
     }
 
-    /// Set block found callback (triggers payout proposal when is_block == true)
-    pub fn with_block_found_handler<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(BlockFoundNotification) -> GhostResult<()> + Send + Sync + 'static,
-    {
-        self.block_found_fn = Some(Arc::new(handler));
-        self
-    }
-
     /// Record a share (called from HTTP endpoint)
     pub fn record_share(&self, share: ShareNotification) -> GhostResult<()> {
         if let Some(ref recorder) = self.record_share_fn {
@@ -1112,28 +1071,8 @@ impl VerificationState {
                     "Block found via SRI webhook - triggering payout proposal"
                 );
 
-                if let Some(ref block_found_fn) = self.block_found_fn {
-                    // Parse share hash from hex string to bytes
-                    let block_hash = parse_share_hash(&share.share_hash);
-
-                    let block_notification = BlockFoundNotification {
-                        block_hash,
-                        miner_id,
-                        share_work: share.share_work,
-                        timestamp: share.timestamp_ms / 1000,
-                        payout_address: if !payout_address.is_empty() {
-                            Some(payout_address)
-                        } else {
-                            None
-                        },
-                    };
-
-                    if let Err(e) = block_found_fn(block_notification) {
-                        tracing::error!(error = %e, "Failed to handle block found event");
-                    }
-                } else {
-                    tracing::warn!("Block found but no block_found_handler configured");
-                }
+                // Block found handling is done via TemplateProcessor.block_submitted_rx channel
+                // in main.rs, not via this webhook path.
             }
         }
 
@@ -1146,12 +1085,6 @@ impl VerificationState {
         }
 
         Ok(recorded)
-    }
-
-    /// Parse a share hash hex string to [u8; 32]
-    #[allow(dead_code)]
-    fn parse_share_hash_internal(hash_str: &str) -> [u8; 32] {
-        parse_share_hash(hash_str)
     }
 
     /// Set the node config path and load config from disk
