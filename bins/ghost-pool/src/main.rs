@@ -1017,13 +1017,65 @@ async fn main() -> Result<()> {
         }
 
         // Create broadcast callbacks for ZK handlers
-        let mesh_for_zk_block = Arc::clone(&mesh);
+        // Uses async Noise relay: sync closure queues messages, background task
+        // routes them through mesh.broadcast() which uses Noise encryption
+        let (zk_block_tx, mut zk_block_rx) = tokio::sync::mpsc::channel::<(
+            ghost_consensus::message::MessageType,
+            Vec<u8>,
+        )>(64);
+        let mesh_for_zk_block_relay = Arc::clone(&mesh);
+        tokio::spawn(async move {
+            while let Some((msg_type, payload)) = zk_block_rx.recv().await {
+                match mesh_for_zk_block_relay.create_envelope_raw(msg_type, payload) {
+                    Ok(envelope) => {
+                        if let Err(e) = mesh_for_zk_block_relay.broadcast(envelope).await {
+                            tracing::warn!(error = %e, "ZK block Noise broadcast failed");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ZK block envelope creation failed");
+                    }
+                }
+            }
+        });
         let zk_block_broadcast: ghost_consensus::zk_vote_handler::ZkBroadcastFn =
-            Arc::new(move |msg_type, payload| mesh_for_zk_block.broadcast_sync(msg_type, payload));
+            Arc::new(move |msg_type, payload| {
+                zk_block_tx.try_send((msg_type, payload)).map_err(|e| {
+                    ghost_common::error::GhostError::Internal(format!(
+                        "ZK block broadcast channel error: {}",
+                        e
+                    ))
+                })
+            });
 
-        let mesh_for_zk_payout = Arc::clone(&mesh);
+        let (zk_payout_tx, mut zk_payout_rx) = tokio::sync::mpsc::channel::<(
+            ghost_consensus::message::MessageType,
+            Vec<u8>,
+        )>(64);
+        let mesh_for_zk_payout_relay = Arc::clone(&mesh);
+        tokio::spawn(async move {
+            while let Some((msg_type, payload)) = zk_payout_rx.recv().await {
+                match mesh_for_zk_payout_relay.create_envelope_raw(msg_type, payload) {
+                    Ok(envelope) => {
+                        if let Err(e) = mesh_for_zk_payout_relay.broadcast(envelope).await {
+                            tracing::warn!(error = %e, "ZK payout Noise broadcast failed");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ZK payout envelope creation failed");
+                    }
+                }
+            }
+        });
         let zk_payout_broadcast: ghost_consensus::zk_payout_handler::ZkPayoutBroadcastFn =
-            Arc::new(move |msg_type, payload| mesh_for_zk_payout.broadcast_sync(msg_type, payload));
+            Arc::new(move |msg_type, payload| {
+                zk_payout_tx.try_send((msg_type, payload)).map_err(|e| {
+                    ghost_common::error::GhostError::Internal(format!(
+                        "ZK payout broadcast channel error: {}",
+                        e
+                    ))
+                })
+            });
 
         // Create ZK handlers WITHOUT verifiers initially - they'll be set when params are ready
         let zk_vote_handler = Arc::new(
