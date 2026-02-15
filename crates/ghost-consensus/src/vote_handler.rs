@@ -732,7 +732,9 @@ impl VoteHandler {
     ///
     /// Call this after constructing the VoteHandler if persistence is enabled.
     /// The task will persist rate limiter state every 60 seconds with HMAC authentication.
-    pub fn start_persistence_task(&self) {
+    pub fn start_persistence_task(self: &Arc<Self>) {
+        let handler = Arc::clone(self);
+
         if let (Some(ref persist_path), Some(ref persist_key)) = (
             &self.rate_limiter_persist_path,
             &self.rate_limiter_persist_key,
@@ -759,13 +761,28 @@ impl VoteHandler {
                             "M-2: Persisted authenticated rate limiter state"
                         );
                     }
+                    // Evict stale proposals so the dedup map doesn't grow unbounded.
+                    // Proposals are kept after consensus for dedup (not removed in
+                    // handle_decision), so periodic cleanup is required.
+                    handler.cleanup_stale_proposals();
                 }
             });
 
             info!(
                 path = %persist_path.display(),
-                "M-2: Started authenticated rate limiter persistence task (60 second interval)"
+                "M-2: Started persistence + stale proposal cleanup task (60 second interval)"
             );
+        } else {
+            // No rate limiter persistence configured, but still need proposal cleanup
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    handler.cleanup_stale_proposals();
+                }
+            });
+
+            info!("Started stale proposal cleanup task (60 second interval)");
         }
     }
 
@@ -1390,8 +1407,9 @@ impl VoteHandler {
                 execute(result.clone())?;
             }
 
-            // Remove from pending
-            self.pending_proposals.write().remove(&proposal_hash);
+            // Keep in pending_proposals for dedup — cleanup_stale_proposals() handles expiry.
+            // Removing here caused re-received gossip copies to pass the dedup check,
+            // spawn duplicate voting sessions, and trigger false equivocation bans.
         }
 
         Ok(())
