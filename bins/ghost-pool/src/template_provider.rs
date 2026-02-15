@@ -873,8 +873,17 @@ async fn handle_submit_solution(
     // Pass the ORIGINAL witness coinbase from SRI for block data,
     // and the non-witness version for weight calculation
     template_processor
-        .submit_block_with_coinbase(coinbase_tx, &coinbase_non_witness, &header)
+        .submit_block_with_coinbase(coinbase_tx, &coinbase_non_witness, &header, &work_state)
         .await?;
+
+    // Notify the payout task that this block has been submitted to Bitcoin Core.
+    // block_hash from double_sha256 is in internal byte order; reverse to display order.
+    let mut block_hash_display = block_hash;
+    block_hash_display.reverse();
+    template_processor.notify_block_submitted(crate::template::BlockSubmittedInfo {
+        block_hash: block_hash_display,
+        height: work_state.height,
+    });
 
     info!(
         "Block at height {} submitted successfully!",

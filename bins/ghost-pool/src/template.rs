@@ -53,7 +53,7 @@ use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
 use bitcoin::consensus::deserialize;
@@ -66,7 +66,7 @@ use ghost_policy::PolicyProfile;
 use ghost_storage::Database;
 
 // M-28: Import CoinbaseVerifier for pre-submission verification
-use crate::coinbase_verifier::{CoinbaseCommitment, CoinbaseVerificationError, CoinbaseVerifier};
+use crate::coinbase_verifier::{CoinbaseCommitment, CoinbaseOutput, CoinbaseVerifier};
 
 /// Errors that can occur during template processing
 #[derive(Debug, Error)]
@@ -90,6 +90,16 @@ pub enum TemplateError {
     /// Block assembly error
     #[error("Block assembly error: {0}")]
     BlockAssemblyError(String),
+}
+
+/// Information about a block successfully submitted to Bitcoin Core.
+/// Sent via channel from `handle_submit_solution()` to the payout task in main.rs.
+#[derive(Debug, Clone)]
+pub struct BlockSubmittedInfo {
+    /// Block hash in display byte order
+    pub block_hash: [u8; 32],
+    /// Block height
+    pub height: u64,
 }
 
 /// Type alias for coinbase build result:
@@ -260,6 +270,10 @@ pub struct WorkState {
     /// This prevents TOCTOU race conditions where the approved payout could change
     /// between template creation and coinbase building.
     pub payout_snapshot: Option<[u8; 32]>,
+    /// M-28: Coinbase commitment snapshot at template creation time.
+    /// Used for per-template verification instead of the global CoinbaseVerifier,
+    /// which can be overwritten by newer payout proposals before the block is found.
+    pub commitment_snapshot: Option<CoinbaseCommitment>,
 }
 
 /// Witness data for SegWit coinbase transaction
@@ -315,12 +329,18 @@ pub struct TemplateProcessor {
     coinbase_verifier: CoinbaseVerifier,
     /// Database for persisting payout proposals across restarts
     db: Option<Arc<Database>>,
+    /// Channel sender: fires when a block is successfully submitted to Bitcoin Core.
+    /// Used by template_provider.rs to notify the payout task in main.rs.
+    block_submitted_tx: mpsc::UnboundedSender<BlockSubmittedInfo>,
+    /// Channel receiver: taken once by main.rs at startup to spawn the payout task.
+    block_submitted_rx: parking_lot::Mutex<Option<mpsc::UnboundedReceiver<BlockSubmittedInfo>>>,
 }
 
 impl TemplateProcessor {
     /// Create a new template processor
     pub fn new(config: TemplateConfig, rpc: Arc<BitcoinRpc>, policy: PolicyProfile) -> Self {
         let (event_tx, _) = broadcast::channel(100);
+        let (block_submitted_tx, block_submitted_rx) = mpsc::unbounded_channel();
 
         Self {
             config,
@@ -336,6 +356,8 @@ impl TemplateProcessor {
             payout_proposals: RwLock::new(HashMap::new()),
             coinbase_verifier: CoinbaseVerifier::new(),
             db: None,
+            block_submitted_tx,
+            block_submitted_rx: parking_lot::Mutex::new(Some(block_submitted_rx)),
         }
     }
 
@@ -358,6 +380,17 @@ impl TemplateProcessor {
                     Ok(proposal) => {
                         // Restore into in-memory cache
                         let proposal_hash = proposal.proposal_hash;
+
+                        // M-28: Reconstruct coinbase commitment so templates created
+                        // after restart carry a valid commitment_snapshot for verification
+                        let treasury_addr = if !proposal.treasury_address.is_empty() {
+                            proposal.treasury_address.clone()
+                        } else {
+                            self.config.treasury_address.address().as_bytes().to_vec()
+                        };
+                        let commitment = CoinbaseCommitment::from_proposal(&proposal, &treasury_addr);
+                        self.coinbase_verifier.set_commitment(commitment);
+
                         self.payout_proposals.write().insert(proposal_hash, proposal);
 
                         if hash.len() == 32 {
@@ -382,6 +415,23 @@ impl TemplateProcessor {
                 warn!(error = %e, "Failed to query approved payout proposal from database");
             }
         }
+    }
+
+    /// Notify that a block has been successfully submitted to Bitcoin Core.
+    /// Sends the block info to the payout task via the mpsc channel.
+    pub fn notify_block_submitted(&self, info: BlockSubmittedInfo) {
+        if let Err(e) = self.block_submitted_tx.send(info) {
+            warn!(error = %e, "Block submitted channel closed, payout task may have stopped");
+        }
+    }
+
+    /// Take the block submission receiver (can only be called once).
+    /// Called by main.rs at startup to spawn the payout task.
+    pub fn take_block_submitted_rx(&self) -> mpsc::UnboundedReceiver<BlockSubmittedInfo> {
+        self.block_submitted_rx
+            .lock()
+            .take()
+            .expect("block_submitted_rx already taken")
     }
 
     /// Store a payout proposal (called when proposal is received)
@@ -1415,6 +1465,7 @@ impl TemplateProcessor {
             coinbase_outputs_serialized,
             coinbase_outputs_count,
             payout_snapshot, // H-MINE-2: Store snapshot for consistent coinbase reconstruction
+            commitment_snapshot: self.coinbase_verifier.get_commitment(), // M-28: Snapshot for per-template verification
         };
 
         *self.current_work.write() = Some(work);
@@ -2317,13 +2368,8 @@ impl TemplateProcessor {
         coinbase_witness: &[u8],
         coinbase_non_witness: &[u8],
         header: &[u8],
+        work: &WorkState,
     ) -> anyhow::Result<()> {
-        // Get current work state for transaction data
-        let work = self
-            .current_work
-            .read()
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("No active work state"))?;
 
         // === BLOCK VALIDATION BEFORE SUBMISSION ===
 
@@ -2371,23 +2417,23 @@ impl TemplateProcessor {
             return Err(anyhow::anyhow!("Invalid block version: {}", version));
         }
 
-        // M-28: Verify coinbase matches approved payout before submission
-        // This prevents address substitution attacks by modified nodes
-        if let Err(e) = self.coinbase_verifier.verify_coinbase(coinbase_witness) {
-            match e {
-                CoinbaseVerificationError::NoCommitment => {
-                    // No payout commitment stored yet — this happens when a block is found
-                    // before the first payout proposal completes. Ghost-pool controls the
-                    // template outputs, so there is nothing to verify against. Proceed.
-                    warn!("M-28: No payout commitment stored — skipping coinbase verification");
-                }
-                _ => {
+        // M-28: Verify coinbase matches the payout commitment that was active when
+        // this template was created. Uses the per-template snapshot instead of the
+        // global CoinbaseVerifier, which may have been overwritten by a newer payout.
+        match &work.commitment_snapshot {
+            Some(commitment) => {
+                let outputs = CoinbaseOutput::parse_from_coinbase(coinbase_witness)
+                    .map_err(|e| anyhow::anyhow!("M-28: Failed to parse coinbase outputs: {e}"))?;
+                if let Err(e) = commitment.verify(&outputs) {
                     error!(error = %e, "COINBASE VERIFICATION FAILED - block submission blocked");
                     return Err(anyhow::anyhow!(
                         "M-28: Coinbase verification failed - block submission blocked. \
                          Coinbase outputs do not match the BFT-approved payout proposal: {e}"
                     ));
                 }
+            }
+            None => {
+                warn!("M-28: No commitment snapshot for this template — skipping coinbase verification");
             }
         }
 

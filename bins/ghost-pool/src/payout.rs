@@ -295,42 +295,29 @@ impl PayoutProposalCreator {
         // Convert block hash to hex string for RPC call
         let block_hash_hex = hex::encode(block_hash);
 
-        // Query Bitcoin Core for the block header
-        // This will fail if the block doesn't exist
-        //
-        // The SRI webhook can fire BEFORE SubmitSolution submits the block to
-        // Bitcoin Core. Exponential backoff bridges this race: 5 retries with
-        // delays of 1s, 2s, 4s, 8s, 16s = 31s max total wait. Valid blocks
-        // typically appear within 1-2s; invalid blocks correctly fail all retries.
+        // Query Bitcoin Core for the block header.
+        // The payout task is triggered from SubmitSolution after the block is already
+        // submitted to Bitcoin Core, so the first RPC call should succeed immediately.
+        // Defense-in-depth: retry 3 times with 100ms delay for Bitcoin Core indexing lag.
         let header = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
-                match rpc.get_block_header(&block_hash_hex).await {
-                    Ok(h) => Ok(h),
-                    Err(first_err) => {
-                        let max_retries = 5u32;
-                        let mut delay_secs = 1u64;
-                        let mut last_err = first_err;
-                        for attempt in 1..=max_retries {
-                            warn!(
-                                block_hash = %block_hash_hex,
-                                error = %last_err,
-                                attempt,
-                                max_retries,
-                                delay_secs,
-                                "getblockheader failed, retrying (block may still be propagating)"
-                            );
-                            tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
-                            match rpc.get_block_header(&block_hash_hex).await {
-                                Ok(h) => return Ok(h),
-                                Err(e) => {
-                                    last_err = e;
-                                    delay_secs = (delay_secs * 2).min(16);
-                                }
-                            }
-                        }
-                        Err(last_err)
+                let max_attempts = 3u32;
+                let mut last_err = None;
+                for attempt in 0..max_attempts {
+                    if attempt > 0 {
+                        warn!(
+                            block_hash = %block_hash_hex,
+                            attempt,
+                            "getblockheader retry (Bitcoin Core indexing delay)"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                    match rpc.get_block_header(&block_hash_hex).await {
+                        Ok(h) => return Ok(h),
+                        Err(e) => last_err = Some(e),
                     }
                 }
+                Err(last_err.unwrap())
             })
         })?;
 

@@ -60,8 +60,8 @@ use ghost_consensus::voting::VotingManager;
 use ghost_policy::PolicyProfile;
 use ghost_storage::Database;
 use ghost_verification::{
-    start_server, BlockFoundNotification, PeerProvider, QualifiedCapabilityProvider,
-    RpcArchiveHandler, VerifiablePeer, VerificationState, VerificationTask,
+    start_server, PeerProvider, QualifiedCapabilityProvider, RpcArchiveHandler, VerifiablePeer,
+    VerificationState, VerificationTask,
 };
 
 use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler, SoloBlockFoundData};
@@ -1939,172 +1939,157 @@ async fn main() -> Result<()> {
         Ok(())
     });
 
-    // Configure block found handler for payout proposal creation from SRI webhook
-    let rm_for_block = Arc::clone(&round_manager);
-    let tp_for_block = Arc::clone(&template_processor);
-    let payout_for_block = Arc::clone(&payout_handler);
-    let identity_for_block = Arc::clone(&identity);
-    let db_for_block = Arc::clone(&db);
-    let solo_payout_address_for_block = config.network.solo_payout_address.clone();
-    let metrics_for_block = Arc::clone(&metrics);
-    verification_state = verification_state.with_block_found_handler(move |notification: BlockFoundNotification| {
-        let round_id = rm_for_block.current_round_id();
-        let is_solo_mode = rm_for_block.is_solo_mode();
+    // Spawn async payout task: triggers payout proposal creation when a block is
+    // submitted to Bitcoin Core via SubmitSolution (channel from TemplateProcessor).
+    // This replaces the previous webhook-based approach which had a ~3s race condition.
+    {
+        let rm_for_block = Arc::clone(&round_manager);
+        let tp_for_block = Arc::clone(&template_processor);
+        let payout_for_block = Arc::clone(&payout_handler);
+        let identity_for_block = Arc::clone(&identity);
+        let db_for_block = Arc::clone(&db);
+        let solo_payout_address_for_block = config.network.solo_payout_address.clone();
+        let metrics_for_block = Arc::clone(&metrics);
+        let mut block_rx = template_processor.take_block_submitted_rx();
 
-        info!(
-            round = round_id,
-            hash = %hex::encode(&notification.block_hash[..8]),
-            miner = %notification.miner_id,
-            solo_mode = is_solo_mode,
-            "🎉 BLOCK FOUND via webhook! Creating payout proposal..."
-        );
+        tokio::spawn(async move {
+            while let Some(info) = block_rx.recv().await {
+                let round_id = rm_for_block.current_round_id();
+                let is_solo_mode = rm_for_block.is_solo_mode();
 
-        // Gather data for payout proposal
-        let node_shares = rm_for_block.get_node_shares(round_id);
-        let (subsidy, fees, height) = tp_for_block.get_current_block_info();
+                info!(
+                    round = round_id,
+                    hash = %hex::encode(&info.block_hash[..8]),
+                    height = info.height,
+                    solo_mode = is_solo_mode,
+                    "Block submitted to Bitcoin Core, creating payout proposal..."
+                );
 
-        // Load treasury state from database
-        // SEC-ERR-4: Log database errors instead of silently ignoring them
-        let treasury_state = match db_for_block.get_treasury_balance() {
-            Ok(balance) => {
-                let threshold_ts = match db_for_block.get_treasury_threshold_reached() {
-                    Ok(ts_opt) => ts_opt
-                        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
-                        .map(|dt| dt.with_timezone(&chrono::Utc)),
+                // Gather data for payout proposal
+                let node_shares = rm_for_block.get_node_shares(round_id);
+                let (subsidy, fees, height) = tp_for_block.get_current_block_info();
+
+                // Load treasury state from database
+                let treasury_state = match db_for_block.get_treasury_balance() {
+                    Ok(balance) => {
+                        let threshold_ts = match db_for_block.get_treasury_threshold_reached() {
+                            Ok(ts_opt) => ts_opt
+                                .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+                                .map(|dt| dt.with_timezone(&chrono::Utc)),
+                            Err(e) => {
+                                warn!(error = %e, "Failed to load treasury threshold timestamp, using None");
+                                None
+                            }
+                        };
+                        TreasuryState::from_stored(balance, threshold_ts)
+                    }
                     Err(e) => {
-                        warn!(error = %e, "Failed to load treasury threshold timestamp, using None");
-                        None
+                        warn!(error = %e, "Failed to load treasury state, using default");
+                        TreasuryState::new()
                     }
                 };
-                TreasuryState::from_stored(balance, threshold_ts)
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to load treasury state, using default");
-                TreasuryState::new()
-            }
-        };
 
-        // This node found the block
-        let winning_node_id = identity_for_block.node_id();
+                let winning_node_id = identity_for_block.node_id();
 
-        // Dispatch to appropriate payout handler based on mining mode
-        if is_solo_mode {
-            // Solo mode: 99% subsidy + ALL TX fees to solo_payout_address
-            let solo_address = match &solo_payout_address_for_block {
-                Some(addr) if !addr.is_empty() => addr.clone(),
-                _ => {
-                    error!("Solo mode block found but solo_payout_address not configured!");
-                    return Err(ghost_common::GhostError::Config(
-                        "solo_payout_address required for solo mode".to_string(),
-                    ));
-                }
-            };
+                if is_solo_mode {
+                    let solo_address = match &solo_payout_address_for_block {
+                        Some(addr) if !addr.is_empty() => addr.clone(),
+                        _ => {
+                            error!("Solo mode block found but solo_payout_address not configured!");
+                            continue;
+                        }
+                    };
 
-            // PO4-M2: Capture treasury address snapshot to prevent TOCTOU issues
-            let treasury_address_snapshot = payout_for_block.get_treasury_address_snapshot();
+                    let treasury_address_snapshot = payout_for_block.get_treasury_address_snapshot();
 
-            let solo_data = SoloBlockFoundData {
-                round_id,
-                block_hash: notification.block_hash,
-                block_height: height,
-                block_timestamp: chrono::Utc::now(),
-                solo_payout_address: solo_address,
-                subsidy_sats: subsidy,
-                treasury_address_snapshot,
-                tx_fees_sats: fees,
-                node_shares,
-                treasury_state,
-            };
+                    let solo_data = SoloBlockFoundData {
+                        round_id,
+                        block_hash: info.block_hash,
+                        block_height: height,
+                        block_timestamp: chrono::Utc::now(),
+                        solo_payout_address: solo_address,
+                        subsidy_sats: subsidy,
+                        treasury_address_snapshot,
+                        tx_fees_sats: fees,
+                        node_shares,
+                        treasury_state,
+                    };
 
-            match payout_for_block.handle_solo_block_found(solo_data) {
-                Ok(proposal_hash) => {
-                    if proposal_hash != [0u8; 32] {
-                        info!(
-                            round = round_id,
-                            hash = %hex::encode(&proposal_hash[..8]),
-                            "Solo mode payout proposal submitted for consensus"
-                        );
+                    match payout_for_block.handle_solo_block_found(solo_data) {
+                        Ok(proposal_hash) => {
+                            if proposal_hash != [0u8; 32] {
+                                info!(
+                                    round = round_id,
+                                    hash = %hex::encode(&proposal_hash[..8]),
+                                    "Solo mode payout proposal submitted for consensus"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            error!(error = %e, round = round_id, "Failed to create solo mode payout proposal");
+                        }
                     }
-                }
-                Err(e) => {
-                    error!(error = %e, round = round_id, "Failed to create solo mode payout proposal");
-                }
-            }
-        } else {
-            // Pool mode: proportional distribution to all miners
-            // Query miner work from database (source of truth, not ephemeral memory)
-            let miner_work = {
-                use ghost_accounting::shares::WORK_SCALE;
-                let db_work = db_for_block.get_round_miners(round_id).unwrap_or_default();
-                // Also check previous round (handle timing race: round may have
-                // changed between block found and this handler running)
-                let db_work = if db_work.is_empty() && round_id > 0 {
-                    db_for_block.get_round_miners(round_id - 1).unwrap_or_default()
                 } else {
-                    db_work
-                };
-                if db_work.is_empty() {
-                    // Fall back to in-memory data (defense in depth)
-                    warn!(round = round_id, "No miner work in DB, falling back to in-memory data");
-                    rm_for_block.get_miner_work_scaled(round_id)
-                } else {
-                    // Convert f64 work to u128 using WORK_SCALE (top 200 miners)
-                    db_work
-                        .into_iter()
-                        .take(200)
-                        .map(|(id, w)| (id, (w * WORK_SCALE as f64) as u128))
-                        .collect()
-                }
-            };
+                    // Pool mode: proportional distribution to all miners
+                    let miner_work = {
+                        use ghost_accounting::shares::WORK_SCALE;
+                        let db_work = db_for_block.get_round_miners(round_id).unwrap_or_default();
+                        let db_work = if db_work.is_empty() && round_id > 0 {
+                            db_for_block.get_round_miners(round_id - 1).unwrap_or_default()
+                        } else {
+                            db_work
+                        };
+                        if db_work.is_empty() {
+                            warn!(round = round_id, "No miner work in DB, falling back to in-memory data");
+                            rm_for_block.get_miner_work_scaled(round_id)
+                        } else {
+                            db_work
+                                .into_iter()
+                                .take(200)
+                                .map(|(id, w)| (id, (w * WORK_SCALE as f64) as u128))
+                                .collect()
+                        }
+                    };
 
-            // PO4-M2: Capture treasury address snapshot to prevent TOCTOU issues
-            let treasury_address_snapshot = payout_for_block.get_treasury_address_snapshot();
+                    let treasury_address_snapshot = payout_for_block.get_treasury_address_snapshot();
 
-            let block_data = BlockFoundData {
-                round_id,
-                block_hash: notification.block_hash,
-                block_height: height,
-                block_timestamp: chrono::Utc::now(),
-                winning_miner_id: notification.miner_id.clone(),
-                winning_miner_payout_address: notification.payout_address.clone(),
-                treasury_address_snapshot,
-                winning_node_id,
-                subsidy_sats: subsidy,
-                tx_fees_sats: fees,
-                miner_work,
-                node_shares,
-                treasury_state,
-            };
+                    let block_data = BlockFoundData {
+                        round_id,
+                        block_hash: info.block_hash,
+                        block_height: height,
+                        block_timestamp: chrono::Utc::now(),
+                        winning_miner_id: "pool".to_string(),
+                        winning_miner_payout_address: None,
+                        treasury_address_snapshot,
+                        winning_node_id,
+                        subsidy_sats: subsidy,
+                        tx_fees_sats: fees,
+                        miner_work,
+                        node_shares,
+                        treasury_state,
+                    };
 
-            match payout_for_block.handle_block_found(block_data) {
-                Ok(proposal_hash) => {
-                    if proposal_hash != [0u8; 32] {
-                        metrics_for_block.payouts_total.inc();
-                        info!(
-                            round = round_id,
-                            hash = %hex::encode(&proposal_hash[..8]),
-                            "Payout proposal submitted for consensus"
-                        );
-
-                        // Increment blocks_won for the winning miner
-                        if let Err(e) = db_for_block.increment_miner_blocks_won(&notification.miner_id) {
-                            warn!(
-                                miner_id = %notification.miner_id,
-                                error = %e,
-                                "Failed to increment miner blocks_won"
-                            );
+                    match payout_for_block.handle_block_found(block_data) {
+                        Ok(proposal_hash) => {
+                            if proposal_hash != [0u8; 32] {
+                                metrics_for_block.payouts_total.inc();
+                                info!(
+                                    round = round_id,
+                                    hash = %hex::encode(&proposal_hash[..8]),
+                                    "Payout proposal submitted for consensus"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            metrics_for_block.payout_errors_total.inc();
+                            error!(error = %e, round = round_id, "Failed to create payout proposal");
                         }
                     }
                 }
-                Err(e) => {
-                    metrics_for_block.payout_errors_total.inc();
-                    error!(error = %e, round = round_id, "Failed to create payout proposal");
-                }
             }
-        }
-
-        Ok(())
-    });
+            warn!("Block submission channel closed, payout task exiting");
+        });
+    }
 
     // Wire Prometheus metrics to verification state
     verification_state = verification_state.with_metrics(Arc::clone(&metrics));
