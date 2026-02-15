@@ -1746,12 +1746,10 @@ async fn main() -> Result<()> {
 
     // H-MINE-1: PayoutHandler uses the same QualifiedCapabilityProvider as health_handler
     // This ensures consistent verified capability lookups across the system
-    // CRIT-MINE-2: Pass RPC for block validation before payout proposals
     let payout_handler = Arc::new(PayoutHandler::new(
         Arc::clone(&identity),
         payout_config,
         Arc::clone(&db),
-        Some(Arc::clone(&rpc)),
         Arc::clone(&vote_handler),
         Arc::clone(&template_processor),
         Arc::clone(&qualification_provider_for_health), // Reuse provider from health_handler

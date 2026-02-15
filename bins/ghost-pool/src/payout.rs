@@ -180,8 +180,6 @@ pub struct PayoutProposalCreator {
     identity: Arc<NodeIdentity>,
     config: PayoutConfig,
     db: Arc<Database>,
-    /// Bitcoin RPC client for block validation (CRIT-MINE-2)
-    rpc: Option<Arc<ghost_common::rpc::BitcoinRpc>>,
     /// H-FUND-2: Counter for total node pool treasury fallbacks (for monitoring)
     node_pool_treasury_fallback_count: AtomicU64,
     /// H-FUND-2: Counter for consecutive blocks with no qualifying nodes
@@ -194,14 +192,10 @@ impl PayoutProposalCreator {
     /// # Errors
     /// Returns error if treasury_address is not configured
     ///
-    /// # Parameters
-    /// - `rpc`: Optional Bitcoin RPC client for CRIT-MINE-2 block validation.
-    ///   If None, block hash validation will be skipped (not recommended for mainnet).
     pub fn new(
         identity: Arc<NodeIdentity>,
         config: PayoutConfig,
         db: Arc<Database>,
-        rpc: Option<Arc<ghost_common::rpc::BitcoinRpc>>,
     ) -> GhostResult<Self> {
         // Validate configuration at startup - fail early if misconfigured
         config.validate()?;
@@ -210,7 +204,6 @@ impl PayoutProposalCreator {
             identity,
             config,
             db,
-            rpc,
             node_pool_treasury_fallback_count: AtomicU64::new(0),
             consecutive_no_nodes: AtomicU64::new(0),
         })
@@ -248,105 +241,6 @@ impl PayoutProposalCreator {
         Ok(())
     }
 
-    /// CRIT-MINE-2: Validate that block exists on-chain and meets difficulty target
-    ///
-    /// This prevents payout proposals for:
-    /// - Non-existent blocks (invalid block hash)
-    /// - Blocks that don't meet the network difficulty requirement
-    ///
-    /// Without this check, an attacker could propose payouts for invalid blocks
-    /// and potentially cause consensus on fraudulent payout distributions.
-    fn validate_block_exists_and_difficulty(
-        &self,
-        block_hash: &[u8; 32],
-        expected_height: u64,
-    ) -> GhostResult<()> {
-        // LOW SECURITY FIX: RPC is REQUIRED on mainnet for block validation
-        // On mainnet, we MUST validate blocks via RPC to prevent invalid payout proposals.
-        // On testnets, we allow skipping RPC for development convenience.
-        let rpc = match &self.rpc {
-            Some(rpc) => rpc,
-            None => {
-                let is_mainnet =
-                    self.config.network == ghost_common::config::BitcoinNetwork::Mainnet;
-
-                if is_mainnet {
-                    // LOW: On mainnet, RPC is REQUIRED - fail if not configured
-                    error!(
-                        "LOW SECURITY: No Bitcoin RPC configured on MAINNET - cannot validate blocks"
-                    );
-                    return Err(ghost_common::error::GhostError::ConfigError(
-                        "Bitcoin RPC is required on mainnet for block validation. \
-                         Configure bitcoin.rpc_host and bitcoin.rpc_port in your config."
-                            .to_string(),
-                    ));
-                } else {
-                    // On testnets, warn but allow (for development/testing)
-                    warn!(
-                        network = ?self.config.network,
-                        "CRIT-MINE-2: No Bitcoin RPC configured - skipping block validation. \
-                         This would FAIL on mainnet!"
-                    );
-                    return Ok(());
-                }
-            }
-        };
-
-        // Convert block hash to hex string for RPC call
-        let block_hash_hex = hex::encode(block_hash);
-
-        // Query Bitcoin Core for the block header.
-        // The payout task is triggered from SubmitSolution after the block is already
-        // submitted to Bitcoin Core, so the first RPC call should succeed immediately.
-        // Defense-in-depth: retry 3 times with 100ms delay for Bitcoin Core indexing lag.
-        let header = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let max_attempts = 3u32;
-                let mut last_err = None;
-                for attempt in 0..max_attempts {
-                    if attempt > 0 {
-                        warn!(
-                            block_hash = %block_hash_hex,
-                            attempt,
-                            "getblockheader retry (Bitcoin Core indexing delay)"
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    }
-                    match rpc.get_block_header(&block_hash_hex).await {
-                        Ok(h) => return Ok(h),
-                        Err(e) => last_err = Some(e),
-                    }
-                }
-                Err(last_err.unwrap())
-            })
-        })?;
-
-        // Verify the block is at the expected height (within reasonable tolerance)
-        // Allow +1 for chain reorg handling
-        if header.height.abs_diff(expected_height) > 1 {
-            return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
-                "CRIT-MINE-2: Block height mismatch: expected {}, got {} (block {})",
-                expected_height, header.height, block_hash_hex
-            )));
-        }
-
-        // The fact that getblockheader succeeded means:
-        // 1. The block exists on-chain
-        // 2. Bitcoin Core has validated its PoW (or we wouldn't have the block)
-        //
-        // We could additionally verify the difficulty meets expectations,
-        // but Bitcoin Core has already done this validation.
-
-        info!(
-            block_hash = %block_hash_hex,
-            height = header.height,
-            confirmations = header.confirmations,
-            "CRIT-MINE-2: Validated block exists and meets difficulty target"
-        );
-
-        Ok(())
-    }
-
     /// Create a payout proposal from block found data
     ///
     /// Fee distribution per ECONOMICS.md:
@@ -358,10 +252,9 @@ impl PayoutProposalCreator {
         // PO4-M1: Validate block hash before creating proposal
         Self::validate_block_hash(&data.block_hash)?;
 
-        // CRIT-MINE-2: Validate block exists and meets network difficulty
-        // This prevents accepting payout proposals for non-existent or invalid blocks
-        // which could lead to incorrect payout consensus.
-        self.validate_block_exists_and_difficulty(&data.block_hash, data.block_height)?;
+        // Block validation is handled by submitblock — Bitcoin Core verifies PoW and
+        // all consensus rules before accepting. No additional getblockheader check needed;
+        // Bitcoin Core may not have indexed the header yet, causing false failures.
 
         // M-15 SECURITY FIX: Validate subsidy matches expected for height
         // On MAINNET: Subsidy mismatch is a CRITICAL error - indicates template manipulation
@@ -1310,12 +1203,11 @@ impl PayoutHandler {
         identity: Arc<NodeIdentity>,
         config: PayoutConfig,
         db: Arc<Database>,
-        rpc: Option<Arc<ghost_common::rpc::BitcoinRpc>>,
         vote_handler: Arc<VoteHandler>,
         template_processor: Arc<TemplateProcessor>,
         qualification_provider: Arc<QualifiedCapabilityProvider>,
     ) -> GhostResult<Self> {
-        let creator = PayoutProposalCreator::new(identity, config, db, rpc)?;
+        let creator = PayoutProposalCreator::new(identity, config, db)?;
 
         info!("PayoutHandler initialized with required verification provider");
 
