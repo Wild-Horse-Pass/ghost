@@ -285,7 +285,8 @@ BOOST_AUTO_TEST_CASE(strip_block_removes_witness)
     size_t total_removed = result.witness_bytes_removed +
                            result.scriptsig_bytes_removed +
                            result.coinbase_bytes_removed +
-                           result.opreturn_bytes_removed;
+                           result.opreturn_bytes_removed +
+                           result.nonstandard_bytes_removed;
     BOOST_CHECK_GT(total_removed, 0U);
 }
 
@@ -305,7 +306,8 @@ BOOST_AUTO_TEST_CASE(strip_block_statistics)
     size_t total_removed = result.witness_bytes_removed +
                            result.scriptsig_bytes_removed +
                            result.coinbase_bytes_removed +
-                           result.opreturn_bytes_removed;
+                           result.opreturn_bytes_removed +
+                           result.nonstandard_bytes_removed;
     // stripped_size + removed ≈ original_size (not exact due to format differences)
     // But removed should not exceed original
     BOOST_CHECK_LE(total_removed, result.original_size);
@@ -365,8 +367,9 @@ BOOST_AUTO_TEST_CASE(reconstruct_preserves_outputs)
         for (size_t j = 0; j < block.vtx[i]->vout.size(); j++) {
             BOOST_CHECK_EQUAL(reconstructed.vtx[i]->vout[j].nValue,
                               block.vtx[i]->vout[j].nValue);
-            // For non-OP_RETURN outputs, scriptPubKey should be identical
-            if (!haze::IsOpReturn(block.vtx[i]->vout[j].scriptPubKey)) {
+            // For standard (non-stripped) outputs, scriptPubKey should be identical
+            if (!haze::IsOpReturn(block.vtx[i]->vout[j].scriptPubKey) &&
+                !haze::IsNonstandardScript(block.vtx[i]->vout[j].scriptPubKey)) {
                 BOOST_CHECK(reconstructed.vtx[i]->vout[j].scriptPubKey ==
                             block.vtx[i]->vout[j].scriptPubKey);
             }
@@ -387,6 +390,117 @@ BOOST_AUTO_TEST_CASE(reconstruct_meta_flags)
     BOOST_CHECK(meta.witness_stripped);
     BOOST_CHECK(meta.scriptsig_stripped);
     BOOST_CHECK(meta.coinbase_stripped);
+}
+
+// ============================================================================
+// Non-standard Script Stripping
+// ============================================================================
+
+BOOST_AUTO_TEST_CASE(classify_nonstandard_multisig)
+{
+    // Build a bare 1-of-2 multisig scriptPubKey — this is the primary data
+    // embedding vector that non-standard stripping targets.
+    CKey key2;
+    key2.MakeNewKey(true);
+    CScript multisig = GetScriptForMultisig(1, {coinbaseKey.GetPubKey(), key2.GetPubKey()});
+
+    BOOST_CHECK(haze::IsNonstandardScript(multisig));
+
+    // Build a transaction with the multisig output and classify it
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetHash(), 0));
+    mtx.vout.emplace_back(49 * COIN, multisig);
+    CTransactionRef tx = MakeTransactionRef(std::move(mtx));
+
+    auto fields = haze::ClassifyTransaction(*tx, /*is_coinbase=*/false, /*tx_index=*/0);
+    bool has_nonstandard = false;
+    for (const auto& f : fields) {
+        if (f.type == haze::HazeFieldType::NONSTANDARD_SCRIPT) {
+            has_nonstandard = true;
+            BOOST_CHECK_EQUAL(f.field_index, 0U);
+            BOOST_CHECK_EQUAL(f.original_size, multisig.size());
+        }
+    }
+    BOOST_CHECK(has_nonstandard);
+}
+
+BOOST_AUTO_TEST_CASE(classify_standard_p2wpkh_kept)
+{
+    // P2WPKH is hash-based and must NOT be classified as non-standard
+    CScript p2wpkh = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+    BOOST_CHECK(!haze::IsNonstandardScript(p2wpkh));
+
+    // Also check other standard types
+    CScript p2pkh = GetScriptForDestination(PKHash(coinbaseKey.GetPubKey()));
+    BOOST_CHECK(!haze::IsNonstandardScript(p2pkh));
+
+    CScript p2sh = GetScriptForDestination(ScriptHash(p2wpkh));
+    BOOST_CHECK(!haze::IsNonstandardScript(p2sh));
+}
+
+BOOST_AUTO_TEST_CASE(strip_nonstandard_multisig)
+{
+    // Bare multisig output should be replaced with OP_RETURN + OP_1 placeholder
+    CKey key2;
+    key2.MakeNewKey(true);
+    CScript multisig = GetScriptForMultisig(1, {coinbaseKey.GetPubKey(), key2.GetPubKey()});
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetHash(), 0));
+    mtx.vout.emplace_back(1 * COIN, multisig);   // non-standard output
+    mtx.vout.emplace_back(48 * COIN, dest);       // standard change output
+    CTransactionRef tx = MakeTransactionRef(std::move(mtx));
+
+    auto stripped = haze::StripTransaction(*tx, /*is_coinbase=*/false);
+
+    // First output (multisig) should be replaced with placeholder
+    CScript expected = haze::MakeStrippedNonstandard();
+    BOOST_CHECK(stripped.m_outputs[0].script_pub_key == expected);
+
+    // Second output (P2WPKH) should be preserved
+    BOOST_CHECK(stripped.m_outputs[1].script_pub_key == dest);
+
+    // Values should be preserved
+    BOOST_CHECK_EQUAL(stripped.m_outputs[0].n_value, 1 * COIN);
+    BOOST_CHECK_EQUAL(stripped.m_outputs[1].n_value, 48 * COIN);
+
+    // txid must be stored since output was modified
+    BOOST_CHECK(stripped.m_has_stored_txid);
+}
+
+BOOST_AUTO_TEST_CASE(strip_nonstandard_preserves_merkle)
+{
+    // Stripping non-standard outputs must still produce a valid merkle root
+    // via stored txids
+    CKey key2;
+    key2.MakeNewKey(true);
+    CScript multisig = GetScriptForMultisig(1, {coinbaseKey.GetPubKey(), key2.GetPubKey()});
+    CScript dest = GetScriptForDestination(WitnessV0KeyHash(coinbaseKey.GetPubKey()));
+
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetHash(), 0));
+    mtx.vout.emplace_back(49 * COIN, multisig);
+
+    CBlock block = CreateAndProcessBlock({mtx}, dest);
+
+    haze::StripResult result = haze::StripBlock(block);
+    BOOST_CHECK(haze::VerifyStrippedBlock(result.stripped_block, block.GetBlockHeader()));
+}
+
+BOOST_AUTO_TEST_CASE(requires_stored_txid_nonstandard)
+{
+    // A transaction with a non-standard output requires stored txid
+    CKey key2;
+    key2.MakeNewKey(true);
+    CScript multisig = GetScriptForMultisig(1, {coinbaseKey.GetPubKey(), key2.GetPubKey()});
+
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint(m_coinbase_txns[0]->GetHash(), 0));
+    mtx.vout.emplace_back(49 * COIN, multisig);
+    CTransactionRef tx = MakeTransactionRef(std::move(mtx));
+
+    BOOST_CHECK(haze::RequiresStoredTxid(*tx));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -17,7 +17,10 @@ static const fs::path LockFilePath(const fs::path& datadir)
     return datadir / HAZE_MODE_LOCK_FILE;
 }
 
-/** Check if any files matching a glob prefix exist in the blocks directory. */
+/** Check if any files matching a glob prefix exist with actual block data.
+ *  Empty (0-byte) files are ignored — they can be left behind by shutdown.
+ *  Pre-allocated files (non-zero size but all-zero header) are also ignored —
+ *  Bitcoin Core pre-allocates 16MB blk files during init even in hazed mode. */
 static bool HasBlockFiles(const fs::path& datadir, const std::string& prefix)
 {
     const fs::path blocks_dir = datadir / "blocks";
@@ -29,7 +32,17 @@ static bool HasBlockFiles(const fs::path& datadir, const std::string& prefix)
         const std::string filename = entry.path().filename().string();
         if (filename.size() >= prefix.size() &&
             filename.substr(0, prefix.size()) == prefix &&
-            filename.find(".dat") != std::string::npos) {
+            filename.find(".dat") != std::string::npos &&
+            entry.file_size(ec) > 0) {
+            // Check first 4 bytes — real block files start with network magic
+            // (blk: 0xf9beb4d9/0xfabfb5da, gsb: 0x47534200). Pre-allocated
+            // files are all zeros. Skip files with zero header.
+            std::ifstream file(entry.path(), std::ios::binary);
+            if (file.is_open()) {
+                uint32_t header = 0;
+                file.read(reinterpret_cast<char*>(&header), sizeof(header));
+                if (header == 0) continue;
+            }
             return true;
         }
     }
@@ -120,17 +133,19 @@ GhostMode DetectOrSelectMode(const fs::path& datadir, const ArgsManager& args)
         return mode;
     }
 
-    // 3. Check if running as daemon (no TTY) — default to HAZED
+    // 3. Check if running as daemon (no TTY) — default to FULL_ARCHIVE
+    //    This ensures standard Bitcoin Core behavior when no explicit mode is chosen.
+    //    Users who want Hazed mode must explicitly opt in via --hazemode=hazed.
     if (!isatty(fileno(stdin))) {
         LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
-            "Ghost Haze: no TTY and no --hazemode set, defaulting to hazed mode\n");
+            "Ghost Haze: no TTY and no --hazemode set, defaulting to full_archive mode\n");
 
-        if (WriteModeLock(datadir, GhostMode::HAZED)) {
+        if (WriteModeLock(datadir, GhostMode::FULL_ARCHIVE)) {
             LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
                 "Ghost Haze: persisted mode to %s\n", HAZE_MODE_LOCK_FILE);
         }
 
-        return GhostMode::HAZED;
+        return GhostMode::FULL_ARCHIVE;
     }
 
     // 4. Interactive mode selection

@@ -3935,6 +3935,58 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
     }
 }
 
+void ChainstateManager::ReceivedBlockTransactions(uint32_t nTx, CBlockIndex* pindexNew, const FlatFilePos& pos)
+{
+    AssertLockHeld(cs_main);
+    pindexNew->nTx = nTx;
+    auto prev_tx_sum = [](CBlockIndex& block) { return block.nTx + (block.pprev ? block.pprev->m_chain_tx_count : 0); };
+    if (!Assume(pindexNew->m_chain_tx_count == 0 || pindexNew->m_chain_tx_count == prev_tx_sum(*pindexNew) ||
+                pindexNew == GetSnapshotBaseBlock())) {
+        LogWarning("Internal bug detected: block %d has unexpected m_chain_tx_count %i that should be %i (%s %s). Please report this issue here: %s\n",
+            pindexNew->nHeight, pindexNew->m_chain_tx_count, prev_tx_sum(*pindexNew), CLIENT_NAME, FormatFullVersion(), CLIENT_BUGREPORT);
+        pindexNew->m_chain_tx_count = 0;
+    }
+    pindexNew->nFile = pos.nFile;
+    pindexNew->nDataPos = pos.nPos;
+    pindexNew->nUndoPos = 0;
+    pindexNew->nStatus |= BLOCK_HAVE_DATA;
+    if (DeploymentActiveAt(*pindexNew, *this, Consensus::DEPLOYMENT_SEGWIT)) {
+        pindexNew->nStatus |= BLOCK_OPT_WITNESS;
+    }
+    pindexNew->RaiseValidity(BLOCK_VALID_TRANSACTIONS);
+    m_blockman.m_dirty_blockindex.insert(pindexNew);
+
+    if (pindexNew->pprev == nullptr || pindexNew->pprev->HaveNumChainTxs()) {
+        std::deque<CBlockIndex*> queue;
+        queue.push_back(pindexNew);
+
+        while (!queue.empty()) {
+            CBlockIndex *pindex = queue.front();
+            queue.pop_front();
+            if (!Assume(pindex->m_chain_tx_count == 0 || pindex->m_chain_tx_count == prev_tx_sum(*pindex))) {
+                LogWarning("Internal bug detected: block %d has unexpected m_chain_tx_count %i that should be %i (%s %s). Please report this issue here: %s\n",
+                   pindex->nHeight, pindex->m_chain_tx_count, prev_tx_sum(*pindex), CLIENT_NAME, FormatFullVersion(), CLIENT_BUGREPORT);
+            }
+            pindex->m_chain_tx_count = prev_tx_sum(*pindex);
+            pindex->nSequenceId = nBlockSequenceId++;
+            for (Chainstate *c : GetAll()) {
+                c->TryAddBlockIndexCandidate(pindex);
+            }
+            std::pair<std::multimap<CBlockIndex*, CBlockIndex*>::iterator, std::multimap<CBlockIndex*, CBlockIndex*>::iterator> range = m_blockman.m_blocks_unlinked.equal_range(pindex);
+            while (range.first != range.second) {
+                std::multimap<CBlockIndex*, CBlockIndex*>::iterator it = range.first;
+                queue.push_back(it->second);
+                range.first++;
+                m_blockman.m_blocks_unlinked.erase(it);
+            }
+        }
+    } else {
+        if (pindexNew->pprev && pindexNew->pprev->IsValid(BLOCK_VALID_TREE)) {
+            m_blockman.m_blocks_unlinked.insert(std::make_pair(pindexNew->pprev, pindexNew));
+        }
+    }
+}
+
 static bool CheckBlockHeader(const CBlockHeader& block, BlockValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true)
 {
     // Check proof of work matches claimed amount
@@ -4761,6 +4813,15 @@ VerifyDBResult CVerifyDB::VerifyDB(
             skipped_no_block_data = true;
             break;
         }
+        // In Hazed mode, blocks are stored as stripped GSB data — full CBlock
+        // reads are not possible. Skip block-level verification and only verify
+        // the UTXO/coin database (levels 2-4 still work against the coins view).
+        if (chainstate.m_blockman.IsHazeMode()) {
+            LogDebug(BCLog::HAZE, "VerifyDB: skipping block read for height %d (hazed mode)\n", pindex->nHeight);
+            skipped_no_block_data = true;
+            break;
+        }
+
         CBlock block;
         // check level 0: read from disk
         if (!chainstate.m_blockman.ReadBlock(block, *pindex)) {
@@ -5844,6 +5905,17 @@ util::Result<CBlockIndex*> ChainstateManager::ActivateSnapshot(
         m_snapshot_chainstate->CoinsTip().DynamicMemoryUsage() / (1000 * 1000));
 
     this->MaybeRebalanceCaches();
+
+    // Hazed nodes cannot run background IBD — stripped blocks produce a corrupt
+    // UTXO set via ConnectBlock. Disable the IBD chainstate immediately so
+    // ActivateBestChain breaks out and fires snapshot_download_completed.
+    if (m_blockman.m_ghost_exorcism.IsActive() && m_ibd_chainstate) {
+        LogInfo("[snapshot] Hazed mode: disabling background IBD "
+                "(stripped blocks cannot reconstruct UTXO set)");
+        m_ibd_chainstate->m_disabled = true;
+        this->MaybeRebalanceCaches();
+    }
+
     return snapshot_start_block;
 }
 
@@ -6099,6 +6171,18 @@ SnapshotCompletionResult ChainstateManager::MaybeCompleteSnapshotValidation()
        // validation chainstate.
        return SnapshotCompletionResult::SKIPPED;
     }
+    // Hazed nodes cannot run background IBD to rebuild the UTXO set, so we
+    // auto-complete snapshot validation. On restart with both chainstates on
+    // disk, skip the expensive UTXO hash verification and go straight to
+    // cleanup (which removes the IBD chainstate directory).
+    if (m_blockman.m_ghost_exorcism.IsActive()) {
+        LogInfo("[snapshot] Hazed mode: auto-validating snapshot "
+                "(background IBD not possible with stripped blocks)");
+        m_ibd_chainstate->m_disabled = true;
+        this->MaybeRebalanceCaches();
+        return SnapshotCompletionResult::SUCCESS;
+    }
+
     const int snapshot_tip_height = this->ActiveHeight();
     const int snapshot_base_height = *Assert(this->GetSnapshotBaseHeight());
     const CBlockIndex& index_new = *Assert(m_ibd_chainstate->m_chain.Tip());

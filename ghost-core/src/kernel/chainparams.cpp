@@ -606,6 +606,12 @@ public:
                 .m_chain_tx_count = 111,
                 .blockhash = consteval_ctor(uint256{"6affe030b7965ab538f820a56ef56c8149b7dc1d1c144af57113be080db7c397"}),
             },
+            {   // For use by test/functional/feature_ghost_haze_snapshot.py
+                .height = 160,
+                .hash_serialized = AssumeutxoHash{uint256{"20aa7707e776a283447d5c9a6dd9866d5480fcb0c736523ff0cfd45623805e72"}},
+                .m_chain_tx_count = 161,
+                .blockhash = consteval_ctor(uint256{"56f870e76fd6c1a22c570350d7f20f855b7d039d2027d5bdc05f0e3c54f07a68"}),
+            },
             {
                 // For use by fuzz target src/test/fuzz/utxo_snapshot.cpp
                 .height = 200,

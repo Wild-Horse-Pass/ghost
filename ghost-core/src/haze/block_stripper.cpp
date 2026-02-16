@@ -19,6 +19,14 @@ CScript MakeStrippedOpReturn()
     return script;
 }
 
+CScript MakeStrippedNonstandard()
+{
+    CScript script;
+    script << OP_RETURN;
+    script << OP_1;
+    return script;
+}
+
 CStrippedTransaction StripTransaction(const CTransaction& tx, bool is_coinbase)
 {
     CStrippedTransaction stripped;
@@ -42,11 +50,13 @@ CStrippedTransaction StripTransaction(const CTransaction& tx, bool is_coinbase)
         stripped.m_inputs.emplace_back(txin.prevout, txin.nSequence);
     }
 
-    // Strip outputs: keep value + scriptPubKey, but replace OP_RETURN payloads
+    // Strip outputs: keep value + scriptPubKey, but replace OP_RETURN and non-standard scripts
     stripped.m_outputs.reserve(tx.vout.size());
     for (const auto& txout : tx.vout) {
         if (IsOpReturn(txout.scriptPubKey)) {
             stripped.m_outputs.emplace_back(txout.nValue, MakeStrippedOpReturn());
+        } else if (IsNonstandardScript(txout.scriptPubKey)) {
+            stripped.m_outputs.emplace_back(txout.nValue, MakeStrippedNonstandard());
         } else {
             stripped.m_outputs.emplace_back(txout.nValue, txout.scriptPubKey);
         }
@@ -86,6 +96,9 @@ StripResult StripBlock(const CBlock& block)
                 // OP_RETURN payload is everything after the opcode, minus
                 // the 2 bytes we keep (OP_RETURN + OP_0)
                 result.opreturn_bytes_removed += txout.scriptPubKey.size() - 1;
+            } else if (IsNonstandardScript(txout.scriptPubKey) && txout.scriptPubKey.size() > 2) {
+                // Non-standard script replaced with 2-byte placeholder (OP_RETURN + OP_1)
+                result.nonstandard_bytes_removed += txout.scriptPubKey.size() - 2;
             }
         }
 
@@ -105,12 +118,13 @@ StripResult StripBlock(const CBlock& block)
 
     LogPrintLevel(BCLog::HAZE, BCLog::Level::Debug,
         "Stripped block %s: %zu → %zu bytes (%.1f%% reduction), "
-        "witness=%zu scriptSig=%zu opreturn=%zu coinbase=%zu, stored_txids=%u\n",
+        "witness=%zu scriptSig=%zu opreturn=%zu nonstandard=%zu coinbase=%zu, stored_txids=%u\n",
         block.GetHash().ToString(),
         result.original_size, result.stripped_size,
         result.original_size > 0 ? (1.0 - static_cast<double>(result.stripped_size) / result.original_size) * 100.0 : 0.0,
         result.witness_bytes_removed, result.scriptsig_bytes_removed,
-        result.opreturn_bytes_removed, result.coinbase_bytes_removed,
+        result.opreturn_bytes_removed, result.nonstandard_bytes_removed,
+        result.coinbase_bytes_removed,
         result.txids_stored);
 
     return result;

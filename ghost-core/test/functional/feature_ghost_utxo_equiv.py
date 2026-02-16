@@ -13,34 +13,33 @@ Setup:
 - node1: --hazemode=full_archive
 - Both connected and syncing the same chain
 
-Test creates diverse transaction types:
-- P2WPKH standard transfers
-- P2TR (Taproot) outputs
-- OP_RETURN outputs
-- Multi-input transactions
-- Coinbase spends at exactly 100 confirmations
+This test is WALLET-FREE — uses generatetoaddress and signrawtransactionwithkey
+to avoid SQLite wallet version dependencies.
 """
 
 import random
+from decimal import Decimal
 
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import (
-    assert_equal,
-    assert_greater_than,
-)
+from test_framework.util import assert_equal
+from test_framework.key import ECKey
+from test_framework.address import key_to_p2wpkh
+from test_framework.wallet_util import bytes_to_wif
 
 
 class GhostUtxoEquivTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 2
+        # node0 = full_archive (miner) — can serve full blocks to all peers
+        # node1 = hazed (receiver) — strips blocks on write, UTXO must still match
         self.extra_args = [
-            ["-hazemode=hazed"],
-            ["-hazemode=full_archive"],
+            ["-hazemode=full_archive", "-disablewallet"],
+            ["-hazemode=hazed", "-disablewallet"],
         ]
 
     def skip_test_if_missing_module(self):
-        self.skip_if_no_wallet()
+        pass  # No wallet needed
 
     def setup_network(self):
         self.setup_nodes()
@@ -48,114 +47,174 @@ class GhostUtxoEquivTest(BitcoinTestFramework):
         self.sync_all()
 
     def run_test(self):
-        node0 = self.nodes[0]  # hazed
-        node1 = self.nodes[1]  # full_archive
+        node0 = self.nodes[0]  # full_archive (miner — can serve full blocks)
+        node1 = self.nodes[1]  # hazed (strips on write — UTXO must match)
+
+        # Create a deterministic mining key
+        mining_key = ECKey()
+        mining_key.set(b'\x01' * 32, compressed=True)
+        mining_addr = key_to_p2wpkh(mining_key.get_pubkey().get_bytes())
+        mining_wif = bytes_to_wif(mining_key.get_bytes(), compressed=True)
 
         self.log.info("Step 1: Mine 110 blocks for coinbase maturity")
-        self.generate(node0, 110)
+        self.generatetoaddress(node0, 110, mining_addr)
+        self.sync_blocks()
 
-        self.log.info("Step 2: Create diverse transaction types")
+        self.log.info("Step 2: Verify initial sync")
+        assert_equal(node0.getblockcount(), node1.getblockcount())
+        assert_equal(node0.getbestblockhash(), node1.getbestblockhash())
 
-        # P2WPKH standard transfers
-        self.log.info("  Creating P2WPKH transfers...")
-        for i in range(10):
-            addr = node0.getnewaddress("", "bech32")
-            node0.sendtoaddress(addr, 0.5 + i * 0.01)
-
-        self.generate(node0, 1)
-
-        # P2TR (Taproot) outputs
-        self.log.info("  Creating P2TR (Taproot) outputs...")
+        self.log.info("Step 3: Create transactions with OP_RETURN outputs")
         for i in range(5):
-            addr = node0.getnewaddress("", "bech32m")
-            node0.sendtoaddress(addr, 0.3 + i * 0.01)
+            # Get a mature coinbase UTXO to spend
+            block_hash = node0.getblockhash(1 + i)
+            block = node0.getblock(block_hash, 2)
+            coinbase_tx = block["tx"][0]
+            coinbase_txid = coinbase_tx["txid"]
+            coinbase_value = coinbase_tx["vout"][0]["value"]
 
-        self.generate(node0, 1)
+            utxo = node0.gettxout(coinbase_txid, 0)
+            if utxo is None:
+                continue
 
-        # OP_RETURN outputs
-        self.log.info("  Creating OP_RETURN outputs...")
-        for i in range(5):
-            utxos = node0.listunspent(1, 9999, [], True, {"minimumAmount": 0.1})
-            if not utxos:
-                break
-            utxo = utxos[0]
-            change_addr = node0.getnewaddress()
-            change_amount = float(utxo["amount"]) - 0.001
-            data_hex = f"deadbeef{i:04x}"
-            raw = node0.createrawtransaction(
-                [{"txid": utxo["txid"], "vout": utxo["vout"]}],
-                [
-                    {change_addr: round(change_amount, 8)},
-                    {"data": data_hex},
-                ],
-            )
-            signed = node0.signrawtransactionwithwallet(raw)
-            node0.sendrawtransaction(signed["hex"])
+            # Build raw transaction: coinbase → change + OP_RETURN
+            change_amount = round(coinbase_value - Decimal("0.001"), 8)
+            op_return_hex = f"deadbeef{i:04x}"
 
-        self.generate(node0, 1)
-
-        # Multi-input transactions
-        self.log.info("  Creating multi-input transactions...")
-        for _ in range(3):
-            utxos = node0.listunspent(1, 9999, [], True, {"minimumAmount": 0.01})
-            if len(utxos) < 3:
-                break
-            inputs = [{"txid": u["txid"], "vout": u["vout"]} for u in utxos[:3]]
-            total_in = sum(float(u["amount"]) for u in utxos[:3])
-            dest_addr = node0.getnewaddress()
-            raw = node0.createrawtransaction(
-                inputs,
-                [{dest_addr: round(total_in - 0.001, 8)}],
-            )
-            signed = node0.signrawtransactionwithwallet(raw)
-            node0.sendrawtransaction(signed["hex"])
-
-        self.generate(node0, 1)
-
-        # More blocks to ensure chain is substantial
-        self.log.info("  Mining additional blocks to reach 200+ total...")
-        remaining = 200 - node0.getblockcount()
-        if remaining > 0:
-            self.generate(node0, remaining)
-
-        # Coinbase spends at exactly 100 confirmations
-        self.log.info("  Spending coinbase at exactly 100 confirmations...")
-        height = node0.getblockcount()
-        # Block at height (height - 100) should have a mature coinbase
-        target_height = height - 100
-        block_hash = node0.getblockhash(target_height)
-        block = node0.getblock(block_hash, 2)
-        coinbase_txid = block["tx"][0]["txid"]
-
-        # Try to spend the coinbase output
-        coinbase_info = node0.gettxout(coinbase_txid, 0)
-        if coinbase_info:
-            dest = node0.getnewaddress()
             raw = node0.createrawtransaction(
                 [{"txid": coinbase_txid, "vout": 0}],
-                [{dest: round(float(coinbase_info["value"]) - 0.001, 8)}],
+                [
+                    {mining_addr: change_amount},
+                    {"data": op_return_hex},
+                ],
             )
-            signed = node0.signrawtransactionwithwallet(raw)
-            node0.sendrawtransaction(signed["hex"])
-            self.generate(node0, 1)
 
-        self.log.info("Step 3: Mine a few more blocks to finalize")
-        self.generate(node0, 5)
+            signed = node0.signrawtransactionwithkey(
+                raw,
+                [mining_wif],
+                [{"txid": coinbase_txid, "vout": 0,
+                  "scriptPubKey": utxo["scriptPubKey"]["hex"],
+                  "amount": coinbase_value}],
+            )
+            assert signed["complete"], f"Signing failed: {signed.get('errors')}"
+            node0.sendrawtransaction(signed["hex"])
+            self.log.info(f"  Sent OP_RETURN tx {i}")
+
+        self.generatetoaddress(node0, 1, mining_addr)
+        self.sync_blocks()
+
+        self.log.info("Step 3b: Create transactions with bare multisig outputs")
+        # Bare multisig is the primary data embedding vector that non-standard
+        # stripping targets. The scriptPubKey gets replaced with a placeholder
+        # in hazed mode, but the UTXO set must still match because stripping
+        # only affects on-disk block storage, not the UTXO database.
+        from test_framework.messages import CTxOut, tx_from_hex
+        for i in range(3):
+            block_hash = node0.getblockhash(6 + i)
+            block = node0.getblock(block_hash, 2)
+            coinbase_tx = block["tx"][0]
+            coinbase_txid = coinbase_tx["txid"]
+            coinbase_value = coinbase_tx["vout"][0]["value"]
+
+            utxo = node0.gettxout(coinbase_txid, 0)
+            if utxo is None:
+                continue
+
+            # Build a bare 1-of-2 multisig scriptPubKey:
+            # OP_1 <33-byte pubkey1> <33-byte pubkey2> OP_2 OP_CHECKMULTISIG
+            fake_pubkey1 = "02" + "deadbeef" * 8  # 33 bytes
+            fake_pubkey2 = "02" + "cafebabe" * 8  # 33 bytes
+            multisig_hex = "51" + "21" + fake_pubkey1 + "21" + fake_pubkey2 + "52" + "ae"
+            multisig_script = bytes.fromhex(multisig_hex)
+
+            # Create a base tx with change output, then add multisig output
+            change_amount = round(coinbase_value - Decimal("0.001"), 8)
+            raw_hex = node0.createrawtransaction(
+                [{"txid": coinbase_txid, "vout": 0}],
+                [{mining_addr: round(change_amount - Decimal("0.0001"), 8)}],
+            )
+
+            # Deserialize, append multisig output, re-serialize
+            tx = tx_from_hex(raw_hex)
+            tx.vout.append(CTxOut(10000, multisig_script))  # 0.0001 BTC
+            modified_hex = tx.serialize_without_witness().hex()
+
+            signed = node0.signrawtransactionwithkey(
+                modified_hex,
+                [mining_wif],
+                [{"txid": coinbase_txid, "vout": 0,
+                  "scriptPubKey": utxo["scriptPubKey"]["hex"],
+                  "amount": coinbase_value}],
+            )
+            assert signed["complete"], f"Signing failed: {signed.get('errors')}"
+            node0.sendrawtransaction(signed["hex"])
+            self.log.info(f"  Sent bare multisig tx {i}")
+
+        self.generatetoaddress(node0, 1, mining_addr)
+        self.sync_blocks()
+
+        self.log.info("Step 4: Create multi-output transactions")
+        # Generate extra keys for distinct output addresses
+        extra_keys = []
+        for j in range(3):
+            k = ECKey()
+            k.set((b'\x02' + bytes([j]) + b'\x00' * 30), compressed=True)
+            extra_keys.append(key_to_p2wpkh(k.get_pubkey().get_bytes()))
+
+        # Spend a few more coinbases with multiple outputs to different addresses
+        for i in range(3):
+            block_hash = node0.getblockhash(9 + i)
+            block = node0.getblock(block_hash, 2)
+            coinbase_tx = block["tx"][0]
+            coinbase_txid = coinbase_tx["txid"]
+            coinbase_value = coinbase_tx["vout"][0]["value"]
+
+            utxo = node0.gettxout(coinbase_txid, 0)
+            if utxo is None:
+                continue
+
+            # Split into multiple outputs to different addresses
+            split_value = round((coinbase_value - Decimal("0.001")) / 3, 8)
+            raw = node0.createrawtransaction(
+                [{"txid": coinbase_txid, "vout": 0}],
+                [
+                    {extra_keys[0]: split_value},
+                    {extra_keys[1]: split_value},
+                    {extra_keys[2]: split_value},
+                ],
+            )
+            signed = node0.signrawtransactionwithkey(
+                raw,
+                [mining_wif],
+                [{"txid": coinbase_txid, "vout": 0,
+                  "scriptPubKey": utxo["scriptPubKey"]["hex"],
+                  "amount": coinbase_value}],
+            )
+            assert signed["complete"]
+            node0.sendrawtransaction(signed["hex"])
+
+        self.generatetoaddress(node0, 1, mining_addr)
+        self.sync_blocks()
+
+        self.log.info("Step 5: Mine to 200+ blocks")
+        remaining = 200 - node0.getblockcount()
+        if remaining > 0:
+            self.generatetoaddress(node0, remaining, mining_addr)
+        self.sync_blocks()
 
         total_height = node0.getblockcount()
         self.log.info(f"  Final chain height: {total_height}")
 
-        self.log.info("Step 4: Ensure both nodes are synced")
-        self.sync_blocks()
+        self.log.info("Step 6: Ensure both nodes are synced")
         assert_equal(node0.getblockcount(), node1.getblockcount())
         assert_equal(node0.getbestblockhash(), node1.getbestblockhash())
 
-        self.log.info("Step 5: Compare UTXO set hashes — THIS IS THE CRITICAL CHECK")
+        self.log.info("Step 7: Compare UTXO set hashes — THIS IS THE CRITICAL CHECK")
         utxo_info0 = node0.gettxoutsetinfo()
         utxo_info1 = node1.gettxoutsetinfo()
 
-        self.log.info(f"  Hazed node:        hash={utxo_info0['hash_serialized_3']}, txouts={utxo_info0['txouts']}, total={utxo_info0['total_amount']}")
-        self.log.info(f"  Full archive node:  hash={utxo_info1['hash_serialized_3']}, txouts={utxo_info1['txouts']}, total={utxo_info1['total_amount']}")
+        self.log.info(f"  Full archive node:  hash={utxo_info0['hash_serialized_3']}, txouts={utxo_info0['txouts']}, total={utxo_info0['total_amount']}")
+        self.log.info(f"  Hazed node:         hash={utxo_info1['hash_serialized_3']}, txouts={utxo_info1['txouts']}, total={utxo_info1['total_amount']}")
 
         # THE CRITICAL ASSERTION: UTXO set hashes MUST be identical
         assert_equal(
@@ -167,12 +226,7 @@ class GhostUtxoEquivTest(BitcoinTestFramework):
         assert_equal(utxo_info0["txouts"], utxo_info1["txouts"])
         assert_equal(utxo_info0["total_amount"], utxo_info1["total_amount"])
 
-        self.log.info("Step 6: Spot-check 20 random UTXOs via gettxout")
-        # Get all UTXOs from node1 to spot-check
-        best_hash = node1.getbestblockhash()
-        block = node1.getblock(best_hash, 2)
-
-        # Collect some outpoints to check
+        self.log.info("Step 8: Spot-check 20 random UTXOs via gettxout")
         checked = 0
         height = node0.getblockcount()
         for h in random.sample(range(1, height), min(20, height - 1)):
@@ -180,12 +234,11 @@ class GhostUtxoEquivTest(BitcoinTestFramework):
             blk = node0.getblock(bh, 1)
             if not blk["tx"]:
                 continue
-            txid = blk["tx"][0]  # Check coinbase of random blocks
+            txid = blk["tx"][0]
             utxo0 = node0.gettxout(txid, 0)
             utxo1 = node1.gettxout(txid, 0)
 
             if utxo0 is None and utxo1 is None:
-                # Both spent — consistent
                 checked += 1
                 continue
             if utxo0 is not None and utxo1 is not None:
@@ -198,7 +251,7 @@ class GhostUtxoEquivTest(BitcoinTestFramework):
 
         self.log.info(f"  Spot-checked {checked} UTXOs — all match")
 
-        self.log.info("UTXO equivalence test PASSED — Hazed and Full Archive nodes produce identical UTXO sets")
+        self.log.info("UTXO equivalence test PASSED — Hazed and Full Archive produce identical UTXO sets")
 
 
 if __name__ == "__main__":

@@ -54,6 +54,7 @@
 #include <node/kernel_notifications.h>
 #include <node/mempool_args.h>
 #include <node/mempool_persist.h>
+#include <node/utxo_snapshot.h>
 #include <node/mempool_persist_args.h>
 #include <node/miner.h>
 #include <node/peerman_args.h>
@@ -93,6 +94,8 @@
 #include <validationinterface.h>
 #include <walletinitinterface.h>
 
+#include <haze/exorcist.h>
+#include <haze/legal_packet.h>
 #include <haze/mode_selector.h>
 
 #ifdef ENABLE_GSP
@@ -517,6 +520,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-haze-status", "Print Ghost Haze status and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-legal-packet", "Generate legal compliance packet JSON and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-exorcist", "Convert existing full archive to hazed format (irreversible) and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+    argsman.AddArg("-loadtxoutset=<path>", "Load a UTXO snapshot on startup and exit. The snapshot must match a hardcoded assumeutxo entry. Use with -hazemode=hazed to bootstrap a hazed node without a full archive peer. (default: disabled)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-coinstatsindex", strprintf("Maintain coinstats index used by the gettxoutsetinfo RPC (default: %u)", DEFAULT_COINSTATSINDEX), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-conf=<file>", strprintf("Specify path to read-only configuration file. Relative paths will be prefixed by datadir location (only useable from command line, not configuration file) (default: %s)", BITCOIN_CONF_FILENAME), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-datadir=<dir>", "Specify data directory", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
@@ -1363,12 +1367,19 @@ static ChainstateLoadResult InitAndLoadChainstate(
     // Ghost Haze: detect or select operating mode, initialize Exorcism
     {
         const fs::path datadir = args.GetDataDirNet();
+        // Check if mode was persisted from a previous session
+        bool mode_from_lock = haze::ReadModeLock(datadir).has_value();
         haze::GhostMode haze_mode = haze::DetectOrSelectMode(datadir, args);
 
-        // Validate mode consistency with existing data files
-        auto consistency_error = haze::ValidateModeConsistency(datadir, haze_mode);
-        if (consistency_error.has_value()) {
-            return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated(*consistency_error)};
+        // Validate mode consistency with existing data files, but only for
+        // newly selected modes. If the mode was loaded from the lock file,
+        // a previous session already validated it — skip to avoid false
+        // positives from pre-allocated blk files (XOR-obfuscated, non-zero).
+        if (!mode_from_lock) {
+            auto consistency_error = haze::ValidateModeConsistency(datadir, haze_mode);
+            if (consistency_error.has_value()) {
+                return {ChainstateLoadStatus::FAILURE_FATAL, Untranslated(*consistency_error)};
+            }
         }
 
         // Initialize the Exorcism engine with the selected mode
@@ -1377,9 +1388,13 @@ static ChainstateLoadResult InitAndLoadChainstate(
         LogPrintf("Ghost Haze: operating in %s mode\n",
             haze_mode == haze::GhostMode::HAZED ? "hazed" : "full_archive");
 
-        // Advertise NODE_GHOST_HAZE service bit for Hazed nodes
+        // Advertise NODE_GHOST_HAZE service bit for Hazed nodes.
+        // Remove NODE_NETWORK since hazed nodes cannot serve full blocks —
+        // peers would stall waiting for block data that we can only serve
+        // in stripped form. Similar to pruned nodes not advertising NODE_NETWORK.
         if (haze_mode == haze::GhostMode::HAZED) {
             g_local_services = ServiceFlags(g_local_services | NODE_GHOST_HAZE);
+            g_local_services = ServiceFlags(g_local_services & ~NODE_NETWORK);
         }
     }
 
@@ -1387,7 +1402,8 @@ static ChainstateLoadResult InitAndLoadChainstate(
     // dependency between validation and index/base, since the latter is not in
     // libbitcoinkernel.
     chainman.snapshot_download_completed = [&node]() {
-        if (!node.chainman->m_blockman.IsPruneMode()) {
+        if (!node.chainman->m_blockman.IsPruneMode() &&
+            !node.chainman->m_blockman.m_ghost_exorcism.IsActive()) {
             LogInfo("[snapshot] re-enabling NODE_NETWORK services");
             node.connman->AddLocalServices(NODE_NETWORK);
         }
@@ -1881,6 +1897,210 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
 
     ChainstateManager& chainman = *Assert(node.chainman);
     auto& kernel_notifications{*Assert(node.notifications)};
+
+    // ********************************************************* Ghost Haze CLI handlers
+    // These run after chainstate is loaded but before PeerManager, then exit.
+
+    if (args.GetBoolArg("-exorcist", false)) {
+        const fs::path datadir = args.GetDataDirNet();
+        const fs::path blocks_dir = args.GetBlocksDirPath();
+
+        // If already hazed, nothing to convert
+        auto persisted = haze::ReadModeLock(datadir);
+        if (persisted.has_value() && *persisted == haze::GhostMode::HAZED) {
+            tfm::format(std::cout, "Node is already in HAZED mode. Nothing to convert.\n");
+            node.exit_status = EXIT_SUCCESS;
+            return false;
+        }
+
+        // Check that blk files exist
+        bool has_blk_files = false;
+        std::error_code ec;
+        for (const auto& entry : fs::directory_iterator(blocks_dir, ec)) {
+            if (entry.is_regular_file()) {
+                const std::string fname = entry.path().filename().string();
+                if (fname.size() >= 3 && fname.substr(0, 3) == "blk" && fname.find(".dat") != std::string::npos) {
+                    has_blk_files = true;
+                    break;
+                }
+            }
+        }
+        if (!has_blk_files) {
+            tfm::format(std::cout, "No blk*.dat files found in %s. Nothing to convert.\n", fs::PathToString(blocks_dir));
+            node.exit_status = EXIT_SUCCESS;
+            return false;
+        }
+
+        tfm::format(std::cout,
+            "\n"
+            "╔══════════════════════════════════════════════════════════╗\n"
+            "║                  Ghost Exorcist                         ║\n"
+            "╠══════════════════════════════════════════════════════════╣\n"
+            "║  This will PERMANENTLY convert this node to Hazed mode. ║\n"
+            "║  All witness, scriptSig, OP_RETURN, and coinbase data   ║\n"
+            "║  will be stripped from block storage. Original blk*.dat ║\n"
+            "║  files will be securely zeroed and deleted.             ║\n"
+            "║                                                         ║\n"
+            "║  THIS OPERATION IS IRREVERSIBLE.                        ║\n"
+            "╚══════════════════════════════════════════════════════════╝\n"
+            "\n"
+            "Starting conversion...\n\n");
+
+        haze::GhostExorcist exorcist;
+        auto result = exorcist.Resume(chainman.m_blockman, blocks_dir,
+            [](const haze::GhostExorcist::Progress& p) {
+                tfm::format(std::cout, "\r[%s] %u/%u blocks (%.1f%%)",
+                    p.current_phase, p.blocks_processed, p.blocks_total, p.percent);
+                std::cout << std::flush;
+            });
+
+        if (!result.success) {
+            tfm::format(std::cout, "\nExorcist conversion FAILED: %s\n", result.error);
+            return false;
+        }
+
+        // Persist the mode
+        if (!haze::WriteModeLock(datadir, haze::GhostMode::HAZED)) {
+            tfm::format(std::cout, "\nWARNING: Failed to write mode lock file. "
+                "Manually create %s with byte 0x00.\n",
+                fs::PathToString(datadir / haze::HAZE_MODE_LOCK_FILE));
+        }
+
+        // Re-init exorcism engine in hazed mode
+        chainman.m_blockman.m_ghost_exorcism.Init(haze::GhostMode::HAZED);
+
+        tfm::format(std::cout,
+            "\n\nConversion complete!\n"
+            "  Blocks converted: %u\n"
+            "  Original size:    %.2f MB\n"
+            "  Stripped size:    %.2f MB\n"
+            "  Space freed:      %.2f MB (%.1f%% reduction)\n"
+            "\nNode will now shut down. Restart without --exorcist to run in Hazed mode.\n",
+            result.blocks_converted,
+            result.original_size / 1048576.0,
+            result.stripped_size / 1048576.0,
+            result.bytes_freed / 1048576.0,
+            result.original_size > 0
+                ? static_cast<double>(result.bytes_freed) / result.original_size * 100.0
+                : 0.0);
+
+        node.exit_status = EXIT_SUCCESS;
+        return false; // Clean shutdown
+    }
+
+    if (args.GetBoolArg("-haze-status", false)) {
+        const fs::path datadir = args.GetDataDirNet();
+        const fs::path blocks_dir = args.GetBlocksDirPath();
+
+        auto persisted = haze::ReadModeLock(datadir);
+        std::string mode_str = "unknown (no lock file)";
+        if (persisted.has_value()) {
+            mode_str = (*persisted == haze::GhostMode::HAZED) ? "HAZED" : "FULL_ARCHIVE";
+        }
+
+        bool exorcism_active = chainman.m_blockman.m_ghost_exorcism.IsActive();
+        int tip_height = -1;
+        {
+            LOCK(chainman.GetMutex());
+            if (chainman.ActiveTip()) {
+                tip_height = chainman.ActiveTip()->nHeight;
+            }
+        }
+
+        // Count and sum file sizes
+        uint64_t gsb_count = 0, gsb_bytes = 0;
+        uint64_t blk_count = 0, blk_bytes = 0;
+        std::error_code ec;
+        for (const auto& entry : fs::directory_iterator(blocks_dir, ec)) {
+            if (!entry.is_regular_file()) continue;
+            const std::string fname = entry.path().filename().string();
+            if (fname.size() >= 3 && fname.find(".dat") != std::string::npos) {
+                uint64_t fsize = entry.file_size(ec);
+                if (fname.substr(0, 3) == "gsb") { gsb_count++; gsb_bytes += fsize; }
+                else if (fname.substr(0, 3) == "blk") { blk_count++; blk_bytes += fsize; }
+            }
+        }
+
+        tfm::format(std::cout,
+            "Ghost Haze Status\n"
+            "  Mode:              %s\n"
+            "  Exorcism active:   %s\n"
+            "  Chain tip:         %d\n"
+            "  Blocks processed:  %lu\n"
+            "  Bytes stripped:    %.2f MB\n"
+            "  GSB files:         %lu (%.2f MB)\n"
+            "  BLK files:         %lu (%.2f MB)\n",
+            mode_str,
+            exorcism_active ? "yes" : "no",
+            tip_height,
+            chainman.m_blockman.m_ghost_exorcism.GetBlocksProcessed(),
+            chainman.m_blockman.m_ghost_exorcism.GetTotalBytesStripped() / 1048576.0,
+            gsb_count, gsb_bytes / 1048576.0,
+            blk_count, blk_bytes / 1048576.0);
+
+        node.exit_status = EXIT_SUCCESS;
+        return false; // Clean exit
+    }
+
+    if (args.GetBoolArg("-legal-packet", false)) {
+        LOCK(chainman.GetMutex());
+        auto packet = haze::GenerateLegalPacket(
+            chainman.m_blockman, chainman.ActiveChain(), args.GetDataDirNet());
+
+        if (packet.has_value()) {
+            tfm::format(std::cout, "%s\n", packet->ToJSON().write(2));
+        } else {
+            tfm::format(std::cerr, "Error: Legal packet generation requires Hazed mode.\n");
+        }
+        node.exit_status = EXIT_SUCCESS;
+        return false; // Clean exit
+    }
+
+    const std::string snapshot_path_str = args.GetArg("-loadtxoutset", "");
+    if (!snapshot_path_str.empty()) {
+        const fs::path snapshot_path = fs::u8path(snapshot_path_str);
+        const fs::path abs_path = fs::absolute(snapshot_path);
+
+        FILE* file = fsbridge::fopen(abs_path, "rb");
+        AutoFile afile{file};
+        if (afile.IsNull()) {
+            tfm::format(std::cerr, "Error: Cannot open snapshot file: %s\n",
+                         fs::PathToString(abs_path));
+            return false;
+        }
+
+        node::SnapshotMetadata metadata{chainman.GetParams().MessageStart()};
+        try {
+            afile >> metadata;
+        } catch (const std::exception& e) {
+            tfm::format(std::cerr, "Error: Invalid snapshot metadata: %s\n", e.what());
+            return false;
+        }
+
+        tfm::format(std::cout, "Loading UTXO snapshot from %s...\n",
+                     fs::PathToString(abs_path));
+
+        auto result = chainman.ActivateSnapshot(afile, metadata, false);
+        if (!result) {
+            tfm::format(std::cerr, "Error: %s\n",
+                         util::ErrorString(result).original);
+            return false;
+        }
+
+        CBlockIndex& snapshot_index = *CHECK_NONFATAL(*result);
+        tfm::format(std::cout,
+            "Snapshot loaded successfully!\n"
+            "  Base height:  %d\n"
+            "  Base hash:    %s\n"
+            "  Coins loaded: %lu\n"
+            "\nRestart without -loadtxoutset to begin syncing.\n",
+            snapshot_index.nHeight,
+            snapshot_index.GetBlockHash().ToString(),
+            metadata.m_coins_count);
+
+        node.exit_status = EXIT_SUCCESS;
+        return false;  // Clean shutdown
+    }
 
     assert(!node.peerman);
     node.peerman = PeerManager::make(*node.connman, *node.addrman,

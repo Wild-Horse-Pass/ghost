@@ -22,6 +22,7 @@ struct StripResult {
     size_t scriptsig_bytes_removed{0};
     size_t opreturn_bytes_removed{0};
     size_t coinbase_bytes_removed{0};
+    size_t nonstandard_bytes_removed{0};
     uint32_t txids_stored{0};         //!< Number of txids stored explicitly (legacy txs)
 };
 
@@ -68,6 +69,17 @@ bool VerifyStrippedBlock(const CStrippedBlock& stripped, const CBlockHeader& exp
  * @return A CScript containing just OP_RETURN + 0x00.
  */
 CScript MakeStrippedOpReturn();
+
+/**
+ * Create a stripped non-standard scriptPubKey.
+ *
+ * Replaces non-standard output scripts (bare multisig, unknown scripts)
+ * with OP_RETURN + OP_1. This is distinct from stripped OP_RETURN outputs
+ * which use OP_RETURN + OP_0, allowing forensic distinction between the two.
+ *
+ * @return A CScript containing OP_RETURN + 0x51.
+ */
+CScript MakeStrippedNonstandard();
 
 } // namespace haze
 

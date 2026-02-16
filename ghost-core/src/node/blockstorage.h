@@ -356,6 +356,20 @@ public:
      */
     FlatFilePos WriteStrippedBlock(const CBlock& block, int nHeight);
 
+    /** Store a pre-stripped block (received from a peer) to GSB storage.
+     *
+     * Unlike WriteStrippedBlock() which takes a full CBlock and strips it,
+     * this takes an already-stripped block (e.g. received via P2P
+     * GHOST_STRIPPED_BLOCK message) and writes it directly.
+     *
+     * @param[in]  stripped  the already-stripped block to write
+     * @param[in]  nHeight   the height of the block
+     *
+     * @returns in case of success, the position to which the GSB was written
+     *          in case of an error, an empty FlatFilePos
+     */
+    FlatFilePos WriteReceivedStrippedBlock(const haze::CStrippedBlock& stripped, int nHeight);
+
     /** Ghost Exorcism instance for stripping blocks in Hazed mode. */
     haze::GhostExorcism m_ghost_exorcism;
 

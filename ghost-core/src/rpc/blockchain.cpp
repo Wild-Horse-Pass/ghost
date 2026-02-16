@@ -3427,6 +3427,10 @@ static RPCHelpMan loadtxoutset()
     // provide the last 288 blocks, but it doesn't hurt to set it.
     node.connman->AddLocalServices(NODE_NETWORK_LIMITED);
 
+    if (chainman.m_blockman.m_ghost_exorcism.IsActive()) {
+        LogInfo("[snapshot] Hazed mode: background IBD disabled, snapshot is sole chainstate");
+    }
+
     CBlockIndex& snapshot_index{*CHECK_NONFATAL(*activation_result)};
 
     UniValue result(UniValue::VOBJ);

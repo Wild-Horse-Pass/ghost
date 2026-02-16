@@ -1264,6 +1264,9 @@ public:
 
     void ReceivedBlockTransactions(const CBlock& block, CBlockIndex* pindexNew, const FlatFilePos& pos) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
 
+    /** Overload for pre-stripped blocks where we know the tx count but don't have a CBlock. */
+    void ReceivedBlockTransactions(uint32_t nTx, CBlockIndex* pindexNew, const FlatFilePos& pos) EXCLUSIVE_LOCKS_REQUIRED(cs_main);
+
     /**
      * Try to add a transaction to the memory pool.
      *

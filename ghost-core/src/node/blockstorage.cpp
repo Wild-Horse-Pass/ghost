@@ -1240,6 +1240,46 @@ FlatFilePos BlockManager::WriteStrippedBlock(const CBlock& block, int nHeight)
     return pos;
 }
 
+FlatFilePos BlockManager::WriteReceivedStrippedBlock(const haze::CStrippedBlock& stripped, int nHeight)
+{
+    const unsigned int block_size{static_cast<unsigned int>(GetSerializeSize(stripped))};
+
+    FlatFilePos pos{FindNextBlockPos(block_size + STORAGE_HEADER_BYTES, nHeight, stripped.m_header.GetBlockTime())};
+    if (pos.IsNull()) {
+        LogError("FindNextBlockPos failed for %s while writing received stripped block", pos.ToString());
+        return FlatFilePos();
+    }
+
+    AutoFile file{OpenGSBFile(pos, /*fReadOnly=*/false)};
+    if (file.IsNull()) {
+        LogError("OpenGSBFile failed for %s while writing received stripped block", pos.ToString());
+        m_opts.notifications.fatalError(_("Failed to write received stripped block."));
+        return FlatFilePos();
+    }
+
+    {
+        BufferedWriter fileout{file};
+
+        static constexpr MessageStartChars gsb_magic = {0x47, 0x53, 0x42, 0x00}; // "GSB\0"
+        fileout << gsb_magic << block_size;
+        pos.nPos += STORAGE_HEADER_BYTES;
+
+        fileout << stripped;
+    }
+
+    if (file.fclose() != 0) {
+        LogError("Failed to close GSB file %s: %s", pos.ToString(), SysErrorString(errno));
+        m_opts.notifications.fatalError(_("Failed to close file when writing received stripped block."));
+        return FlatFilePos();
+    }
+
+    LogPrintLevel(BCLog::HAZE, BCLog::Level::Debug,
+        "Wrote received stripped block height=%d to gsb%05u.dat pos=%u (%u bytes)\n",
+        nHeight, pos.nFile, pos.nPos, block_size);
+
+    return pos;
+}
+
 static auto InitBlocksdirXorKey(const BlockManager::Options& opts)
 {
     // Bytes are serialized without length indicator, so this is also the exact

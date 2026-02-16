@@ -32,7 +32,8 @@ StripResult GhostExorcism::StripValidatedBlock(const CBlock& block)
     size_t bytes_stripped = result.witness_bytes_removed
                          + result.scriptsig_bytes_removed
                          + result.opreturn_bytes_removed
-                         + result.coinbase_bytes_removed;
+                         + result.coinbase_bytes_removed
+                         + result.nonstandard_bytes_removed;
     m_total_bytes_stripped.fetch_add(bytes_stripped);
     m_blocks_processed.fetch_add(1);
 

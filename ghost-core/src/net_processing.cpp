@@ -2288,6 +2288,8 @@ void PeerManagerImpl::ProcessGetBlockData(CNode& pfrom, Peer& peer, const CInv& 
                 return;
             }
             MakeAndPushMessage(pfrom, NetMsgType::GHOST_STRIPPED_BLOCK, stripped);
+            LogDebug(BCLog::HAZE, "served stripped block %s to hazed peer=%d\n",
+                inv.hash.ToString(), pfrom.GetId());
         } else {
             // Peer does not support Haze — send redirect with known Full Archive peers
             haze::GhostRedirect redirect;
@@ -2298,6 +2300,8 @@ void PeerManagerImpl::ProcessGetBlockData(CNode& pfrom, Peer& peer, const CInv& 
                 }
             });
             MakeAndPushMessage(pfrom, NetMsgType::GHOST_REDIRECT, redirect);
+            LogDebug(BCLog::HAZE, "sent redirect for block %s to non-hazed peer=%d (%zu archive peers)\n",
+                inv.hash.ToString(), pfrom.GetId(), redirect.archive_peers.size());
         }
         haze_block_sent = true;
     }
@@ -4739,12 +4743,37 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         LogDebug(BCLog::NET, "received stripped block %s peer=%d (%zu txs)\n",
             stripped.m_header.GetHash().ToString(), pfrom.GetId(), stripped.GetTxCount());
 
-        // Store the stripped block if we're in Hazed mode
+        // Store the stripped block directly to GSB if we're in Hazed mode.
+        // This is a storage-only path — it writes to GSB and updates the block
+        // index but does NOT call ActivateBestChain(). Stripped blocks cannot be
+        // connected (scriptPubKeys are modified, so UTXO construction would fail).
         if (m_chainman.m_blockman.IsHazeMode()) {
-            // The stripped block will be written via the normal block processing
-            // pipeline through AcceptBlock → WriteStrippedBlock, not directly here.
-            // For now, we log receipt. Full IBD integration with stripped blocks
-            // will extend this handler.
+            LOCK(cs_main);
+
+            const uint256 block_hash = stripped.m_header.GetHash();
+            CBlockIndex* pindex = m_chainman.m_blockman.LookupBlockIndex(block_hash);
+            if (!pindex) {
+                LogDebug(BCLog::NET, "Stripped block %s not in block index\n", block_hash.ToString());
+                return;
+            }
+
+            if (pindex->nStatus & BLOCK_HAVE_DATA) {
+                LogDebug(BCLog::NET, "Already have data for stripped block %s\n", block_hash.ToString());
+                return;
+            }
+
+            FlatFilePos blockPos = m_chainman.m_blockman.WriteReceivedStrippedBlock(
+                stripped, pindex->nHeight);
+            if (blockPos.IsNull()) {
+                LogError("Failed to write received stripped block %s to GSB\n", block_hash.ToString());
+                return;
+            }
+
+            m_chainman.ReceivedBlockTransactions(
+                static_cast<uint32_t>(stripped.GetTxCount()), pindex, blockPos);
+
+            LogDebug(BCLog::HAZE, "Stored received stripped block %s at height %d\n",
+                block_hash.ToString(), pindex->nHeight);
         }
 
         return;

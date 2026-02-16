@@ -5,12 +5,20 @@
 #include <haze/field_classifier.h>
 
 #include <script/script.h>
+#include <script/solver.h>
 
 namespace haze {
 
 bool IsOpReturn(const CScript& script)
 {
     return script.size() >= 1 && script[0] == OP_RETURN;
+}
+
+bool IsNonstandardScript(const CScript& script)
+{
+    std::vector<std::vector<unsigned char>> solutions;
+    TxoutType type = Solver(script, solutions);
+    return type == TxoutType::NONSTANDARD || type == TxoutType::MULTISIG;
 }
 
 size_t WitnessDataSize(const CScriptWitness& witness)
@@ -29,6 +37,16 @@ bool RequiresStoredTxid(const CTransaction& tx)
             return true;
         }
     }
+
+    // OP_RETURN and non-standard outputs get their scriptPubKey replaced during
+    // stripping. Since outputs are part of the non-witness txid hash, this
+    // modification changes the txid. We must store it to preserve merkle root.
+    for (const auto& txout : tx.vout) {
+        if (IsOpReturn(txout.scriptPubKey) || IsNonstandardScript(txout.scriptPubKey)) {
+            return true;
+        }
+    }
+
     return false;
 }
 
@@ -76,7 +94,7 @@ std::vector<HazeableField> ClassifyTransaction(const CTransaction& tx, bool is_c
         }
     }
 
-    // Classify outputs: OP_RETURN payloads are hazeable
+    // Classify outputs: OP_RETURN payloads and non-standard scripts are hazeable
     for (uint32_t i = 0; i < tx.vout.size(); ++i) {
         const auto& txout = tx.vout[i];
         if (IsOpReturn(txout.scriptPubKey)) {
@@ -90,6 +108,13 @@ std::vector<HazeableField> ClassifyTransaction(const CTransaction& tx, bool is_c
                     payload_size
                 });
             }
+        } else if (IsNonstandardScript(txout.scriptPubKey)) {
+            fields.push_back({
+                HazeFieldType::NONSTANDARD_SCRIPT,
+                tx_index,
+                i,
+                txout.scriptPubKey.size()
+            });
         }
     }
 
