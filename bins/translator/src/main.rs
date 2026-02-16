@@ -894,26 +894,19 @@ async fn handle_sv1_request(
                             state_guard.version_rolling_mask = Some(negotiated_mask);
                         }
 
-                        result.insert(
-                            "version-rolling".to_string(),
-                            serde_json::json!(true),
-                        );
+                        result.insert("version-rolling".to_string(), serde_json::json!(true));
                         result.insert(
                             "version-rolling.mask".to_string(),
                             serde_json::json!(format!("{:08x}", negotiated_mask)),
                         );
                     } else {
                         // Not enough bits in intersection
-                        result.insert(
-                            "version-rolling".to_string(),
-                            serde_json::json!(false),
-                        );
+                        result.insert("version-rolling".to_string(), serde_json::json!(false));
                     }
                 }
             }
 
-            let response =
-                sv1::Response::success(request.id, serde_json::Value::Object(result));
+            let response = sv1::Response::success(request.id, serde_json::Value::Object(result));
             let json = serde_json::to_string(&response)?;
             sv1_tx.send(json).await?;
         }
@@ -1889,7 +1882,10 @@ mod tests {
 
         // Check: bits modified outside mask
         let diff_outside_mask = (miner_version ^ template_version) & !mask;
-        assert_ne!(diff_outside_mask, 0, "Should detect out-of-mask modification");
+        assert_ne!(
+            diff_outside_mask, 0,
+            "Should detect out-of-mask modification"
+        );
 
         // Valid version rolling (only changes bits within mask)
         let valid_miner_version: u32 = 0x20002000; // changed bit 13 (within mask)
@@ -1926,6 +1922,9 @@ mod tests {
         let submit = super::sv1::SubmitParams::from_params(&params).unwrap();
         assert_eq!(submit.worker_name, "worker");
         assert_eq!(submit.nonce, "deadbeef");
-        assert!(submit.version_bits.is_none(), "5-param submit should have no version_bits");
+        assert!(
+            submit.version_bits.is_none(),
+            "5-param submit should have no version_bits"
+        );
     }
 }

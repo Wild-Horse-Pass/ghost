@@ -654,7 +654,10 @@ async fn main() -> Result<()> {
     // Set local node's payout address for node reward distribution
     if let Some(ref addr) = config.pool.node_payout_address {
         if let Err(e) = db.update_node_payout_address(&node_id_hex, addr) {
-            warn!("Failed to set node payout address: {} - continuing anyway", e);
+            warn!(
+                "Failed to set node payout address: {} - continuing anyway",
+                e
+            );
         } else {
             info!(address = %addr, "Node payout address configured");
         }
@@ -674,7 +677,10 @@ async fn main() -> Result<()> {
             );
         }
         Err(e) => {
-            warn!("Failed to check MPC elder status: {} - defaulting to non-elder", e);
+            warn!(
+                "Failed to check MPC elder status: {} - defaulting to non-elder",
+                e
+            );
         }
     }
 
@@ -713,7 +719,9 @@ async fn main() -> Result<()> {
     round_manager.reload_from_db(&db);
 
     // Resolve coinbase tag: explicit config overrides mode-based default
-    let coinbase_tag = config.pool.coinbase_extra
+    let coinbase_tag = config
+        .pool
+        .coinbase_extra
         .clone()
         .unwrap_or_else(|| mining_mode.default_coinbase_tag().to_string());
 
@@ -773,10 +781,8 @@ async fn main() -> Result<()> {
     let voting_manager = Arc::new(VotingManager::new(100)); // 100 max sessions
 
     // Create broadcast callback for vote propagation via Noise relay
-    let (vote_tx, mut vote_rx) = tokio::sync::mpsc::channel::<(
-        ghost_consensus::message::MessageType,
-        Vec<u8>,
-    )>(64);
+    let (vote_tx, mut vote_rx) =
+        tokio::sync::mpsc::channel::<(ghost_consensus::message::MessageType, Vec<u8>)>(64);
     let mesh_for_vote_relay = Arc::clone(&mesh);
     tokio::spawn(async move {
         while let Some((msg_type, payload)) = vote_rx.recv().await {
@@ -885,13 +891,17 @@ async fn main() -> Result<()> {
     });
 
     let vote_handler = Arc::new(
-        VoteHandler::with_config(Arc::clone(&identity), Arc::clone(&voting_manager), vote_config)
-            .with_broadcaster(broadcast_fn)
-            .with_executor(execute_fn)
-            .with_proposal_store(proposal_store_fn)
-            .with_ban_manager(Arc::clone(&ban_manager))
-            .with_database(Arc::clone(&db))
-            .with_rate_limiter_persistence(rate_limiter_path),
+        VoteHandler::with_config(
+            Arc::clone(&identity),
+            Arc::clone(&voting_manager),
+            vote_config,
+        )
+        .with_broadcaster(broadcast_fn)
+        .with_executor(execute_fn)
+        .with_proposal_store(proposal_store_fn)
+        .with_ban_manager(Arc::clone(&ban_manager))
+        .with_database(Arc::clone(&db))
+        .with_rate_limiter_persistence(rate_limiter_path),
     );
     // Start the background persistence task (persists every 60 seconds)
     vote_handler.start_persistence_task();
@@ -1046,10 +1056,8 @@ async fn main() -> Result<()> {
         // Create broadcast callbacks for ZK handlers
         // Uses async Noise relay: sync closure queues messages, background task
         // routes them through mesh.broadcast() which uses Noise encryption
-        let (zk_block_tx, mut zk_block_rx) = tokio::sync::mpsc::channel::<(
-            ghost_consensus::message::MessageType,
-            Vec<u8>,
-        )>(64);
+        let (zk_block_tx, mut zk_block_rx) =
+            tokio::sync::mpsc::channel::<(ghost_consensus::message::MessageType, Vec<u8>)>(64);
         let mesh_for_zk_block_relay = Arc::clone(&mesh);
         tokio::spawn(async move {
             while let Some((msg_type, payload)) = zk_block_rx.recv().await {
@@ -1075,10 +1083,8 @@ async fn main() -> Result<()> {
                 })
             });
 
-        let (zk_payout_tx, mut zk_payout_rx) = tokio::sync::mpsc::channel::<(
-            ghost_consensus::message::MessageType,
-            Vec<u8>,
-        )>(64);
+        let (zk_payout_tx, mut zk_payout_rx) =
+            tokio::sync::mpsc::channel::<(ghost_consensus::message::MessageType, Vec<u8>)>(64);
         let mesh_for_zk_payout_relay = Arc::clone(&mesh);
         tokio::spawn(async move {
             while let Some((msg_type, payload)) = zk_payout_rx.recv().await {
@@ -1106,8 +1112,7 @@ async fn main() -> Result<()> {
 
         // Create ZK handlers WITHOUT verifiers initially - they'll be set when params are ready
         let zk_vote_handler = Arc::new(
-            ZkVoteHandler::new(Arc::clone(&identity))
-                .with_broadcaster(zk_block_broadcast),
+            ZkVoteHandler::new(Arc::clone(&identity)).with_broadcaster(zk_block_broadcast),
         );
 
         let zk_payout_handler = Arc::new(
@@ -1151,7 +1156,9 @@ async fn main() -> Result<()> {
                         Ok(block_verifier) => {
                             let block_verifier = Arc::new(block_verifier);
                             zk_vote_handler_for_init.set_verifier(
-                                ghost_consensus::zk_vote_handler::create_block_verifier(block_verifier),
+                                ghost_consensus::zk_vote_handler::create_block_verifier(
+                                    block_verifier,
+                                ),
                             );
                             info!(
                                 elapsed_secs = start.elapsed().as_secs(),
@@ -1239,10 +1246,8 @@ async fn main() -> Result<()> {
         // Create broadcast callback for MPC handler
         // Uses async Noise relay: sync closure queues messages, background task
         // routes them through mesh.broadcast() which uses Noise encryption
-        let (mpc_tx, mut mpc_rx) = tokio::sync::mpsc::channel::<(
-            ghost_consensus::message::MessageType,
-            Vec<u8>,
-        )>(64);
+        let (mpc_tx, mut mpc_rx) =
+            tokio::sync::mpsc::channel::<(ghost_consensus::message::MessageType, Vec<u8>)>(64);
         let mesh_for_mpc_relay = Arc::clone(&mesh);
         tokio::spawn(async move {
             while let Some((msg_type, payload)) = mpc_rx.recv().await {
@@ -1270,15 +1275,12 @@ async fn main() -> Result<()> {
 
         // Create MPC handler
         let mpc_handler = Arc::new(
-            MpcHandler::new(
-                Arc::clone(&identity),
-                Arc::clone(&db),
-            )
-            .with_broadcaster(mpc_broadcast)
-            .with_state(
-                ceremony_manager.contribution_count(),
-                ceremony_manager.is_ossified(),
-            ),
+            MpcHandler::new(Arc::clone(&identity), Arc::clone(&db))
+                .with_broadcaster(mpc_broadcast)
+                .with_state(
+                    ceremony_manager.contribution_count(),
+                    ceremony_manager.is_ossified(),
+                ),
         );
 
         // Register MPC handler with mesh
@@ -1311,7 +1313,9 @@ async fn main() -> Result<()> {
 
             // Check if we've already contributed
             if db_for_mpc.is_mpc_elder(&node_id_hex).unwrap_or(false) {
-                let position = db_for_mpc.get_mpc_elder_position(&node_id_hex).unwrap_or(None);
+                let position = db_for_mpc
+                    .get_mpc_elder_position(&node_id_hex)
+                    .unwrap_or(None);
                 info!(position = ?position, "Already an MPC contributor (elder)");
                 return;
             }
@@ -1320,20 +1324,21 @@ async fn main() -> Result<()> {
             // This handles race conditions where multiple nodes try the same position
             // simultaneously — the loser retries at the next position.
             // Cache the signed message so retries broadcast the same hash (votes accumulate).
-            let mut cached_msg: Option<(ghost_consensus::message::MpcContributionMessage, u32)> = None;
+            let mut cached_msg: Option<(ghost_consensus::message::MpcContributionMessage, u32)> =
+                None;
             for attempt in 1..=5u32 {
                 // Re-check if we became an elder (e.g., via P2P sync of our own contribution)
                 if db_for_mpc.is_mpc_elder(&node_id_hex).unwrap_or(false) {
-                    let position = db_for_mpc.get_mpc_elder_position(&node_id_hex).unwrap_or(None);
+                    let position = db_for_mpc
+                        .get_mpc_elder_position(&node_id_hex)
+                        .unwrap_or(None);
                     info!(position = ?position, "Now an MPC contributor (elder)");
                     // Update live capabilities so health pings reflect elder status
                     mesh_for_mpc_startup.update_elder_status(true);
                     let mut updated_caps = initial_capabilities;
                     updated_caps.elder_status = true;
-                    round_manager_for_mpc.update_node_capabilities(
-                        identity_for_mpc.node_id(),
-                        updated_caps,
-                    );
+                    round_manager_for_mpc
+                        .update_node_capabilities(identity_for_mpc.node_id(), updated_caps);
                     return;
                 }
 
@@ -1382,17 +1387,23 @@ async fn main() -> Result<()> {
                                             Ok(data) if data.len() > 1000 => {
                                                 // Save params to disk
                                                 let _ = std::fs::create_dir_all(&params_dir);
-                                                let params_path = params_dir.join("block_params_v0.bin");
-                                                let current_path = params_dir.join("block_params_current.bin");
+                                                let params_path =
+                                                    params_dir.join("block_params_v0.bin");
+                                                let current_path =
+                                                    params_dir.join("block_params_current.bin");
 
-                                                if let Err(e) = std::fs::write(&params_path, &data) {
+                                                if let Err(e) = std::fs::write(&params_path, &data)
+                                                {
                                                     warn!(error = %e, "MPC: Failed to save fetched params");
                                                     continue;
                                                 }
 
                                                 // Create symlink to current
                                                 let _ = std::fs::remove_file(&current_path);
-                                                if let Err(e) = std::os::unix::fs::symlink(&params_path, &current_path) {
+                                                if let Err(e) = std::os::unix::fs::symlink(
+                                                    &params_path,
+                                                    &current_path,
+                                                ) {
                                                     warn!(error = %e, "MPC: Failed to create params symlink");
                                                 }
 
@@ -1421,7 +1432,8 @@ async fn main() -> Result<()> {
                                 // Also fetch MPC status to sync contribution count
                                 for seed in &seed_nodes_for_mpc {
                                     let host = seed.split(':').next().unwrap_or(seed);
-                                    let status_url = format!("http://{}:8080/api/v1/mpc/status", host);
+                                    let status_url =
+                                        format!("http://{}:8080/api/v1/mpc/status", host);
 
                                     if let Ok(response) = reqwest::Client::new()
                                         .get(&status_url)
@@ -1429,10 +1441,19 @@ async fn main() -> Result<()> {
                                         .send()
                                         .await
                                     {
-                                        if let Ok(status) = response.json::<serde_json::Value>().await {
-                                            if let Some(count) = status.get("contribution_count").and_then(|c| c.as_u64()) {
-                                                info!(contribution_count = count, "MPC: Synced contribution count from peer");
-                                                ceremony_manager_for_startup.sync_contribution_count(count as u32);
+                                        if let Ok(status) =
+                                            response.json::<serde_json::Value>().await
+                                        {
+                                            if let Some(count) = status
+                                                .get("contribution_count")
+                                                .and_then(|c| c.as_u64())
+                                            {
+                                                info!(
+                                                    contribution_count = count,
+                                                    "MPC: Synced contribution count from peer"
+                                                );
+                                                ceremony_manager_for_startup
+                                                    .sync_contribution_count(count as u32);
                                             }
                                             break;
                                         }
@@ -1442,7 +1463,8 @@ async fn main() -> Result<()> {
                                 // Fetch and sync MPC contributors list (needed for vote validation)
                                 for seed in &seed_nodes_for_mpc {
                                     let host = seed.split(':').next().unwrap_or(seed);
-                                    let contributors_url = format!("http://{}:8080/api/v1/mpc/contributors", host);
+                                    let contributors_url =
+                                        format!("http://{}:8080/api/v1/mpc/contributors", host);
 
                                     if let Ok(response) = reqwest::Client::new()
                                         .get(&contributors_url)
@@ -1450,29 +1472,53 @@ async fn main() -> Result<()> {
                                         .send()
                                         .await
                                     {
-                                        if let Ok(data) = response.json::<serde_json::Value>().await {
-                                            if let Some(contributors) = data.get("contributors").and_then(|c| c.as_array()) {
+                                        if let Ok(data) = response.json::<serde_json::Value>().await
+                                        {
+                                            if let Some(contributors) =
+                                                data.get("contributors").and_then(|c| c.as_array())
+                                            {
                                                 let mut synced_count = 0;
                                                 for contrib in contributors {
-                                                    let position = contrib.get("position").and_then(|p| p.as_u64()).unwrap_or(0) as u32;
-                                                    let node_id = contrib.get("node_id").and_then(|n| n.as_str()).unwrap_or("");
-                                                    let prev_hash_hex = contrib.get("prev_params_hash").and_then(|h| h.as_str()).unwrap_or("");
-                                                    let new_hash_hex = contrib.get("new_params_hash").and_then(|h| h.as_str()).unwrap_or("");
-                                                    let epoch = contrib.get("epoch").and_then(|e| e.as_u64()).unwrap_or(0);
-                                                    let created_at = contrib.get("created_at").and_then(|c| c.as_u64()).unwrap_or(0);
+                                                    let position = contrib
+                                                        .get("position")
+                                                        .and_then(|p| p.as_u64())
+                                                        .unwrap_or(0)
+                                                        as u32;
+                                                    let node_id = contrib
+                                                        .get("node_id")
+                                                        .and_then(|n| n.as_str())
+                                                        .unwrap_or("");
+                                                    let prev_hash_hex = contrib
+                                                        .get("prev_params_hash")
+                                                        .and_then(|h| h.as_str())
+                                                        .unwrap_or("");
+                                                    let new_hash_hex = contrib
+                                                        .get("new_params_hash")
+                                                        .and_then(|h| h.as_str())
+                                                        .unwrap_or("");
+                                                    let epoch = contrib
+                                                        .get("epoch")
+                                                        .and_then(|e| e.as_u64())
+                                                        .unwrap_or(0);
+                                                    let created_at = contrib
+                                                        .get("created_at")
+                                                        .and_then(|c| c.as_u64())
+                                                        .unwrap_or(0);
 
                                                     if position == 0 || node_id.is_empty() {
                                                         continue;
                                                     }
 
-                                                    let prev_hash: [u8; 32] = hex::decode(prev_hash_hex)
-                                                        .ok()
-                                                        .and_then(|b| b.try_into().ok())
-                                                        .unwrap_or([0u8; 32]);
-                                                    let new_hash: [u8; 32] = hex::decode(new_hash_hex)
-                                                        .ok()
-                                                        .and_then(|b| b.try_into().ok())
-                                                        .unwrap_or([0u8; 32]);
+                                                    let prev_hash: [u8; 32] =
+                                                        hex::decode(prev_hash_hex)
+                                                            .ok()
+                                                            .and_then(|b| b.try_into().ok())
+                                                            .unwrap_or([0u8; 32]);
+                                                    let new_hash: [u8; 32] =
+                                                        hex::decode(new_hash_hex)
+                                                            .ok()
+                                                            .and_then(|b| b.try_into().ok())
+                                                            .unwrap_or([0u8; 32]);
 
                                                     let record = ghost_storage::queries::MpcContributionRecord {
                                                         elder_position: position,
@@ -1484,12 +1530,18 @@ async fn main() -> Result<()> {
                                                         created_at,
                                                     };
 
-                                                    if db_for_mpc.save_mpc_contribution(&record).is_ok() {
+                                                    if db_for_mpc
+                                                        .save_mpc_contribution(&record)
+                                                        .is_ok()
+                                                    {
                                                         synced_count += 1;
                                                     }
                                                 }
                                                 if synced_count > 0 {
-                                                    info!(count = synced_count, "MPC: Synced contributor records from peer");
+                                                    info!(
+                                                        count = synced_count,
+                                                        "MPC: Synced contributor records from peer"
+                                                    );
                                                 }
                                                 break;
                                             }
@@ -1508,7 +1560,11 @@ async fn main() -> Result<()> {
                             }
 
                             if fetch_attempt % 4 == 0 {
-                                info!(fetch_attempt, "MPC: Still trying to fetch params (attempt {}/20)...", fetch_attempt);
+                                info!(
+                                    fetch_attempt,
+                                    "MPC: Still trying to fetch params (attempt {}/20)...",
+                                    fetch_attempt
+                                );
                             }
 
                             tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
@@ -1525,7 +1581,10 @@ async fn main() -> Result<()> {
                 let db_count = db_for_mpc.get_mpc_elder_count().unwrap_or(0) as u32;
                 let next_position = db_count + 1;
 
-                info!(attempt, db_count, next_position, "MPC: Attempting to contribute to ceremony");
+                info!(
+                    attempt,
+                    db_count, next_position, "MPC: Attempting to contribute to ceremony"
+                );
 
                 // Cache the signed message so retries broadcast the same hash.
                 // Regenerate only on first attempt or when db_count changes (position shifted).
@@ -1535,22 +1594,26 @@ async fn main() -> Result<()> {
                 };
 
                 if need_generate {
-                    match ceremony_manager_for_startup.generate_contribution_at_position(&node_id_hex, next_position) {
+                    match ceremony_manager_for_startup
+                        .generate_contribution_at_position(&node_id_hex, next_position)
+                    {
                         Ok((new_params, contribution)) => {
                             let position = contribution.position;
                             info!(
                                 position = position,
-                                "MPC contribution generated for position {}",
-                                position,
+                                "MPC contribution generated for position {}", position,
                             );
 
                             // Genesis case: auto-apply when DB has no contributors
                             if db_count == 0 {
                                 info!("MPC genesis: Auto-applying first contribution (no existing contributors to vote)");
-                                if let Err(e) = ceremony_manager_for_startup.apply_contribution(new_params, &contribution) {
+                                if let Err(e) = ceremony_manager_for_startup
+                                    .apply_contribution(new_params, &contribution)
+                                {
                                     warn!(error = %e, "Failed to apply genesis contribution");
                                 } else {
-                                    let proof_bytes = serde_json::to_vec(&contribution.proof).unwrap_or_default();
+                                    let proof_bytes =
+                                        serde_json::to_vec(&contribution.proof).unwrap_or_default();
                                     let record = ghost_storage::queries::MpcContributionRecord {
                                         elder_position: position,
                                         contributor_node_id: node_id_hex.clone(),
@@ -1577,7 +1640,8 @@ async fn main() -> Result<()> {
                             }
 
                             // Build and sign the broadcast message
-                            let proof_bytes = serde_json::to_vec(&contribution.proof).unwrap_or_default();
+                            let proof_bytes =
+                                serde_json::to_vec(&contribution.proof).unwrap_or_default();
 
                             let candidate: [u8; 32] = hex::decode(&contribution.contributor)
                                 .ok()
@@ -1602,12 +1666,20 @@ async fn main() -> Result<()> {
                             // If this was genesis (auto-applied), broadcast and we're done
                             if db_count == 0 {
                                 if let Some((ref cached, _)) = cached_msg {
-                                    match mesh_for_mpc_startup.broadcast_message(
-                                        ghost_consensus::message::MessageType::MpcContribution,
-                                        cached,
-                                    ).await {
-                                        Ok(sent) => info!(sent = sent, "MPC genesis contribution broadcast via Noise"),
-                                        Err(e) => warn!(error = %e, "Failed to broadcast MPC genesis contribution"),
+                                    match mesh_for_mpc_startup
+                                        .broadcast_message(
+                                            ghost_consensus::message::MessageType::MpcContribution,
+                                            cached,
+                                        )
+                                        .await
+                                    {
+                                        Ok(sent) => info!(
+                                            sent = sent,
+                                            "MPC genesis contribution broadcast via Noise"
+                                        ),
+                                        Err(e) => {
+                                            warn!(error = %e, "Failed to broadcast MPC genesis contribution")
+                                        }
                                     }
                                 }
                                 return;
@@ -1618,15 +1690,21 @@ async fn main() -> Result<()> {
                         }
                     }
                 } else {
-                    info!(attempt, db_count, "MPC: Rebroadcasting cached contribution (same position)");
+                    info!(
+                        attempt,
+                        db_count, "MPC: Rebroadcasting cached contribution (same position)"
+                    );
                 }
 
                 // Broadcast (or rebroadcast) the cached message
                 if let Some((ref cached, _)) = cached_msg {
-                    match mesh_for_mpc_startup.broadcast_message(
-                        ghost_consensus::message::MessageType::MpcContribution,
-                        cached,
-                    ).await {
+                    match mesh_for_mpc_startup
+                        .broadcast_message(
+                            ghost_consensus::message::MessageType::MpcContribution,
+                            cached,
+                        )
+                        .await
+                    {
                         Ok(sent) => {
                             info!(sent = sent, attempt, "MPC contribution broadcast via Noise");
                         }
@@ -1644,7 +1722,8 @@ async fn main() -> Result<()> {
                     // Sync contributors from peers to detect if our contribution was approved
                     for seed in &seed_nodes_for_mpc {
                         let host = seed.split(':').next().unwrap_or(seed);
-                        let contributors_url = format!("http://{}:8080/api/v1/mpc/contributors", host);
+                        let contributors_url =
+                            format!("http://{}:8080/api/v1/mpc/contributors", host);
 
                         if let Ok(response) = reqwest::Client::new()
                             .get(&contributors_url)
@@ -1653,14 +1732,35 @@ async fn main() -> Result<()> {
                             .await
                         {
                             if let Ok(data) = response.json::<serde_json::Value>().await {
-                                if let Some(contributors) = data.get("contributors").and_then(|c| c.as_array()) {
+                                if let Some(contributors) =
+                                    data.get("contributors").and_then(|c| c.as_array())
+                                {
                                     for contrib in contributors {
-                                        let position = contrib.get("position").and_then(|p| p.as_u64()).unwrap_or(0) as u32;
-                                        let node_id = contrib.get("node_id").and_then(|n| n.as_str()).unwrap_or("");
-                                        let prev_hash_hex = contrib.get("prev_params_hash").and_then(|h| h.as_str()).unwrap_or("");
-                                        let new_hash_hex = contrib.get("new_params_hash").and_then(|h| h.as_str()).unwrap_or("");
-                                        let epoch = contrib.get("epoch").and_then(|e| e.as_u64()).unwrap_or(0);
-                                        let created_at = contrib.get("created_at").and_then(|c| c.as_u64()).unwrap_or(0);
+                                        let position = contrib
+                                            .get("position")
+                                            .and_then(|p| p.as_u64())
+                                            .unwrap_or(0)
+                                            as u32;
+                                        let node_id = contrib
+                                            .get("node_id")
+                                            .and_then(|n| n.as_str())
+                                            .unwrap_or("");
+                                        let prev_hash_hex = contrib
+                                            .get("prev_params_hash")
+                                            .and_then(|h| h.as_str())
+                                            .unwrap_or("");
+                                        let new_hash_hex = contrib
+                                            .get("new_params_hash")
+                                            .and_then(|h| h.as_str())
+                                            .unwrap_or("");
+                                        let epoch = contrib
+                                            .get("epoch")
+                                            .and_then(|e| e.as_u64())
+                                            .unwrap_or(0);
+                                        let created_at = contrib
+                                            .get("created_at")
+                                            .and_then(|c| c.as_u64())
+                                            .unwrap_or(0);
 
                                         if position == 0 || node_id.is_empty() {
                                             continue;
@@ -1675,15 +1775,16 @@ async fn main() -> Result<()> {
                                             .and_then(|b| b.try_into().ok())
                                             .unwrap_or([0u8; 32]);
 
-                                        let record = ghost_storage::queries::MpcContributionRecord {
-                                            elder_position: position,
-                                            contributor_node_id: node_id.to_string(),
-                                            prev_params_hash: prev_hash,
-                                            new_params_hash: new_hash,
-                                            contribution_proof: Vec::new(),
-                                            epoch,
-                                            created_at,
-                                        };
+                                        let record =
+                                            ghost_storage::queries::MpcContributionRecord {
+                                                elder_position: position,
+                                                contributor_node_id: node_id.to_string(),
+                                                prev_params_hash: prev_hash,
+                                                new_params_hash: new_hash,
+                                                contribution_proof: Vec::new(),
+                                                epoch,
+                                                created_at,
+                                            };
 
                                         let _ = db_for_mpc.save_mpc_contribution(&record);
                                     }
@@ -1697,16 +1798,16 @@ async fn main() -> Result<()> {
 
             // Final check after all attempts
             if db_for_mpc.is_mpc_elder(&node_id_hex).unwrap_or(false) {
-                let position = db_for_mpc.get_mpc_elder_position(&node_id_hex).unwrap_or(None);
+                let position = db_for_mpc
+                    .get_mpc_elder_position(&node_id_hex)
+                    .unwrap_or(None);
                 info!(position = ?position, "MPC contribution succeeded after retries");
                 // Update live capabilities so health pings reflect elder status
                 mesh_for_mpc_startup.update_elder_status(true);
                 let mut updated_caps = initial_capabilities;
                 updated_caps.elder_status = true;
-                round_manager_for_mpc.update_node_capabilities(
-                    identity_for_mpc.node_id(),
-                    updated_caps,
-                );
+                round_manager_for_mpc
+                    .update_node_capabilities(identity_for_mpc.node_id(), updated_caps);
             } else {
                 warn!("MPC: Failed to contribute after 5 attempts. Node will not be an elder.");
             }
@@ -1949,7 +2050,8 @@ async fn main() -> Result<()> {
         match db_for_shares.insert_share(&share_record) {
             Ok(_) => {
                 // Share inserted successfully — update miner cumulative stats
-                if let Err(e) = db_for_shares.increment_miner_stats(&share.miner_id, 1, share.work) {
+                if let Err(e) = db_for_shares.increment_miner_stats(&share.miner_id, 1, share.work)
+                {
                     tracing::warn!(
                         miner_id = %share.miner_id,
                         error = %e,
@@ -2090,7 +2192,8 @@ async fn main() -> Result<()> {
                         }
                     };
 
-                    let treasury_address_snapshot = payout_for_block.get_treasury_address_snapshot();
+                    let treasury_address_snapshot =
+                        payout_for_block.get_treasury_address_snapshot();
 
                     let solo_data = SoloBlockFoundData {
                         round_id,
@@ -2125,12 +2228,17 @@ async fn main() -> Result<()> {
                         use ghost_accounting::shares::WORK_SCALE;
                         let db_work = db_for_block.get_round_miners(round_id).unwrap_or_default();
                         let db_work = if db_work.is_empty() && round_id > 0 {
-                            db_for_block.get_round_miners(round_id - 1).unwrap_or_default()
+                            db_for_block
+                                .get_round_miners(round_id - 1)
+                                .unwrap_or_default()
                         } else {
                             db_work
                         };
                         if db_work.is_empty() {
-                            warn!(round = round_id, "No miner work in DB, falling back to in-memory data");
+                            warn!(
+                                round = round_id,
+                                "No miner work in DB, falling back to in-memory data"
+                            );
                             rm_for_block.get_miner_work_scaled(round_id)
                         } else {
                             db_work
@@ -2141,7 +2249,8 @@ async fn main() -> Result<()> {
                         }
                     };
 
-                    let treasury_address_snapshot = payout_for_block.get_treasury_address_snapshot();
+                    let treasury_address_snapshot =
+                        payout_for_block.get_treasury_address_snapshot();
 
                     let block_data = BlockFoundData {
                         round_id,
@@ -2337,7 +2446,8 @@ async fn main() -> Result<()> {
         const PRUNE_INTERVAL_SECS: u64 = 3600;
         const SHARE_RETENTION_SECS: i64 = 24 * 3600;
 
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(PRUNE_INTERVAL_SECS));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(PRUNE_INTERVAL_SECS));
         loop {
             tokio::select! {
                 _ = interval.tick() => {
@@ -2367,7 +2477,8 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         const MAINTENANCE_INTERVAL_SECS: u64 = 3600;
 
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(MAINTENANCE_INTERVAL_SECS));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(MAINTENANCE_INTERVAL_SECS));
         // Skip the first immediate tick — let the node fully start up first
         interval.tick().await;
         loop {
@@ -2409,7 +2520,8 @@ async fn main() -> Result<()> {
     tokio::spawn(async move {
         const BACKUP_INTERVAL_SECS: u64 = 86400; // 24 hours
 
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(BACKUP_INTERVAL_SECS));
+        let mut interval =
+            tokio::time::interval(std::time::Duration::from_secs(BACKUP_INTERVAL_SECS));
         // Skip first immediate tick — let node start fully first
         interval.tick().await;
         loop {
@@ -2445,9 +2557,15 @@ async fn main() -> Result<()> {
     let has_explicit_tls = config.network.tls.cert_path.is_some();
     let is_mainnet_tls = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
     let tls_server_config = if has_explicit_tls || is_mainnet_tls {
-        match ghost_common::tls::build_server_config_for_network(&config.network.tls, is_mainnet_tls) {
+        match ghost_common::tls::build_server_config_for_network(
+            &config.network.tls,
+            is_mainnet_tls,
+        ) {
             Ok(tls) => {
-                info!("TLS configured for verification server on port {}", http_port);
+                info!(
+                    "TLS configured for verification server on port {}",
+                    http_port
+                );
                 Some(tls)
             }
             Err(e) => {
@@ -2628,7 +2746,8 @@ async fn main() -> Result<()> {
                             let accept_result = tokio::time::timeout(
                                 std::time::Duration::from_secs(30),
                                 pool.accept_connection(stream),
-                            ).await;
+                            )
+                            .await;
 
                             let accept_result = match accept_result {
                                 Ok(result) => result,
@@ -3144,14 +3263,20 @@ async fn main() -> Result<()> {
                         // Query miner work from database (source of truth, not ephemeral memory)
                         let miner_work = {
                             use ghost_accounting::shares::WORK_SCALE;
-                            let db_work = db_for_events.get_round_miners(round_id).unwrap_or_default();
+                            let db_work =
+                                db_for_events.get_round_miners(round_id).unwrap_or_default();
                             let db_work = if db_work.is_empty() && round_id > 0 {
-                                db_for_events.get_round_miners(round_id - 1).unwrap_or_default()
+                                db_for_events
+                                    .get_round_miners(round_id - 1)
+                                    .unwrap_or_default()
                             } else {
                                 db_work
                             };
                             if db_work.is_empty() {
-                                warn!(round = round_id, "No miner work in DB, falling back to in-memory data");
+                                warn!(
+                                    round = round_id,
+                                    "No miner work in DB, falling back to in-memory data"
+                                );
                                 rm_for_events.get_miner_work_scaled(round_id)
                             } else {
                                 db_work

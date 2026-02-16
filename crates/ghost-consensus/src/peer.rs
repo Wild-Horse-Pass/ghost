@@ -121,9 +121,7 @@ impl PeerManager {
             let subnet_count = peers
                 .values()
                 .filter(|p| {
-                    extract_ipv4_subnet(&p.public_address)
-                        .as_deref()
-                        == Some(new_subnet.as_str())
+                    extract_ipv4_subnet(&p.public_address).as_deref() == Some(new_subnet.as_str())
                 })
                 .count();
 

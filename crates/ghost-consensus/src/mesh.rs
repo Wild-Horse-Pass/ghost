@@ -1056,10 +1056,9 @@ impl MeshNetwork {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        if let Err(e) = std::fs::set_permissions(
-                            path,
-                            std::fs::Permissions::from_mode(0o600),
-                        ) {
+                        if let Err(e) =
+                            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                        {
                             warn!(path = ?path, error = %e, "Failed to set Noise keypair file permissions");
                         }
                     }

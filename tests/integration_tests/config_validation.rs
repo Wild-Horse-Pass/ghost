@@ -621,6 +621,8 @@ fn test_pool_config_validate_success() {
         treasury_fee_percent: 2.0,
         min_payout_sats: 10000,
         payout_interval_blocks: 100,
+        node_payout_address: None,
+        coinbase_extra: None,
     };
 
     let result = config.validate();

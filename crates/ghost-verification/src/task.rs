@@ -2124,12 +2124,20 @@ mod tests {
         let mut seen_nonzero = false;
         for _ in 0..1000 {
             let epoch = VerificationTask::generate_challenge_epoch_for_peer(peer_epoch);
-            assert!(epoch <= peer_epoch, "epoch {} exceeds peer_epoch {}", epoch, peer_epoch);
+            assert!(
+                epoch <= peer_epoch,
+                "epoch {} exceeds peer_epoch {}",
+                epoch,
+                peer_epoch
+            );
             if epoch > 0 {
                 seen_nonzero = true;
             }
         }
-        assert!(seen_nonzero, "Should have seen non-zero epochs in 1000 trials with peer_epoch=100");
+        assert!(
+            seen_nonzero,
+            "Should have seen non-zero epochs in 1000 trials with peer_epoch=100"
+        );
     }
 
     #[test]
@@ -2140,10 +2148,17 @@ mod tests {
         for _ in 0..100 {
             let epoch = VerificationTask::generate_challenge_epoch_for_peer(1);
             assert!(epoch <= 1);
-            if epoch == 0 { seen_zero = true; }
-            if epoch == 1 { seen_one = true; }
+            if epoch == 0 {
+                seen_zero = true;
+            }
+            if epoch == 1 {
+                seen_one = true;
+            }
         }
-        assert!(seen_zero && seen_one, "Should see both 0 and 1 for peer_epoch=1");
+        assert!(
+            seen_zero && seen_one,
+            "Should see both 0 and 1 for peer_epoch=1"
+        );
     }
 
     #[test]

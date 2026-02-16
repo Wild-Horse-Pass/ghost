@@ -58,8 +58,8 @@ pub struct PaymentSubmitResult {
 }
 
 use crate::error::{LightWalletError, WalletResult};
-use crate::locks::PreparedLock;
 use crate::locks::JumpResponse;
+use crate::locks::PreparedLock;
 
 /// Callback for lock state updates
 pub type LockStateCallback = Arc<dyn Fn(String, LockStateSnapshot) + Send + Sync>;

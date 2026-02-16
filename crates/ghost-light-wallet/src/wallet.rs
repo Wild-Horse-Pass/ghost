@@ -497,7 +497,10 @@ impl LightWallet {
     }
 
     /// Get recent transactions from cache
-    pub fn get_recent_transactions(&self, limit: u32) -> WalletResult<Vec<crate::state::CachedTransaction>> {
+    pub fn get_recent_transactions(
+        &self,
+        limit: u32,
+    ) -> WalletResult<Vec<crate::state::CachedTransaction>> {
         self.cache.get_recent_transactions(limit)
     }
 

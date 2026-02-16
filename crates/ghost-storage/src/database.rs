@@ -623,8 +623,11 @@ impl Database {
         info!(path = %path_str, "Creating database backup");
 
         self.with_connection(|conn| {
-            conn.execute(&format!("VACUUM INTO '{}'", path_str.replace('\'', "''")), [])
-                .map_err(|e| GhostError::Database(format!("VACUUM INTO failed: {}", e)))?;
+            conn.execute(
+                &format!("VACUUM INTO '{}'", path_str.replace('\'', "''")),
+                [],
+            )
+            .map_err(|e| GhostError::Database(format!("VACUUM INTO failed: {}", e)))?;
             Ok(())
         })?;
 
@@ -632,15 +635,10 @@ impl Database {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(
-                backup_path,
-                std::fs::Permissions::from_mode(0o600),
-            );
+            let _ = std::fs::set_permissions(backup_path, std::fs::Permissions::from_mode(0o600));
         }
 
-        let size = std::fs::metadata(backup_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let size = std::fs::metadata(backup_path).map(|m| m.len()).unwrap_or(0);
         info!(path = %path_str, size_mb = size / (1024 * 1024), "Database backup complete");
 
         Ok(())

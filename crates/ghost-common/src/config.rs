@@ -538,10 +538,7 @@ impl NodeConfig {
                     if port_str.parse::<u16>().is_err() {
                         result.add_error(
                             &field,
-                            &format!(
-                                "Seed node '{}' has invalid port: '{}'",
-                                seed, port_str
-                            ),
+                            &format!("Seed node '{}' has invalid port: '{}'", seed, port_str),
                         );
                     }
                 }
@@ -665,7 +662,6 @@ impl NodeConfig {
                 }
             }
         }
-
     }
 
     fn validate_storage(&self, result: &mut ConfigValidationResult) {
@@ -1697,10 +1693,7 @@ mod tests {
         });
 
         let result = config.validate();
-        assert!(!result
-            .errors
-            .iter()
-            .any(|e| e.field == "identity.signer"));
+        assert!(!result.errors.iter().any(|e| e.field == "identity.signer"));
     }
 
     #[test]
@@ -1748,11 +1741,9 @@ mod tests {
 
         let result = config.validate();
         assert!(
-            result
-                .errors
-                .iter()
-                .any(|e| e.field == "network.tls.key_path"
-                    && e.message.contains("MAINNET SECURITY")),
+            result.errors.iter().any(
+                |e| e.field == "network.tls.key_path" && e.message.contains("MAINNET SECURITY")
+            ),
             "Mainnet should require TLS key_path when cert_path is set"
         );
     }

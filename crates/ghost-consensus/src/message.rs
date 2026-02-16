@@ -1053,7 +1053,11 @@ impl ElderListApprovalMessage {
     }
 
     /// Get the message to be signed (v2, for epoch > 0 with chain binding)
-    pub fn signing_message_v2(epoch: u64, merkle_root: &[u8; 32], prev_merkle_root: &[u8; 32]) -> Vec<u8> {
+    pub fn signing_message_v2(
+        epoch: u64,
+        merkle_root: &[u8; 32],
+        prev_merkle_root: &[u8; 32],
+    ) -> Vec<u8> {
         let mut msg = Vec::with_capacity(Self::APPROVAL_DOMAIN.len() + 8 + 32 + 32);
         msg.extend_from_slice(Self::APPROVAL_DOMAIN);
         msg.extend_from_slice(&epoch.to_le_bytes());

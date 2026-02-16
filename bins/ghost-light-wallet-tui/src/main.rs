@@ -24,7 +24,7 @@ use ratatui::{
 
 use bitcoin::Network;
 use ghost_light_wallet::state::{CachedLock, CachedTransaction};
-use ghost_light_wallet::wraith::{WraithWizard, WizardStep};
+use ghost_light_wallet::wraith::{WizardStep, WraithWizard};
 use ghost_light_wallet::{LightWallet, WalletConfig, WalletStatus};
 
 /// Ghost Wallet TUI - Terminal interface for Ghost Pay
@@ -245,10 +245,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_app<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-) -> Result<()>
+fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 where
     B::Error: Send + Sync + 'static,
 {
@@ -398,7 +395,9 @@ where
                         // Receive tab: 'g' to generate address
                         if app.current_tab == Tab::Receive && key.code == KeyCode::Char('g') {
                             if let Some(ref wallet) = app.wallet {
-                                match wallet.generate_address(ghost_light_wallet::payments::AddressType::GhostPay) {
+                                match wallet.generate_address(
+                                    ghost_light_wallet::payments::AddressType::GhostPay,
+                                ) {
                                     Ok(addr) => {
                                         app.receive_address = Some(addr.address);
                                         app.status_message = "New address generated".to_string();
@@ -416,7 +415,9 @@ where
                         // Send tab: 's' to start send flow, 'w' to toggle wraith
                         if app.current_tab == Tab::Send {
                             match key.code {
-                                KeyCode::Char('s') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                KeyCode::Char('s')
+                                    if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
                                     if app.wallet.is_some() {
                                         app.send_address.clear();
                                         app.send_amount.clear();
@@ -533,20 +534,25 @@ where
                             app.status_message = "Cancelled".to_string();
                         }
                         KeyCode::Char(c) => app.send_address.push(c),
-                        KeyCode::Backspace => { app.send_address.pop(); }
+                        KeyCode::Backspace => {
+                            app.send_address.pop();
+                        }
                         _ => {}
                     },
                     InputMode::SendAmount => match key.code {
                         KeyCode::Enter => {
                             app.input_mode = InputMode::SendMemo;
-                            app.status_message = "Enter memo (optional, Enter to skip):".to_string();
+                            app.status_message =
+                                "Enter memo (optional, Enter to skip):".to_string();
                         }
                         KeyCode::Esc => {
                             app.input_mode = InputMode::Normal;
                             app.status_message = "Cancelled".to_string();
                         }
                         KeyCode::Char(c) if c.is_ascii_digit() => app.send_amount.push(c),
-                        KeyCode::Backspace => { app.send_amount.pop(); }
+                        KeyCode::Backspace => {
+                            app.send_amount.pop();
+                        }
                         _ => {}
                     },
                     InputMode::SendMemo => match key.code {
@@ -589,7 +595,10 @@ where
 
                             match result {
                                 Ok(payment_id) => {
-                                    app.status_message = format!("Sent! ID: {}", &payment_id[..16.min(payment_id.len())]);
+                                    app.status_message = format!(
+                                        "Sent! ID: {}",
+                                        &payment_id[..16.min(payment_id.len())]
+                                    );
                                     app.send_address.clear();
                                     app.send_amount.clear();
                                     app.send_memo.clear();
@@ -606,7 +615,9 @@ where
                             app.status_message = "Cancelled".to_string();
                         }
                         KeyCode::Char(c) => app.send_memo.push(c),
-                        KeyCode::Backspace => { app.send_memo.pop(); }
+                        KeyCode::Backspace => {
+                            app.send_memo.pop();
+                        }
                         _ => {}
                     },
                     InputMode::WraithDenomination => match key.code {
@@ -620,7 +631,8 @@ where
                                     app.input_mode = InputMode::WraithTxid;
                                     app.status_message = format!(
                                         "Selected {}. Enter UTXO txid (requires {} sats):",
-                                        denom.name(), denom.input_sats()
+                                        denom.name(),
+                                        denom.input_sats()
                                     );
                                 }
                             }
@@ -646,7 +658,9 @@ where
                             app.status_message = "Wraith wizard cancelled".to_string();
                         }
                         KeyCode::Char(c) if c.is_ascii_hexdigit() => app.wraith_txid_input.push(c),
-                        KeyCode::Backspace => { app.wraith_txid_input.pop(); }
+                        KeyCode::Backspace => {
+                            app.wraith_txid_input.pop();
+                        }
                         _ => {}
                     },
                     InputMode::WraithVout => match key.code {
@@ -661,7 +675,9 @@ where
                             app.status_message = "Wraith wizard cancelled".to_string();
                         }
                         KeyCode::Char(c) if c.is_ascii_digit() => app.wraith_vout_input.push(c),
-                        KeyCode::Backspace => { app.wraith_vout_input.pop(); }
+                        KeyCode::Backspace => {
+                            app.wraith_vout_input.pop();
+                        }
                         _ => {}
                     },
                     InputMode::WraithAmount => match key.code {
@@ -673,20 +689,18 @@ where
 
                             if let Some(ref mut wizard) = app.wraith_wizard {
                                 match wizard.select_utxo(&txid, vout, amount) {
-                                    Ok(()) => {
-                                        match wizard.join() {
-                                            Ok(session_id) => {
-                                                app.status_message = format!(
-                                                    "Wraith session joined: {}",
-                                                    &session_id[..20.min(session_id.len())]
-                                                );
-                                            }
-                                            Err(e) => {
-                                                app.status_message = format!("Join failed: {}", e);
-                                                app.wraith_wizard = None;
-                                            }
+                                    Ok(()) => match wizard.join() {
+                                        Ok(session_id) => {
+                                            app.status_message = format!(
+                                                "Wraith session joined: {}",
+                                                &session_id[..20.min(session_id.len())]
+                                            );
                                         }
-                                    }
+                                        Err(e) => {
+                                            app.status_message = format!("Join failed: {}", e);
+                                            app.wraith_wizard = None;
+                                        }
+                                    },
                                     Err(e) => {
                                         app.status_message = format!("UTXO error: {}", e);
                                         app.wraith_wizard = None;
@@ -700,7 +714,9 @@ where
                             app.status_message = "Wraith wizard cancelled".to_string();
                         }
                         KeyCode::Char(c) if c.is_ascii_digit() => app.wraith_amount_input.push(c),
-                        KeyCode::Backspace => { app.wraith_amount_input.pop(); }
+                        KeyCode::Backspace => {
+                            app.wraith_amount_input.pop();
+                        }
                         _ => {}
                     },
                 }
@@ -875,16 +891,22 @@ fn render_send(app: &App) -> Paragraph<'static> {
     }
 
     let wraith_status = if app.send_wraith {
-        Span::styled("ON", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        Span::styled(
+            "ON",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::styled("OFF", Style::default().fg(Color::DarkGray))
     };
 
     let mut lines = vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  Send Ghost Pay", Style::default().add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "  Send Ghost Pay",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::raw("  [s] Start send  [w] Toggle Wraith: "),
@@ -953,19 +975,23 @@ fn render_receive(app: &App) -> Paragraph<'static> {
 
     let mut lines = vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  Receive Payment", Style::default().add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "  Receive Payment",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
-        Line::from(vec![
-            Span::raw("  [g] Generate new address"),
-        ]),
+        Line::from(vec![Span::raw("  [g] Generate new address")]),
         Line::from(""),
         Line::from("  ─────────────────────────────────────────────"),
         Line::from(""),
         Line::from(vec![
             Span::raw("  Ghost ID: "),
-            Span::styled(ghost_id, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                ghost_id,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
     ];
 
@@ -973,7 +999,12 @@ fn render_receive(app: &App) -> Paragraph<'static> {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::raw("  Address:  "),
-            Span::styled(addr.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                addr.clone(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
     }
 
@@ -1003,9 +1034,10 @@ fn render_history(app: &App) -> Paragraph<'static> {
 
     let mut lines = vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  Transaction History", Style::default().add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "  Transaction History",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         Line::from("  [r] Refresh"),
         Line::from(""),
@@ -1040,10 +1072,7 @@ fn render_history(app: &App) -> Paragraph<'static> {
 
             lines.push(Line::from(vec![
                 Span::styled(arrow, Style::default().fg(color)),
-                Span::styled(
-                    format!("{:<15}", amount_str),
-                    Style::default().fg(color),
-                ),
+                Span::styled(format!("{:<15}", amount_str), Style::default().fg(color)),
                 Span::styled(
                     format!(" {:>10} ", tx.status),
                     Style::default().fg(status_color),
@@ -1089,9 +1118,12 @@ fn render_locks(app: &App) -> Paragraph<'static> {
         let progress = wizard.progress();
         let mut lines = vec![
             Line::from(""),
-            Line::from(vec![
-                Span::styled("  Wraith CoinJoin Wizard", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-            ]),
+            Line::from(vec![Span::styled(
+                "  Wraith CoinJoin Wizard",
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from(""),
         ];
 
@@ -1103,8 +1135,14 @@ fn render_locks(app: &App) -> Paragraph<'static> {
                 for (i, d) in denoms.iter().enumerate() {
                     lines.push(Line::from(vec![
                         Span::styled(format!("  [{}] ", i + 1), Style::default().fg(Color::Cyan)),
-                        Span::styled(format!("{:<8}", d.name), Style::default().add_modifier(Modifier::BOLD)),
-                        Span::raw(format!(" {} sats out, {} sats fee, ~{}h wait", d.output_sats, d.fee_sats, d.expected_wait_hours)),
+                        Span::styled(
+                            format!("{:<8}", d.name),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw(format!(
+                            " {} sats out, {} sats fee, ~{}h wait",
+                            d.output_sats, d.fee_sats, d.expected_wait_hours
+                        )),
                     ]));
                 }
             }
@@ -1112,23 +1150,36 @@ fn render_locks(app: &App) -> Paragraph<'static> {
                 lines.push(Line::from(vec![
                     Span::raw("  Denomination: "),
                     Span::styled(
-                        wizard.denomination().map(|d| d.name().to_string()).unwrap_or_default(),
+                        wizard
+                            .denomination()
+                            .map(|d| d.name().to_string())
+                            .unwrap_or_default(),
                         Style::default().fg(Color::Green),
                     ),
                 ]));
                 lines.push(Line::from(""));
                 lines.push(Line::from(vec![
                     Span::raw("  TXID: "),
-                    Span::styled(app.wraith_txid_input.clone(), Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        app.wraith_txid_input.clone(),
+                        Style::default().fg(Color::Cyan),
+                    ),
                 ]));
                 lines.push(Line::from(vec![
                     Span::raw("  Vout: "),
-                    Span::styled(app.wraith_vout_input.clone(), Style::default().fg(Color::Cyan)),
+                    Span::styled(
+                        app.wraith_vout_input.clone(),
+                        Style::default().fg(Color::Cyan),
+                    ),
                 ]));
                 lines.push(Line::from(vec![
                     Span::raw("  Amount: "),
                     Span::styled(
-                        if app.wraith_amount_input.is_empty() { "(enter sats)".to_string() } else { format!("{} sats", app.wraith_amount_input) },
+                        if app.wraith_amount_input.is_empty() {
+                            "(enter sats)".to_string()
+                        } else {
+                            format!("{} sats", app.wraith_amount_input)
+                        },
                         Style::default().fg(Color::Yellow),
                     ),
                 ]));
@@ -1161,14 +1212,18 @@ fn render_locks(app: &App) -> Paragraph<'static> {
                 ]));
             }
             WizardStep::Complete => {
-                lines.push(Line::from(vec![
-                    Span::styled("  ✓ Mixing complete!", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "  ✓ Mixing complete!",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )]));
             }
             WizardStep::Failed => {
-                lines.push(Line::from(vec![
-                    Span::styled("  ✗ Session failed", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "  ✗ Session failed",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                )]));
                 if let Some(err) = wizard.error_message() {
                     lines.push(Line::from(vec![
                         Span::raw("  Error: "),
@@ -1191,9 +1246,10 @@ fn render_locks(app: &App) -> Paragraph<'static> {
 
     let mut lines = vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  Ghost Locks", Style::default().add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "  Ghost Locks",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         Line::from("  [r] Refresh  [w] Wraith Wizard"),
         Line::from(""),
@@ -1202,18 +1258,19 @@ fn render_locks(app: &App) -> Paragraph<'static> {
 
     if app.locks.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from(
-            "  No locks. Use CLI to create locks.",
-        ));
+        lines.push(Line::from("  No locks. Use CLI to create locks."));
     } else {
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  {:<18} {:>12} {:>12} {:>12}", "Lock ID", "Capacity", "Used", "Status"),
-                Style::default().add_modifier(Modifier::BOLD),
+        lines.push(Line::from(vec![Span::styled(
+            format!(
+                "  {:<18} {:>12} {:>12} {:>12}",
+                "Lock ID", "Capacity", "Used", "Status"
             ),
-        ]));
-        lines.push(Line::from("  ─────────────────────────────────────────────────────────"));
+            Style::default().add_modifier(Modifier::BOLD),
+        )]));
+        lines.push(Line::from(
+            "  ─────────────────────────────────────────────────────────",
+        ));
 
         for lock in &app.locks {
             let id_short = if lock.lock_id.len() > 16 {
@@ -1320,9 +1377,10 @@ fn render_settings(app: &App) -> Paragraph<'static> {
 
     Paragraph::new(vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  Settings", Style::default().add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "  Settings",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         Line::from("  ─────────────────────────────────────────────"),
         Line::from(""),

@@ -428,7 +428,9 @@ impl ZkPayoutVoteHandler {
         } else {
             // SECURITY: No verifier configured - REJECT all proofs
             // Fail-closed is mandatory for mainnet security (verifier may still be initializing)
-            warn!("ZK payout verifier not yet initialized - rejecting proof (will retry when ready)");
+            warn!(
+                "ZK payout verifier not yet initialized - rejecting proof (will retry when ready)"
+            );
             false
         };
 

@@ -537,9 +537,15 @@ mod tests {
         let valid_bytes = [0x01; 32];
 
         let result = tree.hash_pair(&invalid_bytes, &valid_bytes);
-        assert!(result.is_err(), "Should reject bytes exceeding field modulus");
+        assert!(
+            result.is_err(),
+            "Should reject bytes exceeding field modulus"
+        );
 
         let result = tree.hash_pair(&valid_bytes, &invalid_bytes);
-        assert!(result.is_err(), "Should reject bytes exceeding field modulus (right)");
+        assert!(
+            result.is_err(),
+            "Should reject bytes exceeding field modulus (right)"
+        );
     }
 }

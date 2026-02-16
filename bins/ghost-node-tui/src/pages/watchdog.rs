@@ -65,9 +65,18 @@ fn render_service_health(f: &mut Frame, area: Rect, app: &App) {
         } else {
             // Fallback: use service_status() lookup for well-known services
             vec![
-                ("ghost_pool".to_string(), watchdog.service_status("ghost_pool").to_string()),
-                ("ghost_core".to_string(), watchdog.service_status("ghost_core").to_string()),
-                ("ghost_pay".to_string(), watchdog.service_status("ghost_pay").to_string()),
+                (
+                    "ghost_pool".to_string(),
+                    watchdog.service_status("ghost_pool").to_string(),
+                ),
+                (
+                    "ghost_core".to_string(),
+                    watchdog.service_status("ghost_core").to_string(),
+                ),
+                (
+                    "ghost_pay".to_string(),
+                    watchdog.service_status("ghost_pay").to_string(),
+                ),
             ]
         };
 
@@ -95,7 +104,10 @@ fn render_service_health(f: &mut Frame, area: Rect, app: &App) {
 
             lines.push(Line::from(vec![
                 Span::styled(format!("{} ", status_text), Style::default().fg(color)),
-                Span::styled(format!("{:<15}", display_name), Style::default().fg(Color::White)),
+                Span::styled(
+                    format!("{:<15}", display_name),
+                    Style::default().fg(Color::White),
+                ),
                 Span::styled(status.clone(), Style::default().fg(color)),
             ]));
         }
@@ -105,7 +117,11 @@ fn render_service_health(f: &mut Frame, area: Rect, app: &App) {
         let health_label = watchdog
             .overall_health
             .as_deref()
-            .unwrap_or(if watchdog.healthy { "healthy" } else { "unhealthy" });
+            .unwrap_or(if watchdog.healthy {
+                "healthy"
+            } else {
+                "unhealthy"
+            });
 
         lines.push(Line::from(vec![
             Span::styled("Overall: ", Style::default().fg(Color::Gray)),

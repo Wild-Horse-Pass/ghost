@@ -976,10 +976,14 @@ impl VoteHandler {
 
         // Create voting session using MPC elders from DB as eligible voters
         let session = {
-            let voters = self.db.as_ref()
-                .ok_or_else(|| ghost_common::error::GhostError::Internal(
-                    "No database configured for voting".to_string(),
-                ))?
+            let voters = self
+                .db
+                .as_ref()
+                .ok_or_else(|| {
+                    ghost_common::error::GhostError::Internal(
+                        "No database configured for voting".to_string(),
+                    )
+                })?
                 .get_mpc_elder_node_ids()
                 .map_err(|e| {
                     warn!(error = %e, "Failed to query MPC elders for voting");

@@ -47,12 +47,10 @@ pub fn build_server_config_for_network(
     let (certs, key) = if let (Some(cert_path), Some(key_path)) = (&tls.cert_path, &tls.key_path) {
         load_pem_files(cert_path, key_path)?
     } else if is_mainnet {
-        return Err(
-            "Mainnet requires operator-provided TLS certificates. \
+        return Err("Mainnet requires operator-provided TLS certificates. \
              Self-signed certificates are not allowed on mainnet. \
              Set tls.cert_path and tls.key_path in your configuration."
-                .into(),
-        );
+            .into());
     } else {
         generate_self_signed()?
     };
@@ -121,8 +119,7 @@ fn generate_self_signed() -> Result<
     let cert = params.self_signed(&key_pair)?;
 
     let cert_der = CertificateDer::from(cert.der().to_vec());
-    let key_der =
-        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der().to_vec()));
+    let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.serialize_der().to_vec()));
 
     tracing::info!("TLS: Generated self-signed Ed25519 certificate for development use");
 

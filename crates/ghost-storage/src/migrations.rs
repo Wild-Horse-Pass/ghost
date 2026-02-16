@@ -51,6 +51,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
     //
     // v10 is a special case: it uses PRAGMA foreign_keys ON/OFF which cannot run
     // inside a transaction, so it manages its own transaction internally.
+    #[allow(clippy::type_complexity)]
     let pre_v10: &[(u32, fn(&Connection) -> GhostResult<()>)] = &[
         (1, migrate_v1),
         (2, migrate_v2),
@@ -63,6 +64,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (9, migrate_v9),
     ];
 
+    #[allow(clippy::type_complexity)]
     let post_v10: &[(u32, fn(&Connection) -> GhostResult<()>)] = &[
         (11, migrate_v11),
         (12, migrate_v12),
@@ -136,8 +138,9 @@ fn run_migration_tx(
     version: u32,
     migrate_fn: fn(&Connection) -> GhostResult<()>,
 ) -> GhostResult<()> {
-    conn.execute("BEGIN IMMEDIATE", [])
-        .map_err(|e| GhostError::Migration(format!("Failed to begin migration v{}: {}", version, e)))?;
+    conn.execute("BEGIN IMMEDIATE", []).map_err(|e| {
+        GhostError::Migration(format!("Failed to begin migration v{}: {}", version, e))
+    })?;
 
     if let Err(e) = migrate_fn(conn) {
         let _ = conn.execute("ROLLBACK", []);
@@ -149,8 +152,9 @@ fn run_migration_tx(
         return Err(e);
     }
 
-    conn.execute("COMMIT", [])
-        .map_err(|e| GhostError::Migration(format!("Failed to commit migration v{}: {}", version, e)))?;
+    conn.execute("COMMIT", []).map_err(|e| {
+        GhostError::Migration(format!("Failed to commit migration v{}: {}", version, e))
+    })?;
 
     Ok(())
 }

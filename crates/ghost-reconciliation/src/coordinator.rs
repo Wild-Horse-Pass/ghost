@@ -356,17 +356,15 @@ impl SettlementCoordinator {
     /// 5. Update coordinator and executor state
     ///
     /// Requires both `with_executor()` and `with_broadcaster()` to have been called.
-    pub fn execute_settlement(
-        &self,
-        epoch: u64,
-        fee_rate: u64,
-    ) -> ReconciliationResult<()> {
-        let executor_lock = self.executor.as_ref().ok_or_else(|| {
-            ReconciliationError::InvalidState("No executor configured".into())
-        })?;
-        let broadcaster = self.broadcaster.as_ref().ok_or_else(|| {
-            ReconciliationError::InvalidState("No broadcaster configured".into())
-        })?;
+    pub fn execute_settlement(&self, epoch: u64, fee_rate: u64) -> ReconciliationResult<()> {
+        let executor_lock = self
+            .executor
+            .as_ref()
+            .ok_or_else(|| ReconciliationError::InvalidState("No executor configured".into()))?;
+        let broadcaster = self
+            .broadcaster
+            .as_ref()
+            .ok_or_else(|| ReconciliationError::InvalidState("No broadcaster configured".into()))?;
 
         // 1. Check if batch should be formed
         let mut exec = executor_lock.write();
@@ -728,8 +726,8 @@ mod tests {
 
         let executor = BatchExecutor::new(bitcoin::Network::Regtest, "bcrt1qtest".to_string());
 
-        let coordinator = SettlementCoordinator::new(identity.clone(), epoch_tracker)
-            .with_executor(executor);
+        let coordinator =
+            SettlementCoordinator::new(identity.clone(), epoch_tracker).with_executor(executor);
 
         assert!(coordinator.executor.is_some());
         assert!(coordinator.broadcaster.is_none());
@@ -743,8 +741,7 @@ mod tests {
         struct TestBroadcaster;
         impl L1Broadcaster for TestBroadcaster {
             fn broadcast(&self, _tx_hex: &str) -> Result<String, String> {
-                Ok("0000000000000000000000000000000000000000000000000000000000000001"
-                    .to_string())
+                Ok("0000000000000000000000000000000000000000000000000000000000000001".to_string())
             }
             fn get_block_height(&self) -> Result<u64, String> {
                 Ok(100)
@@ -757,8 +754,8 @@ mod tests {
         let (identity, epoch_tracker) = setup_test();
         let broadcaster: Arc<dyn L1Broadcaster> = Arc::new(TestBroadcaster);
 
-        let coordinator = SettlementCoordinator::new(identity, epoch_tracker)
-            .with_broadcaster(broadcaster);
+        let coordinator =
+            SettlementCoordinator::new(identity, epoch_tracker).with_broadcaster(broadcaster);
 
         assert!(coordinator.broadcaster.is_some());
         assert!(coordinator.executor.is_none());
@@ -771,8 +768,7 @@ mod tests {
         struct TestBroadcaster;
         impl L1Broadcaster for TestBroadcaster {
             fn broadcast(&self, _tx_hex: &str) -> Result<String, String> {
-                Ok("0000000000000000000000000000000000000000000000000000000000000001"
-                    .to_string())
+                Ok("0000000000000000000000000000000000000000000000000000000000000001".to_string())
             }
             fn get_block_height(&self) -> Result<u64, String> {
                 Ok(100)
@@ -816,8 +812,8 @@ mod tests {
         let (identity, epoch_tracker) = setup_test();
         let executor = BatchExecutor::new(bitcoin::Network::Regtest, "bcrt1qtest".to_string());
 
-        let coordinator = SettlementCoordinator::new(identity, epoch_tracker)
-            .with_executor(executor);
+        let coordinator =
+            SettlementCoordinator::new(identity, epoch_tracker).with_executor(executor);
 
         let result = coordinator.execute_settlement(0, 1);
         assert!(result.is_err());
@@ -880,8 +876,7 @@ mod tests {
 
         let (identity, epoch_tracker) = setup_test();
         let treasury_addr = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
-        let mut executor =
-            BatchExecutor::new(bitcoin::Network::Regtest, treasury_addr.to_string());
+        let mut executor = BatchExecutor::new(bitcoin::Network::Regtest, treasury_addr.to_string());
 
         // Add 10 settlements (minimum batch size) with matching inputs
         let output_addr = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
@@ -940,8 +935,7 @@ mod tests {
         impl L1Broadcaster for SuccessBroadcaster {
             fn broadcast(&self, _tx_hex: &str) -> Result<String, String> {
                 self.was_called.store(true, Ordering::SeqCst);
-                Ok("a000000000000000000000000000000000000000000000000000000000000001"
-                    .to_string())
+                Ok("a000000000000000000000000000000000000000000000000000000000000001".to_string())
             }
             fn get_block_height(&self) -> Result<u64, String> {
                 Ok(100)
@@ -953,8 +947,7 @@ mod tests {
 
         let (identity, epoch_tracker) = setup_test();
         let treasury_addr = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
-        let mut executor =
-            BatchExecutor::new(bitcoin::Network::Regtest, treasury_addr.to_string());
+        let mut executor = BatchExecutor::new(bitcoin::Network::Regtest, treasury_addr.to_string());
 
         // Add 10 settlements with matching inputs
         let output_addr = "bcrt1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080";
@@ -994,7 +987,11 @@ mod tests {
             .with_broadcaster(broadcaster_clone as Arc<dyn L1Broadcaster>);
 
         let result = coordinator.execute_settlement(0, 1);
-        assert!(result.is_ok(), "Settlement should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Settlement should succeed: {:?}",
+            result.err()
+        );
 
         // Verify broadcaster was actually called
         assert!(broadcaster.was_called.load(Ordering::SeqCst));

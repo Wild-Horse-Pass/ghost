@@ -61,7 +61,7 @@ use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 use ghost_keys::LabelBackup;
-use ghost_light_wallet::wraith::{WraithWizard, WizardStep};
+use ghost_light_wallet::wraith::{WizardStep, WraithWizard};
 use ghost_light_wallet::{LightWallet, WalletConfig};
 
 /// Ghost Light Wallet CLI
@@ -439,8 +439,7 @@ async fn cmd_init(config: WalletConfig, recover: bool) -> Result<()> {
         // Pick 3 unique random word positions using getrandom
         let verify_positions: Vec<usize> = {
             let mut rand_bytes = [0u8; 3];
-            getrandom::getrandom(&mut rand_bytes)
-                .expect("failed to get random bytes");
+            getrandom::getrandom(&mut rand_bytes).expect("failed to get random bytes");
             let mut positions = std::collections::BTreeSet::new();
             // Use modular arithmetic to pick unique positions
             positions.insert(rand_bytes[0] as usize % word_count);
@@ -745,7 +744,13 @@ async fn cmd_history(config: WalletConfig, limit: u32) -> Result<()> {
                 tx.txid.clone()
             };
 
-            println!("  {} {:>15}  {}  {}", direction, amount, status_style, style(&txid_short).dim());
+            println!(
+                "  {} {:>15}  {}  {}",
+                direction,
+                amount,
+                status_style,
+                style(&txid_short).dim()
+            );
 
             if let Some(ref memo) = tx.memo {
                 println!("    memo: {}", style(memo).dim());
@@ -815,7 +820,10 @@ async fn cmd_lock(config: WalletConfig, action: LockCommands) -> Result<()> {
             println!();
             println!(
                 "{}",
-                style("Fund this lock to activate it. Use 'ghost-wallet lock list' to check status.").dim()
+                style(
+                    "Fund this lock to activate it. Use 'ghost-wallet lock list' to check status."
+                )
+                .dim()
             );
         }
         LockCommands::List => {
@@ -886,7 +894,11 @@ async fn cmd_lock(config: WalletConfig, action: LockCommands) -> Result<()> {
             println!();
 
             let confirm = Confirm::new()
-                .with_prompt(style("This will close the lock permanently. Continue?").red().to_string())
+                .with_prompt(
+                    style("This will close the lock permanently. Continue?")
+                        .red()
+                        .to_string(),
+                )
                 .default(false)
                 .interact()?;
 
@@ -1021,7 +1033,9 @@ async fn cmd_backup(config: WalletConfig, output: &Path) -> Result<()> {
     println!();
     println!(
         "{}",
-        style("Backup complete. Keep these files safe!").bold().green()
+        style("Backup complete. Keep these files safe!")
+            .bold()
+            .green()
     );
     println!(
         "{}",
@@ -1150,13 +1164,18 @@ async fn cmd_wraith(config: WalletConfig) -> Result<()> {
             if *input >= 1 && *input <= denoms.len() {
                 Ok(())
             } else {
-                Err(format!("Please enter a number between 1 and {}", denoms.len()))
+                Err(format!(
+                    "Please enter a number between 1 and {}",
+                    denoms.len()
+                ))
             }
         })
         .interact_text()?;
 
     let selected_denom = denoms[selection - 1].denomination;
-    wizard.select_denomination(selected_denom).map_err(|e| anyhow::anyhow!("{}", e))?;
+    wizard
+        .select_denomination(selected_denom)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     println!();
     println!(
@@ -1258,19 +1277,19 @@ async fn cmd_wraith(config: WalletConfig) -> Result<()> {
             }
             WizardStep::Phase1Splitting => "Phase 1: Splitting transaction...".to_string(),
             WizardStep::Phase1Confirming => {
-                let txid = progress
-                    .phase1_txid
-                    .as_deref()
-                    .unwrap_or("pending");
-                format!("Phase 1: Waiting for confirmation ({})", &txid[..16.min(txid.len())])
+                let txid = progress.phase1_txid.as_deref().unwrap_or("pending");
+                format!(
+                    "Phase 1: Waiting for confirmation ({})",
+                    &txid[..16.min(txid.len())]
+                )
             }
             WizardStep::Phase2Merging => "Phase 2: Merging transaction...".to_string(),
             WizardStep::Phase2Confirming => {
-                let txid = progress
-                    .phase2_txid
-                    .as_deref()
-                    .unwrap_or("pending");
-                format!("Phase 2: Waiting for confirmation ({})", &txid[..16.min(txid.len())])
+                let txid = progress.phase2_txid.as_deref().unwrap_or("pending");
+                format!(
+                    "Phase 2: Waiting for confirmation ({})",
+                    &txid[..16.min(txid.len())]
+                )
             }
             WizardStep::Complete => break,
             WizardStep::Failed => {
@@ -1313,7 +1332,12 @@ async fn cmd_wraith(config: WalletConfig) -> Result<()> {
     if wizard.is_success() {
         pb.finish_with_message("Mixing complete!");
         println!();
-        println!("{}", style("Wraith mixing completed successfully!").bold().green());
+        println!(
+            "{}",
+            style("Wraith mixing completed successfully!")
+                .bold()
+                .green()
+        );
         let progress = wizard.progress();
         if let Some(txid) = &progress.phase2_txid {
             println!("Final transaction: {}", style(txid).cyan());

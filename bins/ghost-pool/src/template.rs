@@ -388,10 +388,13 @@ impl TemplateProcessor {
                         } else {
                             self.config.treasury_address.address().as_bytes().to_vec()
                         };
-                        let commitment = CoinbaseCommitment::from_proposal(&proposal, &treasury_addr);
+                        let commitment =
+                            CoinbaseCommitment::from_proposal(&proposal, &treasury_addr);
                         self.coinbase_verifier.set_commitment(commitment);
 
-                        self.payout_proposals.write().insert(proposal_hash, proposal);
+                        self.payout_proposals
+                            .write()
+                            .insert(proposal_hash, proposal);
 
                         if hash.len() == 32 {
                             let mut arr = [0u8; 32];
@@ -1566,9 +1569,10 @@ impl TemplateProcessor {
                     // Check if all dependencies were kept
                     // depends values are 1-indexed (Bitcoin Core GBT convention),
                     // kept_indices are 0-indexed, so subtract 1
-                    let deps_satisfied = tx.depends.iter().all(|&dep| {
-                        dep > 0 && kept_indices.contains(&((dep - 1) as usize))
-                    });
+                    let deps_satisfied = tx
+                        .depends
+                        .iter()
+                        .all(|&dep| dep > 0 && kept_indices.contains(&((dep - 1) as usize)));
                     if deps_satisfied {
                         original_to_filtered.insert(idx, kept.len());
                         kept_indices.insert(idx);
@@ -1633,7 +1637,9 @@ impl TemplateProcessor {
             sorted.sort_by(|a, b| {
                 let rate_a = a.fee as f64 / (a.weight.max(1) as f64 / 4.0);
                 let rate_b = b.fee as f64 / (b.weight.max(1) as f64 / 4.0);
-                rate_b.partial_cmp(&rate_a).unwrap_or(std::cmp::Ordering::Equal)
+                rate_b
+                    .partial_cmp(&rate_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
             });
             return sorted;
         }
@@ -1787,7 +1793,9 @@ impl TemplateProcessor {
         clusters.sort_by(|a, b| {
             let rate_a = a.total_fee as f64 / (a.total_weight.max(1) as f64 / 4.0);
             let rate_b = b.total_fee as f64 / (b.total_weight.max(1) as f64 / 4.0);
-            rate_b.partial_cmp(&rate_a).unwrap_or(std::cmp::Ordering::Equal)
+            rate_b
+                .partial_cmp(&rate_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
 
         // Flatten clusters into final transaction list
@@ -2467,7 +2475,6 @@ impl TemplateProcessor {
         header: &[u8],
         work: &WorkState,
     ) -> anyhow::Result<()> {
-
         // === BLOCK VALIDATION BEFORE SUBMISSION ===
 
         // 1. Validate header length
@@ -3299,7 +3306,7 @@ mod tests {
         // CPFP pair: package rate = (100+3900)/((400+400)/4) = 4000/200 = 20 sat/vB
         let tx_parent = make_tx("parent", 100, 400, vec![]);
         let tx_child = make_tx("child", 3900, 400, vec![2]); // depends on parent at original idx 1
-        // Independent tx: 10 sat/vB
+                                                             // Independent tx: 10 sat/vB
         let tx_ind2 = make_tx("ind2", 1000, 400, vec![]);
 
         let mut original_to_filtered = HashMap::new();
@@ -3404,7 +3411,9 @@ mod tests {
             .map(|b| format!("{:02x}", b))
             .collect();
 
-        assert_eq!(recovered, rpc_hash,
-            "Full byte reversal should recover original RPC hash from internal format");
+        assert_eq!(
+            recovered, rpc_hash,
+            "Full byte reversal should recover original RPC hash from internal format"
+        );
     }
 }

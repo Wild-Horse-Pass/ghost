@@ -311,7 +311,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // MPC ceremony endpoints
         .route("/api/v1/mpc/params", get(api_mpc_params_handler))
         .route("/api/v1/mpc/status", get(api_mpc_status_handler))
-        .route("/api/v1/mpc/contributors", get(api_mpc_contributors_handler))
+        .route(
+            "/api/v1/mpc/contributors",
+            get(api_mpc_contributors_handler),
+        )
         // Swarm endpoints
         .route("/api/v1/swarm/sync", get(api_swarm_sync_handler))
         .route(
@@ -401,46 +404,121 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         .route("/api/v1/watchdog/events", get(api_watchdog_events_handler))
         // L-16: Backup endpoints moved here to require HMAC authentication
         // These can export/import potentially sensitive node configuration and data
-        .route("/api/v1/backup/export", get(api_backup_export_handler).post(api_backup_export_handler))
-        .route("/api/v1/backup/import", get(api_backup_import_handler).post(api_backup_import_handler))
-        .route("/api/v1/backup/verify", get(api_backup_verify_handler).post(api_backup_verify_handler))
-        .route("/api/v1/backup/delete/:filename", delete(api_backup_delete_handler))
+        .route(
+            "/api/v1/backup/export",
+            get(api_backup_export_handler).post(api_backup_export_handler),
+        )
+        .route(
+            "/api/v1/backup/import",
+            get(api_backup_import_handler).post(api_backup_import_handler),
+        )
+        .route(
+            "/api/v1/backup/verify",
+            get(api_backup_verify_handler).post(api_backup_verify_handler),
+        )
+        .route(
+            "/api/v1/backup/delete/:filename",
+            delete(api_backup_delete_handler),
+        )
         // Dashboard: Logs endpoint (ring buffer)
         .route("/api/v1/logs", get(api_logs_handler))
         // Dashboard: Nickname management
         .route("/api/v1/node/nickname", post(api_nickname_post_handler))
         // Dashboard: Swarm node management CRUD
         .route("/api/v1/swarm/nodes", post(api_swarm_node_add_handler))
-        .route("/api/v1/swarm/nodes/:node_id", delete(api_swarm_node_remove_handler).put(api_swarm_node_update_handler))
-        .route("/api/v1/swarm/nodes/:node_id/refresh", post(api_swarm_node_refresh_handler))
-        .route("/api/v1/swarm/nodes/:node_id/config", put(api_swarm_node_config_handler))
-        .route("/api/v1/swarm/nodes/:node_id/restart", post(api_swarm_node_restart_handler))
-        .route("/api/v1/swarm/nodes/:node_id/update", post(api_swarm_node_update_version_handler))
+        .route(
+            "/api/v1/swarm/nodes/:node_id",
+            delete(api_swarm_node_remove_handler).put(api_swarm_node_update_handler),
+        )
+        .route(
+            "/api/v1/swarm/nodes/:node_id/refresh",
+            post(api_swarm_node_refresh_handler),
+        )
+        .route(
+            "/api/v1/swarm/nodes/:node_id/config",
+            put(api_swarm_node_config_handler),
+        )
+        .route(
+            "/api/v1/swarm/nodes/:node_id/restart",
+            post(api_swarm_node_restart_handler),
+        )
+        .route(
+            "/api/v1/swarm/nodes/:node_id/update",
+            post(api_swarm_node_update_version_handler),
+        )
         .route("/api/v1/swarm/sync", post(api_swarm_sync_post_handler))
-        .route("/api/v1/swarm/update-all", post(api_swarm_update_all_post_handler))
+        .route(
+            "/api/v1/swarm/update-all",
+            post(api_swarm_update_all_post_handler),
+        )
         // Dashboard: Watchdog service control
-        .route("/api/v1/watchdog/start/:service", post(api_watchdog_start_handler))
-        .route("/api/v1/watchdog/stop/:service", post(api_watchdog_stop_handler))
-        .route("/api/v1/watchdog/restart/:service", post(api_watchdog_restart_handler))
-        .route("/api/v1/watchdog/clear-cache", get(api_watchdog_clear_cache_handler).post(api_watchdog_clear_cache_handler))
+        .route(
+            "/api/v1/watchdog/start/:service",
+            post(api_watchdog_start_handler),
+        )
+        .route(
+            "/api/v1/watchdog/stop/:service",
+            post(api_watchdog_stop_handler),
+        )
+        .route(
+            "/api/v1/watchdog/restart/:service",
+            post(api_watchdog_restart_handler),
+        )
+        .route(
+            "/api/v1/watchdog/clear-cache",
+            get(api_watchdog_clear_cache_handler).post(api_watchdog_clear_cache_handler),
+        )
         // Dashboard: Config profile CRUD
-        .route("/api/v1/config/profiles/mempool", post(api_config_profiles_mempool_post_handler))
-        .route("/api/v1/config/profiles/mempool/:name", delete(api_config_profiles_mempool_delete_handler))
-        .route("/api/v1/config/profiles/mempool/:name/activate", post(api_config_profiles_mempool_activate_handler))
-        .route("/api/v1/config/profiles/template", post(api_config_profiles_template_post_handler))
-        .route("/api/v1/config/profiles/template/:name", delete(api_config_profiles_template_delete_handler))
-        .route("/api/v1/config/profiles/template/:name/activate", post(api_config_profiles_template_activate_handler))
+        .route(
+            "/api/v1/config/profiles/mempool",
+            post(api_config_profiles_mempool_post_handler),
+        )
+        .route(
+            "/api/v1/config/profiles/mempool/:name",
+            delete(api_config_profiles_mempool_delete_handler),
+        )
+        .route(
+            "/api/v1/config/profiles/mempool/:name/activate",
+            post(api_config_profiles_mempool_activate_handler),
+        )
+        .route(
+            "/api/v1/config/profiles/template",
+            post(api_config_profiles_template_post_handler),
+        )
+        .route(
+            "/api/v1/config/profiles/template/:name",
+            delete(api_config_profiles_template_delete_handler),
+        )
+        .route(
+            "/api/v1/config/profiles/template/:name/activate",
+            post(api_config_profiles_template_activate_handler),
+        )
         // Dashboard: GhostPay payout address POST
-        .route("/api/v1/settings/ghostpay_payout_address", post(api_settings_ghostpay_payout_address_post_handler))
+        .route(
+            "/api/v1/settings/ghostpay_payout_address",
+            post(api_settings_ghostpay_payout_address_post_handler),
+        )
         // Dashboard: Mining POST handlers
-        .route("/api/v1/mining/private", post(api_mining_private_post_handler))
-        .route("/api/v1/mining/public", post(api_mining_public_post_handler))
-        .route("/api/v1/mining/payout_address", post(api_mining_payout_address_post_handler))
+        .route(
+            "/api/v1/mining/private",
+            post(api_mining_private_post_handler),
+        )
+        .route(
+            "/api/v1/mining/public",
+            post(api_mining_public_post_handler),
+        )
+        .route(
+            "/api/v1/mining/payout_address",
+            post(api_mining_payout_address_post_handler),
+        )
         // Dashboard: System update POST handlers (dashboard sends POST, backend has GET)
         .route("/api/v1/system/update", post(api_system_update_handler))
         .route("/api/v1/system/rollback", post(api_system_rollback_handler))
         // Dashboard: Operator window POST
-        .route("/api/v1/config/operator_window", post(api_config_operator_window_post_handler))
+        .route(
+            "/api/v1/config/operator_window",
+            post(api_config_operator_window_post_handler),
+        )
         // Dashboard: Unredacted miners list (for dashboard mining page)
         .route("/api/v1/mining/miners/full", get(api_miners_full_handler));
 
@@ -2611,7 +2689,8 @@ async fn api_network_elder_handler(
     let spots_remaining = max_elders.saturating_sub(total_elders);
 
     let elder_slot = if is_elder {
-        elders.iter()
+        elders
+            .iter()
             .find(|e| e.get("is_self").and_then(|v| v.as_bool()) == Some(true))
             .and_then(|e| e.get("elder_order").and_then(|v| v.as_u64()))
     } else {
@@ -4135,9 +4214,7 @@ async fn share_batch_handler(
 // ============================================================================
 
 /// Prometheus metrics handler - returns metrics in exposition format
-async fn metrics_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn metrics_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     if let Some(ref metrics) = state.metrics {
         (
             StatusCode::OK,
@@ -4164,19 +4241,19 @@ async fn metrics_handler(
 // ============================================================================
 
 /// MPC params handler - serves current MPC parameters file for P2P sync
-async fn api_mpc_params_handler(
-    State(_state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_mpc_params_handler(State(_state): State<Arc<VerificationState>>) -> impl IntoResponse {
     // Get MPC params path from home directory
-    let params_path = std::path::PathBuf::from(
-        std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
-    ).join(".ghost/mpc_params/block_params_current.bin");
+    let params_path =
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+            .join(".ghost/mpc_params/block_params_current.bin");
 
     if !params_path.exists() {
         return (
             StatusCode::NOT_FOUND,
             [(axum::http::header::CONTENT_TYPE, "application/json")],
-            serde_json::json!({"error": "MPC params not available"}).to_string().into_bytes(),
+            serde_json::json!({"error": "MPC params not available"})
+                .to_string()
+                .into_bytes(),
         );
     }
 
@@ -4194,16 +4271,16 @@ async fn api_mpc_params_handler(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(axum::http::header::CONTENT_TYPE, "application/json")],
-                serde_json::json!({"error": "Failed to read params"}).to_string().into_bytes(),
+                serde_json::json!({"error": "Failed to read params"})
+                    .to_string()
+                    .into_bytes(),
             )
         }
     }
 }
 
 /// MPC status handler - returns ceremony status
-async fn api_mpc_status_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_mpc_status_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     // Get contribution count from database if available
     let (contribution_count, is_ossified) = if let Some(ref db) = state.database {
         let count = db.get_mpc_elder_count().unwrap_or(0);
@@ -4213,9 +4290,9 @@ async fn api_mpc_status_handler(
     };
 
     // Check if params file exists
-    let params_path = std::path::PathBuf::from(
-        std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
-    ).join(".ghost/mpc_params/block_params_current.bin");
+    let params_path =
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+            .join(".ghost/mpc_params/block_params_current.bin");
     let has_params = params_path.exists();
 
     Json(serde_json::json!({
@@ -4297,11 +4374,15 @@ async fn api_logs_handler(
     // Read from journalctl for ghost-pool service
     let output = tokio::process::Command::new("journalctl")
         .args([
-            "-u", "ghost-pool",
+            "-u",
+            "ghost-pool",
             "--no-pager",
-            "-o", "json",
-            "-n", &limit.to_string(),
-            "-p", priority,
+            "-o",
+            "json",
+            "-n",
+            &limit.to_string(),
+            "-p",
+            priority,
         ])
         .output()
         .await;
@@ -4313,12 +4394,14 @@ async fn api_logs_handler(
                 .lines()
                 .filter_map(|line| {
                     let obj: serde_json::Value = serde_json::from_str(line).ok()?;
-                    let timestamp = obj.get("__REALTIME_TIMESTAMP")
+                    let timestamp = obj
+                        .get("__REALTIME_TIMESTAMP")
                         .and_then(|v| v.as_str())
                         .and_then(|s| s.parse::<u64>().ok())
                         .map(|us| us / 1_000_000) // microseconds to seconds
                         .unwrap_or(0);
-                    let priority_num = obj.get("PRIORITY")
+                    let priority_num = obj
+                        .get("PRIORITY")
                         .and_then(|v| v.as_str())
                         .and_then(|s| s.parse::<u8>().ok())
                         .unwrap_or(6);
@@ -4328,10 +4411,9 @@ async fn api_logs_handler(
                         5..=6 => "info",
                         _ => "debug",
                     };
-                    let message = obj.get("MESSAGE")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let target = obj.get("SYSLOG_IDENTIFIER")
+                    let message = obj.get("MESSAGE").and_then(|v| v.as_str()).unwrap_or("");
+                    let target = obj
+                        .get("SYSLOG_IDENTIFIER")
                         .and_then(|v| v.as_str())
                         .unwrap_or("ghost-pool");
 
@@ -4535,10 +4617,7 @@ async fn api_watchdog_restart_handler(
 }
 
 /// Execute a systemctl command for a whitelisted service
-async fn watchdog_service_control(
-    service: &str,
-    action: &str,
-) -> axum::response::Response {
+async fn watchdog_service_control(service: &str, action: &str) -> axum::response::Response {
     if !WATCHDOG_ALLOWED_SERVICES.contains(&service) {
         return (
             StatusCode::BAD_REQUEST,
@@ -4635,11 +4714,8 @@ async fn api_config_profiles_mempool_activate_handler(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     // Delegate to the existing mempool_profile POST handler
-    api_config_mempool_profile_post_handler(
-        State(state),
-        Json(ProfileRequest { profile: name }),
-    )
-    .await
+    api_config_mempool_profile_post_handler(State(state), Json(ProfileRequest { profile: name }))
+        .await
 }
 
 /// API v1 Config: Save custom template profile
@@ -4685,11 +4761,8 @@ async fn api_config_profiles_template_activate_handler(
     State(state): State<Arc<VerificationState>>,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    api_config_template_profile_post_handler(
-        State(state),
-        Json(ProfileRequest { profile: name }),
-    )
-    .await
+    api_config_template_profile_post_handler(State(state), Json(ProfileRequest { profile: name }))
+        .await
 }
 
 /// GhostPay payout address body
@@ -4729,7 +4802,9 @@ async fn api_mining_private_post_handler(
         config.private_mining = Some(enabled);
     }
     // Return current mining status
-    api_mining_status_handler(State(state)).await.into_response()
+    api_mining_status_handler(State(state))
+        .await
+        .into_response()
 }
 
 /// API v1 Mining: Set public mining mode (POST)
@@ -4741,7 +4816,9 @@ async fn api_mining_public_post_handler(
         let mut config = state.dashboard_config.write();
         config.public_mining = enabled;
     }
-    api_mining_status_handler(State(state)).await.into_response()
+    api_mining_status_handler(State(state))
+        .await
+        .into_response()
 }
 
 /// Payout address body
@@ -4759,7 +4836,9 @@ async fn api_mining_payout_address_post_handler(
         let mut config = state.dashboard_config.write();
         config.payout_address = Some(body.address);
     }
-    api_mining_status_handler(State(state)).await.into_response()
+    api_mining_status_handler(State(state))
+        .await
+        .into_response()
 }
 
 /// Operator window body
@@ -4799,9 +4878,7 @@ async fn api_backup_delete_handler(
 }
 
 /// API v1 Miners: Full unredacted miner list (internal only)
-async fn api_miners_full_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_miners_full_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
 
     let miners = if let Some(ref db) = state.database {

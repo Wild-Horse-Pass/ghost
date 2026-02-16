@@ -887,9 +887,10 @@ impl GspServer {
         router: Router,
     ) -> GspResult<()> {
         loop {
-            let (tcp_stream, remote_addr) = listener.accept().await.map_err(|e| {
-                GspError::Internal(format!("Accept error: {}", e))
-            })?;
+            let (tcp_stream, remote_addr) = listener
+                .accept()
+                .await
+                .map_err(|e| GspError::Internal(format!("Accept error: {}", e)))?;
 
             let acceptor = tls_acceptor.clone();
             let app = router.clone();
@@ -904,8 +905,7 @@ impl GspServer {
                 };
 
                 // Build a one-shot service from the router for this connection
-                let service = app
-                    .into_make_service_with_connect_info::<std::net::SocketAddr>();
+                let service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
                 let mut make_svc = service;
 
                 use tower::Service;

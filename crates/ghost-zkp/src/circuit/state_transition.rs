@@ -299,9 +299,8 @@ fn hash_leaf<F: PrimeField, CS: ConstraintSystem<F>>(
     let domain_sep_value = F::from(0x4c454146u64);
 
     // Allocate the domain separator
-    let domain_sep = AllocatedNum::alloc(cs.namespace(|| "leaf_domain_sep"), || {
-        Ok(domain_sep_value)
-    })?;
+    let domain_sep =
+        AllocatedNum::alloc(cs.namespace(|| "leaf_domain_sep"), || Ok(domain_sep_value))?;
 
     // Constrain domain_sep to equal the constant value
     // This is required for Groth16 parameter generation to succeed

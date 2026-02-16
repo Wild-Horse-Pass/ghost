@@ -174,10 +174,7 @@ pub struct MpcHandler {
 
 impl MpcHandler {
     /// Create a new MPC handler
-    pub fn new(
-        identity: Arc<NodeIdentity>,
-        db: Arc<Database>,
-    ) -> Self {
+    pub fn new(identity: Arc<NodeIdentity>, db: Arc<Database>) -> Self {
         Self {
             identity,
             db,
@@ -273,7 +270,9 @@ impl MpcHandler {
                 return Ok(());
             }
             // Clean up stale pending contributions before inserting
-            pending.retain(|_, c| c.received_at.elapsed().as_secs() < PENDING_CONTRIBUTION_TIMEOUT_SECS);
+            pending.retain(|_, c| {
+                c.received_at.elapsed().as_secs() < PENDING_CONTRIBUTION_TIMEOUT_SECS
+            });
 
             pending.insert(
                 contribution_hash,
@@ -296,7 +295,9 @@ impl MpcHandler {
         // Check for genesis case: first contribution is auto-approved
         let contributor_count = self.mpc_contributor_count();
         if contributor_count == 0 && msg.elder_position == 1 {
-            info!("MPC genesis: Auto-approving first contribution (no existing contributors to vote)");
+            info!(
+                "MPC genesis: Auto-approving first contribution (no existing contributors to vote)"
+            );
             self.apply_contribution(&contribution_hash)?;
             return Ok(());
         }
@@ -465,7 +466,10 @@ impl MpcHandler {
 
         // Apply if threshold reached
         if should_apply {
-            info!(position = msg.elder_position, "MPC contribution threshold met, applying");
+            info!(
+                position = msg.elder_position,
+                "MPC contribution threshold met, applying"
+            );
             self.apply_contribution(&contribution_hash)?;
         }
 

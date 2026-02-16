@@ -987,8 +987,15 @@ mod tests {
             eligible.insert([i as u8; 32]);
         }
 
-        VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000, VotingSession::MIN_VOTERS_FOR_BFT)
-            .expect("Test session should have enough voters")
+        VotingSession::new(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            eligible,
+            5000,
+            VotingSession::MIN_VOTERS_FOR_BFT,
+        )
+        .expect("Test session should have enough voters")
     }
 
     #[test]
@@ -1082,9 +1089,15 @@ mod tests {
             VotingSession::MIN_VOTERS_FOR_BFT,
         )
         .expect("Session should have enough voters");
-        let mut session2 =
-            VotingSession::new(200, proposal_hash, VoteType::PayoutApproval, eligible, 5000, VotingSession::MIN_VOTERS_FOR_BFT)
-                .expect("Session should have enough voters");
+        let mut session2 = VotingSession::new(
+            200,
+            proposal_hash,
+            VoteType::PayoutApproval,
+            eligible,
+            5000,
+            VotingSession::MIN_VOTERS_FOR_BFT,
+        )
+        .expect("Session should have enough voters");
 
         // Sign vote for round 100
         let msg = compute_vote_signing_message(100, &proposal_hash, &voter_id, true);
@@ -1287,8 +1300,15 @@ mod tests {
             eligible.insert(id);
         }
 
-        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000, VotingSession::MIN_VOTERS_FOR_BFT)
-            .expect("Session should have enough voters");
+        let session = VotingSession::new(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            eligible,
+            5000,
+            VotingSession::MIN_VOTERS_FOR_BFT,
+        )
+        .expect("Session should have enough voters");
 
         // 67% of 10,000 = 6,700
         let threshold = session.threshold();
@@ -1306,8 +1326,14 @@ mod tests {
         for i in 0..3 {
             small_eligible.insert([i as u8; 32]);
         }
-        let result =
-            VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, small_eligible, 5000, VotingSession::MIN_VOTERS_FOR_BFT);
+        let result = VotingSession::new(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            small_eligible,
+            5000,
+            VotingSession::MIN_VOTERS_FOR_BFT,
+        );
 
         // H-5: Should reject with InsufficientVoters error
         assert!(
@@ -1440,7 +1466,14 @@ mod tests {
             eligible.insert([i as u8; 32]);
         }
 
-        let result = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 0, VotingSession::MIN_VOTERS_FOR_BFT);
+        let result = VotingSession::new(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            eligible,
+            0,
+            VotingSession::MIN_VOTERS_FOR_BFT,
+        );
 
         // MED-CONS-1: Invalid timeouts are now rejected, not clamped
         assert!(result.is_err(), "Zero timeout should be rejected");
@@ -1461,7 +1494,14 @@ mod tests {
             eligible.insert([i as u8; 32]);
         }
 
-        let result = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 500, VotingSession::MIN_VOTERS_FOR_BFT);
+        let result = VotingSession::new(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            eligible,
+            500,
+            VotingSession::MIN_VOTERS_FOR_BFT,
+        );
 
         // MED-CONS-1: Invalid timeouts are now rejected, not clamped
         assert!(
@@ -1485,8 +1525,15 @@ mod tests {
             eligible.insert([i as u8; 32]);
         }
 
-        let session = VotingSession::new(1, [0u8; 32], VoteType::PayoutApproval, eligible, 5000, VotingSession::MIN_VOTERS_FOR_BFT)
-            .expect("Session should have enough voters");
+        let session = VotingSession::new(
+            1,
+            [0u8; 32],
+            VoteType::PayoutApproval,
+            eligible,
+            5000,
+            VotingSession::MIN_VOTERS_FOR_BFT,
+        )
+        .expect("Session should have enough voters");
 
         assert_eq!(
             session.timeout_ms, 5000,

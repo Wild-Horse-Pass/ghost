@@ -1205,7 +1205,8 @@ async fn main() -> Result<()> {
     match tls_config {
         Some(tls) => {
             let tls_acceptor = tokio_rustls::TlsAcceptor::from(tls);
-            let mut make_service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+            let mut make_service =
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>();
 
             // We need to handle graceful shutdown manually for TLS
             let shutdown = tokio::signal::ctrl_c();
@@ -3411,7 +3412,10 @@ mod tests {
         let key_a = derive_encryption_key("password-a", &salt).expect("derivation a failed");
         let key_b = derive_encryption_key("password-b", &salt).expect("derivation b failed");
 
-        assert_ne!(key_a, key_b, "different passwords must produce different keys");
+        assert_ne!(
+            key_a, key_b,
+            "different passwords must produce different keys"
+        );
     }
 
     #[test]
@@ -3430,7 +3434,10 @@ mod tests {
     fn test_derive_encryption_key_empty_password() {
         let salt = [0xFFu8; 32];
         let key = derive_encryption_key("", &salt).expect("empty password derivation failed");
-        assert_ne!(key, [0u8; 32], "derived key from empty password must not be all zeros");
+        assert_ne!(
+            key, [0u8; 32],
+            "derived key from empty password must not be all zeros"
+        );
     }
 
     // =========================================================================
@@ -3445,7 +3452,10 @@ mod tests {
         let encrypted = encrypt_keys(plaintext, password).expect("encryption failed");
         let decrypted = decrypt_keys(&encrypted, password).expect("decryption failed");
 
-        assert_eq!(decrypted, plaintext, "roundtrip must recover original plaintext");
+        assert_eq!(
+            decrypted, plaintext,
+            "roundtrip must recover original plaintext"
+        );
     }
 
     #[test]
@@ -3456,7 +3466,10 @@ mod tests {
         let encrypted = encrypt_keys(plaintext, password).expect("encryption failed");
         let decrypted = decrypt_keys(&encrypted, password).expect("decryption failed");
 
-        assert_eq!(decrypted, plaintext, "roundtrip with empty plaintext must work");
+        assert_eq!(
+            decrypted, plaintext,
+            "roundtrip with empty plaintext must work"
+        );
     }
 
     #[test]
@@ -3624,8 +3637,7 @@ mod tests {
     #[test]
     fn test_hex_to_32bytes_long_input_truncated() {
         // 66 hex chars = 33 bytes; should only take the first 32 bytes
-        let hex_str =
-            "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+        let hex_str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
         let result = hex_to_32bytes(hex_str);
         let expected: [u8; 32] = [
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,

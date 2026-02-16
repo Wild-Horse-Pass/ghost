@@ -770,7 +770,10 @@ mod tests {
         witness.intermediate_roots.clear();
 
         let result = prover.prove_v2(&witness);
-        assert!(result.is_err(), "Should reject witness with missing intermediate roots");
+        assert!(
+            result.is_err(),
+            "Should reject witness with missing intermediate roots"
+        );
 
         let err = result.unwrap_err();
         let err_msg = err.to_string();

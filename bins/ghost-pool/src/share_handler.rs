@@ -53,11 +53,7 @@ pub struct ShareProofHandler {
 }
 
 impl ShareProofHandler {
-    pub fn new(
-        round_manager: Arc<RoundManager>,
-        db: Arc<Database>,
-        our_node_id: NodeId,
-    ) -> Self {
+    pub fn new(round_manager: Arc<RoundManager>, db: Arc<Database>, our_node_id: NodeId) -> Self {
         Self {
             round_manager,
             db,

@@ -267,9 +267,7 @@ impl WraithWizard {
         let (participant_count, min_participants, fill_percentage) =
             if let Some(ref session) = self.session {
                 let tier = ParticipantTier::for_balance(
-                    self.denomination
-                        .map(|d| d.output_sats())
-                        .unwrap_or(10_000),
+                    self.denomination.map(|d| d.output_sats()).unwrap_or(10_000),
                 );
                 (
                     Some(session.participant_count()),

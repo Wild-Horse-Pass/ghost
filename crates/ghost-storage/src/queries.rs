@@ -472,11 +472,9 @@ impl Database {
     pub fn get_max_round_id(&self) -> GhostResult<u64> {
         self.with_connection(|conn| {
             let max_id: u64 = conn
-                .query_row(
-                    "SELECT COALESCE(MAX(round_id), 0) FROM shares",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT COALESCE(MAX(round_id), 0) FROM shares", [], |row| {
+                    row.get(0)
+                })
                 .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(max_id)
         })
@@ -5000,11 +4998,9 @@ impl Database {
     pub fn get_mpc_elder_count(&self) -> GhostResult<u32> {
         self.with_connection(|conn| {
             let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM mpc_contributions",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT COUNT(*) FROM mpc_contributions", [], |row| {
+                    row.get(0)
+                })
                 .map_err(|e| GhostError::Database(e.to_string()))?;
             i64_to_u32_count(count, "mpc_elder_count")
                 .map_err(|e| GhostError::Database(e.to_string()))
@@ -5260,7 +5256,10 @@ impl Database {
         // Find the highest block in this epoch
         // Epoch N contains blocks [N * 2160, (N+1) * 2160 - 1]
         let epoch_start = epoch.saturating_mul(2160);
-        let epoch_end = epoch.saturating_add(1).saturating_mul(2160).saturating_sub(1);
+        let epoch_end = epoch
+            .saturating_add(1)
+            .saturating_mul(2160)
+            .saturating_sub(1);
 
         self.with_connection(|conn| {
             let result = conn.query_row(
@@ -5296,7 +5295,6 @@ impl Database {
             }
         })
     }
-
 
     // =========================================================================
     // PAYOUT PROPOSAL PERSISTENCE
@@ -6327,7 +6325,8 @@ mod tests {
             received_by: "node1".to_string(),
             valid: true,
         };
-        db.insert_share(&old_share).expect("Failed to insert old share");
+        db.insert_share(&old_share)
+            .expect("Failed to insert old share");
 
         // Insert recent share (30 minutes ago — well within the 1h minimum retention)
         let recent_share = ShareRecord {
@@ -6341,7 +6340,8 @@ mod tests {
             received_by: "node1".to_string(),
             valid: true,
         };
-        db.insert_share(&recent_share).expect("Failed to insert recent share");
+        db.insert_share(&recent_share)
+            .expect("Failed to insert recent share");
 
         // Max round_id should be 5
         let max = db.get_max_round_id().expect("Failed to get max round id");
@@ -6361,9 +6361,7 @@ mod tests {
         assert_eq!(remaining[0].miner_id, "miner_recent");
 
         // Old share should be gone
-        let old = db
-            .get_shares_by_round(1)
-            .expect("Failed to get old shares");
+        let old = db.get_shares_by_round(1).expect("Failed to get old shares");
         assert_eq!(old.len(), 0);
 
         // Minimum retention guard: even with 0 seconds, enforces 1 hour minimum
@@ -6371,6 +6369,9 @@ mod tests {
         let deleted = db
             .delete_old_shares(0)
             .expect("Failed to prune with minimum guard");
-        assert_eq!(deleted, 0, "Recent share should survive minimum retention guard");
+        assert_eq!(
+            deleted, 0,
+            "Recent share should survive minimum retention guard"
+        );
     }
 }

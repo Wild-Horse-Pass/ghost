@@ -703,11 +703,8 @@ impl PayoutProposalCreator {
 
         // Work values arrive as pre-scaled u128 from RoundShares, no f64 conversion needed.
         // Filter out zero-work entries.
-        let scaled_work: Vec<(String, u128)> = miner_work
-            .iter()
-            .filter(|(_, w)| *w > 0)
-            .cloned()
-            .collect();
+        let scaled_work: Vec<(String, u128)> =
+            miner_work.iter().filter(|(_, w)| *w > 0).cloned().collect();
 
         let total_work: u128 = scaled_work.iter().map(|(_, w)| w).sum();
 
@@ -1467,7 +1464,10 @@ mod tests {
             winning_node_id: [1u8; 32],
             subsidy_sats: 625_000_000, // 6.25 BTC
             tx_fees_sats: 10_000_000,  // 0.1 BTC
-            miner_work: vec![("miner1".to_string(), 100_000_000_000_000u128), ("miner2".to_string(), 50_000_000_000_000u128)],
+            miner_work: vec![
+                ("miner1".to_string(), 100_000_000_000_000u128),
+                ("miner2".to_string(), 50_000_000_000_000u128),
+            ],
             node_shares: vec![([1u8; 32], 10), ([2u8; 32], 5)],
             treasury_state: TreasuryState::new(),
         };

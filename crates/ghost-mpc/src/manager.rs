@@ -246,14 +246,16 @@ impl CeremonyManager {
 
         // Generate genesis parameters using dummy circuit
         use bellperson::groth16::generate_random_parameters;
-        use ghost_zkp::circuit::BlockCircuit;
         use blstrs::Scalar as Fr;
+        use ghost_zkp::circuit::BlockCircuit;
         use rand::rngs::OsRng;
 
         tracing::info!("MPC: Generating genesis parameters with dummy circuit...");
         let dummy_circuit = BlockCircuit::<Fr>::dummy(10);
         let genesis_params = generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut OsRng)
-            .map_err(|e| MpcError::Internal(format!("Failed to generate genesis params: {:?}", e)))?;
+            .map_err(|e| {
+            MpcError::Internal(format!("Failed to generate genesis params: {:?}", e))
+        })?;
 
         self.initialize_genesis(genesis_params)?;
         tracing::info!("MPC: Genesis parameters initialized successfully");
@@ -911,14 +913,20 @@ mod tests {
         // First init should succeed
         let result = manager.ensure_genesis_initialized();
         assert!(result.is_ok(), "Genesis init failed: {:?}", result.err());
-        assert!(result.unwrap(), "Should report genesis was just initialized");
+        assert!(
+            result.unwrap(),
+            "Should report genesis was just initialized"
+        );
         assert!(manager.has_current_params());
         assert_eq!(manager.contribution_count(), 0);
 
         // Second init should be idempotent (returns false = already initialized)
         let result2 = manager.ensure_genesis_initialized();
         assert!(result2.is_ok());
-        assert!(!result2.unwrap(), "Second init should return false (already initialized)");
+        assert!(
+            !result2.unwrap(),
+            "Second init should return false (already initialized)"
+        );
     }
 
     #[test]
@@ -937,11 +945,15 @@ mod tests {
         assert_ne!(contribution.new_params_hash, genesis_hash);
 
         // Verify the contribution
-        let valid = manager.verify_contribution(&new_params, &contribution).unwrap();
+        let valid = manager
+            .verify_contribution(&new_params, &contribution)
+            .unwrap();
         assert!(valid, "Valid contribution should verify");
 
         // Apply the contribution
-        manager.apply_contribution(new_params, &contribution).unwrap();
+        manager
+            .apply_contribution(new_params, &contribution)
+            .unwrap();
         assert_eq!(manager.contribution_count(), 1);
         assert_eq!(manager.current_params_hash(), contribution.new_params_hash);
     }
@@ -961,10 +973,14 @@ mod tests {
             assert_eq!(contribution.position, (i + 1) as u32);
             assert_eq!(contribution.prev_params_hash, prev_hash);
 
-            let valid = manager.verify_contribution(&new_params, &contribution).unwrap();
+            let valid = manager
+                .verify_contribution(&new_params, &contribution)
+                .unwrap();
             assert!(valid, "Contribution {} should verify", i + 1);
 
-            manager.apply_contribution(new_params, &contribution).unwrap();
+            manager
+                .apply_contribution(new_params, &contribution)
+                .unwrap();
             assert_eq!(manager.contribution_count(), (i + 1) as u32);
 
             prev_hash = manager.current_params_hash();
@@ -1021,8 +1037,13 @@ mod tests {
         assert_eq!(contribution.commitment_hash, Some(commitment_hash));
 
         // Apply contribution — commitment should be fulfilled
-        manager.apply_contribution(new_params, &contribution).unwrap();
-        assert!(!manager.has_pending_commitments(), "Commitment should be fulfilled after apply");
+        manager
+            .apply_contribution(new_params, &contribution)
+            .unwrap();
+        assert!(
+            !manager.has_pending_commitments(),
+            "Commitment should be fulfilled after apply"
+        );
 
         // Fulfilled commitments should be tracked
         let fulfilled = manager.get_fulfilled_commitments();

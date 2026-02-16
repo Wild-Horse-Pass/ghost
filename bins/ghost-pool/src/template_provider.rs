@@ -565,7 +565,10 @@ async fn handle_tdp_client(
                 }
             }
             Err(e) => {
-                error!("TDP read error from {} (connection lost): {:?}", peer_addr, e);
+                error!(
+                    "TDP read error from {} (connection lost): {:?}",
+                    peer_addr, e
+                );
                 break;
             }
         }

@@ -28,8 +28,8 @@ use axum::middleware::Next;
 use axum::response::Response;
 use ghost_common::constants::{SV1_STRATUM_PORT, SV2_STRATUM_PORT};
 use ghost_common::error::{GhostError, GhostResult};
-use ghost_common::metrics::Metrics;
 use ghost_common::identity::NodeIdentity;
+use ghost_common::metrics::Metrics;
 use ghost_common::rpc::BitcoinRpc;
 use ghost_common::types::NodeCapabilities;
 use ghost_policy::{PolicyEngine, PolicyProfile};
@@ -1923,11 +1923,10 @@ async fn serve_tls(
 
             // Serve the connection using hyper
             let io = hyper_util::rt::TokioIo::new(tls_stream);
-            if let Err(e) = hyper_util::server::conn::auto::Builder::new(
-                hyper_util::rt::TokioExecutor::new(),
-            )
-            .serve_connection(io, hyper_service)
-            .await
+            if let Err(e) =
+                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                    .serve_connection(io, hyper_service)
+                    .await
             {
                 tracing::debug!(error = %e, remote = %remote_addr, "TLS connection error");
             }

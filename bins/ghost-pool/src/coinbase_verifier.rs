@@ -103,7 +103,9 @@ const COINBASE_OUTPUTS_DOMAIN: &[u8] = b"CoinbaseOutputs/v1";
 /// this converts them to match the script pubkey format in actual coinbase outputs.
 fn address_to_script_pubkey(address_bytes: &[u8]) -> Option<Vec<u8>> {
     let addr_str = std::str::from_utf8(address_bytes).ok()?;
-    let addr = addr_str.parse::<bitcoin::Address<NetworkUnchecked>>().ok()?;
+    let addr = addr_str
+        .parse::<bitcoin::Address<NetworkUnchecked>>()
+        .ok()?;
     let script = addr.assume_checked().script_pubkey();
     Some(script.as_bytes().to_vec())
 }
@@ -145,8 +147,8 @@ impl CoinbaseCommitment {
         // Hash miner payouts (order-sensitive) - same format as compute_outputs_hash
         // M-28: Convert bech32 address strings to script pubkeys to match actual coinbase encoding
         for payout in &proposal.miner_payouts {
-            let script = address_to_script_pubkey(&payout.address)
-                .unwrap_or_else(|| payout.address.clone());
+            let script =
+                address_to_script_pubkey(&payout.address).unwrap_or_else(|| payout.address.clone());
             hasher.update(payout.amount.to_le_bytes());
             hasher.update((script.len() as u32).to_le_bytes());
             hasher.update(&script);
@@ -155,8 +157,8 @@ impl CoinbaseCommitment {
 
         // Hash node payouts (order-sensitive) - same format as compute_outputs_hash
         for payout in &proposal.node_payouts {
-            let script = address_to_script_pubkey(&payout.address)
-                .unwrap_or_else(|| payout.address.clone());
+            let script =
+                address_to_script_pubkey(&payout.address).unwrap_or_else(|| payout.address.clone());
             hasher.update(payout.amount.to_le_bytes());
             hasher.update((script.len() as u32).to_le_bytes());
             hasher.update(&script);
@@ -597,8 +599,7 @@ mod tests {
         // BIP173 test vector: bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4
         // Script pubkey: 0014 751e76e8199196d454941c45d1b3a323f1433bd6
         let addr_bech32 = b"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_vec();
-        let addr_script =
-            hex::decode("0014751e76e8199196d454941c45d1b3a323f1433bd6").unwrap();
+        let addr_script = hex::decode("0014751e76e8199196d454941c45d1b3a323f1433bd6").unwrap();
 
         // Verify our helper produces the expected script pubkey
         assert_eq!(

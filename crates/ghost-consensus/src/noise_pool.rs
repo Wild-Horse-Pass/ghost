@@ -248,10 +248,12 @@ impl NoiseConnectionPool {
             TcpStream::connect(peer_addr),
         )
         .await
-        .map_err(|_| NoiseError::Io(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            format!("Connection to {} timed out", peer_addr),
-        )))?
+        .map_err(|_| {
+            NoiseError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("Connection to {} timed out", peer_addr),
+            ))
+        })?
         .map_err(NoiseError::Io)?;
 
         // Perform Noise handshake as initiator

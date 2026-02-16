@@ -737,7 +737,11 @@ mod tests {
         // Verify that all-0xFF input does NOT produce Scalar::ONE (the old broken fallback)
         let max_hash = [0xFF; 32];
         let result = scalar_from_hash(&max_hash);
-        assert_ne!(result, Scalar::ONE, "0xFF hash must not produce Scalar::ONE");
+        assert_ne!(
+            result,
+            Scalar::ONE,
+            "0xFF hash must not produce Scalar::ONE"
+        );
 
         // Verify 100 random inputs all produce non-zero scalars
         use rand::RngCore;
@@ -746,7 +750,11 @@ mod tests {
             let mut hash = [0u8; 32];
             rng.fill_bytes(&mut hash);
             let scalar = scalar_from_hash(&hash);
-            assert_ne!(scalar, Scalar::ZERO, "scalar_from_hash should never produce zero for random input");
+            assert_ne!(
+                scalar,
+                Scalar::ZERO,
+                "scalar_from_hash should never produce zero for random input"
+            );
         }
     }
 

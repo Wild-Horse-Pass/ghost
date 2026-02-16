@@ -786,7 +786,10 @@ impl RoundManager {
         };
 
         if miners.is_empty() {
-            info!(round_id = max_round_id, "No valid miner work found for latest round");
+            info!(
+                round_id = max_round_id,
+                "No valid miner work found for latest round"
+            );
             return;
         }
 
