@@ -532,7 +532,7 @@ public:
     bool ProcessMessages(CNode* pfrom, std::atomic<bool>& interrupt) override
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, !m_headers_presync_mutex, g_msgproc_mutex, !m_tx_download_mutex);
     bool SendMessages(CNode* pto) override
-        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, g_msgproc_mutex, !m_tx_download_mutex);
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, g_msgproc_mutex, !m_tx_download_mutex, !m_shroud_mutex);
 
     /** Implement PeerManager */
     void StartScheduledTasks(CScheduler& scheduler) override;
@@ -543,7 +543,7 @@ public:
     std::vector<node::TxOrphanage::OrphanInfo> GetOrphanTransactions() override EXCLUSIVE_LOCKS_REQUIRED(!m_tx_download_mutex);
     PeerManagerInfo GetInfo() const override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
     void SendPings() override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
-    void RelayTransaction(const Txid& txid, const Wtxid& wtxid) override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+    void RelayTransaction(const Txid& txid, const Wtxid& wtxid) override EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_shroud_mutex);
     void SetBestBlock(int height, std::chrono::seconds time) override
     {
         m_best_height = height;
@@ -566,6 +566,14 @@ private:
 
     /** Retrieve unbroadcast transactions from the mempool and reattempt sending to peers */
     void ReattemptInitialBroadcast(CScheduler& scheduler) EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+
+    /** Relay a transaction directly to all peers (no shroud delay). */
+    void RelayTransactionDirect(const Txid& txid, const Wtxid& wtxid)
+        EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex);
+
+    /** Drain shroud queue entries whose delay has elapsed. */
+    void DrainShroudQueue()
+        EXCLUSIVE_LOCKS_REQUIRED(!m_shroud_mutex, !m_peer_mutex);
 
     /** Get a shared pointer to the Peer object.
      *  May return an empty shared_ptr if the Peer object can't be found. */
@@ -787,6 +795,15 @@ private:
     TimeOffsets m_outbound_time_offsets{m_warnings};
 
     const Options m_opts;
+
+    /** Ghost Shroud: queue of transactions waiting for their random relay delay to elapse. */
+    Mutex m_shroud_mutex;
+    struct ShroudEntry {
+        Txid txid;
+        Wtxid wtxid;
+        std::chrono::microseconds relay_at;
+    };
+    std::vector<ShroudEntry> m_shroud_queue GUARDED_BY(m_shroud_mutex);
 
     /** Chunk downloader for checkpoint P2P sync (hazed nodes only). */
     std::unique_ptr<haze::ChunkDownloader> m_chunk_downloader;
@@ -2171,11 +2188,8 @@ void PeerManagerImpl::SendPings()
     for(auto& it : m_peer_map) it.second->m_ping_queued = true;
 }
 
-void PeerManagerImpl::RelayTransaction(const Txid& txid, const Wtxid& wtxid)
+void PeerManagerImpl::RelayTransactionDirect(const Txid& txid, const Wtxid& wtxid)
 {
-    // Ghost mode: do not relay transactions to peers
-    if (m_connman.GetGhostMode()) return;
-
     LOCK(m_peer_mutex);
     for(auto& it : m_peer_map) {
         Peer& peer = *it.second;
@@ -2194,6 +2208,44 @@ void PeerManagerImpl::RelayTransaction(const Txid& txid, const Wtxid& wtxid)
         if (!tx_relay->m_tx_inventory_known_filter.contains(hash)) {
             tx_relay->m_tx_inventory_to_send.insert(wtxid);
         }
+    }
+}
+
+void PeerManagerImpl::RelayTransaction(const Txid& txid, const Wtxid& wtxid)
+{
+    // Ghost mode: do not relay transactions to peers
+    if (m_connman.GetGhostMode()) return;
+
+    if (m_opts.shroud) {
+        LOCK(m_shroud_mutex);
+        auto delay = FastRandomContext().randrange<std::chrono::milliseconds>(
+            std::chrono::milliseconds{5000});
+        m_shroud_queue.push_back({txid, wtxid,
+            GetTime<std::chrono::microseconds>() +
+            std::chrono::duration_cast<std::chrono::microseconds>(delay)});
+        return;
+    }
+
+    RelayTransactionDirect(txid, wtxid);
+}
+
+void PeerManagerImpl::DrainShroudQueue()
+{
+    std::vector<std::pair<Txid, Wtxid>> ready;
+    {
+        LOCK(m_shroud_mutex);
+        auto now = GetTime<std::chrono::microseconds>();
+        std::erase_if(m_shroud_queue, [&](const ShroudEntry& e) {
+            if (e.relay_at <= now) {
+                ready.emplace_back(e.txid, e.wtxid);
+                return true;
+            }
+            return false;
+        });
+    }
+    // m_shroud_mutex released before acquiring m_peer_mutex — no deadlock
+    for (const auto& [txid, wtxid] : ready) {
+        RelayTransactionDirect(txid, wtxid);
     }
 }
 
@@ -5948,6 +6000,8 @@ bool PeerManagerImpl::SendMessages(CNode* pto)
 {
     AssertLockNotHeld(m_tx_download_mutex);
     AssertLockHeld(g_msgproc_mutex);
+
+    DrainShroudQueue();
 
     PeerRef peer = GetPeerRef(pto->GetId());
     if (!peer) return false;

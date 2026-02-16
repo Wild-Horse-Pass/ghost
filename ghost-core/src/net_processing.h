@@ -101,6 +101,8 @@ public:
         std::string checkpoint_dir{};
         //! Network-specific data directory path (for deriving checkpoint download paths).
         std::string datadir{};
+        //! Whether to delay transaction relay for origin protection (Ghost Shroud)
+        bool shroud{true};
     };
 
     static std::unique_ptr<PeerManager> make(CConnman& connman, AddrMan& addrman,
