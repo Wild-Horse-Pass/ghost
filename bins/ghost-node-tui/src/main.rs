@@ -662,12 +662,31 @@ async fn refresh_data(app: &mut App) {
         return;
     };
 
-    // Fetch data based on current tab (prioritize visible data)
+    // Always fetch node status (used by header + multiple tabs)
+    // and update connection status based on result
+    let active_url = app.active_node().map(|n| n.url.clone());
+    match client.get_node_status().await {
+        Ok(status) => {
+            app.node_data.node_status = Some(status);
+            if let Some(url) = &active_url {
+                app.swarm
+                    .connection_status
+                    .insert(url.clone(), app::ConnectionStatus::Connected);
+            }
+        }
+        Err(_) => {
+            if let Some(url) = &active_url {
+                app.swarm.connection_status.insert(
+                    url.clone(),
+                    app::ConnectionStatus::Error("Connection failed".to_string()),
+                );
+            }
+        }
+    }
+
+    // Fetch additional data based on current tab
     match app.current_tab {
         Tab::Overview => {
-            if let Ok(status) = client.get_node_status().await {
-                app.node_data.node_status = Some(status);
-            }
             if let Ok(resources) = client.get_resources().await {
                 app.node_data.resources = Some(resources);
             }
@@ -682,9 +701,6 @@ async fn refresh_data(app: &mut App) {
             }
         }
         Tab::Bitcoin => {
-            if let Ok(status) = client.get_node_status().await {
-                app.node_data.node_status = Some(status);
-            }
             if let Ok(peers) = client.get_peers().await {
                 app.node_data.peers = Some(peers);
             }
@@ -709,7 +725,7 @@ async fn refresh_data(app: &mut App) {
             }
         }
         Tab::Swarm => {
-            // Refresh status for all nodes
+            // Refresh status for all nodes (not just active)
             let nodes: Vec<_> = app
                 .swarm
                 .nodes
@@ -717,6 +733,10 @@ async fn refresh_data(app: &mut App) {
                 .map(|n| (n.url.clone(), n.auth_token.clone(), n.hmac_secret.clone()))
                 .collect();
             for (url, auth_token, hmac_secret) in nodes {
+                // Skip active node — already checked above
+                if active_url.as_deref() == Some(&url) {
+                    continue;
+                }
                 let node_client =
                     create_client(&url, auth_token.as_deref(), hmac_secret.as_deref());
                 match node_client.get_node_status().await {
@@ -744,20 +764,13 @@ async fn refresh_data(app: &mut App) {
             if let Ok(wd) = client.get_watchdog_status().await {
                 app.node_data.watchdog = Some(wd);
             }
-            if let Ok(status) = client.get_node_status().await {
-                app.node_data.node_status = Some(status);
-            }
         }
         Tab::Backup => {
             if let Ok(history) = client.get_backup_history().await {
                 app.node_data.backup_history = Some(history);
             }
         }
-        Tab::Settings => {
-            if let Ok(status) = client.get_node_status().await {
-                app.node_data.node_status = Some(status);
-            }
-        }
+        Tab::Settings => {}
     }
 
     app.node_data.mark_refreshed(app.current_tab.data_type());

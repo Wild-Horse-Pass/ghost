@@ -83,33 +83,47 @@ fn render_service_health(f: &mut Frame, area: Rect, app: &App) {
 
         for (name, status) in &display_services {
             let (status_text, color) = match status.as_str() {
-                "healthy" | "running" | "active" => ("●", Color::Green),
+                "healthy" | "running" | "active" | "ok" => ("●", Color::Green),
                 "degraded" | "warning" => ("◐", Color::Yellow),
-                "unhealthy" | "failed" | "stopped" | "dead" => ("○", Color::Red),
+                "unhealthy" | "failed" | "stopped" | "dead" | "error" => ("○", Color::Red),
+                "not_enabled" | "disabled" => ("○", Color::DarkGray),
                 _ => ("?", Color::Gray),
             };
 
-            // Pretty-print service name
+            // Pretty-print service name (preserve known acronyms)
             let display_name = name
                 .replace('_', " ")
                 .split(' ')
                 .map(|w| {
-                    let mut c = w.chars();
-                    match c.next() {
-                        None => String::new(),
-                        Some(f) => f.to_uppercase().to_string() + c.as_str(),
+                    // Keep known acronyms uppercase
+                    match w.to_lowercase().as_str() {
+                        "gsp" => "GSP".to_string(),
+                        _ => {
+                            let mut c = w.chars();
+                            match c.next() {
+                                None => String::new(),
+                                Some(f) => f.to_uppercase().to_string() + c.as_str(),
+                            }
+                        }
                     }
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
 
+            // Display-friendly status text
+            let display_status = status.replace('_', " ");
+
             lines.push(Line::from(vec![
                 Span::styled(format!("{} ", status_text), Style::default().fg(color)),
                 Span::styled(
                     format!("{:<15}", display_name),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(if color == Color::DarkGray {
+                        Color::DarkGray
+                    } else {
+                        Color::White
+                    }),
                 ),
-                Span::styled(status.clone(), Style::default().fg(color)),
+                Span::styled(display_status, Style::default().fg(color)),
             ]));
         }
 
