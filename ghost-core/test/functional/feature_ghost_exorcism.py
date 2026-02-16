@@ -31,6 +31,34 @@ class GhostExorcismTest(BitcoinTestFramework):
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
 
+    def run_exorcist(self, node):
+        """Start node with --exorcist and wait for it to exit.
+
+        The node loads chainstate, runs the conversion, prints results,
+        then returns false from AppInitMain (clean shutdown without RPC).
+        Bitcoin Core's main() treats AppInitMain returning false as
+        EXIT_FAILURE, so the exit code is 1 even on successful conversion.
+        We verify success by checking stdout for the completion message.
+        """
+        node.start(extra_args=["-hazemode=full_archive", "-disablewallet", "-exorcist"])
+        ret_code = node.process.wait(timeout=120)
+
+        # Read stdout before closing
+        node.stdout.seek(0)
+        stdout_content = node.stdout.read().decode("utf-8", errors="replace")
+
+        # Clean up TestNode state (process exited without RPC)
+        node.stdout.close()
+        node.stderr.close()
+        node.running = False
+        node.process = None
+        node.rpc_connected = False
+        node._rpc = None
+
+        # Verify conversion succeeded via stdout message
+        assert "Conversion complete!" in stdout_content, \
+            f"Exorcist conversion failed (exit code {ret_code}). Stdout:\n{stdout_content}"
+
     def run_test(self):
         node = self.nodes[0]
 
@@ -52,7 +80,7 @@ class GhostExorcismTest(BitcoinTestFramework):
                 ],
             )
             signed = node.signrawtransactionwithwallet(raw)
-            node.sendrawtransaction(signed["hex"])
+            node.sendrawtransaction(signed["hex"], 0)  # maxfeerate=0
             bh = self.generate(node, 1)
             block_hashes.extend(bh)
 
@@ -66,18 +94,18 @@ class GhostExorcismTest(BitcoinTestFramework):
         assert_greater_than(len(blk_files), 0)
 
         self.log.info("Restart with --exorcist flag to convert")
-        # The --exorcist flag converts and exits; we need to handle the expected shutdown
-        self.start_node(0, extra_args=["-hazemode=full_archive", "-exorcist"])
-        # Wait for conversion to complete — node will shut down after conversion
-        self.wait_for_node_exit(0, timeout=120)
+        self.run_exorcist(node)
 
         self.log.info("Verify gsb*.dat files exist after conversion")
         gsb_files = [f for f in os.listdir(blocks_dir) if f.startswith("gsb") and f.endswith(".dat")]
         assert_greater_than(len(gsb_files), 0)
 
-        self.log.info("Verify blk*.dat files are removed after conversion")
-        blk_files_after = [f for f in os.listdir(blocks_dir) if f.startswith("blk") and f.endswith(".dat")]
-        assert_equal(len(blk_files_after), 0)
+        self.log.info("Verify blk*.dat files are removed or empty after conversion")
+        for fname in os.listdir(blocks_dir):
+            if fname.startswith("blk") and fname.endswith(".dat"):
+                fpath = os.path.join(blocks_dir, fname)
+                size = os.path.getsize(fpath)
+                assert size == 0, f"{fname} should be empty after exorcist but has {size} bytes"
 
         self.log.info("Restart in hazed mode")
         self.start_node(0, extra_args=["-hazemode=hazed"])

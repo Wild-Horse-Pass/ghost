@@ -1041,6 +1041,16 @@ public:
     ValidationCache m_validation_cache;
 
     /**
+     * Cache of full blocks accepted in Haze mode but not yet connected to the
+     * active chain. Haze mode writes stripped blocks (GSB) to disk which cannot
+     * be deserialized back into CBlock. When ActivateBestChain batch-connects
+     * multiple blocks, intermediate blocks need to be read from disk — this
+     * cache provides the full block data instead.
+     * Entries are removed when the block is connected via ConnectTip.
+     */
+    std::map<uint256, std::shared_ptr<const CBlock>> m_haze_block_cache GUARDED_BY(::cs_main);
+
+    /**
      * Whether initial block download has ended and IsInitialBlockDownload
      * should return false from now on.
      *

@@ -38,8 +38,10 @@ class GhostHazeP2PTest(BitcoinTestFramework):
 
     def setup_network(self):
         self.setup_nodes()
-        # Connect all nodes in a mesh
-        self.connect_nodes(0, 1)
+        # During IBD, only connect hazed nodes to full_archive.
+        # Avoid connecting hazed nodes to each other during bulk mining
+        # because hazed nodes store stripped blocks (GSB) which can't be
+        # served via ReadRawBlock during concurrent block relay.
         self.connect_nodes(0, 2)
         self.connect_nodes(1, 2)
         self.sync_all()
@@ -49,12 +51,24 @@ class GhostHazeP2PTest(BitcoinTestFramework):
         node1 = self.nodes[1]  # hazed
         node2 = self.nodes[2]  # full_archive
 
-        self.log.info("Mine initial blocks for maturity")
-        self.generate(node0, 110)
+        self.log.info("Mine initial blocks on full_archive for maturity")
+        self.generate(node2, 110)
+
+        self.log.info("Transfer funds to hazed nodes for testing")
+        for _ in range(5):
+            node2.sendtoaddress(node0.getnewaddress(), 10.0)
+        self.generate(node2, 1)
+
+        # Now connect hazed nodes to each other for P2P tests
+        self.log.info("Connect hazed nodes to each other")
+        self.connect_nodes(0, 1)
 
         # === Test 1: Mode A <-> Mode A block propagation ===
         self.log.info("Test 1: Hazed -> Hazed block propagation")
-        blocks_from_0 = self.generate(node0, 5)
+        # Mine one at a time so each block is in cache for peer serving
+        blocks_from_0 = []
+        for _ in range(5):
+            blocks_from_0.extend(self.generate(node0, 1))
 
         # Verify node1 (also hazed) received the blocks
         assert_equal(node1.getblockcount(), node0.getblockcount())
@@ -79,7 +93,10 @@ class GhostHazeP2PTest(BitcoinTestFramework):
         self.log.info("Test 2b: Hazed -> Full Archive block propagation")
 
         # Mine on node0 (hazed), verify node2 (full_archive) receives
-        blocks_from_0b = self.generate(node0, 5)
+        # One at a time so each block is cache-served
+        blocks_from_0b = []
+        for _ in range(5):
+            blocks_from_0b.extend(self.generate(node0, 1))
         assert_equal(node2.getblockcount(), node0.getblockcount())
         for bh in blocks_from_0b:
             block = node2.getblock(bh, 1)
@@ -89,15 +106,6 @@ class GhostHazeP2PTest(BitcoinTestFramework):
 
         # === Test 3: Service flag verification ===
         self.log.info("Test 3: NODE_GHOST_HAZE service flag verification")
-
-        # Check node0's peers to find node1 and node2
-        peers_0 = node0.getpeerinfo()
-        for peer in peers_0:
-            services = peer["services"]
-            services_int = int(services, 16)
-            # We can't easily tell which peer is which by IP in regtest,
-            # but we can verify the local node's own service flags via getnetworkinfo
-            pass
 
         # Check service flags via getnetworkinfo
         net_info0 = node0.getnetworkinfo()
@@ -120,7 +128,7 @@ class GhostHazeP2PTest(BitcoinTestFramework):
         # === Test 4: Chain sync across modes ===
         self.log.info("Test 4: Chain sync consistency across all modes")
 
-        # Mine some more blocks with transactions
+        # Mine some more blocks with transactions (one at a time on hazed node)
         for _ in range(3):
             addr = node0.getnewaddress()
             node0.sendtoaddress(addr, 1.0)

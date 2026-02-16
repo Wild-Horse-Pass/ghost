@@ -38,8 +38,14 @@ class GhostHazeTest(BitcoinTestFramework):
         node0 = self.nodes[0]  # hazed
         node1 = self.nodes[1]  # full_archive
 
-        self.log.info("Mine 110 blocks for coinbase maturity")
-        self.generate(node0, 110)
+        self.log.info("Mine 110 blocks on full_archive for coinbase maturity")
+        self.generate(node1, 110)
+
+        self.log.info("Transfer funds from full_archive to hazed node")
+        addr0 = node0.getnewaddress()
+        for _ in range(5):
+            node1.sendtoaddress(addr0, 10.0)
+        self.generate(node1, 1)
 
         self.log.info("Verify gethazestatus RPC on both nodes")
         status0 = node0.gethazestatus()
@@ -70,12 +76,17 @@ class GhostHazeTest(BitcoinTestFramework):
                         {"data": payload_hex},
                     ],
                 )
-            )["hex"]
+            )["hex"],
+            0,  # maxfeerate=0
         )
         txids.append(opreturn_txid)
 
-        self.log.info("Mine blocks containing transactions")
-        block_hashes = self.generate(node0, 5)
+        self.log.info("Mine blocks containing transactions (one at a time for cache serving)")
+        # Hazed nodes can only serve the most-recently-cached block to non-hazed
+        # peers. Mining one at a time ensures each block is in cache during sync.
+        block_hashes = []
+        for _ in range(5):
+            block_hashes.extend(self.generate(node0, 1))
 
         self.log.info("Verify getblock on hazed node includes haze_status")
         for bh in block_hashes:

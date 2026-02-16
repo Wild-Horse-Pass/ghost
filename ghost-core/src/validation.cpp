@@ -3135,14 +3135,22 @@ bool Chainstate::ConnectTip(
     if (m_mempool) AssertLockHeld(m_mempool->cs);
 
     assert(pindexNew->pprev == m_chain.Tip());
-    // Read block from disk.
+    // Read block from disk (or Haze block cache).
     const auto time_1{SteadyClock::now()};
     if (!block_to_connect) {
-        std::shared_ptr<CBlock> pblockNew = std::make_shared<CBlock>();
-        if (!m_blockman.ReadBlock(*pblockNew, *pindexNew)) {
-            return FatalError(m_chainman.GetNotifications(), state, _("Failed to read block."));
+        // In Haze mode, check the pending block cache first — GSB files
+        // cannot be deserialized as CBlock.
+        auto cache_it = m_chainman.m_haze_block_cache.find(pindexNew->GetBlockHash());
+        if (cache_it != m_chainman.m_haze_block_cache.end()) {
+            block_to_connect = cache_it->second;
+            m_chainman.m_haze_block_cache.erase(cache_it);
+        } else {
+            std::shared_ptr<CBlock> pblockNew = std::make_shared<CBlock>();
+            if (!m_blockman.ReadBlock(*pblockNew, *pindexNew)) {
+                return FatalError(m_chainman.GetNotifications(), state, _("Failed to read block."));
+            }
+            block_to_connect = std::move(pblockNew);
         }
-        block_to_connect = std::move(pblockNew);
     } else {
         LogDebug(BCLog::BENCH, "  - Using cached block\n");
     }
@@ -4550,6 +4558,13 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
             }
         }
         ReceivedBlockTransactions(block, pindex, blockPos);
+
+        // In Haze mode, cache the full block — GSB files cannot be deserialized
+        // back into CBlock, but ConnectTip may need the full block if
+        // ActivateBestChain batch-connects multiple blocks.
+        if (m_blockman.m_ghost_exorcism.IsActive()) {
+            m_haze_block_cache[pblock->GetHash()] = pblock;
+        }
     } catch (const std::runtime_error& e) {
         return FatalError(GetNotifications(), state, strprintf(_("System error while saving block to disk: %s"), e.what()));
     }
