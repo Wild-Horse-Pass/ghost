@@ -1168,29 +1168,26 @@ async fn main() -> Result<()> {
     // Parse listen address
     let addr: SocketAddr = state.config.api_listen.parse()?;
 
-    // Build TLS config for HTTPS
-    let has_explicit_cert = tls_cert_path.is_some();
-    let tls_cfg = ghost_common::config::TlsConfig {
-        cert_path: tls_cert_path,
-        key_path: tls_key_path,
-    };
-    let tls_config = match ghost_common::tls::build_server_config(&tls_cfg) {
-        Ok(tls) => {
-            if has_explicit_cert {
+    // Build TLS config for HTTPS — only when operator provides explicit cert/key.
+    // Without explicit certs, serve plain HTTP so that the verification client
+    // (which uses HTTP on signet/testnet) can reach us without TLS issues.
+    let tls_config = if let (Some(cert_path), Some(key_path)) = (tls_cert_path, tls_key_path) {
+        let tls_cfg = ghost_common::config::TlsConfig {
+            cert_path: Some(cert_path),
+            key_path: Some(key_path),
+        };
+        match ghost_common::tls::build_server_config(&tls_cfg) {
+            Ok(tls) => {
                 info!("Ghost Pay API starting on {} (HTTPS, operator cert)", addr);
-            } else {
-                info!("Ghost Pay API starting on {} (HTTPS, self-signed)", addr);
+                Some(tls)
             }
-            Some(tls)
-        }
-        Err(e) => {
-            if has_explicit_cert {
-                // Operator explicitly provided cert/key that failed to load -- hard error
+            Err(e) => {
                 return Err(anyhow::anyhow!("Failed to build TLS config: {}", e));
             }
-            warn!(error = %e, "Failed to generate self-signed cert, using plain HTTP");
-            None
         }
+    } else {
+        info!("Ghost Pay API starting on {} (HTTP)", addr);
+        None
     };
 
     // Start server with graceful shutdown
