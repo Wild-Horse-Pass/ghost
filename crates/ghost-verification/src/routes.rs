@@ -496,27 +496,13 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
 /// - Trigger admin operations (test-consensus)
 /// - Submit fraudulent block notifications
 ///
-/// # Localhost Bypass
-///
-/// Requests from 127.0.0.1 or ::1 skip HMAC validation. This allows the Next.js
-/// dashboard proxy (running on the same machine) to call internal endpoints without
-/// signing. Remote requests always require HMAC authentication.
+/// All requests require HMAC authentication, including localhost.
+/// This prevents auth bypass via misconfigured reverse proxies or IP spoofing.
 async fn internal_auth_middleware(
     auth: Arc<InternalAuth>,
     request: axum::extract::Request,
     next: Next,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
-    // Check if request is from localhost — skip HMAC auth
-    let is_localhost = request
-        .extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| ci.0.ip().is_loopback())
-        .unwrap_or(false);
-
-    if is_localhost {
-        return Ok(next.run(request).await);
-    }
-
     // Extract headers and body for authentication
     let (parts, body) = request.into_parts();
     let headers = &parts.headers;

@@ -45,103 +45,52 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         "Running database migrations"
     );
 
-    // Run migrations sequentially
-    // Each migration sets the schema version immediately after completing.
-    // This prevents a crash mid-migration from re-running non-idempotent
-    // ALTER TABLE statements (which would fail with "duplicate column name").
-    if current_version < 1 {
-        migrate_v1(conn)?;
-        set_schema_version(conn, 1)?;
+    // Run migrations sequentially, each wrapped in a transaction.
+    // This ensures that if a migration succeeds but the version update fails,
+    // both are rolled back atomically — preventing stuck partial migrations.
+    //
+    // v10 is a special case: it uses PRAGMA foreign_keys ON/OFF which cannot run
+    // inside a transaction, so it manages its own transaction internally.
+    let pre_v10: &[(u32, fn(&Connection) -> GhostResult<()>)] = &[
+        (1, migrate_v1),
+        (2, migrate_v2),
+        (3, migrate_v3),
+        (4, migrate_v4),
+        (5, migrate_v5),
+        (6, migrate_v6),
+        (7, migrate_v7),
+        (8, migrate_v8),
+        (9, migrate_v9),
+    ];
+
+    let post_v10: &[(u32, fn(&Connection) -> GhostResult<()>)] = &[
+        (11, migrate_v11),
+        (12, migrate_v12),
+        (13, migrate_v13),
+        (14, migrate_v14),
+        (15, migrate_v15),
+        (16, migrate_v16),
+        (17, migrate_v17),
+        (18, migrate_v18),
+        (19, migrate_v19),
+    ];
+
+    for &(version, migrate_fn) in pre_v10 {
+        if current_version < version {
+            run_migration_tx(conn, version, migrate_fn)?;
+        }
     }
 
-    if current_version < 2 {
-        migrate_v2(conn)?;
-        set_schema_version(conn, 2)?;
-    }
-
-    if current_version < 3 {
-        migrate_v3(conn)?;
-        set_schema_version(conn, 3)?;
-    }
-
-    if current_version < 4 {
-        migrate_v4(conn)?;
-        set_schema_version(conn, 4)?;
-    }
-
-    if current_version < 5 {
-        migrate_v5(conn)?;
-        set_schema_version(conn, 5)?;
-    }
-
-    if current_version < 6 {
-        migrate_v6(conn)?;
-        set_schema_version(conn, 6)?;
-    }
-
-    if current_version < 7 {
-        migrate_v7(conn)?;
-        set_schema_version(conn, 7)?;
-    }
-
-    if current_version < 8 {
-        migrate_v8(conn)?;
-        set_schema_version(conn, 8)?;
-    }
-
-    if current_version < 9 {
-        migrate_v9(conn)?;
-        set_schema_version(conn, 9)?;
-    }
-
+    // v10 manages its own PRAGMA foreign_keys ON/OFF and cannot be wrapped
     if current_version < 10 {
         migrate_v10(conn)?;
         set_schema_version(conn, 10)?;
     }
 
-    if current_version < 11 {
-        migrate_v11(conn)?;
-        set_schema_version(conn, 11)?;
-    }
-
-    if current_version < 12 {
-        migrate_v12(conn)?;
-        set_schema_version(conn, 12)?;
-    }
-
-    if current_version < 13 {
-        migrate_v13(conn)?;
-        set_schema_version(conn, 13)?;
-    }
-
-    if current_version < 14 {
-        migrate_v14(conn)?;
-        set_schema_version(conn, 14)?;
-    }
-
-    if current_version < 15 {
-        migrate_v15(conn)?;
-        set_schema_version(conn, 15)?;
-    }
-
-    if current_version < 16 {
-        migrate_v16(conn)?;
-        set_schema_version(conn, 16)?;
-    }
-
-    if current_version < 17 {
-        migrate_v17(conn)?;
-        set_schema_version(conn, 17)?;
-    }
-
-    if current_version < 18 {
-        migrate_v18(conn)?;
-        set_schema_version(conn, 18)?;
-    }
-
-    if current_version < 19 {
-        migrate_v19(conn)?;
-        set_schema_version(conn, 19)?;
+    for &(version, migrate_fn) in post_v10 {
+        if current_version < version {
+            run_migration_tx(conn, version, migrate_fn)?;
+        }
     }
 
     info!("Database migrations complete");
@@ -173,6 +122,36 @@ fn set_schema_version(conn: &Connection, version: u32) -> GhostResult<()> {
     let sql = format!("PRAGMA user_version = {}", version);
     conn.execute(&sql, [])
         .map_err(|e| GhostError::Database(e.to_string()))?;
+    Ok(())
+}
+
+/// Run a single migration within a transaction.
+///
+/// Wraps the migration function + version update in BEGIN IMMEDIATE / COMMIT
+/// so that if the migration succeeds but the version update fails (e.g. disk full),
+/// both are rolled back atomically. This prevents the node from getting stuck with
+/// a partially-applied migration that can't be re-run.
+fn run_migration_tx(
+    conn: &Connection,
+    version: u32,
+    migrate_fn: fn(&Connection) -> GhostResult<()>,
+) -> GhostResult<()> {
+    conn.execute("BEGIN IMMEDIATE", [])
+        .map_err(|e| GhostError::Migration(format!("Failed to begin migration v{}: {}", version, e)))?;
+
+    if let Err(e) = migrate_fn(conn) {
+        let _ = conn.execute("ROLLBACK", []);
+        return Err(e);
+    }
+
+    if let Err(e) = set_schema_version(conn, version) {
+        let _ = conn.execute("ROLLBACK", []);
+        return Err(e);
+    }
+
+    conn.execute("COMMIT", [])
+        .map_err(|e| GhostError::Migration(format!("Failed to commit migration v{}: {}", version, e)))?;
+
     Ok(())
 }
 

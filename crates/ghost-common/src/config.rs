@@ -479,8 +479,10 @@ impl NodeConfig {
             }
         }
 
-        // Validate seed nodes use secure protocols for remote connections
+        // Validate seed nodes use secure protocols and have valid format
         for (i, seed) in self.network.seed_nodes.iter().enumerate() {
+            let field = format!("network.seed_nodes[{}]", i);
+
             // Allow localhost without TLS for development
             let is_localhost = seed.starts_with("127.0.0.1")
                 || seed.starts_with("localhost")
@@ -492,7 +494,7 @@ impl NodeConfig {
             // If it's a URL, check for HTTP vs HTTPS
             if seed.starts_with("http://") && !is_localhost {
                 result.add_error(
-                    &format!("network.seed_nodes[{}]", i),
+                    &field,
                     &format!(
                         "Insecure HTTP URL for remote seed node: {}. Use HTTPS or TCP for P2P.",
                         seed
@@ -503,10 +505,59 @@ impl NodeConfig {
             // Warn about insecure localhost (defense in depth)
             if seed.starts_with("http://") && is_localhost {
                 result.add_warning(
-                    &format!("network.seed_nodes[{}]", i),
+                    &field,
                     "Using HTTP for localhost seed node. Consider HTTPS for defense in depth.",
                 );
             }
+
+            // Validate host:port format for non-URL seeds
+            if !seed.starts_with("http://") && !seed.starts_with("https://") {
+                // IPv6 format: [::1]:8559 or plain host:port
+                let has_port = if seed.starts_with('[') {
+                    // IPv6: expect [addr]:port
+                    seed.contains("]:")
+                } else {
+                    seed.contains(':') && seed.matches(':').count() == 1
+                };
+
+                if !has_port {
+                    result.add_error(
+                        &field,
+                        &format!(
+                            "Seed node '{}' must be in host:port format (e.g. 'seed1.example.com:8559')",
+                            seed
+                        ),
+                    );
+                } else {
+                    // Validate port is numeric
+                    let port_str = if seed.starts_with('[') {
+                        seed.rsplit("]:").next().unwrap_or("")
+                    } else {
+                        seed.rsplit(':').next().unwrap_or("")
+                    };
+                    if port_str.parse::<u16>().is_err() {
+                        result.add_error(
+                            &field,
+                            &format!(
+                                "Seed node '{}' has invalid port: '{}'",
+                                seed, port_str
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+
+        // M1: Mainnet requires at least 3 seed nodes for network redundancy
+        if self.bitcoin.network == BitcoinNetwork::Mainnet && self.network.seed_nodes.len() < 3 {
+            result.add_error(
+                "network.seed_nodes",
+                &format!(
+                    "MAINNET SECURITY: At least 3 seed nodes are required for mainnet (got {}). \
+                     A single seed node is a single point of failure for peer discovery.",
+                    self.network.seed_nodes.len()
+                ),
+            );
         }
 
         // Validate mining mode configuration
@@ -1570,12 +1621,17 @@ mod tests {
     #[test]
     fn test_mainnet_with_seed_nodes_valid() {
         // M-15: Mainnet nodes with seed_nodes configured should not error
+        // M1: Mainnet requires at least 3 seed nodes
         let mut config = NodeConfig::default();
         config.bitcoin.network = BitcoinNetwork::Mainnet;
         config.network.noise_enabled = true;
         config.network.internal_api_secret =
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
-        config.network.seed_nodes = vec!["seed1.bitcoinghost.org:8559".to_string()];
+        config.network.seed_nodes = vec![
+            "seed1.bitcoinghost.org:8559".to_string(),
+            "seed2.bitcoinghost.org:8559".to_string(),
+            "seed3.bitcoinghost.org:8559".to_string(),
+        ];
 
         let result = config.validate();
         // Should not have seed_nodes error
@@ -1654,7 +1710,11 @@ mod tests {
         config.network.noise_enabled = true;
         config.network.internal_api_secret =
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
-        config.network.seed_nodes = vec!["seed1.bitcoinghost.org:8559".to_string()];
+        config.network.seed_nodes = vec![
+            "seed1.bitcoinghost.org:8559".to_string(),
+            "seed2.bitcoinghost.org:8559".to_string(),
+            "seed3.bitcoinghost.org:8559".to_string(),
+        ];
         // No TLS cert configured
         config.network.tls = TlsConfig::default();
 
@@ -1676,7 +1736,11 @@ mod tests {
         config.network.noise_enabled = true;
         config.network.internal_api_secret =
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
-        config.network.seed_nodes = vec!["seed1.bitcoinghost.org:8559".to_string()];
+        config.network.seed_nodes = vec![
+            "seed1.bitcoinghost.org:8559".to_string(),
+            "seed2.bitcoinghost.org:8559".to_string(),
+            "seed3.bitcoinghost.org:8559".to_string(),
+        ];
         config.network.tls = TlsConfig {
             cert_path: Some(PathBuf::from("/etc/ghost/cert.pem")),
             key_path: None, // Missing key
@@ -1700,7 +1764,11 @@ mod tests {
         config.network.noise_enabled = true;
         config.network.internal_api_secret =
             Some("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_string());
-        config.network.seed_nodes = vec!["seed1.bitcoinghost.org:8559".to_string()];
+        config.network.seed_nodes = vec![
+            "seed1.bitcoinghost.org:8559".to_string(),
+            "seed2.bitcoinghost.org:8559".to_string(),
+            "seed3.bitcoinghost.org:8559".to_string(),
+        ];
         config.network.tls = TlsConfig {
             cert_path: Some(PathBuf::from("/etc/ghost/cert.pem")),
             key_path: Some(PathBuf::from("/etc/ghost/key.pem")),

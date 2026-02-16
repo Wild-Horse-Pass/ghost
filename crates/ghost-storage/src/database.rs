@@ -607,6 +607,45 @@ impl Database {
         })
     }
 
+    /// Create a backup of the database using VACUUM INTO.
+    ///
+    /// This creates a consistent, compact copy of the database at the given path.
+    /// The backup is atomic — either the full backup completes or nothing is written.
+    /// Old backups at the same path are overwritten.
+    pub fn backup(&self, backup_path: &std::path::Path) -> GhostResult<()> {
+        // Remove existing backup file if present (VACUUM INTO fails if target exists)
+        if backup_path.exists() {
+            std::fs::remove_file(backup_path)
+                .map_err(|e| GhostError::Database(format!("Failed to remove old backup: {}", e)))?;
+        }
+
+        let path_str = backup_path.to_string_lossy();
+        info!(path = %path_str, "Creating database backup");
+
+        self.with_connection(|conn| {
+            conn.execute(&format!("VACUUM INTO '{}'", path_str.replace('\'', "''")), [])
+                .map_err(|e| GhostError::Database(format!("VACUUM INTO failed: {}", e)))?;
+            Ok(())
+        })?;
+
+        // Set restrictive permissions on backup file
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                backup_path,
+                std::fs::Permissions::from_mode(0o600),
+            );
+        }
+
+        let size = std::fs::metadata(backup_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+        info!(path = %path_str, size_mb = size / (1024 * 1024), "Database backup complete");
+
+        Ok(())
+    }
+
     /// Prune old shares from the database
     ///
     /// Deletes shares older than the specified number of rounds.

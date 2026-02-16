@@ -1024,15 +1024,45 @@ impl MeshNetwork {
         // Load or generate keypair
         let keypair = if let Some(ref path) = config.noise_keypair_path {
             if path.exists() {
+                // Verify file permissions before loading (warn if too permissive)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(metadata) = std::fs::metadata(path) {
+                        let mode = metadata.permissions().mode() & 0o777;
+                        if mode & 0o077 != 0 {
+                            warn!(
+                                path = ?path,
+                                mode = format!("{:o}", mode),
+                                "Noise keypair file has overly permissive permissions, fixing to 0600"
+                            );
+                            let _ = std::fs::set_permissions(
+                                path,
+                                std::fs::Permissions::from_mode(0o600),
+                            );
+                        }
+                    }
+                }
                 // Load existing keypair
                 let hex = std::fs::read_to_string(path).map_err(crate::noise::NoiseError::Io)?;
                 NoiseKeypair::from_hex(hex.trim())?
             } else {
-                // Generate and save new keypair
+                // Generate and save new keypair with restrictive permissions
                 let kp = NoiseKeypair::generate();
                 if let Err(e) = std::fs::write(path, hex::encode(kp.private_key())) {
                     warn!(path = ?path, error = %e, "Failed to save Noise keypair");
                 } else {
+                    // Set restrictive file permissions (owner read/write only)
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Err(e) = std::fs::set_permissions(
+                            path,
+                            std::fs::Permissions::from_mode(0o600),
+                        ) {
+                            warn!(path = ?path, error = %e, "Failed to set Noise keypair file permissions");
+                        }
+                    }
                     info!(path = ?path, "Generated and saved new Noise keypair");
                 }
                 kp

@@ -74,7 +74,7 @@ impl Default for PayoutConfig {
             max_miner_outputs: 200,
             max_node_outputs: 100,
             treasury_address: None, // Must be configured at startup
-            network: ghost_common::config::BitcoinNetwork::Signet, // Safe default
+            network: ghost_common::config::BitcoinNetwork::Mainnet, // Fail-safe: strictest validation by default
         }
     }
 }
@@ -452,11 +452,16 @@ impl PayoutProposalCreator {
         // H-MINE-3: Use treasury address snapshot from BlockFoundData
         // This ensures the coinbase is built with the address that was valid
         // at the time the round started, not a potentially changed address
-        let treasury_address = data.treasury_address_snapshot.clone().unwrap_or_else(|| {
-            // Fallback to current config if no snapshot (shouldn't happen)
-            warn!("No treasury address snapshot - using current config (potential TOCTOU)");
-            self.config.treasury_address.clone().unwrap_or_default()
-        });
+        let treasury_address = match data.treasury_address_snapshot.clone() {
+            Some(addr) => addr,
+            None => {
+                return Err(ghost_common::error::GhostError::PayoutCalculation(
+                    "No treasury address snapshot in BlockFoundData — cannot build payout. \
+                     This indicates a bug: the round should always capture the treasury address at start."
+                        .to_string(),
+                ));
+            }
+        };
 
         // HIGH-MINE-3 / HIGH-POOL-3: Validate treasury address using Bitcoin library
         // Instead of just checking length (22-34 bytes), we validate the script

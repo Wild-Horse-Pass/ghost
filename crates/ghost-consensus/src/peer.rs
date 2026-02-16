@@ -24,7 +24,7 @@
 
 use parking_lot::RwLock;
 use std::collections::HashMap;
-use tracing::info;
+use tracing::{debug, info};
 
 use ghost_common::types::{NodeCapabilities, NodeId};
 
@@ -59,6 +59,24 @@ fn extract_host_from_address(address: &str) -> String {
     address.to_string()
 }
 
+/// Extract the /24 subnet prefix from an address string.
+/// Returns `Some("a.b.c")` for IPv4 addresses, `None` for IPv6 or unparseable.
+fn extract_ipv4_subnet(address: &str) -> Option<String> {
+    let host = extract_host_from_address(address);
+    let ip: std::net::IpAddr = host.parse().ok()?;
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            Some(format!("{}.{}.{}", octets[0], octets[1], octets[2]))
+        }
+        std::net::IpAddr::V6(_) => None, // IPv6 subnet diversity handled separately if needed
+    }
+}
+
+/// Maximum peers allowed from the same /24 subnet.
+/// Limits eclipse attack surface while allowing legitimate multi-node operators.
+const MAX_PEERS_PER_SUBNET: usize = 3;
+
 /// Peer manager for tracking connected peers
 #[derive(Debug)]
 pub struct PeerManager {
@@ -80,14 +98,45 @@ impl PeerManager {
         }
     }
 
-    /// Add or update a peer
+    /// Add or update a peer.
+    ///
+    /// Enforces /24 subnet diversity: at most `MAX_PEERS_PER_SUBNET` peers from
+    /// the same IPv4 /24 to limit eclipse attack surface.
+    #[allow(clippy::map_entry)] // entry() API doesn't fit: we need checks between contains_key and insert
     pub fn upsert_peer(&self, peer: Peer) {
         let mut peers = self.peers.write();
 
-        if peers.len() >= self.max_peers && !peers.contains_key(&peer.node_id) {
-            // At capacity, only add if peer is better than worst peer
-            // For now, just reject
+        // Allow updates to existing peers unconditionally
+        if peers.contains_key(&peer.node_id) {
+            peers.insert(peer.node_id, peer);
             return;
+        }
+
+        if peers.len() >= self.max_peers {
+            return;
+        }
+
+        // M2: Enforce subnet diversity for new peers
+        if let Some(new_subnet) = extract_ipv4_subnet(&peer.public_address) {
+            let subnet_count = peers
+                .values()
+                .filter(|p| {
+                    extract_ipv4_subnet(&p.public_address)
+                        .as_deref()
+                        == Some(new_subnet.as_str())
+                })
+                .count();
+
+            if subnet_count >= MAX_PEERS_PER_SUBNET {
+                debug!(
+                    subnet = %new_subnet,
+                    count = subnet_count,
+                    max = MAX_PEERS_PER_SUBNET,
+                    peer_addr = %peer.public_address,
+                    "Rejecting peer: /24 subnet limit reached"
+                );
+                return;
+            }
         }
 
         peers.insert(peer.node_id, peer);

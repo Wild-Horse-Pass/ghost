@@ -610,6 +610,13 @@ impl RoundManager {
         // Combined with L-7 cumulative tolerance tracking (1% cap per miner),
         // this prevents any meaningful payout inflation.
         let calculated_work = diff_calc.calculate_work(proof.difficulty);
+        // M3: Guard against NaN/Inf from degenerate difficulty values
+        if !calculated_work.is_finite() || calculated_work <= 0.0 {
+            return Err(ShareError::WorkValueTooHigh {
+                got: proof.work,
+                max: calculated_work,
+            });
+        }
         let per_share_tolerance = calculated_work * 0.0001; // M-9: 0.01% tolerance (was 0.1%)
         let work_difference = proof.work - calculated_work;
         if work_difference.abs() > per_share_tolerance {
@@ -1170,8 +1177,8 @@ impl RoundManager {
         // Update current template
         *self.current_template_id.write() = Some(template_id);
 
-        // Add to recent templates (keep last 3)
-        const MAX_RECENT_TEMPLATES: usize = 3;
+        // Add to recent templates (keep last 10 to accommodate network latency)
+        const MAX_RECENT_TEMPLATES: usize = 10;
         let mut recent = self.recent_template_ids.write();
         if !recent.contains(&template_id) {
             recent.push(template_id);
@@ -1500,6 +1507,7 @@ mod tests {
     #[test]
     fn test_m_mine_1_template_validation() {
         // M-MINE-1: Test template ID tracking and validation
+        // M4: Template retention increased to 10 for mainnet latency tolerance
         let node_id = [1u8; 32];
         let manager = RoundManager::new(node_id, RoundConfig::default());
 
@@ -1517,21 +1525,21 @@ mod tests {
         manager.set_template_id(template2);
         assert_eq!(manager.current_template_id(), Some(template2));
         assert!(manager.is_valid_template(&template2));
-        assert!(manager.is_valid_template(&template1)); // Recent template still valid
-
-        // Set third template
-        let template3 = [3u8; 32];
-        manager.set_template_id(template3);
-        assert!(manager.is_valid_template(&template3));
-        assert!(manager.is_valid_template(&template2));
         assert!(manager.is_valid_template(&template1));
 
-        // Set fourth template - first should be evicted (only keep 3)
-        let template4 = [4u8; 32];
-        manager.set_template_id(template4);
-        assert!(manager.is_valid_template(&template4));
-        assert!(manager.is_valid_template(&template3));
-        assert!(manager.is_valid_template(&template2));
+        // Fill up to 10 templates — template1 should still be valid
+        for i in 3..=10u8 {
+            let mut t = [0u8; 32];
+            t[0] = i;
+            manager.set_template_id(t);
+        }
+        assert!(manager.is_valid_template(&template1)); // 10 templates, still in window
+
+        // 11th template evicts template1 (window is 10)
+        let template11 = [11u8; 32];
+        manager.set_template_id(template11);
+        assert!(manager.is_valid_template(&template11));
+        assert!(manager.is_valid_template(&template2)); // Still in window
         assert!(!manager.is_valid_template(&template1)); // Evicted
 
         // Unknown template should be invalid

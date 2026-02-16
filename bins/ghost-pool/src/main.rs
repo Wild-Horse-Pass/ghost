@@ -2402,6 +2402,38 @@ async fn main() -> Result<()> {
     });
     info!("Database maintenance task started (hourly)");
 
+    // M5: Daily database backup task
+    let db_for_backup = Arc::clone(&db);
+    let backup_dir = data_dir.clone();
+    let mut backup_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        const BACKUP_INTERVAL_SECS: u64 = 86400; // 24 hours
+
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(BACKUP_INTERVAL_SECS));
+        // Skip first immediate tick — let node start fully first
+        interval.tick().await;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let backup_path = backup_dir.join("ghost_backup.db");
+                    match db_for_backup.backup(&backup_path) {
+                        Ok(()) => {
+                            tracing::info!(path = ?backup_path, "Daily database backup complete");
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "Daily database backup failed");
+                        }
+                    }
+                }
+                _ = backup_shutdown.recv() => {
+                    tracing::info!("Database backup task shutting down");
+                    break;
+                }
+            }
+        }
+    });
+    info!("Database backup task started (daily)");
+
     // Clone ws_state for event handlers before moving verification_state
     let _verification_state_for_ws = Arc::clone(&verification_state);
 
@@ -2419,6 +2451,15 @@ async fn main() -> Result<()> {
                 Some(tls)
             }
             Err(e) => {
+                if is_mainnet_tls {
+                    return Err(anyhow::anyhow!(
+                        "MAINNET SECURITY: TLS configuration failed and cannot fall back to HTTP on mainnet. \
+                         Fix TLS cert/key at {:?}/{:?}: {}",
+                        config.network.tls.cert_path,
+                        config.network.tls.key_path,
+                        e
+                    ));
+                }
                 warn!(error = %e, "Failed to build TLS config, verification server will use plain HTTP");
                 None
             }
@@ -2582,7 +2623,25 @@ async fn main() -> Result<()> {
                             // M-17: Hold permit for connection lifetime - released when dropped
                             let _permit = permit;
 
-                            match pool.accept_connection(stream).await {
+                            // H2: Timeout Noise handshake to prevent resource exhaustion
+                            // from peers that connect but never complete the handshake
+                            let accept_result = tokio::time::timeout(
+                                std::time::Duration::from_secs(30),
+                                pool.accept_connection(stream),
+                            ).await;
+
+                            let accept_result = match accept_result {
+                                Ok(result) => result,
+                                Err(_) => {
+                                    tracing::warn!(
+                                        peer = %addr,
+                                        "Noise handshake timed out after 30s"
+                                    );
+                                    return;
+                                }
+                            };
+
+                            match accept_result {
                                 Ok(conn) => {
                                     tracing::debug!(
                                         peer = %addr,
