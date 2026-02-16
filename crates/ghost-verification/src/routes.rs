@@ -1757,18 +1757,57 @@ async fn api_resources_handler(State(state): State<Arc<VerificationState>>) -> i
     }))
 }
 
-/// Query ghost-pay L2 status from the local handler (sync)
-fn query_ghostpay_live(state: &VerificationState) -> (u64, u64, u64, bool, &'static str) {
+/// Ghost Pay L2 status result
+struct GhostPayLiveStatus {
+    epoch: u64,
+    virtual_block: u64,
+    wraith_enabled: bool,
+    sync_state: &'static str,
+}
+
+/// Query ghost-pay L2 status — tries in-process handler first, then HTTP to localhost:8800.
+/// Returns a self-contained future (no borrows) so axum handlers stay Send.
+async fn fetch_ghostpay_from_service() -> Option<GhostPayLiveStatus> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .ok()?;
+
+    let resp = client
+        .get("http://127.0.0.1:8800/verify/ghostpay?unsigned=true")
+        .send()
+        .await
+        .ok()?;
+    let json: serde_json::Value = resp.json().await.ok()?;
+    let inner = json.get("response")?;
+
+    let success = inner.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+    if !success {
+        return None;
+    }
+
+    Some(GhostPayLiveStatus {
+        epoch: inner.get("epoch").and_then(|v| v.as_u64()).unwrap_or(0),
+        virtual_block: inner.get("virtual_block").and_then(|v| v.as_u64()).unwrap_or(0),
+        wraith_enabled: inner.get("wraith_enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+        sync_state: "synced",
+    })
+}
+
+/// Check ghost-pay status from in-process handler (sync). Returns None if handler unavailable.
+fn check_ghostpay_local(state: &VerificationState) -> Option<GhostPayLiveStatus> {
     let config = state.dashboard_config.read();
     if !config.ghost_pay {
-        return (0, 0, 0, false, "disabled");
+        return Some(GhostPayLiveStatus { epoch: 0, virtual_block: 0, wraith_enabled: false, sync_state: "disabled" });
     }
     drop(config);
 
-    match state.get_ghostpay_status() {
-        Some(info) => (info.epoch, info.virtual_block, info.epoch, info.wraith_enabled, "synced"),
-        None => (0, 0, 0, false, "unavailable"),
-    }
+    state.get_ghostpay_status().map(|info| GhostPayLiveStatus {
+        epoch: info.epoch,
+        virtual_block: info.virtual_block,
+        wraith_enabled: info.wraith_enabled,
+        sync_state: "synced",
+    })
 }
 
 /// API v1 GhostPay status handler
@@ -1776,22 +1815,33 @@ async fn api_ghostpay_status_handler(
     State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
     let health = state.get_health().await;
-    let (epoch, virtual_block, l2_era, wraith_enabled, sync_state) = query_ghostpay_live(&state);
+
+    // Try in-process handler first (sync, no borrow issues)
+    let gp = match check_ghostpay_local(&state) {
+        Some(status) => status,
+        None => {
+            // Ghost-pay runs as separate service on port 8800 — query via spawned task
+            match tokio::spawn(fetch_ghostpay_from_service()).await {
+                Ok(Some(status)) => status,
+                _ => GhostPayLiveStatus { epoch: 0, virtual_block: 0, wraith_enabled: false, sync_state: "unavailable" },
+            }
+        }
+    };
 
     Json(serde_json::json!({
-        "enabled": sync_state != "disabled",
+        "enabled": gp.sync_state != "disabled",
         "node_id": health.node_id,
         "protocol_version": 1,
         "network": "signet",
-        "l2_era": l2_era,
-        "virtual_block": virtual_block,
-        "l2_height": virtual_block,
+        "l2_era": gp.epoch,
+        "virtual_block": gp.virtual_block,
+        "l2_height": gp.virtual_block,
         "block_height": health.block_height,
-        "epoch": epoch,
+        "epoch": gp.epoch,
         "peer_count": health.peer_count,
         "uptime_secs": health.uptime_secs,
-        "sync_state": sync_state,
-        "wraith_enabled": wraith_enabled,
+        "sync_state": gp.sync_state,
+        "wraith_enabled": gp.wraith_enabled,
         "total_balances": 0
     }))
 }
@@ -2360,28 +2410,27 @@ async fn api_watchdog_status_handler(
     };
 
     // Check ghost-pay L2 service status
-    let ghost_pay_status = match state.get_ghostpay_status() {
-        Some(info) => serde_json::json!({
+    let gp = match check_ghostpay_local(&state) {
+        Some(status) => status,
+        None => match tokio::spawn(fetch_ghostpay_from_service()).await {
+            Ok(Some(status)) => status,
+            _ => GhostPayLiveStatus { epoch: 0, virtual_block: 0, wraith_enabled: false, sync_state: "unavailable" },
+        },
+    };
+    let ghost_pay_status = match gp.sync_state {
+        "synced" => serde_json::json!({
             "status": "running",
-            "epoch": info.epoch,
-            "virtual_block": info.virtual_block
+            "epoch": gp.epoch,
+            "virtual_block": gp.virtual_block
         }),
-        None => {
-            let config = state.dashboard_config.read();
-            let enabled = config.ghost_pay;
-            drop(config);
-            if enabled {
-                serde_json::json!({
-                    "status": "error",
-                    "message": "Ghost Pay enabled but handler not configured"
-                })
-            } else {
-                serde_json::json!({
-                    "status": "not_enabled",
-                    "message": "Ghost Pay not configured"
-                })
-            }
-        }
+        "disabled" => serde_json::json!({
+            "status": "not_enabled",
+            "message": "Ghost Pay not configured"
+        }),
+        _ => serde_json::json!({
+            "status": "error",
+            "message": "Ghost Pay not responding"
+        }),
     };
 
     // Check GSP (Ghost Service Protocol) status for light wallet support
