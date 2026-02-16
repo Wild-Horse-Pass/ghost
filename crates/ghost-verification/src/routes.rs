@@ -4444,9 +4444,9 @@ struct SwarmNodeUpdateBody {
 async fn api_swarm_node_update_handler(
     State(_state): State<Arc<VerificationState>>,
     Path(node_id): Path<String>,
-    Json(_body): Json<SwarmNodeUpdateBody>,
+    Json(body): Json<SwarmNodeUpdateBody>,
 ) -> impl IntoResponse {
-    debug!(node_id = %node_id, "Updating swarm node");
+    debug!(node_id = %node_id, name = ?body.name, address = ?body.address, "Updating swarm node");
     StatusCode::NO_CONTENT
 }
 
