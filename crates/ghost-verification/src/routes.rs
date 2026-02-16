@@ -1757,26 +1757,41 @@ async fn api_resources_handler(State(state): State<Arc<VerificationState>>) -> i
     }))
 }
 
+/// Query ghost-pay L2 status from the local handler (sync)
+fn query_ghostpay_live(state: &VerificationState) -> (u64, u64, u64, bool, &'static str) {
+    let config = state.dashboard_config.read();
+    if !config.ghost_pay {
+        return (0, 0, 0, false, "disabled");
+    }
+    drop(config);
+
+    match state.get_ghostpay_status() {
+        Some(info) => (info.epoch, info.virtual_block, info.epoch, info.wraith_enabled, "synced"),
+        None => (0, 0, 0, false, "unavailable"),
+    }
+}
+
 /// API v1 GhostPay status handler
 async fn api_ghostpay_status_handler(
     State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
     let health = state.get_health().await;
-    let config = state.dashboard_config.read();
+    let (epoch, virtual_block, l2_era, wraith_enabled, sync_state) = query_ghostpay_live(&state);
+
     Json(serde_json::json!({
-        "enabled": config.ghost_pay,
+        "enabled": sync_state != "disabled",
         "node_id": health.node_id,
         "protocol_version": 1,
         "network": "signet",
-        "l2_era": 0,
-        "virtual_block": 0,
-        "l2_height": 0,
+        "l2_era": l2_era,
+        "virtual_block": virtual_block,
+        "l2_height": virtual_block,
         "block_height": health.block_height,
-        "epoch": 0,
+        "epoch": epoch,
         "peer_count": health.peer_count,
         "uptime_secs": health.uptime_secs,
-        "sync_state": "synced",
-        "wraith_enabled": false,
+        "sync_state": sync_state,
+        "wraith_enabled": wraith_enabled,
         "total_balances": 0
     }))
 }
@@ -2344,6 +2359,31 @@ async fn api_watchdog_status_handler(
         })
     };
 
+    // Check ghost-pay L2 service status
+    let ghost_pay_status = match state.get_ghostpay_status() {
+        Some(info) => serde_json::json!({
+            "status": "running",
+            "epoch": info.epoch,
+            "virtual_block": info.virtual_block
+        }),
+        None => {
+            let config = state.dashboard_config.read();
+            let enabled = config.ghost_pay;
+            drop(config);
+            if enabled {
+                serde_json::json!({
+                    "status": "error",
+                    "message": "Ghost Pay enabled but handler not configured"
+                })
+            } else {
+                serde_json::json!({
+                    "status": "not_enabled",
+                    "message": "Ghost Pay not configured"
+                })
+            }
+        }
+    };
+
     // Check GSP (Ghost Service Protocol) status for light wallet support
     let gsp_status = if let Some(gsp_info) = state.get_gsp_info() {
         serde_json::json!({
@@ -2374,6 +2414,11 @@ async fn api_watchdog_status_handler(
             "details": ghost_core_status
         }),
         serde_json::json!({
+            "name": "ghost-pay",
+            "status": ghost_pay_status.get("status").and_then(|s| s.as_str()).unwrap_or("not_enabled"),
+            "details": ghost_pay_status
+        }),
+        serde_json::json!({
             "name": "gsp",
             "status": gsp_status.get("status").and_then(|s| s.as_str()).unwrap_or("not_enabled"),
             "details": gsp_status
@@ -2396,6 +2441,15 @@ async fn api_watchdog_status_handler(
             "name": "ghost-core",
             "port": 8332,
             "status": if ghost_core_status.get("status").and_then(|s| s.as_str()) == Some("running") { "ok" } else { "error" },
+            "last_check": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        }),
+        serde_json::json!({
+            "name": "ghost-pay",
+            "port": 8800,
+            "status": if ghost_pay_status.get("status").and_then(|s| s.as_str()) == Some("running") { "ok" } else { "down" },
             "last_check": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()

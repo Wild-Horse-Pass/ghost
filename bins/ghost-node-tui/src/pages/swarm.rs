@@ -272,8 +272,8 @@ fn format_number(n: u64) -> String {
 }
 
 fn truncate_url(url: &str) -> String {
-    if url.len() > 30 {
-        format!("{}...", &url[..27])
+    if url.chars().count() > 30 {
+        format!("{}...", url.chars().take(27).collect::<String>())
     } else {
         url.to_string()
     }

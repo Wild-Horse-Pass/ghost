@@ -176,9 +176,11 @@ fn render_peers_table(f: &mut Frame, area: Rect, app: &App) {
             ),
         ]);
 
+        let visible_rows = area.height.saturating_sub(4) as usize; // borders + header
         let rows: Vec<Row> = peers
             .iter()
-            .take(20)
+            .skip(app.scroll_offset)
+            .take(visible_rows)
             .map(|peer| {
                 Row::new(vec![
                     Cell::from(peer.address.clone()),
@@ -236,8 +238,8 @@ fn format_number(n: u64) -> String {
 }
 
 fn truncate_id(id: &str) -> String {
-    if id.len() > 16 {
-        format!("{}...", &id[..16])
+    if id.chars().count() > 16 {
+        format!("{}...", id.chars().take(16).collect::<String>())
     } else {
         id.to_string()
     }

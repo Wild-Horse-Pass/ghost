@@ -486,7 +486,9 @@ fn format_sats(sats: u64) -> String {
 }
 
 fn format_hashrate(ths: f64) -> String {
-    if ths >= 1000.0 {
+    if ths == 0.0 {
+        "0 H/s".to_string()
+    } else if ths >= 1000.0 {
         format!("{:.2} PH/s", ths / 1000.0)
     } else if ths >= 1.0 {
         format!("{:.2} TH/s", ths)

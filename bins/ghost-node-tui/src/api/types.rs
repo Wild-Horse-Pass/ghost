@@ -179,8 +179,8 @@ pub struct PeerInfo {
 pub struct MiningStatus {
     #[serde(default)]
     pub active: bool,
-    #[serde(default, alias = "enabled")]
-    pub _enabled: Option<bool>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
     #[serde(default)]
     pub sync_height: u64,
     #[serde(default)]
@@ -217,6 +217,10 @@ pub struct MiningStatus {
     pub blocks_found: Option<u64>,
     #[serde(default)]
     pub payout_address: Option<String>,
+    #[serde(default)]
+    pub stratum_v2_port: Option<u16>,
+    #[serde(default)]
+    pub stratum_v2_endpoint: Option<String>,
 }
 
 /// Miner info from /api/v1/mining/miners

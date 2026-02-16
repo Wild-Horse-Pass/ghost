@@ -422,32 +422,38 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
         }
 
         // Tab navigation (general number keys)
-        KeyCode::Char('1') => app.current_tab = Tab::Overview,
-        KeyCode::Char('2') => app.current_tab = Tab::Bitcoin,
-        KeyCode::Char('3') => app.current_tab = Tab::L2Service,
-        KeyCode::Char('4') => app.current_tab = Tab::Mining,
-        KeyCode::Char('5') => app.current_tab = Tab::Swarm,
-        KeyCode::Char('6') => app.current_tab = Tab::Logs,
-        KeyCode::Char('7') => app.current_tab = Tab::Watchdog,
-        KeyCode::Char('8') => app.current_tab = Tab::Backup,
-        KeyCode::Char('9') => app.current_tab = Tab::Settings,
+        KeyCode::Char('1') => { app.current_tab = Tab::Overview; app.scroll_offset = 0; app.selected_row = 0; }
+        KeyCode::Char('2') => { app.current_tab = Tab::Bitcoin; app.scroll_offset = 0; app.selected_row = 0; }
+        KeyCode::Char('3') => { app.current_tab = Tab::L2Service; app.scroll_offset = 0; app.selected_row = 0; }
+        KeyCode::Char('4') => { app.current_tab = Tab::Mining; app.scroll_offset = 0; app.selected_row = 0; }
+        KeyCode::Char('5') => { app.current_tab = Tab::Swarm; app.scroll_offset = 0; app.selected_row = 0; }
+        KeyCode::Char('6') => { app.current_tab = Tab::Logs; app.scroll_offset = 0; app.selected_row = 0; }
+        KeyCode::Char('7') => { app.current_tab = Tab::Watchdog; app.scroll_offset = 0; app.selected_row = 0; }
+        KeyCode::Char('8') => { app.current_tab = Tab::Backup; app.scroll_offset = 0; app.selected_row = 0; }
+        KeyCode::Char('9') => { app.current_tab = Tab::Settings; app.scroll_offset = 0; app.selected_row = 0; }
 
         KeyCode::Tab => {
             app.current_tab = app.current_tab.next();
+            app.scroll_offset = 0;
+            app.selected_row = 0;
         }
         KeyCode::BackTab => {
             app.current_tab = app.current_tab.prev();
+            app.scroll_offset = 0;
+            app.selected_row = 0;
         }
 
         // Scrolling / selection
         KeyCode::Char('j') | KeyCode::Down => {
             app.selected_row = app.selected_row.saturating_add(1);
+            app.clamp_scroll();
         }
         KeyCode::Char('k') | KeyCode::Up => {
             app.selected_row = app.selected_row.saturating_sub(1);
         }
         KeyCode::PageDown => {
             app.scroll_offset = app.scroll_offset.saturating_add(10);
+            app.clamp_scroll();
         }
         KeyCode::PageUp => {
             app.scroll_offset = app.scroll_offset.saturating_sub(10);

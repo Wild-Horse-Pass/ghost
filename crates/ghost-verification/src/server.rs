@@ -887,6 +887,13 @@ pub struct GspInfo {
     pub registered_wallets: u32,
 }
 
+/// Ghost Pay L2 status summary (for dashboard)
+pub struct GhostPayInfo {
+    pub epoch: u64,
+    pub virtual_block: u64,
+    pub wraith_enabled: bool,
+}
+
 impl VerificationState {
     /// Create new verification state
     pub fn new(
@@ -1308,6 +1315,19 @@ impl VerificationState {
             connections: handler.get_connection_count(),
             sync_status: handler.get_sync_status(),
             registered_wallets: handler.get_registered_wallets(),
+        })
+    }
+
+    /// Get Ghost Pay L2 status (sync, for dashboard)
+    pub fn get_ghostpay_status(&self) -> Option<GhostPayInfo> {
+        let handler = self.ghostpay_handler.as_ref()?;
+        if !handler.is_enabled() {
+            return None;
+        }
+        Some(GhostPayInfo {
+            epoch: handler.get_epoch(),
+            virtual_block: handler.get_virtual_block(),
+            wraith_enabled: handler.is_wraith_enabled(),
         })
     }
 

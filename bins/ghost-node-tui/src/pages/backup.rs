@@ -152,9 +152,11 @@ fn render_backup_history(f: &mut Frame, area: Rect, app: &App) {
             ),
         ]);
 
+        let visible_rows = area.height.saturating_sub(4) as usize; // borders + header
         let rows: Vec<Row> = backups
             .iter()
-            .take(20)
+            .skip(app.scroll_offset)
+            .take(visible_rows)
             .map(|backup| {
                 let status_color = match backup.status.as_str() {
                     "completed" => Color::Green,
@@ -208,8 +210,8 @@ fn render_backup_history(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn truncate_id(id: &str) -> String {
-    if id.len() > 12 {
-        format!("{}...", &id[..12])
+    if id.chars().count() > 12 {
+        format!("{}...", id.chars().take(12).collect::<String>())
     } else {
         id.to_string()
     }

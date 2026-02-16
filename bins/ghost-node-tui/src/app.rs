@@ -287,6 +287,32 @@ impl App {
             .unwrap_or(ConnectionStatus::Disconnected)
     }
 
+    /// Get the number of scrollable rows for the current tab
+    pub fn scrollable_row_count(&self) -> usize {
+        match self.current_tab {
+            Tab::Swarm => self.swarm.nodes.len(),
+            Tab::Mining => self.node_data.miners.as_ref().map_or(0, |m| m.len()),
+            Tab::Bitcoin => self.node_data.peers.as_ref().map_or(0, |p| p.len()),
+            Tab::Backup => self.node_data.backup_history.as_ref().map_or(0, |b| b.len()),
+            Tab::Logs => self.node_data.logs.as_ref().map_or(0, |l| l.len()),
+            Tab::L2Service => self.node_data.wraith_sessions.as_ref().map_or(0, |s| s.len()),
+            Tab::Watchdog => self.node_data.watchdog.as_ref().map_or(0, |w| w.recent_events.len()),
+            _ => 0,
+        }
+    }
+
+    /// Clamp scroll_offset and selected_row to valid range
+    pub fn clamp_scroll(&mut self) {
+        let max = self.scrollable_row_count();
+        if max == 0 {
+            self.selected_row = 0;
+            self.scroll_offset = 0;
+        } else {
+            self.selected_row = self.selected_row.min(max.saturating_sub(1));
+            self.scroll_offset = self.scroll_offset.min(max.saturating_sub(1));
+        }
+    }
+
     #[allow(dead_code)]
     pub fn set_status_message(&mut self, msg: impl Into<String>) {
         self.status_message = msg.into();

@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table},
+    widgets::{Block, Borders, Cell, Gauge, Paragraph, Row, Table},
     Frame,
 };
 
@@ -143,7 +143,7 @@ fn render_epoch_progress(f: &mut Frame, area: Rect, app: &App) {
 
         if let Some(vblock) = gp.virtual_block {
             let vblock_in_epoch = vblock % 2160;
-            let _progress = (vblock_in_epoch as f64 / 2160.0 * 100.0) as u16;
+            let progress = (vblock_in_epoch as f64 / 2160.0 * 100.0).min(100.0) as u16;
 
             lines.push(Line::from(vec![
                 Span::styled("VBlock: ", Style::default().fg(Color::Gray)),
@@ -152,8 +152,6 @@ fn render_epoch_progress(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(Color::White),
                 ),
             ]));
-
-            lines.push(Line::from(Span::raw("")));
 
             // Remaining time estimate
             let remaining_vblocks = 2160 - vblock_in_epoch;
@@ -166,6 +164,30 @@ fn render_epoch_progress(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(Color::Yellow),
                 ),
             ]));
+
+            // Render the text first, then the gauge below
+            let paragraph = Paragraph::new(lines);
+            let text_height = 5; // epoch + vblock + remaining + gauge label
+            let text_area = Rect {
+                height: text_height.min(inner.height),
+                ..inner
+            };
+            f.render_widget(paragraph, text_area);
+
+            // Epoch progress gauge
+            if inner.height > text_height {
+                let gauge_area = Rect {
+                    y: inner.y + text_height,
+                    height: 1.min(inner.height.saturating_sub(text_height)),
+                    ..inner
+                };
+                let gauge = Gauge::default()
+                    .gauge_style(Style::default().fg(Color::Cyan))
+                    .percent(progress)
+                    .label(format!("{}%", progress));
+                f.render_widget(gauge, gauge_area);
+            }
+            return;
         }
     } else {
         lines.push(Line::from(Span::styled(
@@ -285,9 +307,11 @@ fn render_wraith_sessions(f: &mut Frame, area: Rect, app: &App) {
             ),
         ]);
 
+        let visible_rows = area.height.saturating_sub(4) as usize; // borders + header
         let rows: Vec<Row> = sessions
             .iter()
-            .take(10)
+            .skip(app.scroll_offset)
+            .take(visible_rows)
             .map(|session| {
                 let phase_color = match session.phase.as_str() {
                     "registration" => Color::Yellow,
@@ -366,8 +390,8 @@ fn format_duration(secs: u64) -> String {
 }
 
 fn truncate_id(id: &str) -> String {
-    if id.len() > 12 {
-        format!("{}...", &id[..12])
+    if id.chars().count() > 12 {
+        format!("{}...", id.chars().take(12).collect::<String>())
     } else {
         id.to_string()
     }

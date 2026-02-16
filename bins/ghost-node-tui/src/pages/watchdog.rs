@@ -253,10 +253,12 @@ fn render_events(f: &mut Frame, area: Rect, app: &App) {
             ),
         ]);
 
+        let visible_rows = area.height.saturating_sub(4) as usize; // borders + header
         let rows: Vec<Row> = watchdog
             .recent_events
             .iter()
-            .take(10)
+            .skip(app.scroll_offset)
+            .take(visible_rows)
             .map(|event| {
                 let color = match event.event_type.as_str() {
                     "error" | "failure" => Color::Red,

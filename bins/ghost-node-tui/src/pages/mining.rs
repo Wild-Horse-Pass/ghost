@@ -212,9 +212,11 @@ fn render_workers_table(f: &mut Frame, area: Rect, app: &App) {
             ),
         ]);
 
+        let visible_rows = area.height.saturating_sub(4) as usize; // borders + header
         let rows: Vec<Row> = miners
             .iter()
-            .take(20)
+            .skip(app.scroll_offset)
+            .take(visible_rows)
             .map(|miner| {
                 let (status_text, status_color) = if miner.active {
                     ("Online", Color::Green)
@@ -276,7 +278,9 @@ fn format_number(n: u64) -> String {
 }
 
 fn format_hashrate(ths: f64) -> String {
-    if ths >= 1000.0 {
+    if ths == 0.0 {
+        "0 H/s".to_string()
+    } else if ths >= 1000.0 {
         format!("{:.2} PH/s", ths / 1000.0)
     } else if ths >= 1.0 {
         format!("{:.2} TH/s", ths)
@@ -286,16 +290,16 @@ fn format_hashrate(ths: f64) -> String {
 }
 
 fn truncate_id(id: &str) -> String {
-    if id.len() > 16 {
-        format!("{}...", &id[..16])
+    if id.chars().count() > 16 {
+        format!("{}...", id.chars().take(16).collect::<String>())
     } else {
         id.to_string()
     }
 }
 
 fn truncate_hash(hash: &str) -> String {
-    if hash.len() > 20 {
-        format!("{}...", &hash[..20])
+    if hash.chars().count() > 20 {
+        format!("{}...", hash.chars().take(20).collect::<String>())
     } else {
         hash.to_string()
     }

@@ -124,10 +124,26 @@ fn render_log_entries(f: &mut Frame, area: Rect, app: &App) {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let paragraph = Paragraph::new(Span::styled(
-            "No log data available",
-            Style::default().fg(Color::Gray),
-        ));
+        let lines = vec![
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(
+                "  Logs are not available via the API (removed for security).",
+                Style::default().fg(Color::Yellow),
+            )),
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(
+                "  View logs directly on the node:",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(
+                "    journalctl -u ghost-pool -f",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )),
+        ];
+        let paragraph = Paragraph::new(lines);
         f.render_widget(paragraph, inner);
     }
 }
