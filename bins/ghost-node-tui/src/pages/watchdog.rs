@@ -49,36 +49,85 @@ fn render_service_health(f: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![];
 
     if let Some(watchdog) = &app.node_data.watchdog {
-        let services = [
-            ("Bitcoin Core", &watchdog.bitcoin_core),
-            ("Ghost Pay", &watchdog.ghost_pay),
-            ("Mining Pool", &watchdog.mining_pool),
-            ("API Server", &watchdog.api_server),
-        ];
+        // Use dynamic services/components arrays from backend
+        let display_services = if !watchdog.services.is_empty() {
+            watchdog
+                .services
+                .iter()
+                .map(|s| (s.name.clone(), s.status.clone()))
+                .collect::<Vec<_>>()
+        } else if !watchdog.components.is_empty() {
+            watchdog
+                .components
+                .iter()
+                .map(|c| (c.name.clone(), c.status.clone()))
+                .collect::<Vec<_>>()
+        } else {
+            // Fallback: use service_status() lookup for well-known services
+            vec![
+                ("ghost_pool".to_string(), watchdog.service_status("ghost_pool").to_string()),
+                ("ghost_core".to_string(), watchdog.service_status("ghost_core").to_string()),
+                ("ghost_pay".to_string(), watchdog.service_status("ghost_pay").to_string()),
+            ]
+        };
 
-        for (name, status) in services {
+        for (name, status) in &display_services {
             let (status_text, color) = match status.as_str() {
-                "healthy" => ("●", Color::Green),
-                "degraded" => ("◐", Color::Yellow),
-                "unhealthy" | "failed" => ("○", Color::Red),
+                "healthy" | "running" | "active" => ("●", Color::Green),
+                "degraded" | "warning" => ("◐", Color::Yellow),
+                "unhealthy" | "failed" | "stopped" | "dead" => ("○", Color::Red),
                 _ => ("?", Color::Gray),
             };
 
+            // Pretty-print service name
+            let display_name = name
+                .replace('_', " ")
+                .split(' ')
+                .map(|w| {
+                    let mut c = w.chars();
+                    match c.next() {
+                        None => String::new(),
+                        Some(f) => f.to_uppercase().to_string() + c.as_str(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+
             lines.push(Line::from(vec![
                 Span::styled(format!("{} ", status_text), Style::default().fg(color)),
-                Span::styled(format!("{:<15}", name), Style::default().fg(Color::White)),
-                Span::styled(status, Style::default().fg(color)),
+                Span::styled(format!("{:<15}", display_name), Style::default().fg(Color::White)),
+                Span::styled(status.clone(), Style::default().fg(color)),
             ]));
         }
 
         lines.push(Line::from(Span::raw("")));
+
+        let health_label = watchdog
+            .overall_health
+            .as_deref()
+            .unwrap_or(if watchdog.healthy { "healthy" } else { "unhealthy" });
+
         lines.push(Line::from(vec![
-            Span::styled("Last check: ", Style::default().fg(Color::Gray)),
+            Span::styled("Overall: ", Style::default().fg(Color::Gray)),
             Span::styled(
-                format_timestamp(watchdog.last_check),
-                Style::default().fg(Color::White),
+                health_label,
+                Style::default().fg(if watchdog.healthy {
+                    Color::Green
+                } else {
+                    Color::Red
+                }),
             ),
         ]));
+
+        if watchdog.last_check > 0 {
+            lines.push(Line::from(vec![
+                Span::styled("Last check: ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format_timestamp(watchdog.last_check),
+                    Style::default().fg(Color::White),
+                ),
+            ]));
+        }
     } else {
         lines.push(Line::from(Span::styled(
             "No watchdog data available",
@@ -107,39 +156,33 @@ fn render_capabilities(f: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![];
 
     if let Some(status) = &app.node_data.node_status {
-        if let Some(caps) = &status.capabilities {
-            let capabilities = [
-                ("Archive Mode", caps.archive_mode, "+5 shares"),
-                ("Ghost Pay", caps.ghost_pay, "+4 shares"),
-                ("Public Mining", caps.public_mining, "+3 shares"),
-                ("Bitcoin Pure", caps.bitcoin_pure, "+2 shares"),
-                ("Elder Status", caps.elder_status, "+1 share"),
-            ];
+        let caps = status.get_capabilities();
+        let capabilities = [
+            ("Archive Mode", caps.archive_mode, "+5 shares"),
+            ("Ghost Pay", caps.ghost_pay, "+4 shares"),
+            ("Public Mining", caps.public_mining, "+3 shares"),
+            ("Bitcoin Pure", caps.bitcoin_pure, "+2 shares"),
+            ("Elder Status", caps.elder_status, "+1 share"),
+        ];
 
-            for (name, enabled, bonus) in capabilities {
-                let (indicator, color) = if enabled {
-                    ("✓", Color::Green)
-                } else {
-                    ("✗", Color::Gray)
-                };
+        for (name, enabled, bonus) in capabilities {
+            let (indicator, color) = if enabled {
+                ("✓", Color::Green)
+            } else {
+                ("✗", Color::Gray)
+            };
 
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{} ", indicator), Style::default().fg(color)),
-                    Span::styled(
-                        format!("{:<15}", name),
-                        Style::default().fg(if enabled { Color::White } else { Color::Gray }),
-                    ),
-                    Span::styled(
-                        if enabled { bonus } else { "" },
-                        Style::default().fg(Color::Yellow),
-                    ),
-                ]));
-            }
-        } else {
-            lines.push(Line::from(Span::styled(
-                "Capabilities not available",
-                Style::default().fg(Color::Gray),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled(format!("{} ", indicator), Style::default().fg(color)),
+                Span::styled(
+                    format!("{:<15}", name),
+                    Style::default().fg(if enabled { Color::White } else { Color::Gray }),
+                ),
+                Span::styled(
+                    if enabled { bonus } else { "" },
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]));
         }
     } else {
         lines.push(Line::from(Span::styled(

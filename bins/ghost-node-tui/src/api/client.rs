@@ -69,7 +69,7 @@ impl NodeApiClient {
     /// Get node nickname
     #[allow(dead_code)]
     pub async fn get_node_nickname(&self) -> Result<String> {
-        #[derive(Deserialize)]
+        #[derive(serde::Deserialize)]
         struct NicknameResponse {
             nickname: String,
         }
@@ -95,8 +95,9 @@ impl NodeApiClient {
 
     /// Get peer list
     pub async fn get_peers(&self) -> Result<Vec<PeerInfo>> {
-        #[derive(Deserialize)]
+        #[derive(serde::Deserialize)]
         struct PeersResponse {
+            #[serde(default)]
             peers: Vec<PeerInfo>,
         }
         let resp: PeersResponse = self.get("/api/v1/network/peers").await?;
@@ -111,13 +112,26 @@ impl NodeApiClient {
     }
 
     /// Get miner list
+    /// Note: Public endpoint returns redacted aggregate data (no individual miners).
+    /// Returns empty vec if miners are redacted.
     pub async fn get_miners(&self) -> Result<Vec<MinerInfo>> {
-        #[derive(Deserialize)]
+        #[derive(serde::Deserialize)]
         struct MinersResponse {
+            #[serde(default)]
             miners: Vec<MinerInfo>,
+            #[serde(default)]
+            miners_redacted: bool,
         }
-        let resp: MinersResponse = self.get("/api/v1/mining/miners").await?;
-        Ok(resp.miners)
+        match self.get::<MinersResponse>("/api/v1/mining/miners").await {
+            Ok(resp) => {
+                if resp.miners_redacted || resp.miners.is_empty() {
+                    Ok(vec![])
+                } else {
+                    Ok(resp.miners)
+                }
+            }
+            Err(_) => Ok(vec![]),
+        }
     }
 
     // === Ghost Pay ===
@@ -129,8 +143,9 @@ impl NodeApiClient {
 
     /// Get Wraith mixing sessions
     pub async fn get_wraith_sessions(&self) -> Result<Vec<WraithSession>> {
-        #[derive(Deserialize)]
+        #[derive(serde::Deserialize)]
         struct WraithResponse {
+            #[serde(default)]
             sessions: Vec<WraithSession>,
         }
         let resp: WraithResponse = self.get("/api/v1/wraith/sessions").await?;
@@ -153,8 +168,9 @@ impl NodeApiClient {
 
     /// Get backup history
     pub async fn get_backup_history(&self) -> Result<Vec<BackupEntry>> {
-        #[derive(Deserialize)]
+        #[derive(serde::Deserialize)]
         struct BackupResponse {
+            #[serde(default)]
             backups: Vec<BackupEntry>,
         }
         let resp: BackupResponse = self.get("/api/v1/backup/history").await?;
@@ -164,9 +180,12 @@ impl NodeApiClient {
     // === Logs ===
 
     /// Get logs with optional filter
+    /// Note: This endpoint may be removed for security reasons.
+    /// Returns empty vec on 404 or error.
     pub async fn get_logs(&self, level: LogLevel, limit: usize) -> Result<Vec<LogEntry>> {
-        #[derive(Deserialize)]
+        #[derive(serde::Deserialize)]
         struct LogsResponse {
+            #[serde(default)]
             entries: Vec<LogEntry>,
         }
         let url = format!(
@@ -181,14 +200,20 @@ impl NodeApiClient {
             req = req.header("Authorization", format!("Bearer {}", token));
         }
 
-        let resp = req.send().await.context("Failed to send request")?;
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(_) => return Ok(vec![]),
+        };
 
+        // Handle 404 (endpoint removed for security) or other errors gracefully
         if !resp.status().is_success() {
-            anyhow::bail!("API error: {}", resp.status());
+            return Ok(vec![]);
         }
 
-        let logs_resp: LogsResponse = resp.json().await.context("Failed to parse response")?;
-        Ok(logs_resp.entries)
+        match resp.json::<LogsResponse>().await {
+            Ok(logs_resp) => Ok(logs_resp.entries),
+            Err(_) => Ok(vec![]),
+        }
     }
 
     // === Swarm ===
@@ -196,8 +221,9 @@ impl NodeApiClient {
     /// Get swarm nodes
     #[allow(dead_code)]
     pub async fn get_swarm_nodes(&self) -> Result<Vec<SwarmNodeInfo>> {
-        #[derive(Deserialize)]
+        #[derive(serde::Deserialize)]
         struct SwarmResponse {
+            #[serde(default)]
             nodes: Vec<SwarmNodeInfo>,
         }
         let resp: SwarmResponse = self.get("/api/v1/swarm/nodes").await?;
@@ -226,5 +252,3 @@ impl NodeApiClient {
         resp.json().await.context("Failed to parse response")
     }
 }
-
-use serde::Deserialize;

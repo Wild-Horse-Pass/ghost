@@ -417,21 +417,20 @@ fn render_rewards_card(f: &mut Frame, area: Rect, app: &App) {
 
     // Show capabilities if available
     if let Some(status) = &app.node_data.node_status {
-        if let Some(caps) = &status.capabilities {
-            lines.push(Line::from(Span::raw("")));
-            lines.push(Line::from(vec![
-                Span::styled("Capabilities: ", Style::default().fg(Color::Gray)),
-                capability_span("Archive", caps.archive_mode, 5),
-                Span::raw(" "),
-                capability_span("GhostPay", caps.ghost_pay, 4),
-                Span::raw(" "),
-                capability_span("Public", caps.public_mining, 3),
-                Span::raw(" "),
-                capability_span("Policy", caps.bitcoin_pure, 2),
-                Span::raw(" "),
-                capability_span("Elder", caps.elder_status, 1),
-            ]));
-        }
+        let caps = status.get_capabilities();
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(vec![
+            Span::styled("Capabilities: ", Style::default().fg(Color::Gray)),
+            capability_span("Archive", caps.archive_mode, 5),
+            Span::raw(" "),
+            capability_span("GhostPay", caps.ghost_pay, 4),
+            Span::raw(" "),
+            capability_span("Public", caps.public_mining, 3),
+            Span::raw(" "),
+            capability_span("Policy", caps.bitcoin_pure, 2),
+            Span::raw(" "),
+            capability_span("Elder", caps.elder_status, 1),
+        ]));
     }
 
     let paragraph = Paragraph::new(lines);
