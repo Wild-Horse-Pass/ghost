@@ -1420,6 +1420,15 @@ impl TemplateProcessor {
         // subsidy (from halving schedule) + filtered tx fees
         let subsidy = Self::calculate_subsidy(template.height);
         let coinbase_value = subsidy + total_fees;
+
+        // Always recompute witness commitment from filtered transactions (BIP141).
+        // Bitcoin Core's default_witness_commitment assumes the original transaction
+        // order from getblocktemplate, but filter_transactions() reorders by fee rate
+        // (sort_by_package_fee_rate), making the original commitment invalid.
+        // Must always include commitment — signet requires it for block signatures
+        // even when there are no non-coinbase transactions.
+        let witness_commitment = Some(self.compute_witness_commitment(&filtered_txs));
+
         // H-MINE-2: Pass snapshot to coinbase builder to use consistent payout data
         // CRIT-10: This will fail if any payout address is invalid, preventing bad blocks
         let (
@@ -1432,7 +1441,7 @@ impl TemplateProcessor {
             .build_coinbase_parts_with_payout_snapshot(
                 template.height,
                 coinbase_value,
-                &template.default_witness_commitment,
+                &witness_commitment,
                 payout_snapshot,
             )
             .map_err(|e| {
@@ -1447,6 +1456,12 @@ impl TemplateProcessor {
             error!(error = %e, hash = %template.previousblockhash, "Invalid previousblockhash from Bitcoin RPC");
             e
         })?;
+        // Store filtered template so block assembly uses the same transactions
+        // as the merkle tree. Using the unfiltered template here would cause
+        // bad-txnmrklroot rejection when BUDS filtering removes transactions.
+        let mut filtered_template = template.clone();
+        filtered_template.transactions = filtered_txs;
+
         let work = WorkState {
             job_id: job_id.clone(),
             prev_hash,
@@ -1459,9 +1474,9 @@ impl TemplateProcessor {
             ntime: template.curtime as u32,
             height: template.height,
             total_fees, // Just the TX fees, NOT coinbasevalue (which includes subsidy)
-            tx_count: filtered_txs.len() + 1, // +1 for coinbase
+            tx_count: filtered_template.transactions.len() + 1, // +1 for coinbase
             total_weight,
-            template: template.clone(),
+            template: filtered_template,
             coinbase_outputs_serialized,
             coinbase_outputs_count,
             payout_snapshot, // H-MINE-2: Store snapshot for consistent coinbase reconstruction
@@ -1477,7 +1492,7 @@ impl TemplateProcessor {
 
         debug!(
             height = template.height,
-            txs = filtered_txs.len(),
+            txs = filter_stats.kept,
             fees = total_fees,
             "New block template"
         );
@@ -1887,6 +1902,88 @@ impl TemplateProcessor {
         let mut hash = [0u8; 32];
         hash.copy_from_slice(&result);
         hash
+    }
+
+    /// Compute BIP141 witness commitment from filtered transactions.
+    ///
+    /// When BUDS filtering removes transactions, the witness commitment from
+    /// Bitcoin Core's `default_witness_commitment` is no longer valid because
+    /// it covers ALL template transactions. This recomputes it from the
+    /// filtered set.
+    ///
+    /// Returns hex-encoded witness commitment script:
+    ///   OP_RETURN OP_PUSHBYTES_36 <aa21a9ed> <32-byte commitment>
+    fn compute_witness_commitment(&self, transactions: &[TemplateTransaction]) -> String {
+        use sha2::{Digest, Sha256};
+
+        // Build wtxid list: coinbase wtxid is 0x00*32, then transaction wtxids
+        let mut wtxids: Vec<[u8; 32]> = Vec::with_capacity(transactions.len() + 1);
+
+        // Coinbase wtxid is always 32 zero bytes (BIP141)
+        wtxids.push([0u8; 32]);
+
+        // Add transaction wtxids (from tx.hash field)
+        for tx in transactions {
+            match hex::decode(&tx.hash) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    let mut wtxid = [0u8; 32];
+                    // RPC returns wtxids in display order (big-endian)
+                    // Merkle tree needs internal byte order (little-endian)
+                    for (i, &b) in bytes.iter().enumerate() {
+                        wtxid[31 - i] = b;
+                    }
+                    wtxids.push(wtxid);
+                }
+                _ => {
+                    // Fall back to txid if hash is invalid (non-segwit tx: hash == txid)
+                    if let Ok(bytes) = hex::decode(&tx.txid) {
+                        if bytes.len() == 32 {
+                            let mut wtxid = [0u8; 32];
+                            for (i, &b) in bytes.iter().enumerate() {
+                                wtxid[31 - i] = b;
+                            }
+                            wtxids.push(wtxid);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Compute full merkle root (not branches)
+        let mut level = wtxids;
+        while level.len() > 1 {
+            let mut next = Vec::with_capacity((level.len() + 1) / 2);
+            for chunk in level.chunks(2) {
+                let pair = if chunk.len() == 2 {
+                    self.double_sha256_pair(&chunk[0], &chunk[1])
+                } else {
+                    self.double_sha256_pair(&chunk[0], &chunk[0]) // Odd: duplicate last
+                };
+                next.push(pair);
+            }
+            level = next;
+        }
+        let witness_root = level[0];
+
+        // Commitment = SHA256d(witness_root || witness_nonce)
+        // Witness nonce is 32 zero bytes (standard)
+        let witness_nonce = [0u8; 32];
+        let mut hasher = Sha256::new();
+        hasher.update(witness_root);
+        hasher.update(witness_nonce);
+        let first = hasher.finalize();
+        let mut hasher = Sha256::new();
+        hasher.update(first);
+        let commitment_hash = hasher.finalize();
+
+        // Build script: OP_RETURN(6a) OP_PUSHBYTES_36(24) magic(aa21a9ed) commitment(32 bytes)
+        let mut script = Vec::with_capacity(38);
+        script.push(0x6a); // OP_RETURN
+        script.push(0x24); // Push 36 bytes
+        script.extend_from_slice(&[0xaa, 0x21, 0xa9, 0xed]); // BIP141 magic
+        script.extend_from_slice(&commitment_hash);
+
+        hex::encode(script)
     }
 
     /// Build coinbase transaction parts
