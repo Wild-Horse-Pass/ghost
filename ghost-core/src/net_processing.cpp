@@ -555,6 +555,7 @@ public:
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_most_recent_block_mutex, !m_headers_presync_mutex, g_msgproc_mutex, !m_tx_download_mutex);
     void UpdateLastBlockAnnounceTime(NodeId node, int64_t time_in_seconds) override;
     ServiceFlags GetDesirableServiceFlags(ServiceFlags services) const override;
+    std::optional<CheckpointDownloadInfo> GetCheckpointDownloadProgress() const override;
 
 private:
     /** Consider evicting an outbound peer based on the amount of time they've been behind our tip */
@@ -1789,6 +1790,22 @@ PeerManagerInfo PeerManagerImpl::GetInfo() const
         .median_outbound_time_offset = m_outbound_time_offsets.Median(),
         .ignores_incoming_txs = m_opts.ignore_incoming_txs,
     };
+}
+
+std::optional<CheckpointDownloadInfo> PeerManagerImpl::GetCheckpointDownloadProgress() const
+{
+    if (!m_chunk_downloader || !m_checkpoint_manifest) {
+        return std::nullopt;
+    }
+
+    auto stats = m_chunk_downloader->GetStats();
+    CheckpointDownloadInfo info;
+    info.height = m_checkpoint_manifest->height;
+    info.chunks_received = stats.chunks_complete;
+    info.chunks_total = stats.chunks_total;
+    info.percent_complete = stats.percent;
+    info.peer_id = -1; // Not tracked per-chunk
+    return info;
 }
 
 void PeerManagerImpl::AddToCompactExtraTransactions(const CTransactionRef& tx)

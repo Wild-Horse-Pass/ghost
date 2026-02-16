@@ -1,0 +1,7 @@
+[Unit]
+Description=Ghost checkpoint generation
+
+[Service]
+Type=oneshot
+User=ghost
+ExecStart=/opt/ghost/bin/generate-checkpoint.sh

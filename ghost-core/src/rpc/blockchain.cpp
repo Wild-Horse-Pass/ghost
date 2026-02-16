@@ -22,6 +22,7 @@
 #include <hash.h>
 #include <haze/block_reconstruct.h>
 #include <haze/checkpoint.h>
+#include <haze/checkpoint_signing.h>
 #include <haze/stripped_block.h>
 #include <index/blockfilterindex.h>
 #include <index/coinstatsindex.h>
@@ -3526,10 +3527,12 @@ static RPCHelpMan generatecheckpoint()
         "generatecheckpoint",
         "Generate a full checkpoint at the specified height.\n"
         "Creates headers.bin, UTXO chunk files, bloom.bin, and manifest.bin in the output directory.\n"
+        "If a secret key is provided, the manifest is signed before writing.\n"
         "This is a long-running operation that locks the UTXO set.\n",
         {
             {"height", RPCArg::Type::NUM, RPCArg::Optional::NO, "The block height to checkpoint at."},
             {"output_dir", RPCArg::Type::STR, RPCArg::Optional::NO, "Directory to write checkpoint files."},
+            {"secret_key", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "Ed25519 secret key (hex) to sign the manifest."},
         },
         RPCResult{
             RPCResult::Type::OBJ, "", "",
@@ -3541,6 +3544,7 @@ static RPCHelpMan generatecheckpoint()
                 {RPCResult::Type::NUM, "total_chunks", "number of UTXO chunk files"},
                 {RPCResult::Type::STR_HEX, "bloom_hash", "SHA-256 of bloom.bin"},
                 {RPCResult::Type::STR_HEX, "headers_hash", "SHA-256 of headers.bin"},
+                {RPCResult::Type::BOOL, "signed", "whether the manifest was signed"},
                 {RPCResult::Type::OBJ, "manifest", "full manifest details",
                     {
                         {RPCResult::Type::ELISION, "", ""},
@@ -3550,6 +3554,7 @@ static RPCHelpMan generatecheckpoint()
         },
         RPCExamples{
             HelpExampleCli("generatecheckpoint", "160 /tmp/checkpoint")
+            + HelpExampleCli("generatecheckpoint", "160 /tmp/checkpoint abc123...")
         },
         [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
 {
@@ -3617,7 +3622,23 @@ static RPCHelpMan generatecheckpoint()
         throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to generate bloom filter");
     }
 
-    // Step 5: Re-serialize manifest with all hashes populated
+    // Step 5: Optionally sign the manifest
+    bool was_signed = false;
+    if (!request.params[2].isNull()) {
+        const std::string secret_key_hex = request.params[2].get_str();
+        auto parsed = TryParseHex<uint8_t>(secret_key_hex);
+        if (!parsed || parsed->size() != 32) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Secret key must be exactly 32 bytes (64 hex characters)");
+        }
+        haze::Ed25519SecKey secret_key;
+        std::copy(parsed->begin(), parsed->end(), secret_key.begin());
+        if (!haze::SignCheckpoint(manifest, secret_key)) {
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to sign checkpoint manifest");
+        }
+        was_signed = true;
+    }
+
+    // Step 6: Re-serialize manifest with all hashes populated
     const std::string manifest_path = output_dir + "/manifest.bin";
     DataStream ss;
     ss << manifest;
@@ -3639,6 +3660,7 @@ static RPCHelpMan generatecheckpoint()
     result.pushKV("total_chunks", static_cast<int>(manifest.chunk_manifest.total_chunks));
     result.pushKV("bloom_hash", manifest.bloom_hash.GetHex());
     result.pushKV("headers_hash", manifest.headers_hash.GetHex());
+    result.pushKV("signed", was_signed);
     result.pushKV("manifest", manifest.ToJSON());
     return result;
 },

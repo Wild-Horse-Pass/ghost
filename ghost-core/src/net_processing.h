@@ -68,6 +68,15 @@ struct PeerManagerInfo {
     bool ignores_incoming_txs{false};
 };
 
+/** Checkpoint download progress info for getcheckpointstatus RPC. */
+struct CheckpointDownloadInfo {
+    int32_t height{0};
+    uint64_t chunks_received{0};
+    uint64_t chunks_total{0};
+    double percent_complete{0.0};
+    NodeId peer_id{-1};
+};
+
 class PeerManager : public CValidationInterface, public NetEventsInterface
 {
 public:
@@ -143,6 +152,9 @@ public:
 
     /** This function is used for testing the stale tip eviction logic, see denialofservice_tests.cpp */
     virtual void UpdateLastBlockAnnounceTime(NodeId node, int64_t time_in_seconds) = 0;
+
+    /** Get checkpoint download progress, if a download is active. */
+    virtual std::optional<CheckpointDownloadInfo> GetCheckpointDownloadProgress() const = 0;
 
     /**
      * Gets the set of service flags which are "desirable" for a given peer.

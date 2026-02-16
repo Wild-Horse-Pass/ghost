@@ -1,0 +1,32 @@
+[Unit]
+Description=Ghost Core (Signet - Checkpoint Server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ghost
+Group=ghost
+ExecStart=/opt/ghost/bin/ghostd \
+  -signet \
+  -hazemode=full_archive \
+  -datadir=/var/lib/ghostd \
+  -server=1 \
+  -rpcbind=127.0.0.1 \
+  -rpcport=38332 \
+  -rpcuser=ghost \
+  -rpcpassword=__GHOST_RPC_PASS__ \
+  -rpcallowip=127.0.0.1/32 \
+  -disablewallet \
+  -maxconnections=32 \
+  -listen=1 \
+  -port=38333
+Restart=on-failure
+RestartSec=30
+LimitNOFILE=65536
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
