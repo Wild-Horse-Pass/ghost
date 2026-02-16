@@ -572,7 +572,7 @@ async fn main() -> Result<()> {
     )?);
 
     // Test RPC connection
-    match rpc.get_blockchain_info().await {
+    let blockchain_info = match rpc.get_blockchain_info().await {
         Ok(info) => {
             info!(
                 chain = %info.chain,
@@ -580,12 +580,13 @@ async fn main() -> Result<()> {
                 difficulty = info.difficulty,
                 "Connected to Bitcoin Core"
             );
+            info
         }
         Err(e) => {
             error!(error = %e, "Failed to connect to Bitcoin Core");
             return Err(anyhow::anyhow!("Bitcoin RPC connection failed: {}", e));
         }
-    }
+    };
 
     // Initialize database
     let db_path = data_dir.join("ghost.db");
@@ -675,6 +676,12 @@ async fn main() -> Result<()> {
         Err(e) => {
             warn!("Failed to check MPC elder status: {} - defaulting to non-elder", e);
         }
+    }
+
+    // Hazed nodes cannot claim archive mode — they strip witness/scriptSig/OP_RETURN data
+    if blockchain_info.hazed && capabilities.archive_mode {
+        warn!("Ghost Core is running in haze mode — disabling archive_mode capability (+5 shares)");
+        capabilities.archive_mode = false;
     }
 
     info!("Capability shares: {}/15", capabilities.total_shares());

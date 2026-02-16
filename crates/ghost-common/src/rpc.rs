@@ -1365,6 +1365,8 @@ pub struct BlockchainInfo {
     pub chainwork: String,
     pub size_on_disk: u64,
     pub pruned: bool,
+    #[serde(default)]
+    pub hazed: bool,
     // Additional fields that may be present in newer Bitcoin Core versions
     #[serde(default)]
     pub bits: Option<String>,

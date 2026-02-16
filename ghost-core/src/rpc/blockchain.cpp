@@ -184,7 +184,7 @@ UniValue blockheaderToJSON(const CBlockIndex& tip, const CBlockIndex& blockindex
     return result;
 }
 
-UniValue blockToJSON(BlockManager& blockman, const CBlock& block, const CBlockIndex& tip, const CBlockIndex& blockindex, TxVerbosity verbosity, const uint256 pow_limit, bool is_hazed)
+UniValue blockToJSON(BlockManager& blockman, const CBlock& block, const CBlockIndex& tip, const CBlockIndex& blockindex, TxVerbosity verbosity, const uint256 pow_limit, bool is_hazed, const std::vector<uint256>* original_txids)
 {
     UniValue result = blockheaderToJSON(tip, blockindex, pow_limit);
 
@@ -196,8 +196,12 @@ UniValue blockToJSON(BlockManager& blockman, const CBlock& block, const CBlockIn
 
     switch (verbosity) {
         case TxVerbosity::SHOW_TXID:
-            for (const CTransactionRef& tx : block.vtx) {
-                txs.push_back(tx->GetHash().GetHex());
+            for (size_t i = 0; i < block.vtx.size(); ++i) {
+                if (original_txids && i < original_txids->size()) {
+                    txs.push_back((*original_txids)[i].GetHex());
+                } else {
+                    txs.push_back(block.vtx[i]->GetHash().GetHex());
+                }
             }
             break;
 
@@ -214,8 +218,10 @@ UniValue blockToJSON(BlockManager& blockman, const CBlock& block, const CBlockIn
                 const CTransactionRef& tx = block.vtx.at(i);
                 // coinbase transaction (i.e. i == 0) doesn't have undo data
                 const CTxUndo* txundo = (have_undo && i > 0) ? &blockUndo.vtxundo.at(i - 1) : nullptr;
+                const uint256* override_txid = (original_txids && i < original_txids->size())
+                    ? &(*original_txids)[i] : nullptr;
                 UniValue objTx(UniValue::VOBJ);
-                TxToUniv(*tx, /*block_hash=*/uint256(), /*entry=*/objTx, /*include_hex=*/true, txundo, verbosity, is_hazed);
+                TxToUniv(*tx, /*block_hash=*/uint256(), /*entry=*/objTx, /*include_hex=*/true, txundo, verbosity, is_hazed, override_txid);
                 txs.push_back(std::move(objTx));
             }
             break;
@@ -868,6 +874,13 @@ static RPCHelpMan getblock()
             return HexStr(gsb_data);
         }
 
+        // Extract original txids before reconstruction (stripped data preserves them)
+        std::vector<uint256> original_txids;
+        original_txids.reserve(stripped.GetTxCount());
+        for (size_t i = 0; i < stripped.GetTxCount(); ++i) {
+            original_txids.push_back(stripped.GetTxid(i));
+        }
+
         CBlock block = haze::ReconstructPartialBlock(stripped);
 
         TxVerbosity tx_verbosity;
@@ -879,7 +892,7 @@ static RPCHelpMan getblock()
             tx_verbosity = TxVerbosity::SHOW_DETAILS_AND_PREVOUT;
         }
 
-        return blockToJSON(chainman.m_blockman, block, *tip, *pblockindex, tx_verbosity, chainman.GetConsensus().powLimit, /*is_hazed=*/true);
+        return blockToJSON(chainman.m_blockman, block, *tip, *pblockindex, tx_verbosity, chainman.GetConsensus().powLimit, /*is_hazed=*/true, &original_txids);
     }
 
     // Full archive mode: standard path
@@ -1411,6 +1424,7 @@ RPCHelpMan getblockchaininfo()
                 {RPCResult::Type::STR_HEX, "chainwork", "total amount of work in active chain, in hexadecimal"},
                 {RPCResult::Type::NUM, "size_on_disk", "the estimated size of the block and undo files on disk"},
                 {RPCResult::Type::BOOL, "pruned", "if the blocks are subject to pruning"},
+                {RPCResult::Type::BOOL, "hazed", "true if this node is running in Ghost Haze mode (stripped blocks)"},
                 {RPCResult::Type::NUM, "pruneheight", /*optional=*/true, "height of the last block pruned, plus one (only present if pruning is enabled)"},
                 {RPCResult::Type::BOOL, "automatic_pruning", /*optional=*/true, "whether automatic pruning is enabled (only present if pruning is enabled)"},
                 {RPCResult::Type::NUM, "prune_target_size", /*optional=*/true, "the target size used by pruning (only present if automatic pruning is enabled)"},
@@ -1461,6 +1475,7 @@ RPCHelpMan getblockchaininfo()
             obj.pushKV("prune_target_size", chainman.m_blockman.GetPruneTarget());
         }
     }
+    obj.pushKV("hazed", chainman.m_blockman.IsHazeMode());
     if (chainman.GetParams().GetChainType() == ChainType::SIGNET) {
         const std::vector<uint8_t>& signet_challenge =
             chainman.GetParams().GetConsensus().signet_challenge;
