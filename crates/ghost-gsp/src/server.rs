@@ -360,8 +360,10 @@ impl KeyExtractor for IpKeyExtractor {
             return Ok(IpKey(ip.to_string()));
         }
 
-        // Last resort: return error (no IP could be extracted)
-        Err(GovernorError::UnableToExtractKey)
+        // Last resort: use a fallback key so rate limiting still works
+        // This can happen when ConnectInfo is not available (e.g., plain HTTP without
+        // into_make_service_with_connect_info, or certain proxy configurations)
+        Ok(IpKey("unknown".to_string()))
     }
 }
 
@@ -871,9 +873,13 @@ impl GspServer {
             }
             None => {
                 info!("GSP server using plain HTTP (no TLS)");
-                axum::serve(listener, self.router)
-                    .await
-                    .map_err(|e| GspError::Internal(e.to_string()))?;
+                axum::serve(
+                    listener,
+                    self.router
+                        .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .await
+                .map_err(|e| GspError::Internal(e.to_string()))?;
             }
         }
 

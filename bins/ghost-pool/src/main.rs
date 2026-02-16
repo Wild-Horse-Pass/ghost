@@ -60,8 +60,8 @@ use ghost_consensus::voting::VotingManager;
 use ghost_policy::PolicyProfile;
 use ghost_storage::Database;
 use ghost_verification::{
-    start_server, PeerProvider, QualifiedCapabilityProvider, RpcArchiveHandler, VerifiablePeer,
-    VerificationState, VerificationTask,
+    start_server, GspHandler, PeerProvider, QualifiedCapabilityProvider, RpcArchiveHandler,
+    VerifiablePeer, VerificationState, VerificationTask,
 };
 
 use ghost_pool::payout::{BlockFoundData, PayoutConfig, PayoutHandler, SoloBlockFoundData};
@@ -82,6 +82,103 @@ const EXIT_CODE_RESTART: i32 = 100;
 /// Using OnceLock ensures the subscriber lives for the program lifetime
 /// without leaking, and can be properly dropped on program exit.
 static ZMQ_SUBSCRIBER: OnceLock<ZmqSubscriber> = OnceLock::new();
+
+/// GSP handler that caches status from periodic HTTP polls to the GSP service
+struct CachedGspHandler {
+    cache: Arc<std::sync::RwLock<GspCachedState>>,
+}
+
+#[derive(Default)]
+struct GspCachedState {
+    enabled: bool,
+    protocol_version: String,
+    network: String,
+    connections: u32,
+    registered_wallets: u32,
+    sync_status: String,
+}
+
+impl CachedGspHandler {
+    fn new(gsp_url: String) -> Self {
+        let cache = Arc::new(std::sync::RwLock::new(GspCachedState::default()));
+        let poll_cache = Arc::clone(&cache);
+
+        // Background task polls GSP info every 30s
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .danger_accept_invalid_certs(true)
+                .build()
+                .unwrap_or_default();
+            loop {
+                match client
+                    .get(format!("{}/api/v1/info", gsp_url))
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        if let Ok(info) =
+                            resp.json::<serde_json::Value>().await
+                        {
+                            let mut state = poll_cache.write().unwrap();
+                            state.enabled = true;
+                            state.protocol_version = info
+                                .get("protocol_version")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            state.network = info
+                                .get("network")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                            state.connections = info
+                                .get("connections")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0)
+                                as u32;
+                            state.sync_status = info
+                                .get("sync_status")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown")
+                                .to_string();
+                        }
+                    }
+                    _ => {
+                        poll_cache.write().unwrap().enabled = false;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+
+        Self { cache }
+    }
+}
+
+impl GspHandler for CachedGspHandler {
+    fn is_enabled(&self) -> bool {
+        self.cache.read().unwrap().enabled
+    }
+    fn get_protocol_version(&self) -> String {
+        self.cache.read().unwrap().protocol_version.clone()
+    }
+    fn get_network(&self) -> String {
+        self.cache.read().unwrap().network.clone()
+    }
+    fn get_connection_count(&self) -> u32 {
+        self.cache.read().unwrap().connections
+    }
+    fn get_registered_wallets(&self) -> u32 {
+        self.cache.read().unwrap().registered_wallets
+    }
+    fn get_sync_status(&self) -> String {
+        self.cache.read().unwrap().sync_status.clone()
+    }
+    fn health_check(&self) -> ghost_common::GhostResult<bool> {
+        Ok(self.cache.read().unwrap().enabled)
+    }
+}
 
 /// Adapter to provide peers for verification from PeerManager
 struct PeerProviderAdapter {
@@ -1920,6 +2017,10 @@ async fn main() -> Result<()> {
     // Note: GhostPay verification is now handled directly by ghost-pay on port 8800.
     // The verification client routes GhostPay challenges to ghost-pay instead of ghost-pool,
     // so no stub handler is needed here. Ghost-pay queries its own L2 database for real state.
+
+    // Wire GSP handler if GSP service URL is configured or default (port 8900)
+    let gsp_handler = CachedGspHandler::new("https://127.0.0.1:8900".to_string());
+    verification_state = verification_state.with_gsp_handler(gsp_handler);
 
     // Pass database and RPC to verification state for API endpoints
     verification_state = verification_state.with_database((*db).clone());
