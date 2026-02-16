@@ -109,6 +109,7 @@
 | **Ghost Keys** | BIP-352 Silent Payments - share one address, receive unlimited payments privately |
 | **Ghost Locks** | P2TR outputs with timelocked recovery - your funds are always recoverable |
 | **Wraith Protocol** | Two-phase CoinJoin mixing for transaction graph privacy |
+| **Ghost Shroud** | Random relay delay (0-5s) to prevent transaction origin timing analysis |
 
 ---
 
@@ -304,6 +305,7 @@ The **Bitcoin Use-case Differentiation System** classifies transactions into tie
 - [Ghost Locks](docs/protocols/GHOST_LOCKS.md) - Timelocked recovery system
 - [Ghost Pay](docs/protocols/GHOST_PAY.md) - L2 payment network
 - [Wraith Protocol](docs/protocols/WRAITH_PROTOCOL.md) - CoinJoin mixing
+- [Ghost Shroud](docs/GHOST_SHROUD.md) - Transaction relay origin protection
 - [Consensus](docs/protocols/CONSENSUS.md) - ZK-BFT consensus details
 - [Node Capabilities](docs/protocols/NODE_CAPABILITIES.md) - 5-4-3-2-1 verification system
 

@@ -263,9 +263,138 @@ Ensure ghost-core is running before running integration tests:
 cargo test --workspace
 ```
 
+## Ghost Shroud (Transaction Relay Protection)
+
+Ghost Shroud adds a random 0-5 second delay before relaying transactions to peers, preventing timing-based origin detection. It is enabled by default.
+
+### Implementation Location
+
+| File | Purpose |
+|------|---------|
+| `src/net_processing.cpp` | `ShroudEntry` queue, `RelayTransaction()`, `DrainShroudQueue()` |
+| `src/net_processing.h` | `shroud` option in `PeerManager::Options` |
+| `src/node/peerman_args.cpp` | CLI argument parsing |
+| `src/init.cpp` | Argument registration (`-shroud`) |
+
+### Configuration
+
+```ini
+# ghost.conf
+shroud=1   # Enabled (default)
+shroud=0   # Disabled (standard Bitcoin Core relay behavior)
+```
+
+### Behavior
+
+- Transactions enter the local mempool immediately (mining unaffected)
+- Outbound relay to peers is delayed by a random 0-5000ms per transaction
+- `DrainShroudQueue()` runs each `SendMessages()` cycle, relaying transactions whose delay has elapsed
+
+See [Ghost Shroud specification](GHOST_SHROUD.md) for full details.
+
+## Ghost Haze (Stripped Block Storage)
+
+Ghost Haze provides two operating modes for block storage: **Hazed** mode strips witness data, scriptSig, OP_RETURN payloads, and coinbase data before writing blocks to disk (~60% storage reduction), while **Full Archive** mode stores all data unchanged.
+
+### Configuration
+
+```ini
+# ghost.conf
+hazemode=hazed         # Strip witness/scriptSig/OP_RETURN data (saves ~60% storage)
+hazemode=full_archive  # Store all data unchanged (default for daemon mode)
+```
+
+The mode is permanent for a given datadir. On first launch with a TTY, Ghost Core prompts interactively. When running as a daemon, it defaults to `full_archive`. The choice is persisted in a `haze_mode.lock` file in the datadir.
+
+### RPC Integration
+
+**`getblockchaininfo`** includes a `hazed` boolean field:
+
+```json
+{
+    "chain": "signet",
+    "blocks": 250000,
+    "hazed": true,
+    ...
+}
+```
+
+This field is read by `ghost-pool` at startup to determine whether the node can claim Archive Mode (+5 shares). See [Node Capabilities](protocols/NODE_CAPABILITIES.md).
+
+**`gethazestatus`** returns detailed haze mode information.
+
+### ghost-pool Integration
+
+`ghost-pool` calls `getblockchaininfo()` at startup and checks the `hazed` field:
+
+```rust
+// bins/ghost-pool/src/main.rs
+if blockchain_info.hazed && capabilities.archive_mode {
+    warn!("Ghost Core is running in haze mode — disabling archive_mode capability");
+    capabilities.archive_mode = false;
+}
+```
+
+The `hazed` field is defined in `BlockchainInfo` with `#[serde(default)]` for backward compatibility with non-Ghost Core nodes:
+
+```rust
+// crates/ghost-common/src/rpc.rs
+pub pruned: bool,
+#[serde(default)]
+pub hazed: bool,
+```
+
+### GSB File Format
+
+Hazed blocks are stored in GSB files (`gsb?????.dat`) instead of standard `blk?????.dat` files:
+
+```
+GSB File Entry:
+├── Magic: 0x47534200 ("GSB\0")
+├── Size: uint32 LE
+├── Block header: 80 bytes (unchanged)
+├── Transaction count: varint
+└── Per transaction:
+    ├── Flags: 1 byte (bit 0: has_stored_txid)
+    ├── [if has_stored_txid]: Original txid (32 bytes)
+    ├── nVersion: 4 bytes
+    ├── Inputs: prevout only (scriptSig always empty)
+    ├── Outputs: scriptPubKey preserved (OP_RETURN payloads zeroed)
+    └── nLockTime: 4 bytes
+```
+
+The `has_stored_txid` flag is set for transactions that had non-empty scriptSig (legacy or P2SH-wrapped SegWit), since their txid cannot be recomputed from the stripped fields.
+
+### Exorcism
+
+Ghost Exorcism is the process that strips block data in RAM before writing to disk. It runs inline during block validation in `AcceptBlock()` (`validation.cpp`):
+
+1. `StripValidatedBlock()` strips hazeable content from the validated block
+2. `WriteStrippedBlock()` serializes to GSB format and writes to disk
+3. The original RAM buffer is securely zeroed using platform-specific functions
+
+### Ghost Exorcist Tool
+
+The `ghost-exorcist` tool converts an existing Full Archive node to Hazed mode by migrating `blk?????.dat` files to `gsb?????.dat` format.
+
+### Source Files
+
+| File | Purpose |
+|------|---------|
+| `src/haze/mode_selector.h/cpp` | Mode detection, lock file persistence |
+| `src/haze/exorcism.h/cpp` | Block stripping, secure zeroing |
+| `src/haze/stripped_block.h/cpp` | GSB format serialization/deserialization |
+| `src/haze/exorcist.h/cpp` | Archive conversion tool (blk → gsb) |
+| `src/haze/legal_packet.h/cpp` | Legal Compliance Packet generation |
+| `src/rpc/haze.cpp` | Haze-specific RPC commands |
+| `src/rpc/blockchain.cpp` | `getblockchaininfo` `hazed` field |
+| `src/validation.cpp` | Integration point in `AcceptBlock()` |
+| `src/node/blockstorage.h/cpp` | `WriteStrippedBlock()`, GSB file handling |
+
 ## References
 
 - `ghost-core/TODO.md` - Ghost-core feature status
 - `ghost-core/src/silentpayments.h` - Silent Payment API
 - `ghost-core/src/ghostlock.h` - Ghost Lock API
 - `ghost-core/src/wallet/rpc/wraith.cpp` - Wraith RPC implementation
+- [Ghost Haze Specification](../tasks/ghost-haze-progress.md) - Implementation progress

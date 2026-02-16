@@ -16,6 +16,7 @@
 4. [External Dependencies](#4-external-dependencies)
 5. [Network Ports](#5-network-ports)
 6. [Communication Protocols](#6-communication-protocols)
+    - [6.6 Ghost Shroud](#66-ghost-shroud-transaction-relay-protection)
 7. [Database Schema](#7-database-schema)
 8. [Configuration](#8-configuration)
 9. [Economic Model](#9-economic-model)
@@ -47,7 +48,7 @@ Bitcoin Ghost is a **full Bitcoin node implementation** - a derivative of Bitcoi
 - **Incentivized Operation**: Nodes earn rewards for running valuable features (5-4-3-2-1 share system)
 - **Decentralized Mining**: Built-in mining coordination without centralized pools
 - **Ghost Pay L2**: Instant payment layer with 10-second settlement
-- **Enhanced Privacy**: Silent payments, Wraith mixing, encrypted metadata
+- **Enhanced Privacy**: Silent payments, Wraith mixing, relay origin protection (Shroud)
 - **Policy Sovereignty**: Each node enforces its own mempool/block policies via BUDS
 
 ### 1.2 Comparison with Other Implementations
@@ -59,7 +60,7 @@ Bitcoin Ghost is a **full Bitcoin node implementation** - a derivative of Bitcoi
 | Mining support | Solo only | Solo only | Decentralized mining |
 | Node incentives | None | None | 5-4-3-2-1 rewards |
 | L2 payments | No | No | Ghost Pay |
-| Privacy features | Basic | Basic | Silent payments + Wraith |
+| Privacy features | Basic | Basic | Silent payments + Wraith + Shroud |
 
 ### 1.3 Design Principles
 
@@ -67,7 +68,7 @@ Bitcoin Ghost is a **full Bitcoin node implementation** - a derivative of Bitcoi
 2. **Node Sovereignty**: Each node chooses its own mempool/block policy
 3. **Incentive Alignment**: Nodes earn rewards for running valuable services
 4. **Decentralization**: No central servers, pools, or coordinators required
-5. **Privacy by Default**: Silent payments, encrypted metadata, optional mixing
+5. **Privacy by Default**: Silent payments, relay origin protection, optional mixing
 6. **Spam Resistance**: BUDS classification enables intelligent transaction filtering
 
 ### 1.4 Key Outcomes
@@ -399,6 +400,22 @@ GET  /api/v1/verify/ghostpay            → GhostPayVerifyResponse
 POST /api/v1/verify/policy              → PolicyVerifyResponse
 GET  /api/v1/status                     → NodeStatusResponse
 ```
+
+### 6.6 Ghost Shroud (Transaction Relay Protection)
+
+Network-level privacy feature that adds a random delay (0-5 seconds) before relaying transactions to peers, preventing timing-based origin detection.
+
+**Mechanism**:
+- When a transaction enters the mempool, it is queued for relay with a random delay
+- `DrainShroudQueue()` runs each message-processing cycle in `SendMessages()`
+- Transactions whose delay has elapsed are relayed normally
+- Mining is unaffected: transactions enter the local mempool immediately
+
+**Configuration**: `-shroud=1` (enabled by default), `-shroud=0` to disable
+
+**Implementation**: `net_processing.cpp` — `RelayTransaction()`, `DrainShroudQueue()`, `ShroudEntry` queue
+
+See [Ghost Shroud](GHOST_SHROUD.md) for the full specification.
 
 ---
 

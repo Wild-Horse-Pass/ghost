@@ -88,6 +88,23 @@ Pass Criteria:
 └── 95% pass rate required
 ```
 
+### Ghost Haze Restriction
+
+Nodes running Ghost Core in **Hazed mode** (`-hazemode=hazed`) are automatically excluded from Archive Mode. Hazed nodes strip witness data, scriptSig, OP_RETURN payloads, and coinbase data before writing blocks to disk — they do not store full archival blocks and cannot serve them for verification challenges.
+
+`ghost-pool` checks `getblockchaininfo` at startup. If the `hazed` field is `true`, `archive_mode` is forced to `false` regardless of configuration:
+
+```
+Startup check:
+├── Call getblockchaininfo()
+├── If hazed == true AND archive_mode == true:
+│   ├── Log warning: "Ghost Core is running in haze mode"
+│   └── Set archive_mode = false
+└── Node cannot earn +5 Archive Mode shares
+```
+
+To earn Archive Mode shares, run Ghost Core with `-hazemode=full_archive` (the default for daemon mode).
+
 ### Verification Endpoint
 
 ```
