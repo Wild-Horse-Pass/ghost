@@ -5,6 +5,7 @@
 #include <bitcoin-build-config.h> // IWYU pragma: keep
 
 #include <chainparams.h>
+#include <haze/mode_selector.h>
 #include <qt/intro.h>
 #include <qt/forms/ui_intro.h>
 #include <util/chaintype.h>
@@ -78,6 +79,23 @@ Intro::Intro(QWidget *parent, int64_t blockchain_size_gb, int64_t chain_state_si
         UpdateFreeSpaceLabel();
     });
 
+    ui->lblHazeModeExplanation->setText(ui->lblHazeModeExplanation->text().arg(CLIENT_NAME));
+
+    connect(ui->hazeModeHazed, &QRadioButton::toggled, [this](bool checked) {
+        if (checked) {
+            m_selected_haze_mode = haze::GhostMode::HAZED;
+            UpdatePruneLabels(ui->prune->isChecked());
+            UpdateFreeSpaceLabel();
+        }
+    });
+    connect(ui->hazeModeFull, &QRadioButton::toggled, [this](bool checked) {
+        if (checked) {
+            m_selected_haze_mode = haze::GhostMode::FULL_ARCHIVE;
+            UpdatePruneLabels(ui->prune->isChecked());
+            UpdateFreeSpaceLabel();
+        }
+    });
+
     startThread();
 }
 
@@ -117,6 +135,11 @@ int64_t Intro::getPruneMiB() const
     case Qt::Unchecked: default:
         return 0;
     }
+}
+
+haze::GhostMode Intro::getHazeMode() const
+{
+    return m_selected_haze_mode;
 }
 
 bool Intro::showIfNeeded(bool& did_show_intro, int64_t& prune_MiB)
@@ -161,12 +184,35 @@ bool Intro::showIfNeeded(bool& did_show_intro, int64_t& prune_MiB)
                     // If a new data directory has been created, make wallets subdirectory too
                     TryCreateDirectories(GUIUtil::QStringToPath(dataDir) / "wallets");
                 }
-                break;
             } catch (const fs::filesystem_error&) {
                 QMessageBox::critical(nullptr, CLIENT_NAME,
                     tr("Error: Specified data directory \"%1\" cannot be created.").arg(dataDir));
                 /* fall through, back to choosing screen */
+                continue;
             }
+
+            // Validate haze mode consistency with existing data files
+            haze::GhostMode haze_mode = intro.getHazeMode();
+            fs::path datadir_path = GUIUtil::QStringToPath(dataDir);
+            auto consistency_error = haze::ValidateModeConsistency(datadir_path, haze_mode);
+            if (consistency_error.has_value()) {
+                QMessageBox::critical(nullptr, CLIENT_NAME,
+                    tr("Storage mode conflict: %1").arg(QString::fromStdString(*consistency_error)));
+                /* fall through, back to choosing screen */
+                continue;
+            }
+
+            // Write the haze mode lock file (unless already locked)
+            auto existing_lock = haze::ReadModeLock(datadir_path);
+            if (!existing_lock.has_value()) {
+                if (!haze::WriteModeLock(datadir_path, haze_mode)) {
+                    QMessageBox::warning(nullptr, CLIENT_NAME,
+                        tr("Warning: Could not write storage mode lock file. "
+                           "The mode will be selected again on next launch."));
+                }
+            }
+
+            break;
         }
 
         // Additional preferences:
@@ -233,6 +279,26 @@ void Intro::on_dataDirectory_textChanged(const QString &dataDirStr)
     /* Disable OK button until check result comes in */
     ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(false);
     checkPath(dataDirStr);
+
+    /* Check if this datadir already has a persisted haze mode */
+    fs::path datadir = GUIUtil::QStringToPath(dataDirStr);
+    auto locked_mode = haze::ReadModeLock(datadir);
+    if (locked_mode.has_value()) {
+        m_haze_mode_locked = true;
+        m_selected_haze_mode = *locked_mode;
+        ui->hazeModeHazed->setChecked(*locked_mode == haze::GhostMode::HAZED);
+        ui->hazeModeFull->setChecked(*locked_mode == haze::GhostMode::FULL_ARCHIVE);
+        ui->hazeModeHazed->setEnabled(false);
+        ui->hazeModeFull->setEnabled(false);
+        ui->lblHazeWarning->setText(
+            tr("Storage mode is locked to %1 for this data directory.")
+                .arg(*locked_mode == haze::GhostMode::HAZED ? tr("Hazed") : tr("Full Archive")));
+    } else {
+        m_haze_mode_locked = false;
+        ui->hazeModeHazed->setEnabled(true);
+        ui->hazeModeFull->setEnabled(true);
+        ui->lblHazeWarning->setText(tr("This choice is permanent for this data directory."));
+    }
 }
 
 void Intro::on_ellipsisButton_clicked()
@@ -291,9 +357,15 @@ QString Intro::getPathToCheck()
 
 void Intro::UpdatePruneLabels(bool prune_checked)
 {
-    m_required_space_gb = m_blockchain_size_gb + m_chain_state_size_gb;
+    // Adjust blockchain size estimate for haze mode (~40% of full archive)
+    int64_t effective_blockchain_gb = m_blockchain_size_gb;
+    if (m_selected_haze_mode == haze::GhostMode::HAZED) {
+        effective_blockchain_gb = static_cast<int64_t>(m_blockchain_size_gb * 0.4);
+    }
+
+    m_required_space_gb = effective_blockchain_gb + m_chain_state_size_gb;
     QString storageRequiresMsg = tr("At least %1 GB of data will be stored in this directory, and it will grow over time.");
-    if (prune_checked && m_prune_target_gb <= m_blockchain_size_gb) {
+    if (prune_checked && m_prune_target_gb <= effective_blockchain_gb) {
         m_required_space_gb = m_prune_target_gb + m_chain_state_size_gb;
         storageRequiresMsg = tr("Approximately %1 GB of data will be stored in this directory.");
     }
@@ -310,5 +382,13 @@ void Intro::UpdatePruneLabels(bool prune_checked)
         storageRequiresMsg.arg(m_required_space_gb) + " " +
         tr("The wallet will also be stored in this directory.")
     );
+
+    // Show note when both hazed and pruning are selected
+    if (m_selected_haze_mode == haze::GhostMode::HAZED && prune_checked) {
+        ui->lblHazeNote->setText(tr("Hazed mode already reduces storage by ~60%. Pruning provides minimal additional benefit."));
+    } else {
+        ui->lblHazeNote->setText(QString());
+    }
+
     this->adjustSize();
 }

@@ -272,6 +272,69 @@
     </layout>
    </item>
    <item>
+    <widget class="QLabel" name="lblHazeModeHeader">
+     <property name="text">
+      <string>Storage Mode</string>
+     </property>
+     <property name="font">
+      <font>
+       <weight>75</weight>
+       <bold>true</bold>
+      </font>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="lblHazeModeExplanation">
+     <property name="text">
+      <string>Choose how %1 stores block data on disk. This choice is permanent for this data directory.</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QRadioButton" name="hazeModeHazed">
+     <property name="text">
+      <string>Hazed (recommended — ~60% less storage)</string>
+     </property>
+     <property name="checked">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QRadioButton" name="hazeModeFull">
+     <property name="text">
+      <string>Full Archive (standard Bitcoin Core behavior)</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="lblHazeWarning">
+     <property name="text">
+      <string>This choice is permanent for this data directory.</string>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">QLabel { color: #999900; font-style: italic; }</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="lblHazeNote">
+     <property name="text">
+      <string/>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
     <spacer name="verticalSpacer">
      <property name="orientation">
       <enum>Qt::Vertical</enum>

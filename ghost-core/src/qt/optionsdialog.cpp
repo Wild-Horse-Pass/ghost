@@ -14,6 +14,7 @@
 #include <qt/optionsmodel.h>
 
 #include <common/system.h>
+#include <haze/mode_selector.h>
 #include <interfaces/node.h>
 #include <netbase.h>
 #include <node/caches.h>
@@ -242,6 +243,7 @@ void OptionsDialog::setModel(OptionsModel *_model)
         setFontChoice(ui->moneyFont, font_for_money);
 
         updateDefaultProxyNets();
+        updateHazeStatus();
     }
 
     /* warn when one of the following settings changes by user action (placed here so init via mapper doesn't trigger them) */
@@ -444,6 +446,42 @@ void OptionsDialog::updateProxyValidationState()
         setOkButtonState(false);
         ui->statusLabel->setStyleSheet("QLabel { color: red; }");
         ui->statusLabel->setText(tr("The supplied proxy address is invalid."));
+    }
+}
+
+void OptionsDialog::updateHazeStatus()
+{
+    if (!m_client_model) {
+        ui->hazeModeValue->setText(tr("Unknown"));
+        ui->hazeStatsValue->setText(QString());
+        return;
+    }
+
+    auto status = m_client_model->node().getHazeStatus();
+    if (!status.has_value()) {
+        ui->hazeModeValue->setText(tr("Not configured"));
+        ui->hazeStatsValue->setText(QString());
+        ui->hazeStatsLabel->setVisible(false);
+        ui->hazeStatsValue->setVisible(false);
+        return;
+    }
+
+    ui->hazeModeValue->setText(status->is_hazed ? tr("Hazed") : tr("Full Archive"));
+
+    if (status->is_hazed && status->blocks_processed > 0) {
+        ui->hazeStatsLabel->setVisible(true);
+        ui->hazeStatsValue->setVisible(true);
+        double stripped_gb = static_cast<double>(status->bytes_stripped) / 1e9;
+        ui->hazeStatsValue->setText(
+            tr("%1 blocks, %2 GB stripped")
+                .arg(QLocale().toString(static_cast<qulonglong>(status->blocks_processed)))
+                .arg(QString::number(stripped_gb, 'f', 1)));
+    } else {
+        ui->hazeStatsLabel->setVisible(!status->is_hazed);
+        ui->hazeStatsValue->setVisible(false);
+        if (!status->is_hazed) {
+            ui->hazeStatsLabel->setVisible(false);
+        }
     }
 }
 

@@ -55,6 +55,14 @@ struct BlockAndHeaderTipInfo
     double verification_progress;
 };
 
+//! Ghost Haze storage mode status
+struct HazeStatus
+{
+    bool is_hazed;
+    uint64_t blocks_processed;
+    uint64_t bytes_stripped;
+};
+
 //! External signer interface used by the GUI.
 class ExternalSigner
 {
@@ -262,6 +270,9 @@ public:
     using NotifyHeaderTipFn =
         std::function<void(SynchronizationState, interfaces::BlockTip tip, bool presync)>;
     virtual std::unique_ptr<Handler> handleNotifyHeaderTip(NotifyHeaderTipFn fn) = 0;
+
+    //! Get Ghost Haze storage mode status.
+    virtual std::optional<HazeStatus> getHazeStatus() = 0;
 
     //! Get and set internal node context. Useful for testing, but not
     //! accessible across processes.

@@ -4,6 +4,7 @@
 
 #include <addrdb.h>
 #include <banman.h>
+#include <haze/mode_selector.h>
 #include <blockfilter.h>
 #include <chain.h>
 #include <chainparams.h>
@@ -417,6 +418,24 @@ public:
             ::uiInterface.NotifyHeaderTip_connect([fn](SynchronizationState sync_state, int64_t height, int64_t timestamp, bool presync) {
                 fn(sync_state, BlockTip{(int)height, timestamp, uint256{}}, presync);
             }));
+    }
+    std::optional<interfaces::HazeStatus> getHazeStatus() override
+    {
+        auto mode = haze::ReadModeLock(args().GetDataDirNet());
+        if (!mode.has_value()) return std::nullopt;
+
+        interfaces::HazeStatus status;
+        status.is_hazed = (*mode == haze::GhostMode::HAZED);
+        status.blocks_processed = 0;
+        status.bytes_stripped = 0;
+
+        if (m_context->chainman) {
+            const auto& exorcism = m_context->chainman->m_blockman.m_ghost_exorcism;
+            status.blocks_processed = exorcism.GetBlocksProcessed();
+            status.bytes_stripped = exorcism.GetTotalBytesStripped();
+        }
+
+        return status;
     }
     NodeContext* context() override { return m_context; }
     void setContext(NodeContext* context) override

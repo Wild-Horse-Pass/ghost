@@ -5,6 +5,7 @@
 #ifndef BITCOIN_QT_INTRO_H
 #define BITCOIN_QT_INTRO_H
 
+#include <haze/exorcism.h>
 #include <qt/freespacechecker.h>
 
 #include <QDialog>
@@ -37,6 +38,7 @@ public:
     QString getDataDirectory();
     void setDataDirectory(const QString &dataDir);
     int64_t getPruneMiB() const;
+    haze::GhostMode getHazeMode() const;
 
     /**
      * Determine data directory. Let the user choose if the current one doesn't exist.
@@ -75,6 +77,8 @@ private:
     int64_t m_required_space_gb{0};
     uint64_t m_bytes_available{0};
     int64_t m_prune_target_gb;
+    haze::GhostMode m_selected_haze_mode{haze::GhostMode::HAZED};
+    bool m_haze_mode_locked{false};
 
     void startThread();
     void checkPath(const QString &dataDir);
