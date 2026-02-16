@@ -168,11 +168,15 @@ void ScriptToUniv(const CScript& script, UniValue& out, bool include_hex, bool i
     out.pushKV("type", GetTxnOutputType(type));
 }
 
-void TxToUniv(const CTransaction& tx, const uint256& block_hash, UniValue& entry, bool include_hex, const CTxUndo* txundo, TxVerbosity verbosity, bool is_hazed)
+void TxToUniv(const CTransaction& tx, const uint256& block_hash, UniValue& entry, bool include_hex, const CTxUndo* txundo, TxVerbosity verbosity, bool is_hazed, const uint256* original_txid)
 {
     CHECK_NONFATAL(verbosity >= TxVerbosity::SHOW_DETAILS);
 
-    entry.pushKV("txid", tx.GetHash().GetHex());
+    if (original_txid) {
+        entry.pushKV("txid", original_txid->GetHex());
+    } else {
+        entry.pushKV("txid", tx.GetHash().GetHex());
+    }
     entry.pushKV("hash", tx.GetWitnessHash().GetHex());
     entry.pushKV("version", tx.version);
     entry.pushKV("size", tx.GetTotalSize());
