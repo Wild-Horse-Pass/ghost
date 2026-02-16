@@ -496,6 +496,21 @@ impl LightWallet {
         Ok(())
     }
 
+    /// Get recent transactions from cache
+    pub fn get_recent_transactions(&self, limit: u32) -> WalletResult<Vec<crate::state::CachedTransaction>> {
+        self.cache.get_recent_transactions(limit)
+    }
+
+    /// Get cached locks
+    pub fn get_cached_locks(&self) -> WalletResult<Vec<crate::state::CachedLock>> {
+        self.cache.get_locks()
+    }
+
+    /// Save a lock to the local cache
+    pub fn save_lock(&self, lock: &crate::state::CachedLock) -> WalletResult<()> {
+        self.cache.save_lock(lock)
+    }
+
     /// Get transactions by label
     pub fn get_transactions_by_label(
         &self,

@@ -472,6 +472,71 @@ impl WalletCache {
 
         Ok(transactions)
     }
+
+    // =========================================================================
+    // Ghost Lock Cache Methods
+    // =========================================================================
+
+    /// Get all cached locks
+    pub fn get_locks(&self) -> WalletResult<Vec<CachedLock>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT lock_id, capacity_sats, used_sats, status, funding_txid, created_at, updated_at
+             FROM ghost_locks
+             ORDER BY created_at DESC",
+        )?;
+
+        let rows = stmt.query_map([], |row| {
+            Ok(CachedLock {
+                lock_id: row.get(0)?,
+                capacity_sats: row.get(1)?,
+                used_sats: row.get(2)?,
+                status: row.get(3)?,
+                funding_txid: row.get(4)?,
+                created_at: row.get(5)?,
+                updated_at: row.get(6)?,
+            })
+        })?;
+
+        let mut locks = Vec::new();
+        for row in rows {
+            locks.push(row?);
+        }
+
+        Ok(locks)
+    }
+
+    /// Save or update a lock in the cache
+    pub fn save_lock(&self, lock: &CachedLock) -> WalletResult<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO ghost_locks
+             (lock_id, capacity_sats, used_sats, status, funding_txid, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                lock.lock_id,
+                lock.capacity_sats,
+                lock.used_sats,
+                lock.status,
+                lock.funding_txid,
+                lock.created_at,
+                lock.updated_at,
+            ],
+        )?;
+
+        debug!(lock_id = %lock.lock_id, status = %lock.status, "Saved lock to cache");
+        Ok(())
+    }
+}
+
+/// Cached Ghost Lock record
+#[derive(Debug, Clone)]
+pub struct CachedLock {
+    pub lock_id: String,
+    pub capacity_sats: u64,
+    pub used_sats: u64,
+    pub status: String,
+    pub funding_txid: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 /// Cached transaction record

@@ -25,5 +25,6 @@
 mod create;
 mod jump;
 
-pub use create::{create_lock, LockRequest};
-pub use jump::{request_jump, JumpRequest};
+pub use create::{create_lock, LockRequest, PreparedLock};
+pub use ghost_gsp_proto::JumpPriority;
+pub use jump::{estimate_jump_fee, request_jump, JumpRequest, JumpResponse};

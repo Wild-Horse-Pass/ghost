@@ -65,6 +65,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Error handling
 anyhow = "1.0"
 
+# Utilities
+chrono = "0.4"
+
 # Directories
 dirs = "5.0"
 

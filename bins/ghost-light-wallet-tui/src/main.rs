@@ -23,6 +23,7 @@ use ratatui::{
 };
 
 use bitcoin::Network;
+use ghost_light_wallet::state::{CachedLock, CachedTransaction};
 use ghost_light_wallet::{LightWallet, WalletConfig, WalletStatus};
 
 /// Ghost Wallet TUI - Terminal interface for Ghost Pay
@@ -56,6 +57,7 @@ enum Tab {
 
 struct App {
     wallet: Option<LightWallet>,
+    config: WalletConfig,
     current_tab: Tab,
     should_quit: bool,
     status_message: String,
@@ -66,15 +68,28 @@ struct App {
     selected_label: usize,
     label_input: String,
     label_input_mode: LabelInputMode,
+    // Receive tab state
+    receive_address: Option<String>,
+    // History tab state
+    transactions: Vec<CachedTransaction>,
+    // Locks tab state
+    locks: Vec<CachedLock>,
+    // Send tab state
+    send_address: String,
+    send_amount: String,
+    send_memo: String,
+    send_wraith: bool,
+    // Async runtime for GSP calls
+    runtime: tokio::runtime::Runtime,
 }
 
 #[derive(PartialEq)]
-#[allow(dead_code)]
 enum InputMode {
     Normal,
     Password,
-    Amount,
-    Address,
+    SendAddress,
+    SendAmount,
+    SendMemo,
 }
 
 #[derive(PartialEq)]
@@ -85,9 +100,11 @@ enum LabelInputMode {
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(config: WalletConfig) -> Self {
+        let runtime = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         Self {
             wallet: None,
+            config,
             current_tab: Tab::Dashboard,
             should_quit: false,
             status_message: "Press 'u' to unlock wallet, 'q' to quit".to_string(),
@@ -97,6 +114,14 @@ impl App {
             selected_label: 0,
             label_input: String::new(),
             label_input_mode: LabelInputMode::None,
+            receive_address: None,
+            transactions: Vec::new(),
+            locks: Vec::new(),
+            send_address: String::new(),
+            send_amount: String::new(),
+            send_memo: String::new(),
+            send_wraith: false,
+            runtime,
         }
     }
 
@@ -107,6 +132,22 @@ impl App {
                 if self.selected_label >= self.labels.len() {
                     self.selected_label = self.labels.len().saturating_sub(1);
                 }
+            }
+        }
+    }
+
+    fn refresh_transactions(&mut self) {
+        if let Some(ref wallet) = self.wallet {
+            if let Ok(txs) = wallet.get_recent_transactions(20) {
+                self.transactions = txs;
+            }
+        }
+    }
+
+    fn refresh_locks(&mut self) {
+        if let Some(ref wallet) = self.wallet {
+            if let Ok(locks) = wallet.get_cached_locks() {
+                self.locks = locks;
             }
         }
     }
@@ -146,10 +187,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Create app
-    let mut app = App::new();
-
-    // Try to load existing wallet
+    // Build config
     let data_dir = cli.data_dir.unwrap_or_else(|| {
         dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -171,8 +209,11 @@ fn main() -> Result<()> {
         reconnect_interval_secs: 5,
     };
 
+    // Create app with config
+    let mut app = App::new(config);
+
     // Main loop
-    let res = run_app(&mut terminal, &mut app, config);
+    let res = run_app(&mut terminal, &mut app);
 
     // Restore terminal
     disable_raw_mode()?;
@@ -193,7 +234,6 @@ fn main() -> Result<()> {
 fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-    _config: WalletConfig,
 ) -> Result<()>
 where
     B::Error: Send + Sync + 'static,
@@ -341,6 +381,65 @@ where
                             continue;
                         }
 
+                        // Receive tab: 'g' to generate address
+                        if app.current_tab == Tab::Receive && key.code == KeyCode::Char('g') {
+                            if let Some(ref wallet) = app.wallet {
+                                match wallet.generate_address(ghost_light_wallet::payments::AddressType::GhostPay) {
+                                    Ok(addr) => {
+                                        app.receive_address = Some(addr.address);
+                                        app.status_message = "New address generated".to_string();
+                                    }
+                                    Err(e) => {
+                                        app.status_message = format!("Error: {}", e);
+                                    }
+                                }
+                            } else {
+                                app.status_message = "Unlock wallet first".to_string();
+                            }
+                            continue;
+                        }
+
+                        // Send tab: 's' to start send flow, 'w' to toggle wraith
+                        if app.current_tab == Tab::Send {
+                            match key.code {
+                                KeyCode::Char('s') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    if app.wallet.is_some() {
+                                        app.send_address.clear();
+                                        app.send_amount.clear();
+                                        app.send_memo.clear();
+                                        app.input_mode = InputMode::SendAddress;
+                                        app.status_message = "Enter recipient address:".to_string();
+                                    } else {
+                                        app.status_message = "Unlock wallet first".to_string();
+                                    }
+                                    continue;
+                                }
+                                KeyCode::Char('w') => {
+                                    app.send_wraith = !app.send_wraith;
+                                    app.status_message = format!(
+                                        "Wraith mode: {}",
+                                        if app.send_wraith { "ON" } else { "OFF" }
+                                    );
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                        }
+
+                        // History tab: 'r' to refresh
+                        if app.current_tab == Tab::History && key.code == KeyCode::Char('r') {
+                            app.refresh_transactions();
+                            app.status_message = "Transactions refreshed".to_string();
+                            continue;
+                        }
+
+                        // Locks tab: 'r' to refresh
+                        if app.current_tab == Tab::Locks && key.code == KeyCode::Char('r') {
+                            app.refresh_locks();
+                            app.status_message = "Locks refreshed".to_string();
+                            continue;
+                        }
+
                         // Normal mode key handling
                         match key.code {
                             KeyCode::Char('q') => app.should_quit = true,
@@ -365,9 +464,22 @@ where
                     }
                     InputMode::Password => match key.code {
                         KeyCode::Enter => {
-                            app.status_message = "Unlocking wallet...".to_string();
+                            let password = app.password_input.clone();
                             app.password_input.clear();
                             app.input_mode = InputMode::Normal;
+
+                            match LightWallet::open(&password, app.config.clone()) {
+                                Ok(wallet) => {
+                                    app.wallet = Some(wallet);
+                                    app.refresh_labels();
+                                    app.refresh_transactions();
+                                    app.refresh_locks();
+                                    app.status_message = "Wallet unlocked".to_string();
+                                }
+                                Err(e) => {
+                                    app.status_message = format!("Unlock failed: {}", e);
+                                }
+                            }
                         }
                         KeyCode::Esc => {
                             app.password_input.clear();
@@ -382,7 +494,92 @@ where
                         }
                         _ => {}
                     },
-                    _ => {}
+                    InputMode::SendAddress => match key.code {
+                        KeyCode::Enter => {
+                            app.input_mode = InputMode::SendAmount;
+                            app.status_message = "Enter amount in sats:".to_string();
+                        }
+                        KeyCode::Esc => {
+                            app.input_mode = InputMode::Normal;
+                            app.status_message = "Cancelled".to_string();
+                        }
+                        KeyCode::Char(c) => app.send_address.push(c),
+                        KeyCode::Backspace => { app.send_address.pop(); }
+                        _ => {}
+                    },
+                    InputMode::SendAmount => match key.code {
+                        KeyCode::Enter => {
+                            app.input_mode = InputMode::SendMemo;
+                            app.status_message = "Enter memo (optional, Enter to skip):".to_string();
+                        }
+                        KeyCode::Esc => {
+                            app.input_mode = InputMode::Normal;
+                            app.status_message = "Cancelled".to_string();
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => app.send_amount.push(c),
+                        KeyCode::Backspace => { app.send_amount.pop(); }
+                        _ => {}
+                    },
+                    InputMode::SendMemo => match key.code {
+                        KeyCode::Enter => {
+                            // Submit the payment
+                            app.input_mode = InputMode::Normal;
+                            let address = app.send_address.clone();
+                            let amount_str = app.send_amount.clone();
+                            let use_wraith = app.send_wraith;
+
+                            let amount: u64 = match amount_str.parse() {
+                                Ok(a) if a > 0 => a,
+                                _ => {
+                                    app.status_message = "Invalid amount".to_string();
+                                    continue;
+                                }
+                            };
+
+                            if address.is_empty() {
+                                app.status_message = "Address is empty".to_string();
+                                continue;
+                            }
+
+                            app.status_message = "Sending payment...".to_string();
+                            terminal.draw(|f| ui(f, app))?;
+
+                            // Use runtime for async GSP call
+                            let result = if let Some(ref wallet) = app.wallet {
+                                let gsp_url = app.config.gsp_urls.first().cloned();
+                                app.runtime.block_on(async {
+                                    if let Some(url) = gsp_url {
+                                        wallet.connect(&url).await?;
+                                    }
+                                    wallet.send_payment(&address, amount, use_wraith).await
+                                })
+                            } else {
+                                app.status_message = "Wallet not unlocked".to_string();
+                                continue;
+                            };
+
+                            match result {
+                                Ok(payment_id) => {
+                                    app.status_message = format!("Sent! ID: {}", &payment_id[..16.min(payment_id.len())]);
+                                    app.send_address.clear();
+                                    app.send_amount.clear();
+                                    app.send_memo.clear();
+                                    app.send_wraith = false;
+                                    app.refresh_transactions();
+                                }
+                                Err(e) => {
+                                    app.status_message = format!("Send failed: {}", e);
+                                }
+                            }
+                        }
+                        KeyCode::Esc => {
+                            app.input_mode = InputMode::Normal;
+                            app.status_message = "Cancelled".to_string();
+                        }
+                        KeyCode::Char(c) => app.send_memo.push(c),
+                        KeyCode::Backspace => { app.send_memo.pop(); }
+                        _ => {}
+                    },
                 }
             }
         }
@@ -477,6 +674,12 @@ fn ui(f: &mut Frame, app: &App) {
     let password_mask = "*".repeat(app.password_input.len());
     let input_display = if app.input_mode == InputMode::Password {
         password_mask.clone()
+    } else if app.input_mode == InputMode::SendAddress {
+        app.send_address.clone()
+    } else if app.input_mode == InputMode::SendAmount {
+        app.send_amount.clone()
+    } else if app.input_mode == InputMode::SendMemo {
+        app.send_memo.clone()
     } else if app.label_input_mode != LabelInputMode::None {
         app.label_input.clone()
     } else {
@@ -537,44 +740,290 @@ fn render_dashboard(app: &App) -> Paragraph<'static> {
     )
 }
 
-fn render_send(_app: &App) -> Paragraph<'static> {
-    Paragraph::new(vec![
+fn render_send(app: &App) -> Paragraph<'static> {
+    if app.wallet.is_none() {
+        return Paragraph::new(vec![
+            Line::from(""),
+            Line::from("  Send Ghost Pay"),
+            Line::from(""),
+            Line::from("  [Unlock wallet first]"),
+        ])
+        .block(Block::default().borders(Borders::ALL).title(" Send "));
+    }
+
+    let wraith_status = if app.send_wraith {
+        Span::styled("ON", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+    } else {
+        Span::styled("OFF", Style::default().fg(Color::DarkGray))
+    };
+
+    let mut lines = vec![
         Line::from(""),
-        Line::from("  Send Ghost Pay"),
+        Line::from(vec![
+            Span::styled("  Send Ghost Pay", Style::default().add_modifier(Modifier::BOLD)),
+        ]),
         Line::from(""),
-        Line::from("  [Unlock wallet first]"),
-    ])
-    .block(Block::default().borders(Borders::ALL).title(" Send "))
+        Line::from(vec![
+            Span::raw("  [s] Start send  [w] Toggle Wraith: "),
+            wraith_status,
+        ]),
+        Line::from(""),
+        Line::from("  ─────────────────────────────────────────────"),
+    ];
+
+    if !app.send_address.is_empty() || !app.send_amount.is_empty() {
+        let addr_display = if app.send_address.is_empty() {
+            "(enter address)".to_string()
+        } else {
+            app.send_address.clone()
+        };
+        let amount_display = if app.send_amount.is_empty() {
+            "(enter amount)".to_string()
+        } else {
+            format!("{} sats", app.send_amount)
+        };
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::raw("  To:     "),
+            Span::styled(addr_display, Style::default().fg(Color::Cyan)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("  Amount: "),
+            Span::styled(amount_display, Style::default().fg(Color::Yellow)),
+        ]));
+        if !app.send_memo.is_empty() {
+            lines.push(Line::from(vec![
+                Span::raw("  Memo:   "),
+                Span::styled(app.send_memo.clone(), Style::default().fg(Color::DarkGray)),
+            ]));
+        }
+    } else {
+        lines.push(Line::from(""));
+        lines.push(Line::from("  Press 's' to start a new payment"));
+    }
+
+    Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Send ")
+            .title_style(Style::default().fg(Color::Cyan)),
+    )
 }
 
-fn render_receive(_app: &App) -> Paragraph<'static> {
-    Paragraph::new(vec![
+fn render_receive(app: &App) -> Paragraph<'static> {
+    if app.wallet.is_none() {
+        return Paragraph::new(vec![
+            Line::from(""),
+            Line::from("  Your Ghost ID:"),
+            Line::from(""),
+            Line::from("  [Unlock wallet first]"),
+        ])
+        .block(Block::default().borders(Borders::ALL).title(" Receive "));
+    }
+
+    let ghost_id = app
+        .wallet
+        .as_ref()
+        .and_then(|w| w.ghost_id().ok())
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let mut lines = vec![
         Line::from(""),
-        Line::from("  Your Ghost ID:"),
+        Line::from(vec![
+            Span::styled("  Receive Payment", Style::default().add_modifier(Modifier::BOLD)),
+        ]),
         Line::from(""),
-        Line::from("  [Unlock wallet first]"),
-    ])
-    .block(Block::default().borders(Borders::ALL).title(" Receive "))
+        Line::from(vec![
+            Span::raw("  [g] Generate new address"),
+        ]),
+        Line::from(""),
+        Line::from("  ─────────────────────────────────────────────"),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  Ghost ID: "),
+            Span::styled(ghost_id, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        ]),
+    ];
+
+    if let Some(ref addr) = app.receive_address {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::raw("  Address:  "),
+            Span::styled(addr.clone(), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(
+        "  Share your Ghost ID to receive Ghost Pay payments.",
+    ));
+
+    Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Receive ")
+            .title_style(Style::default().fg(Color::Cyan)),
+    )
 }
 
-fn render_history(_app: &App) -> Paragraph<'static> {
-    Paragraph::new(vec![
+fn render_history(app: &App) -> Paragraph<'static> {
+    if app.wallet.is_none() {
+        return Paragraph::new(vec![
+            Line::from(""),
+            Line::from("  Transaction History"),
+            Line::from(""),
+            Line::from("  [Unlock wallet first]"),
+        ])
+        .block(Block::default().borders(Borders::ALL).title(" History "));
+    }
+
+    let mut lines = vec![
         Line::from(""),
-        Line::from("  Transaction History"),
+        Line::from(vec![
+            Span::styled("  Transaction History", Style::default().add_modifier(Modifier::BOLD)),
+        ]),
         Line::from(""),
-        Line::from("  [No transactions yet]"),
-    ])
-    .block(Block::default().borders(Borders::ALL).title(" History "))
+        Line::from("  [r] Refresh"),
+        Line::from(""),
+        Line::from("  ─────────────────────────────────────────────"),
+    ];
+
+    if app.transactions.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from("  No transactions yet."));
+    } else {
+        for tx in &app.transactions {
+            let (arrow, color) = if tx.is_incoming {
+                ("  <- ", Color::Green)
+            } else {
+                ("  -> ", Color::Red)
+            };
+            let amount_str = if tx.is_incoming {
+                format!("+{} sats", tx.amount_sats)
+            } else {
+                format!("-{} sats", tx.amount_sats.unsigned_abs())
+            };
+            let txid_short = if tx.txid.len() > 12 {
+                format!("{}...", &tx.txid[..12])
+            } else {
+                tx.txid.clone()
+            };
+            let status_color = match tx.status.as_str() {
+                "confirmed" => Color::Green,
+                "pending" => Color::Yellow,
+                _ => Color::DarkGray,
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled(arrow, Style::default().fg(color)),
+                Span::styled(
+                    format!("{:<15}", amount_str),
+                    Style::default().fg(color),
+                ),
+                Span::styled(
+                    format!(" {:>10} ", tx.status),
+                    Style::default().fg(status_color),
+                ),
+                Span::styled(txid_short, Style::default().fg(Color::DarkGray)),
+            ]));
+
+            if let Some(ref memo) = tx.decrypted_memo {
+                lines.push(Line::from(vec![
+                    Span::raw("       "),
+                    Span::styled(memo.clone(), Style::default().fg(Color::DarkGray)),
+                ]));
+            } else if let Some(ref memo) = tx.memo {
+                lines.push(Line::from(vec![
+                    Span::raw("       "),
+                    Span::styled(memo.clone(), Style::default().fg(Color::DarkGray)),
+                ]));
+            }
+        }
+    }
+
+    Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" History ")
+            .title_style(Style::default().fg(Color::Cyan)),
+    )
 }
 
-fn render_locks(_app: &App) -> Paragraph<'static> {
-    Paragraph::new(vec![
+fn render_locks(app: &App) -> Paragraph<'static> {
+    if app.wallet.is_none() {
+        return Paragraph::new(vec![
+            Line::from(""),
+            Line::from("  Ghost Locks"),
+            Line::from(""),
+            Line::from("  [Unlock wallet first]"),
+        ])
+        .block(Block::default().borders(Borders::ALL).title(" Locks "));
+    }
+
+    let mut lines = vec![
         Line::from(""),
-        Line::from("  Ghost Locks"),
+        Line::from(vec![
+            Span::styled("  Ghost Locks", Style::default().add_modifier(Modifier::BOLD)),
+        ]),
         Line::from(""),
-        Line::from("  [No locks yet]"),
-    ])
-    .block(Block::default().borders(Borders::ALL).title(" Locks "))
+        Line::from("  [r] Refresh"),
+        Line::from(""),
+        Line::from("  ─────────────────────────────────────────────"),
+    ];
+
+    if app.locks.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(
+            "  No locks. Use CLI to create locks.",
+        ));
+    } else {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:<18} {:>12} {:>12} {:>12}", "Lock ID", "Capacity", "Used", "Status"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from("  ─────────────────────────────────────────────────────────"));
+
+        for lock in &app.locks {
+            let id_short = if lock.lock_id.len() > 16 {
+                format!("{}...", &lock.lock_id[..16])
+            } else {
+                lock.lock_id.clone()
+            };
+            let status_color = match lock.status.as_str() {
+                "active" => Color::Green,
+                "pending_funding" => Color::Yellow,
+                "closed" | "jump_requested" => Color::DarkGray,
+                _ => Color::White,
+            };
+
+            lines.push(Line::from(vec![
+                Span::raw(format!("  {:<18}", id_short)),
+                Span::styled(
+                    format!("{:>10} s", lock.capacity_sats),
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(
+                    format!("{:>10} s", lock.used_sats),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(
+                    format!("{:>12}", lock.status),
+                    Style::default().fg(status_color),
+                ),
+            ]));
+        }
+    }
+
+    Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Locks ")
+            .title_style(Style::default().fg(Color::Cyan)),
+    )
 }
 
 fn render_labels(app: &App) -> Paragraph<'static> {
@@ -627,13 +1076,56 @@ fn render_labels(app: &App) -> Paragraph<'static> {
     )
 }
 
-fn render_settings(_app: &App) -> Paragraph<'static> {
+fn render_settings(app: &App) -> Paragraph<'static> {
+    let network = format!("{:?}", app.config.network);
+    let gsp_urls = if app.config.gsp_urls.is_empty() {
+        "None configured".to_string()
+    } else {
+        app.config.gsp_urls.join(", ")
+    };
+    let status = app
+        .wallet
+        .as_ref()
+        .map(|w| format!("{:?}", w.status()))
+        .unwrap_or_else(|| "No wallet loaded".to_string());
+    let data_dir = app.config.data_dir.display().to_string();
+
     Paragraph::new(vec![
         Line::from(""),
-        Line::from("  Settings"),
+        Line::from(vec![
+            Span::styled("  Settings", Style::default().add_modifier(Modifier::BOLD)),
+        ]),
         Line::from(""),
-        Line::from("  Network: Regtest"),
-        Line::from("  GSP: Not connected"),
+        Line::from("  ─────────────────────────────────────────────"),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  Network:  "),
+            Span::styled(network, Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::raw("  GSP:      "),
+            Span::styled(gsp_urls, Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(vec![
+            Span::raw("  Status:   "),
+            Span::styled(status, Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(vec![
+            Span::raw("  Data Dir: "),
+            Span::styled(data_dir, Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::raw("  Version:  "),
+            Span::styled(
+                ghost_light_wallet::WALLET_VERSION.to_string(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
     ])
-    .block(Block::default().borders(Borders::ALL).title(" Settings "))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Settings ")
+            .title_style(Style::default().fg(Color::Cyan)),
+    )
 }

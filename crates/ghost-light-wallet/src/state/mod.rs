@@ -24,4 +24,4 @@
 
 mod cache;
 
-pub use cache::{CachedTransaction, WalletCache};
+pub use cache::{CachedLock, CachedTransaction, WalletCache};
