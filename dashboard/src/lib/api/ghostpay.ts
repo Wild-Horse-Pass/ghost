@@ -1,0 +1,187 @@
+// Ghost Pay API endpoints
+import { fetchApi } from './client';
+import type {
+  GhostPayStatus,
+  WraithSessionsResponse,
+  WraithStats,
+  WraithSession,
+  GhostLocksResponse,
+  GhostLock,
+  PaymentsResponse,
+  SettlementResponse,
+  SettlementStatus,
+  JumpQueueStats,
+  GhostPayEvent,
+  L2MempoolStats,
+  GhostPayPayoutHistoryResponse,
+  PayoutHistoryTimeFilter,
+} from '@/types/api';
+
+// Ghost Pay Status
+export async function getGhostPayStatus(): Promise<GhostPayStatus> {
+  return fetchApi<GhostPayStatus>('/api/v1/ghostpay/status');
+}
+
+// Wraith
+export async function getWraithSessions(): Promise<WraithSessionsResponse> {
+  return fetchApi<WraithSessionsResponse>('/api/v1/wraith/sessions');
+}
+
+export async function getWraithSession(sessionId: string): Promise<WraithSession> {
+  return fetchApi<WraithSession>(`/api/v1/wraith/session/${sessionId}`);
+}
+
+export async function joinWraithSession(sessionId: string, lockId: string): Promise<{ success: boolean; message: string }> {
+  return fetchApi<{ success: boolean; message: string }>(`/api/v1/wraith/sessions/${sessionId}/join`, {
+    method: 'POST',
+    body: JSON.stringify({ lock_id: lockId }),
+  });
+}
+
+// Ghost Locks
+export async function getGhostLocks(): Promise<GhostLocksResponse> {
+  return fetchApi<GhostLocksResponse>('/api/v1/locks');
+}
+
+export async function getGhostLock(lockId: string): Promise<GhostLock> {
+  return fetchApi<GhostLock>(`/api/v1/locks/${lockId}`);
+}
+
+export async function requestLockSettlement(lockId: string): Promise<{ success: boolean; message: string }> {
+  return fetchApi<{ success: boolean; message: string }>(`/api/v1/locks/${lockId}/settlement`, {
+    method: 'POST',
+  });
+}
+
+export async function useLockInMix(lockId: string, sessionId: string): Promise<{ success: boolean; message: string }> {
+  return fetchApi<{ success: boolean; message: string }>(`/api/v1/locks/${lockId}/mix`, {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+}
+
+// Payments
+export async function getPayments(limit?: number, offset?: number): Promise<PaymentsResponse> {
+  const params = new URLSearchParams();
+  if (limit) params.set('limit', limit.toString());
+  if (offset) params.set('offset', offset.toString());
+  const query = params.toString();
+  return fetchApi<PaymentsResponse>(`/api/v1/payments${query ? `?${query}` : ''}`);
+}
+
+// Settlement
+export async function getSettlement(): Promise<SettlementResponse> {
+  return fetchApi<SettlementResponse>('/api/v1/settlement/status');
+}
+
+// New node-focused endpoints
+// These return mock data until backend endpoints are implemented
+
+// Wraith Stats (aggregate stats, not wallet-specific)
+export async function getWraithStats(): Promise<WraithStats> {
+  try {
+    // Try to get from wraith sessions and compute stats
+    const sessions = await fetchApi<WraithSessionsResponse>('/api/v1/wraith/sessions');
+    return {
+      total_sessions: sessions.stats?.total_sessions ?? sessions.sessions?.length ?? 0,
+      active_sessions: sessions.stats?.active_sessions ?? sessions.sessions?.filter(s => s.status === 'Filling' || s.status === 'Full').length ?? 0,
+      sessions_completed: sessions.stats?.sessions_completed ?? sessions.sessions?.filter(s => s.status === 'Complete').length ?? 0,
+      sessions_expired: sessions.stats?.sessions_expired ?? sessions.sessions?.filter(s => s.status === 'Expired').length ?? 0,
+      total_participants: sessions.sessions?.reduce((sum, s) => sum + (s.participant_count ?? 0), 0) ?? 0,
+      avg_fill_rate: sessions.sessions?.length > 0
+        ? sessions.sessions.reduce((sum, s) => sum + (s.fill_percentage ?? 0), 0) / sessions.sessions.length / 100
+        : 0,
+      avg_completion_time_secs: 180, // Placeholder
+      your_participations: sessions.stats?.your_participations ?? 0,
+      your_completed: sessions.stats?.your_completed ?? 0,
+    };
+  } catch {
+    return {
+      total_sessions: 0,
+      active_sessions: 0,
+      sessions_completed: 0,
+      sessions_expired: 0,
+      total_participants: 0,
+      avg_fill_rate: 0,
+      avg_completion_time_secs: 0,
+      your_participations: 0,
+      your_completed: 0,
+    };
+  }
+}
+
+// Settlement Status (node-level settlement service status)
+export async function getSettlementStatus(): Promise<SettlementStatus> {
+  try {
+    const settlement = await fetchApi<SettlementResponse>('/api/v1/settlement/status');
+    return {
+      l1_available: settlement.stats?.l1_connected ?? false,
+      l1_height: settlement.stats?.l1_height ?? 0,
+      active_count: settlement.stats?.active_batches ?? 0,
+      pending_count: settlement.stats?.pending_batches ?? 0,
+      batches_24h: settlement.stats?.confirmed_24h ?? 0,
+      total_settled_24h: settlement.stats?.total_settled_24h ?? 0,
+      current_epoch: settlement.stats?.current_epoch ?? 0,
+      avg_batch_size: (settlement.batches?.length ?? 0) > 0
+        ? settlement.batches!.reduce((sum, b) => sum + b.participant_count, 0) / settlement.batches!.length
+        : 0,
+      avg_confirmation_time_mins: 30, // Placeholder
+    };
+  } catch {
+    return {
+      l1_available: false,
+      l1_height: 0,
+      active_count: 0,
+      pending_count: 0,
+      batches_24h: 0,
+      total_settled_24h: 0,
+      current_epoch: 0,
+      avg_batch_size: 0,
+      avg_confirmation_time_mins: 0,
+    };
+  }
+}
+
+// Jump Queue Stats
+export async function getJumpQueueStats(): Promise<JumpQueueStats> {
+  // Return placeholder data until endpoint is implemented
+  return {
+    pending_count: 0,
+    processing_count: 0,
+    total_enqueued: 0,
+    total_completed: 0,
+    total_failed: 0,
+    avg_wait_time_secs: 0,
+    total_volume_sats: 0,
+    liquidity_available_sats: 0,
+  };
+}
+
+// Events/Alerts
+export async function getGhostPayEvents(limit?: number): Promise<GhostPayEvent[]> {
+  // Return empty array until endpoint is implemented
+  return [];
+}
+
+// L2 Mempool Stats
+export async function getL2Mempool(): Promise<L2MempoolStats> {
+  // Return placeholder data until endpoint is implemented
+  return {
+    pending_count: 0,
+    pending_volume_sats: 0,
+    avg_payment_size_sats: 0,
+    throughput_per_min: 0,
+    avg_wait_secs: 0,
+    avg_fee_sats: 0,
+    total_fees_24h: 0,
+  };
+}
+
+// GhostPay Payout History (for Ghost-Pay page)
+export async function getGhostPayPayoutHistory(
+  timeFilter: PayoutHistoryTimeFilter = '7d'
+): Promise<GhostPayPayoutHistoryResponse> {
+  return fetchApi<GhostPayPayoutHistoryResponse>(
+    `/api/v1/ghostpay/payout-history?time_filter=${timeFilter}`
+  );
+}
