@@ -682,6 +682,21 @@ pub struct DashboardConfig {
     pub proc_paths_allowed: Vec<String>,
     /// M-STOR-3: Backup directory path
     pub backup_dir: String,
+    // Dashboard-managed fields
+    /// Node display nickname
+    pub nickname: Option<String>,
+    /// Custom mempool profiles (name -> settings)
+    pub custom_mempool_profiles: std::collections::HashMap<String, serde_json::Value>,
+    /// Custom template profiles (name -> settings)
+    pub custom_template_profiles: std::collections::HashMap<String, serde_json::Value>,
+    /// GhostPay payout address
+    pub ghostpay_payout_address: Option<String>,
+    /// Private mining enabled
+    pub private_mining: Option<bool>,
+    /// Payout address for mining rewards
+    pub payout_address: Option<String>,
+    /// Operator pruning window (blocks)
+    pub operator_window: Option<u64>,
 }
 
 impl Default for DashboardConfig {
@@ -713,6 +728,14 @@ impl Default for DashboardConfig {
             ],
             // M-STOR-3: Default backup directory
             backup_dir: "/home/ghost/.ghost/backups".to_string(),
+            // Dashboard-managed fields
+            nickname: None,
+            custom_mempool_profiles: std::collections::HashMap::new(),
+            custom_template_profiles: std::collections::HashMap::new(),
+            ghostpay_payout_address: None,
+            private_mining: None,
+            payout_address: None,
+            operator_window: None,
         }
     }
 }
