@@ -516,6 +516,9 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-blockreconstructionextratxn=<n>", strprintf("Extra transactions to keep in memory for compact block reconstructions (default: %u)", DEFAULT_BLOCK_RECONSTRUCTION_EXTRA_TXN), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-blocksonly", strprintf("Whether to reject transactions from network peers. Disables automatic broadcast and rebroadcast of transactions, unless the source peer has the 'forcerelay' permission. RPC transactions are not affected. (default: %u)", DEFAULT_BLOCKSONLY), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-ghostmode", "Operate in ghost mode: do not request, relay, or announce unconfirmed transactions. Similar to -blocksonly but can be toggled at runtime via RPC (default: 0)", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-shroud", "Add random delay (0-5s) before relaying transactions to peers, "
+        "preventing timing-based origin detection. Does not affect mining. "
+        "(default: 1)", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-hazemode=<mode>", "Set Ghost Haze operating mode: 'hazed' strips witness/scriptSig/OP_RETURN data before writing to disk (~60%% storage reduction); 'full_archive' stores all data unchanged. Choice is permanent for this datadir. (default: interactive prompt on first launch, then persisted)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-haze-status", "Print Ghost Haze status and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-legal-packet", "Generate legal compliance packet JSON and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -1923,28 +1926,27 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         const fs::path datadir = args.GetDataDirNet();
         const fs::path blocks_dir = args.GetBlocksDirPath();
 
-        // If already hazed, nothing to convert
-        auto persisted = haze::ReadModeLock(datadir);
-        if (persisted.has_value() && *persisted == haze::GhostMode::HAZED) {
-            tfm::format(std::cout, "Node is already in HAZED mode. Nothing to convert.\n");
-            node.exit_status = EXIT_SUCCESS;
-            return false;
-        }
-
-        // Check that blk files exist
+        // Check that blk files with data exist
         bool has_blk_files = false;
         std::error_code ec;
         for (const auto& entry : fs::directory_iterator(blocks_dir, ec)) {
             if (entry.is_regular_file()) {
                 const std::string fname = entry.path().filename().string();
                 if (fname.size() >= 3 && fname.substr(0, 3) == "blk" && fname.find(".dat") != std::string::npos) {
-                    has_blk_files = true;
-                    break;
+                    if (entry.file_size(ec) > 0) {
+                        has_blk_files = true;
+                        break;
+                    }
                 }
             }
         }
         if (!has_blk_files) {
-            tfm::format(std::cout, "No blk*.dat files found in %s. Nothing to convert.\n", fs::PathToString(blocks_dir));
+            auto persisted = haze::ReadModeLock(datadir);
+            if (persisted.has_value() && *persisted == haze::GhostMode::HAZED) {
+                tfm::format(std::cout, "Node is already in HAZED mode. Nothing to convert.\n");
+            } else {
+                tfm::format(std::cout, "No blk*.dat files found in %s. Nothing to convert.\n", fs::PathToString(blocks_dir));
+            }
             node.exit_status = EXIT_SUCCESS;
             return false;
         }

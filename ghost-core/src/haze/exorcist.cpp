@@ -165,6 +165,7 @@ bool GhostExorcist::StripArchive(node::BlockManager& blockman,
     }
 
     uint32_t blocks_processed = 0;
+    uint32_t blocks_skipped = 0;
     uint32_t dirty_count = 0;
 
     for (CBlockIndex* pindex : indices) {
@@ -172,10 +173,15 @@ bool GhostExorcist::StripArchive(node::BlockManager& blockman,
         if (!(pindex->nStatus & BLOCK_HAVE_DATA)) continue;
 
         // Read the full block from blk*.dat.
+        // If ReadBlock fails, the block may already be in GSB format
+        // (happens when hazemode=hazed was set before running exorcist).
         CBlock block;
         if (!blockman.ReadBlock(block, *pindex)) {
-            result.error = strprintf("Failed to read block at height %d", pindex->nHeight);
-            return false;
+            LogPrintLevel(BCLog::HAZE, BCLog::Level::Debug,
+                "Ghost Exorcist: skipping block at height %d (already in GSB)\n",
+                pindex->nHeight);
+            blocks_skipped++;
+            continue;
         }
 
         // Strip hazeable content.
@@ -273,6 +279,12 @@ bool GhostExorcist::StripArchive(node::BlockManager& blockman,
             result.error = "Failed to flush final block index updates";
             return false;
         }
+    }
+
+    if (blocks_skipped > 0) {
+        LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
+            "Ghost Exorcist: skipped %u blocks already in GSB format\n",
+            blocks_skipped);
     }
 
     return true;
