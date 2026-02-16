@@ -225,6 +225,10 @@ if(ENABLE_WALLET)
       depositwizard.h
       withdrawwizard.cpp
       withdrawwizard.h
+      mnemonicwidget.cpp
+      mnemonicwidget.h
+      sendl2dialog.cpp
+      sendl2dialog.h
   )
   target_link_libraries(ghostqt
     PRIVATE

@@ -93,6 +93,7 @@ pub mod payments;
 mod signing;
 pub mod state;
 mod wallet;
+pub mod wraith;
 
 pub use error::LightWalletError;
 pub use instant::{InstantPaymentChecker, InstantStatus};

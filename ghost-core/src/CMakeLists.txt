@@ -140,6 +140,7 @@ add_library(bitcoin_common STATIC EXCLUDE_FROM_ALL
   rpc/request.cpp
   rpc/util.cpp
   scheduler.cpp
+  bip39.cpp
   silentpayments.cpp
   ghostlock.cpp
   script/descriptor.cpp

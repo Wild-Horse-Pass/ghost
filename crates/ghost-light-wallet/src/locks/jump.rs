@@ -137,22 +137,15 @@ pub async fn request_jump(
         proof,
     };
 
-    // In a real implementation, we'd send this and wait for response
-    let _ = msg;
-    let _ = client;
+    let response = client.request_jump(msg).await?;
 
-    info!(lock_id = request.lock_id, "Jump request submitted");
+    info!(
+        lock_id = request.lock_id,
+        jump_id = response.jump_id,
+        "Jump request submitted via GSP"
+    );
 
-    // Placeholder response
-    Ok(JumpResponse {
-        jump_id: format!("jump_{}", uuid::Uuid::new_v4()),
-        lock_id: request.lock_id.clone(),
-        target_address: request.target_address.clone(),
-        amount_sats: 0, // Would come from GSP
-        fee_sats: 0,    // Would come from GSP
-        expected_settlement: chrono::Utc::now().timestamp() + 86400, // 24h default
-        txid: None,
-    })
+    Ok(response)
 }
 
 /// Check jump status

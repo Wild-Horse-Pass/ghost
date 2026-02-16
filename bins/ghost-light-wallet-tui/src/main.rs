@@ -24,6 +24,7 @@ use ratatui::{
 
 use bitcoin::Network;
 use ghost_light_wallet::state::{CachedLock, CachedTransaction};
+use ghost_light_wallet::wraith::{WraithWizard, WizardStep};
 use ghost_light_wallet::{LightWallet, WalletConfig, WalletStatus};
 
 /// Ghost Wallet TUI - Terminal interface for Ghost Pay
@@ -79,6 +80,11 @@ struct App {
     send_amount: String,
     send_memo: String,
     send_wraith: bool,
+    // Wraith wizard state
+    wraith_wizard: Option<WraithWizard>,
+    wraith_txid_input: String,
+    wraith_vout_input: String,
+    wraith_amount_input: String,
     // Async runtime for GSP calls
     runtime: tokio::runtime::Runtime,
 }
@@ -90,6 +96,10 @@ enum InputMode {
     SendAddress,
     SendAmount,
     SendMemo,
+    WraithDenomination,
+    WraithTxid,
+    WraithVout,
+    WraithAmount,
 }
 
 #[derive(PartialEq)]
@@ -121,6 +131,10 @@ impl App {
             send_amount: String::new(),
             send_memo: String::new(),
             send_wraith: false,
+            wraith_wizard: None,
+            wraith_txid_input: String::new(),
+            wraith_vout_input: String::new(),
+            wraith_amount_input: String::new(),
             runtime,
         }
     }
@@ -433,11 +447,26 @@ where
                             continue;
                         }
 
-                        // Locks tab: 'r' to refresh
-                        if app.current_tab == Tab::Locks && key.code == KeyCode::Char('r') {
-                            app.refresh_locks();
-                            app.status_message = "Locks refreshed".to_string();
-                            continue;
+                        // Locks tab: 'r' to refresh, 'w' to start wraith wizard
+                        if app.current_tab == Tab::Locks {
+                            match key.code {
+                                KeyCode::Char('r') => {
+                                    app.refresh_locks();
+                                    app.status_message = "Locks refreshed".to_string();
+                                    continue;
+                                }
+                                KeyCode::Char('w') => {
+                                    if app.wallet.is_some() {
+                                        app.wraith_wizard = Some(WraithWizard::new());
+                                        app.input_mode = InputMode::WraithDenomination;
+                                        app.status_message = "Select denomination (1=Micro, 2=Small, 3=Medium, 4=Large):".to_string();
+                                    } else {
+                                        app.status_message = "Unlock wallet first".to_string();
+                                    }
+                                    continue;
+                                }
+                                _ => {}
+                            }
                         }
 
                         // Normal mode key handling
@@ -578,6 +607,100 @@ where
                         }
                         KeyCode::Char(c) => app.send_memo.push(c),
                         KeyCode::Backspace => { app.send_memo.pop(); }
+                        _ => {}
+                    },
+                    InputMode::WraithDenomination => match key.code {
+                        KeyCode::Char(c @ '1'..='4') => {
+                            let denoms = WraithWizard::available_denominations();
+                            let idx = (c as usize) - ('1' as usize);
+                            if let Some(ref mut wizard) = app.wraith_wizard {
+                                let denom = denoms[idx].denomination;
+                                if wizard.select_denomination(denom).is_ok() {
+                                    app.wraith_txid_input.clear();
+                                    app.input_mode = InputMode::WraithTxid;
+                                    app.status_message = format!(
+                                        "Selected {}. Enter UTXO txid (requires {} sats):",
+                                        denom.name(), denom.input_sats()
+                                    );
+                                }
+                            }
+                        }
+                        KeyCode::Esc => {
+                            app.wraith_wizard = None;
+                            app.input_mode = InputMode::Normal;
+                            app.status_message = "Wraith wizard cancelled".to_string();
+                        }
+                        _ => {}
+                    },
+                    InputMode::WraithTxid => match key.code {
+                        KeyCode::Enter => {
+                            if !app.wraith_txid_input.is_empty() {
+                                app.wraith_vout_input.clear();
+                                app.input_mode = InputMode::WraithVout;
+                                app.status_message = "Enter output index (vout):".to_string();
+                            }
+                        }
+                        KeyCode::Esc => {
+                            app.wraith_wizard = None;
+                            app.input_mode = InputMode::Normal;
+                            app.status_message = "Wraith wizard cancelled".to_string();
+                        }
+                        KeyCode::Char(c) if c.is_ascii_hexdigit() => app.wraith_txid_input.push(c),
+                        KeyCode::Backspace => { app.wraith_txid_input.pop(); }
+                        _ => {}
+                    },
+                    InputMode::WraithVout => match key.code {
+                        KeyCode::Enter => {
+                            app.wraith_amount_input.clear();
+                            app.input_mode = InputMode::WraithAmount;
+                            app.status_message = "Enter UTXO amount (sats):".to_string();
+                        }
+                        KeyCode::Esc => {
+                            app.wraith_wizard = None;
+                            app.input_mode = InputMode::Normal;
+                            app.status_message = "Wraith wizard cancelled".to_string();
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => app.wraith_vout_input.push(c),
+                        KeyCode::Backspace => { app.wraith_vout_input.pop(); }
+                        _ => {}
+                    },
+                    InputMode::WraithAmount => match key.code {
+                        KeyCode::Enter => {
+                            app.input_mode = InputMode::Normal;
+                            let txid = app.wraith_txid_input.clone();
+                            let vout: u32 = app.wraith_vout_input.parse().unwrap_or(0);
+                            let amount: u64 = app.wraith_amount_input.parse().unwrap_or(0);
+
+                            if let Some(ref mut wizard) = app.wraith_wizard {
+                                match wizard.select_utxo(&txid, vout, amount) {
+                                    Ok(()) => {
+                                        match wizard.join() {
+                                            Ok(session_id) => {
+                                                app.status_message = format!(
+                                                    "Wraith session joined: {}",
+                                                    &session_id[..20.min(session_id.len())]
+                                                );
+                                            }
+                                            Err(e) => {
+                                                app.status_message = format!("Join failed: {}", e);
+                                                app.wraith_wizard = None;
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        app.status_message = format!("UTXO error: {}", e);
+                                        app.wraith_wizard = None;
+                                    }
+                                }
+                            }
+                        }
+                        KeyCode::Esc => {
+                            app.wraith_wizard = None;
+                            app.input_mode = InputMode::Normal;
+                            app.status_message = "Wraith wizard cancelled".to_string();
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => app.wraith_amount_input.push(c),
+                        KeyCode::Backspace => { app.wraith_amount_input.pop(); }
                         _ => {}
                     },
                 }
@@ -961,13 +1084,118 @@ fn render_locks(app: &App) -> Paragraph<'static> {
         .block(Block::default().borders(Borders::ALL).title(" Locks "));
     }
 
+    // Show wraith wizard if active
+    if let Some(ref wizard) = app.wraith_wizard {
+        let progress = wizard.progress();
+        let mut lines = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Wraith CoinJoin Wizard", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(""),
+        ];
+
+        match progress.step {
+            WizardStep::SelectDenomination => {
+                let denoms = WraithWizard::available_denominations();
+                lines.push(Line::from("  Select denomination:"));
+                lines.push(Line::from(""));
+                for (i, d) in denoms.iter().enumerate() {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("  [{}] ", i + 1), Style::default().fg(Color::Cyan)),
+                        Span::styled(format!("{:<8}", d.name), Style::default().add_modifier(Modifier::BOLD)),
+                        Span::raw(format!(" {} sats out, {} sats fee, ~{}h wait", d.output_sats, d.fee_sats, d.expected_wait_hours)),
+                    ]));
+                }
+            }
+            WizardStep::SelectUtxo => {
+                lines.push(Line::from(vec![
+                    Span::raw("  Denomination: "),
+                    Span::styled(
+                        wizard.denomination().map(|d| d.name().to_string()).unwrap_or_default(),
+                        Style::default().fg(Color::Green),
+                    ),
+                ]));
+                lines.push(Line::from(""));
+                lines.push(Line::from(vec![
+                    Span::raw("  TXID: "),
+                    Span::styled(app.wraith_txid_input.clone(), Style::default().fg(Color::Cyan)),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("  Vout: "),
+                    Span::styled(app.wraith_vout_input.clone(), Style::default().fg(Color::Cyan)),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("  Amount: "),
+                    Span::styled(
+                        if app.wraith_amount_input.is_empty() { "(enter sats)".to_string() } else { format!("{} sats", app.wraith_amount_input) },
+                        Style::default().fg(Color::Yellow),
+                    ),
+                ]));
+            }
+            WizardStep::WaitingForParticipants => {
+                let count = progress.participant_count.unwrap_or(0);
+                let min = progress.min_participants.unwrap_or(0);
+                lines.push(Line::from(vec![
+                    Span::styled("  ● ", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("Waiting for participants... {}/{}", count, min)),
+                ]));
+                if let Some(sid) = wizard.session_id() {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::raw("  Session: "),
+                        Span::styled(sid.to_string(), Style::default().fg(Color::Cyan)),
+                    ]));
+                }
+            }
+            WizardStep::Phase1Splitting | WizardStep::Phase1Confirming => {
+                lines.push(Line::from(vec![
+                    Span::styled("  ◐ ", Style::default().fg(Color::Green)),
+                    Span::raw(progress.message.clone()),
+                ]));
+            }
+            WizardStep::Phase2Merging | WizardStep::Phase2Confirming => {
+                lines.push(Line::from(vec![
+                    Span::styled("  ◑ ", Style::default().fg(Color::Green)),
+                    Span::raw(progress.message.clone()),
+                ]));
+            }
+            WizardStep::Complete => {
+                lines.push(Line::from(vec![
+                    Span::styled("  ✓ Mixing complete!", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                ]));
+            }
+            WizardStep::Failed => {
+                lines.push(Line::from(vec![
+                    Span::styled("  ✗ Session failed", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                ]));
+                if let Some(err) = wizard.error_message() {
+                    lines.push(Line::from(vec![
+                        Span::raw("  Error: "),
+                        Span::styled(err.to_string(), Style::default().fg(Color::Red)),
+                    ]));
+                }
+            }
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from("  [Esc] Cancel"));
+
+        return Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Wraith Wizard ")
+                .title_style(Style::default().fg(Color::Magenta)),
+        );
+    }
+
     let mut lines = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled("  Ghost Locks", Style::default().add_modifier(Modifier::BOLD)),
         ]),
         Line::from(""),
-        Line::from("  [r] Refresh"),
+        Line::from("  [r] Refresh  [w] Wraith Wizard"),
         Line::from(""),
         Line::from("  ─────────────────────────────────────────────"),
     ];

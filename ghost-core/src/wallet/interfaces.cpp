@@ -27,7 +27,10 @@
 #include <wallet/receive.h>
 #include <wallet/rpc/wallet.h>
 #include <wallet/spend.h>
+#include <wallet/silentpayment_spkm.h>
 #include <wallet/wallet.h>
+
+#include <key_io.h>
 
 #include <memory>
 #include <string>
@@ -493,6 +496,13 @@ public:
     bool taprootEnabled() override {
         auto spk_man = m_wallet->GetScriptPubKeyMan(OutputType::BECH32M, /*internal=*/false);
         return spk_man != nullptr;
+    }
+    std::string getSilentPaymentAddress() override {
+        LOCK(m_wallet->cs_wallet);
+        const auto* sp_spkm = m_wallet->GetSilentPaymentScriptPubKeyMan();
+        if (!sp_spkm) return {};
+        auto dest = sp_spkm->GetSilentPaymentDestination();
+        return EncodeDestination(dest);
     }
     OutputType getDefaultAddressType() override { return m_wallet->m_default_address_type; }
     CAmount getDefaultMaxTxFee() override { return m_wallet->m_default_max_tx_fee; }

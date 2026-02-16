@@ -11,6 +11,7 @@
 #include <QHeaderView>
 #include <QItemSelection>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QMenu>
 #include <QPoint>
 #include <QVariant>
@@ -58,6 +59,9 @@ private:
     QAction* copyAmountAction;
     const PlatformStyle *platformStyle;
 
+    QLabel* ghostIdLabel{nullptr};
+    QLabel* ghostIdValue{nullptr};
+
     QModelIndex selectedRow();
     void copyColumnToClipboard(int column);
 
@@ -71,6 +75,7 @@ private Q_SLOTS:
     void showMenu(const QPoint &point);
     void copyURI();
     void copyAddress();
+    void copyGhostId();
     void copyLabel();
     void copyMessage();
     void copyAmount();

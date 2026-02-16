@@ -61,6 +61,7 @@ use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
 
 use ghost_keys::LabelBackup;
+use ghost_light_wallet::wraith::{WraithWizard, WizardStep};
 use ghost_light_wallet::{LightWallet, WalletConfig};
 
 /// Ghost Light Wallet CLI
@@ -177,6 +178,9 @@ enum Commands {
         /// Output file path
         output: PathBuf,
     },
+
+    /// Interactive Wraith CoinJoin mixing wizard
+    Wraith,
 }
 
 #[derive(Subcommand, Debug)]
@@ -347,6 +351,9 @@ async fn main() -> Result<()> {
         Commands::Backup { output } => {
             cmd_backup(config, &output).await?;
         }
+        Commands::Wraith => {
+            cmd_wraith(config).await?;
+        }
     }
 
     Ok(())
@@ -415,7 +422,58 @@ async fn cmd_init(config: WalletConfig, recover: bool) -> Result<()> {
             return Ok(());
         }
 
-        mnemonic.to_string()
+        // Verify the user actually wrote it down by asking for 3 random words
+        let mnemonic_str = mnemonic.to_string();
+        let words: Vec<&str> = mnemonic_str.split_whitespace().collect();
+        let word_count = words.len();
+
+        println!();
+        println!(
+            "{}",
+            style("Verification: Enter the requested words from your recovery phrase.")
+                .bold()
+                .yellow()
+        );
+        println!();
+
+        // Pick 3 unique random word positions using getrandom
+        let verify_positions: Vec<usize> = {
+            let mut rand_bytes = [0u8; 3];
+            getrandom::getrandom(&mut rand_bytes)
+                .expect("failed to get random bytes");
+            let mut positions = std::collections::BTreeSet::new();
+            // Use modular arithmetic to pick unique positions
+            positions.insert(rand_bytes[0] as usize % word_count);
+            let mut idx = 1;
+            while positions.len() < 3 {
+                let pos = (rand_bytes[idx % 3] as usize + positions.len() * 7) % word_count;
+                positions.insert(pos);
+                idx += 1;
+            }
+            positions.into_iter().collect()
+        };
+
+        for &pos in &verify_positions {
+            let prompt = format!("Word #{}", pos + 1);
+            let input: String = Input::new().with_prompt(&prompt).interact_text()?;
+            if input.trim() != words[pos] {
+                println!();
+                println!(
+                    "{}",
+                    style("Incorrect! Word does not match your recovery phrase.").red()
+                );
+                println!(
+                    "{}",
+                    style("Wallet creation aborted for your safety.").red()
+                );
+                return Ok(());
+            }
+        }
+
+        println!();
+        println!("{}", style("Verification passed!").bold().green());
+
+        mnemonic_str
     };
 
     // Get password
@@ -1045,6 +1103,220 @@ async fn cmd_label(config: WalletConfig, action: LabelCommands) -> Result<()> {
             let backup = LabelBackup::from_json(&json)?;
             wallet.import_label_backup(backup)?;
             println!("Imported labels from {}", style(input.display()).green());
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Wraith Wizard
+// ============================================================================
+
+async fn cmd_wraith(config: WalletConfig) -> Result<()> {
+    println!("{}", style("Wraith CoinJoin Wizard").bold().cyan());
+    println!(
+        "{}",
+        style("Mix your Bitcoin for privacy using the Wraith protocol.").dim()
+    );
+    println!();
+
+    let password = rpassword::prompt_password("Enter wallet password: ")?;
+    let wallet = LightWallet::open(&password, config)?;
+
+    let mut wizard = WraithWizard::new();
+
+    // Step 1: Select denomination
+    let denoms = WraithWizard::available_denominations();
+
+    println!("{}", style("Available denominations:").bold());
+    println!();
+    for (i, d) in denoms.iter().enumerate() {
+        println!(
+            "  {} {} ({}) — {} sats output, {} sats fee, ~{} hour wait",
+            style(format!("[{}]", i + 1)).cyan(),
+            style(&d.name).bold(),
+            d.short_code,
+            style(d.output_sats).yellow(),
+            d.fee_sats,
+            d.expected_wait_hours,
+        );
+    }
+    println!();
+
+    let selection: usize = Input::new()
+        .with_prompt("Select denomination (1-4)")
+        .validate_with(|input: &usize| {
+            if *input >= 1 && *input <= denoms.len() {
+                Ok(())
+            } else {
+                Err(format!("Please enter a number between 1 and {}", denoms.len()))
+            }
+        })
+        .interact_text()?;
+
+    let selected_denom = denoms[selection - 1].denomination;
+    wizard.select_denomination(selected_denom).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    println!();
+    println!(
+        "Selected: {} — requires {} sats input",
+        style(selected_denom.name()).bold().green(),
+        style(selected_denom.input_sats()).yellow(),
+    );
+    println!();
+
+    // Step 2: Select UTXO
+    println!("{}", style("Select UTXO to mix:").bold());
+    println!(
+        "{}",
+        style("Enter the transaction ID and output index of the UTXO to mix.").dim()
+    );
+    println!();
+
+    let txid: String = Input::new()
+        .with_prompt("Transaction ID (txid)")
+        .interact_text()?;
+
+    let vout: u32 = Input::new()
+        .with_prompt("Output index (vout)")
+        .default(0u32)
+        .interact_text()?;
+
+    let amount: u64 = Input::new()
+        .with_prompt("UTXO amount (sats)")
+        .interact_text()?;
+
+    if let Err(e) = wizard.select_utxo(&txid, vout, amount) {
+        println!("{}", style(format!("Error: {}", e)).red());
+        return Ok(());
+    }
+
+    println!();
+
+    // Confirm
+    println!("{}", style("Summary:").bold());
+    println!("  Denomination: {}", style(selected_denom.name()).green());
+    println!("  UTXO: {}:{}", style(&txid).cyan(), vout);
+    println!("  Amount: {} sats", style(amount).yellow());
+    println!(
+        "  Fee: {} sats (1%)",
+        style(selected_denom.fee_sats()).dim()
+    );
+    println!(
+        "  Output: {} sats",
+        style(selected_denom.output_sats()).green()
+    );
+    println!();
+
+    let confirm = Confirm::new()
+        .with_prompt("Join Wraith session?")
+        .default(false)
+        .interact()?;
+
+    if !confirm {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    // Step 3: Join session
+    let session_id = wizard.join().map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    println!();
+    println!(
+        "{} Session ID: {}",
+        style("Joined!").bold().green(),
+        style(&session_id).cyan()
+    );
+    println!();
+
+    // Step 4: Show progress
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
+    pb.enable_steady_tick(std::time::Duration::from_millis(200));
+
+    // Connect to GSP
+    pb.set_message("Connecting to GSP...");
+    wallet.connect(&wallet.config().gsp_urls[0]).await?;
+
+    // Poll progress until complete or failed
+    loop {
+        wizard.sync_from_session();
+        let progress = wizard.progress();
+
+        let msg = match progress.step {
+            WizardStep::WaitingForParticipants => {
+                let count = progress.participant_count.unwrap_or(0);
+                let min = progress.min_participants.unwrap_or(0);
+                let pct = progress.fill_percentage.unwrap_or(0.0);
+                format!(
+                    "Waiting for participants... {}/{} ({:.0}%)",
+                    count,
+                    min,
+                    pct * 100.0
+                )
+            }
+            WizardStep::Phase1Splitting => "Phase 1: Splitting transaction...".to_string(),
+            WizardStep::Phase1Confirming => {
+                let txid = progress
+                    .phase1_txid
+                    .as_deref()
+                    .unwrap_or("pending");
+                format!("Phase 1: Waiting for confirmation ({})", &txid[..16.min(txid.len())])
+            }
+            WizardStep::Phase2Merging => "Phase 2: Merging transaction...".to_string(),
+            WizardStep::Phase2Confirming => {
+                let txid = progress
+                    .phase2_txid
+                    .as_deref()
+                    .unwrap_or("pending");
+                format!("Phase 2: Waiting for confirmation ({})", &txid[..16.min(txid.len())])
+            }
+            WizardStep::Complete => break,
+            WizardStep::Failed => {
+                pb.finish_with_message("Session failed!");
+                println!();
+                if let Some(err) = wizard.error_message() {
+                    println!("{}", style(format!("Error: {}", err)).red());
+                }
+                return Ok(());
+            }
+            _ => progress.message,
+        };
+
+        pb.set_message(msg);
+
+        // In production this would poll the GSP for session updates.
+        // For now, break after showing the waiting state since the session
+        // needs real coordinator interaction to progress.
+        if wizard.step() == WizardStep::WaitingForParticipants {
+            pb.finish_with_message("Waiting for participants to join the session...");
+            println!();
+            println!(
+                "{}",
+                style("Session is active. The coordinator will progress the session when enough")
+                    .dim()
+            );
+            println!(
+                "{}",
+                style("participants have joined. You can safely close this and check back later.")
+                    .dim()
+            );
+            println!();
+            println!("Session ID: {}", style(&session_id).cyan());
+            break;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    if wizard.is_success() {
+        pb.finish_with_message("Mixing complete!");
+        println!();
+        println!("{}", style("Wraith mixing completed successfully!").bold().green());
+        let progress = wizard.progress();
+        if let Some(txid) = &progress.phase2_txid {
+            println!("Final transaction: {}", style(txid).cyan());
         }
     }
 

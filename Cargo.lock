@@ -2170,6 +2170,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "wraith-protocol",
  "zeroize",
 ]
 
@@ -2184,6 +2185,7 @@ dependencies = [
  "console 0.15.11",
  "dialoguer",
  "dirs 5.0.1",
+ "getrandom 0.2.17",
  "ghost-gsp-proto",
  "ghost-keys",
  "ghost-light-wallet",
@@ -2195,6 +2197,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wraith-protocol",
 ]
 
 [[package]]

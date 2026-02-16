@@ -265,6 +265,9 @@ public:
     // Return whether the wallet contains a Taproot scriptPubKeyMan
     virtual bool taprootEnabled() = 0;
 
+    // Get the wallet's Ghost ID (Silent Payment address), empty string if not available
+    virtual std::string getSilentPaymentAddress() = 0;
+
     // Return whether wallet uses an external signer.
     virtual bool hasExternalSigner() = 0;
 

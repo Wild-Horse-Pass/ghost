@@ -22,11 +22,13 @@
 
 //! Receive payment operations - address generation
 
+use bitcoin::{Address, Network};
+use secp256k1::Secp256k1;
 use tracing::debug;
 
-use ghost_keys::GhostId;
+use ghost_keys::{GhostId, GhostNetwork};
 
-use crate::error::WalletResult;
+use crate::error::{LightWalletError, WalletResult};
 use crate::keys::MasterKey;
 
 /// Address type for receiving payments
@@ -93,18 +95,54 @@ pub fn generate_address(
             let ghost_id = master_key.ghost_id();
             Ok(PaymentAddress::ghost_pay(&ghost_id))
         }
-        AddressType::SilentPayment => Err(crate::error::LightWalletError::Internal(
-            "BIP-352 Silent Payment address generation not yet implemented".into(),
-        )),
-        AddressType::Taproot => Err(crate::error::LightWalletError::Internal(
-            "BIP-86 Taproot address derivation not yet implemented".into(),
-        ))
+        AddressType::SilentPayment => {
+            let ghost_id = master_key.ghost_id();
+            let ghost_network = bitcoin_to_ghost_network(master_key.network());
+            let encoded = ghost_id.encode_for_network(ghost_network).map_err(|e| {
+                LightWalletError::KeyDerivation(format!("Ghost ID encoding failed: {}", e))
+            })?;
+            debug!(address = %encoded, "Generated BIP-352 Silent Payment address");
+            Ok(PaymentAddress {
+                address: encoded,
+                address_type: AddressType::SilentPayment,
+                index: None,
+                label: None,
+                created_at: chrono::Utc::now().timestamp(),
+            })
+        }
+        AddressType::Taproot => {
+            let secp = Secp256k1::new();
+            let ghost_keys = master_key.ghost_keys();
+            let spend_pubkey = ghost_keys.spend_pubkey();
+            let (xonly, _parity) = spend_pubkey.x_only_public_key();
+            let address = Address::p2tr(&secp, xonly, None, master_key.network());
+            let addr_str = address.to_string();
+            debug!(address = %addr_str, "Generated BIP-86 Taproot address");
+            Ok(PaymentAddress {
+                address: addr_str,
+                address_type: AddressType::Taproot,
+                index: Some(0),
+                label: None,
+                created_at: chrono::Utc::now().timestamp(),
+            })
+        }
     }
 }
 
 /// Generate the primary Ghost ID for receiving
 pub fn get_ghost_id(master_key: &MasterKey) -> String {
     master_key.ghost_id().to_string()
+}
+
+/// Map bitcoin::Network to GhostNetwork for encoding
+fn bitcoin_to_ghost_network(network: Network) -> GhostNetwork {
+    match network {
+        Network::Bitcoin => GhostNetwork::Mainnet,
+        Network::Testnet => GhostNetwork::Testnet,
+        Network::Signet => GhostNetwork::Signet,
+        Network::Regtest => GhostNetwork::Regtest,
+        _ => GhostNetwork::Mainnet,
+    }
 }
 
 /// Check if an address belongs to this wallet
@@ -159,30 +197,61 @@ mod tests {
     }
 
     #[test]
-    fn test_silent_payment_address_returns_error() {
+    fn test_silent_payment_address() {
         let key = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
-        let result = generate_address(&key, AddressType::SilentPayment);
+        let addr = generate_address(&key, AddressType::SilentPayment).unwrap();
 
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        assert_eq!(addr.address_type, AddressType::SilentPayment);
         assert!(
-            err.to_string().contains("BIP-352"),
-            "Error should mention BIP-352, got: {}",
-            err
+            addr.address.starts_with("rghost1"),
+            "Regtest SP address should start with rghost1, got: {}",
+            addr.address
         );
     }
 
     #[test]
-    fn test_taproot_address_returns_error() {
-        let key = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
-        let result = generate_address(&key, AddressType::Taproot);
+    fn test_silent_payment_address_signet() {
+        let key = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Signet).unwrap();
+        let addr = generate_address(&key, AddressType::SilentPayment).unwrap();
 
-        assert!(result.is_err());
-        let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("BIP-86"),
-            "Error should mention BIP-86, got: {}",
-            err
+            addr.address.starts_with("sghost1"),
+            "Signet SP address should start with sghost1, got: {}",
+            addr.address
         );
+    }
+
+    #[test]
+    fn test_silent_payment_deterministic() {
+        let key1 = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
+        let key2 = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
+        let addr1 = generate_address(&key1, AddressType::SilentPayment).unwrap();
+        let addr2 = generate_address(&key2, AddressType::SilentPayment).unwrap();
+
+        assert_eq!(addr1.address, addr2.address);
+    }
+
+    #[test]
+    fn test_taproot_address() {
+        let key = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
+        let addr = generate_address(&key, AddressType::Taproot).unwrap();
+
+        assert_eq!(addr.address_type, AddressType::Taproot);
+        assert!(
+            addr.address.starts_with("bcrt1p"),
+            "Regtest taproot address should start with bcrt1p, got: {}",
+            addr.address
+        );
+        assert_eq!(addr.index, Some(0));
+    }
+
+    #[test]
+    fn test_taproot_address_deterministic() {
+        let key1 = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
+        let key2 = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
+        let addr1 = generate_address(&key1, AddressType::Taproot).unwrap();
+        let addr2 = generate_address(&key2, AddressType::Taproot).unwrap();
+
+        assert_eq!(addr1.address, addr2.address);
     }
 }

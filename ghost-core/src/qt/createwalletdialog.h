@@ -5,9 +5,13 @@
 #ifndef BITCOIN_QT_CREATEWALLETDIALOG_H
 #define BITCOIN_QT_CREATEWALLETDIALOG_H
 
+#include <qt/mnemonicwidget.h>
+
 #include <QDialog>
 
 #include <memory>
+
+class QCheckBox;
 
 namespace interfaces {
 class ExternalSigner;
@@ -36,10 +40,15 @@ public:
     bool isDisablePrivateKeysChecked() const;
     bool isMakeBlankWalletChecked() const;
     bool isExternalSignerChecked() const;
+    bool isGenerateMnemonicChecked() const;
+    QString generatedMnemonic() const;
 
 private:
     Ui::CreateWalletDialog *ui;
     bool m_has_signers = false;
+    QCheckBox* m_mnemonicCheckbox{nullptr};
+    MnemonicWidget* m_mnemonicWidget{nullptr};
+    QString m_generatedMnemonic;
 };
 
 #endif // BITCOIN_QT_CREATEWALLETDIALOG_H

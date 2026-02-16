@@ -4,13 +4,17 @@
 
 #include <bitcoin-build-config.h> // IWYU pragma: keep
 
+#include <bip39.h>
 #include <interfaces/node.h>
 #include <qt/createwalletdialog.h>
 #include <qt/forms/ui_createwalletdialog.h>
+#include <qt/mnemonicwidget.h>
 
 #include <qt/guiutil.h>
 
+#include <QCheckBox>
 #include <QPushButton>
+#include <QVBoxLayout>
 
 CreateWalletDialog::CreateWalletDialog(QWidget* parent) :
     QDialog(parent, GUIUtil::dialog_flags),
@@ -90,6 +94,47 @@ CreateWalletDialog::CreateWalletDialog(QWidget* parent) :
         ui->external_signer_checkbox->setChecked(false);
 #endif
 
+    // Recovery phrase (BIP-39) section
+    auto* mainLayout = qobject_cast<QVBoxLayout*>(layout());
+    if (mainLayout) {
+        // Find the index of the Advanced Options group box to insert before it
+        int advancedIndex = -1;
+        for (int i = 0; i < mainLayout->count(); ++i) {
+            QLayoutItem* item = mainLayout->itemAt(i);
+            if (item && item->widget() == ui->groupBox) {
+                advancedIndex = i;
+                break;
+            }
+        }
+
+        m_mnemonicCheckbox = new QCheckBox(tr("Generate Recovery Phrase (BIP-39)"), this);
+        m_mnemonicCheckbox->setToolTip(tr("Generate a 24-word recovery phrase that can be used to restore this wallet."));
+
+        m_mnemonicWidget = new MnemonicWidget(this);
+        m_mnemonicWidget->setVisible(false);
+
+        if (advancedIndex >= 0) {
+            // Insert before the spacer that precedes the Advanced Options group box
+            mainLayout->insertWidget(advancedIndex, m_mnemonicCheckbox);
+            mainLayout->insertWidget(advancedIndex + 1, m_mnemonicWidget);
+        } else {
+            // Fallback: append before the button box
+            mainLayout->insertWidget(mainLayout->count() - 1, m_mnemonicCheckbox);
+            mainLayout->insertWidget(mainLayout->count() - 1, m_mnemonicWidget);
+        }
+
+        connect(m_mnemonicCheckbox, &QCheckBox::toggled, this, [this](bool checked) {
+            if (checked) {
+                std::string mnemonic = bip39::GenerateMnemonic(256);
+                m_generatedMnemonic = QString::fromStdString(mnemonic);
+                m_mnemonicWidget->setMnemonic(m_generatedMnemonic);
+                m_mnemonicWidget->setVisible(true);
+            } else {
+                m_mnemonicWidget->setVisible(false);
+                m_generatedMnemonic.clear();
+            }
+        });
+    }
 }
 
 CreateWalletDialog::~CreateWalletDialog()
@@ -141,4 +186,14 @@ bool CreateWalletDialog::isMakeBlankWalletChecked() const
 bool CreateWalletDialog::isExternalSignerChecked() const
 {
     return ui->external_signer_checkbox->isChecked();
+}
+
+bool CreateWalletDialog::isGenerateMnemonicChecked() const
+{
+    return m_mnemonicCheckbox && m_mnemonicCheckbox->isChecked();
+}
+
+QString CreateWalletDialog::generatedMnemonic() const
+{
+    return m_generatedMnemonic;
 }

@@ -33,8 +33,8 @@ use tracing::{debug, error, info, warn};
 
 use ghost_common::instant::LockSnapshot;
 use ghost_gsp_proto::{
-    ClientMessage, InstantCapability, LockStateSnapshot, PreparedPayment, ServerMessage,
-    SessionToken, WalletId,
+    ClientMessage, GhostLockInfo, InstantCapability, LockStateSnapshot, PreparedPayment,
+    ServerMessage, SessionToken, WalletId,
 };
 
 /// Balance information from GSP
@@ -58,6 +58,8 @@ pub struct PaymentSubmitResult {
 }
 
 use crate::error::{LightWalletError, WalletResult};
+use crate::locks::PreparedLock;
+use crate::locks::JumpResponse;
 
 /// Callback for lock state updates
 pub type LockStateCallback = Arc<dyn Fn(String, LockStateSnapshot) + Send + Sync>;
@@ -73,6 +75,9 @@ struct ReadCallbacks {
     pending_balance: Arc<RwLock<Option<tokio::sync::oneshot::Sender<GspBalance>>>>,
     pending_prepare: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PreparedPayment>>>>,
     pending_submit: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PaymentSubmitResult>>>>,
+    pending_lock_prepare: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PreparedLock>>>>,
+    pending_lock_confirm: Arc<RwLock<Option<tokio::sync::oneshot::Sender<GhostLockInfo>>>>,
+    pending_jump: Arc<RwLock<Option<tokio::sync::oneshot::Sender<JumpResponse>>>>,
 }
 
 /// GSP client for WebSocket communication
@@ -112,6 +117,15 @@ pub struct GspClient {
 
     /// Pending payment submission response channel
     pending_submit: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PaymentSubmitResult>>>>,
+
+    /// Pending lock preparation response channel
+    pending_lock_prepare: Arc<RwLock<Option<tokio::sync::oneshot::Sender<PreparedLock>>>>,
+
+    /// Pending lock confirmation response channel
+    pending_lock_confirm: Arc<RwLock<Option<tokio::sync::oneshot::Sender<GhostLockInfo>>>>,
+
+    /// Pending jump response channel
+    pending_jump: Arc<RwLock<Option<tokio::sync::oneshot::Sender<JumpResponse>>>>,
 }
 
 impl GspClient {
@@ -137,6 +151,9 @@ impl GspClient {
         let pending_balance = Arc::new(RwLock::new(None));
         let pending_prepare = Arc::new(RwLock::new(None));
         let pending_submit = Arc::new(RwLock::new(None));
+        let pending_lock_prepare = Arc::new(RwLock::new(None));
+        let pending_lock_confirm = Arc::new(RwLock::new(None));
+        let pending_jump = Arc::new(RwLock::new(None));
 
         // Spawn write task
         let connected_clone = connected.clone();
@@ -151,6 +168,9 @@ impl GspClient {
             pending_balance: pending_balance.clone(),
             pending_prepare: pending_prepare.clone(),
             pending_submit: pending_submit.clone(),
+            pending_lock_prepare: pending_lock_prepare.clone(),
+            pending_lock_confirm: pending_lock_confirm.clone(),
+            pending_jump: pending_jump.clone(),
         };
         tokio::spawn(Self::read_task(read, connected_clone, callbacks));
 
@@ -168,6 +188,9 @@ impl GspClient {
             pending_balance,
             pending_prepare,
             pending_submit,
+            pending_lock_prepare,
+            pending_lock_confirm,
+            pending_jump,
         })
     }
 
@@ -448,6 +471,58 @@ impl GspClient {
                 }
             }
 
+            // Handle lock prepared - resolve pending lock prepare request if any
+            ServerMessage::LockPrepared {
+                success,
+                lock_id,
+                funding_address,
+                required_sats,
+                error,
+            } => {
+                if let Some(sender) = cb.pending_lock_prepare.write().take() {
+                    if success {
+                        if let (Some(id), Some(addr)) = (lock_id.clone(), funding_address) {
+                            let prepared = PreparedLock {
+                                lock_id: id,
+                                funding_address: addr,
+                                funding_amount_sats: required_sats.unwrap_or(0),
+                                expires_at: chrono::Utc::now().timestamp() + 3600,
+                            };
+                            let _ = sender.send(prepared);
+                        }
+                    }
+                }
+                if let Some(err) = error {
+                    warn!(lock_id = ?lock_id, error = err, "Lock preparation failed");
+                }
+            }
+
+            // Handle jump requested - resolve pending jump request if any
+            ServerMessage::JumpRequested {
+                success,
+                lock_id,
+                jump_txid,
+                error,
+            } => {
+                if let Some(sender) = cb.pending_jump.write().take() {
+                    if success {
+                        let response = JumpResponse {
+                            jump_id: lock_id.clone(),
+                            lock_id: lock_id.clone(),
+                            target_address: String::new(),
+                            amount_sats: 0,
+                            fee_sats: 0,
+                            expected_settlement: chrono::Utc::now().timestamp() + 86400,
+                            txid: jump_txid,
+                        };
+                        let _ = sender.send(response);
+                    }
+                }
+                if let Some(err) = error {
+                    warn!(lock_id = lock_id, error = err, "Jump request failed");
+                }
+            }
+
             // Delegate other messages to standard handler
             _ => Self::handle_server_message(msg).await,
         }
@@ -572,6 +647,79 @@ impl GspClient {
                 *self.pending_submit.write() = None;
                 Err(LightWalletError::GspError(
                     "Payment submission timed out".to_string(),
+                ))
+            }
+        }
+    }
+
+    // =========================================================================
+    // Ghost Lock Methods
+    // =========================================================================
+
+    /// Prepare a lock creation request through the GSP
+    ///
+    /// Sends the lock prepare request and waits for the GSP to return a PreparedLock.
+    pub async fn prepare_lock_request(&self, msg: ClientMessage) -> WalletResult<PreparedLock> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.pending_lock_prepare.write() = Some(tx);
+
+        self.send_message(msg).await?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+            Ok(Ok(prepared)) => Ok(prepared),
+            Ok(Err(_)) => Err(LightWalletError::GspError(
+                "Lock preparation channel closed - GSP may have returned an error".to_string(),
+            )),
+            Err(_) => {
+                *self.pending_lock_prepare.write() = None;
+                Err(LightWalletError::GspError(
+                    "Lock preparation timed out".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Confirm lock funding through the GSP
+    ///
+    /// Sends the lock confirmation and waits for the GSP to return GhostLockInfo.
+    pub async fn confirm_lock_funding(&self, msg: ClientMessage) -> WalletResult<GhostLockInfo> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.pending_lock_confirm.write() = Some(tx);
+
+        self.send_message(msg).await?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+            Ok(Ok(lock_info)) => Ok(lock_info),
+            Ok(Err(_)) => Err(LightWalletError::GspError(
+                "Lock confirmation channel closed - GSP may have returned an error".to_string(),
+            )),
+            Err(_) => {
+                *self.pending_lock_confirm.write() = None;
+                Err(LightWalletError::GspError(
+                    "Lock confirmation timed out".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Request a jump (emergency withdrawal) from a Ghost Lock
+    ///
+    /// Sends the jump request and waits for the GSP to return a JumpResponse.
+    pub async fn request_jump(&self, msg: ClientMessage) -> WalletResult<JumpResponse> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *self.pending_jump.write() = Some(tx);
+
+        self.send_message(msg).await?;
+
+        match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(_)) => Err(LightWalletError::GspError(
+                "Jump request channel closed - GSP may have returned an error".to_string(),
+            )),
+            Err(_) => {
+                *self.pending_jump.write() = None;
+                Err(LightWalletError::GspError(
+                    "Jump request timed out".to_string(),
                 ))
             }
         }

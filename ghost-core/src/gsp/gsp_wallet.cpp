@@ -57,6 +57,12 @@ bool WalletRegistry::Initialize()
         fs::create_directories(m_data_dir);
     }
 
+    // Configure SQLite before first use (must happen before sqlite3_initialize/sqlite3_open)
+    static std::once_flag sqlite_config_flag;
+    std::call_once(sqlite_config_flag, []() {
+        sqlite3_config(SQLITE_CONFIG_SERIALIZED);
+    });
+
     m_impl->db_path = m_data_dir / "wallets.db";
     int rc = sqlite3_open(fs::PathToString(m_impl->db_path).c_str(), &m_impl->db);
     if (rc != SQLITE_OK) {

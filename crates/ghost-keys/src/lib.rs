@@ -63,7 +63,7 @@ pub use derivation::{
 };
 // M-15/M-17: Re-export Zeroizing for callers who receive zeroizing wrappers
 pub use error::GhostKeyError;
-pub use ghost_id::GhostId;
+pub use ghost_id::{GhostId, GhostNetwork};
 pub use keys::{GhostKeys, GhostKeysExport};
 pub use labels::{LabelBackup, LabelDictionary};
 pub use metadata::{

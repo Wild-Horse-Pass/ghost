@@ -16,8 +16,13 @@
 #include <qt/walletmodel.h>
 
 #include <QAction>
+#include <QClipboard>
 #include <QCursor>
+#include <QFont>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QScrollBar>
 #include <QSettings>
 #include <QTextDocument>
@@ -28,6 +33,33 @@ ReceiveCoinsDialog::ReceiveCoinsDialog(const PlatformStyle *_platformStyle, QWid
     platformStyle(_platformStyle)
 {
     ui->setupUi(this);
+
+    // Ghost ID section - inserted at top of dialog
+    {
+        auto* ghostIdFrame = new QFrame(this);
+        ghostIdFrame->setFrameShape(QFrame::StyledPanel);
+        ghostIdFrame->setFrameShadow(QFrame::Sunken);
+        auto* ghostIdLayout = new QHBoxLayout(ghostIdFrame);
+
+        ghostIdLabel = new QLabel(tr("Ghost ID:"), ghostIdFrame);
+        QFont boldFont = ghostIdLabel->font();
+        boldFont.setBold(true);
+        ghostIdLabel->setFont(boldFont);
+        ghostIdLayout->addWidget(ghostIdLabel);
+
+        ghostIdValue = new QLabel(tr("(wallet loading...)"), ghostIdFrame);
+        ghostIdValue->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        ghostIdValue->setWordWrap(true);
+        ghostIdLayout->addWidget(ghostIdValue, 1);
+
+        auto* copyGhostIdBtn = new QPushButton(tr("Copy"), ghostIdFrame);
+        copyGhostIdBtn->setMaximumWidth(80);
+        connect(copyGhostIdBtn, &QPushButton::clicked, this, &ReceiveCoinsDialog::copyGhostId);
+        ghostIdLayout->addWidget(copyGhostIdBtn);
+
+        // Insert at the very top of the main layout
+        qobject_cast<QVBoxLayout*>(layout())->insertWidget(0, ghostIdFrame);
+    }
 
     if (!_platformStyle->getImagesOnButtons()) {
         ui->clearButton->setIcon(QIcon());
@@ -98,6 +130,14 @@ void ReceiveCoinsDialog::setModel(WalletModel *_model)
         add_address_type(OutputType::BECH32, tr("Bech32 (SegWit)"), tr("Generates a native segwit address (BIP-173). Some old wallets don't support it."));
         if (model->wallet().taprootEnabled()) {
             add_address_type(OutputType::BECH32M, tr("Bech32m (Taproot)"), tr("Bech32m (BIP-350) is an upgrade to Bech32, wallet support is still limited."));
+        }
+
+        // Display the wallet's Ghost ID (Silent Payment address)
+        std::string ghost_id = _model->wallet().getSilentPaymentAddress();
+        if (!ghost_id.empty()) {
+            ghostIdValue->setText(QString::fromStdString(ghost_id));
+        } else {
+            ghostIdValue->setText(tr("Not available (wallet has no Silent Payment keys)"));
         }
 
         // Set the button to be enabled or disabled based on whether the wallet can give out new addresses.
@@ -312,4 +352,11 @@ void ReceiveCoinsDialog::copyMessage()
 void ReceiveCoinsDialog::copyAmount()
 {
     copyColumnToClipboard(RecentRequestsTableModel::Amount);
+}
+
+void ReceiveCoinsDialog::copyGhostId()
+{
+    if (ghostIdValue && !ghostIdValue->text().isEmpty()) {
+        GUIUtil::setClipboard(ghostIdValue->text());
+    }
 }

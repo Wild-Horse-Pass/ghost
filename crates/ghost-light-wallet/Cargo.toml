@@ -34,6 +34,7 @@ ghost-common = { workspace = true }
 ghost-gsp-proto = { path = "../ghost-gsp-proto" }
 ghost-keys = { workspace = true }
 ghost-locks = { workspace = true }
+wraith-protocol = { workspace = true }
 
 # Async runtime
 tokio = { workspace = true }

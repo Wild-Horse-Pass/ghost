@@ -119,16 +119,19 @@ pub async fn create_lock(
         capacity_sats: request.capacity_sats,
     };
 
-    // In a real implementation, we'd send this and wait for response
-    let _ = msg;
-    let _ = client;
+    let prepared = client.prepare_lock_request(msg).await?;
 
-    // Placeholder - actual implementation would parse GSP response
+    info!(
+        lock_id = prepared.lock_id,
+        funding_address = prepared.funding_address,
+        "Ghost Lock prepared via GSP"
+    );
+
     Ok(PreparedLock {
-        lock_id: format!("lock_{}", uuid::Uuid::new_v4()),
-        funding_address: format!("bc1p{}", hex::encode(&master_key.auth_pubkey()[..20])),
-        funding_amount_sats: request.capacity_sats,
-        expires_at: chrono::Utc::now().timestamp() + 3600, // 1 hour to fund
+        lock_id: prepared.lock_id,
+        funding_address: prepared.funding_address,
+        funding_amount_sats: prepared.funding_amount_sats,
+        expires_at: prepared.expires_at,
     })
 }
 
@@ -155,31 +158,15 @@ pub async fn confirm_funding(
         proof,
     };
 
-    // In a real implementation, we'd send this and wait for response
-    let _ = msg;
-    let _ = client;
+    let lock_info = client.confirm_lock_funding(msg).await?;
 
-    // Placeholder
-    let now = chrono::Utc::now().timestamp();
-    Ok(GhostLockInfo {
-        lock_id: lock_id.to_string(),
-        status: ghost_gsp_proto::GhostLockStatus::Pending,
-        capacity_sats: 0,
-        balance_sats: 0,
-        denomination: "Small".to_string(),
-        timelock_tier: "Standard".to_string(),
-        jump_risk_tier: "Low".to_string(),
-        funding_address: format!("bc1p{}", hex::encode(&master_key.auth_pubkey()[..20])),
-        funding_txid: Some(funding_txid.to_string()),
-        funding_vout: Some(0),
-        creation_height: 0,
-        recovery_height: 0,
-        next_jump_height: None,
-        needs_jump: false,
-        blocks_until_jump: 0,
-        created_at: now,
-        updated_at: now,
-    })
+    info!(
+        lock_id = lock_id,
+        status = ?lock_info.status,
+        "Ghost Lock funding confirmed via GSP"
+    );
+
+    Ok(lock_info)
 }
 
 /// Get all Ghost Locks for this wallet
