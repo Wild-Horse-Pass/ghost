@@ -12,6 +12,10 @@
 #include <qt/platformstyle.h>
 #include <qt/walletmodel.h>
 
+#include <interfaces/wallet.h>
+#include <key_io.h>
+#include <outputtype.h>
+
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QGridLayout>
@@ -24,7 +28,6 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QTableView>
-#include <QTimer>
 #include <QVBoxLayout>
 
 // ===== WithdrawWizard =====
@@ -394,14 +397,12 @@ void ConfigurePage::onAddressChanged()
         return;
     }
 
-    // Basic validation - in real implementation, use GhostAddressValidator
-    // For now, just check it's not empty and has reasonable length
-    if (address.length() >= 26 && address.length() <= 100) {
-        validationLabel->setText(tr("Address appears valid"));
+    if (IsValidDestinationString(address.toStdString())) {
+        validationLabel->setText(tr("Valid address"));
         validationLabel->setStyleSheet(QStringLiteral("QLabel { color: green; }"));
         m_addressValid = true;
     } else {
-        validationLabel->setText(tr("Invalid address format"));
+        validationLabel->setText(tr("Invalid address"));
         validationLabel->setStyleSheet(QStringLiteral("QLabel { color: red; }"));
         m_addressValid = false;
     }
@@ -413,11 +414,14 @@ void ConfigurePage::onUseNewAddress()
 {
     if (!walletModel) return;
 
-    // Generate new address from wallet
-    // In real implementation: walletModel->getAddressTableModel()->addRow(...)
-    QString newAddress = QStringLiteral("bc1q...generated...");  // Placeholder
-
-    addressEdit->setText(newAddress);
+    auto dest = walletModel->wallet().getNewDestination(
+        OutputType::BECH32M, "Ghost Lock Settlement");
+    if (dest) {
+        addressEdit->setText(QString::fromStdString(EncodeDestination(*dest)));
+    } else {
+        validationLabel->setText(tr("Failed to generate address from wallet"));
+        validationLabel->setStyleSheet(QStringLiteral("QLabel { color: red; }"));
+    }
 }
 
 bool ConfigurePage::validatePage()
@@ -603,25 +607,13 @@ void ProcessingPage::initializePage()
     WithdrawWizard *wiz = qobject_cast<WithdrawWizard*>(wizard());
     if (!wiz || !l2WalletModel) return;
 
-    // Submit withdrawal request
-    // In real implementation:
-    // l2WalletModel->requestWithdrawal(wiz->selectedLockId(), wiz->destinationAddress());
-
-    // Demo: simulate processing
-    QTimer::singleShot(1500, this, [this]() {
-        onRequested(QStringLiteral("batch-xyz789"));
-    });
+    l2WalletModel->requestWithdrawal(wiz->selectedLockId(), wiz->destinationAddress());
 }
 
 void ProcessingPage::onRequested(const QString& batchId)
 {
     statusLabel->setText(tr("Withdrawal queued in batch"));
     batchIdLabel->setText(tr("Batch ID: %1").arg(batchId));
-
-    // Demo: simulate completion
-    QTimer::singleShot(2500, this, [this]() {
-        onComplete(QStringLiteral("lock-abc123"), QStringLiteral("0x1234567890abcdef..."));
-    });
 }
 
 void ProcessingPage::onComplete(const QString& lockId, const QString& txid)

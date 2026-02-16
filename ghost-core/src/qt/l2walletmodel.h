@@ -11,6 +11,7 @@
 #include <QObject>
 #include <QAbstractTableModel>
 #include <QList>
+#include <QMap>
 #include <QTimer>
 #include <memory>
 
@@ -256,6 +257,10 @@ private:
     // Track pending operations
     QList<QString> m_pendingLockRegistrations;
     QString m_currentGhostId;
+
+    // Track in-flight payment amounts for pending balance display
+    int64_t m_pendingPaymentTotal{0};
+    QMap<QString, int64_t> m_pendingPayments;
 };
 
 #endif // GHOST_QT_L2WALLETMODEL_H

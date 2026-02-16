@@ -373,7 +373,7 @@ GhostPay::L2Balance L2WalletModel::getTotalBalance() const
 {
     GhostPay::L2Balance balance;
     balance.available = m_locksModel->getTotalL2Balance();
-    balance.pending = 0; // TODO: track pending payments
+    balance.pending = m_pendingPaymentTotal;
     balance.total = balance.available + balance.pending;
     balance.lockCount = m_locksModel->getActiveLockCount();
     return balance;
@@ -403,10 +403,13 @@ void L2WalletModel::sendPayment(const QString& fromLockId,
                                 const QString& toGhostId,
                                 int64_t amountSats)
 {
-    // TODO: Sign the payment with the lock's key
-    // For now, signature is placeholder
-    QString signature = QStringLiteral("placeholder_signature");
-    m_client->submitPayment(fromLockId, toGhostId, amountSats, signature);
+    // L2 payment signing requires a lock-key mapping infrastructure that maps
+    // lockId → wallet key (CTxDestination) for producing real signatures.
+    // This code path is blocked until a Send L2 dialog with signing support is built.
+    Q_UNUSED(fromLockId);
+    Q_UNUSED(toGhostId);
+    Q_UNUSED(amountSats);
+    Q_EMIT paymentError(tr("L2 payment signing not yet implemented"));
 }
 
 void L2WalletModel::refreshPayments(const QString& ghostId)

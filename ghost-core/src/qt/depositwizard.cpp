@@ -11,6 +11,10 @@
 #include <qt/platformstyle.h>
 #include <qt/walletmodel.h>
 
+#include <interfaces/wallet.h>
+#include <key_io.h>
+#include <outputtype.h>
+
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QGridLayout>
@@ -21,7 +25,6 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
-#include <QTimer>
 #include <QVBoxLayout>
 
 // ===== DepositWizard =====
@@ -252,35 +255,35 @@ void SelectUTXOPage::populateUtxoList()
 
     if (!walletModel) return;
 
-    // Get coin control list from wallet
-    // This is a simplified version - in practice you'd use interfaces::Wallet::listCoins()
-    std::vector<std::pair<QString, std::vector<std::tuple<QString, uint32_t, int64_t>>>> coins;
+    for (const auto& coins : walletModel->wallet().listCoins()) {
+        for (const auto& outpair : coins.second) {
+            const COutPoint& output = std::get<0>(outpair);
+            const interfaces::WalletTxOut& out = std::get<1>(outpair);
 
-    // For now, show a placeholder message
-    // In a real implementation, iterate through wallet UTXOs
-    QListWidgetItem *placeholder = new QListWidgetItem(
-        tr("(UTXO list would be populated from wallet)"));
-    placeholder->setFlags(placeholder->flags() & ~Qt::ItemIsSelectable);
-    utxoList->addItem(placeholder);
+            if (out.is_spent) continue;
+            if (out.txout.nValue < required) continue;
 
-    // Example entries for demonstration
-    // Real implementation would query walletModel->wallet().listCoins()
-    /*
-    for (const auto& group : coins) {
-        for (const auto& [txid, vout, amount] : group.second) {
-            if (amount >= required) {
-                UtxoEntry entry{txid, vout, amount};
-                m_utxos.append(entry);
+            UtxoEntry entry{
+                QString::fromStdString(output.hash.ToString()),
+                output.n,
+                out.txout.nValue
+            };
+            m_utxos.append(entry);
 
-                QString text = QString("%1:%2 - %3")
-                    .arg(txid.left(16) + "...")
-                    .arg(vout)
-                    .arg(BitcoinUnits::formatWithUnit(BitcoinUnit::BTC, amount));
-                utxoList->addItem(text);
-            }
+            QString text = QStringLiteral("%1:%2 - %3")
+                .arg(entry.txid.left(16) + QStringLiteral("..."))
+                .arg(entry.vout)
+                .arg(BitcoinUnits::formatWithUnit(BitcoinUnit::BTC, entry.amount, false, BitcoinUnits::SeparatorStyle::ALWAYS));
+            utxoList->addItem(text);
         }
     }
-    */
+
+    if (m_utxos.isEmpty()) {
+        QListWidgetItem *noCoins = new QListWidgetItem(
+            tr("No UTXOs available with at least %1 sats").arg(required));
+        noCoins->setFlags(noCoins->flags() & ~Qt::ItemIsSelectable);
+        utxoList->addItem(noCoins);
+    }
 
     selectedLabel->setText(tr("No UTXO selected"));
 }
@@ -306,8 +309,7 @@ void SelectUTXOPage::onUtxoSelected()
 bool SelectUTXOPage::validatePage()
 {
     if (m_selectedIndex < 0 || m_selectedIndex >= m_utxos.size()) {
-        // For demo purposes, allow proceeding without selection
-        return true;
+        return false;
     }
 
     DepositWizard *wiz = qobject_cast<DepositWizard*>(wizard());
@@ -325,9 +327,7 @@ int SelectUTXOPage::nextId() const
 
 bool SelectUTXOPage::isComplete() const
 {
-    // For demo, always complete
-    return true;
-    // Real: return m_selectedIndex >= 0;
+    return m_selectedIndex >= 0;
 }
 
 QString SelectUTXOPage::selectedTxid() const
@@ -414,17 +414,26 @@ void JoinWraithPage::onJoinClicked()
     DepositWizard *wiz = qobject_cast<DepositWizard*>(wizard());
     if (!wiz || !l2WalletModel) return;
 
+    // Generate a new destination for the Ghost Lock output
+    auto dest = wiz->getWalletModel()->wallet().getNewDestination(
+        OutputType::BECH32M, "Ghost Lock Deposit");
+    if (!dest) {
+        statusLabel->setText(tr("Failed to generate deposit address"));
+        statusLabel->setStyleSheet(QStringLiteral("QLabel { color: red; }"));
+        return;
+    }
+    QString outputPubkey = QString::fromStdString(EncodeDestination(*dest));
+
     joinButton->setEnabled(false);
     statusLabel->setText(tr("Joining session..."));
     progressBar->setVisible(true);
 
-    // In real implementation, this would call:
-    // l2WalletModel->joinWraithDeposit(denom, txid, vout, amount, outputPubkey);
-
-    // For demo, simulate joining
-    QTimer::singleShot(1500, this, [this]() {
-        onWraithJoined(QStringLiteral("demo-session-12345"));
-    });
+    l2WalletModel->joinWraithDeposit(
+        wiz->selectedDenomination(),
+        wiz->selectedUtxoTxid(),
+        wiz->selectedUtxoVout(),
+        wiz->selectedUtxoAmount(),
+        outputPubkey);
 }
 
 void JoinWraithPage::onWraithJoined(const QString& sessionId)
@@ -510,11 +519,6 @@ void SigningPage::initializePage()
     phase1Label->setText(tr("Phase 1 (Split): Pending"));
     phase2Label->setText(tr("Phase 2 (Merge): Pending"));
     statusLabel->setText(tr("Waiting for protocol to begin..."));
-
-    // Demo: simulate phase progression
-    QTimer::singleShot(2000, this, [this]() {
-        onPhaseChanged(GhostPay::WraithPhase::Phase1Ready);
-    });
 }
 
 void SigningPage::onPhaseChanged(GhostPay::WraithPhase phase)
@@ -532,11 +536,6 @@ void SigningPage::onPhaseChanged(GhostPay::WraithPhase phase)
         phase1Label->setStyleSheet(QStringLiteral("QLabel { color: orange; }"));
         progressBar->setValue(25);
         statusLabel->setText(tr("Signing split transaction..."));
-
-        // Demo: simulate progression
-        QTimer::singleShot(2000, this, [this]() {
-            onPhaseChanged(GhostPay::WraithPhase::Phase1Signed);
-        });
         break;
 
     case GhostPay::WraithPhase::Phase1Signed:
@@ -544,11 +543,6 @@ void SigningPage::onPhaseChanged(GhostPay::WraithPhase phase)
         phase1Label->setStyleSheet(QStringLiteral("QLabel { color: green; }"));
         progressBar->setValue(50);
         statusLabel->setText(tr("Waiting for Phase 2..."));
-
-        // Demo: simulate progression
-        QTimer::singleShot(1500, this, [this]() {
-            onPhaseChanged(GhostPay::WraithPhase::Phase2Ready);
-        });
         break;
 
     case GhostPay::WraithPhase::Phase2Ready:
@@ -557,11 +551,6 @@ void SigningPage::onPhaseChanged(GhostPay::WraithPhase phase)
         phase2Label->setStyleSheet(QStringLiteral("QLabel { color: orange; }"));
         progressBar->setValue(65);
         statusLabel->setText(tr("Signing merge transaction..."));
-
-        // Demo: simulate progression
-        QTimer::singleShot(2000, this, [this]() {
-            onPhaseChanged(GhostPay::WraithPhase::Phase2Signed);
-        });
         break;
 
     case GhostPay::WraithPhase::Phase2Signed:
@@ -569,11 +558,6 @@ void SigningPage::onPhaseChanged(GhostPay::WraithPhase phase)
         phase2Label->setStyleSheet(QStringLiteral("QLabel { color: green; }"));
         progressBar->setValue(85);
         statusLabel->setText(tr("Broadcasting..."));
-
-        // Demo: simulate completion
-        QTimer::singleShot(1500, this, [this]() {
-            onComplete(QStringLiteral("lock-abc123def456"));
-        });
         break;
 
     case GhostPay::WraithPhase::Complete:

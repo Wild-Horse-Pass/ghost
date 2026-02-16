@@ -65,6 +65,9 @@ public:
     QString wraithSessionId() const { return m_sessionId; }
     QString newLockId() const { return m_newLockId; }
 
+    // Model access
+    WalletModel* getWalletModel() const { return walletModel; }
+
 public Q_SLOTS:
     void setDenomination(GhostPay::Denomination denom);
     void setSelectedUtxo(const QString& txid, uint32_t vout, int64_t amount);
