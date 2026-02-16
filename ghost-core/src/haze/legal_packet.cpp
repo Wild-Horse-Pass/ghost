@@ -37,7 +37,11 @@ static bool HasBlkFiles(const fs::path& datadir)
         const std::string filename = entry.path().filename().string();
         if (filename.size() >= 3 && filename.substr(0, 3) == "blk" &&
             filename.find(".dat") != std::string::npos) {
-            return true;
+            // Ignore empty blk files (Bitcoin Core recreates blk00000.dat
+            // on startup even after exorcist deletes it)
+            if (entry.file_size(ec) > 0) {
+                return true;
+            }
         }
     }
     return false;
@@ -59,11 +63,6 @@ static double SumGSBFileSizes(const fs::path& datadir)
         }
     }
     return static_cast<double>(total_bytes) / (1024.0 * 1024.0 * 1024.0);
-}
-
-static bool ExorcistResumeExists(const fs::path& datadir)
-{
-    return fs::exists(datadir / "blocks" / "exorcist_resume.dat");
 }
 
 static const char* LEGAL_SUMMARY_TEXT =
@@ -112,20 +111,28 @@ std::optional<LegalPacket> GenerateLegalPacket(
     packet.ghost_core_version = FormatFullVersion();
     packet.node_mode = "HAZED";
     packet.exorcism_active = true;
-    packet.blocks_stripped = static_cast<int64_t>(blockman.m_ghost_exorcism.GetBlocksProcessed());
     packet.chain_tip = chain.Height();
     packet.structural_archive_size_gb = SumGSBFileSizes(datadir);
     packet.hazeable_content_on_disk = HasBlkFiles(datadir);
 
+    // blocks_stripped: use chain tip height as the total count of stripped blocks
+    // since every block on a hazed node is in GSB format (either via exorcist
+    // conversion or runtime exorcism).
+    packet.blocks_stripped = packet.hazeable_content_on_disk
+        ? static_cast<int64_t>(blockman.m_ghost_exorcism.GetBlocksProcessed())
+        : static_cast<int64_t>(packet.chain_tip + 1);  // +1 for genesis
+
     // Determine haze status
-    if (packet.blocks_stripped > 0 && !packet.hazeable_content_on_disk) {
+    if (!packet.hazeable_content_on_disk && packet.structural_archive_size_gb > 0.0) {
         packet.haze_status = "COMPLETE";
     } else {
         packet.haze_status = "IN_PROGRESS";
     }
 
-    // Conversion method: if exorcist_resume.dat existed, it was a conversion
-    if (ExorcistResumeExists(datadir)) {
+    // Conversion method: if GSB archive size significantly exceeds what
+    // runtime exorcism alone would produce, the exorcist was used.
+    const size_t runtime_blocks = blockman.m_ghost_exorcism.GetBlocksProcessed();
+    if (packet.chain_tip > 0 && runtime_blocks < static_cast<size_t>(packet.chain_tip)) {
         packet.conversion_method = "exorcist";
     } else {
         packet.conversion_method = "exorcism";
