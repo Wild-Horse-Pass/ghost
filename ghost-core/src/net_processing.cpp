@@ -20,6 +20,8 @@
 #include <crypto/siphash.h>
 #include <deploymentstatus.h>
 #include <flatfile.h>
+#include <haze/checkpoint.h>
+#include <haze/chunk_downloader.h>
 #include <haze/haze_p2p.h>
 #include <haze/stripped_block.h>
 #include <headerssync.h>
@@ -34,6 +36,7 @@
 #include <netmessagemaker.h>
 #include <node/blockstorage.h>
 #include <node/connection_types.h>
+#include <node/utxo_snapshot.h>
 #include <node/protocol_version.h>
 #include <node/timeoffsets.h>
 #include <node/txdownloadman.h>
@@ -58,6 +61,7 @@
 #include <txmempool.h>
 #include <uint256.h>
 #include <util/check.h>
+#include <util/fs.h>
 #include <util/strencodings.h>
 #include <util/time.h>
 #include <util/trace.h>
@@ -70,6 +74,7 @@
 #include <cstddef>
 #include <deque>
 #include <exception>
+#include <fstream>
 #include <functional>
 #include <future>
 #include <initializer_list>
@@ -781,6 +786,24 @@ private:
     TimeOffsets m_outbound_time_offsets{m_warnings};
 
     const Options m_opts;
+
+    /** Chunk downloader for checkpoint P2P sync (hazed nodes only). */
+    std::unique_ptr<haze::ChunkDownloader> m_chunk_downloader;
+
+    /** Path to local checkpoint directory (if serving checkpoints). */
+    std::string m_checkpoint_dir;
+
+    /** Checkpoint manifest received from peer (for ongoing download). */
+    std::optional<haze::CheckpointManifest> m_checkpoint_manifest;
+
+    /** Rate-limit: last time each peer requested a checkpoint manifest. */
+    std::map<NodeId, int64_t> m_last_chkpt_request GUARDED_BY(cs_main);
+
+    /** Peer we have an outstanding GETCHECKPOINT request to (reject unsolicited). */
+    std::optional<NodeId> m_chkpt_request_peer GUARDED_BY(cs_main);
+
+    /** Rate-limit: last time each peer requested a chunk from us. */
+    std::map<NodeId, std::pair<int64_t, int>> m_last_chunk_request GUARDED_BY(cs_main);
 
     bool RejectIncomingTxs(const CNode& peer) const;
 
@@ -1628,6 +1651,10 @@ void PeerManagerImpl::FinalizeNode(const CNode& node)
         LOCK(m_tx_download_mutex);
         m_txdownloadman.DisconnectedPeer(nodeid);
     }
+    m_last_chkpt_request.erase(nodeid);
+    m_last_chunk_request.erase(nodeid);
+    if (m_chkpt_request_peer && *m_chkpt_request_peer == nodeid) m_chkpt_request_peer.reset();
+    if (m_chunk_downloader) m_chunk_downloader->HandlePeerDisconnect(nodeid);
     if (m_txreconciliation) m_txreconciliation->ForgetPeer(nodeid);
     m_num_preferred_download_peers -= state->fPreferredDownload;
     m_peers_downloading_from -= (!state->vBlocksInFlight.empty());
@@ -1903,6 +1930,13 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
     // This argument can go away after Erlay support is complete.
     if (opts.reconcile_txs) {
         m_txreconciliation = std::make_unique<TxReconciliationTracker>(TXRECONCILIATION_VERSION);
+    }
+
+    // Set checkpoint serving directory from options
+    if (!m_opts.checkpoint_dir.empty()) {
+        m_checkpoint_dir = m_opts.checkpoint_dir;
+        LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
+            "PeerManager: serving checkpoints from %s\n", m_checkpoint_dir);
     }
 }
 
@@ -4798,6 +4832,309 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
         // For now, just log — full redirect handling will be implemented when
         // cross-mode IBD is designed.
 
+        return;
+    }
+
+    if (msg_type == NetMsgType::GETCHECKPOINT)
+    {
+        // Peer requests our checkpoint manifest
+        if (m_checkpoint_dir.empty()) {
+            LogDebug(BCLog::HAZE, "getchkpt from peer %d but we have no checkpoint\n", pfrom.GetId());
+            return;
+        }
+
+        // Rate-limit: 1 request per minute per peer
+        {
+            LOCK(cs_main);
+            int64_t now = GetTime();
+            auto it = m_last_chkpt_request.find(pfrom.GetId());
+            if (it != m_last_chkpt_request.end() && (now - it->second) < 60) {
+                LogDebug(BCLog::HAZE, "getchkpt rate-limited for peer %d\n", pfrom.GetId());
+                return;
+            }
+            m_last_chkpt_request[pfrom.GetId()] = now;
+        }
+
+        int32_t requested_height;
+        try {
+            vRecv >> requested_height;
+        } catch (const std::exception& e) {
+            LogDebug(BCLog::NET, "Failed to deserialize getchkpt from peer %d: %s\n", pfrom.GetId(), e.what());
+            return;
+        }
+
+        // Load and send our checkpoint manifest
+        haze::CheckpointManifest manifest;
+        if (!haze::LoadCheckpoint(m_checkpoint_dir, manifest)) {
+            LogDebug(BCLog::HAZE, "Failed to load checkpoint manifest for peer %d request\n", pfrom.GetId());
+            return;
+        }
+
+        MakeAndPushMessage(pfrom, NetMsgType::CHECKPOINT, manifest);
+        LogDebug(BCLog::HAZE, "Sent checkpoint manifest (height %d) to peer %d\n",
+            manifest.height, pfrom.GetId());
+        return;
+    }
+
+    if (msg_type == NetMsgType::CHECKPOINT)
+    {
+        // Reject if we already have a download in progress
+        if (m_chunk_downloader) {
+            LogDebug(BCLog::HAZE, "Ignoring checkpoint manifest from peer %d: download already in progress\n", pfrom.GetId());
+            return;
+        }
+
+        // Received a checkpoint manifest from a peer
+        haze::CheckpointManifest manifest;
+        try {
+            vRecv >> manifest;
+        } catch (const std::exception& e) {
+            LogDebug(BCLog::NET, "Failed to deserialize checkpoint from peer %d: %s\n", pfrom.GetId(), e.what());
+            Misbehaving(*peer, "invalid checkpoint manifest");
+            return;
+        }
+
+        // Validate version
+        if (manifest.version != haze::CHECKPOINT_VERSION) {
+            LogDebug(BCLog::HAZE, "Checkpoint manifest bad version %u from peer %d\n",
+                manifest.version, pfrom.GetId());
+            Misbehaving(*peer, "bad checkpoint version");
+            return;
+        }
+
+        LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
+            "Received checkpoint manifest: height=%d hash=%s chunks=%u from peer %d\n",
+            manifest.height, manifest.block_hash.GetHex(),
+            manifest.chunk_manifest.total_chunks, pfrom.GetId());
+
+        // Store the manifest and initialize chunk downloader
+        m_checkpoint_manifest = manifest;
+
+        const std::string chunks_dir = m_opts.datadir + "/checkpoint";
+        m_chunk_downloader = std::make_unique<haze::ChunkDownloader>();
+        m_chunk_downloader->Init(manifest.chunk_manifest, chunks_dir);
+
+        // Check for existing chunks (resume support)
+        uint32_t existing = m_chunk_downloader->CheckExistingChunks();
+        if (existing > 0) {
+            LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
+                "Resuming checkpoint download: %u/%u chunks already on disk\n",
+                existing, manifest.chunk_manifest.total_chunks);
+        }
+
+        if (m_chunk_downloader->IsComplete()) {
+            LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
+                "All checkpoint chunks already present, assembling snapshot\n");
+        } else {
+            // Request first batch of chunks from this peer
+            auto chunk_indices = m_chunk_downloader->RequestChunks(pfrom.GetId(), haze::DEFAULT_MAX_PARALLEL_DOWNLOADS);
+            for (uint32_t idx : chunk_indices) {
+                MakeAndPushMessage(pfrom, NetMsgType::GETCHUNK, idx);
+            }
+            LogDebug(BCLog::HAZE, "Requested %zu chunks from peer %d\n",
+                chunk_indices.size(), pfrom.GetId());
+            return;
+        }
+
+        // Fall through to assembly if all chunks are already present
+        {
+            const std::string chunks_dir_path = m_chunk_downloader->GetOutputDir();
+            const std::string snapshot_path = chunks_dir_path + "/snapshot.dat";
+
+            if (!haze::AssembleSnapshot(*m_checkpoint_manifest, chunks_dir_path, snapshot_path,
+                                         m_chainman.GetParams().MessageStart())) {
+                LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                    "Failed to assemble snapshot from checkpoint chunks\n");
+                m_chunk_downloader.reset();
+                m_checkpoint_manifest.reset();
+                return;
+            }
+
+            FILE* file = fsbridge::fopen(fs::u8path(snapshot_path), "rb");
+            AutoFile afile{file};
+            if (afile.IsNull()) {
+                LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                    "Cannot open assembled snapshot: %s\n", snapshot_path);
+                m_chunk_downloader.reset();
+                m_checkpoint_manifest.reset();
+                return;
+            }
+
+            node::SnapshotMetadata metadata{m_chainman.GetParams().MessageStart()};
+            try {
+                afile >> metadata;
+            } catch (const std::exception& e) {
+                LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                    "Invalid snapshot metadata: %s\n", e.what());
+                m_chunk_downloader.reset();
+                m_checkpoint_manifest.reset();
+                return;
+            }
+
+            auto result = m_chainman.ActivateSnapshot(afile, metadata, false);
+            if (!result) {
+                LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                    "Failed to activate snapshot: %s\n",
+                    util::ErrorString(result).original);
+                m_chunk_downloader.reset();
+                m_checkpoint_manifest.reset();
+                return;
+            }
+
+            m_connman.RemoveLocalServices(NODE_NETWORK);
+            m_connman.AddLocalServices(NODE_NETWORK_LIMITED);
+
+            CBlockIndex& snapshot_index = *CHECK_NONFATAL(*result);
+            LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
+                "Checkpoint sync complete! Snapshot loaded at height %d, hash %s\n",
+                snapshot_index.nHeight, snapshot_index.GetBlockHash().ToString());
+
+            m_chunk_downloader.reset();
+            m_checkpoint_manifest.reset();
+        }
+        return;
+    }
+
+    if (msg_type == NetMsgType::GETCHUNK)
+    {
+        // Peer requests a specific UTXO chunk
+        if (m_checkpoint_dir.empty()) {
+            LogDebug(BCLog::HAZE, "getchunk from peer %d but we have no checkpoint\n", pfrom.GetId());
+            return;
+        }
+
+        // Rate-limit: max 32 chunk requests per 10 seconds per peer
+        {
+            LOCK(cs_main);
+            int64_t now = GetTime();
+            auto& [last_time, count] = m_last_chunk_request[pfrom.GetId()];
+            if (now - last_time > 10) {
+                last_time = now;
+                count = 1;
+            } else {
+                count++;
+                if (count > 32) {
+                    LogDebug(BCLog::HAZE, "getchunk rate-limited for peer %d\n", pfrom.GetId());
+                    return;
+                }
+            }
+        }
+
+        uint32_t chunk_index;
+        try {
+            vRecv >> chunk_index;
+        } catch (const std::exception& e) {
+            LogDebug(BCLog::NET, "Failed to deserialize getchunk from peer %d: %s\n", pfrom.GetId(), e.what());
+            return;
+        }
+
+        // Read chunk file from disk
+        const std::string chunk_path = m_checkpoint_dir + "/utxo_" + std::to_string(chunk_index) + ".bin";
+        std::ifstream chunk_file(chunk_path, std::ios::binary | std::ios::ate);
+        if (!chunk_file.is_open()) {
+            LogDebug(BCLog::HAZE, "Cannot open chunk %u for peer %d: %s\n",
+                chunk_index, pfrom.GetId(), chunk_path);
+            return;
+        }
+
+        auto file_size = chunk_file.tellg();
+        chunk_file.seekg(0);
+        std::vector<uint8_t> data(file_size);
+        chunk_file.read(reinterpret_cast<char*>(data.data()), file_size);
+
+        MakeAndPushMessage(pfrom, NetMsgType::CHUNK, chunk_index, data);
+        LogDebug(BCLog::HAZE, "Sent chunk %u (%lld bytes) to peer %d\n",
+            chunk_index, static_cast<long long>(file_size), pfrom.GetId());
+        return;
+    }
+
+    if (msg_type == NetMsgType::CHUNK)
+    {
+        // Received a UTXO chunk from a peer
+        if (!m_chunk_downloader) {
+            LogDebug(BCLog::HAZE, "Received chunk but no download in progress (peer %d)\n", pfrom.GetId());
+            return;
+        }
+
+        uint32_t chunk_index;
+        std::vector<uint8_t> data;
+        try {
+            vRecv >> chunk_index >> data;
+        } catch (const std::exception& e) {
+            LogDebug(BCLog::NET, "Failed to deserialize chunk from peer %d: %s\n", pfrom.GetId(), e.what());
+            return;
+        }
+
+        bool valid = m_chunk_downloader->ReceiveChunk(chunk_index, std::move(data));
+        if (!valid) {
+            LogDebug(BCLog::HAZE, "Chunk %u from peer %d failed validation\n",
+                chunk_index, pfrom.GetId());
+        }
+
+        // Check if download is complete
+        if (m_chunk_downloader->IsComplete()) {
+            LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
+                "All checkpoint chunks downloaded, assembling snapshot\n");
+
+            if (!m_checkpoint_manifest) {
+                LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                    "No checkpoint manifest available for assembly\n");
+                return;
+            }
+
+            const std::string chunks_dir = m_chunk_downloader->GetOutputDir();
+            const std::string snapshot_path = chunks_dir + "/snapshot.dat";
+
+            if (!haze::AssembleSnapshot(*m_checkpoint_manifest, chunks_dir, snapshot_path,
+                                         m_chainman.GetParams().MessageStart())) {
+                LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                    "Failed to assemble snapshot from checkpoint chunks\n");
+                return;
+            }
+
+            FILE* file = fsbridge::fopen(fs::u8path(snapshot_path), "rb");
+            AutoFile afile{file};
+            if (afile.IsNull()) {
+                LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                    "Cannot open assembled snapshot: %s\n", snapshot_path);
+                return;
+            }
+
+            node::SnapshotMetadata metadata{m_chainman.GetParams().MessageStart()};
+            try {
+                afile >> metadata;
+            } catch (const std::exception& e) {
+                LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                    "Invalid snapshot metadata: %s\n", e.what());
+                return;
+            }
+
+            auto result = m_chainman.ActivateSnapshot(afile, metadata, false);
+            if (!result) {
+                LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                    "Failed to activate snapshot: %s\n",
+                    util::ErrorString(result).original);
+                return;
+            }
+
+            m_connman.RemoveLocalServices(NODE_NETWORK);
+            m_connman.AddLocalServices(NODE_NETWORK_LIMITED);
+
+            CBlockIndex& snapshot_index = *CHECK_NONFATAL(*result);
+            LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
+                "Checkpoint sync complete! Snapshot loaded at height %d, hash %s\n",
+                snapshot_index.nHeight, snapshot_index.GetBlockHash().ToString());
+
+            m_chunk_downloader.reset();
+            m_checkpoint_manifest.reset();
+            return;
+        }
+
+        // Request more chunks from this peer if available
+        auto chunk_indices = m_chunk_downloader->RequestChunks(pfrom.GetId(), 4);
+        for (uint32_t idx : chunk_indices) {
+            MakeAndPushMessage(pfrom, NetMsgType::GETCHUNK, idx);
+        }
         return;
     }
 

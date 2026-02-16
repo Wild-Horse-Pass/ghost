@@ -21,6 +21,7 @@
 #include <flatfile.h>
 #include <hash.h>
 #include <haze/block_reconstruct.h>
+#include <haze/checkpoint.h>
 #include <haze/stripped_block.h>
 #include <index/blockfilterindex.h>
 #include <index/coinstatsindex.h>
@@ -29,6 +30,7 @@
 #include <logging/timer.h>
 #include <net.h>
 #include <net_processing.h>
+#include <netmessagemaker.h>
 #include <node/blockstorage.h>
 #include <node/context.h>
 #include <node/transaction.h>
@@ -56,6 +58,7 @@
 #include <versionbits.h>
 
 #include <cstdint>
+#include <fstream>
 
 #include <condition_variable>
 #include <iterator>
@@ -3517,6 +3520,171 @@ return RPCHelpMan{
 }
 
 
+static RPCHelpMan generatecheckpoint()
+{
+    return RPCHelpMan{
+        "generatecheckpoint",
+        "Generate a full checkpoint at the specified height.\n"
+        "Creates headers.bin, UTXO chunk files, bloom.bin, and manifest.bin in the output directory.\n"
+        "This is a long-running operation that locks the UTXO set.\n",
+        {
+            {"height", RPCArg::Type::NUM, RPCArg::Optional::NO, "The block height to checkpoint at."},
+            {"output_dir", RPCArg::Type::STR, RPCArg::Optional::NO, "Directory to write checkpoint files."},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::NUM, "height", "checkpoint height"},
+                {RPCResult::Type::STR_HEX, "block_hash", "block hash at checkpoint height"},
+                {RPCResult::Type::NUM, "utxo_count", "number of UTXOs in the set"},
+                {RPCResult::Type::STR_HEX, "utxo_hash", "hash of the UTXO set"},
+                {RPCResult::Type::NUM, "total_chunks", "number of UTXO chunk files"},
+                {RPCResult::Type::STR_HEX, "bloom_hash", "SHA-256 of bloom.bin"},
+                {RPCResult::Type::STR_HEX, "headers_hash", "SHA-256 of headers.bin"},
+                {RPCResult::Type::OBJ, "manifest", "full manifest details",
+                    {
+                        {RPCResult::Type::ELISION, "", ""},
+                    }
+                },
+            }
+        },
+        RPCExamples{
+            HelpExampleCli("generatecheckpoint", "160 /tmp/checkpoint")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    NodeContext& node = EnsureAnyNodeContext(request.context);
+    ChainstateManager& chainman = EnsureChainman(node);
+
+    const int height = self.Arg<int>("height");
+    const std::string output_dir = self.Arg<std::string>("output_dir");
+
+    if (height < 0) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Height must be non-negative");
+    }
+
+    haze::CheckpointManifest manifest;
+    std::unique_ptr<CCoinsViewCursor> chunk_cursor;
+    std::unique_ptr<CCoinsViewCursor> bloom_cursor;
+
+    {
+        // Hold cs_main briefly to validate chain, generate headers, flush
+        // coins to disk, compute UTXO stats, and create leveldb cursors.
+        // Cursors are snapshot-based and remain valid after lock release.
+        LOCK(cs_main);
+
+        Chainstate& chainstate = chainman.ActiveChainstate();
+        const CChain& chain = chainstate.m_chain;
+
+        if (chain.Height() < height) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                strprintf("Chain height %d < requested checkpoint height %d", chain.Height(), height));
+        }
+
+        // Step 1: Generate headers.bin + manifest skeleton
+        if (!haze::GenerateCheckpoint(chain, chainman.m_blockman, height, output_dir, manifest)) {
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to generate checkpoint headers");
+        }
+
+        // Step 2: Flush coins and prepare cursors (must be done under cs_main)
+        chainstate.ForceFlushStateToDisk();
+
+        auto maybe_stats = GetUTXOStats(&chainstate.CoinsDB(), chainstate.m_blockman,
+                                         CoinStatsHashType::HASH_SERIALIZED,
+                                         node.rpc_interruption_point);
+        if (!maybe_stats) {
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Unable to read UTXO set");
+        }
+
+        manifest.utxo_count = maybe_stats->coins_count;
+        manifest.utxo_hash = maybe_stats->hashSerialized;
+
+        chunk_cursor = chainstate.CoinsDB().Cursor();
+        bloom_cursor = chainstate.CoinsDB().Cursor();
+    }
+    // cs_main released — slow I/O happens without holding the lock.
+
+    // Step 3: Generate UTXO chunks (no lock needed — cursor is a leveldb snapshot)
+    if (!haze::GenerateUTXOChunks(*chunk_cursor, manifest.utxo_count, manifest.utxo_hash,
+                                   output_dir, haze::DEFAULT_CHUNK_SIZE, manifest,
+                                   node.rpc_interruption_point)) {
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to generate UTXO chunks");
+    }
+
+    // Step 4: Generate bloom filter (no lock needed)
+    if (!haze::GenerateBloomFilter(*bloom_cursor, output_dir, manifest,
+                                    node.rpc_interruption_point)) {
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to generate bloom filter");
+    }
+
+    // Step 5: Re-serialize manifest with all hashes populated
+    const std::string manifest_path = output_dir + "/manifest.bin";
+    DataStream ss;
+    ss << manifest;
+
+    std::ofstream manifest_file(manifest_path, std::ios::binary | std::ios::trunc);
+    if (!manifest_file.is_open()) {
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Cannot write final manifest.bin");
+    }
+    manifest_file.write(reinterpret_cast<const char*>(ss.data()), ss.size());
+    manifest_file.flush();
+    manifest_file.close();
+
+    // Return summary + full manifest JSON
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("height", manifest.height);
+    result.pushKV("block_hash", manifest.block_hash.GetHex());
+    result.pushKV("utxo_count", static_cast<int64_t>(manifest.utxo_count));
+    result.pushKV("utxo_hash", manifest.utxo_hash.GetHex());
+    result.pushKV("total_chunks", static_cast<int>(manifest.chunk_manifest.total_chunks));
+    result.pushKV("bloom_hash", manifest.bloom_hash.GetHex());
+    result.pushKV("headers_hash", manifest.headers_hash.GetHex());
+    result.pushKV("manifest", manifest.ToJSON());
+    return result;
+},
+    };
+}
+
+static RPCHelpMan downloadcheckpoint()
+{
+    return RPCHelpMan{
+        "downloadcheckpoint",
+        "Initiate checkpoint download from a specific peer.\n"
+        "Sends a getchkpt message to the peer, which will respond with a checkpoint manifest.\n"
+        "Download progress is visible in debug.log.\n",
+        {
+            {"peer_id", RPCArg::Type::NUM, RPCArg::Optional::NO, "The peer ID to request the checkpoint from."},
+        },
+        RPCResult{
+            RPCResult::Type::OBJ, "", "",
+            {
+                {RPCResult::Type::BOOL, "requested", "whether the request was sent successfully"},
+                {RPCResult::Type::NUM, "peer_id", "the peer ID the request was sent to"},
+            }
+        },
+        RPCExamples{
+            HelpExampleCli("downloadcheckpoint", "0")
+        },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    NodeContext& node = EnsureAnyNodeContext(request.context);
+    CConnman& connman = EnsureConnman(node);
+
+    const NodeId peer_id = self.Arg<int>("peer_id");
+
+    bool sent = connman.ForNode(peer_id, [&](CNode* pnode) {
+        connman.PushMessage(pnode, NetMsg::Make(NetMsgType::GETCHECKPOINT, static_cast<int32_t>(-1)));
+        return true;
+    });
+
+    UniValue result(UniValue::VOBJ);
+    result.pushKV("requested", sent);
+    result.pushKV("peer_id", peer_id);
+    return result;
+},
+    };
+}
+
 void RegisterBlockchainRPCCommands(CRPCTable& t)
 {
     static const CRPCCommand commands[]{
@@ -3544,6 +3712,8 @@ void RegisterBlockchainRPCCommands(CRPCTable& t)
         {"blockchain", &dumptxoutset},
         {"blockchain", &loadtxoutset},
         {"blockchain", &getchainstates},
+        {"blockchain", &generatecheckpoint},
+        {"blockchain", &downloadcheckpoint},
         {"hidden", &invalidateblock},
         {"hidden", &reconsiderblock},
         {"blockchain", &waitfornewblock},

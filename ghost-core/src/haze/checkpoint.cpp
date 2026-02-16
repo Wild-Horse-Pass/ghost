@@ -3,13 +3,16 @@
 // file COPYING or https://opensource.org/license/mit/.
 
 #include <haze/checkpoint.h>
+#include <haze/bloom_filter.h>
 #include <haze/headers_file.h>
 
 #include <chain.h>
+#include <coins.h>
 #include <crypto/sha256.h>
 #include <hash.h>
 #include <logging.h>
 #include <node/blockstorage.h>
+#include <node/utxo_snapshot.h>
 #include <serialize.h>
 #include <streams.h>
 #include <util/strencodings.h>
@@ -271,6 +274,256 @@ bool ValidateCheckpoint(const CheckpointManifest& manifest,
     LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
                   "ValidateCheckpoint: all integrity checks passed for height %d\n",
                   manifest.height);
+    return true;
+}
+
+bool GenerateUTXOChunks(CCoinsViewCursor& pcursor,
+                         uint64_t utxo_count,
+                         const uint256& utxo_hash,
+                         const std::string& output_dir,
+                         uint32_t chunk_size,
+                         CheckpointManifest& manifest,
+                         const std::function<void()>& interruption_point)
+{
+    namespace fs = std::filesystem;
+
+    manifest.utxo_count = utxo_count;
+    manifest.utxo_hash = utxo_hash;
+
+    fs::create_directories(output_dir);
+
+    // Track chunk state
+    uint32_t chunk_index = 0;
+    uint64_t chunk_bytes = 0;
+    uint64_t total_offset = 0;
+    size_t coins_written = 0;
+    unsigned int iter = 0;
+
+    CSHA256 chunk_hasher;
+    std::ofstream chunk_file;
+
+    auto open_new_chunk = [&]() {
+        std::string path = output_dir + "/utxo_" + std::to_string(chunk_index) + ".bin";
+        chunk_file.open(path, std::ios::binary | std::ios::trunc);
+        chunk_bytes = 0;
+        chunk_hasher.Reset();
+    };
+
+    auto close_chunk = [&]() {
+        if (!chunk_file.is_open()) return;
+        chunk_file.flush();
+        chunk_file.close();
+
+        // Record chunk info in manifest
+        ChunkInfo ci;
+        ci.chunk_index = chunk_index;
+        ci.offset = total_offset;
+        ci.size = chunk_bytes;
+        ci.height_min = 0;  // Height tracking not available from cursor order
+        ci.height_max = manifest.height;
+        chunk_hasher.Finalize(ci.hash.begin());
+        manifest.chunk_manifest.chunks.push_back(std::move(ci));
+
+        total_offset += chunk_bytes;
+        chunk_index++;
+    };
+
+    // Write coins in the same txid-grouped format as WriteUTXOSnapshot,
+    // but WITHOUT the SnapshotMetadata header (chunks are raw coin data only).
+    open_new_chunk();
+    if (!chunk_file.is_open()) {
+        LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                      "GenerateUTXOChunks: cannot open first chunk file\n");
+        return false;
+    }
+
+    COutPoint key;
+    Coin coin;
+    Txid last_hash;
+    std::vector<std::pair<uint32_t, Coin>> coins;
+
+    auto write_coins_to_chunk = [&](const Txid& txid, const std::vector<std::pair<uint32_t, Coin>>& coins_vec) {
+        // Serialize to a buffer first so we can hash and measure size
+        DataStream ss;
+        ss << txid;
+        WriteCompactSize(ss, coins_vec.size());
+        for (const auto& [n, c] : coins_vec) {
+            WriteCompactSize(ss, n);
+            ss << c;
+        }
+
+        // Check if we need to start a new chunk (don't split a tx group across chunks)
+        if (chunk_bytes > 0 && chunk_bytes + ss.size() > chunk_size) {
+            close_chunk();
+            open_new_chunk();
+            if (!chunk_file.is_open()) return false;
+        }
+
+        chunk_file.write(reinterpret_cast<const char*>(ss.data()), ss.size());
+        chunk_hasher.Write(reinterpret_cast<const unsigned char*>(ss.data()), ss.size());
+        chunk_bytes += ss.size();
+        coins_written += coins_vec.size();
+        return true;
+    };
+
+    pcursor.GetKey(key);
+    last_hash = key.hash;
+
+    while (pcursor.Valid()) {
+        if (interruption_point && iter % 5000 == 0) interruption_point();
+        ++iter;
+
+        if (pcursor.GetKey(key) && pcursor.GetValue(coin)) {
+            if (key.hash != last_hash) {
+                if (!write_coins_to_chunk(last_hash, coins)) return false;
+                last_hash = key.hash;
+                coins.clear();
+            }
+            coins.emplace_back(key.n, coin);
+        }
+        pcursor.Next();
+    }
+
+    // Flush remaining coins
+    if (!coins.empty()) {
+        if (!write_coins_to_chunk(last_hash, coins)) return false;
+    }
+
+    // Close final chunk
+    close_chunk();
+
+    // Populate chunk manifest metadata
+    manifest.chunk_manifest.chunk_size = chunk_size;
+    manifest.chunk_manifest.total_chunks = chunk_index;
+
+    LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
+                  "GenerateUTXOChunks: wrote %zu coins to %u chunks (%llu bytes total)\n",
+                  coins_written, chunk_index,
+                  static_cast<unsigned long long>(total_offset));
+
+    if (coins_written != manifest.utxo_count) {
+        LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                      "GenerateUTXOChunks: coin count mismatch: wrote %zu, expected %llu\n",
+                      coins_written, static_cast<unsigned long long>(manifest.utxo_count));
+        return false;
+    }
+
+    return true;
+}
+
+bool GenerateBloomFilter(CCoinsViewCursor& pcursor,
+                          const std::string& output_dir,
+                          CheckpointManifest& manifest,
+                          const std::function<void()>& interruption_point)
+{
+    namespace fs = std::filesystem;
+
+    if (manifest.utxo_count == 0) {
+        LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                      "GenerateBloomFilter: utxo_count is 0 (run GenerateUTXOChunks first)\n");
+        return false;
+    }
+
+    // Construct bloom filter sized for the UTXO count at 0.1% FPR
+    SwiftSyncFilter filter(manifest.utxo_count, 0.001);
+
+    COutPoint key;
+    Coin coin;
+    uint64_t count = 0;
+    unsigned int iter = 0;
+
+    while (pcursor.Valid()) {
+        if (interruption_point && iter % 5000 == 0) interruption_point();
+        ++iter;
+
+        if (pcursor.GetKey(key) && pcursor.GetValue(coin)) {
+            filter.Insert(key);
+            count++;
+        }
+        pcursor.Next();
+    }
+
+    LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
+                  "GenerateBloomFilter: inserted %llu outpoints (filter %zu bytes, %u hashes)\n",
+                  static_cast<unsigned long long>(count),
+                  filter.GetSizeBytes(), filter.GetNumHashes());
+
+    // Save to disk
+    fs::create_directories(output_dir);
+    const std::string bloom_path = output_dir + "/bloom.bin";
+    if (!filter.Save(bloom_path)) {
+        LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                      "GenerateBloomFilter: failed to save bloom.bin\n");
+        return false;
+    }
+
+    // Hash the bloom file for manifest
+    uint256 bloom_hash;
+    if (!HashFile(bloom_path, bloom_hash)) {
+        LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                      "GenerateBloomFilter: failed to hash bloom.bin\n");
+        return false;
+    }
+    manifest.bloom_hash = bloom_hash;
+
+    return true;
+}
+
+bool AssembleSnapshot(const CheckpointManifest& manifest,
+                       const std::string& chunks_dir,
+                       const std::string& output_path,
+                       const MessageStartChars& network_magic)
+{
+    // Create the SnapshotMetadata header
+    node::SnapshotMetadata metadata(network_magic, manifest.block_hash, manifest.utxo_count);
+
+    std::ofstream outfile(output_path, std::ios::binary | std::ios::trunc);
+    if (!outfile.is_open()) {
+        LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                      "AssembleSnapshot: cannot open output file %s\n", output_path);
+        return false;
+    }
+
+    // Serialize the metadata header
+    DataStream ss;
+    ss << metadata;
+    outfile.write(reinterpret_cast<const char*>(ss.data()), ss.size());
+
+    // Concatenate chunk files in order
+    uint64_t total_bytes = ss.size();
+    for (uint32_t i = 0; i < manifest.chunk_manifest.total_chunks; i++) {
+        const std::string chunk_path = chunks_dir + "/utxo_" + std::to_string(i) + ".bin";
+        std::ifstream chunk_file(chunk_path, std::ios::binary);
+        if (!chunk_file.is_open()) {
+            LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                          "AssembleSnapshot: cannot open chunk %s\n", chunk_path);
+            return false;
+        }
+
+        // Stream the chunk data
+        char buf[65536];
+        while (chunk_file.good()) {
+            chunk_file.read(buf, sizeof(buf));
+            std::streamsize bytes_read = chunk_file.gcount();
+            if (bytes_read > 0) {
+                outfile.write(buf, bytes_read);
+                total_bytes += bytes_read;
+            }
+        }
+    }
+
+    outfile.flush();
+    if (!outfile.good()) {
+        LogPrintLevel(BCLog::HAZE, BCLog::Level::Error,
+                      "AssembleSnapshot: write error on %s\n", output_path);
+        return false;
+    }
+    outfile.close();
+
+    LogPrintLevel(BCLog::HAZE, BCLog::Level::Info,
+                  "AssembleSnapshot: wrote %llu bytes to %s (%u chunks + header)\n",
+                  static_cast<unsigned long long>(total_bytes), output_path,
+                  manifest.chunk_manifest.total_chunks);
     return true;
 }
 

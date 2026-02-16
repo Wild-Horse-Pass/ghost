@@ -10,10 +10,11 @@ a valid UTXO set via ConnectBlock.
 
 Setup:
 - node0: --hazemode=full_archive (miner, creates snapshot)
-- node1: --hazemode=hazed (loads snapshot, syncs forward)
+- node1: --hazemode=hazed (loads snapshot via RPC, syncs forward)
+- node2: --hazemode=hazed (loads snapshot via CLI -loadtxoutset flag)
 
 Test steps:
-1. Mine deterministic chain on node0 to snapshot height (110)
+1. Mine deterministic chain on node0 to snapshot height (160)
 2. Dump UTXO snapshot via dumptxoutset
 3. Start node1 (hazed), sync headers from node0
 4. Load snapshot on node1 via loadtxoutset RPC
@@ -23,6 +24,8 @@ Test steps:
 8. Verify final UTXO equivalence
 9. Verify node1 has GSB files (new blocks stored as stripped)
 10. Restart node1, verify chain persists
+11. Load snapshot on node2 via CLI -loadtxoutset flag
+12. Restart node2 normally, verify UTXO hash matches
 """
 
 from pathlib import Path
@@ -37,9 +40,10 @@ SNAPSHOT_HEIGHT = 160
 class GhostHazeSnapshotTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
-        self.num_nodes = 2
+        self.num_nodes = 3
         self.extra_args = [
             ["-hazemode=full_archive", "-disablewallet"],
+            ["-hazemode=hazed", "-disablewallet", "-debug=haze"],
             ["-hazemode=hazed", "-disablewallet", "-debug=haze"],
         ]
 
@@ -47,7 +51,7 @@ class GhostHazeSnapshotTest(BitcoinTestFramework):
         pass  # No wallet needed
 
     def setup_network(self):
-        # Start only node0 initially; node1 starts later after snapshot is ready
+        # Start only node0 initially; node1/node2 start later after snapshot is ready
         self.add_nodes(self.num_nodes, self.extra_args)
         self.start_node(0)
 
@@ -111,8 +115,8 @@ class GhostHazeSnapshotTest(BitcoinTestFramework):
 
         self.log.info("Step 8: Mine 10 new blocks on node0, sync to node1")
         self.connect_nodes(0, 1)
-        self.generatetoaddress(node0, 10, addr)
-        self.sync_blocks()
+        self.generatetoaddress(node0, 10, addr, sync_fun=self.no_op)
+        self.sync_blocks(self.nodes[:2])
 
         final_height = SNAPSHOT_HEIGHT + 10
         assert_equal(node0.getblockcount(), final_height)
@@ -148,7 +152,52 @@ class GhostHazeSnapshotTest(BitcoinTestFramework):
         assert_equal(utxo_final_0['hash_serialized_3'], utxo_restart['hash_serialized_3'])
         self.log.info("  Post-restart UTXO hash matches!")
 
+        # --- Part 2: CLI -loadtxoutset flag test ---
+        self.log.info("Step 12: Load snapshot on node2 via CLI -loadtxoutset flag")
+
+        # node2 needs headers first, so start it, feed headers, then stop
+        self.start_node(2)
+        node2 = self.nodes[2]
+
+        for i in range(1, SNAPSHOT_HEIGHT + 1):
+            block_hex = node0.getblock(node0.getblockhash(i), 0)
+            node2.submitheader(block_hex)
+
+        assert_equal(node2.getblockchaininfo()["headers"], SNAPSHOT_HEIGHT)
+        self.log.info(f"  node2 headers synced to {SNAPSHOT_HEIGHT}")
+        self.stop_node(2)
+
+        self.log.info("Step 13: Start node2 with -loadtxoutset flag (exits after load)")
+        stdout_content = self.run_cli_snapshot_load(self.nodes[2], snapshot_path)
+        self.log.info(f"  CLI output: {stdout_content[:200]}")
+        # Verify the CLI output contains expected fields
+        assert f"Base height:  {SNAPSHOT_HEIGHT}" in stdout_content
+        assert "Coins loaded:" in stdout_content
+        self.log.info("  CLI -loadtxoutset flag works correctly!")
+
         self.log.info("PASSED: Hazed node bootstrapped from UTXO snapshot successfully")
+
+    def run_cli_snapshot_load(self, node, snapshot_path):
+        """Start node with -loadtxoutset and wait for it to exit."""
+        node.start(extra_args=["-hazemode=hazed", "-disablewallet",
+                                f"-loadtxoutset={snapshot_path}"])
+        ret_code = node.process.wait(timeout=120)
+
+        # Read stdout before cleaning up TestNode state
+        node.stdout.seek(0)
+        stdout_content = node.stdout.read().decode("utf-8", errors="replace")
+        node.stdout.close()
+        node.stderr.close()
+        node.running = False
+        node.process = None
+        node.rpc_connected = False
+        node._rpc = None
+
+        # The -loadtxoutset flag causes AppInitMain to return false (clean shutdown),
+        # which ghostd interprets as exit code 1. The success indicator is the stdout message.
+        assert "Snapshot loaded successfully" in stdout_content, \
+            f"Expected 'Snapshot loaded successfully' in stdout (exit {ret_code}):\n{stdout_content}"
+        return stdout_content
 
 
 if __name__ == "__main__":

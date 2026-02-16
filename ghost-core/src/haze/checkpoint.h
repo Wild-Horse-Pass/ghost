@@ -5,14 +5,19 @@
 #ifndef BITCOIN_HAZE_CHECKPOINT_H
 #define BITCOIN_HAZE_CHECKPOINT_H
 
+#include <kernel/messagestartchars.h>
 #include <serialize.h>
 #include <uint256.h>
 #include <univalue.h>
 
 #include <array>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
+
+class CCoinsViewCursor;
 
 class CChain;
 class CBlockIndex;
@@ -23,8 +28,10 @@ class BlockManager;
 
 namespace haze {
 
-/** Default UTXO chunk size: 64 MB. */
-static constexpr uint32_t DEFAULT_CHUNK_SIZE = 64 * 1024 * 1024;
+/** Default UTXO chunk size: 2 MB.
+ *  Must be well under MAX_PROTOCOL_MESSAGE_LENGTH (4 MB) since chunks
+ *  are sent as P2P messages with a small amount of framing overhead. */
+static constexpr uint32_t DEFAULT_CHUNK_SIZE = 2 * 1024 * 1024;
 
 /** Checkpoint manifest version. */
 static constexpr uint32_t CHECKPOINT_VERSION = 1;
@@ -98,10 +105,7 @@ struct CheckpointManifest {
     {
         READWRITE(obj.version, obj.height, obj.block_hash, obj.utxo_count,
                   obj.headers_hash, obj.utxo_hash, obj.bloom_hash,
-                  obj.chunk_manifest);
-        // Signature is a fixed-size array
-        SER_WRITE(obj, s.write(std::as_bytes(std::span{obj.signature})));
-        SER_READ(obj, s.read(std::as_writable_bytes(std::span{obj.signature})));
+                  obj.chunk_manifest, obj.signature);
     }
 };
 
@@ -152,6 +156,73 @@ bool ValidateCheckpoint(const CheckpointManifest& manifest,
  * @return true on success.
  */
 bool HashFile(const std::string& filepath, uint256& hash);
+
+/**
+ * Generate UTXO chunk files from a pre-created UTXO cursor.
+ *
+ * Iterates the cursor (same txid-grouped format as assumeutxo snapshot body),
+ * splitting coins into multiple chunk files (utxo_0.bin, utxo_1.bin, ...)
+ * each capped at chunk_size bytes. Each chunk is hashed with SHA-256 and
+ * recorded in manifest.chunk_manifest.
+ *
+ * The caller must create the cursor under cs_main (via CoinsDB().Cursor())
+ * and pass pre-computed UTXO stats. This allows the lock to be released
+ * before the slow I/O happens.
+ *
+ * @param[in]     pcursor             UTXO cursor (created under cs_main).
+ * @param[in]     utxo_count          Number of UTXOs (from GetUTXOStats).
+ * @param[in]     utxo_hash           Hash of the UTXO set (hash_serialized_3).
+ * @param[in]     output_dir          Directory to write chunk files.
+ * @param[in]     chunk_size          Maximum bytes per chunk file.
+ * @param[in,out] manifest            The manifest to populate.
+ * @param[in]     interruption_point  Optional callback for interruptibility.
+ * @return true on success.
+ */
+bool GenerateUTXOChunks(CCoinsViewCursor& pcursor,
+                         uint64_t utxo_count,
+                         const uint256& utxo_hash,
+                         const std::string& output_dir,
+                         uint32_t chunk_size,
+                         CheckpointManifest& manifest,
+                         const std::function<void()>& interruption_point = {});
+
+/**
+ * Generate the SwiftSync bloom filter from a pre-created UTXO cursor.
+ *
+ * Iterates the cursor, inserts each COutPoint into a SwiftSyncFilter,
+ * saves to bloom.bin, and records the hash in manifest.bloom_hash.
+ *
+ * The caller must create the cursor under cs_main (via CoinsDB().Cursor())
+ * and set manifest.utxo_count before calling. This allows the lock to be
+ * released before the slow I/O happens.
+ *
+ * @param[in]     pcursor             UTXO cursor (created under cs_main).
+ * @param[in]     output_dir          Directory to write bloom.bin.
+ * @param[in,out] manifest            The manifest to populate (utxo_count must be set).
+ * @param[in]     interruption_point  Optional callback for interruptibility.
+ * @return true on success.
+ */
+bool GenerateBloomFilter(CCoinsViewCursor& pcursor,
+                          const std::string& output_dir,
+                          CheckpointManifest& manifest,
+                          const std::function<void()>& interruption_point = {});
+
+/**
+ * Assemble verified UTXO chunks into an assumeutxo-compatible snapshot file.
+ *
+ * Prepends a SnapshotMetadata header and concatenates chunk files in order.
+ * The result is byte-identical to dumptxoutset output, loadable by ActivateSnapshot.
+ *
+ * @param[in] manifest     The checkpoint manifest (for block_hash, utxo_count, chunk order).
+ * @param[in] chunks_dir   Directory containing verified utxo_N.bin chunk files.
+ * @param[in] output_path  Path for the assembled snapshot file.
+ * @param[in] network_magic  Network magic bytes for the SnapshotMetadata header.
+ * @return true on success.
+ */
+bool AssembleSnapshot(const CheckpointManifest& manifest,
+                       const std::string& chunks_dir,
+                       const std::string& output_path,
+                       const MessageStartChars& network_magic);
 
 } // namespace haze
 

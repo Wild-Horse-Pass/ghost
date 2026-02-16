@@ -87,6 +87,11 @@ public:
         //! Number of headers sent in one getheaders message result (this is
         //! a test-only option).
         uint32_t max_headers_result{MAX_HEADERS_RESULTS};
+        //! Path to checkpoint directory for serving checkpoint data to peers.
+        //! Empty if not serving checkpoints.
+        std::string checkpoint_dir{};
+        //! Network-specific data directory path (for deriving checkpoint download paths).
+        std::string datadir{};
     };
 
     static std::unique_ptr<PeerManager> make(CConnman& connman, AddrMan& addrman,

@@ -5446,7 +5446,7 @@ void ChainstateManager::CheckBlockIndex() const
 
         // Chainstate-specific checks on setBlockIndexCandidates
         for (const Chainstate* c : {m_ibd_chainstate.get(), m_snapshot_chainstate.get()}) {
-            if (!c || c->m_chain.Tip() == nullptr) continue;
+            if (!c || c->m_disabled || c->m_chain.Tip() == nullptr) continue;
             // Two main factors determine whether pindex is a candidate in
             // setBlockIndexCandidates:
             //

@@ -1396,6 +1396,14 @@ static ChainstateLoadResult InitAndLoadChainstate(
             g_local_services = ServiceFlags(g_local_services | NODE_GHOST_HAZE);
             g_local_services = ServiceFlags(g_local_services & ~NODE_NETWORK);
         }
+
+        // Advertise NODE_HAZE_CHECKPOINT if a valid checkpoint directory exists
+        const fs::path checkpoint_dir = datadir / "checkpoint";
+        const fs::path manifest_path = checkpoint_dir / "manifest.bin";
+        if (fs::exists(manifest_path)) {
+            g_local_services = ServiceFlags(g_local_services | NODE_HAZE_CHECKPOINT);
+            LogPrintf("Ghost Haze: checkpoint directory found, advertising NODE_HAZE_CHECKPOINT\n");
+        }
     }
 
     // This is defined and set here instead of inline in validation.h to avoid a hard
@@ -1609,6 +1617,16 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
 
     PeerManager::Options peerman_opts{};
     ApplyArgsManOptions(args, peerman_opts);
+
+    // Set checkpoint directory if available (for serving checkpoints to peers)
+    {
+        peerman_opts.datadir = fs::PathToString(args.GetDataDirNet());
+        const fs::path checkpoint_dir = args.GetDataDirNet() / "checkpoint";
+        const fs::path manifest_path = checkpoint_dir / "manifest.bin";
+        if (fs::exists(manifest_path)) {
+            peerman_opts.checkpoint_dir = fs::PathToString(checkpoint_dir);
+        }
+    }
 
     {
 
