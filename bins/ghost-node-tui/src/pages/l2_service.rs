@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::theme;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
@@ -42,11 +43,11 @@ fn render_service_status(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Ghost Pay Service ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -78,7 +79,7 @@ fn render_service_status(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("Peers: ", Style::default().fg(Color::Gray)),
-            Span::styled(gp.peer_count.to_string(), Style::default().fg(Color::Cyan)),
+            Span::styled(gp.peer_count.to_string(), Style::default().fg(theme::PRIMARY_DIM)),
         ]));
 
         let wraith_status = gp.wraith_enabled.unwrap_or(false);
@@ -94,7 +95,7 @@ fn render_service_status(f: &mut Frame, area: Rect, app: &App) {
         ]));
     } else {
         lines.push(Line::from(Span::styled(
-            "No data available",
+            "Waiting for Ghost Pay...",
             Style::default().fg(Color::Gray),
         )));
     }
@@ -117,11 +118,11 @@ fn render_epoch_progress(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Epoch Progress ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -182,7 +183,7 @@ fn render_epoch_progress(f: &mut Frame, area: Rect, app: &App) {
                     ..inner
                 };
                 let gauge = Gauge::default()
-                    .gauge_style(Style::default().fg(Color::Cyan))
+                    .gauge_style(Style::default().fg(theme::PRIMARY))
                     .percent(progress)
                     .label(format!("{}%", progress));
                 f.render_widget(gauge, gauge_area);
@@ -191,7 +192,7 @@ fn render_epoch_progress(f: &mut Frame, area: Rect, app: &App) {
         }
     } else {
         lines.push(Line::from(Span::styled(
-            "No data available",
+            "Waiting for Ghost Pay...",
             Style::default().fg(Color::Gray),
         )));
     }
@@ -205,11 +206,11 @@ fn render_locks_summary(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Locks Managed ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -222,7 +223,7 @@ fn render_locks_summary(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 locks.active_locks.to_string(),
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY_DIM)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -251,8 +252,17 @@ fn render_locks_summary(f: &mut Frame, area: Rect, app: &App) {
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "No data available",
-            Style::default().fg(Color::Gray),
+            "No lock data.",
+            Style::default().fg(theme::TEXT_DIM),
+        )));
+        lines.push(Line::from(Span::raw("")));
+        lines.push(Line::from(Span::styled(
+            "Locks are timelocked P2TR outputs",
+            Style::default().fg(theme::PRIMARY_DIM),
+        )));
+        lines.push(Line::from(Span::styled(
+            "used by the L2 payment system.",
+            Style::default().fg(theme::PRIMARY_DIM),
         )));
     }
 
@@ -265,21 +275,34 @@ fn render_wraith_sessions(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Wraith Mixing Sessions (Coordinator View) ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     if let Some(sessions) = &app.node_data.wraith_sessions {
         if sessions.is_empty() {
             let inner = block.inner(area);
             f.render_widget(block, area);
 
-            let paragraph = Paragraph::new(Span::styled(
-                "No active sessions",
-                Style::default().fg(Color::Gray),
-            ));
+            let lines = vec![
+                Line::from(Span::styled(
+                    "No active Wraith sessions.",
+                    Style::default().fg(theme::TEXT_DIM),
+                )),
+                Line::from(Span::raw("")),
+                Line::from(Span::styled(
+                    "Wraith is Ghost's CoinJoin mixing protocol.",
+                    Style::default().fg(theme::PRIMARY_DIM),
+                )),
+                Line::from(Span::styled(
+                    "Sessions start when participants register.",
+                    Style::default().fg(theme::PRIMARY_DIM),
+                )),
+            ];
+
+            let paragraph = Paragraph::new(lines);
             f.render_widget(paragraph, inner);
             return;
         }
@@ -287,22 +310,22 @@ fn render_wraith_sessions(f: &mut Frame, area: Rect, app: &App) {
         let header = Row::new(vec![
             Cell::from("Session").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Denomination").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Phase").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Participants").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
@@ -315,7 +338,7 @@ fn render_wraith_sessions(f: &mut Frame, area: Rect, app: &App) {
             .map(|session| {
                 let phase_color = match session.phase.as_str() {
                     "registration" => Color::Yellow,
-                    "signing" | "split" | "shuffle" | "merge" => Color::Cyan,
+                    "signing" | "split" | "shuffle" | "merge" => theme::PRIMARY_DIM,
                     "complete" => Color::Green,
                     _ => Color::White,
                 };
@@ -349,10 +372,23 @@ fn render_wraith_sessions(f: &mut Frame, area: Rect, app: &App) {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let paragraph = Paragraph::new(Span::styled(
-            "No session data available",
-            Style::default().fg(Color::Gray),
-        ));
+        let lines = vec![
+            Line::from(Span::styled(
+                "No active Wraith sessions.",
+                Style::default().fg(theme::TEXT_DIM),
+            )),
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(
+                "Wraith is Ghost's CoinJoin mixing protocol.",
+                Style::default().fg(theme::PRIMARY_DIM),
+            )),
+            Line::from(Span::styled(
+                "Sessions start when participants register.",
+                Style::default().fg(theme::PRIMARY_DIM),
+            )),
+        ];
+
+        let paragraph = Paragraph::new(lines);
         f.render_widget(paragraph, inner);
     }
 }

@@ -62,6 +62,11 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+# Crypto (HMAC authentication for POST actions)
+hmac = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
 # Utilities
 chrono = { workspace = true }
 dirs = "5.0"

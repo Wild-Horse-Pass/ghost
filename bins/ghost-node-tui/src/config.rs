@@ -29,9 +29,13 @@ pub struct NodeEntry {
     #[serde(default)]
     pub default: bool,
 
-    /// Optional authentication token
+    /// Optional authentication token (Bearer)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_token: Option<String>,
+
+    /// Optional HMAC secret for authenticated POST actions
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hmac_secret: Option<String>,
 
     /// Optional group for organization
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -235,6 +239,7 @@ impl NodeEntry {
             url: url.into(),
             default: false,
             auth_token: None,
+            hmac_secret: None,
             group: None,
             notes: None,
         }

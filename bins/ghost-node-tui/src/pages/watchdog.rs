@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::theme;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
@@ -37,11 +38,11 @@ fn render_service_health(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Service Health ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -146,8 +147,8 @@ fn render_service_health(f: &mut Frame, area: Rect, app: &App) {
         }
     } else {
         lines.push(Line::from(Span::styled(
-            "No watchdog data available",
-            Style::default().fg(Color::Gray),
+            "Waiting for watchdog...",
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -160,11 +161,11 @@ fn render_capabilities(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Node Capabilities ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -202,8 +203,8 @@ fn render_capabilities(f: &mut Frame, area: Rect, app: &App) {
         }
     } else {
         lines.push(Line::from(Span::styled(
-            "No node data available",
-            Style::default().fg(Color::Gray),
+            "Waiting for node status...",
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -216,11 +217,11 @@ fn render_events(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Recent Events ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     if let Some(watchdog) = &app.node_data.watchdog {
         if watchdog.recent_events.is_empty() {
@@ -228,8 +229,8 @@ fn render_events(f: &mut Frame, area: Rect, app: &App) {
             f.render_widget(block, area);
 
             let paragraph = Paragraph::new(Span::styled(
-                "No recent events",
-                Style::default().fg(Color::Gray),
+                "All systems nominal — no recent events.",
+                Style::default().fg(theme::OK),
             ));
             f.render_widget(paragraph, inner);
             return;
@@ -238,17 +239,17 @@ fn render_events(f: &mut Frame, area: Rect, app: &App) {
         let header = Row::new(vec![
             Cell::from("Time").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Service").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Event").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
@@ -295,8 +296,8 @@ fn render_events(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(block, area);
 
         let paragraph = Paragraph::new(Span::styled(
-            "No event data available",
-            Style::default().fg(Color::Gray),
+            "Waiting for watchdog...",
+            Style::default().fg(theme::TEXT_DIM),
         ));
         f.render_widget(paragraph, inner);
     }

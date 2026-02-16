@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::theme;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
@@ -30,11 +31,11 @@ fn render_filter_bar(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             format!(" Log Filter: {} ", current_level.as_str().to_uppercase()),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -52,16 +53,16 @@ fn render_filter_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let mut spans = vec![Span::styled(
         "[/] Search  ",
-        Style::default().fg(Color::Gray),
+        Style::default().fg(theme::TEXT_DIM),
     )];
 
     for (key, name, level) in levels {
         let style = if level == current_level {
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Gray)
+            Style::default().fg(theme::TEXT_DIM)
         };
         spans.push(Span::styled(format!("[{}] {} ", key, name), style));
     }
@@ -76,11 +77,11 @@ fn render_log_entries(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Log Entries ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     if let Some(logs) = &app.node_data.logs {
         let items: Vec<ListItem> = logs
@@ -92,7 +93,7 @@ fn render_log_entries(f: &mut Frame, area: Rect, app: &App) {
                     "ERROR" => Color::Red,
                     "WARN" => Color::Yellow,
                     "INFO" => Color::Green,
-                    "DEBUG" => Color::Cyan,
+                    "DEBUG" => theme::PRIMARY_DIM,
                     "TRACE" => Color::Gray,
                     _ => Color::White,
                 };
@@ -109,7 +110,7 @@ fn render_log_entries(f: &mut Frame, area: Rect, app: &App) {
                     ),
                     Span::styled(
                         format!("[{}] ", entry.component),
-                        Style::default().fg(Color::Cyan),
+                        Style::default().fg(theme::PRIMARY_DIM),
                     ),
                     Span::styled(&entry.message, Style::default().fg(Color::White)),
                 ]);
@@ -139,7 +140,7 @@ fn render_log_entries(f: &mut Frame, area: Rect, app: &App) {
             Line::from(Span::styled(
                 "    journalctl -u ghost-pool -f",
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             )),
         ];

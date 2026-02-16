@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::{App, ConnectionStatus};
+use crate::theme;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
@@ -64,11 +65,11 @@ fn render_node_status_card(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Node Status ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -110,7 +111,10 @@ fn render_node_status_card(f: &mut Frame, area: Rect, app: &App) {
         ]));
         lines.push(Line::from(vec![
             Span::styled("Peers: ", Style::default().fg(Color::Gray)),
-            Span::styled(s.peer_count.to_string(), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                s.peer_count.to_string(),
+                Style::default().fg(theme::PRIMARY_DIM),
+            ),
         ]));
     }
 
@@ -123,11 +127,11 @@ fn render_sync_status_card(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Bitcoin Core ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -165,12 +169,15 @@ fn render_sync_status_card(f: &mut Frame, area: Rect, app: &App) {
         ]));
         lines.push(Line::from(vec![
             Span::styled("Miners: ", Style::default().fg(Color::Gray)),
-            Span::styled(s.miner_count.to_string(), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                s.miner_count.to_string(),
+                Style::default().fg(theme::PRIMARY_DIM),
+            ),
         ]));
     } else {
         lines.push(Line::from(Span::styled(
-            "No data",
-            Style::default().fg(Color::Gray),
+            "Waiting for Bitcoin Core...",
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -183,11 +190,11 @@ fn render_resources_card(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Resources ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -209,7 +216,10 @@ fn render_resources_card(f: &mut Frame, area: Rect, app: &App) {
         // Disk gauge
         render_resource_gauge(f, inner_chunks[2], "DISK", res.disk_percent);
     } else {
-        let paragraph = Paragraph::new(Span::styled("No data", Style::default().fg(Color::Gray)));
+        let paragraph = Paragraph::new(Span::styled(
+            "Gathering metrics...",
+            Style::default().fg(theme::TEXT_DIM),
+        ));
         f.render_widget(paragraph, inner);
     }
 }
@@ -237,11 +247,11 @@ fn render_mining_card(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Mining Pool ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -266,7 +276,7 @@ fn render_mining_card(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("Workers: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 mining.miner_count.to_string(),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::PRIMARY_DIM),
             ),
         ]));
         lines.push(Line::from(vec![
@@ -290,8 +300,8 @@ fn render_mining_card(f: &mut Frame, area: Rect, app: &App) {
         }
     } else {
         lines.push(Line::from(Span::styled(
-            "No data",
-            Style::default().fg(Color::Gray),
+            "Gathering metrics...",
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -304,11 +314,11 @@ fn render_l2_card(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Ghost Pay (L2) ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -349,12 +359,15 @@ fn render_l2_card(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("Peers: ", Style::default().fg(Color::Gray)),
-            Span::styled(gp.peer_count.to_string(), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                gp.peer_count.to_string(),
+                Style::default().fg(theme::PRIMARY_DIM),
+            ),
         ]));
     } else {
         lines.push(Line::from(Span::styled(
-            "No data",
-            Style::default().fg(Color::Gray),
+            "Gathering metrics...",
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -367,11 +380,11 @@ fn render_rewards_card(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Node Rewards ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -384,7 +397,7 @@ fn render_rewards_card(f: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 format!("{}/15", rewards.node_shares),
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY_DIM)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -410,8 +423,8 @@ fn render_rewards_card(f: &mut Frame, area: Rect, app: &App) {
         ]));
     } else {
         lines.push(Line::from(Span::styled(
-            "No data",
-            Style::default().fg(Color::Gray),
+            "Gathering metrics...",
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 

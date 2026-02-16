@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::{App, ConnectionStatus, InputMode};
+use crate::theme;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
@@ -30,11 +31,11 @@ fn render_instructions(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Swarm Management ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -47,7 +48,7 @@ fn render_instructions(f: &mut Frame, area: Rect, app: &App) {
         InputMode::NodeUrl => Line::from(vec![
             Span::styled("URL: ", Style::default().fg(Color::Yellow)),
             Span::styled(&app.input_buffer, Style::default().fg(Color::White)),
-            Span::styled("_", Style::default().fg(Color::Cyan)),
+            Span::styled("_", Style::default().fg(theme::PRIMARY)),
             Span::styled(
                 "  [Enter] Confirm  [Esc] Cancel",
                 Style::default().fg(Color::Gray),
@@ -56,7 +57,7 @@ fn render_instructions(f: &mut Frame, area: Rect, app: &App) {
         InputMode::NodeName => Line::from(vec![
             Span::styled("Name: ", Style::default().fg(Color::Yellow)),
             Span::styled(&app.input_buffer, Style::default().fg(Color::White)),
-            Span::styled("_", Style::default().fg(Color::Cyan)),
+            Span::styled("_", Style::default().fg(theme::PRIMARY)),
             Span::styled(
                 "  [Enter] Confirm  [Esc] Cancel",
                 Style::default().fg(Color::Gray),
@@ -81,37 +82,37 @@ fn render_node_list(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Configured Nodes ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let header = Row::new(vec![
-        Cell::from("").style(Style::default().fg(Color::Cyan)),
+        Cell::from("").style(Style::default().fg(theme::PRIMARY)),
         Cell::from("Name").style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
         Cell::from("URL").style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
         Cell::from("Status").style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
         Cell::from("Block").style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
         Cell::from("Peers").style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
@@ -207,11 +208,11 @@ fn render_node_details(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Node Details ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -231,7 +232,7 @@ fn render_node_details(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("URL: ", Style::default().fg(Color::Gray)),
-            Span::styled(&node.url, Style::default().fg(Color::Cyan)),
+            Span::styled(&node.url, Style::default().fg(theme::PRIMARY_DIM)),
         ]));
 
         if let Some(group) = &node.group {

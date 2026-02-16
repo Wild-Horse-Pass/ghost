@@ -26,6 +26,7 @@ mod api;
 mod app;
 mod config;
 mod pages;
+mod theme;
 mod widgets;
 
 use app::{App, InputMode, Tab};
@@ -90,6 +91,7 @@ async fn main() -> Result<()> {
             url,
             default: true,
             auth_token: None,
+            hmac_secret: None,
             group: None,
             notes: None,
         });
@@ -107,7 +109,11 @@ async fn main() -> Result<()> {
 
     // Create API client for active node
     if let Some(node) = app.active_node() {
-        app.api_client = Some(create_client(&node.url, node.auth_token.as_deref()));
+        app.api_client = Some(create_client(
+            &node.url,
+            node.auth_token.as_deref(),
+            node.hmac_secret.as_deref(),
+        ));
     }
 
     // Run app
@@ -182,9 +188,12 @@ async fn run_app(
             pages::render_page(f, chunks[1], app);
             widgets::render_footer(f, chunks[2], app);
 
-            // Render help overlay if active
+            // Render overlays
             if matches!(app.input_mode, InputMode::Help) {
                 widgets::render_help_overlay(f, f.area());
+            }
+            if matches!(app.input_mode, InputMode::ConfirmAction) {
+                widgets::render_confirm_dialog(f, f.area(), app);
             }
         })?;
 
@@ -239,6 +248,7 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
                             url: url.clone(),
                             default: app.swarm.nodes.is_empty(),
                             auth_token: None,
+                            hmac_secret: None,
                             group: None,
                             notes: None,
                         };
@@ -353,6 +363,97 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
                 _ => return false,
             }
         }
+        InputMode::ConfirmAction => {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    execute_action(app).await;
+                    app.input_mode = InputMode::Normal;
+                    return false;
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    app.pending_action = None;
+                    app.input_mode = InputMode::Normal;
+                    app.status_message.clear();
+                    return false;
+                }
+                _ => return false,
+            }
+        }
+        InputMode::InputNickname => {
+            match code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    app.input_buffer.clear();
+                    app.status_message.clear();
+                    return false;
+                }
+                KeyCode::Enter => {
+                    if !app.input_buffer.is_empty() {
+                        let nickname = app.input_buffer.clone();
+                        if let Some(client) = &app.api_client {
+                            match client.set_nickname(&nickname).await {
+                                Ok(_) => {
+                                    app.status_message = format!("Nickname set: {}", nickname);
+                                }
+                                Err(e) => {
+                                    app.status_message = format!("Failed: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    app.input_mode = InputMode::Normal;
+                    app.input_buffer.clear();
+                    return false;
+                }
+                KeyCode::Char(c) => {
+                    app.input_buffer.push(c);
+                    return false;
+                }
+                KeyCode::Backspace => {
+                    app.input_buffer.pop();
+                    return false;
+                }
+                _ => return false,
+            }
+        }
+        InputMode::InputPayoutAddress => {
+            match code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    app.input_buffer.clear();
+                    app.status_message.clear();
+                    return false;
+                }
+                KeyCode::Enter => {
+                    if !app.input_buffer.is_empty() {
+                        let addr = app.input_buffer.clone();
+                        if let Some(client) = &app.api_client {
+                            match client.set_payout_address(&addr).await {
+                                Ok(_) => {
+                                    app.status_message =
+                                        format!("Payout address set: {}...", &addr[..addr.len().min(16)]);
+                                }
+                                Err(e) => {
+                                    app.status_message = format!("Failed: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    app.input_mode = InputMode::Normal;
+                    app.input_buffer.clear();
+                    return false;
+                }
+                KeyCode::Char(c) => {
+                    app.input_buffer.push(c);
+                    return false;
+                }
+                KeyCode::Backspace => {
+                    app.input_buffer.pop();
+                    return false;
+                }
+                _ => return false,
+            }
+        }
     }
 
     // Normal mode key handling
@@ -393,6 +494,66 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
                 app.status_message = format!("Delete '{}'? (y/n)", name);
             }
         }
+
+        // Watchdog actions
+        KeyCode::Char('R') if matches!(app.current_tab, Tab::Watchdog) => {
+            if let Some(wd) = &app.node_data.watchdog {
+                let services: Vec<_> = if !wd.services.is_empty() {
+                    wd.services.iter().map(|s| s.name.clone()).collect()
+                } else {
+                    wd.components.iter().map(|c| c.name.clone()).collect()
+                };
+                if let Some(name) = services.get(app.selected_row) {
+                    app.pending_action = Some(app::PendingAction::RestartService(name.clone()));
+                    app.input_mode = InputMode::ConfirmAction;
+                    app.status_message = format!("Restart '{}'?", name);
+                }
+            }
+        }
+        KeyCode::Char('S') if matches!(app.current_tab, Tab::Watchdog) => {
+            if let Some(wd) = &app.node_data.watchdog {
+                let services: Vec<_> = if !wd.services.is_empty() {
+                    wd.services.iter().map(|s| s.name.clone()).collect()
+                } else {
+                    wd.components.iter().map(|c| c.name.clone()).collect()
+                };
+                if let Some(name) = services.get(app.selected_row) {
+                    app.pending_action = Some(app::PendingAction::StopService(name.clone()));
+                    app.input_mode = InputMode::ConfirmAction;
+                    app.status_message = format!("Stop '{}'?", name);
+                }
+            }
+        }
+
+        // Settings actions
+        KeyCode::Char('n') if matches!(app.current_tab, Tab::Settings) => {
+            app.input_mode = InputMode::InputNickname;
+            app.input_buffer.clear();
+            app.status_message = "Enter nickname:".to_string();
+        }
+        KeyCode::Char('p') if matches!(app.current_tab, Tab::Settings) => {
+            app.input_mode = InputMode::InputPayoutAddress;
+            app.input_buffer.clear();
+            app.status_message = "Enter payout address:".to_string();
+        }
+
+        // Backup actions
+        KeyCode::Char('b') if matches!(app.current_tab, Tab::Backup) => {
+            app.pending_action = Some(app::PendingAction::TriggerBackup);
+            app.input_mode = InputMode::ConfirmAction;
+            app.status_message = "Create backup?".to_string();
+        }
+        KeyCode::Char('d') if matches!(app.current_tab, Tab::Backup) => {
+            if let Some(backups) = &app.node_data.backup_history {
+                if let Some(backup) = backups.get(app.selected_row) {
+                    let id = backup.backup_id.clone();
+                    app.pending_action = Some(app::PendingAction::DeleteBackup(id.clone()));
+                    app.input_mode = InputMode::ConfirmAction;
+                    app.status_message = format!("Delete backup '{}'?", id);
+                }
+            }
+        }
+
         KeyCode::Char('/') if matches!(app.current_tab, Tab::Logs) => {
             app.input_mode = InputMode::Search;
             app.input_buffer.clear();
@@ -469,11 +630,20 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
                 // Switch to selected node
                 if app.selected_row < app.swarm.nodes.len() {
                     app.active_node_idx = app.selected_row;
-                    let node_info = app
-                        .active_node()
-                        .map(|n| (n.url.clone(), n.auth_token.clone(), n.name.clone()));
-                    if let Some((url, auth_token, name)) = node_info {
-                        app.api_client = Some(create_client(&url, auth_token.as_deref()));
+                    let node_info = app.active_node().map(|n| {
+                        (
+                            n.url.clone(),
+                            n.auth_token.clone(),
+                            n.hmac_secret.clone(),
+                            n.name.clone(),
+                        )
+                    });
+                    if let Some((url, auth_token, hmac_secret, name)) = node_info {
+                        app.api_client = Some(create_client(
+                            &url,
+                            auth_token.as_deref(),
+                            hmac_secret.as_deref(),
+                        ));
                         app.status_message = format!("Switched to {}", name);
                         refresh_data(app).await;
                     }
@@ -544,10 +714,11 @@ async fn refresh_data(app: &mut App) {
                 .swarm
                 .nodes
                 .iter()
-                .map(|n| (n.url.clone(), n.auth_token.clone()))
+                .map(|n| (n.url.clone(), n.auth_token.clone(), n.hmac_secret.clone()))
                 .collect();
-            for (url, auth_token) in nodes {
-                let node_client = create_client(&url, auth_token.as_deref());
+            for (url, auth_token, hmac_secret) in nodes {
+                let node_client =
+                    create_client(&url, auth_token.as_deref(), hmac_secret.as_deref());
                 match node_client.get_node_status().await {
                     Ok(status) => {
                         app.swarm.node_statuses.insert(url.clone(), status);
@@ -592,11 +763,58 @@ async fn refresh_data(app: &mut App) {
     app.node_data.mark_refreshed(app.current_tab.data_type());
 }
 
-/// Create an API client with optional authentication
-fn create_client(url: &str, auth_token: Option<&str>) -> api::client::NodeApiClient {
-    match auth_token {
+/// Create an API client with optional authentication and HMAC secret
+fn create_client(
+    url: &str,
+    auth_token: Option<&str>,
+    hmac_secret: Option<&str>,
+) -> api::client::NodeApiClient {
+    let mut client = match auth_token {
         Some(token) => api::client::NodeApiClient::with_auth(url, token),
         None => api::client::NodeApiClient::new(url),
+    };
+    client.set_hmac_secret(hmac_secret.map(String::from));
+    client
+}
+
+/// Execute a pending action via the API
+async fn execute_action(app: &mut App) {
+    let Some(action) = app.pending_action.take() else {
+        return;
+    };
+    let Some(client) = &app.api_client else {
+        app.status_message = "No active connection".to_string();
+        return;
+    };
+
+    match action {
+        app::PendingAction::RestartService(name) => match client.restart_service(&name).await {
+            Ok(_) => app.status_message = format!("Restarting {}", name),
+            Err(e) => app.status_message = format!("Failed: {}", e),
+        },
+        app::PendingAction::StopService(name) => match client.stop_service(&name).await {
+            Ok(_) => app.status_message = format!("Stopping {}", name),
+            Err(e) => app.status_message = format!("Failed: {}", e),
+        },
+        app::PendingAction::StartService(name) => match client.start_service(&name).await {
+            Ok(_) => app.status_message = format!("Starting {}", name),
+            Err(e) => app.status_message = format!("Failed: {}", e),
+        },
+        app::PendingAction::ToggleCapability { name, new_value } => {
+            app.status_message = format!(
+                "Toggle {} → {} (not yet implemented)",
+                name,
+                if new_value { "on" } else { "off" }
+            );
+        }
+        app::PendingAction::TriggerBackup => match client.trigger_backup().await {
+            Ok(_) => app.status_message = "Backup triggered".to_string(),
+            Err(e) => app.status_message = format!("Failed: {}", e),
+        },
+        app::PendingAction::DeleteBackup(id) => match client.delete_backup(&id).await {
+            Ok(_) => app.status_message = format!("Deleted backup: {}", id),
+            Err(e) => app.status_message = format!("Failed: {}", e),
+        },
     }
 }
 

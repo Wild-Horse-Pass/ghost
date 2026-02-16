@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::theme;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
@@ -30,11 +31,11 @@ fn render_node_config(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Node Configuration ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -54,7 +55,7 @@ fn render_node_config(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("URL: ", Style::default().fg(Color::Gray)),
-            Span::styled(&node.url, Style::default().fg(Color::Cyan)),
+            Span::styled(&node.url, Style::default().fg(theme::PRIMARY_DIM)),
         ]));
 
         let auth_status = if node.auth_token.is_some() {
@@ -97,11 +98,11 @@ fn render_display_settings(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Display Settings ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -120,7 +121,7 @@ fn render_display_settings(f: &mut Frame, area: Rect, app: &App) {
         ]),
         Line::from(vec![
             Span::styled("Theme: ", Style::default().fg(Color::Gray)),
-            Span::styled(theme, Style::default().fg(Color::Cyan)),
+            Span::styled(theme, Style::default().fg(crate::theme::PRIMARY_DIM)),
         ]),
         Line::from(vec![
             Span::styled("Notifications: ", Style::default().fg(Color::Gray)),
@@ -154,11 +155,11 @@ fn render_help(f: &mut Frame, area: Rect) {
         .title(Span::styled(
             " Keyboard Shortcuts ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);

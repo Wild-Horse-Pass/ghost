@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::theme;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
@@ -37,11 +38,11 @@ fn render_chain_info(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Chain ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -56,7 +57,7 @@ fn render_chain_info(f: &mut Frame, area: Rect, app: &App) {
         };
 
         lines.push(Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(Color::Gray)),
+            Span::styled("Status: ", Style::default().fg(theme::TEXT_DIM)),
             Span::styled(
                 sync_text,
                 Style::default().fg(sync_color).add_modifier(Modifier::BOLD),
@@ -64,34 +65,34 @@ fn render_chain_info(f: &mut Frame, area: Rect, app: &App) {
         ]));
 
         lines.push(Line::from(vec![
-            Span::styled("Block Height: ", Style::default().fg(Color::Gray)),
+            Span::styled("Block Height: ", Style::default().fg(theme::TEXT_DIM)),
             Span::styled(
                 format_number(status.block_height),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme::ACCENT)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
 
         lines.push(Line::from(vec![
-            Span::styled("Sync Height: ", Style::default().fg(Color::Gray)),
+            Span::styled("Sync Height: ", Style::default().fg(theme::TEXT_DIM)),
             Span::styled(
                 format_number(status.sync_height),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme::TEXT),
             ),
         ]));
 
         lines.push(Line::from(vec![
-            Span::styled("Peers: ", Style::default().fg(Color::Gray)),
+            Span::styled("Peers: ", Style::default().fg(theme::TEXT_DIM)),
             Span::styled(
                 status.peer_count.to_string(),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::PRIMARY_DIM),
             ),
         ]));
     } else {
         lines.push(Line::from(Span::styled(
-            "No data available",
-            Style::default().fg(Color::Gray),
+            "Waiting for Bitcoin Core...",
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -104,11 +105,11 @@ fn render_mempool_info(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Mempool ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -118,22 +119,22 @@ fn render_mempool_info(f: &mut Frame, area: Rect, app: &App) {
     if let Some(status) = &app.node_data.node_status {
         if let Some(profile) = &status.mempool_profile {
             lines.push(Line::from(vec![
-                Span::styled("Profile: ", Style::default().fg(Color::Gray)),
-                Span::styled(profile.clone(), Style::default().fg(Color::White)),
+                Span::styled("Profile: ", Style::default().fg(theme::TEXT_DIM)),
+                Span::styled(profile.clone(), Style::default().fg(theme::TEXT)),
             ]));
         }
 
         lines.push(Line::from(vec![
-            Span::styled("Round: ", Style::default().fg(Color::Gray)),
+            Span::styled("Round: ", Style::default().fg(theme::TEXT_DIM)),
             Span::styled(
                 status.round_id.to_string(),
-                Style::default().fg(Color::White),
+                Style::default().fg(theme::TEXT),
             ),
         ]));
     } else {
         lines.push(Line::from(Span::styled(
-            "No data available",
-            Style::default().fg(Color::Gray),
+            "Waiting for Bitcoin Core...",
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -146,32 +147,32 @@ fn render_peers_table(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Connected Peers ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     if let Some(peers) = &app.node_data.peers {
         let header = Row::new(vec![
             Cell::from("Address").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Node ID").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Latency").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Last Seen").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
@@ -217,10 +218,23 @@ fn render_peers_table(f: &mut Frame, area: Rect, app: &App) {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let paragraph = Paragraph::new(Span::styled(
-            "No peer data available",
-            Style::default().fg(Color::Gray),
-        ));
+        let empty_lines = vec![
+            Line::from(Span::styled(
+                "No peers connected.",
+                Style::default().fg(theme::TEXT_DIM),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Peer data appears once the node",
+                Style::default().fg(theme::PRIMARY_DIM),
+            )),
+            Line::from(Span::styled(
+                "joins the Bitcoin network.",
+                Style::default().fg(theme::PRIMARY_DIM),
+            )),
+        ];
+
+        let paragraph = Paragraph::new(empty_lines);
         f.render_widget(paragraph, inner);
     }
 }

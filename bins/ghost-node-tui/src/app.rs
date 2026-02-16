@@ -30,6 +30,7 @@ pub struct App {
     pub scroll_offset: usize,
     pub selected_row: usize,
     pub input_buffer: String,
+    pub pending_action: Option<PendingAction>,
 
     // Refresh tracking
     #[allow(dead_code)]
@@ -178,8 +179,27 @@ pub enum InputMode {
     Filter,
     /// Confirmation dialog (delete node)
     ConfirmDelete,
+    /// Confirmation dialog (generic action)
+    ConfirmAction,
+    /// Entering node nickname
+    InputNickname,
+    /// Entering payout address
+    InputPayoutAddress,
     /// Help overlay visible
     Help,
+}
+
+/// Actions that require confirmation before execution
+#[derive(Debug, Clone)]
+pub enum PendingAction {
+    RestartService(String),
+    StopService(String),
+    #[allow(dead_code)]
+    StartService(String),
+    #[allow(dead_code)]
+    ToggleCapability { name: String, new_value: bool },
+    TriggerBackup,
+    DeleteBackup(String),
 }
 
 /// Connection status for a node
@@ -272,6 +292,7 @@ impl App {
             scroll_offset: 0,
             selected_row: 0,
             input_buffer: String::new(),
+            pending_action: None,
             last_refresh: Instant::now(),
         }
     }

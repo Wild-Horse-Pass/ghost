@@ -1,10 +1,14 @@
 //! HTTP API client for Ghost Node
 
 use anyhow::{Context, Result};
+use hmac::{Hmac, Mac};
 use reqwest::Client;
+use sha2::Sha256;
 use std::time::Duration;
 
 use super::types::*;
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// API client for a single Ghost Node
 #[derive(Clone)]
@@ -12,6 +16,7 @@ pub struct NodeApiClient {
     client: Client,
     base_url: String,
     auth_token: Option<String>,
+    hmac_secret: Option<String>,
 }
 
 impl NodeApiClient {
@@ -27,6 +32,7 @@ impl NodeApiClient {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
             auth_token: None,
+            hmac_secret: None,
         }
     }
 
@@ -41,6 +47,11 @@ impl NodeApiClient {
     #[allow(dead_code)]
     pub fn set_auth_token(&mut self, token: Option<String>) {
         self.auth_token = token;
+    }
+
+    /// Set HMAC secret for authenticated POST requests
+    pub fn set_hmac_secret(&mut self, secret: Option<String>) {
+        self.hmac_secret = secret;
     }
 
     /// Get the base URL
@@ -230,6 +241,75 @@ impl NodeApiClient {
         Ok(resp.nodes)
     }
 
+    // === Authenticated Actions (HMAC-signed POST) ===
+
+    /// Restart a service via watchdog
+    pub async fn restart_service(&self, name: &str) -> Result<String> {
+        self.post_authenticated(&format!("/api/v1/watchdog/restart/{}", name), b"")
+            .await
+    }
+
+    /// Stop a service via watchdog
+    pub async fn stop_service(&self, name: &str) -> Result<String> {
+        self.post_authenticated(&format!("/api/v1/watchdog/stop/{}", name), b"")
+            .await
+    }
+
+    /// Start a service via watchdog
+    #[allow(dead_code)]
+    pub async fn start_service(&self, name: &str) -> Result<String> {
+        self.post_authenticated(&format!("/api/v1/watchdog/start/{}", name), b"")
+            .await
+    }
+
+    /// Set node nickname
+    pub async fn set_nickname(&self, name: &str) -> Result<String> {
+        let body = serde_json::json!({ "nickname": name }).to_string();
+        self.post_authenticated("/api/v1/node/nickname", body.as_bytes())
+            .await
+    }
+
+    /// Set payout address
+    pub async fn set_payout_address(&self, addr: &str) -> Result<String> {
+        let body = serde_json::json!({ "address": addr }).to_string();
+        self.post_authenticated("/api/v1/mining/payout_address", body.as_bytes())
+            .await
+    }
+
+    /// Trigger a backup export
+    pub async fn trigger_backup(&self) -> Result<String> {
+        self.post_authenticated("/api/v1/backup/export", b"")
+            .await
+    }
+
+    /// Delete a backup by filename
+    pub async fn delete_backup(&self, filename: &str) -> Result<String> {
+        let url = format!("{}/api/v1/backup/delete/{}", self.base_url, filename);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut req = self.client.delete(&url);
+        if let Some(token) = &self.auth_token {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+        if let Some(secret) = &self.hmac_secret {
+            let signature = Self::sign_request(secret, timestamp, b"");
+            req = req
+                .header("X-Ghost-Signature", signature)
+                .header("X-Ghost-Timestamp", timestamp.to_string());
+        }
+
+        let resp = req.send().await.context("Failed to send request")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("API error {}: {}", status, body);
+        }
+        resp.text().await.context("Failed to read response")
+    }
+
     // === Generic Helpers ===
 
     /// Generic GET request
@@ -250,5 +330,48 @@ impl NodeApiClient {
         }
 
         resp.json().await.context("Failed to parse response")
+    }
+
+    /// Authenticated POST with HMAC-SHA256 signature
+    /// Uses same pattern as ghost-verification auth: HMAC-SHA256(secret, timestamp_le || body)
+    async fn post_authenticated(&self, path: &str, body: &[u8]) -> Result<String> {
+        let url = format!("{}{}", self.base_url, path);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut req = self.client.post(&url);
+        if let Some(token) = &self.auth_token {
+            req = req.header("Authorization", format!("Bearer {}", token));
+        }
+        if let Some(secret) = &self.hmac_secret {
+            let signature = Self::sign_request(secret, timestamp, body);
+            req = req
+                .header("X-Ghost-Signature", signature)
+                .header("X-Ghost-Timestamp", timestamp.to_string());
+        }
+        if !body.is_empty() {
+            req = req
+                .header("Content-Type", "application/json")
+                .body(body.to_vec());
+        }
+
+        let resp = req.send().await.context("Failed to send request")?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("API error {}: {}", status, body);
+        }
+        resp.text().await.context("Failed to read response")
+    }
+
+    /// Generate HMAC-SHA256 signature: HMAC(secret, timestamp_le_bytes || body)
+    fn sign_request(secret: &str, timestamp: u64, body: &[u8]) -> String {
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can accept any key size");
+        mac.update(&timestamp.to_le_bytes());
+        mac.update(body);
+        hex::encode(mac.finalize().into_bytes())
     }
 }

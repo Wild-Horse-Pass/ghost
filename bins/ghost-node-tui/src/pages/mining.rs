@@ -1,7 +1,7 @@
 //! Mining page - pool status, workers, blocks
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::theme;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
@@ -37,11 +38,11 @@ fn render_pool_status(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Your Pool ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -79,7 +80,7 @@ fn render_pool_status(f: &mut Frame, area: Rect, app: &App) {
             Span::styled("Workers: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 mining.miner_count.to_string(),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(theme::PRIMARY_DIM),
             ),
         ]));
 
@@ -100,8 +101,8 @@ fn render_pool_status(f: &mut Frame, area: Rect, app: &App) {
         ]));
     } else {
         lines.push(Line::from(Span::styled(
-            "No data available",
-            Style::default().fg(Color::Gray),
+            "Gathering metrics...",
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -114,11 +115,11 @@ fn render_network_status(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Network ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -163,8 +164,8 @@ fn render_network_status(f: &mut Frame, area: Rect, app: &App) {
         }
     } else {
         lines.push(Line::from(Span::styled(
-            "No data available",
-            Style::default().fg(Color::Gray),
+            "Gathering metrics...",
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
@@ -177,37 +178,37 @@ fn render_workers_table(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Workers ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     if let Some(miners) = &app.node_data.miners {
         let header = Row::new(vec![
             Cell::from("Miner ID").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Hashrate").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Shares").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Work").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Status").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
@@ -257,10 +258,23 @@ fn render_workers_table(f: &mut Frame, area: Rect, app: &App) {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let paragraph = Paragraph::new(Span::styled(
-            "No worker data available",
-            Style::default().fg(Color::Gray),
-        ));
+        let empty_lines = vec![
+            Line::from(Span::styled(
+                "No workers connected.",
+                Style::default().fg(theme::TEXT_DIM),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Miners connect via Stratum V1 on port 3333.",
+                Style::default().fg(theme::PRIMARY_DIM),
+            )),
+            Line::from(Span::styled(
+                "Format: <payout_address>.<worker_id>",
+                Style::default().fg(theme::PRIMARY_DIM),
+            )),
+        ];
+
+        let paragraph = Paragraph::new(empty_lines).alignment(Alignment::Left);
         f.render_widget(paragraph, inner);
     }
 }

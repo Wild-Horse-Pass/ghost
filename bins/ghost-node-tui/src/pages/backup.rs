@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::app::App;
+use crate::theme;
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
@@ -28,11 +29,11 @@ fn render_backup_status(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Backup Status ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -49,7 +50,7 @@ fn render_backup_status(f: &mut Frame, area: Rect, app: &App) {
             };
 
             lines.push(Line::from(vec![
-                Span::styled("Last backup: ", Style::default().fg(Color::Gray)),
+                Span::styled("Last backup: ", Style::default().fg(theme::TEXT_DIM)),
                 Span::styled(
                     status_text,
                     Style::default()
@@ -59,41 +60,50 @@ fn render_backup_status(f: &mut Frame, area: Rect, app: &App) {
             ]));
 
             lines.push(Line::from(vec![
-                Span::styled("Time: ", Style::default().fg(Color::Gray)),
+                Span::styled("Time: ", Style::default().fg(theme::TEXT_DIM)),
                 Span::styled(
                     format_datetime(latest.timestamp),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(theme::TEXT),
                 ),
             ]));
 
             lines.push(Line::from(vec![
-                Span::styled("Type: ", Style::default().fg(Color::Gray)),
-                Span::styled(&latest.backup_type, Style::default().fg(Color::Cyan)),
+                Span::styled("Type: ", Style::default().fg(theme::TEXT_DIM)),
+                Span::styled(&latest.backup_type, Style::default().fg(theme::PRIMARY_DIM)),
             ]));
 
             if let Some(size) = latest.size_bytes {
                 lines.push(Line::from(vec![
-                    Span::styled("Size: ", Style::default().fg(Color::Gray)),
-                    Span::styled(format_bytes(size), Style::default().fg(Color::White)),
+                    Span::styled("Size: ", Style::default().fg(theme::TEXT_DIM)),
+                    Span::styled(format_bytes(size), Style::default().fg(theme::TEXT)),
                 ]));
             }
         } else {
             lines.push(Line::from(Span::styled(
-                "No backups found",
-                Style::default().fg(Color::Gray),
+                "No backups found.",
+                Style::default().fg(theme::TEXT_DIM),
+            )));
+            lines.push(Line::from(Span::raw("")));
+            lines.push(Line::from(Span::styled(
+                "Backups preserve node config, keys, and DB.",
+                Style::default().fg(theme::PRIMARY_DIM),
+            )));
+            lines.push(Line::from(Span::styled(
+                "Press [b] to create one.",
+                Style::default().fg(theme::PRIMARY_DIM),
             )));
         }
     } else {
         lines.push(Line::from(Span::styled(
-            "No backup data available",
-            Style::default().fg(Color::Gray),
+            "Waiting for backup data...",
+            Style::default().fg(theme::TEXT_DIM),
         )));
     }
 
     lines.push(Line::from(Span::raw("")));
     lines.push(Line::from(Span::styled(
         "[b] Trigger backup  [r] Refresh",
-        Style::default().fg(Color::Gray),
+        Style::default().fg(theme::TEXT_DIM),
     )));
 
     let paragraph = Paragraph::new(lines);
@@ -105,21 +115,33 @@ fn render_backup_history(f: &mut Frame, area: Rect, app: &App) {
         .title(Span::styled(
             " Backup History ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(theme::PRIMARY)
                 .add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(theme::PRIMARY));
 
     if let Some(backups) = &app.node_data.backup_history {
         if backups.is_empty() {
             let inner = block.inner(area);
             f.render_widget(block, area);
 
-            let paragraph = Paragraph::new(Span::styled(
-                "No backup history",
-                Style::default().fg(Color::Gray),
-            ));
+            let lines = vec![
+                Line::from(Span::styled(
+                    "No backups found.",
+                    Style::default().fg(theme::TEXT_DIM),
+                )),
+                Line::from(Span::raw("")),
+                Line::from(Span::styled(
+                    "Backups preserve node config, keys, and DB.",
+                    Style::default().fg(theme::PRIMARY_DIM),
+                )),
+                Line::from(Span::styled(
+                    "Press [b] to create one.",
+                    Style::default().fg(theme::PRIMARY_DIM),
+                )),
+            ];
+            let paragraph = Paragraph::new(lines);
             f.render_widget(paragraph, inner);
             return;
         }
@@ -127,27 +149,27 @@ fn render_backup_history(f: &mut Frame, area: Rect, app: &App) {
         let header = Row::new(vec![
             Cell::from("ID").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Type").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Time").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Size").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
             Cell::from("Status").style(
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme::PRIMARY)
                     .add_modifier(Modifier::BOLD),
             ),
         ]);
@@ -202,8 +224,8 @@ fn render_backup_history(f: &mut Frame, area: Rect, app: &App) {
         f.render_widget(block, area);
 
         let paragraph = Paragraph::new(Span::styled(
-            "No backup data available",
-            Style::default().fg(Color::Gray),
+            "Waiting for backup data...",
+            Style::default().fg(theme::TEXT_DIM),
         ));
         f.render_widget(paragraph, inner);
     }
