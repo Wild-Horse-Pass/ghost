@@ -85,7 +85,7 @@ export function DataTable<TData, TValue>({
                           ? null
                           : flexRender(header.column.columnDef.header, header.getContext())}
                         {header.column.getIsSorted() && (
-                          <span className="text-green-400">
+                          <span className="text-orange-400">
                             {header.column.getIsSorted() === 'asc' ? '↑' : '↓'}
                           </span>
                         )}

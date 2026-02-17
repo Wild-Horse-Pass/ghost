@@ -147,18 +147,18 @@ export default function StoragePage() {
               {/* Window Visualization */}
               <div className="grid grid-cols-3 gap-4">
                 {/* Validator Window */}
-                <div className="p-4 bg-blue-900/20 border border-blue-800 rounded-lg">
-                  <div className="text-blue-400 font-medium mb-2">Validator Window (VW)</div>
+                <div className="p-4 bg-orange-900/20 border border-orange-800 rounded-lg">
+                  <div className="text-orange-400 font-medium mb-2">Validator Window (VW)</div>
                   <div className="text-2xl font-bold text-gray-100">288 blocks</div>
                   <div className="text-sm text-gray-400 mt-1">~2 days</div>
-                  <div className="mt-3 text-xs text-blue-300">
+                  <div className="mt-3 text-xs text-orange-300">
                     Fixed - Bitcoin Core minimum for reorg safety
                   </div>
                 </div>
 
                 {/* Operator Window */}
-                <div className={`p-4 rounded-lg border ${archiveMode ? 'bg-gray-800/30 border-gray-700' : 'bg-purple-900/20 border-purple-800'}`}>
-                  <div className={`font-medium mb-2 ${archiveMode ? 'text-gray-500' : 'text-purple-400'}`}>
+                <div className={`p-4 rounded-lg border ${archiveMode ? 'bg-gray-800/30 border-gray-700' : 'bg-orange-900/20 border-orange-800'}`}>
+                  <div className={`font-medium mb-2 ${archiveMode ? 'text-gray-500' : 'text-orange-400'}`}>
                     Operator Window (OW)
                   </div>
                   <div className={`text-2xl font-bold ${archiveMode ? 'text-gray-500' : 'text-gray-100'}`}>
@@ -167,7 +167,7 @@ export default function StoragePage() {
                   <div className="text-sm text-gray-400 mt-1">
                     ~{formatDuration(fullConfig?.pruning?.ow_blocks ?? 2016)}
                   </div>
-                  <div className={`mt-3 text-xs ${archiveMode ? 'text-gray-500' : 'text-purple-300'}`}>
+                  <div className={`mt-3 text-xs ${archiveMode ? 'text-gray-500' : 'text-orange-300'}`}>
                     {archiveMode ? "Disabled (Archive Mode)" : "BUDS-based pruning applied here"}
                   </div>
                 </div>
@@ -201,7 +201,7 @@ export default function StoragePage() {
                         disabled={setOperatorWindow.isPending}
                         className={`p-3 rounded-lg border transition-colors text-left ${
                           fullConfig?.pruning?.ow_blocks === preset.blocks
-                            ? "bg-purple-900/30 border-purple-600 text-purple-300"
+                            ? "bg-orange-900/30 border-orange-600 text-orange-300"
                             : "bg-gray-800/50 border-gray-700 text-gray-300 hover:border-gray-500"
                         }`}
                       >
@@ -229,7 +229,7 @@ export default function StoragePage() {
                         disabled={setPruneProfile.isPending}
                         className={`p-3 rounded-lg border transition-colors text-left ${
                           fullConfig?.pruning?.prune_profile === profile.value
-                            ? "bg-purple-900/30 border-purple-600 text-purple-300"
+                            ? "bg-orange-900/30 border-orange-600 text-orange-300"
                             : "bg-gray-800/50 border-gray-700 text-gray-300 hover:border-gray-500"
                         }`}
                       >

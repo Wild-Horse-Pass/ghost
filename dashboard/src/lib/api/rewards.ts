@@ -17,7 +17,12 @@ export async function getRewardsHistory(): Promise<RewardsHistory> {
 }
 
 export async function getRewardsFull(): Promise<RewardsFullResponse> {
-  return fetchApi<RewardsFullResponse>('/api/v1/rewards/full');
+  const data = await fetchApi<RewardsFullResponse & { pending_payout_sats?: number }>('/api/v1/rewards/full');
+  // Backend may return pending_payout_sats instead of pending_rewards_sats
+  if (data.pending_rewards_sats === undefined && data.pending_payout_sats !== undefined) {
+    data.pending_rewards_sats = data.pending_payout_sats;
+  }
+  return data;
 }
 
 // Node Payout History (for Rewards page - only THIS node's payments)

@@ -46,7 +46,7 @@ function TimeFilterToggle({
         onClick={() => onChange("24h")}
         className={`px-2 py-1 text-xs rounded transition-colors ${
           value === "24h"
-            ? "bg-purple-600 text-white"
+            ? "bg-orange-600 text-white"
             : "bg-gray-800 text-gray-400 hover:bg-gray-700"
         }`}
       >
@@ -56,7 +56,7 @@ function TimeFilterToggle({
         onClick={() => onChange("7d")}
         className={`px-2 py-1 text-xs rounded transition-colors ${
           value === "7d"
-            ? "bg-purple-600 text-white"
+            ? "bg-orange-600 text-white"
             : "bg-gray-800 text-gray-400 hover:bg-gray-700"
         }`}
       >
@@ -145,7 +145,7 @@ export function NetworkPayoutHistoryCard({
           href={makeBlockLink(row.original.block_height ?? 0)}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-mono text-purple-400 hover:text-purple-300 hover:underline"
+          className="font-mono text-orange-400 hover:text-orange-300 hover:underline"
         >
           #{row.original.block_height ?? 0}
         </a>
@@ -254,7 +254,7 @@ export function GhostPayPayoutHistoryCard({
           href={makeBlockLink(row.original.block_height ?? 0)}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-mono text-purple-400 hover:text-purple-300 hover:underline"
+          className="font-mono text-orange-400 hover:text-orange-300 hover:underline"
         >
           #{row.original.block_height ?? 0}
         </a>
@@ -307,7 +307,7 @@ export function GhostPayPayoutHistoryCard({
           href={makeBlockLink(row.original.block_height ?? 0)}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-mono text-purple-400 hover:text-purple-300 hover:underline"
+          className="font-mono text-orange-400 hover:text-orange-300 hover:underline"
         >
           #{row.original.block_height ?? 0}
         </a>
@@ -368,7 +368,7 @@ export function GhostPayPayoutHistoryCard({
           onClick={() => setActiveTab("ghostpay")}
           className={`px-3 py-1.5 text-sm rounded transition-colors ${
             activeTab === "ghostpay"
-              ? "bg-green-600 text-white"
+              ? "bg-orange-600 text-white"
               : "bg-gray-800 text-gray-400 hover:bg-gray-700"
           }`}
         >
@@ -443,7 +443,7 @@ export function NodePayoutHistoryCard({
           href={makeBlockLink(row.original.block_height ?? 0)}
           target="_blank"
           rel="noopener noreferrer"
-          className="font-mono text-purple-400 hover:text-purple-300 hover:underline"
+          className="font-mono text-orange-400 hover:text-orange-300 hover:underline"
         >
           #{row.original.block_height ?? 0}
         </a>
@@ -491,7 +491,7 @@ export function NodePayoutHistoryCard({
             onClick={() => onPayoutTypeFilterChange(undefined)}
             className={`px-2 py-1 text-xs rounded transition-colors ${
               !payoutTypeFilter
-                ? "bg-purple-600 text-white"
+                ? "bg-orange-600 text-white"
                 : "bg-gray-800 text-gray-400 hover:bg-gray-700"
             }`}
           >
@@ -501,7 +501,7 @@ export function NodePayoutHistoryCard({
             onClick={() => onPayoutTypeFilterChange("node_reward")}
             className={`px-2 py-1 text-xs rounded transition-colors ${
               payoutTypeFilter === "node_reward"
-                ? "bg-green-600 text-white"
+                ? "bg-orange-600 text-white"
                 : "bg-gray-800 text-gray-400 hover:bg-gray-700"
             }`}
           >
@@ -511,7 +511,7 @@ export function NodePayoutHistoryCard({
             onClick={() => onPayoutTypeFilterChange("ghostpay_fee")}
             className={`px-2 py-1 text-xs rounded transition-colors ${
               payoutTypeFilter === "ghostpay_fee"
-                ? "bg-blue-600 text-white"
+                ? "bg-orange-600 text-white"
                 : "bg-gray-800 text-gray-400 hover:bg-gray-700"
             }`}
           >

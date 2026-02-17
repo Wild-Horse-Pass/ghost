@@ -47,7 +47,7 @@ export function DecentralisationCard() {
 
   const phaseColor = {
     bootstrap: "text-yellow-400",
-    decay: "text-blue-400",
+    decay: "text-orange-400",
     ossified: "text-green-400",
   }[phase] ?? "text-gray-400";
 
@@ -69,7 +69,7 @@ export function DecentralisationCard() {
           </div>
           <div className="h-4 bg-gray-800 rounded-full overflow-hidden">
             <div
-              className="h-full bg-gradient-to-r from-purple-600 to-purple-400 transition-all duration-500"
+              className="h-full bg-gradient-to-r from-orange-600 to-orange-400 transition-all duration-500"
               style={{ width: `${Math.min(treasury.progress_percent ?? 0, 100)}%` }}
             />
           </div>
@@ -115,8 +115,8 @@ export function DecentralisationCard() {
 
               let dotColor = "bg-gray-600";
               if (isOssified && step.year === 5) dotColor = "bg-green-500";
-              else if (isCurrentYear) dotColor = "bg-purple-500 animate-pulse";
-              else if (isPast) dotColor = "bg-purple-400";
+              else if (isCurrentYear) dotColor = "bg-orange-500 animate-pulse";
+              else if (isPast) dotColor = "bg-orange-400";
               else if (!treasury.decay_started && step.year === 0) dotColor = "bg-yellow-500";
 
               return (

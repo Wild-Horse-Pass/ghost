@@ -21,7 +21,7 @@ export function SidebarItem({ href, icon, label, collapsed = false }: SidebarIte
       className={`
         flex items-center gap-3 px-3 py-2 rounded-lg transition-colors
         ${isActive
-          ? 'bg-green-600/20 text-green-400 border border-green-600/30'
+          ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
           : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/50'
         }
         ${collapsed ? 'justify-center' : ''}

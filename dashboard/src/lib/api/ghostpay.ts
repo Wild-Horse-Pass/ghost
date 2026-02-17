@@ -10,9 +10,6 @@ import type {
   PaymentsResponse,
   SettlementResponse,
   SettlementStatus,
-  JumpQueueStats,
-  GhostPayEvent,
-  L2MempoolStats,
   GhostPayPayoutHistoryResponse,
   PayoutHistoryTimeFilter,
 } from '@/types/api';
@@ -73,9 +70,6 @@ export async function getPayments(limit?: number, offset?: number): Promise<Paym
 export async function getSettlement(): Promise<SettlementResponse> {
   return fetchApi<SettlementResponse>('/api/v1/settlement/status');
 }
-
-// New node-focused endpoints
-// These return mock data until backend endpoints are implemented
 
 // Wraith Stats (aggregate stats, not wallet-specific)
 export async function getWraithStats(): Promise<WraithStats> {
@@ -140,41 +134,6 @@ export async function getSettlementStatus(): Promise<SettlementStatus> {
       avg_confirmation_time_mins: 0,
     };
   }
-}
-
-// Jump Queue Stats
-export async function getJumpQueueStats(): Promise<JumpQueueStats> {
-  // Return placeholder data until endpoint is implemented
-  return {
-    pending_count: 0,
-    processing_count: 0,
-    total_enqueued: 0,
-    total_completed: 0,
-    total_failed: 0,
-    avg_wait_time_secs: 0,
-    total_volume_sats: 0,
-    liquidity_available_sats: 0,
-  };
-}
-
-// Events/Alerts
-export async function getGhostPayEvents(limit?: number): Promise<GhostPayEvent[]> {
-  // Return empty array until endpoint is implemented
-  return [];
-}
-
-// L2 Mempool Stats
-export async function getL2Mempool(): Promise<L2MempoolStats> {
-  // Return placeholder data until endpoint is implemented
-  return {
-    pending_count: 0,
-    pending_volume_sats: 0,
-    avg_payment_size_sats: 0,
-    throughput_per_min: 0,
-    avg_wait_secs: 0,
-    avg_fee_sats: 0,
-    total_fees_24h: 0,
-  };
 }
 
 // GhostPay Payout History (for Ghost-Pay page)

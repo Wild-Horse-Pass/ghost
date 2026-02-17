@@ -188,7 +188,7 @@ export default function WatchdogPage() {
           </Card>
           <Card>
             <CardHeader title="Services" />
-            <div className="text-3xl font-bold text-blue-400">{services.length}</div>
+            <div className="text-3xl font-bold text-orange-400">{services.length}</div>
             <p className="text-sm text-gray-400 mt-1">Active services</p>
           </Card>
           <Card>
@@ -493,7 +493,7 @@ export default function WatchdogPage() {
                         </div>
                       </td>
                       <td className="py-3">
-                        <code className="text-purple-400">{component.port}</code>
+                        <code className="text-orange-400">{component.port}</code>
                       </td>
                       <td className="py-3">
                         <Badge variant={statusBadge.variant}>{statusBadge.label}</Badge>
@@ -587,9 +587,9 @@ export default function WatchdogPage() {
 
       {/* Info Card */}
       <Card>
-        <div className="p-4 bg-blue-900/20 border border-blue-800 rounded-lg">
-          <h4 className="text-blue-300 font-medium mb-2">About Watchdog</h4>
-          <ul className="text-sm text-blue-300/80 space-y-1 list-disc list-inside">
+        <div className="p-4 bg-orange-900/20 border border-orange-800 rounded-lg">
+          <h4 className="text-orange-300 font-medium mb-2">About Watchdog</h4>
+          <ul className="text-sm text-orange-300/80 space-y-1 list-disc list-inside">
             <li>Watchdog monitors all Ghost node components in real-time</li>
             <li>Components are automatically restarted if they crash</li>
             <li>Use the Restart button to manually restart a component</li>

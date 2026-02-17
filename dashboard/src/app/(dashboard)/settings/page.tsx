@@ -447,7 +447,7 @@ export default function SettingsPage() {
                 </div>
                 <div className="p-3 bg-gray-800/50 rounded-lg">
                   <div className="text-sm text-gray-400 mb-1">Ghost ID (Short)</div>
-                  <code className="text-purple-400 text-sm">
+                  <code className="text-orange-400 text-sm">
                     {nodeInfo?.node_id_short ?? "Loading..."}
                   </code>
                 </div>
@@ -671,7 +671,7 @@ export default function SettingsPage() {
                   key={profile.name}
                   className={`p-3 rounded-lg border transition-colors text-left ${
                     config?.mempool_profile === profile.name
-                      ? "bg-purple-900/30 border-purple-600 text-purple-300"
+                      ? "bg-orange-900/30 border-orange-600 text-orange-300"
                       : "bg-gray-800/50 border-gray-700 text-gray-300 hover:border-gray-500"
                   }`}
                   onClick={() => activateMempoolProfile.mutate(profile.name)}
@@ -786,7 +786,7 @@ export default function SettingsPage() {
                   key={profile.name}
                   className={`p-3 rounded-lg border transition-colors text-left ${
                     config?.template_profile === profile.name
-                      ? "bg-purple-900/30 border-purple-600 text-purple-300"
+                      ? "bg-orange-900/30 border-orange-600 text-orange-300"
                       : "bg-gray-800/50 border-gray-700 text-gray-300 hover:border-gray-500"
                   }`}
                   onClick={() => activateTemplateProfile.mutate(profile.name)}
@@ -1028,7 +1028,7 @@ export default function SettingsPage() {
 
             {/* Ghost Extensions - Spam/Dust Protection */}
             <div>
-              <h4 className="text-sm font-medium text-purple-300 mb-3">Spam & Dust Protection</h4>
+              <h4 className="text-sm font-medium text-orange-300 mb-3">Spam & Dust Protection</h4>
               <div className="space-y-2">
                 <NumberInput
                   label="Dust Limit"
@@ -1064,7 +1064,7 @@ export default function SettingsPage() {
 
             {/* Ghost Extensions - Output Preferences */}
             <div>
-              <h4 className="text-sm font-medium text-purple-300 mb-3">Output Type Preferences</h4>
+              <h4 className="text-sm font-medium text-orange-300 mb-3">Output Type Preferences</h4>
               <div className="space-y-2">
                 <ToggleRow
                   label="Prefer Native SegWit"
@@ -1087,7 +1087,7 @@ export default function SettingsPage() {
 
             {/* Ghost Extensions - Inscription Filtering */}
             <div>
-              <h4 className="text-sm font-medium text-purple-300 mb-3">Inscription Filtering</h4>
+              <h4 className="text-sm font-medium text-orange-300 mb-3">Inscription Filtering</h4>
               <div className="space-y-2">
                 <ToggleRow
                   label="Filter Ordinal Inscriptions"
@@ -1118,7 +1118,7 @@ export default function SettingsPage() {
 
             {/* Ghost Extensions - Lightning & Privacy */}
             <div>
-              <h4 className="text-sm font-medium text-purple-300 mb-3">Lightning & Privacy</h4>
+              <h4 className="text-sm font-medium text-orange-300 mb-3">Lightning & Privacy</h4>
               <div className="space-y-2">
                 <ToggleRow
                   label="Prioritize Lightning Opens"
@@ -1164,7 +1164,7 @@ export default function SettingsPage() {
 
             {/* Ghost Extensions - Chain Limits */}
             <div>
-              <h4 className="text-sm font-medium text-purple-300 mb-3">Chain Limits (CPFP)</h4>
+              <h4 className="text-sm font-medium text-orange-300 mb-3">Chain Limits (CPFP)</h4>
               <div className="space-y-2">
                 <NumberInput
                   label="Max Ancestor Count"
@@ -1381,7 +1381,7 @@ export default function SettingsPage() {
 
             {/* Ghost Extensions - Block Composition */}
             <div>
-              <h4 className="text-sm font-medium text-purple-300 mb-3">Block Composition</h4>
+              <h4 className="text-sm font-medium text-orange-300 mb-3">Block Composition</h4>
               <div className="space-y-2">
                 <NumberInput
                   label="Reserve Weight for Lightning"
@@ -1416,7 +1416,7 @@ export default function SettingsPage() {
 
             {/* Ghost Extensions - Inscription Filtering */}
             <div>
-              <h4 className="text-sm font-medium text-purple-300 mb-3">Inscription Filtering</h4>
+              <h4 className="text-sm font-medium text-orange-300 mb-3">Inscription Filtering</h4>
               <div className="space-y-2">
                 <ToggleRow
                   label="Filter Ordinal Inscriptions"
@@ -1457,7 +1457,7 @@ export default function SettingsPage() {
 
             {/* Ghost Extensions - Transaction Preferences */}
             <div>
-              <h4 className="text-sm font-medium text-purple-300 mb-3">Transaction Preferences</h4>
+              <h4 className="text-sm font-medium text-orange-300 mb-3">Transaction Preferences</h4>
               <div className="space-y-2">
                 <ToggleRow
                   label="Boost Consolidations"
@@ -1480,7 +1480,7 @@ export default function SettingsPage() {
 
             {/* Ghost Extensions - Package Relay */}
             <div>
-              <h4 className="text-sm font-medium text-purple-300 mb-3">Package Relay (CPFP)</h4>
+              <h4 className="text-sm font-medium text-orange-300 mb-3">Package Relay (CPFP)</h4>
               <div className="space-y-2">
                 <ToggleRow
                   label="Enable Package Relay"
@@ -1507,7 +1507,7 @@ export default function SettingsPage() {
 
             {/* Ghost Extensions - MEV Protection */}
             <div>
-              <h4 className="text-sm font-medium text-purple-300 mb-3">MEV Protection</h4>
+              <h4 className="text-sm font-medium text-orange-300 mb-3">MEV Protection</h4>
               <div className="space-y-2">
                 <ToggleRow
                   label="Randomize Transaction Order"
@@ -1534,7 +1534,7 @@ export default function SettingsPage() {
 
             {/* Ghost Extensions - Economic Preferences */}
             <div>
-              <h4 className="text-sm font-medium text-purple-300 mb-3">Economic Preferences</h4>
+              <h4 className="text-sm font-medium text-orange-300 mb-3">Economic Preferences</h4>
               <div className="space-y-2">
                 <ToggleRow
                   label="Include Free Relay"

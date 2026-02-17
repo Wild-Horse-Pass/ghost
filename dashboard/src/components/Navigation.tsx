@@ -76,7 +76,7 @@ export function Navigation() {
                   onBlur={() => setTimeout(() => setGhostPayOpen(false), 150)}
                   className={`px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-1 ${
                     isGhostPayActive
-                      ? "bg-purple-900/50 text-purple-300"
+                      ? "bg-orange-900/50 text-orange-300"
                       : "text-gray-400 hover:text-gray-100 hover:bg-gray-800/50"
                   }`}
                 >
@@ -101,7 +101,7 @@ export function Navigation() {
                           href={item.href}
                           className={`block px-4 py-2 text-sm ${
                             isActive
-                              ? "bg-purple-900/30 text-purple-300"
+                              ? "bg-orange-900/30 text-orange-300"
                               : "text-gray-400 hover:text-gray-100 hover:bg-gray-800"
                           }`}
                         >
@@ -120,7 +120,7 @@ export function Navigation() {
                   onBlur={() => setTimeout(() => setOperatorOpen(false), 150)}
                   className={`px-3 py-2 rounded-md text-sm font-medium transition-colors flex items-center gap-1 ${
                     isOperatorActive
-                      ? "bg-blue-900/50 text-blue-300"
+                      ? "bg-orange-900/50 text-orange-300"
                       : "text-gray-400 hover:text-gray-100 hover:bg-gray-800/50"
                   }`}
                 >
@@ -145,7 +145,7 @@ export function Navigation() {
                           href={item.href}
                           className={`block px-4 py-2 text-sm ${
                             isActive
-                              ? "bg-blue-900/30 text-blue-300"
+                              ? "bg-orange-900/30 text-orange-300"
                               : "text-gray-400 hover:text-gray-100 hover:bg-gray-800"
                           }`}
                         >
@@ -227,7 +227,7 @@ export function Navigation() {
 
             {/* Ghost Pay Section */}
             <div className="pt-2 border-t border-gray-800">
-              <div className="px-3 py-1 text-xs text-purple-400 font-medium">Ghost Pay</div>
+              <div className="px-3 py-1 text-xs text-orange-400 font-medium">Ghost Pay</div>
               {ghostPayItems.map((item) => {
                 const isActive = pathname === item.href;
                 return (
@@ -237,7 +237,7 @@ export function Navigation() {
                     onClick={() => setMobileMenuOpen(false)}
                     className={`block px-3 py-2 rounded-md text-sm font-medium ${
                       isActive
-                        ? "bg-purple-900/30 text-purple-300"
+                        ? "bg-orange-900/30 text-orange-300"
                         : "text-gray-400 hover:text-gray-100 hover:bg-gray-800/50"
                     }`}
                   >
@@ -249,7 +249,7 @@ export function Navigation() {
 
             {/* Operator Section */}
             <div className="pt-2 border-t border-gray-800">
-              <div className="px-3 py-1 text-xs text-blue-400 font-medium">Operator</div>
+              <div className="px-3 py-1 text-xs text-orange-400 font-medium">Operator</div>
               {operatorItems.map((item) => {
                 const isActive = pathname === item.href;
                 return (
@@ -259,7 +259,7 @@ export function Navigation() {
                     onClick={() => setMobileMenuOpen(false)}
                     className={`block px-3 py-2 rounded-md text-sm font-medium ${
                       isActive
-                        ? "bg-blue-900/30 text-blue-300"
+                        ? "bg-orange-900/30 text-orange-300"
                         : "text-gray-400 hover:text-gray-100 hover:bg-gray-800/50"
                     }`}
                   >

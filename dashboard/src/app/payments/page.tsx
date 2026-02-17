@@ -112,12 +112,12 @@ export default function PaymentsPage() {
 
         {/* Info Banner */}
         <Card className="mb-6">
-          <div className="flex items-center justify-between p-4 bg-blue-900/20 border border-blue-800 rounded-lg">
-            <p className="text-blue-300 text-sm">
+          <div className="flex items-center justify-between p-4 bg-orange-900/20 border border-orange-800 rounded-lg">
+            <p className="text-orange-300 text-sm">
               To send or receive payments, use the Ghost Wallet app.
               This page shows payment history for your registered locks.
             </p>
-            <button className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm whitespace-nowrap ml-4">
+            <button className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded text-sm whitespace-nowrap ml-4">
               Open Wallet
             </button>
           </div>

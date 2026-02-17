@@ -129,7 +129,7 @@ export default function LocksPage() {
               <div className="text-sm text-gray-400">Total Balance (BTC)</div>
             </div>
             <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-green-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {formatBtc(summary?.available_balance ?? 0)}
               </div>
               <div className="text-sm text-gray-400">Available (BTC)</div>
@@ -141,7 +141,7 @@ export default function LocksPage() {
               <div className="text-sm text-gray-400">Pending Settlement</div>
             </div>
             <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-purple-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {formatBtc(summary?.in_mixing ?? 0)}
               </div>
               <div className="text-sm text-gray-400">In Mixing</div>
@@ -238,10 +238,10 @@ export default function LocksPage() {
                     </button>
                     {lock.status === "Active" && (
                       <>
-                        <button className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm">
+                        <button className="px-3 py-1 bg-orange-600 hover:bg-orange-700 text-white rounded text-sm">
                           Request Settlement
                         </button>
-                        <button className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded text-sm">
+                        <button className="px-3 py-1 bg-orange-600 hover:bg-orange-700 text-white rounded text-sm">
                           Use in Mix
                         </button>
                       </>
@@ -256,12 +256,12 @@ export default function LocksPage() {
         {/* Create Lock Info */}
         <Card>
           <CardHeader title="Create New Lock" />
-          <div className="p-4 bg-blue-900/20 border border-blue-800 rounded-lg">
-            <p className="text-blue-300 text-sm mb-4">
+          <div className="p-4 bg-orange-900/20 border border-orange-800 rounded-lg">
+            <p className="text-orange-300 text-sm mb-4">
               To create a new Ghost Lock, use the Ghost Wallet app. Locks are created by
               depositing Bitcoin to a special P2WSH address with a recovery path.
             </p>
-            <button className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded">
+            <button className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded">
               Open Ghost Wallet
             </button>
           </div>

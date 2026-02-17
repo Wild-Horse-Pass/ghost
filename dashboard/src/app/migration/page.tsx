@@ -290,7 +290,7 @@ export default function MigrationPage() {
                   value={exportPassword}
                   onChange={(e) => setExportPassword(e.target.value)}
                   placeholder="Enter a strong password"
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-gray-100 focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-gray-100 focus:outline-none focus:border-orange-500"
                 />
               </div>
 
@@ -301,7 +301,7 @@ export default function MigrationPage() {
                   value={exportConfirmPassword}
                   onChange={(e) => setExportConfirmPassword(e.target.value)}
                   placeholder="Confirm password"
-                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-gray-100 focus:outline-none focus:border-blue-500"
+                  className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-gray-100 focus:outline-none focus:border-orange-500"
                 />
               </div>
 
@@ -328,7 +328,7 @@ export default function MigrationPage() {
               <button
                 onClick={handleExport}
                 disabled={exporting || !exportPassword || exportPassword !== exportConfirmPassword}
-                className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
+                className="w-full px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded disabled:opacity-50"
               >
                 {exporting ? "Generating Backup..." : "Generate Encrypted Backup"}
               </button>
@@ -372,7 +372,7 @@ export default function MigrationPage() {
                     value={importPassword}
                     onChange={(e) => setImportPassword(e.target.value)}
                     placeholder="Enter backup password"
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-gray-100 focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-gray-100 focus:outline-none focus:border-orange-500"
                   />
                 </div>
 

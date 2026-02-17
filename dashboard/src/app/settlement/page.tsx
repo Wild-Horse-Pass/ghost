@@ -134,7 +134,7 @@ export default function SettlementPage() {
               <div className="text-sm text-gray-400">Pending</div>
             </div>
             <div className="text-center p-3 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-blue-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {stats?.active_batches ?? 0}
               </div>
               <div className="text-sm text-gray-400">Active</div>
@@ -152,7 +152,7 @@ export default function SettlementPage() {
               <div className="text-sm text-gray-400">Settled (24h) BTC</div>
             </div>
             <div className="text-center p-3 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-purple-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {stats?.your_settlements ?? 0}
               </div>
               <div className="text-sm text-gray-400">Your Settlements</div>
@@ -199,7 +199,7 @@ export default function SettlementPage() {
                       </div>
                       <div className="w-32 h-2 bg-gray-700 rounded-full overflow-hidden mt-1">
                         <div
-                          className="h-full bg-blue-500"
+                          className="h-full bg-orange-500"
                           style={{
                             width: `${(batch.signatures_collected / batch.participant_count) * 100}%`,
                           }}

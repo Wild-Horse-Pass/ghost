@@ -118,7 +118,7 @@ export default function SwarmPage() {
           <h1 className="text-2xl font-bold text-gray-100">Swarm</h1>
           <button
             onClick={() => setShowAddModal(true)}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium"
+            className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg text-sm font-medium"
           >
             + Add Node
           </button>
@@ -153,7 +153,7 @@ export default function SwarmPage() {
               <div className="text-sm text-gray-400">Offline</div>
             </div>
             <div className="text-center p-3 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-blue-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {stats?.combined_shares ?? 0} / {stats?.max_combined_shares ?? 0}
               </div>
               <div className="text-sm text-gray-400">Combined Shares</div>
@@ -165,7 +165,7 @@ export default function SwarmPage() {
               <div className="text-sm text-gray-400">Total Balance</div>
             </div>
             <div className="text-center p-3 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-purple-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {formatUptime(stats?.avg_uptime_percent ?? 0)}
               </div>
               <div className="text-sm text-gray-400">Avg Uptime</div>
@@ -186,7 +186,7 @@ export default function SwarmPage() {
               <p className="text-gray-400 mb-4">No nodes in your swarm yet</p>
               <button
                 onClick={() => setShowAddModal(true)}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg"
+                className="px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded-lg"
               >
                 Add Your First Node
               </button>
@@ -279,7 +279,7 @@ export default function SwarmPage() {
                     href={`http://${node.address}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm"
+                    className="px-3 py-1 bg-orange-600 hover:bg-orange-700 text-white rounded text-sm"
                   >
                     Open Dashboard
                   </a>
@@ -311,7 +311,7 @@ export default function SwarmPage() {
                       ? "bg-red-900/20 border border-red-800"
                       : alert.severity === "warning"
                       ? "bg-yellow-900/20 border border-yellow-800"
-                      : "bg-blue-900/20 border border-blue-800"
+                      : "bg-orange-900/20 border border-orange-800"
                   }`}
                 >
                   <span
@@ -320,7 +320,7 @@ export default function SwarmPage() {
                         ? "bg-red-500 text-white"
                         : alert.severity === "warning"
                         ? "bg-yellow-500 text-black"
-                        : "bg-blue-500 text-white"
+                        : "bg-orange-500 text-white"
                     }`}
                   >
                     {getAlertIcon(alert.severity ?? "info")}
@@ -332,7 +332,7 @@ export default function SwarmPage() {
                           ? "text-red-400"
                           : alert.severity === "warning"
                           ? "text-yellow-400"
-                          : "text-blue-400"
+                          : "text-orange-400"
                       }`}
                     >
                       {alert.message}
@@ -361,7 +361,7 @@ export default function SwarmPage() {
                     value={newNodeName}
                     onChange={(e) => setNewNodeName(e.target.value)}
                     placeholder="e.g., US-East, Primary"
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-gray-100 focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-gray-100 focus:outline-none focus:border-orange-500"
                   />
                 </div>
 
@@ -372,7 +372,7 @@ export default function SwarmPage() {
                     value={newNodeAddress}
                     onChange={(e) => setNewNodeAddress(e.target.value)}
                     placeholder="e.g., 192.168.1.100:8080"
-                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-gray-100 focus:outline-none focus:border-blue-500"
+                    className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-gray-100 focus:outline-none focus:border-orange-500"
                   />
                   <p className="text-xs text-gray-500 mt-1">
                     The node must have API access enabled for remote connections
@@ -390,7 +390,7 @@ export default function SwarmPage() {
                 <button
                   onClick={handleAddNode}
                   disabled={addingNode || !newNodeName.trim() || !newNodeAddress.trim()}
-                  className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50"
+                  className="flex-1 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white rounded disabled:opacity-50"
                 >
                   {addingNode ? "Adding..." : "Add Node"}
                 </button>

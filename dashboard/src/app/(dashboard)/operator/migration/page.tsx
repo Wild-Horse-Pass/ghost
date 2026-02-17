@@ -252,9 +252,9 @@ export default function MigrationPage() {
 
       {/* Info Card */}
       <Card>
-        <div className="p-4 bg-blue-900/20 border border-blue-800 rounded-lg">
-          <h4 className="text-blue-300 font-medium mb-2">Backup Best Practices</h4>
-          <ul className="text-sm text-blue-300/80 space-y-1 list-disc list-inside">
+        <div className="p-4 bg-orange-900/20 border border-orange-800 rounded-lg">
+          <h4 className="text-orange-300 font-medium mb-2">Backup Best Practices</h4>
+          <ul className="text-sm text-orange-300/80 space-y-1 list-disc list-inside">
             <li>Create regular backups before making configuration changes</li>
             <li>Store backup files in a secure location separate from your node</li>
             <li>Use a strong, unique password and store it safely</li>

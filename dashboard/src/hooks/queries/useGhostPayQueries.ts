@@ -7,9 +7,6 @@ import {
   getPayments,
   getSettlement,
   getSettlementStatus,
-  getJumpQueueStats,
-  getGhostPayEvents,
-  getL2Mempool,
   getGhostPayPayoutHistory,
   joinWraithSession,
   requestLockSettlement,
@@ -27,9 +24,6 @@ export const ghostPayKeys = {
     [...ghostPayKeys.all, 'payments', params] as const,
   settlement: () => [...ghostPayKeys.all, 'settlement'] as const,
   settlementStatus: () => [...ghostPayKeys.all, 'settlement-status'] as const,
-  jumpQueue: () => [...ghostPayKeys.all, 'jump-queue'] as const,
-  events: (params?: { limit?: number }) => [...ghostPayKeys.all, 'events', params] as const,
-  mempool: () => [...ghostPayKeys.all, 'mempool'] as const,
   payoutHistory: (timeFilter: PayoutHistoryTimeFilter) =>
     [...ghostPayKeys.all, 'payout-history', timeFilter] as const,
 };
@@ -128,30 +122,6 @@ export function useSettlementStatus(options?: { refetchInterval?: number }) {
     queryKey: ghostPayKeys.settlementStatus(),
     queryFn: getSettlementStatus,
     refetchInterval: options?.refetchInterval ?? 10_000,
-  });
-}
-
-export function useJumpQueueStats(options?: { refetchInterval?: number }) {
-  return useQuery({
-    queryKey: ghostPayKeys.jumpQueue(),
-    queryFn: getJumpQueueStats,
-    refetchInterval: options?.refetchInterval ?? 10_000,
-  });
-}
-
-export function useGhostPayEvents(params?: { limit?: number }) {
-  return useQuery({
-    queryKey: ghostPayKeys.events(params),
-    queryFn: () => getGhostPayEvents(params?.limit),
-    refetchInterval: 30_000,
-  });
-}
-
-export function useL2Mempool(options?: { refetchInterval?: number }) {
-  return useQuery({
-    queryKey: ghostPayKeys.mempool(),
-    queryFn: getL2Mempool,
-    refetchInterval: options?.refetchInterval ?? 5_000,
   });
 }
 

@@ -51,7 +51,7 @@ export function RecentActivityCard() {
       case "warn":
         return "text-yellow-400";
       case "info":
-        return "text-blue-400";
+        return "text-orange-400";
       default:
         return "text-gray-400";
     }

@@ -221,7 +221,11 @@ export interface MinerInfo {
 
 export interface MinersResponse {
   total: number;
-  miners: MinerInfo[];
+  miners?: MinerInfo[];
+  // Aggregate stats returned when miners array is not available (no HMAC auth)
+  total_hashrate_th?: number;
+  total_shares_accepted?: number;
+  total_shares_submitted?: number;
 }
 
 // Best Hash types

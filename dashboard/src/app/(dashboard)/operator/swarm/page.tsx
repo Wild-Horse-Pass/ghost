@@ -368,7 +368,7 @@ export default function SwarmPage() {
               <div className="text-sm text-gray-400">Offline</div>
             </div>
             <div className="text-center p-3 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-blue-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {stats?.combined_shares ?? 0} / {stats?.max_combined_shares ?? 0}
               </div>
               <div className="text-sm text-gray-400">Combined Shares</div>
@@ -380,7 +380,7 @@ export default function SwarmPage() {
               <div className="text-sm text-gray-400">Total Balance</div>
             </div>
             <div className="text-center p-3 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-purple-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {formatUptime(stats?.avg_uptime_percent ?? 0)}
               </div>
               <div className="text-sm text-gray-400">Avg Uptime</div>
@@ -615,7 +615,7 @@ export default function SwarmPage() {
                     ? "bg-red-900/20 border border-red-800"
                     : alert.severity === "warning"
                       ? "bg-yellow-900/20 border border-yellow-800"
-                      : "bg-blue-900/20 border border-blue-800"
+                      : "bg-orange-900/20 border border-orange-800"
                 }`}
               >
                 <span
@@ -624,7 +624,7 @@ export default function SwarmPage() {
                       ? "bg-red-500 text-white"
                       : alert.severity === "warning"
                         ? "bg-yellow-500 text-black"
-                        : "bg-blue-500 text-white"
+                        : "bg-orange-500 text-white"
                   }`}
                 >
                   {getAlertIcon(alert.severity ?? "info")}
@@ -636,7 +636,7 @@ export default function SwarmPage() {
                         ? "text-red-400"
                         : alert.severity === "warning"
                           ? "text-yellow-400"
-                          : "text-blue-400"
+                          : "text-orange-400"
                     }`}
                   >
                     {alert.message}
@@ -736,8 +736,8 @@ export default function SwarmPage() {
             )}
           </div>
 
-          <div className="p-4 bg-blue-900/20 border border-blue-800 rounded-lg">
-            <p className="text-blue-300 text-sm">
+          <div className="p-4 bg-orange-900/20 border border-orange-800 rounded-lg">
+            <p className="text-orange-300 text-sm">
               For detailed node configuration, access the node&apos;s dashboard directly on that machine.
               Configuration changes are synced automatically via the swarm protocol.
             </p>

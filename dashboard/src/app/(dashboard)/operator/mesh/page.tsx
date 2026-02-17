@@ -114,7 +114,7 @@ export default function MeshPage() {
               <div className="text-sm text-gray-400 mt-1">Network Status</div>
             </div>
             <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-3xl font-bold text-blue-400">
+              <div className="text-3xl font-bold text-orange-400">
                 {consensus?.total_nodes ?? (peers.length + 1)}
               </div>
               <div className="text-sm text-gray-400 mt-1">Total Nodes</div>
@@ -129,7 +129,7 @@ export default function MeshPage() {
               </div>
             </div>
             <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-3xl font-bold text-purple-400">
+              <div className="text-3xl font-bold text-orange-400">
                 {formatUptime(meshData?.uptime_seconds ?? 0)}
               </div>
               <div className="text-sm text-gray-400 mt-1">Node Uptime</div>
@@ -145,8 +145,8 @@ export default function MeshPage() {
           )}
 
           {/* Quorum Explanation */}
-          <div className="mt-4 p-3 bg-blue-900/20 border border-blue-800/50 rounded-lg">
-            <p className="text-sm text-blue-300">
+          <div className="mt-4 p-3 bg-orange-900/20 border border-orange-800/50 rounded-lg">
+            <p className="text-sm text-orange-300">
               <span className="font-medium">BFT Consensus:</span> Requires 67% (2/3 + 1) of peers for quorum.
               Share claims are verified through periodic challenges. Payouts require consensus agreement.
             </p>
@@ -174,15 +174,15 @@ export default function MeshPage() {
             <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">5-4-3-2-1 Share Model</p>
             <div className="grid grid-cols-5 gap-2 text-center text-xs">
               <div className="p-2 bg-gray-800 rounded">
-                <div className="font-bold text-purple-400">+5</div>
+                <div className="font-bold text-orange-400">+5</div>
                 <div className="text-gray-500">Archive</div>
               </div>
               <div className="p-2 bg-gray-800 rounded">
-                <div className="font-bold text-blue-400">+4</div>
+                <div className="font-bold text-orange-400">+4</div>
                 <div className="text-gray-500">GhostPay</div>
               </div>
               <div className="p-2 bg-gray-800 rounded">
-                <div className="font-bold text-green-400">+3</div>
+                <div className="font-bold text-orange-400">+3</div>
                 <div className="text-gray-500">Mining</div>
               </div>
               <div className="p-2 bg-gray-800 rounded">
@@ -216,7 +216,7 @@ export default function MeshPage() {
             <button
               onClick={() => { setFilter("all"); setPage(0); }}
               className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
-                filter === "all" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"
+                filter === "all" ? "bg-orange-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"
               }`}
             >
               All ({peers.length})
@@ -313,13 +313,13 @@ function PeerTableRow({ peer }: { peer: MeshPeer }) {
       <td className="py-2">
         <div className="flex justify-center gap-1 flex-wrap">
           {capabilities.archive_mode && (
-            <span className="px-1.5 py-0.5 text-xs bg-purple-900/50 text-purple-300 rounded" title="Archive Mode (+5)">A</span>
+            <span className="px-1.5 py-0.5 text-xs bg-orange-900/50 text-orange-300 rounded" title="Archive Mode (+5)">A</span>
           )}
           {capabilities.ghost_pay && (
-            <span className="px-1.5 py-0.5 text-xs bg-blue-900/50 text-blue-300 rounded" title="Ghost Pay (+4)">G</span>
+            <span className="px-1.5 py-0.5 text-xs bg-orange-900/50 text-orange-300 rounded" title="Ghost Pay (+4)">G</span>
           )}
           {capabilities.public_mining && (
-            <span className="px-1.5 py-0.5 text-xs bg-green-900/50 text-green-300 rounded" title="Public Mining (+3)">M</span>
+            <span className="px-1.5 py-0.5 text-xs bg-orange-900/50 text-orange-300 rounded" title="Public Mining (+3)">M</span>
           )}
           {capabilities.bitcoin_pure && (
             <span className="px-1.5 py-0.5 text-xs bg-yellow-900/50 text-yellow-300 rounded" title="Bitcoin Pure (+2)">P</span>

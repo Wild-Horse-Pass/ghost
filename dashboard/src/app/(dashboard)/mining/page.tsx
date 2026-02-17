@@ -222,7 +222,7 @@ export default function MiningPage() {
 
             <Card>
               <CardHeader title="Blocks Found" />
-              <div className="text-3xl font-bold text-green-400">
+              <div className="text-3xl font-bold text-orange-400">
                 {status?.blocks_found ?? 0}
               </div>
               <p className="text-sm text-gray-400 mt-1">All time</p>
@@ -285,11 +285,11 @@ export default function MiningPage() {
               <div className="text-xs text-gray-400 mb-2">Connect your miners to:</div>
               <div className="p-2 bg-gray-900/50 rounded">
                 <div className="text-xs text-gray-500">Stratum V1</div>
-                <code className="text-green-400 text-sm">stratum+tcp://{nodeHost}:{status?.stratum_v1_port || 3333}</code>
+                <code className="text-orange-400 text-sm">stratum+tcp://{nodeHost}:{status?.stratum_v1_port || 3333}</code>
               </div>
               <div className="p-2 bg-gray-900/50 rounded">
                 <div className="text-xs text-gray-500">Stratum V2</div>
-                <code className="text-purple-400 text-sm">stratum+tcp://{nodeHost}:{status?.stratum_v2_port || 3334}</code>
+                <code className="text-orange-400 text-sm">stratum+tcp://{nodeHost}:{status?.stratum_v2_port || 3334}</code>
               </div>
               <p className="text-xs text-orange-300/70 mt-2">
                 These endpoints work when either Private or Public mining is enabled.
@@ -300,7 +300,7 @@ export default function MiningPage() {
           {/* Public Mining */}
           <div className={`p-4 rounded-lg border transition-all ${
             status?.public_mining
-              ? "bg-blue-900/20 border-blue-600"
+              ? "bg-orange-900/20 border-orange-600"
               : "bg-gray-800/30 border-gray-700"
           }`}>
             <div className="flex items-center justify-between mb-4">
@@ -323,13 +323,13 @@ export default function MiningPage() {
               <div className="text-xs text-gray-400 mb-2">Public miners connect via:</div>
               <div className="p-2 bg-gray-900/50 rounded">
                 <div className="text-xs text-gray-500">Stratum V1</div>
-                <code className="text-green-400 text-sm">stratum+tcp://pool.bitcoinghost.org:3333</code>
+                <code className="text-orange-400 text-sm">stratum+tcp://pool.bitcoinghost.org:3333</code>
               </div>
               <div className="p-2 bg-gray-900/50 rounded">
                 <div className="text-xs text-gray-500">Stratum V2</div>
-                <code className="text-purple-400 text-sm">stratum+tcp://pool.bitcoinghost.org:34265</code>
+                <code className="text-orange-400 text-sm">stratum+tcp://pool.bitcoinghost.org:34265</code>
               </div>
-              <p className="text-xs text-blue-300/70 mt-2">
+              <p className="text-xs text-orange-300/70 mt-2">
                 P2P routing automatically directs miners to this node based on location.
               </p>
             </div>
@@ -340,7 +340,7 @@ export default function MiningPage() {
         <div className="mt-6 pt-6 border-t border-gray-800">
           <p className="text-xs text-gray-500">
             Configure payout addresses in{" "}
-            <a href="/settings" className="text-purple-400 hover:text-purple-300 underline">
+            <a href="/settings" className="text-orange-400 hover:text-orange-300 underline">
               Settings
             </a>
           </p>
@@ -348,16 +348,41 @@ export default function MiningPage() {
       </Card>
 
       <Card>
-        <CardHeader title="Connected Miners" subtitle={`${miners.length} miners connected`} />
+        <CardHeader title="Connected Miners" subtitle={miners.length > 0 ? `${miners.length} miners connected` : `${minersData?.total ?? 0} miners connected`} />
         {minersLoading ? (
           <SkeletonTable rows={5} cols={5} />
-        ) : (
+        ) : miners.length > 0 ? (
           <DataTable
             columns={minerColumns}
             data={miners}
             emptyMessage="No miners connected"
             showPagination={miners.length > 10}
           />
+        ) : minersData && minersData.total > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="p-4 bg-gray-800/50 rounded-lg text-center">
+              <div className="text-2xl font-bold text-gray-100">{minersData.total}</div>
+              <div className="text-sm text-gray-400">Connected Miners</div>
+            </div>
+            {minersData.total_hashrate_th !== undefined && (
+              <div className="p-4 bg-gray-800/50 rounded-lg text-center">
+                <div className="text-2xl font-bold text-gray-100">
+                  {formatHashrate((minersData.total_hashrate_th ?? 0) * 1e12)}
+                </div>
+                <div className="text-sm text-gray-400">Total Hashrate</div>
+              </div>
+            )}
+            {minersData.total_shares_accepted !== undefined && (
+              <div className="p-4 bg-gray-800/50 rounded-lg text-center">
+                <div className="text-2xl font-bold text-gray-100">
+                  {(minersData.total_shares_accepted ?? 0).toLocaleString()}
+                </div>
+                <div className="text-sm text-gray-400">Shares Accepted</div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="text-center py-8 text-gray-400">No miners connected</div>
         )}
       </Card>
     </div>

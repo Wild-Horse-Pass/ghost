@@ -34,7 +34,7 @@ export function SidebarGroup({ icon, label, items, collapsed = false }: SidebarG
           className={`
             flex items-center justify-center w-full px-3 py-2 rounded-lg transition-colors
             ${isAnyActive
-              ? 'bg-green-600/20 text-green-400'
+              ? 'bg-orange-500/20 text-orange-400'
               : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/50'
             }
           `}
@@ -55,7 +55,7 @@ export function SidebarGroup({ icon, label, items, collapsed = false }: SidebarG
                 className={`
                   block px-3 py-2 text-sm transition-colors
                   ${isPathActive(pathname, item.href)
-                    ? 'text-green-400 bg-green-600/10'
+                    ? 'text-orange-400 bg-orange-500/10'
                     : 'text-gray-300 hover:text-gray-100 hover:bg-gray-800'
                   }
                 `}
@@ -76,7 +76,7 @@ export function SidebarGroup({ icon, label, items, collapsed = false }: SidebarG
         className={`
           flex items-center justify-between w-full px-3 py-2 rounded-lg transition-colors
           ${isAnyActive
-            ? 'bg-green-600/20 text-green-400'
+            ? 'bg-orange-500/20 text-orange-400'
             : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/50'
           }
         `}
@@ -104,7 +104,7 @@ export function SidebarGroup({ icon, label, items, collapsed = false }: SidebarG
               className={`
                 block px-3 py-2 text-sm rounded-lg transition-colors
                 ${isPathActive(pathname, item.href)
-                  ? 'text-green-400 bg-green-600/10'
+                  ? 'text-orange-400 bg-orange-500/10'
                   : 'text-gray-400 hover:text-gray-200 hover:bg-gray-800/50'
                 }
               `}

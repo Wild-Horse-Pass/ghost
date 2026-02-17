@@ -64,7 +64,7 @@ function ProgressBar({ percent }: { percent: number }) {
   return (
     <div className="w-full bg-gray-700 rounded-full h-2.5">
       <div
-        className="bg-purple-600 h-2.5 rounded-full transition-all duration-300"
+        className="bg-orange-600 h-2.5 rounded-full transition-all duration-300"
         style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
       />
     </div>
@@ -174,7 +174,7 @@ export default function UpdatesPage() {
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="p-4 bg-gray-800/50 rounded-lg">
                   <div className="text-sm text-gray-400 mb-1">Version</div>
-                  <div className="text-xl font-bold text-purple-400">
+                  <div className="text-xl font-bold text-orange-400">
                     {version?.node_version ?? "Unknown"}
                   </div>
                 </div>
@@ -221,7 +221,7 @@ export default function UpdatesPage() {
 
                 {updateStatus.status === "verifying" && (
                   <div className="flex items-center gap-2">
-                    <div className="animate-spin w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full" />
+                    <div className="animate-spin w-4 h-4 border-2 border-orange-500 border-t-transparent rounded-full" />
                     <span className="text-gray-400">Verifying SHA256 checksum...</span>
                   </div>
                 )}
@@ -238,11 +238,11 @@ export default function UpdatesPage() {
             <div className="space-y-4">
               {hasUpdate && updateInfo ? (
                 <>
-                  <div className="p-4 bg-purple-900/20 border border-purple-700 rounded-lg">
+                  <div className="p-4 bg-orange-900/20 border border-orange-700 rounded-lg">
                     <div className="flex items-start justify-between">
                       <div>
                         <div className="flex items-center gap-3 mb-2">
-                          <h3 className="text-lg font-bold text-purple-300">
+                          <h3 className="text-lg font-bold text-orange-300">
                             Version {updateInfo.version}
                           </h3>
                           <Badge variant="success">New</Badge>
@@ -324,9 +324,9 @@ export default function UpdatesPage() {
 
           {/* Info Card */}
           <Card>
-            <div className="p-4 bg-blue-900/20 border border-blue-800 rounded-lg">
-              <h4 className="text-blue-300 font-medium mb-2">About Updates</h4>
-              <ul className="text-sm text-blue-300/80 space-y-1 list-disc list-inside">
+            <div className="p-4 bg-orange-900/20 border border-orange-800 rounded-lg">
+              <h4 className="text-orange-300 font-medium mb-2">About Updates</h4>
+              <ul className="text-sm text-orange-300/80 space-y-1 list-disc list-inside">
                 <li>Updates are downloaded from official GitHub releases</li>
                 <li>SHA256 checksums are verified before installation</li>
                 <li>Current binaries are backed up before updating</li>
@@ -349,8 +349,8 @@ export default function UpdatesPage() {
             Are you sure you want to update to version{" "}
             <strong className="text-white">{updateInfo?.version}</strong>?
           </p>
-          <div className="p-3 bg-purple-900/20 border border-purple-800 rounded">
-            <p className="text-sm text-purple-400">
+          <div className="p-3 bg-orange-900/20 border border-orange-800 rounded">
+            <p className="text-sm text-orange-400">
               The node will be stopped during the update and automatically restarted once complete.
               Your current version will be backed up in case you need to rollback.
             </p>

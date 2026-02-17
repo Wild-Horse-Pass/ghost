@@ -140,17 +140,17 @@ export default function BudsPage() {
           </Card>
           <Card>
             <CardHeader title="Total Size" />
-            <div className="text-3xl font-bold text-blue-400">{formatSize(totalSize)}</div>
+            <div className="text-3xl font-bold text-orange-400">{formatSize(totalSize)}</div>
             <p className="text-sm text-gray-400 mt-1">Virtual bytes</p>
           </Card>
           <Card>
             <CardHeader title="Total Fees" />
-            <div className="text-3xl font-bold text-green-400">{formatSats(totalFees)}</div>
+            <div className="text-3xl font-bold text-orange-400">{formatSats(totalFees)}</div>
             <p className="text-sm text-gray-400 mt-1">Pending</p>
           </Card>
           <Card>
             <CardHeader title="Avg Fee Rate" />
-            <div className="text-3xl font-bold text-purple-400">
+            <div className="text-3xl font-bold text-orange-400">
               {totalSize > 0 ? (totalFees / totalSize).toFixed(1) : "0"} sat/vB
             </div>
             <p className="text-sm text-gray-400 mt-1">Average</p>
@@ -284,7 +284,7 @@ export default function BudsPage() {
         <div className="mt-4 pt-4 border-t border-gray-800">
           <Link
             href="/settings"
-            className="text-purple-400 hover:text-purple-300 text-sm"
+            className="text-orange-400 hover:text-orange-300 text-sm"
           >
             Configure profiles in Settings &rarr;
           </Link>
@@ -293,9 +293,9 @@ export default function BudsPage() {
 
       {/* Info Card */}
       <Card>
-        <div className="p-4 bg-blue-900/20 border border-blue-800 rounded-lg">
-          <h4 className="text-blue-300 font-medium mb-2">About BUDS Classification</h4>
-          <p className="text-sm text-blue-300/80 mb-3">
+        <div className="p-4 bg-orange-900/20 border border-orange-800 rounded-lg">
+          <h4 className="text-orange-300 font-medium mb-2">About BUDS Classification</h4>
+          <p className="text-sm text-orange-300/80 mb-3">
             BUDS (Bitcoin Unified Data Standard) classifies <strong>data within transactions</strong>, not transaction types.
             Each transaction is scored by its worst-tier data (ARBDA score).
           </p>
@@ -313,7 +313,7 @@ export default function BudsPage() {
               <strong className="text-red-400">T3 (Unknown)</strong>: Unrecognized or obfuscated data - triggers worst-tier score
             </li>
           </ul>
-          <p className="text-blue-300/60 text-sm mt-3">
+          <p className="text-orange-300/60 text-sm mt-3">
             Nodes can set policy to filter transactions based on their ARBDA score, enabling
             control over mempool composition and block template construction.
           </p>

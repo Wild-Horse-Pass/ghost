@@ -58,7 +58,7 @@ function EarningsChart({ data }: { data: DailyEarning[] }) {
         return (
           <div
             key={day.date}
-            className="w-2 bg-gradient-to-t from-blue-500 to-green-500 rounded-t"
+            className="w-2 bg-gradient-to-t from-orange-500 to-orange-400 rounded-t"
             style={{ height: `${height}px` }}
             title={`${day.date}: ${formatShortBtc(day.amount_btc)}`}
           />
@@ -163,7 +163,7 @@ export default function RewardsPage() {
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-gray-400">Today</span>
-                  <span className="text-lg font-medium text-green-400">
+                  <span className="text-lg font-medium text-orange-400">
                     {formatShortBtc(summary?.earned_today ?? 0)}
                   </span>
                 </div>
@@ -255,25 +255,25 @@ export default function RewardsPage() {
           <CardHeader title="Earnings Projection" />
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
             <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-green-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {formatShortBtc(projections?.daily ?? 0)}
               </div>
               <div className="text-sm text-gray-400">Daily</div>
             </div>
             <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-green-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {formatShortBtc(projections?.weekly ?? 0)}
               </div>
               <div className="text-sm text-gray-400">Weekly</div>
             </div>
             <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-green-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {formatShortBtc(projections?.monthly ?? 0)}
               </div>
               <div className="text-sm text-gray-400">Monthly</div>
             </div>
             <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-green-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {formatShortBtc(projections?.yearly ?? 0)}
               </div>
               <div className="text-sm text-gray-400">Yearly</div>
@@ -281,11 +281,11 @@ export default function RewardsPage() {
           </div>
 
           {projections && (projections.potential_increase_percent ?? 0) > 0 && (
-            <div className="p-4 bg-blue-900/20 border border-blue-800 rounded-lg">
-              <p className="text-blue-300 text-sm">
+            <div className="p-4 bg-orange-900/20 border border-orange-800 rounded-lg">
+              <p className="text-orange-300 text-sm">
                 If you enable all share tiers (Public Mining +3, Bitcoin Pure +2):
               </p>
-              <p className="text-blue-100 font-medium mt-1">
+              <p className="text-orange-100 font-medium mt-1">
                 Daily: {formatShortBtc(projections.daily_with_all_shares ?? 0)} (+{(projections.potential_increase_percent ?? 0).toFixed(0)}%)
               </p>
             </div>
@@ -306,16 +306,16 @@ export default function RewardsPage() {
                 <div className="text-xs text-gray-500">{payouts.filter(p => p.payout_type === "treasury").length} payouts</div>
               </div>
               {/* Node Reward Pool */}
-              <div className="text-center p-4 bg-green-900/20 border border-green-800/50 rounded-lg">
-                <div className="text-lg font-bold text-green-400">
+              <div className="text-center p-4 bg-orange-900/20 border border-orange-800/50 rounded-lg">
+                <div className="text-lg font-bold text-orange-400">
                   {formatShortBtc(payouts.filter(p => p.payout_type === "node_reward").reduce((sum, p) => sum + p.amount_btc, 0))}
                 </div>
                 <div className="text-sm text-gray-400">Node Reward Pool</div>
                 <div className="text-xs text-gray-500">{payouts.filter(p => p.payout_type === "node_reward").length} payouts</div>
               </div>
               {/* Mining Rewards */}
-              <div className="text-center p-4 bg-blue-900/20 border border-blue-800/50 rounded-lg">
-                <div className="text-lg font-bold text-blue-400">
+              <div className="text-center p-4 bg-orange-900/20 border border-orange-800/50 rounded-lg">
+                <div className="text-lg font-bold text-orange-400">
                   {formatShortBtc(payouts.filter(p => p.payout_type === "mining").reduce((sum, p) => sum + p.amount_btc, 0))}
                 </div>
                 <div className="text-sm text-gray-400">Mining Rewards</div>
@@ -330,8 +330,8 @@ export default function RewardsPage() {
                 <div className="text-xs text-gray-500">{payouts.filter(p => p.payout_type === "pool_fee").length} payouts</div>
               </div>
               {/* Block TX Fees */}
-              <div className="text-center p-4 bg-purple-900/20 border border-purple-800/50 rounded-lg">
-                <div className="text-lg font-bold text-purple-400">
+              <div className="text-center p-4 bg-orange-900/20 border border-orange-800/50 rounded-lg">
+                <div className="text-lg font-bold text-orange-400">
                   {formatShortBtc(payouts.filter(p => p.payout_type === "tx_fee").reduce((sum, p) => sum + p.amount_btc, 0))}
                 </div>
                 <div className="text-sm text-gray-400">Block TX Fees</div>
@@ -347,7 +347,7 @@ export default function RewardsPage() {
             title="Payout History"
             subtitle={`${payouts.length} payouts received`}
             action={
-              <button className="text-sm text-blue-400 hover:text-blue-300">
+              <button className="text-sm text-orange-400 hover:text-orange-300">
                 Export CSV
               </button>
             }
@@ -400,7 +400,7 @@ export default function RewardsPage() {
                            payout.payout_type}
                         </Badge>
                       </td>
-                      <td className="py-3 font-mono text-green-400 text-right">
+                      <td className="py-3 font-mono text-orange-400 text-right">
                         +{formatBtc(payout.amount_btc)}
                       </td>
                       <td className="py-3">
@@ -408,7 +408,7 @@ export default function RewardsPage() {
                           href={`https://mempool.space/tx/${payout.txid ?? ""}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="font-mono text-blue-400 hover:text-blue-300 text-sm"
+                          className="font-mono text-orange-400 hover:text-orange-300 text-sm"
                         >
                           {(payout.txid ?? "").slice(0, 8)}...
                         </a>
@@ -420,7 +420,7 @@ export default function RewardsPage() {
 
               {payouts.length > 20 && (
                 <div className="mt-4 text-center">
-                  <button className="text-sm text-blue-400 hover:text-blue-300">
+                  <button className="text-sm text-orange-400 hover:text-orange-300">
                     Load More ({payouts.length - 20} remaining)
                   </button>
                 </div>

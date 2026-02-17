@@ -195,12 +195,12 @@ export default function ConfigPage() {
                   disabled={saving === "mempool"}
                   className={`p-4 rounded-lg text-left transition-all ${
                     isActive
-                      ? "bg-purple-900/30 border-2 border-purple-500"
+                      ? "bg-orange-900/30 border-2 border-orange-500"
                       : "bg-gray-800/50 border-2 border-transparent hover:border-gray-700"
                   } ${saving === "mempool" ? "opacity-50 cursor-not-allowed" : ""}`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className={`font-medium ${isActive ? "text-purple-300" : "text-gray-100"}`}>
+                    <span className={`font-medium ${isActive ? "text-orange-300" : "text-gray-100"}`}>
                       {profile.label}
                     </span>
                     {isActive && (
@@ -231,12 +231,12 @@ export default function ConfigPage() {
                   disabled={saving === "template"}
                   className={`p-4 rounded-lg text-left transition-all ${
                     isActive
-                      ? "bg-blue-900/30 border-2 border-blue-500"
+                      ? "bg-orange-900/30 border-2 border-orange-500"
                       : "bg-gray-800/50 border-2 border-transparent hover:border-gray-700"
                   } ${saving === "template" ? "opacity-50 cursor-not-allowed" : ""}`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className={`font-medium ${isActive ? "text-blue-300" : "text-gray-100"}`}>
+                    <span className={`font-medium ${isActive ? "text-orange-300" : "text-gray-100"}`}>
                       {profile.label}
                     </span>
                     {isActive && (

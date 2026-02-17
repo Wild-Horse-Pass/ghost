@@ -134,7 +134,7 @@ export default function GhostPayPage() {
               </div>
             </div>
             <div className="p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-purple-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {wraithStats?.active_sessions || 0}
               </div>
               <div className="text-sm text-gray-400">Active Mix Sessions</div>
@@ -143,7 +143,7 @@ export default function GhostPayPage() {
               </div>
             </div>
             <div className="p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-blue-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {reconciliation?.active_count || 0}
               </div>
               <div className="text-sm text-gray-400">Reconciliation Batches</div>
@@ -152,7 +152,7 @@ export default function GhostPayPage() {
               </div>
             </div>
             <div className="p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-green-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {reconciliation?.batches_24h || 0}
               </div>
               <div className="text-sm text-gray-400">Confirmed (24h)</div>
@@ -178,7 +178,7 @@ export default function GhostPayPage() {
               <div className="text-sm text-gray-400">Sessions Hosted</div>
             </div>
             <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-green-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {wraithStats?.sessions_completed?.toLocaleString() || 0}
               </div>
               <div className="text-sm text-gray-400">Completed</div>
@@ -190,7 +190,7 @@ export default function GhostPayPage() {
               <div className="text-sm text-gray-400">Expired</div>
             </div>
             <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-              <div className="text-2xl font-bold text-purple-400">
+              <div className="text-2xl font-bold text-orange-400">
                 {wraithStats?.total_participants?.toLocaleString() || 0}
               </div>
               <div className="text-sm text-gray-400">Participants Served</div>
