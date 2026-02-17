@@ -40,6 +40,7 @@ path = "src/main.rs"
 # Internal crates
 ghost-common = { workspace = true }
 ghost-buds = { workspace = true }
+ghost-reaper = { workspace = true }
 ghost-policy = { workspace = true }
 ghost-storage = { workspace = true }
 ghost-consensus = { workspace = true }

@@ -60,6 +60,7 @@ use bitcoin::consensus::deserialize;
 use ghost_accounting::CoinbaseBuilder;
 use ghost_buds::BudsClassifier;
 use ghost_common::config::{BitcoinNetwork, MiningMode};
+use ghost_reaper::ReaperConfig;
 use ghost_common::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
 use ghost_common::types::{PayoutProposal, TreasuryAddress};
 use ghost_policy::PolicyProfile;
@@ -311,6 +312,8 @@ pub struct TemplateProcessor {
     policy: PolicyProfile,
     /// BUDS classifier
     classifier: BudsClassifier,
+    /// Reaper config for dead code detection
+    reaper_config: ReaperConfig,
     /// Current work state
     current_work: RwLock<Option<WorkState>>,
     /// Work states by template_id (for SubmitSolution lookup)
@@ -338,7 +341,12 @@ pub struct TemplateProcessor {
 
 impl TemplateProcessor {
     /// Create a new template processor
-    pub fn new(config: TemplateConfig, rpc: Arc<BitcoinRpc>, policy: PolicyProfile) -> Self {
+    pub fn new(
+        config: TemplateConfig,
+        rpc: Arc<BitcoinRpc>,
+        policy: PolicyProfile,
+        reaper_config: ReaperConfig,
+    ) -> Self {
         let (event_tx, _) = broadcast::channel(100);
         let (block_submitted_tx, block_submitted_rx) = mpsc::unbounded_channel();
 
@@ -347,6 +355,7 @@ impl TemplateProcessor {
             rpc,
             policy,
             classifier: BudsClassifier::new(),
+            reaper_config,
             current_work: RwLock::new(None),
             work_states: RwLock::new(HashMap::new()),
             job_counter: RwLock::new(0),
@@ -1390,6 +1399,7 @@ impl TemplateProcessor {
                 original = filter_stats.original,
                 kept = filter_stats.kept,
                 removed = filter_stats.removed,
+                reaped = filter_stats.reaped,
                 removed_fees = filter_stats.removed_fees,
                 "Filtered transactions by policy"
             );
@@ -1518,6 +1528,7 @@ impl TemplateProcessor {
         let original_count = transactions.len();
         let mut kept = Vec::with_capacity(original_count);
         let mut removed_fees = 0u64;
+        let mut reaped_count = 0usize;
 
         // Track seen TXIDs to detect duplicates
         let mut seen_txids: HashSet<String> = HashSet::with_capacity(transactions.len());
@@ -1556,6 +1567,22 @@ impl TemplateProcessor {
                     continue;
                 }
             };
+
+            // Reaper: detect dead code in witness scripts
+            if self.reaper_config.enabled {
+                let reaper_verdict = ghost_reaper::analyze(&btc_tx, &self.reaper_config);
+                if reaper_verdict.is_corpse() {
+                    removed_fees += tx.fee;
+                    reaped_count += 1;
+                    debug!(
+                        txid = %tx.txid,
+                        dead_bytes = reaper_verdict.total_dead_bytes,
+                        regions = reaper_verdict.dead_regions.len(),
+                        "Transaction reaped: dead code detected"
+                    );
+                    continue;
+                }
+            }
 
             // Classify transaction
             let result = self.classifier.classify(&btc_tx);
@@ -1606,6 +1633,7 @@ impl TemplateProcessor {
             kept: kept.len(),
             removed: original_count - kept.len(),
             removed_fees,
+            reaped: reaped_count,
         };
 
         (kept, stats)
@@ -2757,6 +2785,7 @@ struct FilterStats {
     kept: usize,
     removed: usize,
     removed_fees: u64,
+    reaped: usize,
 }
 
 #[cfg(test)]
@@ -2767,7 +2796,7 @@ mod tests {
     fn test_height_encoding() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
         let processor =
-            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive());
+            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict());
 
         // Test various heights
         assert_eq!(processor.encode_height(0), vec![0x01, 0x00]);
@@ -2780,7 +2809,7 @@ mod tests {
     fn test_reverse_hex() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
         let processor =
-            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive());
+            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict());
 
         // Valid hex string
         let hex = "0102030405060708";
@@ -2811,7 +2840,7 @@ mod tests {
     fn test_witness_conversion() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
         let processor =
-            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive());
+            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict());
 
         // Create a minimal non-witness coinbase:
         // version(4) | input_count(1) | prev_hash(32) | prev_index(4) | scriptsig_len(1) | scriptsig(4) | sequence(4) | output_count(1) | value(8) | scriptpubkey_len(1) | scriptpubkey(22) | locktime(4)
@@ -2864,6 +2893,7 @@ mod tests {
             },
             rpc,
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         let (coinbase1, coinbase2, _witness_data) = processor
@@ -2968,6 +2998,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -2984,6 +3015,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -3006,6 +3038,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -3024,6 +3057,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -3205,7 +3239,7 @@ mod tests {
     /// Helper to create a TemplateProcessor for sorting tests
     fn test_processor() -> TemplateProcessor {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
-        TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive())
+        TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict())
     }
 
     /// Test that CPFP package with high package fee rate sorts above lower independent txs
@@ -3382,6 +3416,7 @@ mod tests {
             },
             rpc,
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         // This should succeed
@@ -3415,5 +3450,143 @@ mod tests {
             recovered, rpc_hash,
             "Full byte reversal should recover original RPC hash from internal format"
         );
+    }
+
+    /// Test that ghost-reaper integration rejects transactions with inscription envelopes
+    #[test]
+    fn test_reaper_filters_inscription_tx() {
+        use bitcoin::consensus::encode::serialize as btc_serialize;
+        use bitcoin::{
+            absolute::LockTime, hashes::Hash, transaction::Version, Amount, OutPoint, ScriptBuf,
+            Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        };
+
+        // Build a tapscript with an inscription envelope (OP_FALSE OP_IF ... OP_ENDIF)
+        let mut tapscript: Vec<u8> = Vec::new();
+        tapscript.push(0x00); // OP_FALSE
+        tapscript.push(0x63); // OP_IF
+        tapscript.push(0x03); // PUSH3
+        tapscript.extend(b"ord"); // "ord" marker
+        tapscript.push(0x51); // OP_1 (content type tag)
+        let ctype = b"text/plain";
+        tapscript.push(ctype.len() as u8);
+        tapscript.extend(ctype);
+        tapscript.push(0x00); // OP_0 (content tag)
+        let body = b"dead code inscription payload";
+        tapscript.push(body.len() as u8);
+        tapscript.extend(body);
+        tapscript.push(0x68); // OP_ENDIF
+        tapscript.push(0xac); // OP_CHECKSIG
+
+        // Witness: signature, tapscript, control block
+        let mut witness = Witness::new();
+        witness.push([0x30; 64]); // fake schnorr sig
+        witness.push(&tapscript);
+        let mut control_block = vec![0xc0u8]; // leaf version
+        control_block.extend([0x11; 32]); // internal key
+        witness.push(&control_block);
+
+        let txid = Txid::from_byte_array([42u8; 32]);
+        let inscription_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint { txid, vout: 0 },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness,
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(50_000),
+                script_pubkey: ScriptBuf::from({
+                    let mut s = vec![0x00, 0x14];
+                    s.extend([0xaa; 20]);
+                    s
+                }),
+            }],
+        };
+
+        let inscription_hex = hex::encode(btc_serialize(&inscription_tx));
+        let inscription_txid = inscription_tx.compute_txid().to_string();
+
+        // Also build a clean P2WPKH transaction (no witness abuse)
+        let clean_txid_hash = Txid::from_byte_array([99u8; 32]);
+        let mut clean_witness = Witness::new();
+        clean_witness.push([0x30; 72]); // DER signature
+        clean_witness.push([0x02; 33]); // compressed pubkey
+        let clean_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: clean_txid_hash,
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: clean_witness,
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(49_000),
+                script_pubkey: ScriptBuf::from({
+                    let mut s = vec![0x00, 0x14];
+                    s.extend([0xbb; 20]);
+                    s
+                }),
+            }],
+        };
+        let clean_hex = hex::encode(btc_serialize(&clean_tx));
+        let clean_txid = clean_tx.compute_txid().to_string();
+
+        // Create TemplateTransactions
+        let txs = vec![
+            TemplateTransaction {
+                data: inscription_hex,
+                txid: inscription_txid.clone(),
+                hash: "00".repeat(32),
+                depends: vec![],
+                fee: 5000,
+                sigops: 1,
+                weight: 800,
+            },
+            TemplateTransaction {
+                data: clean_hex,
+                txid: clean_txid.clone(),
+                hash: "00".repeat(32),
+                depends: vec![],
+                fee: 3000,
+                sigops: 1,
+                weight: 400,
+            },
+        ];
+
+        // Filter with reaper enabled (strict mode)
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        let processor = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc.clone(),
+            PolicyProfile::full_open(), // allow all tiers so only reaper filters
+            ReaperConfig::strict(),
+        );
+
+        let (kept, stats) = processor.filter_transactions(&txs);
+
+        assert_eq!(stats.original, 2);
+        assert_eq!(stats.reaped, 1, "inscription tx should be reaped");
+        assert_eq!(kept.len(), 1, "only clean tx should survive");
+        assert_eq!(kept[0].txid, clean_txid, "clean tx should be kept");
+
+        // Verify reaper disabled lets inscription through
+        let processor_disabled = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::full_open(),
+            ReaperConfig::disabled(),
+        );
+
+        let (kept_all, stats_all) = processor_disabled.filter_transactions(&txs);
+
+        assert_eq!(stats_all.reaped, 0, "disabled reaper should not reap");
+        assert_eq!(kept_all.len(), 2, "both txs should survive with reaper disabled");
     }
 }
