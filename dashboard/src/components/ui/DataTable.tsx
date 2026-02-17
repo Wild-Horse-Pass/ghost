@@ -14,6 +14,8 @@ import {
 } from '@tanstack/react-table';
 import { Input } from './Input';
 import { Button } from './Button';
+import { SkeletonTable } from './Skeleton';
+import { EmptyState } from './EmptyState';
 
 interface DataTableProps<TData, TValue> {
   columns: ColumnDef<TData, TValue>[];
@@ -23,6 +25,10 @@ interface DataTableProps<TData, TValue> {
   pageSize?: number;
   showPagination?: boolean;
   emptyMessage?: string;
+  emptyIcon?: React.ReactNode;
+  emptyDescription?: string;
+  loading?: boolean;
+  loadingRows?: number;
 }
 
 export function DataTable<TData, TValue>({
@@ -33,6 +39,10 @@ export function DataTable<TData, TValue>({
   pageSize = 10,
   showPagination = true,
   emptyMessage = 'No data available',
+  emptyIcon,
+  emptyDescription,
+  loading,
+  loadingRows = 5,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
@@ -50,6 +60,19 @@ export function DataTable<TData, TValue>({
     state: { sorting, columnFilters },
     initialState: { pagination: { pageSize } },
   });
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        {searchColumn && (
+          <div className="max-w-sm">
+            <div className="h-10 bg-gray-800 rounded-lg animate-pulse" />
+          </div>
+        )}
+        <SkeletonTable rows={loadingRows} cols={columns.length} />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -86,7 +109,7 @@ export function DataTable<TData, TValue>({
                           : flexRender(header.column.columnDef.header, header.getContext())}
                         {header.column.getIsSorted() && (
                           <span className="text-orange-400">
-                            {header.column.getIsSorted() === 'asc' ? '↑' : '↓'}
+                            {header.column.getIsSorted() === 'asc' ? '\u2191' : '\u2193'}
                           </span>
                         )}
                       </div>
@@ -98,11 +121,12 @@ export function DataTable<TData, TValue>({
             <tbody className="divide-y divide-gray-800">
               {table.getRowModel().rows.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={columns.length}
-                    className="px-4 py-8 text-center text-gray-500"
-                  >
-                    {emptyMessage}
+                  <td colSpan={columns.length}>
+                    <EmptyState
+                      icon={emptyIcon}
+                      title={emptyMessage}
+                      description={emptyDescription}
+                    />
                   </td>
                 </tr>
               ) : (
@@ -129,7 +153,7 @@ export function DataTable<TData, TValue>({
         <div className="flex items-center justify-between">
           <span className="text-sm text-gray-400">
             Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}
-            {' · '}
+            {' \u00b7 '}
             {table.getFilteredRowModel().rows.length} total rows
           </span>
           <div className="flex gap-2">

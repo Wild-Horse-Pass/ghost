@@ -32,6 +32,9 @@ interface UIState {
   theme: 'dark' | 'light';
   accentColor: AccentColorKey;
 
+  // Tooltips
+  tooltipsEnabled: boolean;
+
   // Actions
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -40,6 +43,8 @@ interface UIState {
   closeDialog: () => void;
   setTheme: (theme: 'dark' | 'light') => void;
   setAccentColor: (color: AccentColorKey) => void;
+  setTooltipsEnabled: (enabled: boolean) => void;
+  toggleTooltips: () => void;
 }
 
 export const useUIStore = create<UIState>()(
@@ -51,6 +56,7 @@ export const useUIStore = create<UIState>()(
       dialogData: null,
       theme: 'dark',
       accentColor: 'orange',
+      tooltipsEnabled: true,
 
       toggleSidebar: () => set((state) => ({
         sidebarCollapsed: !state.sidebarCollapsed
@@ -73,6 +79,9 @@ export const useUIStore = create<UIState>()(
       setTheme: (theme) => set({ theme }),
 
       setAccentColor: (accentColor) => set({ accentColor }),
+
+      setTooltipsEnabled: (tooltipsEnabled) => set({ tooltipsEnabled }),
+      toggleTooltips: () => set((state) => ({ tooltipsEnabled: !state.tooltipsEnabled })),
     }),
     {
       name: 'ghost-node-ui',
@@ -80,6 +89,7 @@ export const useUIStore = create<UIState>()(
         sidebarCollapsed: state.sidebarCollapsed,
         theme: state.theme,
         accentColor: state.accentColor,
+        tooltipsEnabled: state.tooltipsEnabled,
       }),
     }
   )

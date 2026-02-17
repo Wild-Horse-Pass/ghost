@@ -32,7 +32,7 @@ export interface NodeStatus {
   block_height?: number;
   round_id?: number;
   is_synced?: boolean;
-  peer_count: number;
+  peer_count?: number;
   miner_count?: number;
   uptime_seconds?: number;
   uptime_secs?: number;
@@ -764,6 +764,7 @@ export interface BackupHistoryResponse {
 // Enhanced Rewards types
 export interface EarningsSummary {
   total_earned_all_time?: number;
+  pending_btc?: number;
   earned_this_month?: number;
   earned_this_week?: number;
   earned_today?: number;
@@ -852,7 +853,7 @@ export interface WatchdogStatus {
 // Payout History Types (for transparency)
 // ============================================================================
 
-export type PayoutHistoryTimeFilter = "24h" | "7d";
+export type PayoutHistoryTimeFilter = "24h" | "7d" | "all";
 
 export interface NetworkPayoutEntry {
   // Backend fields

@@ -5,7 +5,7 @@ import { Card, CardHeader } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { SkeletonCard } from "@/components/ui/Skeleton";
 import { NodePayoutHistoryCard } from "@/components/PayoutHistoryCard";
-import { useRewards, useNodePayoutHistory } from "@/hooks/queries";
+import { useRewards, useNodePayoutHistory, useShares } from "@/hooks/queries";
 import type { PayoutHistoryTimeFilter } from "@/types/api";
 
 function formatShortBtc(btc: number): string {
@@ -16,25 +16,26 @@ function formatShortBtc(btc: number): string {
 
 export default function RewardsPage() {
   const { data, isLoading } = useRewards();
+  const { data: sharesData, isLoading: sharesLoading } = useShares();
   const [nodePayoutTimeFilter, setNodePayoutTimeFilter] = useState<PayoutHistoryTimeFilter>("7d");
   const [nodePayoutTypeFilter, setNodePayoutTypeFilter] = useState<string | undefined>(undefined);
   const { data: nodePayoutHistory, isLoading: nodePayoutLoading } = useNodePayoutHistory(nodePayoutTimeFilter, nodePayoutTypeFilter);
 
   const summary = data?.summary ?? null;
-  const shares = data?.shares ?? null;
+  const shares = sharesData ?? null;
   const contributions = data?.share_contributions ?? [];
   const networkTotalShares = data?.network_total_shares ?? 0;
   const poolSharePercent = data?.your_share_of_pool_percent ?? 0;
 
   return (
-    <div className="space-y-3">
-      <h1 className="text-lg font-bold text-gray-100">Rewards</h1>
+    <div className="space-y-6">
+      <h1 className="text-2xl font-bold text-gray-100">Rewards</h1>
 
       {/* Earnings Summary */}
       {isLoading ? (
         <SkeletonCard />
       ) : (
-        <Card className="p-3">
+        <Card>
           <CardHeader title="Node Rewards" />
           <div className="p-4 bg-gradient-to-br from-yellow-900/30 to-orange-900/20 border border-yellow-800/50 rounded-lg">
             <div className="text-xs text-yellow-500 uppercase tracking-wide mb-1">
@@ -51,10 +52,10 @@ export default function RewardsPage() {
       )}
 
       {/* Your Shares */}
-      {isLoading ? (
+      {isLoading || sharesLoading ? (
         <SkeletonCard />
       ) : (
-        <Card className="p-3">
+        <Card>
           <CardHeader title="Your Shares" />
           <div className="mb-2">
             <div className="flex items-center gap-2">
@@ -99,7 +100,7 @@ export default function RewardsPage() {
                       )}
                     </td>
                     <td className="py-1.5 text-right">
-                      {contrib.enabled && contrib.contribution_percent != null ? (
+                      {contrib.enabled && typeof contrib.contribution_percent === "number" && Number.isFinite(contrib.contribution_percent) ? (
                         <span className="text-gray-100">~{contrib.contribution_percent.toFixed(0)}%</span>
                       ) : (
                         <span className="text-gray-500">-</span>
@@ -114,11 +115,11 @@ export default function RewardsPage() {
           <div className="mt-2 pt-2 border-t border-gray-800 text-xs text-gray-400">
             <div className="flex justify-between">
               <span>Network Total:</span>
-              <span className="text-gray-100">{networkTotalShares.toLocaleString()}</span>
+              <span className="text-gray-100">{Number.isFinite(networkTotalShares) ? networkTotalShares.toLocaleString() : "0"}</span>
             </div>
             <div className="flex justify-between">
               <span>Your Share:</span>
-              <span className="text-gray-100">{poolSharePercent.toFixed(4)}%</span>
+              <span className="text-gray-100">{Number.isFinite(poolSharePercent) ? poolSharePercent.toFixed(4) : "0.0000"}%</span>
             </div>
           </div>
         </Card>
