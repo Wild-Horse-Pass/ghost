@@ -1,0 +1,131 @@
+"use client";
+
+import { PageHeader } from "@/components/ui/PageHeader";
+import { StatCard } from "@/components/ui/StatCard";
+import { Card, CardHeader } from "@/components/ui/Card";
+import { Badge } from "@/components/ui/Badge";
+import { StatusDot } from "@/components/ui/StatusDot";
+import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
+import { DataTable, formatDuration, truncateId } from "@/components/ui/DataTable";
+import { usePoolStatus, usePeers } from "@/hooks/queries";
+import { useMeshStatus } from "@/hooks/queries/useMeshQueries";
+import type { PeerInfo } from "@/types/api";
+import type { ColumnDef } from "@tanstack/react-table";
+
+const TOOLTIPS = {
+  total_peers: "Number of Ghost nodes your node is directly connected to via the P2P mesh network.",
+  avg_latency: "Average round-trip time to your connected peers. Lower is better.",
+  synced_peers: "How many of your peers are fully synced with the Bitcoin blockchain.",
+  mesh_channels: "Number of active mesh communication channels (share, block, voting, health, etc).",
+};
+
+const peerColumns: ColumnDef<PeerInfo>[] = [
+  {
+    accessorKey: "node_id",
+    header: "Node ID",
+    cell: ({ row }) => (
+      <span className="font-mono text-sm">{truncateId(row.original.node_id || "N/A", 8)}</span>
+    ),
+  },
+  {
+    accessorKey: "version",
+    header: "Version",
+    cell: ({ row }) => (
+      <span className="font-mono text-gray-400">{row.original.version || "N/A"}</span>
+    ),
+  },
+  {
+    accessorKey: "latency_ms",
+    header: "Latency",
+    cell: ({ row }) => {
+      const latency = row.original.latency_ms ?? 0;
+      return (
+        <Badge variant={latency < 100 ? "success" : latency < 500 ? "warning" : "error"}>
+          {latency}ms
+        </Badge>
+      );
+    },
+  },
+  {
+    accessorKey: "synced",
+    header: "Status",
+    cell: ({ row }) => (
+      <StatusDot
+        status={row.original.synced ? "online" : "warning"}
+        label={row.original.synced ? "Synced" : "Syncing"}
+        size="sm"
+      />
+    ),
+  },
+  {
+    accessorKey: "connected_at",
+    header: "Connected",
+    cell: ({ row }) => {
+      const connectedAgo = Math.floor(Date.now() / 1000 - (row.original.connected_at ?? 0));
+      return <span className="text-gray-400">{formatDuration(connectedAgo)}</span>;
+    },
+  },
+];
+
+export default function PeersPage() {
+  const { data: pool, isLoading: poolLoading } = usePoolStatus();
+  const { data: peersData, isLoading: peersLoading } = usePeers();
+  useMeshStatus(); // pre-fetch for mesh data
+
+  const peers = peersData?.peers ?? [];
+  const syncedPeers = peers.filter((p) => p.synced).length;
+  const avgLatency = peers.length > 0
+    ? Math.round(peers.reduce((sum, p) => sum + (p.latency_ms ?? 0), 0) / peers.length)
+    : 0;
+
+  return (
+    <div className="space-y-6">
+      <PageHeader title="Peers" subtitle="Connected nodes in the Ghost mesh network" />
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard
+          label="Total Peers"
+          value={peers.length}
+          tooltip={TOOLTIPS.total_peers}
+          loading={peersLoading}
+        />
+        <StatCard
+          label="Avg Latency"
+          value={avgLatency > 0 ? `${avgLatency}ms` : "--"}
+          tooltip={TOOLTIPS.avg_latency}
+          loading={peersLoading}
+        />
+        <StatCard
+          label="Synced"
+          value={`${syncedPeers} / ${peers.length}`}
+          tooltip={TOOLTIPS.synced_peers}
+          loading={peersLoading}
+        />
+        <StatCard
+          label="Active Nodes"
+          value={pool?.active_nodes ?? "--"}
+          sublabel="pool-wide"
+          loading={poolLoading}
+        />
+      </div>
+
+      {/* Peer Table */}
+      <SectionErrorBoundary section="Peer Table">
+        <Card>
+          <CardHeader title="Connected Peers" subtitle={`${peers.length} peers`} />
+          <DataTable
+            columns={peerColumns}
+            data={peers}
+            loading={peersLoading}
+            emptyMessage="No peers connected"
+            emptyDescription="Your node will discover peers automatically"
+            searchColumn="node_id"
+            searchPlaceholder="Search by node ID..."
+            showPagination={peers.length > 10}
+          />
+        </Card>
+      </SectionErrorBoundary>
+    </div>
+  );
+}

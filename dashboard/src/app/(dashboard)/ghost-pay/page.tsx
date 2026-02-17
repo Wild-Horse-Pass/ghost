@@ -17,6 +17,13 @@ import {
 } from "@/hooks/queries";
 import type { PayoutHistoryTimeFilter } from "@/types/api";
 
+const TOOLTIPS = {
+  l2_height: "Current block height on the Ghost Pay L2 network. Format: era:block for multi-era chains.",
+  active_sessions: "Number of Wraith mixing sessions currently in progress on your node.",
+  reconciliation: "Active L1 settlement batches reconciling L2 state back to Bitcoin.",
+  confirmed_24h: "L1 reconciliation batches confirmed on-chain in the last 24 hours.",
+};
+
 type HealthStatus = "healthy" | "warning" | "unknown";
 
 function getHealthBadge(status: HealthStatus) {
@@ -49,7 +56,7 @@ export default function GhostPayPage() {
     return (
       <div className="space-y-6">
         <PageHeader title="Ghost Pay" subtitle="L2 instant payments, privacy mixing, and settlement" />
-        <Card>
+        <Card className="border-cyan-600/30">
           <EmptyState
             icon={
               <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -59,7 +66,7 @@ export default function GhostPayPage() {
             title="Ghost Pay is not connected"
             description="Enable Ghost Pay in Settings to access L2 payments, Wraith mixing, and Ghost Locks."
             action={
-              <a href="/settings" className="text-sm text-orange-400 hover:text-orange-300">
+              <a href="/settings" className="text-sm text-cyan-400 hover:text-cyan-300">
                 Go to Settings
               </a>
             }
@@ -99,24 +106,28 @@ export default function GhostPayPage() {
           label="L2 Height"
           value={status ? formatL2Block(l2Era, l2Height) : "--"}
           sublabel={`Epoch ${status?.epoch ?? 0}`}
+          tooltip={TOOLTIPS.l2_height}
           loading={isLoading}
         />
         <StatCard
           label="Active Sessions"
           value={wraithStats?.active_sessions ?? 0}
           sublabel={`${wraithStats?.total_participants ?? 0} participants`}
+          tooltip={TOOLTIPS.active_sessions}
           loading={isLoading}
         />
         <StatCard
           label="Reconciliation"
           value={reconciliation?.active_count ?? 0}
           sublabel={`${reconciliation?.pending_count ?? 0} pending`}
+          tooltip={TOOLTIPS.reconciliation}
           loading={isLoading}
         />
         <StatCard
           label="Confirmed (24h)"
           value={reconciliation?.batches_24h ?? 0}
           sublabel="L1 reconciliations"
+          tooltip={TOOLTIPS.confirmed_24h}
           loading={isLoading}
         />
       </div>
@@ -124,10 +135,10 @@ export default function GhostPayPage() {
       {/* Health indicators */}
       <SectionErrorBoundary section="System Health">
         {isLoading ? <SkeletonCard /> : (
-          <Card>
-            <CardHeader title="System Health" />
+          <Card className="border-cyan-600/30">
+            <CardHeader title={<span className="text-cyan-400">System Health</span>} />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="p-4 bg-gray-800/50 rounded-lg">
+              <div className="p-4 bg-cyan-900/10 rounded-lg">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm text-gray-400">L2 Consensus</span>
                   {getHealthBadge(consensusHealth)}
@@ -136,7 +147,7 @@ export default function GhostPayPage() {
                   {status?.sync_state || status?.network || "Unknown"} &middot; {status?.peer_count || 0} peers
                 </div>
               </div>
-              <div className="p-4 bg-gray-800/50 rounded-lg">
+              <div className="p-4 bg-cyan-900/10 rounded-lg">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm text-gray-400">L1 Connection</span>
                   {getHealthBadge(l1Health)}
@@ -145,7 +156,7 @@ export default function GhostPayPage() {
                   {reconciliation?.l1_available ? `Block ${reconciliation.l1_height?.toLocaleString()}` : "Awaiting connection"}
                 </div>
               </div>
-              <div className="p-4 bg-gray-800/50 rounded-lg">
+              <div className="p-4 bg-cyan-900/10 rounded-lg">
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-sm text-gray-400">Wraith Service</span>
                   {getHealthBadge(wraithHealth)}
@@ -162,29 +173,29 @@ export default function GhostPayPage() {
       {/* Wraith Hosting Stats */}
       <SectionErrorBoundary section="Wraith Stats">
         {isLoading ? <SkeletonCard /> : (
-          <Card>
-            <CardHeader title="Wraith Hosting Stats" />
+          <Card className="border-cyan-600/30">
+            <CardHeader title={<span className="text-cyan-400">Wraith Hosting Stats</span>} />
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div className="text-center p-4 bg-gray-800/50 rounded-lg">
+              <div className="text-center p-4 bg-cyan-900/10 rounded-lg">
                 <div className="text-2xl font-bold text-gray-100">
                   {wraithStats?.total_sessions?.toLocaleString() || 0}
                 </div>
                 <div className="text-sm text-gray-400">Sessions Hosted</div>
               </div>
-              <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-                <div className="text-2xl font-bold text-orange-400">
+              <div className="text-center p-4 bg-cyan-900/10 rounded-lg">
+                <div className="text-2xl font-bold text-cyan-400">
                   {wraithStats?.sessions_completed?.toLocaleString() || 0}
                 </div>
                 <div className="text-sm text-gray-400">Completed</div>
               </div>
-              <div className="text-center p-4 bg-gray-800/50 rounded-lg">
+              <div className="text-center p-4 bg-cyan-900/10 rounded-lg">
                 <div className="text-2xl font-bold text-red-400">
                   {wraithStats?.sessions_expired?.toLocaleString() || 0}
                 </div>
                 <div className="text-sm text-gray-400">Expired</div>
               </div>
-              <div className="text-center p-4 bg-gray-800/50 rounded-lg">
-                <div className="text-2xl font-bold text-orange-400">
+              <div className="text-center p-4 bg-cyan-900/10 rounded-lg">
+                <div className="text-2xl font-bold text-cyan-400">
                   {wraithStats?.total_participants?.toLocaleString() || 0}
                 </div>
                 <div className="text-sm text-gray-400">Participants Served</div>

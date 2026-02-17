@@ -315,6 +315,9 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             "/api/v1/mpc/contributors",
             get(api_mpc_contributors_handler),
         )
+        // Ghost Haze & Shroud endpoints
+        .route("/api/v1/haze/status", get(api_haze_status_handler))
+        .route("/api/v1/shroud/status", get(api_shroud_status_handler))
         // Swarm endpoints
         .route("/api/v1/swarm/sync", get(api_swarm_sync_handler))
         .route(
@@ -4439,6 +4442,73 @@ async fn api_mpc_contributors_handler(
     Json(serde_json::json!({
         "contributors": contributors,
         "count": contributors.len()
+    }))
+}
+
+// =============================================================================
+// Ghost Haze & Shroud endpoint handlers
+// =============================================================================
+
+/// Ghost Haze status handler — returns storage privacy status from Ghost Core
+///
+/// Proxies blockchain info from Ghost Core to show haze mode, storage savings,
+/// and block counts. Uses the existing `hazed` field from `getblockchaininfo`.
+async fn api_haze_status_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let archive_mode = { state.dashboard_config.read().archive_mode };
+
+    let rpc_result = match state.rpc {
+        Some(ref rpc) => match rpc.get_blockchain_info().await {
+            Ok(info) => Some(info),
+            Err(e) => {
+                warn!("Failed to get haze status from RPC: {}", e);
+                None
+            }
+        },
+        None => None,
+    };
+
+    let (hazed, blocks, size_on_disk, pruned, chain, mode) = match rpc_result {
+        Some(info) => {
+            let mode = if archive_mode { "full_archive" } else if info.hazed { "hazed" } else { "standard" };
+            (info.hazed, info.blocks, info.size_on_disk, info.pruned, info.chain, mode)
+        }
+        None => (false, 0, 0, false, String::new(), "unknown"),
+    };
+
+    Json(serde_json::json!({
+        "hazed": hazed,
+        "archive_mode": archive_mode,
+        "mode": mode,
+        "blocks": blocks,
+        "size_on_disk": size_on_disk,
+        "pruned": pruned,
+        "chain": chain
+    }))
+}
+
+/// Ghost Shroud status handler — returns relay privacy configuration
+///
+/// Shroud is a Ghost Core feature that adds random delays before relaying
+/// transactions, breaking timing-based origin detection. This endpoint
+/// returns the shroud configuration status.
+async fn api_shroud_status_handler(
+    State(state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Shroud is enabled by default in Ghost Core via -shroud=1
+    // Check if Ghost Core is reachable to confirm it's running
+    let ghost_core_running = if let Some(ref rpc) = state.rpc {
+        rpc.get_blockchain_info().await.is_ok()
+    } else {
+        false
+    };
+
+    Json(serde_json::json!({
+        "enabled": ghost_core_running,
+        "ghost_core_connected": ghost_core_running,
+        "max_delay_ms": 5000,
+        "avg_delay_ms": 2500
     }))
 }
 

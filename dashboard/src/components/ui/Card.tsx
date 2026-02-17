@@ -47,7 +47,7 @@ export function Card({ children, className = '', collapsible, defaultCollapsed =
 }
 
 interface CardHeaderProps {
-  title: string;
+  title: ReactNode;
   subtitle?: string;
   action?: ReactNode;
 }

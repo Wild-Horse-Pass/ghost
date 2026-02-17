@@ -39,3 +39,9 @@ export * from './useResourceQueries';
 
 // Mesh queries
 export * from './useMeshQueries';
+
+// Haze queries
+export * from './useHazeQueries';
+
+// Shroud queries
+export * from './useShroudQueries';

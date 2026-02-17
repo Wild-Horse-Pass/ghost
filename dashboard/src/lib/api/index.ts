@@ -14,3 +14,5 @@ export * from './buds';
 export * from './system';
 export * from './resources';
 export * from './mesh';
+export * from './haze';
+export * from './shroud';

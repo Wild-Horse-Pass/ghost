@@ -31,6 +31,7 @@ export function TemplateProfileSection() {
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<CustomTemplateProfile | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const templateProfiles = templateProfilesData?.profiles ?? [];
   const budsEnabled = status?.ghost_pay ?? false;
@@ -136,68 +137,89 @@ export function TemplateProfileSection() {
           ))}
         </div>
 
-        {/* Custom profiles */}
-        {templateProfiles.length > 0 && (
-          <div className={`space-y-2 ${config?.bitcoin_pure ? "opacity-50 pointer-events-none" : ""}`}>
-            <h4 className="text-sm font-medium text-gray-300">Custom Profiles</h4>
-            {templateProfiles.map((profile) => (
-              <div
-                key={profile.name}
-                className="p-3 bg-gray-800/50 rounded-lg flex justify-between items-center"
-              >
-                <div>
-                  <div className="text-gray-100">{profile.name}</div>
-                  <div className="text-xs text-gray-500">
-                    Min Fee: {profile.block_min_tx_fee} sat/vB | Tiers:{" "}
-                    {[
-                      profile.include_t0 && "T0",
-                      profile.include_t1 && "T1",
-                      profile.include_t2 && "T2",
-                      profile.include_t3 && "T3",
-                    ]
-                      .filter(Boolean)
-                      .join(", ") || "None"}
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => handleEdit(profile)}
-                    disabled={config?.bitcoin_pure}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    onClick={() => handleActivate(profile.name)}
-                    disabled={config?.bitcoin_pure}
-                  >
-                    Use
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleDelete(profile.name)}
-                    disabled={config?.bitcoin_pure}
-                  >
-                    Delete
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <Button
-          onClick={handleNew}
-          variant="secondary"
-          className="w-full"
-          disabled={config?.bitcoin_pure}
+        {/* Show Advanced toggle */}
+        <button
+          className="flex items-center gap-2 text-sm text-gray-400 hover:text-gray-200 transition-colors"
+          onClick={() => setShowAdvanced(!showAdvanced)}
         >
-          Create Custom Template Profile
-        </Button>
+          <svg
+            className={`w-4 h-4 transition-transform ${showAdvanced ? "rotate-90" : ""}`}
+            fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+          {showAdvanced ? "Hide Advanced" : "Show Advanced"}
+          {templateProfiles.length > 0 && !showAdvanced && (
+            <span className="text-xs text-gray-600">({templateProfiles.length} custom)</span>
+          )}
+        </button>
+
+        {showAdvanced && (
+          <>
+            {/* Custom profiles */}
+            {templateProfiles.length > 0 && (
+              <div className={`space-y-2 ${config?.bitcoin_pure ? "opacity-50 pointer-events-none" : ""}`}>
+                <h4 className="text-sm font-medium text-gray-300">Custom Profiles</h4>
+                {templateProfiles.map((profile) => (
+                  <div
+                    key={profile.name}
+                    className="p-3 bg-gray-800/50 rounded-lg flex justify-between items-center"
+                  >
+                    <div>
+                      <div className="text-gray-100">{profile.name}</div>
+                      <div className="text-xs text-gray-500">
+                        Min Fee: {profile.block_min_tx_fee} sat/vB | Tiers:{" "}
+                        {[
+                          profile.include_t0 && "T0",
+                          profile.include_t1 && "T1",
+                          profile.include_t2 && "T2",
+                          profile.include_t3 && "T3",
+                        ]
+                          .filter(Boolean)
+                          .join(", ") || "None"}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => handleEdit(profile)}
+                        disabled={config?.bitcoin_pure}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => handleActivate(profile.name)}
+                        disabled={config?.bitcoin_pure}
+                      >
+                        Use
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => handleDelete(profile.name)}
+                        disabled={config?.bitcoin_pure}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <Button
+              onClick={handleNew}
+              variant="secondary"
+              className="w-full"
+              disabled={config?.bitcoin_pure}
+            >
+              Create Custom Template Profile
+            </Button>
+          </>
+        )}
       </SettingsSection>
 
       <TemplateProfileDialog

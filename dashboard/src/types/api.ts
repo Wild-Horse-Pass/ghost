@@ -943,3 +943,23 @@ export interface NodePayoutEntry {
   share_count?: number | null;
   share_percentage?: number | null;
 }
+
+// Ghost Haze — storage privacy status from Ghost Core
+export interface HazeStatus {
+  hazed: boolean;
+  archive_mode: boolean;
+  mode: 'hazed' | 'full_archive' | 'standard' | 'unknown';
+  blocks: number;
+  size_on_disk: number;
+  pruned: boolean;
+  chain: string;
+  error?: string;
+}
+
+// Ghost Shroud — relay privacy configuration
+export interface ShroudStatus {
+  enabled: boolean;
+  ghost_core_connected: boolean;
+  max_delay_ms: number;
+  avg_delay_ms: number;
+}
