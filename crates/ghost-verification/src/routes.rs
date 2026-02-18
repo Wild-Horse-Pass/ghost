@@ -1296,6 +1296,21 @@ async fn api_node_status_handler(State(state): State<Arc<VerificationState>>) ->
 async fn api_node_shares_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let _health = state.get_health().await;
     let config = state.dashboard_config.read();
+
+    // Check elder status from MPC database (authoritative source)
+    // The dashboard_config.elder flag can be stale; the DB knows the truth
+    let (is_elder, elder_slot) = if let Some(ref db) = state.database {
+        let elder = db.is_mpc_elder(&state.node_id).unwrap_or(false);
+        let slot = if elder {
+            db.get_mpc_elder_position(&state.node_id).unwrap_or(None)
+        } else {
+            None
+        };
+        (elder, slot)
+    } else {
+        (config.elder, config.elder_slot)
+    };
+
     // Calculate total shares based on capabilities (5-4-3-2-1 system)
     let mut total = 0;
     if config.archive_mode {
@@ -1310,7 +1325,7 @@ async fn api_node_shares_handler(State(state): State<Arc<VerificationState>>) ->
     if config.bitcoin_pure {
         total += 2;
     }
-    if config.elder {
+    if is_elder {
         total += 1;
     }
 
@@ -1323,8 +1338,8 @@ async fn api_node_shares_handler(State(state): State<Arc<VerificationState>>) ->
         "ghost_pay": config.ghost_pay,
         "public_mining": config.public_mining,
         "bitcoin_pure": config.bitcoin_pure,
-        "elder": config.elder,
-        "elder_slot": config.elder_slot,
+        "elder": is_elder,
+        "elder_slot": elder_slot,
         "estimated_reward_btc": 0.0
     }))
 }
@@ -2794,11 +2809,18 @@ async fn api_network_elder_handler(
 
     let spots_remaining = max_elders.saturating_sub(total_elders);
 
-    let elder_slot = if is_elder {
-        elders
-            .iter()
-            .find(|e| e.get("is_self").and_then(|v| v.as_bool()) == Some(true))
-            .and_then(|e| e.get("elder_order").and_then(|v| v.as_u64()))
+    // Get elder slot from MPC contributions (authoritative source for position)
+    let elder_slot: Option<u64> = if is_elder {
+        if let Some(ref db) = state.database {
+            db.get_mpc_elder_position(&health.node_id)
+                .unwrap_or(None)
+                .map(|p| p as u64)
+        } else {
+            elders
+                .iter()
+                .find(|e| e.get("is_self").and_then(|v| v.as_bool()) == Some(true))
+                .and_then(|e| e.get("elder_order").and_then(|v| v.as_u64()))
+        }
     } else {
         None
     };
@@ -4425,8 +4447,8 @@ async fn api_mpc_contributors_handler(
                 contributors.push(serde_json::json!({
                     "position": position,
                     "node_id": record.contributor_node_id,
-                    "prev_params_hash": hex::encode(&record.prev_params_hash),
-                    "new_params_hash": hex::encode(&record.new_params_hash),
+                    "prev_params_hash": hex::encode(record.prev_params_hash),
+                    "new_params_hash": hex::encode(record.new_params_hash),
                     "epoch": record.epoch,
                     "created_at": record.created_at,
                 }));

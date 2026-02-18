@@ -35,6 +35,27 @@ export async function getNodePayoutHistory(
   return fetchApi<NodePayoutEntry[]>(`/api/v1/rewards/node-history?${params.toString()}`);
 }
 
+// Node Balance Accounts — all nodes with their reward balances
+export interface NodeBalanceEntry {
+  node_id: string;
+  balance_sats: number;
+  last_credited_round: number;
+  total_credits_sats: number;
+  total_withdrawals_sats: number;
+  is_self: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface NodeBalancesResponse {
+  history: NodeBalanceEntry[];
+  total: number;
+}
+
+export async function getNodeBalances(): Promise<NodeBalancesResponse> {
+  return fetchApi<NodeBalancesResponse>('/api/v1/rewards/node-history');
+}
+
 // CSV export helper (client-side)
 export function exportRewardsToCSV(payouts: Array<{ timestamp: number; amount_btc: number; txid: string; block_height: number }>): void {
   const headers = ['Date', 'Amount (BTC)', 'TxID', 'Block Height'];
