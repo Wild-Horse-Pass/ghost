@@ -60,6 +60,7 @@ use bitcoin::consensus::deserialize;
 use ghost_accounting::CoinbaseBuilder;
 use ghost_buds::BudsClassifier;
 use ghost_common::config::{BitcoinNetwork, MiningMode};
+use ghost_reaper::ReaperConfig;
 use ghost_common::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
 use ghost_common::types::{PayoutProposal, TreasuryAddress};
 use ghost_policy::PolicyProfile;
@@ -311,6 +312,8 @@ pub struct TemplateProcessor {
     policy: PolicyProfile,
     /// BUDS classifier
     classifier: BudsClassifier,
+    /// Reaper config for dead code detection
+    reaper_config: ReaperConfig,
     /// Current work state
     current_work: RwLock<Option<WorkState>>,
     /// Work states by template_id (for SubmitSolution lookup)
@@ -338,7 +341,12 @@ pub struct TemplateProcessor {
 
 impl TemplateProcessor {
     /// Create a new template processor
-    pub fn new(config: TemplateConfig, rpc: Arc<BitcoinRpc>, policy: PolicyProfile) -> Self {
+    pub fn new(
+        config: TemplateConfig,
+        rpc: Arc<BitcoinRpc>,
+        policy: PolicyProfile,
+        reaper_config: ReaperConfig,
+    ) -> Self {
         let (event_tx, _) = broadcast::channel(100);
         let (block_submitted_tx, block_submitted_rx) = mpsc::unbounded_channel();
 
@@ -347,6 +355,7 @@ impl TemplateProcessor {
             rpc,
             policy,
             classifier: BudsClassifier::new(),
+            reaper_config,
             current_work: RwLock::new(None),
             work_states: RwLock::new(HashMap::new()),
             job_counter: RwLock::new(0),
@@ -1390,6 +1399,7 @@ impl TemplateProcessor {
                 original = filter_stats.original,
                 kept = filter_stats.kept,
                 removed = filter_stats.removed,
+                reaped = filter_stats.reaped,
                 removed_fees = filter_stats.removed_fees,
                 "Filtered transactions by policy"
             );
@@ -1518,6 +1528,7 @@ impl TemplateProcessor {
         let original_count = transactions.len();
         let mut kept = Vec::with_capacity(original_count);
         let mut removed_fees = 0u64;
+        let mut reaped_count = 0usize;
 
         // Track seen TXIDs to detect duplicates
         let mut seen_txids: HashSet<String> = HashSet::with_capacity(transactions.len());
@@ -1556,6 +1567,22 @@ impl TemplateProcessor {
                     continue;
                 }
             };
+
+            // Reaper: detect dead code in witness scripts
+            if self.reaper_config.enabled {
+                let reaper_verdict = ghost_reaper::analyze(&btc_tx, &self.reaper_config);
+                if reaper_verdict.is_corpse() {
+                    removed_fees += tx.fee;
+                    reaped_count += 1;
+                    debug!(
+                        txid = %tx.txid,
+                        dead_bytes = reaper_verdict.total_dead_bytes,
+                        regions = reaper_verdict.dead_regions.len(),
+                        "Transaction reaped: dead code detected"
+                    );
+                    continue;
+                }
+            }
 
             // Classify transaction
             let result = self.classifier.classify(&btc_tx);
@@ -1606,6 +1633,7 @@ impl TemplateProcessor {
             kept: kept.len(),
             removed: original_count - kept.len(),
             removed_fees,
+            reaped: reaped_count,
         };
 
         (kept, stats)
@@ -1960,7 +1988,7 @@ impl TemplateProcessor {
         // Compute full merkle root (not branches)
         let mut level = wtxids;
         while level.len() > 1 {
-            let mut next = Vec::with_capacity((level.len() + 1) / 2);
+            let mut next = Vec::with_capacity(level.len().div_ceil(2));
             for chunk in level.chunks(2) {
                 let pair = if chunk.len() == 2 {
                     self.double_sha256_pair(&chunk[0], &chunk[1])
@@ -2757,6 +2785,7 @@ struct FilterStats {
     kept: usize,
     removed: usize,
     removed_fees: u64,
+    reaped: usize,
 }
 
 #[cfg(test)]
@@ -2767,7 +2796,7 @@ mod tests {
     fn test_height_encoding() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
         let processor =
-            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive());
+            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict());
 
         // Test various heights
         assert_eq!(processor.encode_height(0), vec![0x01, 0x00]);
@@ -2780,7 +2809,7 @@ mod tests {
     fn test_reverse_hex() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
         let processor =
-            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive());
+            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict());
 
         // Valid hex string
         let hex = "0102030405060708";
@@ -2811,7 +2840,7 @@ mod tests {
     fn test_witness_conversion() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
         let processor =
-            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive());
+            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict());
 
         // Create a minimal non-witness coinbase:
         // version(4) | input_count(1) | prev_hash(32) | prev_index(4) | scriptsig_len(1) | scriptsig(4) | sequence(4) | output_count(1) | value(8) | scriptpubkey_len(1) | scriptpubkey(22) | locktime(4)
@@ -2864,6 +2893,7 @@ mod tests {
             },
             rpc,
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         let (coinbase1, coinbase2, _witness_data) = processor
@@ -2968,6 +2998,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -2984,6 +3015,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -3006,6 +3038,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -3024,6 +3057,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -3205,7 +3239,7 @@ mod tests {
     /// Helper to create a TemplateProcessor for sorting tests
     fn test_processor() -> TemplateProcessor {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
-        TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive())
+        TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict())
     }
 
     /// Test that CPFP package with high package fee rate sorts above lower independent txs
@@ -3382,6 +3416,7 @@ mod tests {
             },
             rpc,
             PolicyProfile::permissive(),
+            ReaperConfig::strict(),
         );
 
         // This should succeed
@@ -3415,5 +3450,648 @@ mod tests {
             recovered, rpc_hash,
             "Full byte reversal should recover original RPC hash from internal format"
         );
+    }
+
+    /// Test that ghost-reaper integration rejects transactions with inscription envelopes
+    #[test]
+    fn test_reaper_filters_inscription_tx() {
+        use bitcoin::consensus::encode::serialize as btc_serialize;
+        use bitcoin::{
+            absolute::LockTime, hashes::Hash, transaction::Version, Amount, OutPoint, ScriptBuf,
+            Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        };
+
+        // Build a tapscript with an inscription envelope (OP_FALSE OP_IF ... OP_ENDIF)
+        let mut tapscript: Vec<u8> = Vec::new();
+        tapscript.push(0x00); // OP_FALSE
+        tapscript.push(0x63); // OP_IF
+        tapscript.push(0x03); // PUSH3
+        tapscript.extend(b"ord"); // "ord" marker
+        tapscript.push(0x51); // OP_1 (content type tag)
+        let ctype = b"text/plain";
+        tapscript.push(ctype.len() as u8);
+        tapscript.extend(ctype);
+        tapscript.push(0x00); // OP_0 (content tag)
+        let body = b"dead code inscription payload";
+        tapscript.push(body.len() as u8);
+        tapscript.extend(body);
+        tapscript.push(0x68); // OP_ENDIF
+        tapscript.push(0xac); // OP_CHECKSIG
+
+        // Witness: signature, tapscript, control block
+        let mut witness = Witness::new();
+        witness.push([0x30; 64]); // fake schnorr sig
+        witness.push(&tapscript);
+        let mut control_block = vec![0xc0u8]; // leaf version
+        control_block.extend([0x11; 32]); // internal key
+        witness.push(&control_block);
+
+        let txid = Txid::from_byte_array([42u8; 32]);
+        let inscription_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint { txid, vout: 0 },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness,
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(50_000),
+                script_pubkey: ScriptBuf::from({
+                    let mut s = vec![0x00, 0x14];
+                    s.extend([0xaa; 20]);
+                    s
+                }),
+            }],
+        };
+
+        let inscription_hex = hex::encode(btc_serialize(&inscription_tx));
+        let inscription_txid = inscription_tx.compute_txid().to_string();
+
+        // Also build a clean P2WPKH transaction (no witness abuse)
+        let clean_txid_hash = Txid::from_byte_array([99u8; 32]);
+        let mut clean_witness = Witness::new();
+        clean_witness.push([0x30; 72]); // DER signature
+        clean_witness.push([0x02; 33]); // compressed pubkey
+        let clean_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: clean_txid_hash,
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: clean_witness,
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(49_000),
+                script_pubkey: ScriptBuf::from({
+                    let mut s = vec![0x00, 0x14];
+                    s.extend([0xbb; 20]);
+                    s
+                }),
+            }],
+        };
+        let clean_hex = hex::encode(btc_serialize(&clean_tx));
+        let clean_txid = clean_tx.compute_txid().to_string();
+
+        // Create TemplateTransactions
+        let txs = vec![
+            TemplateTransaction {
+                data: inscription_hex,
+                txid: inscription_txid.clone(),
+                hash: "00".repeat(32),
+                depends: vec![],
+                fee: 5000,
+                sigops: 1,
+                weight: 800,
+            },
+            TemplateTransaction {
+                data: clean_hex,
+                txid: clean_txid.clone(),
+                hash: "00".repeat(32),
+                depends: vec![],
+                fee: 3000,
+                sigops: 1,
+                weight: 400,
+            },
+        ];
+
+        // Filter with reaper enabled (strict mode)
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        let processor = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc.clone(),
+            PolicyProfile::full_open(), // allow all tiers so only reaper filters
+            ReaperConfig::strict(),
+        );
+
+        let (kept, stats) = processor.filter_transactions(&txs);
+
+        assert_eq!(stats.original, 2);
+        assert_eq!(stats.reaped, 1, "inscription tx should be reaped");
+        assert_eq!(kept.len(), 1, "only clean tx should survive");
+        assert_eq!(kept[0].txid, clean_txid, "clean tx should be kept");
+
+        // Verify reaper disabled lets inscription through
+        let processor_disabled = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::full_open(),
+            ReaperConfig::disabled(),
+        );
+
+        let (kept_all, stats_all) = processor_disabled.filter_transactions(&txs);
+
+        assert_eq!(stats_all.reaped, 0, "disabled reaper should not reap");
+        assert_eq!(kept_all.len(), 2, "both txs should survive with reaper disabled");
+    }
+
+    /// Test that ghost-reaper detects OP_DROP stuffing in witness scripts
+    #[test]
+    fn test_reaper_filters_drop_stuffing_tx() {
+        use bitcoin::consensus::encode::serialize as btc_serialize;
+        use bitcoin::{
+            absolute::LockTime, hashes::Hash, transaction::Version, Amount, OutPoint, ScriptBuf,
+            Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        };
+
+        // Build a tapscript with large data push followed by OP_DROP (data stuffing)
+        let mut tapscript: Vec<u8> = Vec::new();
+        tapscript.push(0x4c); // OP_PUSHDATA1
+        tapscript.push(100);  // 100 bytes of junk (exceeds strict threshold of 76)
+        tapscript.extend([0xDE; 100]); // junk data
+        tapscript.push(0x75); // OP_DROP
+        tapscript.push(0x51); // OP_TRUE (makes script succeed)
+
+        // Witness: signature, tapscript, control block
+        let mut witness = Witness::new();
+        witness.push([0x30; 64]); // fake schnorr sig
+        witness.push(&tapscript);
+        let mut control_block = vec![0xc0u8]; // leaf version
+        control_block.extend([0x22; 32]); // internal key
+        witness.push(&control_block);
+
+        let txid = Txid::from_byte_array([50u8; 32]);
+        let drop_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint { txid, vout: 0 },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness,
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(40_000),
+                script_pubkey: ScriptBuf::from({
+                    let mut s = vec![0x00, 0x14];
+                    s.extend([0xcc; 20]);
+                    s
+                }),
+            }],
+        };
+
+        let drop_hex = hex::encode(btc_serialize(&drop_tx));
+        let drop_txid = drop_tx.compute_txid().to_string();
+
+        let txs = vec![TemplateTransaction {
+            data: drop_hex,
+            txid: drop_txid,
+            hash: "00".repeat(32),
+            depends: vec![],
+            fee: 4000,
+            sigops: 1,
+            weight: 600,
+        }];
+
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        let processor = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::full_open(),
+            ReaperConfig::strict(),
+        );
+
+        let (kept, stats) = processor.filter_transactions(&txs);
+        assert_eq!(stats.reaped, 1, "drop stuffing tx should be reaped");
+        assert_eq!(kept.len(), 0, "no txs should survive");
+    }
+
+    /// Test that ghost-reaper detects fake pubkeys in bare multisig outputs
+    #[test]
+    fn test_reaper_filters_fake_pubkey_tx() {
+        use bitcoin::consensus::encode::serialize as btc_serialize;
+        use bitcoin::{
+            absolute::LockTime, hashes::Hash, transaction::Version, Amount, OutPoint, ScriptBuf,
+            Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        };
+
+        // Build a bare 1-of-2 multisig output with one fake pubkey (0x04 prefix = invalid)
+        let mut multisig_script: Vec<u8> = Vec::new();
+        multisig_script.push(0x51); // OP_1 (M=1)
+        multisig_script.push(0x21); // OP_PUSHBYTES_33
+        let mut valid_pk = vec![0x02]; // valid compressed prefix
+        valid_pk.extend([0xAA; 32]); // pubkey body
+        multisig_script.extend(&valid_pk);
+        multisig_script.push(0x21); // OP_PUSHBYTES_33
+        let mut fake_pk = vec![0x04]; // INVALID uncompressed prefix (data stuffing)
+        fake_pk.extend([0xBB; 32]); // junk data disguised as pubkey
+        multisig_script.extend(&fake_pk);
+        multisig_script.push(0x52); // OP_2 (N=2)
+        multisig_script.push(0xae); // OP_CHECKMULTISIG
+
+        let txid = Txid::from_byte_array([55u8; 32]);
+        // This tx has a normal P2WPKH witness (clean) but its output has fake multisig
+        let mut witness = Witness::new();
+        witness.push([0x30; 72]); // DER sig
+        witness.push([0x02; 33]); // compressed pubkey
+        let fake_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint { txid, vout: 0 },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness,
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(30_000),
+                script_pubkey: ScriptBuf::from(multisig_script),
+            }],
+        };
+
+        let fake_hex = hex::encode(btc_serialize(&fake_tx));
+        let fake_txid = fake_tx.compute_txid().to_string();
+
+        let txs = vec![TemplateTransaction {
+            data: fake_hex,
+            txid: fake_txid,
+            hash: "00".repeat(32),
+            depends: vec![],
+            fee: 3000,
+            sigops: 1,
+            weight: 500,
+        }];
+
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        let processor = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::full_open(),
+            ReaperConfig::strict(),
+        );
+
+        let (kept, stats) = processor.filter_transactions(&txs);
+        assert_eq!(stats.reaped, 1, "fake pubkey tx should be reaped");
+        assert_eq!(kept.len(), 0, "no txs should survive");
+    }
+
+    /// Test that ghost-reaper detects unreachable code after OP_RETURN in witness scripts
+    #[test]
+    fn test_reaper_filters_unreachable_code_tx() {
+        use bitcoin::consensus::encode::serialize as btc_serialize;
+        use bitcoin::{
+            absolute::LockTime, hashes::Hash, transaction::Version, Amount, OutPoint, ScriptBuf,
+            Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        };
+
+        // Build a tapscript with OP_RETURN followed by dead code
+        let mut tapscript: Vec<u8> = Vec::new();
+        tapscript.push(0x51); // OP_TRUE (script succeeds before OP_RETURN)
+        tapscript.push(0x6a); // OP_RETURN (halts execution)
+        tapscript.extend([0xDE, 0xAD, 0xBE, 0xEF]); // unreachable dead code
+
+        // Witness: signature, tapscript, control block
+        let mut witness = Witness::new();
+        witness.push([0x30; 64]); // fake schnorr sig
+        witness.push(&tapscript);
+        let mut control_block = vec![0xc0u8]; // leaf version
+        control_block.extend([0x33; 32]); // internal key
+        witness.push(&control_block);
+
+        let txid = Txid::from_byte_array([60u8; 32]);
+        let unreach_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint { txid, vout: 0 },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness,
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(45_000),
+                script_pubkey: ScriptBuf::from({
+                    let mut s = vec![0x00, 0x14];
+                    s.extend([0xdd; 20]);
+                    s
+                }),
+            }],
+        };
+
+        let unreach_hex = hex::encode(btc_serialize(&unreach_tx));
+        let unreach_txid = unreach_tx.compute_txid().to_string();
+
+        let txs = vec![TemplateTransaction {
+            data: unreach_hex,
+            txid: unreach_txid,
+            hash: "00".repeat(32),
+            depends: vec![],
+            fee: 3500,
+            sigops: 1,
+            weight: 500,
+        }];
+
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        let processor = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::full_open(),
+            ReaperConfig::strict(),
+        );
+
+        let (kept, stats) = processor.filter_transactions(&txs);
+        assert_eq!(stats.reaped, 1, "unreachable code tx should be reaped");
+        assert_eq!(kept.len(), 0, "no txs should survive");
+    }
+
+    /// Test that ghost-reaper detects witness annex (BIP 341 optional field)
+    #[test]
+    fn test_reaper_filters_annex_tx() {
+        use bitcoin::consensus::encode::serialize as btc_serialize;
+        use bitcoin::{
+            absolute::LockTime, hashes::Hash, transaction::Version, Amount, OutPoint, ScriptBuf,
+            Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        };
+
+        // Build witness with annex (last element starts with 0x50)
+        let mut witness = Witness::new();
+        witness.push([0x30; 64]); // fake schnorr sig
+        let tapscript = vec![0x51, 0xac]; // OP_TRUE OP_CHECKSIG
+        witness.push(&tapscript);
+        let mut control_block = vec![0xc0u8]; // leaf version
+        control_block.extend([0x44; 32]); // internal key
+        witness.push(&control_block);
+        // Annex: starts with 0x50, followed by arbitrary data
+        let mut annex = vec![0x50u8]; // annex prefix
+        annex.extend([0xFF; 100]); // 100 bytes of annex data
+        witness.push(&annex);
+
+        let txid = Txid::from_byte_array([65u8; 32]);
+        let annex_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint { txid, vout: 0 },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness,
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(35_000),
+                script_pubkey: ScriptBuf::from({
+                    let mut s = vec![0x00, 0x14];
+                    s.extend([0xee; 20]);
+                    s
+                }),
+            }],
+        };
+
+        let annex_hex = hex::encode(btc_serialize(&annex_tx));
+        let annex_txid = annex_tx.compute_txid().to_string();
+
+        let txs = vec![TemplateTransaction {
+            data: annex_hex,
+            txid: annex_txid,
+            hash: "00".repeat(32),
+            depends: vec![],
+            fee: 4000,
+            sigops: 1,
+            weight: 700,
+        }];
+
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        let processor = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::full_open(),
+            ReaperConfig::strict(),
+        );
+
+        let (kept, stats) = processor.filter_transactions(&txs);
+        assert_eq!(stats.reaped, 1, "annex tx should be reaped");
+        assert_eq!(kept.len(), 0, "no txs should survive");
+    }
+
+    /// Test that ghost-reaper detects oversized OP_RETURN outputs (>83 bytes)
+    #[test]
+    fn test_reaper_filters_oversized_op_return_tx() {
+        use bitcoin::consensus::encode::serialize as btc_serialize;
+        use bitcoin::{
+            absolute::LockTime, hashes::Hash, transaction::Version, Amount, OutPoint, ScriptBuf,
+            Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        };
+
+        // Build OP_RETURN output > 83 bytes (standard relay limit)
+        let mut op_return_script: Vec<u8> = Vec::new();
+        op_return_script.push(0x6a); // OP_RETURN
+        op_return_script.push(0x4c); // OP_PUSHDATA1
+        op_return_script.push(100);  // 100 bytes payload
+        op_return_script.extend([0xAB; 100]); // junk data
+
+        let txid = Txid::from_byte_array([70u8; 32]);
+        let mut witness = Witness::new();
+        witness.push([0x30; 72]); // DER sig
+        witness.push([0x02; 33]); // compressed pubkey
+        let opret_tx = Transaction {
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: OutPoint { txid, vout: 0 },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness,
+            }],
+            output: vec![
+                TxOut {
+                    value: Amount::from_sat(40_000),
+                    script_pubkey: ScriptBuf::from({
+                        let mut s = vec![0x00, 0x14];
+                        s.extend([0xff; 20]);
+                        s
+                    }),
+                },
+                TxOut {
+                    value: Amount::ZERO,
+                    script_pubkey: ScriptBuf::from(op_return_script),
+                },
+            ],
+        };
+
+        let opret_hex = hex::encode(btc_serialize(&opret_tx));
+        let opret_txid = opret_tx.compute_txid().to_string();
+
+        let txs = vec![TemplateTransaction {
+            data: opret_hex,
+            txid: opret_txid,
+            hash: "00".repeat(32),
+            depends: vec![],
+            fee: 2000,
+            sigops: 1,
+            weight: 400,
+        }];
+
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        let processor = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::full_open(),
+            ReaperConfig::strict(),
+        );
+
+        let (kept, stats) = processor.filter_transactions(&txs);
+        assert_eq!(stats.reaped, 1, "oversized OP_RETURN tx should be reaped");
+        assert_eq!(kept.len(), 0, "no txs should survive");
+    }
+
+    /// Test that all 6 attack vectors are reaped simultaneously
+    #[test]
+    fn test_reaper_filters_all_attack_vectors() {
+        use bitcoin::consensus::encode::serialize as btc_serialize;
+        use bitcoin::{
+            absolute::LockTime, hashes::Hash, transaction::Version, Amount, OutPoint, ScriptBuf,
+            Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+        };
+
+        // Helper to build a TemplateTransaction from a Bitcoin Transaction
+        let make_tt = |tx: &Transaction, fee: u64| -> TemplateTransaction {
+            TemplateTransaction {
+                data: hex::encode(btc_serialize(tx)),
+                txid: tx.compute_txid().to_string(),
+                hash: "00".repeat(32),
+                depends: vec![],
+                fee,
+                sigops: 1,
+                weight: 500,
+            }
+        };
+
+        let make_outpoint = |n: u8| OutPoint {
+            txid: Txid::from_byte_array([n; 32]),
+            vout: 0,
+        };
+
+        let p2wpkh_out = || TxOut {
+            value: Amount::from_sat(40_000),
+            script_pubkey: ScriptBuf::from({
+                let mut s = vec![0x00, 0x14];
+                s.extend([0xaa; 20]);
+                s
+            }),
+        };
+
+        // 1. Inscription envelope
+        let mut ts1 = vec![0x00, 0x63, 0x03]; // OP_FALSE OP_IF PUSH3
+        ts1.extend(b"ord");
+        ts1.extend([0x68, 0xac]); // OP_ENDIF OP_CHECKSIG
+        let mut w1 = Witness::new();
+        w1.push([0x30; 64]);
+        w1.push(&ts1);
+        let mut cb1 = vec![0xc0u8];
+        cb1.extend([0x11; 32]);
+        w1.push(&cb1);
+        let tx1 = Transaction {
+            version: Version::TWO, lock_time: LockTime::ZERO,
+            input: vec![TxIn { previous_output: make_outpoint(1), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w1 }],
+            output: vec![p2wpkh_out()],
+        };
+
+        // 2. OP_DROP stuffing
+        let mut ts2: Vec<u8> = vec![0x4c, 80]; // OP_PUSHDATA1, 80 bytes
+        ts2.extend([0xDE; 80]);
+        ts2.push(0x75); // OP_DROP
+        ts2.push(0x51); // OP_TRUE
+        let mut w2 = Witness::new();
+        w2.push([0x30; 64]);
+        w2.push(&ts2);
+        let mut cb2 = vec![0xc0u8];
+        cb2.extend([0x22; 32]);
+        w2.push(&cb2);
+        let tx2 = Transaction {
+            version: Version::TWO, lock_time: LockTime::ZERO,
+            input: vec![TxIn { previous_output: make_outpoint(2), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w2 }],
+            output: vec![p2wpkh_out()],
+        };
+
+        // 3. Unreachable code
+        let ts3 = vec![0x51, 0x6a, 0xDE, 0xAD]; // OP_TRUE OP_RETURN dead
+        let mut w3 = Witness::new();
+        w3.push([0x30; 64]);
+        w3.push(&ts3);
+        let mut cb3 = vec![0xc0u8];
+        cb3.extend([0x33; 32]);
+        w3.push(&cb3);
+        let tx3 = Transaction {
+            version: Version::TWO, lock_time: LockTime::ZERO,
+            input: vec![TxIn { previous_output: make_outpoint(3), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w3 }],
+            output: vec![p2wpkh_out()],
+        };
+
+        // 4. Fake pubkey multisig
+        let mut ms = vec![0x51, 0x21]; // OP_1, PUSHBYTES_33
+        ms.push(0x02); ms.extend([0xAA; 32]); // valid pk
+        ms.push(0x21);
+        ms.push(0x04); ms.extend([0xBB; 32]); // fake pk (0x04 prefix)
+        ms.extend([0x52, 0xae]); // OP_2 OP_CHECKMULTISIG
+        let mut w4 = Witness::new();
+        w4.push([0x30; 72]);
+        w4.push([0x02; 33]);
+        let tx4 = Transaction {
+            version: Version::TWO, lock_time: LockTime::ZERO,
+            input: vec![TxIn { previous_output: make_outpoint(4), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w4 }],
+            output: vec![TxOut { value: Amount::from_sat(30_000), script_pubkey: ScriptBuf::from(ms) }],
+        };
+
+        // 5. Annex present
+        let mut w5 = Witness::new();
+        w5.push([0x30; 64]);
+        w5.push(&[0x51, 0xac]); // OP_TRUE OP_CHECKSIG
+        let mut cb5 = vec![0xc0u8];
+        cb5.extend([0x55; 32]);
+        w5.push(&cb5);
+        let mut annex = vec![0x50u8];
+        annex.extend([0xFF; 50]);
+        w5.push(&annex);
+        let tx5 = Transaction {
+            version: Version::TWO, lock_time: LockTime::ZERO,
+            input: vec![TxIn { previous_output: make_outpoint(5), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w5 }],
+            output: vec![p2wpkh_out()],
+        };
+
+        // 6. Oversized OP_RETURN
+        let mut opret = vec![0x6a, 0x4c, 100]; // OP_RETURN OP_PUSHDATA1 100
+        opret.extend([0xAB; 100]);
+        let mut w6 = Witness::new();
+        w6.push([0x30; 72]);
+        w6.push([0x02; 33]);
+        let tx6 = Transaction {
+            version: Version::TWO, lock_time: LockTime::ZERO,
+            input: vec![TxIn { previous_output: make_outpoint(6), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w6 }],
+            output: vec![p2wpkh_out(), TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::from(opret) }],
+        };
+
+        // 7. Clean transaction (should survive)
+        let mut w7 = Witness::new();
+        w7.push([0x30; 72]);
+        w7.push([0x02; 33]);
+        let tx7 = Transaction {
+            version: Version::TWO, lock_time: LockTime::ZERO,
+            input: vec![TxIn { previous_output: make_outpoint(7), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w7 }],
+            output: vec![p2wpkh_out()],
+        };
+
+        let txs = vec![
+            make_tt(&tx1, 5000), make_tt(&tx2, 4000), make_tt(&tx3, 3500),
+            make_tt(&tx4, 3000), make_tt(&tx5, 4000), make_tt(&tx6, 2000),
+            make_tt(&tx7, 3000),
+        ];
+
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        let processor = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::full_open(),
+            ReaperConfig::strict(),
+        );
+
+        let (kept, stats) = processor.filter_transactions(&txs);
+        assert_eq!(stats.original, 7, "started with 7 txs");
+        assert_eq!(stats.reaped, 6, "6 attack vector txs should be reaped");
+        assert_eq!(kept.len(), 1, "only clean tx should survive");
+        assert_eq!(kept[0].txid, tx7.compute_txid().to_string(), "clean tx survives");
     }
 }

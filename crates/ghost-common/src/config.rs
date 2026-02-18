@@ -90,6 +90,9 @@ pub struct NodeConfig {
     pub pool: PoolConfig,
     /// Ghost Pay L2 configuration (optional)
     pub ghost_pay: Option<GhostPayConfig>,
+    /// Reaper configuration (dead code detection in witness scripts)
+    #[serde(default)]
+    pub reaper: ReaperSettings,
     /// Registry configuration (optional, for load balancer registration)
     pub registry: Option<RegistryConfig>,
 }
@@ -1284,6 +1287,34 @@ impl Default for RegistryConfig {
             url: String::new(),
             heartbeat_interval_secs: 30,
             region: Region::Unknown,
+        }
+    }
+}
+
+/// Reaper settings for dead code detection in witness scripts
+///
+/// Controls filtering of transactions that contain inscriptions, data stuffing,
+/// fake pubkeys, and other witness abuse patterns.
+///
+/// # TOML Example
+/// ```toml
+/// [reaper]
+/// enabled = true
+/// mode = "strict"   # "strict" | "moderate" | "monitor"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReaperSettings {
+    /// Enable reaper filtering
+    pub enabled: bool,
+    /// Reaper mode: "strict", "moderate", or "monitor"
+    pub mode: String,
+}
+
+impl Default for ReaperSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mode: "strict".to_string(),
         }
     }
 }

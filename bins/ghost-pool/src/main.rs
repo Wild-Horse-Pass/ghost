@@ -58,6 +58,7 @@ use ghost_consensus::vote_handler::{
 };
 use ghost_consensus::voting::VotingManager;
 use ghost_policy::PolicyProfile;
+use ghost_reaper::ReaperConfig;
 use ghost_storage::Database;
 use ghost_verification::{
     start_server, GspHandler, PeerProvider, QualifiedCapabilityProvider, RpcArchiveHandler,
@@ -703,6 +704,29 @@ async fn main() -> Result<()> {
         policy.highest_allowed_tier().map(|t| t as u8).unwrap_or(0)
     );
 
+    // Setup reaper config for dead code detection
+    let reaper_config = if !config.reaper.enabled {
+        ReaperConfig::disabled()
+    } else {
+        match config.reaper.mode.as_str() {
+            "strict" => ReaperConfig::strict(),
+            "moderate" => ReaperConfig::moderate(),
+            "monitor" => ReaperConfig::monitor(),
+            _ => {
+                warn!(
+                    mode = %config.reaper.mode,
+                    "Unknown reaper mode, defaulting to strict"
+                );
+                ReaperConfig::strict()
+            }
+        }
+    };
+    info!(
+        "Reaper: {} (mode: {})",
+        if reaper_config.enabled { "enabled" } else { "disabled" },
+        config.reaper.mode
+    );
+
     // Determine effective public_mining from mining_mode
     // PublicPool = public mining enabled, other modes = private
     let mining_mode = config.network.mining_mode;
@@ -841,7 +865,7 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
     let template_processor = Arc::new(
-        TemplateProcessor::new(template_config, Arc::clone(&rpc), policy.clone())
+        TemplateProcessor::new(template_config, Arc::clone(&rpc), policy.clone(), reaper_config)
             .with_database(Arc::clone(&db)),
     );
     // Restore any previously approved payout proposal from database

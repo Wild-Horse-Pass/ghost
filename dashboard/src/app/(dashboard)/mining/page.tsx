@@ -4,9 +4,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard } from "@/components/ui/StatCard";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
-import { Toggle } from "@/components/ui/Toggle";
 import { CopyButton } from "@/components/ui/CopyButton";
-import { EmptyState } from "@/components/ui/EmptyState";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { DataTable, formatHashrate, formatDuration } from "@/components/ui/DataTable";
 import { SkeletonCard } from "@/components/ui/Skeleton";
@@ -14,6 +12,14 @@ import { useMiningStatus, useMiners, useBestHash, useSetPrivateMining, useSetPub
 import { useToast } from "@/components/ui/Toast";
 import type { MinerInfo, BestHashEntry } from "@/types/api";
 import type { ColumnDef } from "@tanstack/react-table";
+
+const TOOLTIPS = {
+  hashrate: "Combined hashrate of all miners connected to your node's stratum port. Updated every few seconds from share submissions.",
+  connected_miners: "Number of mining devices currently connected to your stratum port and actively submitting shares.",
+  shares_round: "Total accepted shares in the current mining round. The accept rate shows valid vs rejected shares.",
+  blocks_found: "Total blocks your pool has found since first startup. Each block found triggers a payout distribution.",
+  best_hash: "The lowest (best) hash value submitted by miners. More leading zeros means closer to finding a block. Measured by share difficulty.",
+};
 
 const minerColumns: ColumnDef<MinerInfo>[] = [
   {
@@ -102,6 +108,20 @@ function BestHashCard({ title, entry }: { title: string; entry: BestHashEntry | 
   );
 }
 
+type MiningMode = "private_solo" | "private_pool" | "pool";
+
+function getMiningMode(privateMining?: boolean, publicMining?: boolean): MiningMode {
+  if (privateMining && publicMining) return "private_pool";
+  if (publicMining) return "pool";
+  return "private_solo"; // default: private solo (includes both-off state)
+}
+
+const MODES: { key: MiningMode; label: string; desc: string }[] = [
+  { key: "private_solo", label: "Private Solo", desc: "Mine with your own devices only" },
+  { key: "private_pool", label: "Private Pool", desc: "Your devices + accept public miners" },
+  { key: "pool", label: "Pool", desc: "Accept public miners (no private mining)" },
+];
+
 export default function MiningPage() {
   const { data: status, isLoading: statusLoading } = useMiningStatus();
   const { data: minersData, isLoading: minersLoading } = useMiners();
@@ -112,30 +132,40 @@ export default function MiningPage() {
 
   const miners = minersData?.miners ?? [];
   const nodeHost = typeof window !== "undefined" ? window.location.hostname : "localhost";
+  const isPending = setPrivateMining.isPending || setPublicMining.isPending;
 
-  const handlePrivateMiningToggle = async (enabled: boolean) => {
-    try {
-      if (enabled) await setPublicMining.mutateAsync(false);
-      await setPrivateMining.mutateAsync(enabled);
-      addToast({ type: "success", title: `Private mining ${enabled ? "enabled" : "disabled"}` });
-    } catch (err) {
-      addToast({ type: "error", title: err instanceof Error ? err.message : "Failed to update" });
-    }
-  };
+  const currentMode = getMiningMode(status?.private_mining, status?.public_mining);
 
-  const handlePublicMiningToggle = async (enabled: boolean) => {
+  const handleModeChange = async (mode: MiningMode) => {
+    if (mode === currentMode || isPending) return;
     try {
-      if (enabled) await setPrivateMining.mutateAsync(false);
-      await setPublicMining.mutateAsync(enabled);
-      addToast({ type: "success", title: `Public mining ${enabled ? "enabled" : "disabled"}` });
+      switch (mode) {
+        case "private_solo":
+          await setPublicMining.mutateAsync(false);
+          await setPrivateMining.mutateAsync(true);
+          break;
+        case "private_pool":
+          await setPrivateMining.mutateAsync(true);
+          await setPublicMining.mutateAsync(true);
+          break;
+        case "pool":
+          await setPrivateMining.mutateAsync(false);
+          await setPublicMining.mutateAsync(true);
+          break;
+      }
+      addToast({ type: "success", title: `Mining mode: ${MODES.find(m => m.key === mode)?.label}` });
     } catch (err) {
-      addToast({ type: "error", title: err instanceof Error ? err.message : "Failed to update" });
+      addToast({ type: "error", title: err instanceof Error ? err.message : "Failed to update mode" });
     }
   };
 
   const totalSubmitted = status?.shares_submitted ?? 0;
   const totalAccepted = status?.shares_accepted ?? 0;
   const acceptRate = totalSubmitted > 0 ? ((totalAccepted / totalSubmitted) * 100).toFixed(1) : "0";
+
+  // Show stratum endpoints based on mode
+  const showPrivateEndpoints = currentMode === "private_solo" || currentMode === "private_pool";
+  const showPublicEndpoints = currentMode === "private_pool" || currentMode === "pool";
 
   return (
     <div className="space-y-6">
@@ -146,23 +176,27 @@ export default function MiningPage() {
         <StatCard
           label="Hashrate"
           value={status ? formatHashrate((status.hashrate_th ?? 0) * 1e12) : "--"}
+          tooltip={TOOLTIPS.hashrate}
           loading={statusLoading}
         />
         <StatCard
           label="Connected Miners"
           value={status?.connected_miners ?? 0}
+          tooltip={TOOLTIPS.connected_miners}
           loading={statusLoading}
         />
         <StatCard
           label="Shares / Round"
           value={(totalAccepted).toLocaleString()}
           sublabel={`${acceptRate}% accept rate`}
+          tooltip={TOOLTIPS.shares_round}
           loading={statusLoading}
         />
         <StatCard
           label="Blocks Found"
           value={status?.blocks_found ?? 0}
           sublabel="all time"
+          tooltip={TOOLTIPS.blocks_found}
           loading={statusLoading}
         />
       </div>
@@ -170,83 +204,82 @@ export default function MiningPage() {
       {/* Mining Mode */}
       <SectionErrorBoundary section="Mining Mode">
         <Card>
-          <CardHeader title="Mining Mode" subtitle="Configure mining modes and connection endpoints" />
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Private Mining */}
-            <div className={`p-4 rounded-lg border transition-all ${
-              status?.private_mining ? "bg-orange-900/20 border-orange-600" : "bg-gray-800/30 border-gray-700"
-            }`}>
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <div className="text-gray-100 font-medium flex items-center gap-2">
-                    Private Mining
-                    {status?.private_mining && <Badge variant="success">Active</Badge>}
-                  </div>
-                  <div className="text-sm text-gray-400">Mine with your own devices</div>
-                </div>
-                <Toggle
-                  enabled={status?.private_mining ?? false}
-                  onChange={handlePrivateMiningToggle}
-                  label="Private Mining"
-                  disabled={setPrivateMining.isPending}
-                />
-              </div>
-              <div className="space-y-2 pt-3 border-t border-gray-700/50">
-                <div className="text-xs text-gray-400 mb-2">Connect to:</div>
-                <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
-                  <div>
-                    <div className="text-xs text-gray-500">Stratum V1</div>
-                    <code className="text-orange-400 text-sm">stratum+tcp://{nodeHost}:{status?.stratum_v1_port || 3333}</code>
-                  </div>
-                  <CopyButton text={`stratum+tcp://${nodeHost}:${status?.stratum_v1_port || 3333}`} />
-                </div>
-                <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
-                  <div>
-                    <div className="text-xs text-gray-500">Stratum V2</div>
-                    <code className="text-orange-400 text-sm">stratum+tcp://{nodeHost}:{status?.stratum_v2_port || 3334}</code>
-                  </div>
-                  <CopyButton text={`stratum+tcp://${nodeHost}:${status?.stratum_v2_port || 3334}`} />
-                </div>
-              </div>
-            </div>
+          <CardHeader title="Mining Mode" subtitle="Select how your node participates in mining" />
 
-            {/* Public Mining */}
-            <div className={`p-4 rounded-lg border transition-all ${
-              status?.public_mining ? "bg-orange-900/20 border-orange-600" : "bg-gray-800/30 border-gray-700"
-            }`}>
-              <div className="flex items-center justify-between mb-3">
-                <div>
-                  <div className="text-gray-100 font-medium flex items-center gap-2">
-                    Public Mining
-                    {status?.public_mining && <Badge variant="info">Active</Badge>}
+          {/* Mode selector - 3 radio-style options */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
+            {MODES.map(({ key, label, desc }) => {
+              const isActive = currentMode === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => handleModeChange(key)}
+                  disabled={isPending}
+                  className={`p-4 rounded-lg border text-left transition-all ${
+                    isActive
+                      ? "bg-orange-900/20 border-orange-600 ring-1 ring-orange-600/50"
+                      : "bg-gray-800/30 border-gray-700 hover:border-gray-600"
+                  } ${isPending ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center ${
+                      isActive ? "border-orange-500" : "border-gray-600"
+                    }`}>
+                      {isActive && <div className="w-1.5 h-1.5 rounded-full bg-orange-500" />}
+                    </div>
+                    <span className={`font-medium ${isActive ? "text-orange-400" : "text-gray-300"}`}>{label}</span>
+                    {isActive && <Badge variant="success">Active</Badge>}
                   </div>
-                  <div className="text-sm text-gray-400">Accept public miners via P2P</div>
+                  <div className="text-xs text-gray-500 ml-5">{desc}</div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Connection endpoints */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {showPrivateEndpoints && (
+              <div className="p-4 bg-gray-800/30 rounded-lg border border-gray-700">
+                <div className="text-sm text-gray-300 font-medium mb-3">Your Stratum Endpoints</div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
+                    <div>
+                      <div className="text-xs text-gray-500">Stratum V1</div>
+                      <code className="text-orange-400 text-sm">stratum+tcp://{nodeHost}:{status?.stratum_v1_port || 3333}</code>
+                    </div>
+                    <CopyButton text={`stratum+tcp://${nodeHost}:${status?.stratum_v1_port || 3333}`} />
+                  </div>
+                  <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
+                    <div>
+                      <div className="text-xs text-gray-500">Stratum V2</div>
+                      <code className="text-orange-400 text-sm">stratum+tcp://{nodeHost}:{status?.stratum_v2_port || 3334}</code>
+                    </div>
+                    <CopyButton text={`stratum+tcp://${nodeHost}:${status?.stratum_v2_port || 3334}`} />
+                  </div>
                 </div>
-                <Toggle
-                  enabled={status?.public_mining ?? false}
-                  onChange={handlePublicMiningToggle}
-                  label="Public Mining"
-                  disabled={setPublicMining.isPending}
-                />
               </div>
-              <div className="space-y-2 pt-3 border-t border-gray-700/50">
-                <div className="text-xs text-gray-400 mb-2">Public miners connect via:</div>
-                <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
-                  <div>
-                    <div className="text-xs text-gray-500">Stratum V1</div>
-                    <code className="text-orange-400 text-sm">stratum+tcp://pool.bitcoinghost.org:3333</code>
+            )}
+            {showPublicEndpoints && (
+              <div className="p-4 bg-gray-800/30 rounded-lg border border-gray-700">
+                <div className="text-sm text-gray-300 font-medium mb-3">Public Pool Endpoints</div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
+                    <div>
+                      <div className="text-xs text-gray-500">Stratum V1</div>
+                      <code className="text-orange-400 text-sm">stratum+tcp://pool.bitcoinghost.org:3333</code>
+                    </div>
+                    <CopyButton text="stratum+tcp://pool.bitcoinghost.org:3333" />
                   </div>
-                  <CopyButton text="stratum+tcp://pool.bitcoinghost.org:3333" />
-                </div>
-                <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
-                  <div>
-                    <div className="text-xs text-gray-500">Stratum V2</div>
-                    <code className="text-orange-400 text-sm">stratum+tcp://pool.bitcoinghost.org:34265</code>
+                  <div className="flex items-center justify-between p-2 bg-gray-900/50 rounded">
+                    <div>
+                      <div className="text-xs text-gray-500">Stratum V2</div>
+                      <code className="text-orange-400 text-sm">stratum+tcp://pool.bitcoinghost.org:34265</code>
+                    </div>
+                    <CopyButton text="stratum+tcp://pool.bitcoinghost.org:34265" />
                   </div>
-                  <CopyButton text="stratum+tcp://pool.bitcoinghost.org:34265" />
                 </div>
               </div>
-            </div>
+            )}
           </div>
         </Card>
       </SectionErrorBoundary>
@@ -254,14 +287,17 @@ export default function MiningPage() {
       {/* Best Hashes */}
       <SectionErrorBoundary section="Best Hashes">
         <Card>
-          <CardHeader title="Best Hashes" subtitle="Lowest hash values achieved by connected miners" />
+          <CardHeader
+            title="Best Hashes"
+            subtitle="Lowest hash values achieved by connected miners — more leading zeros means closer to winning a block"
+          />
           {bestHashLoading ? (
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
               <SkeletonCard /><SkeletonCard /><SkeletonCard /><SkeletonCard />
             </div>
           ) : (
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <BestHashCard title="Last Round" entry={bestHashData?.last_round} />
+              <BestHashCard title="Current Round" entry={bestHashData?.current_round} />
               <BestHashCard title="Last Hour" entry={bestHashData?.last_hour} />
               <BestHashCard title="Last 24h" entry={bestHashData?.last_24h} />
               <BestHashCard title="All Time" entry={bestHashData?.all_time} />
@@ -275,7 +311,7 @@ export default function MiningPage() {
         <Card>
           <CardHeader
             title="Connected Miners"
-            subtitle={`${minersData?.total ?? miners.length} miners connected`}
+            subtitle={`${minersData?.total ?? miners.length} miners connected this round`}
           />
           <DataTable
             columns={minerColumns}

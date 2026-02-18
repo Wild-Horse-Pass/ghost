@@ -21,101 +21,22 @@
 #|======================================================================================================================|
 
 [package]
-name = "ghost-pool"
+name = "ghost-reaper"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "Bitcoin Ghost mining pool node"
-
-[lib]
-name = "ghost_pool"
-path = "src/lib.rs"
-
-[[bin]]
-name = "ghost-pool"
-path = "src/main.rs"
-
-[dependencies]
-# Internal crates
-ghost-common = { workspace = true }
-ghost-buds = { workspace = true }
-ghost-reaper = { workspace = true }
-ghost-policy = { workspace = true }
-ghost-storage = { workspace = true }
-ghost-consensus = { workspace = true }
-ghost-accounting = { workspace = true }
-ghost-verification = { workspace = true }
-ghost-template = { workspace = true }
-
-# Async runtime
-tokio = { workspace = true }
-
-# CLI
-clap = { workspace = true }
-config = { workspace = true }
-
-# Serialization
-serde = { workspace = true }
-serde_json = { workspace = true }
-toml = { workspace = true }
-
-# Logging
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-
-# Error handling
-anyhow = { workspace = true }
-thiserror = { workspace = true }
-
-# Utilities
-chrono = { workspace = true }
-parking_lot = { workspace = true }
-hex = { workspace = true }
-futures = { workspace = true }
-async-trait = { workspace = true }
-sha2 = { workspace = true }
-bitcoin = { workspace = true }
-getrandom = { workspace = true }
-
-# HTTP client for registry
-reqwest = { workspace = true }
-
-# Template Distribution Protocol (SV2) - from crates.io
-template_distribution_sv2 = "4.0.2"
-codec_sv2 = { version = "4.0.1", features = ["noise_sv2"] }
-noise_sv2 = "1.4.1"
-binary_sv2 = "5.0.1"
-framing_sv2 = "6.0.1"
-common_messages_sv2 = "6.0.2"
-async-channel = "2.3"
-
-# SV2 Application Helpers (for NoiseTcpStream)
-stratum-apps = { path = "../../sv2-apps/stratum-apps", features = ["network", "core"] }
-
-# Key utilities
-bs58 = { version = "0.4.0", features = ["check"] }
-secp256k1 = { version = "0.28.2", features = ["rand"] }
-rand = "0.8"
-
-# TUI dashboard (optional)
-ratatui = { workspace = true, optional = true }
-crossterm = { version = "0.27", optional = true }
+description = "Reaper Protocol — dead code detection engine for witness scripts"
 
 [features]
-# Both ZK consensus and MPC ceremony enabled by default
-# ZK parameter generation is deferred to background task to avoid blocking startup
-default = ["zk-consensus", "mpc-ceremony"]
-tui = ["ratatui", "crossterm"]
-# Enable ZK consensus for block/payout proofs
-zk-consensus = ["ghost-consensus/zk-consensus", "ghost-zkp"]
-# Enable MPC ceremony for ZK parameter generation
-mpc-ceremony = ["ghost-consensus/mpc-ceremony", "ghost-mpc"]
+ffi = []
 
-[dependencies.ghost-zkp]
-workspace = true
-optional = true
+[dependencies]
+bitcoin = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
 
-[dependencies.ghost-mpc]
-workspace = true
-optional = true
+[dev-dependencies]
+hex = { workspace = true }

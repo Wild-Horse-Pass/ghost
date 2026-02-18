@@ -2363,6 +2363,7 @@ dependencies = [
  "ghost-consensus",
  "ghost-mpc",
  "ghost-policy",
+ "ghost-reaper",
  "ghost-storage",
  "ghost-template",
  "ghost-verification",
@@ -2384,6 +2385,18 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ghost-reaper"
+version = "1.7.1"
+dependencies = [
+ "bitcoin",
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]

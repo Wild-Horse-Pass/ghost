@@ -17,18 +17,17 @@ import { useShroudStatus } from "@/hooks/queries/useShroudQueries";
 import { formatHashrate } from "@/components/ui/DataTable";
 
 const TOOLTIPS = {
-  block_height: "The current block height of the Bitcoin blockchain your node has synced to.",
-  l1_sync: "Whether your node is fully synced with the Bitcoin network.",
-  l1_peers: "Number of other Ghost nodes your node is directly connected to.",
-  l1_hashrate: "Combined mining power of all miners connected to your node.",
-  l2_height: "The current block height of the Ghost Pay L2 network.",
-  l2_sync: "Whether your node is synced with the Ghost Pay L2 consensus.",
+  block_height: "The current block height of the Bitcoin blockchain your node has synced to. During Initial Block Download (IBD), this shows sync progress.",
+  l1_peers: "Number of Ghost mesh peers your node is directly connected to via P2P.",
+  l1_hashrate: "Combined mining hashrate of miners connected to YOUR node's stratum port. This is your pool's hashrate, not the total Ghost network.",
+  l2_height: "The current block height of the Ghost Pay L2 network. Format: era:block. During IBD, shows syncing state.",
   l2_peers: "Number of Ghost Pay L2 peers your node is connected to.",
-  l2_sessions: "Active Wraith mixing sessions on the L2 network.",
+  l2_wraith: "Wraith privacy mixing is available when Ghost Pay is running. Any L2 participant can initiate a mixing session.",
   shares: "Your node's share count determines your portion of the node reward pool. Based on the 5-4-3-2-1 system.",
   health: "Overall health of the services running on your node.",
-  privacy_haze: "Ghost Haze strips privacy-sensitive data from stored blocks.",
-  privacy_shroud: "Ghost Shroud adds random relay delays to protect transaction origin.",
+  ghost_mode: "Ghost Mode isolates your node — stops relaying transactions and messages to peers (except block propagation). Useful for privacy.",
+  privacy_haze: "Ghost Haze strips privacy-sensitive data (signatures, witness data, inscriptions) from stored blocks.",
+  privacy_shroud: "Ghost Shroud adds random delays before relaying transactions, protecting against timing analysis.",
 };
 
 const SHARE_TIERS = [
@@ -39,13 +38,24 @@ const SHARE_TIERS = [
   { key: "elder", name: "Elder Status", bonus: 1 },
 ] as const;
 
+function InfoIcon() {
+  return (
+    <svg className="w-3 h-3 text-gray-600 inline-block ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4M12 8h.01" />
+    </svg>
+  );
+}
+
 function L1Card() {
   const { data: status, isLoading: statusLoading } = useNodeStatus();
   const { data: mining, isLoading: miningLoading } = useMiningStatus();
   const isLoading = statusLoading || miningLoading;
 
   const syncStatus = status?.is_synced;
-  const height = status ? (status.sync_height ?? status.block_height ?? 0) : 0;
+  const syncHeight = status?.sync_height ?? status?.block_height ?? 0;
+  const blockHeight = status?.block_height ?? 0;
+  const isSyncing = syncStatus === false && syncHeight > 0 && blockHeight > 0;
 
   return (
     <Card className="border-orange-600/30">
@@ -64,15 +74,23 @@ function L1Card() {
       <div className="grid grid-cols-2 gap-3">
         <Tooltip content={TOOLTIPS.block_height}>
           <div className="p-3 bg-orange-900/10 rounded-lg">
-            <div className="text-xs text-gray-500 mb-1">Block Height</div>
+            <div className="text-xs text-gray-500 mb-1">Block Height <InfoIcon /></div>
             <div className="text-lg font-mono font-semibold text-gray-100">
-              {isLoading ? "..." : height.toLocaleString()}
+              {isLoading ? "..." : isSyncing
+                ? <span>{syncHeight.toLocaleString()} <span className="text-xs text-orange-400">/ {blockHeight.toLocaleString()}</span></span>
+                : syncHeight.toLocaleString()
+              }
             </div>
+            {isSyncing && (
+              <div className="text-xs text-orange-400 mt-0.5">
+                IBD &middot; {blockHeight > 0 ? ((syncHeight / blockHeight) * 100).toFixed(1) : 0}%
+              </div>
+            )}
           </div>
         </Tooltip>
         <Tooltip content={TOOLTIPS.l1_peers}>
           <div className="p-3 bg-orange-900/10 rounded-lg">
-            <div className="text-xs text-gray-500 mb-1">Peers</div>
+            <div className="text-xs text-gray-500 mb-1">Mesh Peers <InfoIcon /></div>
             <div className="text-lg font-mono font-semibold text-gray-100">
               {isLoading ? "..." : `${status?.peer_count ?? 0} connected`}
             </div>
@@ -80,7 +98,7 @@ function L1Card() {
         </Tooltip>
         <Tooltip content={TOOLTIPS.l1_hashrate}>
           <div className="p-3 bg-orange-900/10 rounded-lg">
-            <div className="text-xs text-gray-500 mb-1">Hashrate</div>
+            <div className="text-xs text-gray-500 mb-1">Your Hashrate <InfoIcon /></div>
             <div className="text-lg font-mono font-semibold text-gray-100">
               {isLoading ? "..." : mining ? formatHashrate((mining.hashrate_th ?? 0) * 1e12) : "0 H/s"}
             </div>
@@ -101,48 +119,63 @@ function L2Card() {
   const { data: gp, isLoading } = useGhostPayStatus();
 
   const isRunning = gp && gp.sync_state !== "disabled" && gp.sync_state !== "unavailable";
+  const isSyncing = isRunning && gp?.sync_state !== "synced";
   const height = gp ? `${gp.l2_era ?? 1}:${(gp.virtual_block ?? gp.block_height ?? 0).toLocaleString()}` : "--";
 
   return (
-    <Card className="border-cyan-600/30">
+    <Card className="border-purple-600/30">
       <CardHeader
-        title={<span className="text-cyan-400">L2 &middot; Ghost Pay</span>}
+        title={<span className="text-purple-400">L2 &middot; Ghost Pay</span>}
         action={
           isRunning != null && (
             <StatusDot
               status={isRunning ? "online" : "offline"}
               pulse={!!isRunning}
-              label={isRunning ? (gp?.sync_state === "synced" ? "Synced" : "Syncing") : "Offline"}
+              label={isRunning ? (isSyncing ? "Syncing" : "Synced") : "Offline"}
             />
           )
         }
       />
       <div className="grid grid-cols-2 gap-3">
         <Tooltip content={TOOLTIPS.l2_height}>
-          <div className="p-3 bg-cyan-900/10 rounded-lg">
-            <div className="text-xs text-gray-500 mb-1">L2 Height</div>
+          <div className="p-3 bg-purple-900/10 rounded-lg">
+            <div className="text-xs text-gray-500 mb-1">L2 Height <InfoIcon /></div>
             <div className="text-lg font-mono font-semibold text-gray-100">
-              {isLoading ? "..." : height}
+              {isLoading ? "..." : isSyncing ? <span className="text-purple-400">Syncing...</span> : height}
             </div>
+            {isSyncing && (
+              <div className="text-xs text-purple-400 mt-0.5">
+                {height}
+              </div>
+            )}
           </div>
         </Tooltip>
         <Tooltip content={TOOLTIPS.l2_peers}>
-          <div className="p-3 bg-cyan-900/10 rounded-lg">
-            <div className="text-xs text-gray-500 mb-1">Peers</div>
+          <div className="p-3 bg-purple-900/10 rounded-lg">
+            <div className="text-xs text-gray-500 mb-1">L2 Peers <InfoIcon /></div>
             <div className="text-lg font-mono font-semibold text-gray-100">
               {isLoading ? "..." : `${gp?.peer_count ?? 0} connected`}
             </div>
           </div>
         </Tooltip>
-        <Tooltip content={TOOLTIPS.l2_sessions}>
-          <div className="p-3 bg-cyan-900/10 rounded-lg">
-            <div className="text-xs text-gray-500 mb-1">Wraith</div>
-            <div className="text-lg font-mono font-semibold text-gray-100">
-              {isLoading ? "..." : gp?.wraith_enabled ? "Enabled" : "Disabled"}
+        <Tooltip content={TOOLTIPS.l2_wraith}>
+          <div className="p-3 bg-purple-900/10 rounded-lg">
+            <div className="text-xs text-gray-500 mb-1">Wraith <InfoIcon /></div>
+            <div className="flex items-center gap-2">
+              <StatusDot
+                status={isRunning ? "online" : "offline"}
+                size="sm"
+              />
+              <span className="text-sm font-mono text-gray-100">
+                {isLoading ? "..." : isRunning ? "Available" : "Offline"}
+              </span>
             </div>
+            {isRunning && gp?.wraith_enabled && (
+              <div className="text-xs text-purple-400 mt-0.5">Active sessions</div>
+            )}
           </div>
         </Tooltip>
-        <div className="p-3 bg-cyan-900/10 rounded-lg">
+        <div className="p-3 bg-purple-900/10 rounded-lg">
           <div className="text-xs text-gray-500 mb-1">Status</div>
           <div className="text-lg font-mono font-semibold text-gray-100">
             {isLoading ? "..." : isRunning ? "Active" : "Not enabled"}
@@ -167,9 +200,12 @@ function SharesSection() {
         title="Your Shares"
         subtitle="5-4-3-2-1 Reward System"
         action={
-          <span className="text-2xl font-bold text-gray-100">
-            {shares.total}<span className="text-gray-500 text-lg"> / {shares.max_shares}</span>
-          </span>
+          <Tooltip content={TOOLTIPS.shares}>
+            <span className="text-2xl font-bold text-gray-100">
+              {shares.total}<span className="text-gray-500 text-lg"> / {shares.max_shares}</span>
+              <InfoIcon />
+            </span>
+          </Tooltip>
         }
       />
 
@@ -225,7 +261,7 @@ function HealthSection() {
   const statusColor = overallStatus === "healthy" ? "online" : overallStatus === "degraded" ? "warning" : "offline";
 
   return (
-    <Card>
+    <Card className="border-green-600/30">
       <CardHeader
         title="Health"
         action={
@@ -236,7 +272,7 @@ function HealthSection() {
           />
         }
       />
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2 mb-3">
         {(watchdog.services ?? []).map((svc: { name: string; status: string }) => (
           <Badge
             key={svc.name}
@@ -246,38 +282,78 @@ function HealthSection() {
           </Badge>
         ))}
       </div>
+      {/* Color legend */}
+      <div className="flex gap-4 text-[10px] text-gray-500 border-t border-gray-800 pt-2">
+        <div className="flex items-center gap-1">
+          <span className="w-2 h-2 rounded-full bg-green-500" />
+          Running
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="w-2 h-2 rounded-full bg-yellow-500" />
+          Syncing
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="w-2 h-2 rounded-full bg-red-500" />
+          Stopped
+        </div>
+      </div>
     </Card>
   );
 }
 
 function PrivacySection() {
+  const { data: status } = useNodeStatus();
   const { data: haze } = useHazeStatus();
   const { data: shroud } = useShroudStatus();
 
+  const hazeActive = haze?.mode === "hazed" || haze?.mode === "full_archive";
+  const hazeLabel = haze?.mode === "hazed" ? "Hazed" : haze?.mode === "full_archive" ? "Full Archive" : haze?.mode === "standard" ? "Off" : haze ? "Off" : "Loading...";
+
+  const shroudActive = shroud?.enabled ?? false;
+  const shroudLabel = shroud ? (shroudActive ? "Active" : "Off") : "Loading...";
+
+  const ghostModeActive = status?.ghost_mode ?? false;
+
   return (
-    <Card className="border-purple-600/20">
-      <CardHeader title={<span className="text-purple-400">Privacy Status</span>} />
-      <div className="grid grid-cols-2 gap-3">
-        <div className="p-3 bg-purple-900/10 rounded-lg">
-          <div className="text-xs text-gray-500 mb-1">Ghost Haze</div>
-          <div className="flex items-center gap-2">
-            <StatusDot
-              status={haze?.mode === "hazed" || haze?.mode === "full_archive" ? "online" : "offline"}
-              size="sm"
-            />
-            <span className="text-sm text-gray-100 capitalize">{haze?.mode ?? "unknown"}</span>
+    <Card className="border-red-600/30">
+      <CardHeader title={<span className="text-red-400">Privacy Status</span>} />
+      <div className="grid grid-cols-3 gap-3">
+        <Tooltip content={TOOLTIPS.ghost_mode}>
+          <div className="p-3 bg-red-900/10 rounded-lg">
+            <div className="text-xs text-gray-500 mb-1">Ghost Mode <InfoIcon /></div>
+            <div className="flex items-center gap-2">
+              <StatusDot
+                status={ghostModeActive ? "online" : "offline"}
+                size="sm"
+              />
+              <span className="text-sm text-gray-100">{ghostModeActive ? "Active" : "Off"}</span>
+            </div>
           </div>
-        </div>
-        <div className="p-3 bg-purple-900/10 rounded-lg">
-          <div className="text-xs text-gray-500 mb-1">Ghost Shroud</div>
-          <div className="flex items-center gap-2">
-            <StatusDot
-              status={shroud?.enabled ? "online" : "offline"}
-              size="sm"
-            />
-            <span className="text-sm text-gray-100">{shroud?.enabled ? "Active" : "Inactive"}</span>
+        </Tooltip>
+        <Tooltip content={TOOLTIPS.privacy_haze}>
+          <div className="p-3 bg-red-900/10 rounded-lg">
+            <div className="text-xs text-gray-500 mb-1">Ghost Haze <InfoIcon /></div>
+            <div className="flex items-center gap-2">
+              <StatusDot
+                status={hazeActive ? "online" : "offline"}
+                size="sm"
+              />
+              <span className="text-sm text-gray-100">{hazeLabel}</span>
+            </div>
           </div>
-        </div>
+        </Tooltip>
+        <Tooltip content={TOOLTIPS.privacy_shroud}>
+          <div className="p-3 bg-red-900/10 rounded-lg">
+            <div className="text-xs text-gray-500 mb-1">Ghost Shroud <InfoIcon /></div>
+            <div className="flex items-center gap-2">
+              <StatusDot
+                status={shroudActive ? "online" : "offline"}
+                size="sm"
+              />
+              <span className="text-sm text-gray-100">{shroudLabel}</span>
+            </div>
+          </div>
+        </Tooltip>
       </div>
     </Card>
   );

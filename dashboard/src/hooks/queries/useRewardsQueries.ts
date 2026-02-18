@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { getRewardsCurrent, getRewardsHistory, getRewardsFull, getNodePayoutHistory } from '@/lib/api/rewards';
+import { getRewardsCurrent, getRewardsHistory, getRewardsFull, getNodePayoutHistory, getNodeBalances } from '@/lib/api/rewards';
 import type { PayoutHistoryTimeFilter } from '@/types/api';
 
 export const rewardsKeys = {
@@ -9,6 +9,7 @@ export const rewardsKeys = {
   full: () => [...rewardsKeys.all, 'full'] as const,
   nodeHistory: (timeFilter: PayoutHistoryTimeFilter, payoutType?: string) =>
     [...rewardsKeys.all, 'node-history', timeFilter, payoutType] as const,
+  nodeBalances: () => [...rewardsKeys.all, 'node-balances'] as const,
 };
 
 export function useRewardsCurrent(options?: { refetchInterval?: number }) {
@@ -47,5 +48,13 @@ export function useNodePayoutHistory(
     queryKey: rewardsKeys.nodeHistory(timeFilter, payoutType),
     queryFn: () => getNodePayoutHistory(timeFilter, payoutType),
     refetchInterval: options?.refetchInterval ?? 60_000, // 1 minute
+  });
+}
+
+export function useNodeBalances(options?: { refetchInterval?: number }) {
+  return useQuery({
+    queryKey: rewardsKeys.nodeBalances(),
+    queryFn: getNodeBalances,
+    refetchInterval: options?.refetchInterval ?? 30_000,
   });
 }
