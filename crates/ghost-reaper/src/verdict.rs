@@ -13,8 +13,12 @@ pub enum DeadCodeType {
     DropStuffing,
     UnreachableCode,
     FakePubkey,
+    FakePubkeyCurvePoint,
     AnnexPresent,
     OversizedOpReturn,
+    ExcessWitnessData,
+    ExcessStackItems,
+    LegacyScriptSigData,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,12 +37,26 @@ pub struct DeadCodeRegion {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WitnessBreakdown {
+    pub essential_bytes: usize,
+    pub dead_bytes: usize,
+    pub essential_script_bytes: usize,
+    pub original_script_bytes: usize,
+    pub control_block_bytes: usize,
+    pub essential_stack_items: usize,
+    pub actual_stack_items: usize,
+    pub excess_stack_items: usize,
+    pub excess_stack_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputAnalysis {
     pub input_index: usize,
     pub spend_type: String,
     pub script_size: usize,
     pub dead_bytes: usize,
     pub regions: Vec<DeadCodeRegion>,
+    pub witness_breakdown: Option<WitnessBreakdown>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +67,8 @@ pub struct ReaperVerdict {
     pub total_dead_bytes: usize,
     pub total_witness_bytes: usize,
     pub dead_code_ratio: f64,
+    pub total_essential_bytes: usize,
+    pub total_excess_bytes: usize,
 }
 
 impl ReaperVerdict {
@@ -68,6 +88,8 @@ impl ReaperVerdict {
             total_dead_bytes: 0,
             total_witness_bytes: 0,
             dead_code_ratio: 0.0,
+            total_essential_bytes: 0,
+            total_excess_bytes: 0,
         }
     }
 }

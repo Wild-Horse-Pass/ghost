@@ -271,7 +271,7 @@ pub fn detect_dead_code(
 
 /// Check if pushed data evaluates to false in Bitcoin Script.
 /// False values: empty, all-zero, or negative zero (0x80 as last byte with zeros before).
-fn is_false_value(data: &[u8]) -> bool {
+pub(crate) fn is_false_value(data: &[u8]) -> bool {
     if data.is_empty() {
         return true;
     }

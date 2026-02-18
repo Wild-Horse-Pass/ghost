@@ -1,3 +1,4 @@
+use bitcoin::secp256k1::PublicKey;
 use bitcoin::Transaction;
 
 use crate::config::ReaperConfig;
@@ -33,7 +34,7 @@ pub fn analyze_outputs(tx: &Transaction, config: &ReaperConfig) -> Vec<DeadCodeR
 
         // Check bare multisig for fake pubkeys
         if config.reject_fake_pubkeys {
-            if let Some(fake_regions) = detect_fake_multisig_pubkeys(script_bytes, idx) {
+            if let Some(fake_regions) = detect_fake_multisig_pubkeys(script_bytes, idx, config) {
                 regions.extend(fake_regions);
             }
         }
@@ -59,9 +60,12 @@ fn op_return_data_size(script_bytes: &[u8]) -> usize {
 /// Detect fake pubkeys in bare multisig scripts.
 /// A bare multisig has the form: OP_M <pubkey1> <pubkey2> ... OP_N OP_CHECKMULTISIG
 /// Valid compressed pubkeys are 33 bytes starting with 0x02 or 0x03.
+/// When `config.validate_pubkey_curve_point` is enabled, also validates that the
+/// point is actually on the secp256k1 curve (catches data stuffing with valid prefixes).
 fn detect_fake_multisig_pubkeys(
     script_bytes: &[u8],
     output_index: usize,
+    config: &ReaperConfig,
 ) -> Option<Vec<DeadCodeRegion>> {
     let len = script_bytes.len();
     if len < 3 {
@@ -104,10 +108,10 @@ fn detect_fake_multisig_pubkeys(
             break;
         }
 
-        let pubkey = &script_bytes[pos + 1..pos + 1 + 33];
-        let prefix = pubkey[0];
+        let pubkey_bytes = &script_bytes[pos + 1..pos + 1 + 33];
+        let prefix = pubkey_bytes[0];
 
-        // Valid compressed pubkey prefix is 0x02 or 0x03
+        // First check: valid prefix?
         if prefix != 0x02 && prefix != 0x03 {
             regions.push(DeadCodeRegion {
                 location: AnalysisLocation::Output(output_index),
@@ -119,6 +123,20 @@ fn detect_fake_multisig_pubkeys(
                     prefix
                 ),
             });
+        } else if config.validate_pubkey_curve_point {
+            // Second check: valid prefix but is the point actually on secp256k1?
+            if PublicKey::from_slice(pubkey_bytes).is_err() {
+                regions.push(DeadCodeRegion {
+                    location: AnalysisLocation::Output(output_index),
+                    dead_code_type: DeadCodeType::FakePubkeyCurvePoint,
+                    offset: pos + 1,
+                    size: 33,
+                    description: format!(
+                        "Fake pubkey in bare multisig: valid prefix 0x{:02x} but not on secp256k1 curve",
+                        prefix
+                    ),
+                });
+            }
         }
 
         pos += 1 + 33; // skip push opcode + 33 bytes
@@ -167,7 +185,8 @@ mod tests {
         script.push(0x52); // OP_2
         script.push(0xae); // OP_CHECKMULTISIG
 
-        let regions = detect_fake_multisig_pubkeys(&script, 0).unwrap();
+        let config = ReaperConfig::strict();
+        let regions = detect_fake_multisig_pubkeys(&script, 0, &config).unwrap();
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].dead_code_type, DeadCodeType::FakePubkey);
     }
@@ -188,6 +207,9 @@ mod tests {
         script.push(0x52); // OP_2
         script.push(0xae); // OP_CHECKMULTISIG
 
-        assert!(detect_fake_multisig_pubkeys(&script, 0).is_none());
+        // With EC validation off, valid prefixes pass
+        let mut config = ReaperConfig::strict();
+        config.validate_pubkey_curve_point = false;
+        assert!(detect_fake_multisig_pubkeys(&script, 0, &config).is_none());
     }
 }

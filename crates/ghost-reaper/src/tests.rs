@@ -728,6 +728,8 @@ fn test_2drop_stuffing() {
 }
 
 /// Config toggle: reject_inscription_envelope = false
+/// Pattern toggle suppresses the pattern label, but flow analysis still detects
+/// the dead branch semantically — dead code is dead code.
 #[test]
 fn test_toggle_inscription_off() {
     let mut script: Vec<u8> = Vec::new();
@@ -744,10 +746,15 @@ fn test_toggle_inscription_off() {
     config.reject_inscription_envelope = false;
     let verdict = analyze(&tx, &config);
 
-    assert!(verdict.is_accepted());
+    // Pattern toggle off → no pattern-detected InscriptionEnvelope
+    // But flow analysis still finds the dead FALSE IF branch → Corpse
+    assert!(verdict.is_corpse());
+    assert!(!verdict.dead_regions.is_empty());
 }
 
 /// Config toggle: reject_drop_stuffing = false
+/// Pattern toggle suppresses the pattern label, but flow analysis still detects
+/// the dead push-drop pair semantically.
 #[test]
 fn test_toggle_drop_off() {
     let mut script: Vec<u8> = Vec::new();
@@ -763,7 +770,10 @@ fn test_toggle_drop_off() {
     config.reject_drop_stuffing = false;
     let verdict = analyze(&tx, &config);
 
-    assert!(verdict.is_accepted());
+    // Pattern toggle off → no pattern-detected DropStuffing
+    // But flow analysis still finds the dead push-drop → Corpse
+    assert!(verdict.is_corpse());
+    assert!(!verdict.dead_regions.is_empty());
 }
 
 /// Verdict helper methods
@@ -834,7 +844,9 @@ fn test_multiple_dead_regions() {
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
-    assert_eq!(verdict.dead_regions.len(), 2);
+    // Both pattern and flow analysis detect these regions (may overlap)
+    assert!(verdict.dead_regions.iter().any(|r| r.dead_code_type == DeadCodeType::DropStuffing));
+    assert!(verdict.dead_regions.iter().any(|r| r.dead_code_type == DeadCodeType::InscriptionEnvelope));
 }
 
 /// OP_NOTIF increases envelope depth
@@ -852,3 +864,347 @@ fn test_notif_in_envelope() {
 }
 
 use crate::verdict::ReaperVerdict;
+
+// ─── Computational Validity Tests ───────────────────────────────────────────
+
+/// Witness breakdown on a standard inscription shows essential_script << original
+#[test]
+fn test_witness_breakdown_inscription() {
+    let mut script: Vec<u8> = Vec::new();
+    // OP_FALSE OP_IF envelope
+    script.push(0x00);
+    script.push(0x63);
+    script.push(0x03);
+    script.extend(b"ord");
+    script.push(0x51); // OP_1
+    let ct = b"text/plain;charset=utf-8";
+    script.push(ct.len() as u8);
+    script.extend(ct);
+    script.push(0x00);
+    let content = b"Hello World Hello World Hello World Hello World";
+    script.push(content.len() as u8);
+    script.extend(content);
+    script.push(0x68); // OP_ENDIF
+    // OP_CHECKSIG
+    script.push(0xac);
+
+    let sig = [0x30; 64];
+    let tx = tx_with_tapscript(&script, &[&sig]);
+    let config = ReaperConfig::strict();
+    let verdict = analyze(&tx, &config);
+
+    assert!(verdict.is_corpse());
+    let analysis = &verdict.input_analyses[0];
+    let bd = analysis.witness_breakdown.as_ref().unwrap();
+    // Essential script should be just OP_CHECKSIG (1 byte)
+    assert_eq!(bd.essential_script_bytes, 1);
+    assert!(bd.essential_script_bytes < bd.original_script_bytes);
+    assert!(bd.dead_bytes > 0);
+}
+
+/// Witness breakdown with drop stuffing accumulates dead bytes
+#[test]
+fn test_witness_breakdown_drop_stuffing() {
+    let mut script: Vec<u8> = Vec::new();
+    // Push 100 bytes + DROP
+    script.push(0x4c); // OP_PUSHDATA1
+    script.push(100);
+    script.extend(vec![0xDE; 100]);
+    script.push(0x75); // OP_DROP
+    // Push another 100 bytes + DROP
+    script.push(0x4c);
+    script.push(100);
+    script.extend(vec![0xBE; 100]);
+    script.push(0x75); // OP_DROP
+    // Legitimate
+    script.push(0xac); // OP_CHECKSIG
+
+    let sig = [0x30; 64];
+    let tx = tx_with_tapscript(&script, &[&sig]);
+    let config = ReaperConfig::strict();
+    let verdict = analyze(&tx, &config);
+
+    assert!(verdict.is_corpse());
+    let analysis = &verdict.input_analyses[0];
+    let bd = analysis.witness_breakdown.as_ref().unwrap();
+    // Essential script should be just OP_CHECKSIG (1 byte)
+    assert_eq!(bd.essential_script_bytes, 1);
+    // Original has ~206 bytes of script
+    assert!(bd.original_script_bytes > 200);
+}
+
+/// Excess stack items are detected when script needs fewer items than provided
+#[test]
+fn test_excess_stack_items() {
+    // Script: <pk> OP_CHECKSIG (needs exactly 1 sig from the stack)
+    let mut script = vec![0x21]; // OP_PUSHBYTES_33
+    script.extend([0x02; 33]); // compressed pubkey
+    script.push(0xac); // OP_CHECKSIG
+    // Provide 3 witness items (only 1 needed): excess at bottom, sig on top
+    let item1 = [0xAA; 600]; // excess item 1
+    let item2 = [0xBB; 600]; // excess item 2
+    let item3 = [0x30; 64]; // "signature" (on top where CHECKSIG consumes it)
+    let tx = tx_with_tapscript(&script, &[&item1, &item2, &item3]);
+
+    let mut config = ReaperConfig::strict();
+    config.min_excess_witness_bytes = 100; // lower threshold for test
+    let verdict = analyze(&tx, &config);
+
+    let analysis = &verdict.input_analyses[0];
+    let bd = analysis.witness_breakdown.as_ref().unwrap();
+    assert_eq!(bd.essential_stack_items, 1);
+    assert_eq!(bd.actual_stack_items, 3);
+    assert_eq!(bd.excess_stack_items, 2);
+    assert!(bd.excess_stack_bytes > 0);
+}
+
+/// Legitimate HTLC with both branches doesn't false-positive on stack count
+#[test]
+fn test_legitimate_htlc_no_excess() {
+    // HTLC: OP_IF OP_SHA256 OP_EQUALVERIFY OP_CHECKSIG OP_ELSE OP_CHECKSIG OP_ENDIF
+    let mut script: Vec<u8> = Vec::new();
+    script.push(0x63); // OP_IF
+    script.push(0xa8); // OP_SHA256
+    script.push(0x20); // PUSH32
+    script.extend([0xCC; 32]); // hash
+    script.push(0x88); // OP_EQUALVERIFY
+    script.push(0xac); // OP_CHECKSIG
+    script.push(0x67); // OP_ELSE
+    script.push(0xac); // OP_CHECKSIG
+    script.push(0x68); // OP_ENDIF
+
+    // Provide: sig + preimage (for the hash-lock branch)
+    let sig = [0x30; 64];
+    let preimage = [0xDD; 32];
+    let tx = tx_with_tapscript(&script, &[&sig, &preimage]);
+    let config = ReaperConfig::strict();
+    let verdict = analyze(&tx, &config);
+
+    // Should accept — the conservative count covers both branches
+    let analysis = &verdict.input_analyses[0];
+    let bd = analysis.witness_breakdown.as_ref().unwrap();
+    // Conservative: 2 checksigs + 1 preimage = 3 items needed from stack
+    // We provided 2 items, which is <= 3, so no excess
+    assert_eq!(bd.excess_stack_items, 0);
+    assert!(verdict.is_accepted());
+}
+
+// ─── EC Point Validation Tests ──────────────────────────────────────────────
+
+/// Valid prefix (0x02) but not on secp256k1 curve → FakePubkeyCurvePoint
+#[test]
+fn test_ec_point_valid_prefix_invalid_point() {
+    // 1-of-1 multisig with fake pubkey: 0x02 + all 0xFF (not on curve)
+    let mut script = vec![0x51]; // OP_1
+    script.push(0x21);
+    script.push(0x02);
+    script.extend(vec![0xFF; 32]); // Not a valid x-coordinate on secp256k1
+    script.push(0x51); // OP_1
+    script.push(0xae); // OP_CHECKMULTISIG
+
+    let outputs = vec![TxOut {
+        value: Amount::from_sat(50000),
+        script_pubkey: ScriptBuf::from(script),
+    }];
+    let tx = tx_with_outputs(outputs);
+    let config = ReaperConfig::strict();
+    let verdict = analyze(&tx, &config);
+
+    assert!(verdict.is_corpse());
+    let fake_curve_regions: Vec<_> = verdict
+        .dead_regions
+        .iter()
+        .filter(|r| r.dead_code_type == DeadCodeType::FakePubkeyCurvePoint)
+        .collect();
+    assert_eq!(fake_curve_regions.len(), 1);
+}
+
+/// Real secp256k1 pubkey (Bitcoin genesis coinbase key) → no flagging
+#[test]
+fn test_ec_point_real_pubkey() {
+    // Use the well-known Bitcoin genesis block pubkey (compressed form)
+    // This is 0x02 + a valid x-coordinate
+    let real_pubkey = hex::decode(
+        "0279BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798",
+    )
+    .unwrap();
+
+    let mut script = vec![0x51]; // OP_1
+    script.push(0x21);
+    script.extend(&real_pubkey);
+    script.push(0x51); // OP_1
+    script.push(0xae); // OP_CHECKMULTISIG
+
+    let outputs = vec![TxOut {
+        value: Amount::from_sat(50000),
+        script_pubkey: ScriptBuf::from(script),
+    }];
+    let tx = tx_with_outputs(outputs);
+    let config = ReaperConfig::strict();
+    let verdict = analyze(&tx, &config);
+
+    // Real pubkey should pass
+    assert!(verdict.is_accepted());
+}
+
+// ─── Legacy ScriptSig Tests ────────────────────────────────────────────────
+
+/// Legacy input with large non-sig push → LegacyScriptSigData
+#[test]
+fn test_legacy_scriptsig_data() {
+    // Build a legacy transaction with a data-stuffed scriptSig
+    let mut script_sig_bytes = Vec::new();
+    // 200-byte data push (not a sig or pubkey)
+    script_sig_bytes.push(0x4c); // OP_PUSHDATA1
+    script_sig_bytes.push(200);
+    script_sig_bytes.extend(vec![0xDD; 200]);
+    // Legitimate DER signature (72 bytes)
+    let mut sig = vec![0x30];
+    sig.extend(vec![0x44; 71]);
+    script_sig_bytes.push(sig.len() as u8);
+    script_sig_bytes.extend(&sig);
+
+    let tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: non_coinbase_outpoint(),
+            script_sig: ScriptBuf::from(script_sig_bytes),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(50000),
+            script_pubkey: p2wpkh_script(),
+        }],
+    };
+    let config = ReaperConfig::strict();
+    let verdict = analyze(&tx, &config);
+
+    assert!(verdict.is_corpse());
+    let legacy_regions: Vec<_> = verdict
+        .dead_regions
+        .iter()
+        .filter(|r| r.dead_code_type == DeadCodeType::LegacyScriptSigData)
+        .collect();
+    assert_eq!(legacy_regions.len(), 1);
+}
+
+/// P2SH redeemScript containing OP_FALSE OP_IF → inscription detected inside legacy
+#[test]
+fn test_p2sh_redeemscript_envelope() {
+    // Build a scriptSig: <sig> <redeemScript_with_envelope>
+    let mut script_sig_bytes = Vec::new();
+
+    // Signature (72 bytes)
+    let mut sig = vec![0x30];
+    sig.extend(vec![0x44; 71]);
+    script_sig_bytes.push(sig.len() as u8);
+    script_sig_bytes.extend(&sig);
+
+    // RedeemScript: OP_FALSE OP_IF "ord" OP_ENDIF OP_CHECKSIG
+    let mut redeem = Vec::new();
+    redeem.push(0x00); // OP_FALSE
+    redeem.push(0x63); // OP_IF
+    redeem.push(0x03);
+    redeem.extend(b"ord");
+    redeem.push(0x68); // OP_ENDIF
+    redeem.push(0xac); // OP_CHECKSIG
+
+    // Push the redeemScript
+    script_sig_bytes.push(0x4c); // OP_PUSHDATA1
+    script_sig_bytes.push(redeem.len() as u8);
+    script_sig_bytes.extend(&redeem);
+
+    let tx = Transaction {
+        version: Version::TWO,
+        lock_time: LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: non_coinbase_outpoint(),
+            script_sig: ScriptBuf::from(script_sig_bytes),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(50000),
+            script_pubkey: p2wpkh_script(),
+        }],
+    };
+    let config = ReaperConfig::strict();
+    let verdict = analyze(&tx, &config);
+
+    assert!(verdict.is_corpse());
+    let envelope_regions: Vec<_> = verdict
+        .dead_regions
+        .iter()
+        .filter(|r| r.dead_code_type == DeadCodeType::InscriptionEnvelope)
+        .collect();
+    assert_eq!(envelope_regions.len(), 1);
+}
+
+/// strip_to_essential produces correct output
+#[test]
+fn test_strip_to_essential_correctness() {
+    use crate::essential::strip_to_essential;
+    use crate::verdict::{AnalysisLocation, DeadCodeRegion, DeadCodeType};
+
+    // Script: [OP_FALSE, OP_IF, PUSH3, 'o', 'r', 'd', OP_ENDIF, OP_CHECKSIG]
+    let script = vec![0x00, 0x63, 0x03, b'o', b'r', b'd', 0x68, 0xac];
+    let region = DeadCodeRegion {
+        location: AnalysisLocation::Input(0),
+        dead_code_type: DeadCodeType::InscriptionEnvelope,
+        offset: 0,
+        size: 7,
+        description: String::new(),
+    };
+    let (essential, removed) = strip_to_essential(&script, &[region]);
+    assert_eq!(essential, vec![0xac]);
+    assert_eq!(removed, 7);
+
+    // Multiple regions
+    let mut script2 = Vec::new();
+    // Region 1: bytes 0-3 (4 bytes)
+    script2.extend([0xDE, 0xAD, 0xBE, 0xEF]);
+    // Legitimate: byte 4
+    script2.push(0xac);
+    // Region 2: bytes 5-7 (3 bytes)
+    script2.extend([0xCA, 0xFE, 0xBA]);
+
+    let r1 = DeadCodeRegion {
+        location: AnalysisLocation::Input(0),
+        dead_code_type: DeadCodeType::DropStuffing,
+        offset: 0,
+        size: 4,
+        description: String::new(),
+    };
+    let r2 = DeadCodeRegion {
+        location: AnalysisLocation::Input(0),
+        dead_code_type: DeadCodeType::UnreachableCode,
+        offset: 5,
+        size: 3,
+        description: String::new(),
+    };
+    let (essential2, removed2) = strip_to_essential(&script2, &[r1, r2]);
+    assert_eq!(essential2, vec![0xac]);
+    assert_eq!(removed2, 7);
+}
+
+/// Total essential/excess bytes are populated in verdict
+#[test]
+fn test_verdict_essential_excess_totals() {
+    let mut script: Vec<u8> = Vec::new();
+    script.push(0x00); // OP_FALSE
+    script.push(0x63); // OP_IF
+    script.push(0x03);
+    script.extend(b"ord");
+    script.push(0x68); // OP_ENDIF
+    script.push(0xac); // OP_CHECKSIG
+
+    let sig = [0x30; 64];
+    let tx = tx_with_tapscript(&script, &[&sig]);
+    let config = ReaperConfig::strict();
+    let verdict = analyze(&tx, &config);
+
+    // Should have computed totals
+    assert!(verdict.total_essential_bytes > 0);
+}

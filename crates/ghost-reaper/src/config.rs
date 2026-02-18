@@ -31,6 +31,17 @@ pub struct ReaperConfig {
 
     // Detection thresholds
     pub min_drop_data_size: usize,
+
+    // Computational validity
+    pub reject_excess_witness: bool,
+    pub min_excess_witness_bytes: usize,
+
+    // Legacy analysis
+    pub reject_legacy_data_stuffing: bool,
+    pub legacy_max_push_bytes: usize,
+
+    // EC point validation
+    pub validate_pubkey_curve_point: bool,
 }
 
 impl ReaperConfig {
@@ -48,6 +59,11 @@ impl ReaperConfig {
             reject_unreachable_code: true,
             max_op_return_bytes: 83,
             min_drop_data_size: 76,
+            reject_excess_witness: true,
+            min_excess_witness_bytes: 500,
+            reject_legacy_data_stuffing: true,
+            legacy_max_push_bytes: 80,
+            validate_pubkey_curve_point: true,
         }
     }
 
