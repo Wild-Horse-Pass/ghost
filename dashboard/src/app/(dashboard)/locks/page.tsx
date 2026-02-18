@@ -77,9 +77,9 @@ function formatDate(timestamp: number | null): string {
 function FlowStep({ label, sublabel, accent }: { label: string; sublabel: string; accent?: boolean }) {
   return (
     <div className={`flex-1 text-center px-3 py-4 rounded-lg border ${
-      accent ? "bg-cyan-900/10 border-cyan-600/30" : "bg-gray-800/50 border-gray-700"
+      accent ? "bg-green-900/10 border-green-600/30" : "bg-gray-800/50 border-gray-700"
     }`}>
-      <div className={`text-sm font-medium ${accent ? "text-cyan-400" : "text-gray-100"}`}>{label}</div>
+      <div className={`text-sm font-medium ${accent ? "text-green-400" : "text-gray-100"}`}>{label}</div>
       <div className="text-xs text-gray-500 mt-1">{sublabel}</div>
     </div>
   );
@@ -143,15 +143,15 @@ export default function LocksPage() {
       {/* What are Ghost Locks */}
       <SectionErrorBoundary section="Ghost Locks Overview">
         {isLoading ? <SkeletonCard /> : (
-          <Card className="border-cyan-600/30">
+          <Card className="border-green-600/30">
             <div className="flex items-start gap-4">
-              <div className="w-10 h-10 rounded-lg bg-cyan-900/30 border border-cyan-600/30 flex items-center justify-center flex-shrink-0">
-                <svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <div className="w-10 h-10 rounded-lg bg-green-900/30 border border-green-600/30 flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
                 </svg>
               </div>
               <div>
-                <h2 className="text-lg font-semibold text-cyan-400 mb-2">What are Ghost Locks?</h2>
+                <h2 className="text-lg font-semibold text-green-400 mb-2">What are Ghost Locks?</h2>
                 <p className="text-gray-300 text-sm leading-relaxed">
                   Ghost Locks are P2TR (Pay-to-Taproot) UTXOs with two spending paths: a key path for normal
                   efficient spending, and a script path with a timelocked recovery clause. They represent the
@@ -172,8 +172,8 @@ export default function LocksPage() {
               subtitle="Taproot output with key path and script path spending"
             />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="p-4 bg-cyan-900/10 rounded-lg border border-cyan-600/30">
-                <h4 className="text-sm font-medium text-cyan-400 mb-2 flex items-center gap-2">
+              <div className="p-4 bg-green-900/10 rounded-lg border border-green-600/30">
+                <h4 className="text-sm font-medium text-green-400 mb-2 flex items-center gap-2">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
                   </svg>
@@ -186,7 +186,7 @@ export default function LocksPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                       </svg>
                     </span>
-                    <span>Single <code className="text-cyan-400">lock_pubkey</code> signature</span>
+                    <span>Single <code className="text-green-400">lock_pubkey</code> signature</span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-green-400 mt-0.5 flex-shrink-0">
@@ -220,7 +220,7 @@ export default function LocksPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
                       </svg>
                     </span>
-                    <span>CLTV timelock + <code className="text-cyan-400">recovery_pubkey</code></span>
+                    <span>CLTV timelock + <code className="text-green-400">recovery_pubkey</code></span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="text-gray-500 mt-0.5 flex-shrink-0">
@@ -266,7 +266,7 @@ export default function LocksPage() {
                 {DENOMINATION_TIERS.map((tier) => (
                   <tr key={tier.name} className="border-b border-gray-800/50 last:border-b-0">
                     <td className="py-2.5 px-3 text-gray-100 font-medium">{tier.name}</td>
-                    <td className="py-2.5 px-3 text-right font-mono text-cyan-400">{tier.sats}</td>
+                    <td className="py-2.5 px-3 text-right font-mono text-green-400">{tier.sats}</td>
                     <td className="py-2.5 px-3 text-right font-mono text-gray-400">{tier.btc}</td>
                     <td className="py-2.5 px-3 text-gray-500">{tier.desc}</td>
                   </tr>
@@ -280,15 +280,15 @@ export default function LocksPage() {
       {/* Jump Locks */}
       <SectionErrorBoundary section="Jump Locks">
         {isLoading ? <SkeletonCard /> : (
-          <Card className="border-cyan-600/30">
+          <Card className="border-green-600/30">
             <div className="flex items-start gap-4 mb-4">
-              <div className="w-10 h-10 rounded-lg bg-cyan-900/30 border border-cyan-600/30 flex items-center justify-center flex-shrink-0">
-                <svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <div className="w-10 h-10 rounded-lg bg-green-900/30 border border-green-600/30 flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
                 </svg>
               </div>
               <div>
-                <h2 className="text-lg font-semibold text-cyan-400 mb-2">Jump Locks — Automatic Key Rotation</h2>
+                <h2 className="text-lg font-semibold text-green-400 mb-2">Jump Locks — Automatic Key Rotation</h2>
                 <p className="text-gray-300 text-sm leading-relaxed">
                   Jump Locks extend Ghost Locks with risk-tiered automatic key rotation. Before the timelock on a
                   lock expires, a Jump transaction atomically moves funds to a new lock with fresh keys. This
@@ -326,7 +326,7 @@ export default function LocksPage() {
                         </Badge>
                       </td>
                       <td className="py-2.5 px-3 font-mono text-gray-100">{tier.threshold}</td>
-                      <td className="py-2.5 px-3 text-cyan-400">{tier.interval}</td>
+                      <td className="py-2.5 px-3 text-green-400">{tier.interval}</td>
                       <td className="py-2.5 px-3 text-gray-500">{tier.desc}</td>
                     </tr>
                   ))}
@@ -340,15 +340,15 @@ export default function LocksPage() {
       {/* Reconciliation / Settlement */}
       <SectionErrorBoundary section="Settlement">
         {isLoading ? <SkeletonCard /> : (
-          <Card className="border-cyan-600/30">
+          <Card className="border-green-600/30">
             <div className="flex items-start gap-4 mb-4">
-              <div className="w-10 h-10 rounded-lg bg-cyan-900/30 border border-cyan-600/30 flex items-center justify-center flex-shrink-0">
-                <svg className="w-5 h-5 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <div className="w-10 h-10 rounded-lg bg-green-900/30 border border-green-600/30 flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 4.5h14.25M3 9h9.75M3 13.5h9.75m4.5-4.5v12m0 0l-3.75-3.75M17.25 21l3.75-3.75" />
                 </svg>
               </div>
               <div>
-                <h2 className="text-lg font-semibold text-cyan-400 mb-2">Settlement — L2 to L1</h2>
+                <h2 className="text-lg font-semibold text-green-400 mb-2">Settlement — L2 to L1</h2>
                 <p className="text-gray-300 text-sm leading-relaxed">
                   Reconciliation settles Ghost Pay L2 state back to Bitcoin L1 in batches. Each epoch cycle
                   (6 hours) processes settlement requests, grouping them by class for efficient on-chain
@@ -372,7 +372,7 @@ export default function LocksPage() {
                   {SETTLEMENT_CLASSES.map((cls) => (
                     <tr key={cls.name} className="border-b border-gray-800/50 last:border-b-0">
                       <td className="py-2.5 px-3 text-gray-100 font-medium">{cls.name}</td>
-                      <td className="py-2.5 px-3 font-mono text-cyan-400">{cls.frequency}</td>
+                      <td className="py-2.5 px-3 font-mono text-green-400">{cls.frequency}</td>
                       <td className="py-2.5 px-3 text-gray-400">{cls.participants}</td>
                       <td className="py-2.5 px-3 text-gray-500">{cls.desc}</td>
                     </tr>
@@ -388,7 +388,7 @@ export default function LocksPage() {
                 <div className="text-xs text-gray-400">Active Batches</div>
               </div>
               <div className="text-center p-3 bg-gray-800/50 rounded-lg">
-                <div className="text-lg font-bold text-cyan-400">{reconciliation?.pending_count ?? 0}</div>
+                <div className="text-lg font-bold text-green-400">{reconciliation?.pending_count ?? 0}</div>
                 <div className="text-xs text-gray-400">Pending</div>
               </div>
               <div className="text-center p-3 bg-gray-800/50 rounded-lg">
@@ -437,7 +437,7 @@ export default function LocksPage() {
                       <tr key={lock.lock_id} className="border-b border-gray-800/50 last:border-b-0 hover:bg-gray-800/30">
                         <td className="py-2.5 px-3 font-mono text-gray-100 text-xs">{truncateId(lock.lock_id)}</td>
                         <td className="py-2.5 px-3 text-gray-300">{lock.denomination}</td>
-                        <td className="py-2.5 px-3 text-right font-mono text-cyan-400">{formatBtc(lock.balance)} BTC</td>
+                        <td className="py-2.5 px-3 text-right font-mono text-green-400">{formatBtc(lock.balance)} BTC</td>
                         <td className="py-2.5 px-3">
                           <Badge variant={getStatusBadgeVariant(lock.status)}>
                             {getStatusLabel(lock.status)}

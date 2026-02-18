@@ -39,10 +39,10 @@ function FlowStep({ label, sublabel, accent }: { label: string; sublabel: string
   return (
     <div className={`flex-1 text-center px-3 py-4 rounded-lg border ${
       accent
-        ? "bg-purple-900/10 border-purple-600/30"
+        ? "bg-blue-900/10 border-blue-600/30"
         : "bg-gray-800/50 border-gray-700"
     }`}>
-      <div className={`text-sm font-medium ${accent ? "text-purple-400" : "text-gray-100"}`}>
+      <div className={`text-sm font-medium ${accent ? "text-blue-400" : "text-gray-100"}`}>
         {label}
       </div>
       <div className="text-xs text-gray-500 mt-1">{sublabel}</div>
@@ -80,15 +80,15 @@ export default function ShroudPage() {
       />
 
       {/* Hero Explanation */}
-      <Card className="border-purple-600/30 bg-purple-900/10">
+      <Card className="border-blue-600/30 bg-blue-900/10">
         <div className="flex items-start gap-4">
-          <div className="w-10 h-10 rounded-lg bg-purple-900/30 border border-purple-600/30 flex items-center justify-center flex-shrink-0">
-            <svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <div className="w-10 h-10 rounded-lg bg-blue-900/30 border border-blue-600/30 flex items-center justify-center flex-shrink-0">
+            <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
             </svg>
           </div>
           <div>
-            <h3 className="text-lg font-semibold text-purple-400 mb-2">Relay Privacy Protection</h3>
+            <h3 className="text-lg font-semibold text-blue-400 mb-2">Relay Privacy Protection</h3>
             <p className="text-gray-300 text-sm leading-relaxed">
               Ghost Shroud adds random delays before relaying transactions, breaking timing-based
               origin detection. Your transactions enter your mempool instantly — only relay to peers
@@ -129,7 +129,7 @@ export default function ShroudPage() {
                 </span>
               </StatusRow>
               <StatusRow label="Avg Delay" tooltip={TOOLTIPS.avg_delay}>
-                <span className="text-purple-400 font-mono text-sm">
+                <span className="text-blue-400 font-mono text-sm">
                   {status.avg_delay_ms.toLocaleString()} ms
                 </span>
               </StatusRow>
@@ -157,7 +157,7 @@ export default function ShroudPage() {
           <div className="mt-4 p-3 bg-gray-800/50 rounded-lg border border-gray-700">
             <p className="text-xs text-gray-400 leading-relaxed">
               When a transaction arrives, it is immediately added to your local mempool for mining
-              and validation. Shroud only delays the <span className="text-purple-400">outbound relay</span> to
+              and validation. Shroud only delays the <span className="text-blue-400">outbound relay</span> to
               other peers, making it impossible for observers to determine whether your node originated
               the transaction or simply forwarded it.
             </p>
@@ -174,8 +174,8 @@ export default function ShroudPage() {
           />
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Protects Against */}
-            <div className="p-4 bg-purple-900/10 rounded-lg border border-purple-600/30">
-              <h4 className="text-sm font-medium text-purple-400 mb-3 flex items-center gap-2">
+            <div className="p-4 bg-blue-900/10 rounded-lg border border-blue-600/30">
+              <h4 className="text-sm font-medium text-blue-400 mb-3 flex items-center gap-2">
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                 </svg>
