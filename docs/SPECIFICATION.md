@@ -1,9 +1,10 @@
-# Bitcoin Ghost v1.4 - Canonical Specification
+# Bitcoin Ghost v1.5 - Canonical Specification
 
 ## Document Control
 
 | Version | Date | Author |
 |---------|------|--------|
+| 1.5.0 | 2026-02-18 | Bitcoin Ghost Team |
 | 1.4.0 | 2026-01-22 | Bitcoin Ghost Team |
 
 ---
@@ -25,7 +26,7 @@
 12. [Template Filtering](#12-template-filtering)
 13. [Verification System](#13-verification-system)
 14. [Consensus System](#14-consensus-system)
-15. [Coordinator (Miner Routing)](#15-coordinator-miner-routing)
+15. [Node Discovery](#15-node-discovery)
 16. [Ghost Pay L2](#16-ghost-pay-l2)
     - [16.9 Ghost Keys](#169-ghost-keys-silent-payment-style-addresses)
     - [16.10 Ghost Locks](#1610-ghost-locks-p2tr-utxos-with-timelocks)
@@ -35,6 +36,11 @@
 17. [Coinbase Structure](#17-coinbase-structure)
 18. [Block Lifecycle](#18-block-lifecycle)
 19. [Deployment](#19-deployment)
+20. [Mining Operations](#20-mining-operations)
+21. [Zero-Knowledge Proofs](#21-zero-knowledge-proofs)
+22. [Security Architecture](#22-security-architecture)
+23. [Ghost Reaper](#23-ghost-reaper)
+24. [Ghost Haze](#24-ghost-haze)
 
 ---
 
@@ -415,7 +421,7 @@ Network-level privacy feature that adds a random delay (0-5 seconds) before rela
 
 **Implementation**: `net_processing.cpp` — `RelayTransaction()`, `DrainShroudQueue()`, `ShroudEntry` queue
 
-See [Ghost Shroud](GHOST_SHROUD.md) for the full specification.
+See [Ghost Shroud](protocols/GHOST_SHROUD.md) for the full specification.
 
 ---
 
@@ -2127,6 +2133,240 @@ ufw allow 38333/tcp  # signet
 
 ---
 
+## 20. Mining Operations
+
+### 20.1 Stratum V1 (Native)
+
+Ghost-pool provides a native SV1 stratum server on port 3333. Miners connect directly with worker name format `<bitcoin_address>.<worker_id>`.
+
+Key protocol methods:
+1. `mining.subscribe` - Get extranonce1
+2. `mining.authorize` - Authenticate (payout_address.worker)
+3. `mining.notify` - Receive jobs
+4. `mining.submit` - Submit shares
+
+### 20.2 Variable Difficulty (Vardiff)
+
+Per-miner difficulty targeting approximately 4 shares/minute:
+
+| Parameter | Value |
+|-----------|-------|
+| Target rate | 4 shares/min |
+| Initial difficulty | 2000 |
+| Retarget window | 30 seconds, after 4+ shares |
+| Max change factor | 4.0x |
+
+Adjustments are sent via `mining.set_difficulty` notification after share acceptance.
+
+### 20.3 Share Validation
+
+| Check | Purpose | Threshold |
+|-------|---------|-----------|
+| Job existence | Prevent stale submissions | Template ID tracking |
+| Nonce uniqueness | Prevent duplicate shares | LRU cache |
+| Hash validation | Verify PoW | Pool difficulty |
+| Timestamp bounds | Prevent replay | +/- 2min future, +/- 10min past |
+| Rate limiting | Prevent spam | 100 shares/sec/miner |
+| Work anomaly | Detect inflation | 1.0x network difficulty max |
+| Share cap | Prevent pool dominance | 10% per miner |
+
+### 20.4 Round Management
+
+Rounds track share accounting between blocks:
+
+1. Block found: snapshot round shares
+2. Calculate payout distribution
+3. Create new round
+4. Continue accepting shares
+
+### 20.5 Pre-Consensus Coinbase
+
+Coinbase outputs are computed **before** a winning share arrives, eliminating consensus delay at block discovery:
+
+```
+Every 5 minutes (or template change):
+  Nodes calculate deterministic payouts
+  Same inputs → same outputs (no voting needed)
+  Templates distributed with pre-built coinbase
+
+Winning share arrives:
+  Submit block IMMEDIATELY (no consensus round)
+```
+
+### 20.6 Replay Attack Prevention
+
+Three-layer defense against message replay in the P2P mesh:
+
+**Layer 1 - Deduplication Window**: Tracks `(sender_id, sequence_number)` pairs. 60-second window with 100,000 message capacity. FIFO eviction when full.
+
+**Layer 2 - Timestamp Validation**: Messages must be within 5 minutes of current time. Checked before deduplication.
+
+**Layer 3 - Sequence Monotonicity**: Per-sender tracking of highest sequence seen. Rejects `sequence <= highest_seen`. Handles wrap-around via epoch tracking.
+
+### 20.7 Ban Management
+
+| Reason | Base Duration | Description |
+|--------|---------------|-------------|
+| Equivocation | 24 hours | Conflicting votes |
+| RateLimitExceeded | 1 hour | Too many messages |
+| InvalidMessages | 30 minutes | Malformed messages |
+| ProtocolViolation | 24 hours | Protocol violations |
+
+**Escalation**: Multiplier `2^(count - 1)`, capped at 16x. Decay: count decreases by 1 for each 7-day period since last ban.
+
+---
+
+## 21. Zero-Knowledge Proofs
+
+### 21.1 Groth16 SNARKs
+
+Ghost uses Groth16 proofs over BLS12-381 for block validity and payout distribution:
+
+| Proof Type | Purpose | Public Inputs | Size |
+|-----------|---------|---------------|------|
+| Block Proof | Block validity / state transitions | prev_root, new_root | 192 bytes |
+| Payout Proof | Distribution validity | epoch, totals | 192 bytes |
+
+Proof structure: A (48 bytes, G1) + B (96 bytes, G2) + C (48 bytes, G1).
+
+### 21.2 Circuit Design
+
+**BlockCircuit**: Chains state transitions through all payments in a block. Empty blocks enforce `prev_root == new_root`. Full ZK mode proves complete state transitions without re-execution.
+
+**PaymentCircuit**: Proves single payment validity (balance sufficiency, no underflow/overflow, correct state update).
+
+**PayoutCircuit**: Proves payout distribution preserves sum (miners + nodes + treasury = total) with 64-bit amount bounds.
+
+### 21.3 MPC Ceremony
+
+Parameters are generated through a rolling Multi-Party Computation ceremony. See [MPC Ceremony](protocols/MPC_CEREMONY.md) for the full specification.
+
+Summary:
+- First 101 contributors become Elders (+1 share)
+- 1-of-N security model (one honest participant sufficient)
+- Time-based ossification after 30 days
+- Parameters stored in `~/.ghost/mpc_params/`
+
+### 21.4 Verification
+
+- With verifying key: cryptographic verification (~10ms)
+- Without verifying key: fail closed (reject all proofs in production)
+- Subgroup checks on deserialization prevent invalid curve attacks
+
+### 21.5 Metadata Encryption
+
+Payment metadata (labels and memos) is encrypted with ChaCha20-Poly1305:
+- Fixed 80-byte ciphertext prevents size fingerprinting
+- HKDF key derivation with domain separation
+- Label: 4 bytes, Memo: up to 59 bytes UTF-8
+
+---
+
+## 22. Security Architecture
+
+### 22.1 Mining Security
+
+| Threat | Mitigation |
+|--------|------------|
+| Stale shares | Dual validation (wall clock + monotonic) |
+| Address spoofing | HMAC-SHA256 payout commitment |
+| Share spam | Rate limiting (100/sec/miner) |
+| Work inflation | 1.0x network difficulty cap |
+| TOCTOU races | Snapshot-based payout hash capture |
+
+### 22.2 P2P Security
+
+| Threat | Mitigation |
+|--------|------------|
+| Message replay | 3-layer defense (dedup + timestamp + sequence) |
+| Memory exhaustion | 100k message cap, per-sender limits |
+| Cache flushing | Per-sender tracking (10k max each) |
+| Topic spoofing | Topic validation against envelope type |
+| Plaintext sniffing | Noise Protocol encryption |
+
+### 22.3 Consensus Security
+
+| Threat | Mitigation |
+|--------|------------|
+| Vote forgery | Ed25519 signatures with round_id |
+| Equivocation | Detection + proof broadcast + ban |
+| Weak voter set | 7-day uptime + PoW requirement |
+| Centralized elders | BFT approval from >67% of previous epoch |
+
+### 22.4 Cryptographic Security
+
+| Threat | Mitigation |
+|--------|------------|
+| Key material leakage | Zeroize with volatile writes |
+| Timing attacks | Constant-time comparisons |
+| RNG failure | Shannon entropy validation |
+| Signature replay | Domain separation + ceremony binding |
+
+### 22.5 ZK Security
+
+| Threat | Mitigation |
+|--------|------------|
+| Forged proofs | Groth16 soundness + MPC ceremony |
+| Simulated proofs | Runtime check + feature gate |
+| Cross-ceremony replay | Unique ceremony_id binding |
+| Indefinite ceremony | 30-day auto-ossification |
+| Parameter corruption | Magic markers + version gaps |
+
+---
+
+## 23. Ghost Reaper
+
+Dead code detection engine for witness scripts. Analyzes transactions during block template construction and filters those with excessive dead code ("Corpses").
+
+### 23.1 Detection Vectors
+
+8 detection vectors: inscription envelopes, drop stuffing, unreachable code, fake pubkeys, oversized OP_RETURN, annex presence, excess witness data, and legacy scriptSig data.
+
+### 23.2 Operating Modes
+
+| Mode | Behavior |
+|------|----------|
+| Strict | Any dead code = Corpse (filtered) |
+| Moderate | Allow <=80 bytes AND <=10% dead code ratio |
+| Monitor | Log only, no filtering |
+
+### 23.3 Integration
+
+Runs in `TemplateProcessor.apply_custom_policy()` **before** BUDS classification. Operates independently from BUDS -- classifies transaction *content* (dead bytes) rather than *purpose* (policy tiers).
+
+Not a node capability -- does not grant shares.
+
+See [Ghost Reaper](protocols/GHOST_REAPER.md) for the full specification.
+
+---
+
+## 24. Ghost Haze
+
+Selective archive stripping and real-time data purification for Ghost Core (Bitcoin Core fork). Provides legal protection against embedded content liability by ensuring hazeable data (witness, scriptSig, OP_RETURN, coinbase arbitrary data) never touches persistent storage.
+
+### 24.1 Node Modes
+
+| Mode | Storage | Legal Liability | Description |
+|------|---------|-----------------|-------------|
+| Mode A (Hazed) | ~193 GB | None | All hazeable content stripped; structural economic graph preserved |
+| Mode B (Full Archive) | ~718 GB | Full | Standard Bitcoin Core behavior |
+
+### 24.2 Ghost Exorcism
+
+Runtime process that validates blocks in RAM and writes only structural data to disk. Hazeable content passes through volatile memory during validation and is purged.
+
+### 24.3 Ghost Exorcist
+
+Conversion tool that transforms existing full archive nodes to hazed nodes. Strips hazeable content, writes structural archive, generates Legal Compliance Packet.
+
+### 24.4 Zero Custom Records
+
+Bitcoin's existing cryptographic commitments (txids, witness commitments) serve as proof of destroyed content. No per-field haze records needed.
+
+See [Ghost Haze](protocols/GHOST_HAZE.md) for the full specification.
+
+---
+
 ## Appendix A: Message Types
 
 ### A.1 Consensus Messages
@@ -2262,17 +2502,27 @@ const NOISE_ENCRYPTED_PORT: u16 = 8563;      // Noise Protocol encrypted channel
 | BFT | Byzantine Fault Tolerant - consensus model tolerating 33% malicious nodes |
 | BUDS | Bitcoin Unified Data Standard - transaction classification system |
 | Coinbase | First transaction in block, creates new coins |
-| Elder | One of first 101 registered nodes |
+| Corpse | Transaction containing dead code exceeding Reaper thresholds |
+| Elder | One of first 101 MPC ceremony contributors (+1 share) |
+| Exorcism | Runtime process that strips hazeable data before writing to disk |
+| Exorcist | Archive conversion tool (full archive to hazed) |
 | Gatekeeper | 95% uptime requirement for any node rewards |
+| Ghost Haze | State of a node with irreversibly stripped archive |
 | Ghost Pay | Layer 2 instant payment network |
+| Groth16 | Zero-knowledge proof system used for block/payout proofs |
+| GSB | Ghost Stripped Block - file format for hazed archives |
 | IPC | Inter-Process Communication via Unix socket |
 | Merkle Path | Proof of transaction inclusion in block |
+| MPC | Multi-Party Computation - ceremony for ZK parameter generation |
 | Noise | Encryption protocol for Stratum V2 and P2P consensus |
 | Noise_XX | Noise handshake pattern with mutual authentication |
+| Reaper | Dead code detection engine for witness scripts |
 | Round | Period between blocks (one block = one round) |
 | Share | Proof of work below pool difficulty |
+| Shroud | Random relay delay for transaction origin protection |
 | SV1 | Stratum V1 - legacy JSON-RPC protocol |
 | SV2 | Stratum V2 - modern binary protocol with encryption |
+| TDP | Template Distribution Protocol - template delivery to SRI |
 | Template | Block template from Bitcoin Core |
 | Wraith | Privacy mixing protocol in Ghost Pay |
 
