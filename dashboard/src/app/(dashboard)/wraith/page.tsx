@@ -51,7 +51,7 @@ export default function WraithPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Wraith Protocol"
+        title="Ghost Wraith"
         subtitle="CoinJoin mixing for transaction privacy"
         actions={
           ghostPayStatus ? (
