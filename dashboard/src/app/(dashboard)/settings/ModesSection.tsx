@@ -43,14 +43,14 @@ export function ModesSection() {
     }
   };
 
-  const handleBitcoinPureToggle = async (enabled: boolean) => {
+  const handleGhostReaperToggle = async (enabled: boolean) => {
     try {
       await setBitcoinPure.mutateAsync(enabled);
       success(
         "Mode Changed",
         enabled
-          ? "Bitcoin Pure enabled - profiles locked to bitcoin_pure"
-          : "Bitcoin Pure disabled - profiles reset to standard"
+          ? "Ghost Reaper enabled — mempool filtering active"
+          : "Ghost Reaper disabled — filtering inactive"
       );
     } catch (err) {
       error("Failed", err instanceof Error ? err.message : "Unknown error");
@@ -116,10 +116,10 @@ export function ModesSection() {
       />
 
       <ToggleRow
-        label="Bitcoin Pure"
-        description="Activates bitcoin_pure mempool and block policies. Locks profile selectors when enabled. (+2 shares)"
+        label="Ghost Reaper"
+        description="Reject transactions with dead code in witness scripts. Filters inscriptions, drop stuffing, and other non-financial data from your mempool. (+2 shares)"
         enabled={config?.bitcoin_pure ?? false}
-        onChange={handleBitcoinPureToggle}
+        onChange={handleGhostReaperToggle}
         disabled={setBitcoinPure.isPending}
         badge={
           config?.bitcoin_pure ? (

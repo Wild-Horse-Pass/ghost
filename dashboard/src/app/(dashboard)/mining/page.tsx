@@ -10,6 +10,7 @@ import { DataTable, formatHashrate, formatDuration } from "@/components/ui/DataT
 import { SkeletonCard } from "@/components/ui/Skeleton";
 import { useMiningStatus, useMiners, useBestHash, useSetPrivateMining, useSetPublicMining } from "@/hooks/queries";
 import { useToast } from "@/components/ui/Toast";
+import { useQueryClient } from "@tanstack/react-query";
 import type { MinerInfo, BestHashEntry } from "@/types/api";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -117,9 +118,9 @@ function getMiningMode(privateMining?: boolean, publicMining?: boolean): MiningM
 }
 
 const MODES: { key: MiningMode; label: string; desc: string }[] = [
-  { key: "private_solo", label: "Private Solo", desc: "Mine with your own devices only" },
-  { key: "private_pool", label: "Private Pool", desc: "Your devices + accept public miners" },
-  { key: "pool", label: "Pool", desc: "Accept public miners (no private mining)" },
+  { key: "private_solo", label: "Private Solo", desc: "Your miners only. Stratum port closed to external connections. All block rewards go to you." },
+  { key: "private_pool", label: "Private Pool", desc: "Your miners + accept public miners. You operate a public pool and share rewards with connected miners." },
+  { key: "pool", label: "Pool", desc: "Public pool only. No private mining — your node acts as a pool server for external miners." },
 ];
 
 export default function MiningPage() {
@@ -128,6 +129,7 @@ export default function MiningPage() {
   const { data: bestHashData, isLoading: bestHashLoading } = useBestHash();
   const setPrivateMining = useSetPrivateMining();
   const setPublicMining = useSetPublicMining();
+  const queryClient = useQueryClient();
   const { addToast } = useToast();
 
   const miners = minersData?.miners ?? [];
@@ -153,9 +155,16 @@ export default function MiningPage() {
           await setPublicMining.mutateAsync(true);
           break;
       }
+      await queryClient.invalidateQueries({ queryKey: ["mining"] });
+      await queryClient.invalidateQueries({ queryKey: ["config"] });
       addToast({ type: "success", title: `Mining mode: ${MODES.find(m => m.key === mode)?.label}` });
-    } catch (err) {
-      addToast({ type: "error", title: err instanceof Error ? err.message : "Failed to update mode" });
+    } catch (err: unknown) {
+      const message = err instanceof Error
+        ? err.message
+        : typeof err === "object" && err !== null && "message" in err
+          ? String((err as { message: unknown }).message)
+          : "Failed to update mining mode";
+      addToast({ type: "error", title: message });
     }
   };
 
@@ -176,12 +185,14 @@ export default function MiningPage() {
         <StatCard
           label="Hashrate"
           value={status ? formatHashrate((status.hashrate_th ?? 0) * 1e12) : "--"}
+          sublabel="pool combined"
           tooltip={TOOLTIPS.hashrate}
           loading={statusLoading}
         />
         <StatCard
           label="Connected Miners"
           value={status?.connected_miners ?? 0}
+          sublabel="active workers"
           tooltip={TOOLTIPS.connected_miners}
           loading={statusLoading}
         />

@@ -6,6 +6,7 @@ import { IdentitySection } from "./IdentitySection";
 import { PayoutSection } from "./PayoutSection";
 import { AppearanceSection } from "./AppearanceSection";
 import { ModesSection } from "./ModesSection";
+import { ProtocolsSection } from "./ProtocolsSection";
 import { MempoolProfileSection } from "./MempoolProfileSection";
 import { TemplateProfileSection } from "./TemplateProfileSection";
 
@@ -17,6 +18,7 @@ export default function SettingsPage() {
       <SectionErrorBoundary section="Payout"><PayoutSection /></SectionErrorBoundary>
       <SectionErrorBoundary section="Appearance"><AppearanceSection /></SectionErrorBoundary>
       <SectionErrorBoundary section="Modes"><ModesSection /></SectionErrorBoundary>
+      <SectionErrorBoundary section="Protocols"><ProtocolsSection /></SectionErrorBoundary>
       <SectionErrorBoundary section="Mempool Profiles"><MempoolProfileSection /></SectionErrorBoundary>
       <SectionErrorBoundary section="Template Profiles"><TemplateProfileSection /></SectionErrorBoundary>
     </div>

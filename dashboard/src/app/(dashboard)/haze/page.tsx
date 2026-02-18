@@ -135,6 +135,101 @@ export default function HazePage() {
         )}
       </SectionErrorBoundary>
 
+      {/* The Exorcism Process */}
+      <SectionErrorBoundary section="Exorcism Process">
+        {isLoading ? <SkeletonCard /> : (
+          <Card className="border-purple-600/30">
+            <div className="flex items-start gap-4 mb-4">
+              <div className="w-10 h-10 rounded-lg bg-purple-900/30 border border-purple-600/30 flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v17.25m0 0c-1.472 0-2.882.265-4.185.75M12 20.25c1.472 0 2.882.265 4.185.75M18.75 4.97A48.416 48.416 0 0012 4.5c-2.291 0-4.545.16-6.75.47m13.5 0c1.01.143 2.01.317 3 .52m-3-.52l2.62 10.726c.122.499-.106 1.028-.589 1.202a5.988 5.988 0 01-2.031.352 5.988 5.988 0 01-2.031-.352c-.483-.174-.711-.703-.59-1.202L18.75 4.971zm-16.5.52c.99-.203 1.99-.377 3-.52m0 0l2.62 10.726c.122.499-.106 1.028-.589 1.202a5.989 5.989 0 01-2.031.352 5.989 5.989 0 01-2.031-.352c-.483-.174-.711-.703-.59-1.202L5.25 4.971z" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-purple-400 mb-2">The Exorcism Process</h2>
+                <p className="text-gray-300 text-sm leading-relaxed">
+                  Ghost Haze uses a four-stage pipeline to strip non-financial data from blocks before they touch your disk.
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="p-3 bg-gray-800/50 rounded-lg border border-gray-700">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-purple-400 font-mono text-xs font-bold">1</span>
+                  <span className="text-gray-100 text-sm font-medium">Field Classification</span>
+                </div>
+                <p className="text-gray-400 text-xs leading-relaxed">
+                  The BUDS system classifies each field in a transaction — witness data, OP_RETURN payloads,
+                  script patterns — into financial and non-financial categories.
+                </p>
+              </div>
+              <div className="p-3 bg-gray-800/50 rounded-lg border border-gray-700">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-purple-400 font-mono text-xs font-bold">2</span>
+                  <span className="text-gray-100 text-sm font-medium">Block Stripping</span>
+                </div>
+                <p className="text-gray-400 text-xs leading-relaxed">
+                  Non-financial data is stripped from the block at the validation layer, before the block
+                  is written to disk. Financial data and consensus-critical fields remain untouched.
+                </p>
+              </div>
+              <div className="p-3 bg-gray-800/50 rounded-lg border border-gray-700">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-purple-400 font-mono text-xs font-bold">3</span>
+                  <span className="text-gray-100 text-sm font-medium">GSB Storage</span>
+                </div>
+                <p className="text-gray-400 text-xs leading-relaxed">
+                  Stripped blocks are stored in Ghost Stripped Block (<code className="text-purple-400">.gsb</code>) format —
+                  a compact representation that preserves all data needed for chain validation.
+                </p>
+              </div>
+              <div className="p-3 bg-gray-800/50 rounded-lg border border-gray-700">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="text-purple-400 font-mono text-xs font-bold">4</span>
+                  <span className="text-gray-100 text-sm font-medium">UTXO Preservation</span>
+                </div>
+                <p className="text-gray-400 text-xs leading-relaxed">
+                  All financial data and the UTXO set integrity are preserved. Your node can fully validate
+                  the chain, spend coins, and participate in consensus without any embedded content on disk.
+                </p>
+              </div>
+            </div>
+          </Card>
+        )}
+      </SectionErrorBoundary>
+
+      {/* The Exorcist */}
+      <SectionErrorBoundary section="The Exorcist">
+        {isLoading ? <SkeletonCard /> : (
+          <Card className="border-purple-600/30 bg-purple-900/10">
+            <div className="flex items-start gap-4">
+              <div className="w-10 h-10 rounded-lg bg-purple-900/30 border border-purple-600/30 flex items-center justify-center flex-shrink-0">
+                <svg className="w-5 h-5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.362 5.214A8.252 8.252 0 0112 21 8.25 8.25 0 016.038 7.048 8.287 8.287 0 009 9.6a8.983 8.983 0 013.361-6.867 8.21 8.21 0 003 2.48z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 18a3.75 3.75 0 00.495-7.467 5.99 5.99 0 00-1.925 3.546 5.974 5.974 0 01-2.133-1A3.75 3.75 0 0012 18z" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-purple-400 mb-2">The Exorcist</h2>
+                <p className="text-gray-300 text-sm leading-relaxed mb-3">
+                  The Exorcist is the core component that performs the actual stripping. It runs inside
+                  Ghost Core (<code className="text-purple-400">ghostd</code>) at the block acceptance layer,
+                  intercepting blocks before they are serialized to disk.
+                </p>
+                <div className="p-3 bg-gray-800/50 rounded-lg border border-gray-700">
+                  <div className="text-xs text-gray-400 leading-relaxed">
+                    <span className="text-purple-400 font-medium">Mode A (Active Stripping):</span> The Exorcist
+                    strips classified content before the block is written to disk. This is the default mode for
+                    hazed nodes — blocks arrive from the network, get stripped in memory, and only the clean
+                    version is persisted.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Card>
+        )}
+      </SectionErrorBoundary>
+
       {/* Status detail card */}
       <SectionErrorBoundary section="Haze Status">
         {isLoading ? <SkeletonCard /> : error ? (
