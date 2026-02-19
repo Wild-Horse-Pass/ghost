@@ -70,6 +70,9 @@
 //! ```
 
 pub mod circuit;
+pub mod commitment_tree;
+pub mod confidential_prover;
+pub mod confidential_verifier;
 pub mod errors;
 pub mod field_utils;
 pub mod payout_prover;
@@ -83,22 +86,32 @@ pub mod verifier;
 pub use errors::{ZkError, ZkResult};
 pub use prover::BlockProver;
 pub use types::{
-    BlockProof, BlockWitness, BlockWitnessV2, MerkleProof, PaymentTransitionWitness,
-    PaymentWitness, ProvingParams, StateSnapshot, VerificationKey,
+    BlockProof, BlockWitness, BlockWitnessV2, ConfidentialNote, ConfidentialPublicInputs,
+    ConfidentialTransferWitness, MerkleProof, PaymentTransitionWitness, PaymentWitness,
+    ProvingParams, StateSnapshot, VerificationKey,
 };
 pub use verifier::BlockVerifier;
 
 // Re-export state tree utilities
 pub use state_tree::{BalanceTree, BalanceTreeBuilder};
+pub use commitment_tree::{CommitmentTree, CommitmentTreeBuilder};
 
 // Re-export payout types
 pub use payout_prover::{PayoutProof, PayoutProver, PayoutWitness};
 pub use payout_verifier::{verify_payout, PayoutVerificationResult, PayoutVerifier};
 
+// Re-export confidential transfer types
+pub use confidential_prover::{ConfidentialProver, ConfidentialTransferProof};
+pub use confidential_verifier::ConfidentialVerifier;
+
 // Re-export circuit types for advanced usage
 pub use circuit::{
-    BlockCircuit, BlockCircuitBuilder, MerkleCircuit, PaymentCircuit,
+    BlockCircuit, BlockCircuitBuilder, ConfidentialTransferCircuit, MerkleCircuit, PaymentCircuit,
     PaymentStateTransitionCircuit, StateTransitionOutputs,
+};
+pub use circuit::{
+    compute_nullifier_native, pedersen_commit_native, COMMITMENT_DOMAIN_SEPARATOR,
+    NULLIFIER_DOMAIN_SEPARATOR,
 };
 
 // ============================================================================

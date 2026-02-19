@@ -12,7 +12,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
-/// Container for both block and payout parameters
+/// Container for block, payout, and confidential transfer parameters
 /// Note: Not Clone because PreparedVerifyingKey doesn't implement Clone.
 /// Use Arc<MpcParameters> for shared ownership.
 #[derive(Default)]
@@ -21,10 +21,14 @@ pub struct MpcParameters {
     pub block_params: Option<Parameters<Bls12>>,
     /// Parameters for payout proofs
     pub payout_params: Option<Parameters<Bls12>>,
+    /// Parameters for confidential transfer proofs
+    pub confidential_params: Option<Parameters<Bls12>>,
     /// Prepared verifying key for block proofs (for fast verification)
     pub block_vk: Option<PreparedVerifyingKey<Bls12>>,
     /// Prepared verifying key for payout proofs
     pub payout_vk: Option<PreparedVerifyingKey<Bls12>>,
+    /// Prepared verifying key for confidential transfer proofs
+    pub confidential_vk: Option<PreparedVerifyingKey<Bls12>>,
 }
 
 /// File paths for parameter storage
@@ -69,6 +73,22 @@ impl ParameterFiles {
     /// Path to the payout verifying key
     pub fn payout_vk_path(&self) -> PathBuf {
         self.dir.join("payout_vk.bin")
+    }
+
+    /// Path to confidential transfer parameters file
+    pub fn confidential_params_path(&self, contribution_count: u32) -> PathBuf {
+        self.dir
+            .join(format!("confidential_params_v{}.bin", contribution_count))
+    }
+
+    /// Path to the current (latest) confidential transfer parameters
+    pub fn current_confidential_params_path(&self) -> PathBuf {
+        self.dir.join("confidential_params_current.bin")
+    }
+
+    /// Path to the confidential transfer verifying key
+    pub fn confidential_vk_path(&self) -> PathBuf {
+        self.dir.join("confidential_vk.bin")
     }
 
     /// Ensure the parameters directory exists
@@ -251,8 +271,10 @@ pub fn hash_params_file(path: &Path) -> MpcResult<[u8; 32]> {
 pub fn update_current_params(files: &ParameterFiles, version: u32) -> MpcResult<()> {
     let block_src = files.block_params_path(version);
     let payout_src = files.payout_params_path(version);
+    let confidential_src = files.confidential_params_path(version);
     let block_dst = files.current_block_params_path();
     let payout_dst = files.current_payout_params_path();
+    let confidential_dst = files.current_confidential_params_path();
 
     // On Unix, we'd use symlinks. For portability, we copy.
     // This is atomic enough for our purposes since we only read "current"
@@ -273,6 +295,15 @@ pub fn update_current_params(files: &ParameterFiles, version: u32) -> MpcResult<
             version = version,
             path = %payout_dst.display(),
             "Updated current payout parameters"
+        );
+    }
+
+    if confidential_src.exists() {
+        fs::copy(&confidential_src, &confidential_dst)?;
+        info!(
+            version = version,
+            path = %confidential_dst.display(),
+            "Updated current confidential transfer parameters"
         );
     }
 

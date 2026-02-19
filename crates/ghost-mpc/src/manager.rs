@@ -7,7 +7,7 @@
 //! - Detecting and enforcing ossification
 
 use crate::contribution::{
-    generate_contribution, hash_parameters, verify_contribution, ContributionCommitment,
+    generate_multi_contribution, hash_parameters, verify_contribution, ContributionCommitment,
     MpcContribution,
 };
 use crate::errors::{MpcError, MpcResult};
@@ -95,10 +95,14 @@ pub struct CeremonyManager {
     block_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
     /// Current payout proving parameters (hot-swappable)
     payout_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
+    /// Current confidential transfer proving parameters (hot-swappable)
+    confidential_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
     /// Prepared block verifying key (for fast verification)
     block_vk: RwLock<Option<Arc<PreparedVerifyingKey<Bls12>>>>,
     /// Prepared payout verifying key
     payout_vk: RwLock<Option<Arc<PreparedVerifyingKey<Bls12>>>>,
+    /// Prepared confidential transfer verifying key
+    confidential_vk: RwLock<Option<Arc<PreparedVerifyingKey<Bls12>>>>,
     /// CRIT-2 FIX: Pending contribution commitments (commitment_hash -> commitment)
     /// Contributors broadcast commitments BEFORE revealing their contribution.
     /// This prevents a malicious coordinator from silently dropping contributions.
@@ -115,8 +119,10 @@ impl CeremonyManager {
             files: ParameterFiles::new(params_dir),
             block_params: RwLock::new(None),
             payout_params: RwLock::new(None),
+            confidential_params: RwLock::new(None),
             block_vk: RwLock::new(None),
             payout_vk: RwLock::new(None),
+            confidential_vk: RwLock::new(None),
             // CRIT-2 FIX: Initialize commitment tracking
             pending_commitments: RwLock::new(HashMap::new()),
             fulfilled_commitments: RwLock::new(Vec::new()),
@@ -187,6 +193,21 @@ impl CeremonyManager {
             }
         }
 
+        let confidential_path = self.files.current_confidential_params_path();
+        if confidential_path.exists() {
+            match load_parameters(&confidential_path) {
+                Ok(params) => {
+                    let vk = prepare_verifying_key(&params.vk);
+                    *self.confidential_params.write() = Some(Arc::new(params));
+                    *self.confidential_vk.write() = Some(Arc::new(vk));
+                    info!("Loaded current confidential transfer parameters");
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to load confidential transfer parameters");
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -244,21 +265,33 @@ impl CeremonyManager {
             return Ok(false);
         }
 
-        // Generate genesis parameters using dummy circuit
+        // Generate genesis parameters using dummy circuits for all three circuit types
         use bellperson::groth16::generate_random_parameters;
         use blstrs::Scalar as Fr;
-        use ghost_zkp::circuit::BlockCircuit;
+        use ghost_zkp::circuit::{BlockCircuit, ConfidentialTransferCircuit};
         use rand::rngs::OsRng;
 
-        tracing::info!("MPC: Generating genesis parameters with dummy circuit...");
-        let dummy_circuit = BlockCircuit::<Fr>::dummy(10);
-        let genesis_params = generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut OsRng)
-            .map_err(|e| {
-            MpcError::Internal(format!("Failed to generate genesis params: {:?}", e))
-        })?;
+        tracing::info!("MPC: Generating genesis parameters for all circuits...");
 
-        self.initialize_genesis(genesis_params)?;
-        tracing::info!("MPC: Genesis parameters initialized successfully");
+        let dummy_block = BlockCircuit::<Fr>::dummy(10);
+        let block_params = generate_random_parameters::<Bls12, _, _>(dummy_block, &mut OsRng)
+            .map_err(|e| {
+                MpcError::Internal(format!("Failed to generate block genesis params: {:?}", e))
+            })?;
+
+        let dummy_confidential = ConfidentialTransferCircuit::<Fr>::dummy(20);
+        let confidential_params =
+            generate_random_parameters::<Bls12, _, _>(dummy_confidential, &mut OsRng).map_err(
+                |e| {
+                    MpcError::Internal(format!(
+                        "Failed to generate confidential genesis params: {:?}",
+                        e
+                    ))
+                },
+            )?;
+
+        self.initialize_genesis_multi(block_params, confidential_params)?;
+        tracing::info!("MPC: Genesis parameters initialized for all circuits");
         Ok(true)
     }
 
@@ -282,6 +315,16 @@ impl CeremonyManager {
         self.payout_vk.read().clone()
     }
 
+    /// Get current confidential transfer parameters for proving
+    pub fn confidential_params(&self) -> Option<Arc<Parameters<Bls12>>> {
+        self.confidential_params.read().clone()
+    }
+
+    /// Get current confidential transfer verifying key
+    pub fn confidential_vk(&self) -> Option<Arc<PreparedVerifyingKey<Bls12>>> {
+        self.confidential_vk.read().clone()
+    }
+
     /// Generate a contribution for a new elder
     ///
     /// This is called by a node that is becoming an elder and the ceremony
@@ -299,6 +342,18 @@ impl CeremonyManager {
         &self,
         contributor_id: &str,
     ) -> MpcResult<(Parameters<Bls12>, MpcContribution)> {
+        let result = self.generate_multi_circuit_contribution(contributor_id)?;
+        Ok((result.block_params, result.contribution))
+    }
+
+    /// Generate a contribution that transforms all circuit parameter sets
+    ///
+    /// Uses the same toxic waste (tau, alpha, beta) for all circuits,
+    /// maintaining the 1-of-N security guarantee across all three.
+    pub fn generate_multi_circuit_contribution(
+        &self,
+        contributor_id: &str,
+    ) -> MpcResult<crate::contribution::MultiContributionResult> {
         let state = self.state.read();
 
         if state.is_ossified {
@@ -308,7 +363,6 @@ impl CeremonyManager {
         // 3.9 SECURITY: Check time-based ossification (30 days from genesis)
         if state.should_time_ossify() {
             drop(state);
-            // Trigger ossification
             self.ossify()?;
             return Err(MpcError::CeremonyOssified(self.contribution_count()));
         }
@@ -318,20 +372,27 @@ impl CeremonyManager {
             return Err(MpcError::CeremonyOssified(state.contribution_count));
         }
 
-        // Get current parameters
-        let current_params = self.block_params.read();
-        let params = current_params.as_ref().ok_or_else(|| {
-            MpcError::Internal("No current parameters loaded for contribution".into())
+        // Get current parameters for all circuits
+        let current_block = self.block_params.read();
+        let block_params = current_block.as_ref().ok_or_else(|| {
+            MpcError::Internal("No current block parameters loaded for contribution".into())
         })?;
+
+        let current_payout = self.payout_params.read();
+        let payout_ref = current_payout.as_ref().map(|p| p.as_ref());
+
+        let current_confidential = self.confidential_params.read();
+        let confidential_ref = current_confidential.as_ref().map(|p| p.as_ref());
 
         // 4.22: Get ceremony_id for binding proofs to this ceremony
         let ceremony_id = state.ceremony_id;
-        drop(state); // Release read lock before generating
+        drop(state);
 
-        // Generate the contribution
         let mut rng = OsRng;
-        let (new_params, contribution) = generate_contribution(
-            params.as_ref(),
+        let result = generate_multi_contribution(
+            block_params.as_ref(),
+            payout_ref,
+            confidential_ref,
             &ceremony_id,
             next_position,
             contributor_id,
@@ -341,12 +402,14 @@ impl CeremonyManager {
         info!(
             position = next_position,
             contributor = contributor_id,
-            prev_hash = %hex::encode(contribution.prev_params_hash),
-            new_hash = %hex::encode(contribution.new_params_hash),
-            "Generated MPC contribution"
+            prev_hash = %hex::encode(result.contribution.prev_params_hash),
+            new_hash = %hex::encode(result.contribution.new_params_hash),
+            has_payout = result.payout_params.is_some(),
+            has_confidential = result.confidential_params.is_some(),
+            "Generated multi-circuit MPC contribution"
         );
 
-        Ok((new_params, contribution))
+        Ok(result)
     }
 
     /// Generate a contribution at a specific position
@@ -382,20 +445,27 @@ impl CeremonyManager {
             return Err(MpcError::CeremonyOssified(state.contribution_count));
         }
 
-        // Get current parameters
-        let current_params = self.block_params.read();
-        let params = current_params.as_ref().ok_or_else(|| {
+        // Get current block parameters
+        let current_block = self.block_params.read();
+        let block_params = current_block.as_ref().ok_or_else(|| {
             MpcError::Internal("No current parameters loaded for contribution".into())
         })?;
 
+        let current_payout = self.payout_params.read();
+        let payout_ref = current_payout.as_ref().map(|p| p.as_ref());
+
+        let current_confidential = self.confidential_params.read();
+        let confidential_ref = current_confidential.as_ref().map(|p| p.as_ref());
+
         // 4.22: Get ceremony_id for binding proofs to this ceremony
         let ceremony_id = state.ceremony_id;
-        drop(state); // Release read lock before generating
+        drop(state);
 
-        // Generate the contribution
         let mut rng = OsRng;
-        let (new_params, contribution) = generate_contribution(
-            params.as_ref(),
+        let result = generate_multi_contribution(
+            block_params.as_ref(),
+            payout_ref,
+            confidential_ref,
             &ceremony_id,
             position,
             contributor_id,
@@ -405,12 +475,12 @@ impl CeremonyManager {
         info!(
             position = position,
             contributor = contributor_id,
-            prev_hash = %hex::encode(contribution.prev_params_hash),
-            new_hash = %hex::encode(contribution.new_params_hash),
+            prev_hash = %hex::encode(result.contribution.prev_params_hash),
+            new_hash = %hex::encode(result.contribution.new_params_hash),
             "Generated MPC contribution (DB-driven position)"
         );
 
-        Ok((new_params, contribution))
+        Ok((result.block_params, result.contribution))
     }
 
     /// Generate a contribution with a prior commitment (RECOMMENDED)
@@ -516,6 +586,20 @@ impl CeremonyManager {
         new_params: Parameters<Bls12>,
         contribution: &MpcContribution,
     ) -> MpcResult<()> {
+        self.apply_contribution_multi(new_params, None, None, contribution)
+    }
+
+    /// Apply a multi-circuit contribution after BFT approval
+    ///
+    /// Updates the ceremony state and hot-swaps parameters for all circuits.
+    /// Called when >67% of elders have approved the contribution.
+    pub fn apply_contribution_multi(
+        &self,
+        new_block_params: Parameters<Bls12>,
+        new_payout_params: Option<Parameters<Bls12>>,
+        new_confidential_params: Option<Parameters<Bls12>>,
+        contribution: &MpcContribution,
+    ) -> MpcResult<()> {
         let mut state = self.state.write();
 
         if state.is_ossified {
@@ -533,24 +617,52 @@ impl CeremonyManager {
 
         // Save new parameters to disk
         self.files.ensure_dir()?;
-        let params_path = self.files.block_params_path(contribution.position);
-        save_parameters(&params_path, &new_params)?;
 
-        // Update current symlink
+        // Block params (always present)
+        let block_path = self.files.block_params_path(contribution.position);
+        save_parameters(&block_path, &new_block_params)?;
+        save_verifying_key(&self.files.block_vk_path(), &new_block_params.vk)?;
+
+        // Payout params (if provided)
+        if let Some(ref payout_params) = new_payout_params {
+            let payout_path = self.files.payout_params_path(contribution.position);
+            save_parameters(&payout_path, payout_params)?;
+            save_verifying_key(&self.files.payout_vk_path(), &payout_params.vk)?;
+        }
+
+        // Confidential params (if provided)
+        if let Some(ref confidential_params) = new_confidential_params {
+            let confidential_path = self.files.confidential_params_path(contribution.position);
+            save_parameters(&confidential_path, confidential_params)?;
+            save_verifying_key(&self.files.confidential_vk_path(), &confidential_params.vk)?;
+        }
+
+        // Update current symlinks
         update_current_params(&self.files, contribution.position)?;
 
-        // Save verifying key
-        save_verifying_key(&self.files.block_vk_path(), &new_params.vk)?;
+        // Hot-swap block params
+        let block_vk = prepare_verifying_key(&new_block_params.vk);
+        *self.block_params.write() = Some(Arc::new(new_block_params));
+        *self.block_vk.write() = Some(Arc::new(block_vk));
 
-        // Hot-swap in-memory parameters
-        let vk = prepare_verifying_key(&new_params.vk);
-        *self.block_params.write() = Some(Arc::new(new_params));
-        *self.block_vk.write() = Some(Arc::new(vk));
+        // Hot-swap payout params
+        if let Some(payout_params) = new_payout_params {
+            let payout_vk = prepare_verifying_key(&payout_params.vk);
+            *self.payout_params.write() = Some(Arc::new(payout_params));
+            *self.payout_vk.write() = Some(Arc::new(payout_vk));
+        }
+
+        // Hot-swap confidential params
+        if let Some(confidential_params) = new_confidential_params {
+            let confidential_vk = prepare_verifying_key(&confidential_params.vk);
+            *self.confidential_params.write() = Some(Arc::new(confidential_params));
+            *self.confidential_vk.write() = Some(Arc::new(confidential_vk));
+        }
 
         // Update state
         state.contribution_count = contribution.position;
         state.current_params_hash = contribution.new_params_hash;
-        state.block_vk_hash = Some(contribution.new_params_hash); // Same hash for now
+        state.block_vk_hash = Some(contribution.new_params_hash);
         state.updated_at = contribution.timestamp;
 
         // CRIT-2 FIX: If contribution has a commitment hash, verify and mark as fulfilled
@@ -728,7 +840,7 @@ impl CeremonyManager {
         Ok(())
     }
 
-    /// Initialize with genesis parameters
+    /// Initialize with genesis parameters (block circuit only — legacy)
     ///
     /// Called on first network launch to create the initial parameters.
     /// The genesis parameters are created by the network founder.
@@ -771,6 +883,74 @@ impl CeremonyManager {
             genesis_timestamp = now,
             max_duration_days = 30,
             "Initialized MPC ceremony with genesis parameters (30-day ossification timer started)"
+        );
+
+        Ok(())
+    }
+
+    /// Initialize genesis with all three circuit types
+    ///
+    /// Generates and saves genesis parameters for block, and confidential transfer circuits.
+    /// All three sets go through the same MPC ceremony transformations.
+    pub fn initialize_genesis_multi(
+        &self,
+        block_params: Parameters<Bls12>,
+        confidential_params: Parameters<Bls12>,
+    ) -> MpcResult<()> {
+        let mut state = self.state.write();
+
+        if state.contribution_count > 0 {
+            return Err(MpcError::Internal(
+                "Cannot initialize genesis - ceremony already started".into(),
+            ));
+        }
+
+        self.files.ensure_dir()?;
+
+        // Save block params as v0
+        save_parameters(&self.files.block_params_path(0), &block_params)?;
+        save_verifying_key(&self.files.block_vk_path(), &block_params.vk)?;
+
+        // Save confidential params as v0
+        save_parameters(
+            &self.files.confidential_params_path(0),
+            &confidential_params,
+        )?;
+        save_verifying_key(
+            &self.files.confidential_vk_path(),
+            &confidential_params.vk,
+        )?;
+
+        // Update current symlinks
+        update_current_params(&self.files, 0)?;
+
+        // Hash primary (block) parameters for the chain
+        let params_hash = hash_parameters(&block_params)?;
+
+        // Hot-swap all params into memory
+        let block_vk = prepare_verifying_key(&block_params.vk);
+        *self.block_params.write() = Some(Arc::new(block_params));
+        *self.block_vk.write() = Some(Arc::new(block_vk));
+
+        let confidential_vk = prepare_verifying_key(&confidential_params.vk);
+        *self.confidential_params.write() = Some(Arc::new(confidential_params));
+        *self.confidential_vk.write() = Some(Arc::new(confidential_vk));
+
+        // Update state
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        state.current_params_hash = params_hash;
+        state.updated_at = now;
+        state.genesis_timestamp = Some(now);
+
+        info!(
+            params_hash = %hex::encode(params_hash),
+            genesis_timestamp = now,
+            circuits = "block + confidential",
+            "Initialized MPC ceremony with multi-circuit genesis parameters"
         );
 
         Ok(())

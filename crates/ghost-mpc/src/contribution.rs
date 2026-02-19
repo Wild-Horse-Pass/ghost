@@ -263,6 +263,87 @@ pub fn generate_contribution<R: RngCore + CryptoRng>(
     Ok((new_params, contribution))
 }
 
+/// Result of a multi-circuit contribution
+pub struct MultiContributionResult {
+    /// Transformed block parameters
+    pub block_params: Parameters<Bls12>,
+    /// Transformed payout parameters (if provided)
+    pub payout_params: Option<Parameters<Bls12>>,
+    /// Transformed confidential transfer parameters (if provided)
+    pub confidential_params: Option<Parameters<Bls12>>,
+    /// Contribution record (hash chain based on block params)
+    pub contribution: MpcContribution,
+}
+
+/// Generate contributions for all circuit types using the same toxic waste
+///
+/// This ensures all parameter sets are transformed with identical randomness,
+/// maintaining the 1-of-N security guarantee across all circuits.
+/// The hash chain tracks block params as the primary circuit.
+///
+/// # Arguments
+/// * `block_params` - Block circuit parameters (required)
+/// * `payout_params` - Payout circuit parameters (optional)
+/// * `confidential_params` - Confidential transfer circuit parameters (optional)
+/// * `ceremony_id` - Unique ceremony identifier
+/// * `position` - Contributor's position
+/// * `contributor` - Contributor identifier
+/// * `rng` - Cryptographically secure RNG
+pub fn generate_multi_contribution<R: RngCore + CryptoRng>(
+    block_params: &Parameters<Bls12>,
+    payout_params: Option<&Parameters<Bls12>>,
+    confidential_params: Option<&Parameters<Bls12>>,
+    ceremony_id: &[u8; 32],
+    position: u32,
+    contributor: &str,
+    rng: &mut R,
+) -> MpcResult<MultiContributionResult> {
+    // Generate toxic waste (shared across all circuits)
+    let toxic = ToxicWaste::random(rng);
+
+    // Hash the previous block parameters (primary chain)
+    let prev_params_hash = hash_parameters(block_params)?;
+
+    // Apply transformation to all parameter sets
+    let new_block_params = apply_contribution(block_params, &toxic)?;
+    let new_block_hash = hash_parameters(&new_block_params)?;
+
+    let new_payout_params = match payout_params {
+        Some(params) => Some(apply_contribution(params, &toxic)?),
+        None => None,
+    };
+
+    let new_confidential_params = match confidential_params {
+        Some(params) => Some(apply_contribution(params, &toxic)?),
+        None => None,
+    };
+
+    // Generate proof of valid transformation
+    let proof = generate_proof(&toxic, ceremony_id, rng)?;
+
+    let contribution = MpcContribution {
+        position,
+        prev_params_hash,
+        new_params_hash: new_block_hash,
+        proof,
+        contributor: contributor.to_string(),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        commitment_hash: None,
+    };
+
+    // toxic is automatically zeroized here on drop
+
+    Ok(MultiContributionResult {
+        block_params: new_block_params,
+        payout_params: new_payout_params,
+        confidential_params: new_confidential_params,
+        contribution,
+    })
+}
+
 /// Apply a contribution's transformation to parameters
 ///
 /// Implements Groth16 Phase 2 transformation:

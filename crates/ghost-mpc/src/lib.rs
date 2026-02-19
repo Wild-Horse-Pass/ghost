@@ -47,7 +47,7 @@ pub mod params;
 pub mod sync;
 
 // Re-export main types
-pub use contribution::{ContributionProof, MpcContribution};
+pub use contribution::{ContributionProof, MpcContribution, MultiContributionResult};
 pub use errors::{MpcError, MpcResult};
 pub use manager::{CeremonyManager, CeremonyState};
 pub use params::{MpcParameters, ParameterFiles};
