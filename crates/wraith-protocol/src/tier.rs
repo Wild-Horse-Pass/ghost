@@ -38,6 +38,38 @@ use serde::{Deserialize, Serialize};
 /// Maximum transaction size budget in vbytes (safe margin under 100KB limit)
 pub const MAX_TX_VBYTES: usize = 80_000;
 
+/// Network maturity mode for participant minimums
+///
+/// Early networks cannot meet the full participant minimums (160-400).
+/// WraithMode allows scaling participant requirements as the network grows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum WraithMode {
+    /// Bootstrap phase: 10 participants for all tiers (early network)
+    #[default]
+    Bootstrap,
+    /// Growth phase: 15-50 participants scaled per tier
+    Growth,
+    /// Mature phase: full participant minimums (160-400)
+    Mature,
+}
+
+impl WraithMode {
+    /// Get the mode name
+    pub fn name(&self) -> &'static str {
+        match self {
+            WraithMode::Bootstrap => "Bootstrap",
+            WraithMode::Growth => "Growth",
+            WraithMode::Mature => "Mature",
+        }
+    }
+}
+
+impl std::fmt::Display for WraithMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
 /// vbytes per P2TR input
 pub const VBYTES_PER_INPUT: usize = 58; // Rounded up from 57.5
 
@@ -188,6 +220,44 @@ impl ParticipantTier {
     /// Calculate fill percentage
     pub fn fill_percentage(&self, count: usize) -> f64 {
         (count as f64 / self.min_participants() as f64 * 100.0).min(100.0)
+    }
+
+    /// Get minimum participants for a specific network mode
+    pub fn min_participants_for_mode(&self, mode: WraithMode) -> usize {
+        match mode {
+            WraithMode::Bootstrap => 10,
+            WraithMode::Growth => match self {
+                ParticipantTier::Whale => 15,
+                ParticipantTier::Large => 20,
+                ParticipantTier::Standard => 25,
+                ParticipantTier::Medium => 30,
+                ParticipantTier::Small => 40,
+                ParticipantTier::Micro => 50,
+            },
+            WraithMode::Mature => self.min_participants(),
+        }
+    }
+
+    /// Get maximum participants for a specific network mode (10% over minimum)
+    pub fn max_participants_for_mode(&self, mode: WraithMode) -> usize {
+        (self.min_participants_for_mode(mode) * 11) / 10
+    }
+
+    /// Check if participant count meets minimum for mode
+    pub fn meets_minimum_for_mode(&self, count: usize, mode: WraithMode) -> bool {
+        count >= self.min_participants_for_mode(mode)
+    }
+
+    /// Calculate fill percentage for mode
+    pub fn fill_percentage_for_mode(&self, count: usize, mode: WraithMode) -> f64 {
+        (count as f64 / self.min_participants_for_mode(mode) as f64 * 100.0).min(100.0)
+    }
+
+    /// Estimate tx vbytes for a specific mode's participant count
+    pub fn estimated_tx_vbytes_for_mode(&self, mode: WraithMode) -> usize {
+        let participants = self.min_participants_for_mode(mode);
+        let outputs = self.outputs_per_participant();
+        (participants * VBYTES_PER_INPUT) + (participants * outputs * VBYTES_PER_OUTPUT)
     }
 
     /// Validate that this tier's transaction fits within size limits
@@ -364,5 +434,121 @@ mod tests {
         // 10% over minimum
         assert_eq!(ParticipantTier::Micro.max_participants(), 440);
         assert_eq!(ParticipantTier::Whale.max_participants(), 176);
+    }
+
+    #[test]
+    fn test_bootstrap_mode_all_tiers_minimum_10() {
+        for tier in ParticipantTier::all() {
+            assert_eq!(
+                tier.min_participants_for_mode(WraithMode::Bootstrap),
+                10,
+                "Bootstrap mode should be 10 for {:?}",
+                tier
+            );
+        }
+    }
+
+    #[test]
+    fn test_growth_mode_scaled() {
+        assert_eq!(
+            ParticipantTier::Whale.min_participants_for_mode(WraithMode::Growth),
+            15
+        );
+        assert_eq!(
+            ParticipantTier::Large.min_participants_for_mode(WraithMode::Growth),
+            20
+        );
+        assert_eq!(
+            ParticipantTier::Standard.min_participants_for_mode(WraithMode::Growth),
+            25
+        );
+        assert_eq!(
+            ParticipantTier::Medium.min_participants_for_mode(WraithMode::Growth),
+            30
+        );
+        assert_eq!(
+            ParticipantTier::Small.min_participants_for_mode(WraithMode::Growth),
+            40
+        );
+        assert_eq!(
+            ParticipantTier::Micro.min_participants_for_mode(WraithMode::Growth),
+            50
+        );
+    }
+
+    #[test]
+    fn test_mature_matches_original() {
+        for tier in ParticipantTier::all() {
+            assert_eq!(
+                tier.min_participants_for_mode(WraithMode::Mature),
+                tier.min_participants(),
+                "Mature mode should match original for {:?}",
+                tier
+            );
+        }
+    }
+
+    #[test]
+    fn test_bootstrap_tx_sizes_within_limit() {
+        // 10 participants × (58 input + outputs × 43) must fit in 80KB
+        for tier in ParticipantTier::all() {
+            let vbytes = tier.estimated_tx_vbytes_for_mode(WraithMode::Bootstrap);
+            assert!(
+                vbytes <= MAX_TX_VBYTES,
+                "Bootstrap {:?} tx size {} exceeds max {}",
+                tier,
+                vbytes,
+                MAX_TX_VBYTES
+            );
+        }
+        // Verify specific: 10 × 58 + 10 × 10 × 43 = 580 + 4300 = 4,880 (Whale, worst case)
+        assert_eq!(
+            ParticipantTier::Whale.estimated_tx_vbytes_for_mode(WraithMode::Bootstrap),
+            4_880
+        );
+    }
+
+    #[test]
+    fn test_mode_aware_meets_minimum() {
+        // Bootstrap: 10 is enough for any tier
+        assert!(ParticipantTier::Whale.meets_minimum_for_mode(10, WraithMode::Bootstrap));
+        assert!(!ParticipantTier::Whale.meets_minimum_for_mode(9, WraithMode::Bootstrap));
+
+        // Growth: Whale needs 15
+        assert!(ParticipantTier::Whale.meets_minimum_for_mode(15, WraithMode::Growth));
+        assert!(!ParticipantTier::Whale.meets_minimum_for_mode(14, WraithMode::Growth));
+
+        // Mature: Whale needs 160
+        assert!(ParticipantTier::Whale.meets_minimum_for_mode(160, WraithMode::Mature));
+        assert!(!ParticipantTier::Whale.meets_minimum_for_mode(159, WraithMode::Mature));
+    }
+
+    #[test]
+    fn test_mode_aware_fill_percentage() {
+        // Bootstrap: 5 of 10 = 50%
+        let pct = ParticipantTier::Medium.fill_percentage_for_mode(5, WraithMode::Bootstrap);
+        assert!((pct - 50.0).abs() < 0.1);
+
+        // Bootstrap: 10 of 10 = 100%
+        let pct = ParticipantTier::Medium.fill_percentage_for_mode(10, WraithMode::Bootstrap);
+        assert!((pct - 100.0).abs() < 0.1);
+
+        // Capped at 100%
+        let pct = ParticipantTier::Medium.fill_percentage_for_mode(20, WraithMode::Bootstrap);
+        assert!((pct - 100.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn test_mode_aware_max_participants() {
+        // Bootstrap: 10 * 11/10 = 11
+        assert_eq!(
+            ParticipantTier::Medium.max_participants_for_mode(WraithMode::Bootstrap),
+            11
+        );
+        // Growth: Whale 15 * 11/10 = 16
+        assert_eq!(
+            ParticipantTier::Whale.max_participants_for_mode(WraithMode::Growth),
+            16
+        );
     }
 }

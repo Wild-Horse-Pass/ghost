@@ -154,7 +154,17 @@ solo_payout_address = "tb1q..."  # Your payout address
 
 ## Stratum Protocol
 
-Ghost Pool supports two mining protocol modes:
+Ghost Pool uses **Stratum V1 exclusively**. The node builds block templates and distributes work to miners. Miners hash. Period.
+
+### Design Decision: SV1 Only, Node-Controlled Templates
+
+Ghost nodes have full sovereignty over block template construction. This means:
+
+- **Nodes control what goes in blocks** — BUDS policy, Reaper filtering, and template construction are enforced by the node, not the miner
+- **SV2 miner-selected transactions are NOT supported** — SV2's "client push" mode lets miners choose which transactions to include, which conflicts with node sovereignty
+- **99% of miners don't care what they mine** — They want work, they hash, they get paid. SV1 handles this perfectly
+
+If SV2 support is ever added, it will be in **pool-controls-template mode only** (equivalent to SV1's trust model). Miner-selected templates will never be supported.
 
 ### Native Stratum (SV1)
 
@@ -179,56 +189,6 @@ Direct miner connections using Stratum V1 (JSON-RPC over TCP):
 | Port | 34255 |
 | Protocol | TCP/JSON-RPC |
 | Encryption | Optional TLS |
-
-### TDP Mode with SRI (SV2)
-
-For Stratum V2 support, ghost-pool integrates with SRI (Stratum Reference Implementation) using the Template Distribution Protocol (TDP). This architecture allows ghost-pool to control block template building while SRI handles the SV2 mining protocol.
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     TDP Mode Architecture                        │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ghost-core (RPC)                                               │
-│       │                                                         │
-│       ▼                                                         │
-│  ghost-pool (TDP Server)  ◄── BUDS/policy/custom block building │
-│  --tdp-enabled --no-stratum                                     │
-│       │ Noise encrypted (port 8442)                             │
-│       ▼                                                         │
-│  SRI Pool (pool-sv2)  ◄── SV2 protocol distribution             │
-│       │ SV2 (port 34256)                                        │
-│       ▼                                                         │
-│  SRI Translator (translator-sv1)  ◄── SV1 ↔ SV2 conversion      │
-│       │ SV1 (port 3333)                                         │
-│       ▼                                                         │
-│  Legacy Miners (BitAxe, ASICs)                                  │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-**TDP Mode Benefits:**
-- Ghost-pool retains full control over block template construction
-- BUDS policy and mempool filtering applied before template distribution
-- Noise protocol encryption for secure template transport
-- Full Stratum V2 protocol support via SRI
-- Backward compatible with SV1 miners through SRI translator
-
-**CLI Flags:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--tdp-enabled` | false | Enable TDP server |
-| `--tdp-port` | 8442 | TDP server port |
-| `--no-stratum` | false | Disable native stratum |
-
-**TDP Port Configuration:**
-
-| Port | Component | Purpose |
-|------|-----------|---------|
-| 8442 | ghost-pool | TDP server (Noise encrypted) |
-| 34256 | SRI Pool | SV2 miner/translator connections |
-| 3333 | SRI Translator | SV1 miner connections |
 
 ### Username Format
 

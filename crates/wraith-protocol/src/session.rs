@@ -485,6 +485,8 @@ impl std::fmt::Display for SessionState {
 pub struct SessionConfig {
     /// Custom timeout in seconds (defaults to DEFAULT_TIMEOUT_SECS)
     pub timeout_secs: Option<u64>,
+    /// Network maturity mode for participant minimums
+    pub mode: Option<crate::tier::WraithMode>,
 }
 
 impl SessionConfig {
@@ -492,6 +494,15 @@ impl SessionConfig {
     pub fn with_timeout(timeout_secs: u64) -> Self {
         Self {
             timeout_secs: Some(timeout_secs),
+            mode: None,
+        }
+    }
+
+    /// Create a new session config with custom mode
+    pub fn with_mode(mode: crate::tier::WraithMode) -> Self {
+        Self {
+            timeout_secs: None,
+            mode: Some(mode),
         }
     }
 }
@@ -528,6 +539,8 @@ pub struct WraithSession {
     timeout_duration_secs: u64,
     /// M-6: Total extension time used (to enforce MAX_EXTENSION_SECS limit)
     total_extensions_secs: u64,
+    /// Network maturity mode for participant minimums
+    mode: crate::tier::WraithMode,
 }
 
 impl WraithSession {
@@ -563,6 +576,8 @@ impl WraithSession {
         let timeout_duration = config.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS);
         let timeout_instant = Instant::now() + Duration::from_secs(timeout_duration);
 
+        let mode = config.mode.unwrap_or_default();
+
         Self {
             session_id,
             tier,
@@ -577,6 +592,7 @@ impl WraithSession {
             creation_system_time: std::time::SystemTime::now(),
             timeout_duration_secs: timeout_duration,
             total_extensions_secs: 0,
+            mode,
         }
     }
 
@@ -610,24 +626,29 @@ impl WraithSession {
         self.participant_count
     }
 
-    /// Check if session has minimum participants
+    /// Check if session has minimum participants (mode-aware)
     pub fn has_minimum_participants(&self) -> bool {
-        self.tier.meets_minimum(self.participant_count)
+        self.tier.meets_minimum_for_mode(self.participant_count, self.mode)
     }
 
-    /// Get fill percentage
+    /// Get fill percentage (mode-aware)
     pub fn fill_percentage(&self) -> f64 {
-        self.tier.fill_percentage(self.participant_count)
+        self.tier.fill_percentage_for_mode(self.participant_count, self.mode)
     }
 
-    /// Check if session can force execute (50% threshold)
+    /// Check if session can force execute (50% threshold, mode-aware)
     pub fn can_force_execute(&self) -> bool {
         self.fill_percentage() >= MIN_EXECUTION_THRESHOLD * 100.0
     }
 
-    /// Check if session can early execute (75% threshold)
+    /// Check if session can early execute (75% threshold, mode-aware)
     pub fn can_early_execute(&self) -> bool {
         self.fill_percentage() >= EARLY_EXECUTION_THRESHOLD * 100.0
+    }
+
+    /// Get the network maturity mode
+    pub fn mode(&self) -> crate::tier::WraithMode {
+        self.mode
     }
 
     /// Check if session has timed out
@@ -753,12 +774,12 @@ impl WraithSession {
         now_unix + self.remaining_secs()
     }
 
-    /// Add a participant
+    /// Add a participant (mode-aware max)
     pub fn add_participant(&mut self) -> bool {
         if !self.state.can_accept_participants() {
             return false;
         }
-        if self.participant_count >= self.tier.max_participants() {
+        if self.participant_count >= self.tier.max_participants_for_mode(self.mode) {
             return false;
         }
         self.participant_count += 1;
@@ -776,7 +797,7 @@ impl WraithSession {
         if !self.has_minimum_participants() {
             return Err(crate::WraithError::NotEnoughParticipants(
                 self.participant_count,
-                self.tier.min_participants(),
+                self.tier.min_participants_for_mode(self.mode),
             ));
         }
         self.state = SessionState::CollectingInputs;
@@ -904,8 +925,13 @@ mod tests {
 
     #[test]
     fn test_add_participants() {
-        // Use Whale tier (160 minimum) for practical test values
-        let mut session = WraithSession::new(ParticipantTier::Whale, WraithDenomination::Small);
+        // Use Whale tier in Mature mode (160 minimum) for practical test values
+        let config = SessionConfig {
+            timeout_secs: None,
+            mode: Some(crate::tier::WraithMode::Mature),
+        };
+        let mut session =
+            WraithSession::with_config(ParticipantTier::Whale, WraithDenomination::Small, config);
 
         for _ in 0..160 {
             assert!(session.add_participant());
@@ -916,9 +942,31 @@ mod tests {
     }
 
     #[test]
-    fn test_fill_percentage() {
-        // Use Whale tier (160 minimum) for practical test values
+    fn test_add_participants_bootstrap() {
+        // Bootstrap mode: 10 minimum, 11 max for any tier
         let mut session = WraithSession::new(ParticipantTier::Whale, WraithDenomination::Small);
+        assert_eq!(session.mode(), crate::tier::WraithMode::Bootstrap);
+
+        for _ in 0..10 {
+            assert!(session.add_participant());
+        }
+        assert!(session.has_minimum_participants());
+
+        // Can add one more (max = 11)
+        assert!(session.add_participant());
+        // 12th should be rejected
+        assert!(!session.add_participant());
+    }
+
+    #[test]
+    fn test_fill_percentage() {
+        // Use Whale tier in Mature mode (160 minimum) for practical test values
+        let config = SessionConfig {
+            timeout_secs: None,
+            mode: Some(crate::tier::WraithMode::Mature),
+        };
+        let mut session =
+            WraithSession::with_config(ParticipantTier::Whale, WraithDenomination::Small, config);
 
         for _ in 0..80 {
             session.add_participant();
@@ -930,11 +978,11 @@ mod tests {
 
     #[test]
     fn test_session_lifecycle() {
-        // Use Whale tier (160 minimum) for practical test values
+        // Bootstrap mode: 10 minimum for all tiers
         let mut session = WraithSession::new(ParticipantTier::Whale, WraithDenomination::Small);
 
-        // Add minimum participants
-        for _ in 0..160 {
+        // Add minimum participants (10 in bootstrap)
+        for _ in 0..10 {
             session.add_participant();
         }
 

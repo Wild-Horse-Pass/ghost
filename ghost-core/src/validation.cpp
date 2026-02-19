@@ -33,6 +33,7 @@
 #include <node/blockstorage.h>
 #include <node/utxo_snapshot.h>
 #include <policy/ephemeral_policy.h>
+#include <policy/ghost_reaper.h>
 #include <policy/policy.h>
 #include <policy/rbf.h>
 #include <policy/settings.h>
@@ -904,6 +905,14 @@ bool MemPoolAccept::PreChecks(ATMPArgs& args, Workspace& ws)
     // Check for non-standard witnesses.
     if (tx.HasWitness() && m_pool.m_opts.require_standard && !IsWitnessStandard(tx, m_view)) {
         return state.Invalid(TxValidationResult::TX_WITNESS_MUTATED, "bad-witness-nonstandard");
+    }
+
+    // Ghost Reaper: reject dead-code patterns before expensive signature checks
+    if (m_pool.m_opts.ghost_reaper.mode != GhostReaperMode::Disabled) {
+        std::string reaper_reason;
+        if (!IsGhostReaperClean(tx, m_pool.m_opts.ghost_reaper, reaper_reason)) {
+            return state.Invalid(TxValidationResult::TX_NOT_STANDARD, reaper_reason);
+        }
     }
 
     int64_t nSigOpsCost = GetTransactionSigOpCost(tx, m_view, STANDARD_SCRIPT_VERIFY_FLAGS);

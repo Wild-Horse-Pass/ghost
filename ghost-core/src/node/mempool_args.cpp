@@ -104,6 +104,27 @@ util::Result<void> ApplyArgsManOptions(const ArgsManager& argsman, const CChainP
 
     mempool_opts.persist_v1_dat = argsman.GetBoolArg("-persistmempoolv1", mempool_opts.persist_v1_dat);
 
+    // Ghost Reaper configuration
+    {
+        const std::string reaper_mode = argsman.GetArg("-ghostreaper", "moderate");
+        if (reaper_mode == "disabled") {
+            mempool_opts.ghost_reaper.mode = GhostReaperMode::Disabled;
+        } else if (reaper_mode == "moderate") {
+            mempool_opts.ghost_reaper.mode = GhostReaperMode::Moderate;
+        } else if (reaper_mode == "strict") {
+            mempool_opts.ghost_reaper.mode = GhostReaperMode::Strict;
+        } else {
+            return util::Error{Untranslated(strprintf("Invalid -ghostreaper mode: %s (expected: disabled, moderate, strict)", reaper_mode))};
+        }
+
+        if (argsman.IsArgSet("-ghostreaper-maxopreturn")) {
+            mempool_opts.ghost_reaper.max_op_return_bytes = argsman.GetIntArg("-ghostreaper-maxopreturn", 83);
+        }
+        if (argsman.IsArgSet("-ghostreaper-mindropsize")) {
+            mempool_opts.ghost_reaper.min_drop_size = argsman.GetIntArg("-ghostreaper-mindropsize", 76);
+        }
+    }
+
     ApplyArgsManOptions(argsman, mempool_opts.limits);
 
     return {};

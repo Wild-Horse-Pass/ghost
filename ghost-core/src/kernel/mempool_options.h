@@ -7,6 +7,7 @@
 #include <kernel/mempool_limits.h>
 
 #include <policy/feerate.h>
+#include <policy/ghost_reaper.h>
 #include <policy/policy.h>
 
 #include <chrono>
@@ -54,6 +55,8 @@ struct MemPoolOptions {
     bool permit_bare_multisig{DEFAULT_PERMIT_BAREMULTISIG};
     bool require_standard{true};
     bool persist_v1_dat{DEFAULT_PERSIST_V1_DAT};
+    /** Ghost Reaper dead-code mempool filter configuration */
+    GhostReaperConfig ghost_reaper{};
     MemPoolLimits limits{};
 
     ValidationSignals* signals{nullptr};

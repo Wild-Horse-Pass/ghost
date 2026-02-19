@@ -13,11 +13,36 @@ Ghost Reaper is a dead code detection engine that analyzes Bitcoin transaction w
 Reaper operates independently from BUDS classification. BUDS classifies transaction *purpose* (policy tiers T0-T3), while Reaper classifies transaction *content* (dead bytes in witness data, scripts, and outputs). A transaction may pass BUDS policy but still be reaped if it contains dead code.
 
 **Key properties:**
-- Runs during block template construction, before BUDS classification
-- Configurable operating mode: Strict, Moderate, or Monitor
+- **Two-layer defense**: Layer 1 (C++ in Ghost Core mempool) + Layer 2 (Rust in ghost-pool template)
+- Layer 1 rejects common patterns before transactions enter the mempool or propagate to peers
+- Layer 2 runs the full 8-vector analysis during block template construction
+- Configurable operating mode: Strict, Moderate, or Monitor (Disabled for Layer 1)
 - Per-vector toggles for fine-grained control
 - Taint-tracking stack simulator for computational witness analysis
 - NOT a node capability -- does not grant shares in the 5-4-3-2-1 system
+
+### Layer 1: Ghost Core Mempool (C++)
+
+Fast pattern matching inside `validation.cpp:PreChecks()`, after `IsStandardTx()` but before UTXO lookups. Catches the 5 most common dead-code patterns:
+
+1. Inscription envelopes (`OP_FALSE OP_IF ... OP_ENDIF` in witness)
+2. Oversized OP_RETURN (data payload exceeding configurable limit)
+3. Drop stuffing (`<push ≥76 bytes> OP_DROP` in witness)
+4. Fake pubkeys in bare multisig (invalid prefix, not 0x02/0x03)
+5. P2TR annex abuse (last witness element starting with 0x50)
+
+**Configuration** (ghostd CLI):
+```
+-ghostreaper=<mode>          disabled, moderate, strict (default: moderate)
+-ghostreaper-maxopreturn=<n> Maximum OP_RETURN data bytes (default: 83)
+-ghostreaper-mindropsize=<n> Minimum push size for drop stuffing (default: 76)
+```
+
+Rejection reason: `TX_NOT_STANDARD` with specific `ghost-reaper-*` reason strings.
+
+### Layer 2: Ghost Pool Template (Rust)
+
+Full 8-vector analysis with taint-tracking stack simulator during template construction. Catches everything Layer 1 catches plus computational witness analysis, unreachable code flow, and legacy scriptSig detection.
 
 ---
 

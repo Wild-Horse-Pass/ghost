@@ -95,6 +95,7 @@ namespace BCLog {
         SCAN        = (CategoryMask{1} << 27),
         TXPACKAGES  = (CategoryMask{1} << 28),
         HAZE        = (CategoryMask{1} << 29),
+        REAPER      = (CategoryMask{1} << 30),
         ALL         = ~NONE,
     };
     enum class Level {

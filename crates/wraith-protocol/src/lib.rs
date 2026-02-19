@@ -79,7 +79,7 @@ pub use executor::{
 };
 pub use phase::{Phase, PhaseExecution, PhaseState};
 pub use session::{SessionConfig, SessionRegistry, SessionState, WraithSession};
-pub use tier::ParticipantTier;
+pub use tier::{ParticipantTier, WraithMode};
 
 /// Protocol version
 pub const WRAITH_VERSION: u32 = 1;

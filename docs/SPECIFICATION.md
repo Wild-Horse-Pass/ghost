@@ -299,22 +299,9 @@ L2 payment network (optional). Features:
 
 ## 6. Communication Protocols
 
-### 6.1 Stratum V2 (SV2)
+### 6.1 Stratum V1 (SV1) — Primary Protocol
 
-Binary protocol with Noise encryption for miner↔pool communication.
-
-**Key Messages**:
-- `SetupConnection` - Initial handshake
-- `OpenStandardMiningChannel` - Miner requests work
-- `NewMiningJob` - Pool sends work to miner
-- `SubmitSharesStandard` - Miner submits share
-- `SubmitSharesSuccess` - Pool acknowledges share
-
-**Encryption**: Noise_NX_secp256k1_ChaChaPoly_SHA256
-
-### 6.2 Stratum V1 (SV1)
-
-JSON-RPC over TCP for legacy miners.
+JSON-RPC over TCP. The node builds block templates and distributes work to miners.
 
 **Key Methods**:
 - `mining.subscribe` - Subscribe to work
@@ -322,7 +309,9 @@ JSON-RPC over TCP for legacy miners.
 - `mining.notify` - Receive new job
 - `mining.submit` - Submit share
 
-### 6.3 Bitcoin Core RPC
+**SV2 Note**: Stratum V2 miner-selected transactions are explicitly unsupported. Ghost nodes have full sovereignty over block template construction — BUDS policy, Reaper filtering, and transaction selection are enforced by the node, not the miner. If SV2 is ever added, it will operate in pool-controls-template mode only.
+
+### 6.2 Bitcoin Core RPC
 
 JSON-RPC over HTTP for template distribution and block submission.
 
@@ -337,7 +326,7 @@ JSON-RPC over HTTP for template distribution and block submission.
 - Block template validation before use
 - Bounded fields to prevent DoS attacks
 
-### 6.4 ZMQ Consensus Protocol
+### 6.3 ZMQ Consensus Protocol
 
 Ed25519-signed messages over ZMQ for P2P consensus.
 
@@ -351,7 +340,7 @@ SignedMessage {
 }
 ```
 
-### 6.5 Noise Protocol Encryption (P2P)
+### 6.4 Noise Protocol Encryption (P2P)
 
 Sensitive P2P messages are encrypted using the Noise Protocol Framework for point-to-point security.
 
@@ -1072,21 +1061,44 @@ max_outputs = 100
 
 ## 12. Template Filtering
 
+Transaction filtering operates at two layers for defense in depth:
+
+**Layer 1 — Ghost Core mempool (C++, fast pattern matching):**
+The Ghost Reaper runs inside Ghost Core's `PreChecks()` after `IsStandardTx()`, before UTXO lookups. It rejects common dead-code patterns before they enter the mempool or propagate to peers:
+- Inscription envelopes (`OP_FALSE OP_IF ... OP_ENDIF` in witness)
+- Oversized OP_RETURN (configurable, default 83 bytes)
+- Drop stuffing (`<push ≥76 bytes> OP_DROP` in witness)
+- Fake pubkeys in bare multisig (invalid 0x02/0x03 prefix)
+- P2TR annex abuse (last witness element starting with 0x50)
+
+Configuration: `-ghostreaper=<mode>` (disabled/moderate/strict, default: moderate)
+
+**Layer 2 — Ghost Pool template (Rust, full analysis):**
+The existing Reaper in ghost-pool runs the complete 8-vector analysis including taint-tracking simulation, unreachable code flow analysis, and legacy scriptSig detection during template construction. This catches anything the fast C++ layer misses.
+
 ### 12.1 Flow
 
 ```
-Bitcoin Core (IPC)
+P2P tx received → Ghost Core mempool
        │
-       ▼ NewTemplate
+       ├── IsStandardTx()         (Bitcoin Core policy)
+       ├── IsGhostReaperClean()   (Layer 1 — fast C++ pattern check)
+       └── Fee/UTXO checks
+       │
+       ▼ Accepted into mempool
+Bitcoin Core (RPC)
+       │
+       ▼ getblocktemplate
 ┌──────────────────┐
 │  Ghost Pool      │
 │                  │
 │  1. Receive      │
 │  2. Classify     │◄─── BUDS Classifier
 │  3. Validate     │◄─── Policy Validator
-│  4. Filter       │
-│  5. Rebuild      │◄─── Merkle Rebuild
-│  6. Distribute   │
+│  4. Reaper       │◄─── Layer 2 (full 8-vector analysis)
+│  5. Filter       │
+│  6. Rebuild      │◄─── Merkle Rebuild
+│  7. Distribute   │
 └──────────────────┘
        │
        ▼ mining.notify
@@ -1095,12 +1107,13 @@ Bitcoin Core (IPC)
 
 ### 12.2 Steps
 
-1. **Receive**: Get template from Bitcoin Core via IPC
+1. **Receive**: Get template from Bitcoin Core via RPC
 2. **Classify**: Run BUDS classifier on each non-coinbase transaction
 3. **Validate**: Check each transaction against active policy profile
-4. **Filter**: Remove rejected transactions
-5. **Rebuild**: Recompute merkle tree with remaining transactions
-6. **Distribute**: Send filtered template to miners
+4. **Reaper**: Run full dead-code analysis (taint tracking, flow analysis)
+5. **Filter**: Remove rejected transactions
+6. **Rebuild**: Recompute merkle tree with remaining transactions
+7. **Distribute**: Send filtered template to miners
 
 ### 12.3 Merkle Rebuild
 
