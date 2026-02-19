@@ -84,6 +84,7 @@
 //! }
 //! ```
 
+pub mod confidential;
 mod error;
 pub mod gsp;
 pub mod instant;

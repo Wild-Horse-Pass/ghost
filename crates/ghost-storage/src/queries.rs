@@ -5407,6 +5407,375 @@ impl Database {
     }
 }
 
+// =============================================================================
+// CONFIDENTIAL TRANSFER QUERIES
+// =============================================================================
+
+/// Maximum proof size: Groth16 proofs are exactly 192 bytes
+pub const MAX_CONFIDENTIAL_PROOF_SIZE: usize = 192;
+
+/// Maximum commitment/nullifier size: 32 bytes (BLS12-381 scalar field element)
+pub const MAX_COMMITMENT_SIZE: usize = 32;
+
+/// Confidential note record for query results
+#[derive(Debug, Clone)]
+pub struct ConfidentialNoteRecord {
+    pub tree_index: u64,
+    pub commitment: [u8; 32],
+    pub owner_pubkey: [u8; 32],
+    pub created_at_height: u64,
+    pub spent_at_height: Option<u64>,
+}
+
+/// Confidential transfer record for persistence
+#[derive(Debug, Clone)]
+pub struct ConfidentialTransferRecord {
+    pub transfer_id: String,
+    pub block_height: Option<u64>,
+    pub nullifier: [u8; 32],
+    pub sender_new_commitment: [u8; 32],
+    pub recipient_new_commitment: [u8; 32],
+    pub old_commitment_root: [u8; 32],
+    pub new_commitment_root: [u8; 32],
+    pub proof: Vec<u8>,
+    pub sender_index: u64,
+    pub recipient_index: u64,
+    pub status: String,
+}
+
+impl Database {
+    // =========================================================================
+    // CONFIDENTIAL NOTES
+    // =========================================================================
+
+    /// Insert a confidential note (commitment tree leaf)
+    pub fn insert_confidential_note(
+        &self,
+        index: u64,
+        commitment: &[u8; 32],
+        owner_pubkey: &[u8; 32],
+        height: u64,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO confidential_notes (tree_index, commitment, owner_pubkey, created_at_height)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![index as i64, commitment.as_slice(), owner_pubkey.as_slice(), height as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Mark a confidential note as spent at a given height
+    pub fn mark_note_spent(&self, index: u64, height: u64) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE confidential_notes SET spent_at_height = ?1 WHERE tree_index = ?2",
+                params![height as i64, index as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get all notes owned by a specific pubkey
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS to prevent OOM.
+    pub fn get_notes_for_owner(&self, owner_pubkey: &[u8; 32]) -> GhostResult<Vec<ConfidentialNoteRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT tree_index, commitment, owner_pubkey, created_at_height, spent_at_height
+                     FROM confidential_notes WHERE owner_pubkey = ?1
+                     ORDER BY tree_index ASC LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![owner_pubkey.as_slice(), Self::MAX_QUERY_RESULTS], |row| {
+                    let idx: i64 = row.get(0)?;
+                    let commitment: Vec<u8> = row.get(1)?;
+                    let owner: Vec<u8> = row.get(2)?;
+                    let created_h: i64 = row.get(3)?;
+                    let spent_h: Option<i64> = row.get(4)?;
+                    Ok((idx, commitment, owner, created_h, spent_h))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut notes = Vec::new();
+            for row in rows {
+                let (idx, commitment, owner, created_h, spent_h) =
+                    row.map_err(|e| GhostError::Database(e.to_string()))?;
+
+                let commitment: [u8; 32] = commitment.try_into().map_err(|_| {
+                    GhostError::Database("Invalid commitment size in DB".to_string())
+                })?;
+                let owner_pk: [u8; 32] = owner.try_into().map_err(|_| {
+                    GhostError::Database("Invalid owner pubkey size in DB".to_string())
+                })?;
+
+                notes.push(ConfidentialNoteRecord {
+                    tree_index: i64_to_u64_sats(idx, "tree_index")
+                        .map_err(|e| GhostError::Database(e.to_string()))?,
+                    commitment,
+                    owner_pubkey: owner_pk,
+                    created_at_height: i64_to_u64_sats(created_h, "created_at_height")
+                        .map_err(|e| GhostError::Database(e.to_string()))?,
+                    spent_at_height: spent_h
+                        .map(|h| i64_to_u64_sats(h, "spent_at_height")
+                            .map_err(|e| GhostError::Database(e.to_string())))
+                        .transpose()?,
+                });
+            }
+            Ok(notes)
+        })
+    }
+
+    /// Load all confidential notes for tree reconstruction
+    ///
+    /// Returns (tree_index, commitment) pairs ordered by index.
+    pub fn load_all_confidential_notes(&self) -> GhostResult<Vec<(u64, [u8; 32])>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT tree_index, commitment FROM confidential_notes ORDER BY tree_index ASC",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    let idx: i64 = row.get(0)?;
+                    let commitment: Vec<u8> = row.get(1)?;
+                    Ok((idx, commitment))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut notes = Vec::new();
+            for row in rows {
+                let (idx, commitment) = row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let commitment: [u8; 32] = commitment.try_into().map_err(|_| {
+                    GhostError::Database("Invalid commitment size in DB".to_string())
+                })?;
+                notes.push((
+                    i64_to_u64_sats(idx, "tree_index")
+                        .map_err(|e| GhostError::Database(e.to_string()))?,
+                    commitment,
+                ));
+            }
+            Ok(notes)
+        })
+    }
+
+    /// Get the next available tree index (one past the highest existing)
+    pub fn get_next_confidential_note_index(&self) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let result: Option<i64> = conn
+                .query_row(
+                    "SELECT MAX(tree_index) FROM confidential_notes",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .flatten();
+
+            match result {
+                Some(max_idx) => Ok(i64_to_u64_sats(max_idx, "max_tree_index")
+                    .map_err(|e| GhostError::Database(e.to_string()))? + 1),
+                None => Ok(0),
+            }
+        })
+    }
+
+    // =========================================================================
+    // NULLIFIERS
+    // =========================================================================
+
+    /// Insert a nullifier (marks a note as spent)
+    pub fn insert_nullifier(
+        &self,
+        nullifier: &[u8; 32],
+        height: u64,
+        transfer_id: &str,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO nullifiers (nullifier, block_height, transfer_id) VALUES (?1, ?2, ?3)",
+                params![nullifier.as_slice(), height as i64, transfer_id],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Check if a nullifier has already been spent
+    pub fn is_nullifier_spent(&self, nullifier: &[u8; 32]) -> GhostResult<bool> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM nullifiers WHERE nullifier = ?1",
+                    params![nullifier.as_slice()],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count > 0)
+        })
+    }
+
+    /// Load all nullifiers for in-memory set reconstruction
+    pub fn load_all_nullifiers(&self) -> GhostResult<Vec<[u8; 32]>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT nullifier FROM nullifiers")
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    let nullifier: Vec<u8> = row.get(0)?;
+                    Ok(nullifier)
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut nullifiers = Vec::new();
+            for row in rows {
+                let nullifier = row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let nullifier: [u8; 32] = nullifier.try_into().map_err(|_| {
+                    GhostError::Database("Invalid nullifier size in DB".to_string())
+                })?;
+                nullifiers.push(nullifier);
+            }
+            Ok(nullifiers)
+        })
+    }
+
+    /// Get count of nullifiers (for tree state reporting)
+    pub fn get_nullifier_count(&self) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM nullifiers", [], |row| row.get(0))
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u64)
+        })
+    }
+
+    /// Get nullifiers in a block height range (for settlement batch merkle root)
+    pub fn get_nullifiers_in_range(
+        &self,
+        start_height: u64,
+        end_height: u64,
+    ) -> GhostResult<Vec<[u8; 32]>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT nullifier FROM nullifiers
+                     WHERE block_height >= ?1 AND block_height <= ?2
+                     ORDER BY block_height ASC, created_at ASC",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![start_height as i64, end_height as i64], |row| {
+                    let nullifier: Vec<u8> = row.get(0)?;
+                    Ok(nullifier)
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut nullifiers = Vec::new();
+            for row in rows {
+                let nullifier = row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let nullifier: [u8; 32] = nullifier.try_into().map_err(|_| {
+                    GhostError::Database("Invalid nullifier size in DB".to_string())
+                })?;
+                nullifiers.push(nullifier);
+            }
+            Ok(nullifiers)
+        })
+    }
+
+    // =========================================================================
+    // CONFIDENTIAL TRANSFERS
+    // =========================================================================
+
+    /// Insert a confidential transfer record
+    pub fn insert_confidential_transfer(&self, record: &ConfidentialTransferRecord) -> GhostResult<()> {
+        if record.proof.len() > MAX_CONFIDENTIAL_PROOF_SIZE {
+            return Err(GhostError::Database(format!(
+                "Proof size {} exceeds maximum {}",
+                record.proof.len(),
+                MAX_CONFIDENTIAL_PROOF_SIZE
+            )));
+        }
+
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO confidential_transfers
+                 (transfer_id, block_height, nullifier, sender_new_commitment,
+                  recipient_new_commitment, old_commitment_root, new_commitment_root,
+                  proof, sender_index, recipient_index, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                params![
+                    record.transfer_id,
+                    record.block_height.map(|h| h as i64),
+                    record.nullifier.as_slice(),
+                    record.sender_new_commitment.as_slice(),
+                    record.recipient_new_commitment.as_slice(),
+                    record.old_commitment_root.as_slice(),
+                    record.new_commitment_root.as_slice(),
+                    record.proof.as_slice(),
+                    record.sender_index as i64,
+                    record.recipient_index as i64,
+                    record.status,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Update confidential transfer status and optionally set block height
+    pub fn update_confidential_transfer_status(
+        &self,
+        transfer_id: &str,
+        status: &str,
+        block_height: Option<u64>,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            match block_height {
+                Some(h) => {
+                    conn.execute(
+                        "UPDATE confidential_transfers SET status = ?1, block_height = ?2
+                         WHERE transfer_id = ?3",
+                        params![status, h as i64, transfer_id],
+                    )
+                }
+                None => {
+                    conn.execute(
+                        "UPDATE confidential_transfers SET status = ?1 WHERE transfer_id = ?2",
+                        params![status, transfer_id],
+                    )
+                }
+            }
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get count of confidential notes (for tree state reporting)
+    pub fn get_confidential_note_count(&self) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM confidential_notes",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u64)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6373,5 +6742,162 @@ mod tests {
             deleted, 0,
             "Recent share should survive minimum retention guard"
         );
+    }
+
+    // =========================================================================
+    // CONFIDENTIAL TRANSFER TESTS
+    // =========================================================================
+
+    #[test]
+    fn test_confidential_note_insert_and_query() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+
+        let commitment = [0xABu8; 32];
+        let owner = [0xCDu8; 32];
+
+        db.insert_confidential_note(0, &commitment, &owner, 100)
+            .expect("Failed to insert note");
+
+        let notes = db.get_notes_for_owner(&owner).expect("Failed to get notes");
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].tree_index, 0);
+        assert_eq!(notes[0].commitment, commitment);
+        assert_eq!(notes[0].owner_pubkey, owner);
+        assert_eq!(notes[0].created_at_height, 100);
+        assert!(notes[0].spent_at_height.is_none());
+
+        // Mark spent
+        db.mark_note_spent(0, 200).expect("Failed to mark spent");
+        let notes = db.get_notes_for_owner(&owner).expect("Failed to get notes");
+        assert_eq!(notes[0].spent_at_height, Some(200));
+    }
+
+    #[test]
+    fn test_confidential_note_load_all() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+
+        let owner = [0x01u8; 32];
+        for i in 0u64..5 {
+            let mut commitment = [0u8; 32];
+            commitment[0] = i as u8;
+            db.insert_confidential_note(i, &commitment, &owner, i * 10)
+                .expect("Failed to insert note");
+        }
+
+        let all = db.load_all_confidential_notes().expect("Failed to load all");
+        assert_eq!(all.len(), 5);
+        assert_eq!(all[0].0, 0);
+        assert_eq!(all[4].0, 4);
+
+        let next = db.get_next_confidential_note_index().expect("Failed to get next");
+        assert_eq!(next, 5);
+    }
+
+    #[test]
+    fn test_nullifier_insert_and_check() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+
+        let nullifier = [0xFFu8; 32];
+        assert!(!db.is_nullifier_spent(&nullifier).expect("Failed to check nullifier"));
+
+        db.insert_nullifier(&nullifier, 100, "tx-001")
+            .expect("Failed to insert nullifier");
+
+        assert!(db.is_nullifier_spent(&nullifier).expect("Failed to check nullifier"));
+
+        // Duplicate insert should fail (PRIMARY KEY constraint)
+        assert!(db.insert_nullifier(&nullifier, 101, "tx-002").is_err());
+    }
+
+    #[test]
+    fn test_nullifier_load_all_and_count() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+
+        for i in 0u8..3 {
+            let mut nullifier = [0u8; 32];
+            nullifier[0] = i;
+            db.insert_nullifier(&nullifier, i as u64, &format!("tx-{}", i))
+                .expect("Failed to insert nullifier");
+        }
+
+        let all = db.load_all_nullifiers().expect("Failed to load all");
+        assert_eq!(all.len(), 3);
+
+        let count = db.get_nullifier_count().expect("Failed to get count");
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn test_nullifiers_in_range() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+
+        for i in 0u8..10 {
+            let mut nullifier = [0u8; 32];
+            nullifier[0] = i;
+            db.insert_nullifier(&nullifier, (i as u64) * 10, &format!("tx-{}", i))
+                .expect("Failed to insert nullifier");
+        }
+
+        // Get nullifiers in range [30, 60]
+        let range = db.get_nullifiers_in_range(30, 60).expect("Failed to get range");
+        assert_eq!(range.len(), 4); // heights 30, 40, 50, 60
+    }
+
+    #[test]
+    fn test_confidential_transfer_insert_and_update() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+
+        let record = ConfidentialTransferRecord {
+            transfer_id: "ct-001".to_string(),
+            block_height: None,
+            nullifier: [0xAAu8; 32],
+            sender_new_commitment: [0xBBu8; 32],
+            recipient_new_commitment: [0xCCu8; 32],
+            old_commitment_root: [0xDDu8; 32],
+            new_commitment_root: [0xEEu8; 32],
+            proof: vec![0u8; 192],
+            sender_index: 0,
+            recipient_index: 1,
+            status: "pending".to_string(),
+        };
+
+        db.insert_confidential_transfer(&record)
+            .expect("Failed to insert transfer");
+
+        // Update status with height
+        db.update_confidential_transfer_status("ct-001", "confirmed", Some(500))
+            .expect("Failed to update status");
+
+        // Verify note count
+        let count = db.get_confidential_note_count().expect("Failed to get count");
+        assert_eq!(count, 0); // No notes inserted directly, only transfer record
+    }
+
+    #[test]
+    fn test_confidential_transfer_rejects_oversized_proof() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+
+        let record = ConfidentialTransferRecord {
+            transfer_id: "ct-oversized".to_string(),
+            block_height: None,
+            nullifier: [0u8; 32],
+            sender_new_commitment: [0u8; 32],
+            recipient_new_commitment: [0u8; 32],
+            old_commitment_root: [0u8; 32],
+            new_commitment_root: [0u8; 32],
+            proof: vec![0u8; 256], // Too large
+            sender_index: 0,
+            recipient_index: 1,
+            status: "pending".to_string(),
+        };
+
+        assert!(db.insert_confidential_transfer(&record).is_err());
+    }
+
+    #[test]
+    fn test_next_index_empty_table() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        let next = db.get_next_confidential_note_index().expect("Failed to get next");
+        assert_eq!(next, 0);
     }
 }

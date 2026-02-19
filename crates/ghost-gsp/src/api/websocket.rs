@@ -686,6 +686,58 @@ async fn handle_message(
             )
             .await
         }
+
+        // =====================================================================
+        // Confidential Transfers
+        // =====================================================================
+        ClientMessage::SubmitConfidentialTransfer {
+            proof_hex,
+            old_commitment_root,
+            new_commitment_root,
+            nullifier,
+            sender_new_commitment,
+            recipient_new_commitment,
+            sender_index,
+            recipient_index,
+            recipient_owner_pubkey,
+        } => {
+            handle_submit_confidential_transfer(
+                state,
+                conn_state,
+                &proof_hex,
+                &old_commitment_root,
+                &new_commitment_root,
+                &nullifier,
+                &sender_new_commitment,
+                &recipient_new_commitment,
+                sender_index,
+                recipient_index,
+                &recipient_owner_pubkey,
+            )
+            .await
+        }
+
+        ClientMessage::ShieldBalance {
+            amount_sats,
+            blinding_hex,
+            owner_pubkey,
+            proof: _,
+        } => {
+            handle_shield_balance(state, conn_state, amount_sats, &blinding_hex, &owner_pubkey)
+                .await
+        }
+
+        ClientMessage::GetCommitmentTreeState => {
+            handle_get_commitment_tree_state(state).await
+        }
+
+        ClientMessage::GetConfidentialNotes { owner_pubkey } => {
+            handle_get_confidential_notes(state, &owner_pubkey).await
+        }
+
+        ClientMessage::SubscribeConfidential => {
+            handle_subscribe(state, conn_state, "confidential").await
+        }
     }
 }
 
@@ -2225,4 +2277,138 @@ fn verify_instant_payment_signature(signed_payment: &SignedInstantPayment) -> Re
         .map_err(|_| "Schnorr signature verification failed".to_string())?;
 
     Ok(())
+}
+
+// =============================================================================
+// Confidential Transfer Handlers
+// =============================================================================
+
+/// Handle submit confidential transfer via proxy to Ghost Pay
+#[allow(clippy::too_many_arguments)]
+async fn handle_submit_confidential_transfer(
+    state: &Arc<GspState>,
+    _conn_state: &ConnectionState,
+    proof_hex: &str,
+    old_commitment_root: &str,
+    new_commitment_root: &str,
+    nullifier: &str,
+    sender_new_commitment: &str,
+    recipient_new_commitment: &str,
+    sender_index: u64,
+    recipient_index: u64,
+    recipient_owner_pubkey: &str,
+) -> Result<Option<ServerMessage>, GspError> {
+    let body = serde_json::json!({
+        "proof_hex": proof_hex,
+        "old_commitment_root": old_commitment_root,
+        "new_commitment_root": new_commitment_root,
+        "nullifier": nullifier,
+        "sender_new_commitment": sender_new_commitment,
+        "recipient_new_commitment": recipient_new_commitment,
+        "sender_index": sender_index,
+        "recipient_index": recipient_index,
+        "recipient_owner_pubkey": recipient_owner_pubkey,
+    });
+
+    match state.pay_node.submit_confidential_transfer(&body).await {
+        Ok(result) => {
+            let transfer_id = result.get("transfer_id").and_then(|v| v.as_str()).map(String::from);
+            let new_root = result.get("new_commitment_root").and_then(|v| v.as_str()).map(String::from);
+
+            Ok(Some(ServerMessage::ConfidentialTransferResult {
+                success: true,
+                transfer_id,
+                new_commitment_root: new_root,
+                error: None,
+            }))
+        }
+        Err(e) => Ok(Some(ServerMessage::ConfidentialTransferResult {
+            success: false,
+            transfer_id: None,
+            new_commitment_root: None,
+            error: Some(e.to_string()),
+        })),
+    }
+}
+
+/// Handle shield balance via proxy to Ghost Pay
+async fn handle_shield_balance(
+    state: &Arc<GspState>,
+    _conn_state: &ConnectionState,
+    amount_sats: u64,
+    blinding_hex: &str,
+    owner_pubkey: &str,
+) -> Result<Option<ServerMessage>, GspError> {
+    let body = serde_json::json!({
+        "amount_sats": amount_sats,
+        "blinding_hex": blinding_hex,
+        "owner_pubkey": owner_pubkey,
+    });
+
+    match state.pay_node.shield_balance(&body).await {
+        Ok(result) => {
+            let note_index = result.get("note_index").and_then(|v| v.as_u64());
+            let commitment = result.get("commitment").and_then(|v| v.as_str()).map(String::from);
+            let new_root = result.get("new_root").and_then(|v| v.as_str()).map(String::from);
+
+            Ok(Some(ServerMessage::ShieldResult {
+                success: true,
+                note_index,
+                commitment,
+                new_root,
+                error: None,
+            }))
+        }
+        Err(e) => Ok(Some(ServerMessage::ShieldResult {
+            success: false,
+            note_index: None,
+            commitment: None,
+            new_root: None,
+            error: Some(e.to_string()),
+        })),
+    }
+}
+
+/// Handle get commitment tree state via proxy
+async fn handle_get_commitment_tree_state(
+    state: &Arc<GspState>,
+) -> Result<Option<ServerMessage>, GspError> {
+    let result = state.pay_node.get_commitment_tree_state().await?;
+
+    Ok(Some(ServerMessage::CommitmentTreeState {
+        root: result.get("root").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        note_count: result.get("note_count").and_then(|v| v.as_u64()).unwrap_or(0),
+        next_index: result.get("next_index").and_then(|v| v.as_u64()).unwrap_or(0),
+        tree_depth: result.get("tree_depth").and_then(|v| v.as_u64()).unwrap_or(20) as usize,
+        nullifier_count: result.get("nullifier_count").and_then(|v| v.as_u64()).unwrap_or(0),
+    }))
+}
+
+/// Handle get confidential notes via proxy
+async fn handle_get_confidential_notes(
+    state: &Arc<GspState>,
+    owner_pubkey: &str,
+) -> Result<Option<ServerMessage>, GspError> {
+    use ghost_gsp_proto::ConfidentialNoteInfo;
+
+    let result = state.pay_node.get_confidential_notes(owner_pubkey).await?;
+
+    let notes: Vec<ConfidentialNoteInfo> = result
+        .get("notes")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|n| {
+                    Some(ConfidentialNoteInfo {
+                        index: n.get("index")?.as_u64()?,
+                        commitment: n.get("commitment")?.as_str()?.to_string(),
+                        created_height: n.get("created_height")?.as_u64()?,
+                        spent: n.get("spent")?.as_bool()?,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(Some(ServerMessage::ConfidentialNotes { notes }))
 }

@@ -34,6 +34,7 @@ ghost-common = { workspace = true }
 ghost-gsp-proto = { path = "../ghost-gsp-proto" }
 ghost-keys = { workspace = true }
 ghost-locks = { workspace = true }
+ghost-zkp = { workspace = true }
 wraith-protocol = { workspace = true }
 
 # Async runtime
@@ -58,6 +59,7 @@ aes-gcm = { workspace = true }
 scrypt = "0.11"
 getrandom = { workspace = true }
 secp256k1 = { version = "0.29", features = ["rand", "global-context"] }
+blstrs = { workspace = true }
 zeroize = { version = "1.7", features = ["derive"] }
 
 # Database
@@ -76,6 +78,9 @@ url = "2.5"
 
 # BIP-39 mnemonic support
 bip39 = "2.0"
+
+[features]
+zk-production = []
 
 [dev-dependencies]
 tokio-test = "0.4"

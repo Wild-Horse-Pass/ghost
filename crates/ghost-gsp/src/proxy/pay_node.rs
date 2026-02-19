@@ -1418,6 +1418,116 @@ impl PayNodeProxy {
             .await
             .map_err(|e| GspError::PayNodeError(e.to_string()))
     }
+
+    // =========================================================================
+    // CONFIDENTIAL TRANSFER PROXY METHODS
+    // =========================================================================
+
+    /// Submit a confidential transfer to Ghost Pay
+    pub async fn submit_confidential_transfer(
+        &self,
+        body: &serde_json::Value,
+    ) -> GspResult<serde_json::Value> {
+        let url = format!("{}/api/v1/confidential/transfer", self.base_url);
+        debug!(url = %url, "Submitting confidential transfer");
+
+        let response = self
+            .add_internal_auth(self.client.post(&url).json(body))
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let error_json: serde_json::Value = response.json().await.unwrap_or_default();
+            let error_msg = error_json
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("Unknown error")
+                .to_string();
+            return Err(GspError::PayNodeError(error_msg));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(e.to_string()))
+    }
+
+    /// Shield balance via Ghost Pay
+    pub async fn shield_balance(
+        &self,
+        body: &serde_json::Value,
+    ) -> GspResult<serde_json::Value> {
+        let url = format!("{}/api/v1/confidential/shield", self.base_url);
+        debug!(url = %url, "Shielding balance");
+
+        let response = self
+            .add_internal_auth(self.client.post(&url).json(body))
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        if !response.status().is_success() {
+            let error_json: serde_json::Value = response.json().await.unwrap_or_default();
+            let error_msg = error_json
+                .get("error")
+                .and_then(|e| e.as_str())
+                .unwrap_or("Unknown error")
+                .to_string();
+            return Err(GspError::PayNodeError(error_msg));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(e.to_string()))
+    }
+
+    /// Get commitment tree state from Ghost Pay
+    pub async fn get_commitment_tree_state(&self) -> GspResult<serde_json::Value> {
+        let url = format!("{}/api/v1/confidential/tree", self.base_url);
+
+        let response = self
+            .add_internal_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(GspError::PayNodeError("Failed to get tree state".into()));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(e.to_string()))
+    }
+
+    /// Get confidential notes for an owner from Ghost Pay
+    pub async fn get_confidential_notes(
+        &self,
+        owner_pubkey: &str,
+    ) -> GspResult<serde_json::Value> {
+        let url = format!(
+            "{}/api/v1/confidential/notes/{}",
+            self.base_url, owner_pubkey
+        );
+
+        let response = self
+            .add_internal_auth(self.client.get(&url))
+            .send()
+            .await
+            .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
+
+        if !response.status().is_success() {
+            return Err(GspError::PayNodeError("Failed to get confidential notes".into()));
+        }
+
+        response
+            .json()
+            .await
+            .map_err(|e| GspError::PayNodeError(e.to_string()))
+    }
 }
 
 /// H-9: Payment information including ownership

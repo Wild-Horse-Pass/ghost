@@ -532,6 +532,17 @@ pub fn verify_merkle_proof(
     &computed_root == root
 }
 
+/// Compute merkle root over nullifiers recorded in a batch window.
+/// Uses the same domain-separated collision-resistant merkle tree
+/// as `compute_merkle_root()`.
+pub fn compute_nullifier_merkle_root(nullifiers: &[[u8; 32]]) -> [u8; 32] {
+    if nullifiers.is_empty() {
+        return [0u8; 32];
+    }
+    // Use same merkle computation as settlement merkle root
+    compute_merkle_root(nullifiers)
+}
+
 fn rand_bytes() -> ReconciliationResult<[u8; 16]> {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).map_err(|_| ReconciliationError::RngFailure)?;
@@ -664,5 +675,47 @@ mod tests {
             !verify_merkle_proof(&leaves[0], &oversized_for_tree, &root, 0, 4),
             "Proof longer than tree depth should be rejected"
         );
+    }
+
+    #[test]
+    fn test_nullifier_merkle_root_empty() {
+        let root = compute_nullifier_merkle_root(&[]);
+        assert_eq!(root, [0u8; 32], "Empty nullifier set should return all zeros");
+    }
+
+    #[test]
+    fn test_nullifier_merkle_root_single() {
+        let nullifier = [0xAAu8; 32];
+        let root = compute_nullifier_merkle_root(&[nullifier]);
+
+        // Should produce the same result as compute_merkle_root with one leaf
+        let expected = compute_merkle_root(&[nullifier]);
+        assert_eq!(root, expected);
+        assert_ne!(root, [0u8; 32], "Single nullifier should not produce zero root");
+    }
+
+    #[test]
+    fn test_nullifier_merkle_root_multiple() {
+        let nullifiers: Vec<[u8; 32]> = (0..5).map(|i| [i as u8; 32]).collect();
+        let root = compute_nullifier_merkle_root(&nullifiers);
+
+        // Should produce the same result as compute_merkle_root
+        let expected = compute_merkle_root(&nullifiers);
+        assert_eq!(root, expected);
+
+        // Should be deterministic
+        let root2 = compute_nullifier_merkle_root(&nullifiers);
+        assert_eq!(root, root2);
+    }
+
+    #[test]
+    fn test_nullifier_merkle_root_different_sets_differ() {
+        let set_a: Vec<[u8; 32]> = (0..3).map(|i| [i as u8; 32]).collect();
+        let set_b: Vec<[u8; 32]> = (10..13).map(|i| [i as u8; 32]).collect();
+
+        let root_a = compute_nullifier_merkle_root(&set_a);
+        let root_b = compute_nullifier_merkle_root(&set_b);
+
+        assert_ne!(root_a, root_b, "Different nullifier sets must produce different roots");
     }
 }

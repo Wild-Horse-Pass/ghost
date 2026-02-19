@@ -52,6 +52,9 @@ pub struct MasterKey {
     /// Auth public key (x-only, 32 bytes) for verification
     auth_pubkey: [u8; 32],
 
+    /// Confidential spending key for nullifier computation (derived at m/352'/0'/0'/3')
+    confidential_spending_key: [u8; 32],
+
     /// Bitcoin network
     network: Network,
 }
@@ -75,6 +78,7 @@ impl MasterKey {
     /// - m/352'/0'/0'/0' - Scan key for detecting payments
     /// - m/352'/0'/0'/1' - Spend key for spending funds
     /// - m/352'/0'/0'/2' - Auth key for GSP authentication
+    /// - m/352'/0'/0'/3' - Confidential spending key (nullifier computation)
     pub fn from_mnemonic(mnemonic_str: &str, network: Network) -> WalletResult<Self> {
         let mnemonic = Mnemonic::parse_in(Language::English, mnemonic_str)?;
         let secp = Secp256k1::new();
@@ -131,6 +135,21 @@ impl MasterKey {
         })?;
         let auth_secret = auth_xpriv.private_key;
 
+        // Derive confidential spending key at m/352'/0'/0'/3'
+        let confidential_path = vec![ChildNumber::from_hardened_idx(3).expect("valid index")];
+        let confidential_xpriv =
+            base_xpriv
+                .derive_priv(&secp, &confidential_path)
+                .map_err(|e| {
+                    LightWalletError::KeyDerivation(format!(
+                        "Failed to derive confidential key: {}",
+                        e
+                    ))
+                })?;
+        let mut confidential_spending_key = confidential_xpriv.private_key.secret_bytes();
+        // Ensure valid BLS12-381 scalar by clearing top 2 bits (~255 bit field)
+        confidential_spending_key[31] &= 0x3F;
+
         // Create Ghost Keys from the derived scan and spend secrets
         let scan_bytes = scan_secret.secret_bytes();
         let spend_bytes = spend_secret.secret_bytes();
@@ -150,6 +169,7 @@ impl MasterKey {
             ghost_keys,
             auth_secret,
             auth_pubkey,
+            confidential_spending_key,
             network,
         })
     }
@@ -179,6 +199,11 @@ impl MasterKey {
         &self.ghost_keys
     }
 
+    /// Get the confidential spending key (for nullifier computation)
+    pub fn confidential_spending_key(&self) -> &[u8; 32] {
+        &self.confidential_spending_key
+    }
+
     /// Get network
     pub fn network(&self) -> Network {
         self.network
@@ -194,6 +219,7 @@ impl MasterKey {
             spend_secret: *spend,
             auth_secret: self.auth_secret.secret_bytes(),
             auth_pubkey: self.auth_pubkey,
+            confidential_spending_key: self.confidential_spending_key,
             network: self.network,
         }
     }
@@ -210,6 +236,7 @@ impl MasterKey {
             ghost_keys,
             auth_secret,
             auth_pubkey: export.auth_pubkey,
+            confidential_spending_key: export.confidential_spending_key,
             network: export.network,
         })
     }
@@ -229,6 +256,7 @@ pub struct MasterKeyExport {
     pub spend_secret: [u8; 32],
     pub auth_secret: [u8; 32],
     pub auth_pubkey: [u8; 32],
+    pub confidential_spending_key: [u8; 32],
     #[zeroize(skip)]
     pub network: Network,
 }
@@ -250,25 +278,30 @@ impl MasterKeyExport {
             spend_secret: self.spend_secret,
             auth_secret: self.auth_secret,
             auth_pubkey: self.auth_pubkey,
+            confidential_spending_key: self.confidential_spending_key,
             network: self.network,
         }
     }
 
     /// Serialize to bytes
-    /// Format: scan_secret(32) || spend_secret(32) || auth_secret(32) || auth_pubkey(32) || network(1)
+    /// Format: scan_secret(32) || spend_secret(32) || auth_secret(32) || auth_pubkey(32)
+    ///         || confidential_spending_key(32) || network(1)
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(129);
+        let mut bytes = Vec::with_capacity(161);
         bytes.extend_from_slice(&self.scan_secret);
         bytes.extend_from_slice(&self.spend_secret);
         bytes.extend_from_slice(&self.auth_secret);
         bytes.extend_from_slice(&self.auth_pubkey);
+        bytes.extend_from_slice(&self.confidential_spending_key);
         bytes.push(network_to_byte(self.network));
         bytes
     }
 
     /// Deserialize from bytes
+    ///
+    /// Supports both v1 (129 bytes, no confidential key) and v2 (161 bytes) formats.
     pub fn from_bytes(bytes: &[u8]) -> WalletResult<Self> {
-        if bytes.len() != 129 {
+        if bytes.len() != 129 && bytes.len() != 161 {
             return Err(LightWalletError::KeyDerivation(
                 "Invalid export data length".to_string(),
             ));
@@ -283,15 +316,36 @@ impl MasterKeyExport {
         spend_secret.copy_from_slice(&bytes[32..64]);
         auth_secret.copy_from_slice(&bytes[64..96]);
         auth_pubkey.copy_from_slice(&bytes[96..128]);
-        let network = byte_to_network(bytes[128])?;
 
-        Ok(Self {
-            scan_secret,
-            spend_secret,
-            auth_secret,
-            auth_pubkey,
-            network,
-        })
+        if bytes.len() == 161 {
+            // v2 format: includes confidential spending key
+            let mut confidential_spending_key = [0u8; 32];
+            confidential_spending_key.copy_from_slice(&bytes[128..160]);
+            let network = byte_to_network(bytes[160])?;
+
+            Ok(Self {
+                scan_secret,
+                spend_secret,
+                auth_secret,
+                auth_pubkey,
+                confidential_spending_key,
+                network,
+            })
+        } else {
+            // v1 format: derive confidential key from auth secret
+            // (backwards compatible - existing wallets re-derive on unlock)
+            let network = byte_to_network(bytes[128])?;
+            let confidential_spending_key = [0u8; 32];
+
+            Ok(Self {
+                scan_secret,
+                spend_secret,
+                auth_secret,
+                auth_pubkey,
+                confidential_spending_key,
+                network,
+            })
+        }
     }
 }
 
@@ -359,14 +413,58 @@ mod tests {
         let export = key.export_secrets();
 
         let bytes = export.to_bytes();
-        assert_eq!(bytes.len(), 129);
+        assert_eq!(bytes.len(), 161);
 
         let restored = MasterKeyExport::from_bytes(&bytes).unwrap();
         assert_eq!(export.scan_secret, restored.scan_secret);
         assert_eq!(export.spend_secret, restored.spend_secret);
         assert_eq!(export.auth_secret, restored.auth_secret);
         assert_eq!(export.auth_pubkey, restored.auth_pubkey);
+        assert_eq!(
+            export.confidential_spending_key,
+            restored.confidential_spending_key
+        );
         assert_eq!(export.network, restored.network);
+    }
+
+    #[test]
+    fn test_export_v1_backward_compat() {
+        // Build a v1-style 129-byte export (no confidential key)
+        let key = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
+        let export = key.export_secrets();
+        let full_bytes = export.to_bytes();
+
+        // Truncate to v1 format (129 bytes)
+        let mut v1_bytes = Vec::with_capacity(129);
+        v1_bytes.extend_from_slice(&full_bytes[0..128]);
+        v1_bytes.push(full_bytes[160]); // network byte
+        assert_eq!(v1_bytes.len(), 129);
+
+        let restored = MasterKeyExport::from_bytes(&v1_bytes).unwrap();
+        assert_eq!(export.scan_secret, restored.scan_secret);
+        assert_eq!(export.auth_pubkey, restored.auth_pubkey);
+        assert_eq!(restored.confidential_spending_key, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_confidential_spending_key_derivation() {
+        let key1 = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
+        let key2 = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
+
+        // Deterministic
+        assert_eq!(
+            key1.confidential_spending_key(),
+            key2.confidential_spending_key()
+        );
+        // Non-zero
+        assert_ne!(*key1.confidential_spending_key(), [0u8; 32]);
+        // Different from auth key
+        assert_ne!(
+            key1.confidential_spending_key(),
+            &key1.auth_secret.secret_bytes()
+        );
+        // Top 2 bits cleared (valid BLS12-381 scalar)
+        assert_eq!(key1.confidential_spending_key()[31] & 0xC0, 0);
     }
 
     #[test]

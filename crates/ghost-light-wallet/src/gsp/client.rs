@@ -867,6 +867,19 @@ impl GspClient {
         self.lock_snapshots.read().get(lock_id).cloned()
     }
 
+    // =========================================================================
+    // Confidential Transfer Methods
+    // =========================================================================
+
+    /// Send a confidential transfer message to the GSP
+    ///
+    /// Fire-and-forget for messages that don't need a synchronous response
+    /// (tree state queries, note queries, subscribe). Responses arrive via
+    /// the read task and are handled by the message dispatcher.
+    pub async fn send_confidential_message(&self, msg: ClientMessage) -> WalletResult<()> {
+        self.send_message(msg).await
+    }
+
     /// Check if connected
     pub fn is_connected(&self) -> bool {
         *self.connected.read()

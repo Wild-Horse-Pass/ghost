@@ -223,6 +223,56 @@ pub enum ClientMessage {
         /// The payment_id, sender_lock_id, recipient, and amount are bound by this signature.
         signed_payment: SignedInstantPayment,
     },
+
+    // =========================================================================
+    // Confidential Transfers
+    // =========================================================================
+
+    /// Submit a confidential transfer with Groth16 proof
+    SubmitConfidentialTransfer {
+        /// Groth16 proof (192 bytes hex)
+        proof_hex: String,
+        /// Current tree root before transfer
+        old_commitment_root: String,
+        /// Expected tree root after transfer
+        new_commitment_root: String,
+        /// Nullifier proving note ownership (prevents double-spend)
+        nullifier: String,
+        /// Sender's new change commitment
+        sender_new_commitment: String,
+        /// Recipient's new balance commitment
+        recipient_new_commitment: String,
+        /// Sender's note position in tree
+        sender_index: u64,
+        /// Recipient's note position in tree
+        recipient_index: u64,
+        /// Recipient's owner pubkey (for notification routing)
+        recipient_owner_pubkey: String,
+    },
+
+    /// Shield plaintext balance into a confidential commitment
+    ShieldBalance {
+        /// Amount to shield (satoshis)
+        amount_sats: u64,
+        /// Random blinding factor (32 bytes hex)
+        blinding_hex: String,
+        /// Owner's public key (32 bytes hex)
+        owner_pubkey: String,
+        /// Authentication proof
+        proof: WalletProof,
+    },
+
+    /// Get current commitment tree state
+    GetCommitmentTreeState,
+
+    /// Get confidential notes for a specific owner
+    GetConfidentialNotes {
+        /// Owner public key (32 bytes hex)
+        owner_pubkey: String,
+    },
+
+    /// Subscribe to confidential transfer notifications
+    SubscribeConfidential,
 }
 
 /// Messages sent from GSP server to Light Wallet client
@@ -606,6 +656,49 @@ pub enum ServerMessage {
         /// Number of confirmations since reorg
         confirmations_since_reorg: u32,
     },
+
+    // =========================================================================
+    // Confidential Transfers
+    // =========================================================================
+
+    /// Result of a confidential transfer submission
+    ConfidentialTransferResult {
+        success: bool,
+        transfer_id: Option<String>,
+        new_commitment_root: Option<String>,
+        error: Option<String>,
+    },
+
+    /// Result of a shield balance operation
+    ShieldResult {
+        success: bool,
+        note_index: Option<u64>,
+        commitment: Option<String>,
+        new_root: Option<String>,
+        error: Option<String>,
+    },
+
+    /// Current commitment tree state
+    CommitmentTreeState {
+        root: String,
+        note_count: u64,
+        next_index: u64,
+        tree_depth: usize,
+        nullifier_count: u64,
+    },
+
+    /// Notes owned by a specific pubkey
+    ConfidentialNotes {
+        notes: Vec<ConfidentialNoteInfo>,
+    },
+
+    /// Push notification: a confidential transfer was received
+    ConfidentialTransferReceived {
+        transfer_id: String,
+        recipient_new_commitment: String,
+        note_index: u64,
+        block_height: u64,
+    },
 }
 
 /// UTXO information
@@ -623,6 +716,19 @@ pub struct UtxoInfo {
     pub script_type: String,
     /// Whether this UTXO is spendable
     pub spendable: bool,
+}
+
+/// Confidential note information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfidentialNoteInfo {
+    /// Note position in commitment tree
+    pub index: u64,
+    /// MiMC commitment (32 bytes hex)
+    pub commitment: String,
+    /// Block height when created
+    pub created_height: u64,
+    /// Whether this note has been spent
+    pub spent: bool,
 }
 
 /// Transaction information
@@ -736,6 +842,10 @@ impl ClientMessage {
                 | ClientMessage::SubscribeLockState { .. }
                 | ClientMessage::UnsubscribeLockState { .. }
                 | ClientMessage::AcceptInstantPayment { .. }
+                | ClientMessage::SubmitConfidentialTransfer { .. }
+                | ClientMessage::ShieldBalance { .. }
+                | ClientMessage::GetConfidentialNotes { .. }
+                | ClientMessage::SubscribeConfidential
         )
     }
 
@@ -748,6 +858,7 @@ impl ClientMessage {
                 | ClientMessage::ConfirmGhostLockFunding { .. }
                 | ClientMessage::RequestJump { .. }
                 | ClientMessage::AcceptInstantPayment { .. }
+                | ClientMessage::ShieldBalance { .. }
         )
     }
 }

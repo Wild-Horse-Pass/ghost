@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 19;
+const SCHEMA_VERSION: u32 = 20;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -75,6 +75,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (17, migrate_v17),
         (18, migrate_v18),
         (19, migrate_v19),
+        (20, migrate_v20),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1353,6 +1354,60 @@ fn migrate_v19(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added payout_proposals table for restart persistence");
+    Ok(())
+}
+
+/// Migration v20: Add confidential transfer tables for ZK privacy layer
+///
+/// Three tables for the MiMC commitment tree and Groth16 confidential transfers:
+/// - confidential_notes: Commitment tree leaves with owner tracking
+/// - nullifiers: Spent nullifier registry (prevents double-spend)
+/// - confidential_transfers: Transfer records with Groth16 proofs
+fn migrate_v20(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v20: Adding confidential transfer tables");
+
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS confidential_notes (
+            tree_index INTEGER PRIMARY KEY,
+            commitment BLOB NOT NULL,
+            owner_pubkey BLOB NOT NULL,
+            created_at_height INTEGER NOT NULL,
+            spent_at_height INTEGER,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS nullifiers (
+            nullifier BLOB PRIMARY KEY,
+            block_height INTEGER NOT NULL,
+            transfer_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS confidential_transfers (
+            transfer_id TEXT PRIMARY KEY,
+            block_height INTEGER,
+            nullifier BLOB NOT NULL,
+            sender_new_commitment BLOB NOT NULL,
+            recipient_new_commitment BLOB NOT NULL,
+            old_commitment_root BLOB NOT NULL,
+            new_commitment_root BLOB NOT NULL,
+            proof BLOB NOT NULL,
+            sender_index INTEGER NOT NULL,
+            recipient_index INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at INTEGER NOT NULL DEFAULT (unixepoch())
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ct_status ON confidential_transfers(status);
+        CREATE INDEX IF NOT EXISTS idx_ct_height ON confidential_transfers(block_height);
+        CREATE INDEX IF NOT EXISTS idx_cn_owner ON confidential_notes(owner_pubkey);
+        CREATE INDEX IF NOT EXISTS idx_null_height ON nullifiers(block_height);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added confidential transfer tables (notes, nullifiers, transfers)");
     Ok(())
 }
 

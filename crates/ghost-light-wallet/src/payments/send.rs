@@ -207,6 +207,10 @@ pub fn estimate_fee(amount_sats: u64, mode: &PaymentMode) -> u64 {
             // Assume ~140 vbytes for simple tx
             140 * 10 // 10 sat/vbyte
         }
+        PaymentMode::Confidential => {
+            // Confidential transfers have ZK proof verification overhead
+            (amount_sats as f64 * 0.002).max(200.0) as u64
+        }
     }
 }
 

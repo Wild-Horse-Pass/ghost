@@ -38,6 +38,8 @@ pub enum PaymentMode {
     GhostPay,
     /// Wraith Protocol payment (mixing, more private)
     Wraith,
+    /// Confidential transfer with ZK proof (value-hiding)
+    Confidential,
 }
 
 impl std::fmt::Display for PaymentMode {
@@ -45,6 +47,7 @@ impl std::fmt::Display for PaymentMode {
         match self {
             PaymentMode::GhostPay => write!(f, "ghostpay"),
             PaymentMode::Wraith => write!(f, "wraith"),
+            PaymentMode::Confidential => write!(f, "confidential"),
         }
     }
 }

@@ -115,6 +115,27 @@ pub use circuit::{
 };
 
 // ============================================================================
+// Byte-level commitment helpers for application layer
+// ============================================================================
+
+/// Compute a Pedersen commitment from byte-level inputs.
+///
+/// C = MiMC(MiMC(value, blinding), COMMITMENT_DOMAIN_SEPARATOR)
+///
+/// This is a convenience wrapper for application code that doesn't
+/// want to deal with field element types directly.
+pub fn compute_commitment_bytes(value_sats: u64, blinding: &[u8; 32]) -> ZkResult<[u8; 32]> {
+    use blstrs::Scalar;
+    use circuit::mimc::{bytes_to_field, field_to_bytes};
+
+    let value_fr = Scalar::from(value_sats);
+    let blinding_fr: Scalar = bytes_to_field(blinding)
+        .map_err(|e| ZkError::FieldConversionError(format!("Invalid blinding: {}", e)))?;
+    let commitment_fr = pedersen_commit_native(value_fr, blinding_fr);
+    Ok(field_to_bytes(commitment_fr))
+}
+
+// ============================================================================
 // H-1: ZK Production Mode Safety
 // ============================================================================
 
@@ -427,6 +448,129 @@ pub fn verify_zk_setup_for_mainnet() -> ZkResult<()> {
 /// `verify_zk_setup_for_mainnet()` when you want detailed error messages.
 pub fn is_zk_setup_valid_for_mainnet() -> bool {
     verify_zk_setup_for_mainnet().is_ok()
+}
+
+// ============================================================================
+// Confidential Transfer Parameter Loading
+// ============================================================================
+
+/// Load a confidential transfer verifying key from disk.
+///
+/// Reads a `VerifyingKey<Bls12>` file, prepares it for efficient verification,
+/// and returns a `ConfidentialVerifier` ready to verify Groth16 proofs.
+///
+/// The VK file is typically generated during MPC ceremony or dev setup
+/// and saved as `confidential_vk.bin`.
+pub fn load_confidential_verifier(
+    vk_path: &std::path::Path,
+    tree_depth: usize,
+) -> ZkResult<ConfidentialVerifier> {
+    use bellperson::groth16::{prepare_verifying_key, VerifyingKey};
+    use blstrs::Bls12;
+    use std::io::BufReader;
+
+    if !vk_path.exists() {
+        return Err(ZkError::InvalidParams(format!(
+            "Confidential VK not found: {}",
+            vk_path.display()
+        )));
+    }
+
+    let file = std::fs::File::open(vk_path)
+        .map_err(|e| ZkError::InvalidParams(format!("Failed to open VK: {}", e)))?;
+    let reader = BufReader::new(file);
+
+    let vk: VerifyingKey<Bls12> = VerifyingKey::read(reader)
+        .map_err(|e| ZkError::InvalidParams(format!("Failed to read VK: {}", e)))?;
+
+    let prepared_vk = prepare_verifying_key(&vk);
+
+    // Compute prover ID (must match what ConfidentialProver uses)
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"ghost-zkp-confidential-prover-v1");
+    hasher.update(tree_depth.to_le_bytes());
+    let prover_id: [u8; 32] = hasher.finalize().into();
+
+    Ok(ConfidentialVerifier::new(
+        std::sync::Arc::new(prepared_vk),
+        prover_id,
+    ))
+}
+
+/// Generate confidential transfer Groth16 parameters and save to disk.
+///
+/// **WARNING**: This uses a random trusted setup. For production, use MPC ceremony.
+/// This is intended for signet/testnet/development deployments only.
+///
+/// Generates:
+/// - `confidential_params_current.bin` - Full proving parameters
+/// - `confidential_vk.bin` - Verification key only
+#[cfg(not(feature = "zk-production"))]
+pub fn generate_confidential_params(
+    dir: &std::path::Path,
+    tree_depth: usize,
+) -> ZkResult<()> {
+    use bellperson::groth16::{generate_random_parameters, Parameters};
+    use blstrs::Bls12;
+    use std::io::{BufWriter, Write};
+
+    tracing::warn!(
+        "Generating random confidential transfer Groth16 parameters (NOT production-safe)"
+    );
+
+    let dummy_circuit = circuit::ConfidentialTransferCircuit::<blstrs::Scalar>::dummy(tree_depth);
+    let params: Parameters<Bls12> =
+        generate_random_parameters(dummy_circuit, &mut rand::rngs::OsRng)
+            .map_err(|e| ZkError::SetupError(format!("Parameter generation failed: {:?}", e)))?;
+
+    std::fs::create_dir_all(dir)
+        .map_err(|e| ZkError::SetupError(format!("Failed to create dir: {}", e)))?;
+
+    // Save full params
+    let params_path = dir.join("confidential_params_current.bin");
+    {
+        let file = std::fs::File::create(&params_path)
+            .map_err(|e| ZkError::SetupError(format!("Failed to create params file: {}", e)))?;
+        let mut writer = BufWriter::new(file);
+        params
+            .write(&mut writer)
+            .map_err(|e| ZkError::SetupError(format!("Failed to write params: {}", e)))?;
+        writer.flush().map_err(|e| ZkError::SetupError(format!("Flush failed: {}", e)))?;
+        writer.get_ref().sync_all().map_err(|e| ZkError::SetupError(format!("Sync failed: {}", e)))?;
+    }
+
+    // Save VK separately
+    let vk_path = dir.join("confidential_vk.bin");
+    {
+        let file = std::fs::File::create(&vk_path)
+            .map_err(|e| ZkError::SetupError(format!("Failed to create VK file: {}", e)))?;
+        let mut writer = BufWriter::new(file);
+        params
+            .vk
+            .write(&mut writer)
+            .map_err(|e| ZkError::SetupError(format!("Failed to write VK: {}", e)))?;
+        writer.flush().map_err(|e| ZkError::SetupError(format!("Flush failed: {}", e)))?;
+        writer.get_ref().sync_all().map_err(|e| ZkError::SetupError(format!("Sync failed: {}", e)))?;
+    }
+
+    let params_size = std::fs::metadata(&params_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let vk_size = std::fs::metadata(&vk_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    tracing::info!(
+        params_path = %params_path.display(),
+        params_size_bytes = params_size,
+        vk_path = %vk_path.display(),
+        vk_size_bytes = vk_size,
+        tree_depth = tree_depth,
+        "Generated and saved confidential transfer parameters"
+    );
+
+    Ok(())
 }
 
 // ============================================================================

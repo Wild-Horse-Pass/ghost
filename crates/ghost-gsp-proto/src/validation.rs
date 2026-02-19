@@ -389,6 +389,83 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
                 result.add_error("Signed payment sender pubkey cannot be empty");
             }
         }
+
+        // =========================================================================
+        // Confidential Transfer Messages
+        // =========================================================================
+        ClientMessage::SubmitConfidentialTransfer {
+            proof_hex,
+            old_commitment_root,
+            new_commitment_root,
+            nullifier,
+            sender_new_commitment,
+            recipient_new_commitment,
+            sender_index: _,
+            recipient_index: _,
+            recipient_owner_pubkey,
+        } => {
+            // Proof must be 192 bytes = 384 hex chars
+            if proof_hex.len() != 384 {
+                result.add_error("Proof must be 384 hex characters (192 bytes)");
+            } else if hex::decode(proof_hex).is_err() {
+                result.add_error("Invalid proof hex encoding");
+            }
+            // All 32-byte fields must be 64 hex chars
+            for (name, val) in [
+                ("old_commitment_root", old_commitment_root.as_str()),
+                ("new_commitment_root", new_commitment_root.as_str()),
+                ("nullifier", nullifier.as_str()),
+                ("sender_new_commitment", sender_new_commitment.as_str()),
+                ("recipient_new_commitment", recipient_new_commitment.as_str()),
+                ("recipient_owner_pubkey", recipient_owner_pubkey.as_str()),
+            ] {
+                if val.len() != 64 {
+                    result.add_error(format!("{} must be 64 hex characters", name));
+                } else if hex::decode(val).is_err() {
+                    result.add_error(format!("Invalid {} hex encoding", name));
+                }
+            }
+        }
+
+        ClientMessage::ShieldBalance {
+            amount_sats,
+            blinding_hex,
+            owner_pubkey,
+            proof,
+        } => {
+            if *amount_sats == 0 {
+                result.add_error("Amount must be greater than 0");
+            }
+            if blinding_hex.len() != 64 {
+                result.add_error("Blinding must be 64 hex characters (32 bytes)");
+            } else if hex::decode(blinding_hex).is_err() {
+                result.add_error("Invalid blinding hex encoding");
+            }
+            if owner_pubkey.len() != 64 {
+                result.add_error("Owner pubkey must be 64 hex characters");
+            } else if hex::decode(owner_pubkey).is_err() {
+                result.add_error("Invalid owner pubkey hex encoding");
+            }
+            if let Err(e) = proof.validate_structure() {
+                result.add_error(format!("Invalid proof: {}", e));
+            }
+        }
+
+        ClientMessage::GetCommitmentTreeState => {
+            // No parameters to validate
+        }
+
+        ClientMessage::GetConfidentialNotes { owner_pubkey } => {
+            if owner_pubkey.len() != 64 {
+                result.add_error("Owner pubkey must be 64 hex characters");
+            } else if hex::decode(owner_pubkey).is_err() {
+                result.add_error("Invalid owner pubkey hex encoding");
+            }
+        }
+
+        ClientMessage::SubscribeConfidential => {
+            // No parameters to validate
+        }
     }
 
     result
