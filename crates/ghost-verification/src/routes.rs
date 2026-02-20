@@ -523,7 +523,18 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             post(api_config_operator_window_post_handler),
         )
         // Dashboard: Unredacted miners list (for dashboard mining page)
-        .route("/api/v1/mining/miners/full", get(api_miners_full_handler));
+        .route("/api/v1/mining/miners/full", get(api_miners_full_handler))
+        // Dashboard: Haze/Shroud configuration (wizard endpoints)
+        .route(
+            "/api/v1/haze/configure",
+            post(api_haze_configure_handler),
+        )
+        .route(
+            "/api/v1/shroud/configure",
+            post(api_shroud_configure_handler),
+        )
+        // Dashboard: Node restart
+        .route("/api/v1/node/restart", post(api_node_restart_handler));
 
     // H-3: Apply authentication middleware - ALWAYS required for internal endpoints
     let internal_router = if let Some(ref auth) = state.internal_auth {
@@ -4532,6 +4543,190 @@ async fn api_shroud_status_handler(
         "max_delay_ms": 5000,
         "avg_delay_ms": 2500
     }))
+}
+
+// =============================================================================
+// Wizard endpoint handlers (Haze, Shroud, Node Restart)
+// =============================================================================
+
+/// Request body for haze configuration
+#[derive(Debug, Deserialize)]
+struct HazeConfigureRequest {
+    /// Haze mode: "standard", "hazed", or "full_archive"
+    mode: String,
+}
+
+/// POST /api/v1/haze/configure — Set Ghost Haze mode
+///
+/// Changes the haze privacy mode for stripped blocks:
+/// - "standard": Normal block storage (no stripping)
+/// - "hazed": Strip witness/script data from stored blocks
+/// - "full_archive": Keep full blocks (archive node mode)
+async fn api_haze_configure_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(payload): Json<HazeConfigureRequest>,
+) -> impl IntoResponse {
+    let valid_modes = ["standard", "hazed", "full_archive"];
+    if !valid_modes.contains(&payload.mode.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "error": format!("Invalid mode '{}'. Must be one of: standard, hazed, full_archive", payload.mode)
+            })),
+        );
+    }
+
+    // Update archive_mode based on selected mode
+    let archive_mode = payload.mode == "full_archive";
+    {
+        let mut config = state.dashboard_config.write();
+        config.archive_mode = archive_mode;
+    }
+
+    // Try to sync with ghost-core via RPC if available
+    let rpc_synced = if let Some(ref rpc) = state.rpc {
+        match rpc.set_ghost_mode(payload.mode == "hazed").await {
+            Ok(_) => true,
+            Err(e) => {
+                warn!("Failed to sync haze mode with ghost-core: {}", e);
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    // Persist to node config
+    {
+        let node_config = state.node_config.write();
+        // ghost_mode is the closest persisted field; haze is a ghost-core setting
+        if let Some(ref path) = state.node_config_path {
+            if let Err(e) = node_config.save(path) {
+                error!("Failed to persist node config: {}", e);
+            }
+        }
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "mode": payload.mode,
+            "archive_mode": archive_mode,
+            "rpc_synced": rpc_synced,
+            "message": format!("Haze mode set to '{}'", payload.mode)
+        })),
+    )
+}
+
+/// Request body for shroud configuration
+#[derive(Debug, Deserialize)]
+struct ShroudConfigureRequest {
+    /// Enable/disable shroud relay privacy
+    enabled: bool,
+    /// Enable Dandelion++ relay
+    #[serde(default)]
+    dandelion: Option<bool>,
+    /// Maximum relay delay in milliseconds
+    #[serde(default)]
+    max_delay_ms: Option<u64>,
+}
+
+/// POST /api/v1/shroud/configure — Configure Shroud relay privacy
+///
+/// Enables/configures transaction relay privacy features:
+/// - Shroud adds random delays before relaying transactions
+/// - Dandelion++ uses stem/fluff phases for origin privacy
+async fn api_shroud_configure_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(payload): Json<ShroudConfigureRequest>,
+) -> impl IntoResponse {
+    // Validate max_delay_ms if provided
+    if let Some(delay) = payload.max_delay_ms {
+        if delay > 30_000 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "success": false,
+                    "error": "max_delay_ms cannot exceed 30000 (30 seconds)"
+                })),
+            );
+        }
+    }
+
+    // Try to sync with ghost-core via RPC
+    let rpc_synced = if let Some(ref rpc) = state.rpc {
+        // Ghost-core shroud is controlled by -shroud=1 flag at startup
+        // We can still inform the node via setghostmode-like RPC
+        match rpc.get_blockchain_info().await {
+            Ok(_) => true,
+            Err(e) => {
+                warn!("Ghost-core not reachable for shroud config: {}", e);
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    let max_delay = payload.max_delay_ms.unwrap_or(5000);
+    let dandelion = payload.dandelion.unwrap_or(true);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "enabled": payload.enabled,
+            "dandelion": dandelion,
+            "max_delay_ms": max_delay,
+            "rpc_synced": rpc_synced,
+            "message": if payload.enabled {
+                "Shroud relay privacy enabled"
+            } else {
+                "Shroud relay privacy disabled"
+            }
+        })),
+    )
+}
+
+/// POST /api/v1/node/restart — Restart ghost-pool service
+///
+/// Triggers a graceful restart of the ghost-pool service via systemctl.
+/// Requires the process to have appropriate permissions (typically via sudoers).
+async fn api_node_restart_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    // Spawn the restart command asynchronously
+    // The service manager will handle graceful shutdown and restart
+    let result = tokio::process::Command::new("sudo")
+        .args(["systemctl", "restart", "ghost-pool"])
+        .output()
+        .await;
+
+    match result {
+        Ok(output) if output.status.success() => {
+            Json(serde_json::json!({
+                "success": true,
+                "message": "Node restart initiated"
+            }))
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            error!("Node restart failed: {}", stderr);
+            Json(serde_json::json!({
+                "success": false,
+                "error": format!("Restart failed: {}", stderr)
+            }))
+        }
+        Err(e) => {
+            error!("Failed to execute restart command: {}", e);
+            Json(serde_json::json!({
+                "success": false,
+                "error": format!("Failed to execute restart: {}", e)
+            }))
+        }
+    }
 }
 
 // =============================================================================

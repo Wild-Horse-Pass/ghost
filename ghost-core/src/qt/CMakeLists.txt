@@ -225,6 +225,16 @@ if(ENABLE_WALLET)
       depositwizard.h
       withdrawwizard.cpp
       withdrawwizard.h
+      ghostidwizard.cpp
+      ghostidwizard.h
+      createlockwizard.cpp
+      createlockwizard.h
+      jumplockwizard.cpp
+      jumplockwizard.h
+      reconcilelockwizard.cpp
+      reconcilelockwizard.h
+      sendl2wizard.cpp
+      sendl2wizard.h
       mnemonicwidget.cpp
       mnemonicwidget.h
       sendl2dialog.cpp

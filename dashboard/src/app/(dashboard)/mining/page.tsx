@@ -1,9 +1,11 @@
 "use client";
 
+import { useState } from "react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard } from "@/components/ui/StatCard";
 import { Card, CardHeader } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { DataTable, formatHashrate, formatDuration } from "@/components/ui/DataTable";
@@ -11,6 +13,7 @@ import { SkeletonCard } from "@/components/ui/Skeleton";
 import { useMiningStatus, useMiners, useBestHash, useSetPrivateMining, useSetPublicMining } from "@/hooks/queries";
 import { useToast } from "@/components/ui/Toast";
 import { useQueryClient } from "@tanstack/react-query";
+import PoolSetupWizard from "../settings/wizards/PoolSetupWizard";
 import type { MinerInfo, BestHashEntry } from "@/types/api";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -131,6 +134,7 @@ export default function MiningPage() {
   const setPublicMining = useSetPublicMining();
   const queryClient = useQueryClient();
   const { addToast } = useToast();
+  const [poolSetupOpen, setPoolSetupOpen] = useState(false);
 
   const miners = minersData?.miners ?? [];
   const nodeHost = typeof window !== "undefined" ? window.location.hostname : "localhost";
@@ -215,7 +219,15 @@ export default function MiningPage() {
       {/* Mining Mode */}
       <SectionErrorBoundary section="Mining Mode">
         <Card>
-          <CardHeader title="Mining Mode" subtitle="Select how your node participates in mining" />
+          <CardHeader
+            title="Mining Mode"
+            subtitle="Select how your node participates in mining"
+            action={
+              <Button variant="outline" size="sm" onClick={() => setPoolSetupOpen(true)}>
+                Pool Setup Wizard
+              </Button>
+            }
+          />
 
           {/* Mode selector - 3 radio-style options */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
@@ -336,6 +348,9 @@ export default function MiningPage() {
           />
         </Card>
       </SectionErrorBoundary>
+
+      {/* Wizard dialog */}
+      <PoolSetupWizard isOpen={poolSetupOpen} onClose={() => setPoolSetupOpen(false)} />
     </div>
   );
 }

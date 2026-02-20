@@ -2192,6 +2192,7 @@ dependencies = [
  "ghost-keys",
  "ghost-light-wallet",
  "indicatif",
+ "reqwest",
  "rpassword",
  "serde",
  "serde_json",

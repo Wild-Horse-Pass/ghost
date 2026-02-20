@@ -215,3 +215,47 @@ export async function setGhostPayPayoutAddress(address: string | null): Promise<
     body: JSON.stringify({ address }),
   });
 }
+
+// Haze configuration (wizard endpoint)
+export async function configureHaze(mode: 'standard' | 'hazed' | 'full_archive'): Promise<{ success: boolean; mode: string; message: string }> {
+  return fetchApi('/api/v1/haze/configure', {
+    method: 'POST',
+    body: JSON.stringify({ mode }),
+  });
+}
+
+// Shroud configuration (wizard endpoint)
+export async function configureShroud(config: {
+  enabled: boolean;
+  dandelion?: boolean;
+  max_delay_ms?: number;
+}): Promise<{ success: boolean; enabled: boolean; message: string }> {
+  return fetchApi('/api/v1/shroud/configure', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}
+
+// Node restart (wizard endpoint)
+export async function restartNode(): Promise<{ success: boolean; message: string }> {
+  return fetchApi('/api/v1/node/restart', {
+    method: 'POST',
+  });
+}
+
+// Ghost Pay mode toggle
+export async function setGhostPay(enabled: boolean): Promise<NodeConfig> {
+  return fetchApi<NodeConfig>('/api/v1/config/ghost_pay', {
+    method: 'POST',
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+// Mining payout address
+export async function setMiningPayoutAddress(address: string): Promise<{ success: boolean; message: string }> {
+  return fetchApi('/api/v1/mining/payout_address', {
+    method: 'POST',
+    body: JSON.stringify({ address }),
+  });
+}
+

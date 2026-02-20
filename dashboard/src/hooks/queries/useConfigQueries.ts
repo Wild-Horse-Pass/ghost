@@ -19,6 +19,12 @@ import {
   setOperatorWindow,
   getL2PruningStatus,
   setGhostPayPayoutAddress,
+  configureHaze,
+  configureShroud,
+  restartNode,
+  setGhostPay,
+  setMiningPayoutAddress,
+  setPublicMiningConfig,
   type CustomMempoolProfile,
   type CustomTemplateProfile,
 } from '@/lib/api/config';
@@ -233,6 +239,71 @@ export function useSetGhostPayPayoutAddress() {
       queryClient.invalidateQueries({ queryKey: configKeys.all });
       // Also invalidate mining status which may include payout info
       queryClient.invalidateQueries({ queryKey: ['mining', 'status'] });
+    },
+  });
+}
+
+// Wizard mutation hooks
+
+import { hazeKeys } from './useHazeQueries';
+import { shroudKeys } from './useShroudQueries';
+
+export function useConfigureHaze() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (mode: 'standard' | 'hazed' | 'full_archive') => configureHaze(mode),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: hazeKeys.all });
+      queryClient.invalidateQueries({ queryKey: configKeys.all });
+    },
+  });
+}
+
+export function useConfigureShroud() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (config: { enabled: boolean; dandelion?: boolean; max_delay_ms?: number }) =>
+      configureShroud(config),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: shroudKeys.all });
+      queryClient.invalidateQueries({ queryKey: configKeys.all });
+    },
+  });
+}
+
+export function useRestartNode() {
+  return useMutation({
+    mutationFn: () => restartNode(),
+  });
+}
+
+export function useSetGhostPay() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => setGhostPay(enabled),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: configKeys.all });
+    },
+  });
+}
+
+export function useSetMiningPayoutAddress() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (address: string) => setMiningPayoutAddress(address),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: configKeys.all });
+      queryClient.invalidateQueries({ queryKey: ['mining'] });
+    },
+  });
+}
+
+export function useSetPublicMiningConfig() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => setPublicMiningConfig(enabled),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: configKeys.all });
     },
   });
 }

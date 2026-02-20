@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::api::client::NodeApiClient;
 use crate::api::types::*;
 use crate::config::{NodeEntry, SwarmConfig, TuiSettings};
+use crate::wizard::WizardState;
 
 /// Main application state
 pub struct App {
@@ -31,6 +32,9 @@ pub struct App {
     pub selected_row: usize,
     pub input_buffer: String,
     pub pending_action: Option<PendingAction>,
+
+    // Wizard overlay
+    pub active_wizard: Option<WizardState>,
 
     // Refresh tracking
     #[allow(dead_code)]
@@ -187,6 +191,8 @@ pub enum InputMode {
     InputPayoutAddress,
     /// Help overlay visible
     Help,
+    /// Wizard picker overlay (press 1-9 to launch a wizard)
+    WizardPicker,
 }
 
 /// Actions that require confirmation before execution
@@ -293,6 +299,7 @@ impl App {
             selected_row: 0,
             input_buffer: String::new(),
             pending_action: None,
+            active_wizard: None,
             last_refresh: Instant::now(),
         }
     }

@@ -55,7 +55,7 @@ use anyhow::Result;
 use bitcoin::Network;
 use clap::{Parser, Subcommand};
 use console::style;
-use dialoguer::{Confirm, Input};
+use dialoguer::{Confirm, Input, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use tracing::Level;
 use tracing_subscriber::FmtSubscriber;
@@ -80,6 +80,14 @@ struct Args {
     /// GSP URL to connect to
     #[arg(long, global = true)]
     gsp: Option<String>,
+
+    /// Ghost Pay API host
+    #[arg(long, global = true, default_value = "127.0.0.1")]
+    host: String,
+
+    /// Ghost Pay API port
+    #[arg(long, global = true, default_value = "8800")]
+    pay_port: u16,
 
     /// Log level (trace, debug, info, warn, error)
     #[arg(short, long, global = true, default_value = "warn")]
@@ -181,14 +189,47 @@ enum Commands {
 
     /// Interactive Wraith CoinJoin mixing wizard
     Wraith,
+
+    /// Generate a new Ghost ID
+    GhostId,
+
+    /// Send an L2 Ghost Pay payment
+    Pay {
+        /// Recipient Ghost ID or address
+        #[arg(long)]
+        recipient: Option<String>,
+
+        /// Amount in satoshis
+        #[arg(long)]
+        amount: Option<u64>,
+
+        /// Optional memo (max 59 chars)
+        #[arg(long)]
+        memo: Option<String>,
+    },
+
+    /// Reconcile a Ghost Lock to L1
+    Reconcile {
+        /// Lock ID to reconcile
+        #[arg(long)]
+        lock_id: Option<String>,
+
+        /// Destination bech32 address
+        #[arg(long)]
+        address: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
 enum LockCommands {
-    /// Create a new Ghost Lock
+    /// Create a new Ghost Lock (interactive if no args given)
     Create {
         /// Lock capacity in satoshis
-        amount: u64,
+        amount: Option<u64>,
+
+        /// Lock tier (standard, premium, vault)
+        #[arg(long)]
+        tier: Option<String>,
 
         /// Label for the lock
         #[arg(long)]
@@ -287,10 +328,11 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber)?;
 
     // Parse configuration
-    let data_dir = args.data_dir.unwrap_or_else(get_default_data_dir);
+    let data_dir = args.data_dir.clone().unwrap_or_else(get_default_data_dir);
     let network = parse_network(&args.network);
     let gsp_urls = args
         .gsp
+        .clone()
         .map(|url| vec![url])
         .unwrap_or_else(|| vec!["wss://localhost:8901/ws/v1".to_string()]);
 
@@ -301,6 +343,10 @@ async fn main() -> Result<()> {
         auto_reconnect: true,
         reconnect_interval_secs: 5,
     };
+
+    // Extract API connection params before consuming args
+    let api_host = args.host.clone();
+    let api_port = args.pay_port;
 
     // Execute command
     match args.command {
@@ -353,6 +399,19 @@ async fn main() -> Result<()> {
         }
         Commands::Wraith => {
             cmd_wraith(config).await?;
+        }
+        Commands::GhostId => {
+            cmd_ghost_id(&api_host, api_port).await?;
+        }
+        Commands::Pay {
+            recipient,
+            amount,
+            memo,
+        } => {
+            cmd_pay(&api_host, api_port, recipient, amount, memo).await?;
+        }
+        Commands::Reconcile { lock_id, address } => {
+            cmd_reconcile(&api_host, api_port, lock_id, address).await?;
         }
     }
 
@@ -770,9 +829,67 @@ async fn cmd_lock(config: WalletConfig, action: LockCommands) -> Result<()> {
     let wallet = LightWallet::open(&password, config)?;
 
     match action {
-        LockCommands::Create { amount, label } => {
+        LockCommands::Create {
+            amount,
+            tier,
+            label,
+        } => {
             println!();
             println!("{}", style("Create Ghost Lock").bold().cyan());
+
+            // Interactive tier selection if not provided
+            let tier = match tier {
+                Some(t) => t,
+                None => {
+                    let tier_options = ["standard", "premium", "vault"];
+                    let tier_descriptions = [
+                        "standard - Basic lock, lower minimums",
+                        "premium  - Enhanced lock, priority settlement",
+                        "vault    - Maximum security, highest capacity",
+                    ];
+                    println!();
+                    let tier_idx = Select::new()
+                        .with_prompt("Lock tier")
+                        .items(&tier_descriptions)
+                        .default(0)
+                        .interact()?;
+                    tier_options[tier_idx].to_string()
+                }
+            };
+
+            // Interactive amount if not provided
+            let amount = match amount {
+                Some(a) => a,
+                None => {
+                    Input::new()
+                        .with_prompt("Lock capacity (sats)")
+                        .validate_with(|input: &u64| {
+                            if *input > 0 {
+                                Ok(())
+                            } else {
+                                Err("Amount must be greater than 0")
+                            }
+                        })
+                        .interact_text()?
+                }
+            };
+
+            // Interactive label if not provided
+            let label = match label {
+                Some(l) => {
+                    if l.is_empty() { None } else { Some(l) }
+                }
+                None => {
+                    let l: String = Input::new()
+                        .with_prompt("Label (optional)")
+                        .allow_empty(true)
+                        .interact_text()?;
+                    if l.is_empty() { None } else { Some(l) }
+                }
+            };
+
+            println!();
+            println!("Tier:   {}", style(&tier).blue());
             println!("Amount: {} sats", style(amount).yellow());
             if let Some(ref l) = label {
                 println!("Label:  {}", l);
@@ -1341,6 +1458,515 @@ async fn cmd_wraith(config: WalletConfig) -> Result<()> {
         let progress = wizard.progress();
         if let Some(txid) = &progress.phase2_txid {
             println!("Final transaction: {}", style(txid).cyan());
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Ghost ID Wizard
+// ============================================================================
+
+async fn cmd_ghost_id(host: &str, pay_port: u16) -> Result<()> {
+    println!("{}", style("Ghost ID Generator").bold().cyan());
+    println!();
+    println!(
+        "{}",
+        style("A Ghost ID is your unique identity on the Ghost network.").dim()
+    );
+    println!(
+        "{}",
+        style("It allows you to receive L2 payments and interact with Ghost services.").dim()
+    );
+    println!();
+
+    let confirm = Confirm::new()
+        .with_prompt("Generate a new Ghost ID?")
+        .default(true)
+        .interact()?;
+
+    if !confirm {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
+    pb.set_message("Generating Ghost ID...");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let base_url = format!("http://{}:{}", host, pay_port);
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/api/v1/keys/generate", base_url))
+        .header("Content-Type", "application/json")
+        .body("{}")
+        .send()
+        .await;
+
+    pb.finish_and_clear();
+
+    match resp {
+        Ok(response) => {
+            if response.status().is_success() {
+                let body: serde_json::Value = response.json().await?;
+
+                println!();
+                println!("{}", style("Ghost ID Generated").bold().green());
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!();
+
+                if let Some(ghost_id) = body.get("ghost_id").and_then(|v| v.as_str()) {
+                    println!("  Ghost ID: {}", style(ghost_id).green().bold());
+                } else {
+                    println!("  Response: {}", style(&body).green());
+                }
+
+                println!();
+                println!(
+                    "{}",
+                    style("IMPORTANT: Back up your Ghost ID and associated keys!").bold().red()
+                );
+                println!(
+                    "{}",
+                    style("If you lose access, your Ghost ID cannot be recovered.").yellow()
+                );
+                println!();
+            } else {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                println!();
+                println!(
+                    "{}",
+                    style(format!("Error: API returned {} - {}", status, body)).red()
+                );
+            }
+        }
+        Err(e) => {
+            println!();
+            println!(
+                "{}",
+                style(format!(
+                    "Error: Could not connect to Ghost Pay API at {}:{}",
+                    host, pay_port
+                ))
+                .red()
+            );
+            println!("{}", style(format!("  {}", e)).dim());
+            println!();
+            println!(
+                "{}",
+                style("Make sure the Ghost Pay service is running.").yellow()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Pay Wizard
+// ============================================================================
+
+async fn cmd_pay(
+    host: &str,
+    pay_port: u16,
+    recipient: Option<String>,
+    amount: Option<u64>,
+    memo: Option<String>,
+) -> Result<()> {
+    println!("{}", style("Ghost Pay - Send L2 Payment").bold().cyan());
+    println!();
+
+    // Collect recipient
+    let recipient = match recipient {
+        Some(r) => r,
+        None => Input::new()
+            .with_prompt("Recipient Ghost ID or address")
+            .interact_text()?,
+    };
+
+    // Collect amount
+    let amount = match amount {
+        Some(a) => {
+            if a == 0 {
+                println!("{}", style("Amount must be greater than 0.").red());
+                return Ok(());
+            }
+            a
+        }
+        None => {
+            let a: u64 = Input::new()
+                .with_prompt("Amount (sats)")
+                .validate_with(|input: &u64| {
+                    if *input > 0 {
+                        Ok(())
+                    } else {
+                        Err("Amount must be greater than 0")
+                    }
+                })
+                .interact_text()?;
+            a
+        }
+    };
+
+    // Collect memo
+    let memo = match memo {
+        Some(m) => {
+            if m.len() > 59 {
+                println!("{}", style("Memo must be 59 characters or fewer.").red());
+                return Ok(());
+            }
+            if m.is_empty() { None } else { Some(m) }
+        }
+        None => {
+            let m: String = Input::new()
+                .with_prompt("Memo (optional, max 59 chars)")
+                .allow_empty(true)
+                .interact_text()?;
+            if m.is_empty() {
+                None
+            } else if m.len() > 59 {
+                println!("{}", style("Memo must be 59 characters or fewer.").red());
+                return Ok(());
+            } else {
+                Some(m)
+            }
+        }
+    };
+
+    // Display summary
+    println!();
+    println!("{}", style("Payment Summary").bold());
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("  Recipient: {}", style(&recipient).green());
+    println!("  Amount:    {} sats", style(amount).yellow());
+    if let Some(ref m) = memo {
+        println!("  Memo:      {}", m);
+    }
+    println!();
+
+    let confirm = Confirm::new()
+        .with_prompt("Send payment?")
+        .default(false)
+        .interact()?;
+
+    if !confirm {
+        println!("Payment cancelled.");
+        return Ok(());
+    }
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
+    pb.set_message("Sending payment...");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let base_url = format!("http://{}:{}", host, pay_port);
+    let client = reqwest::Client::new();
+
+    let mut payload = serde_json::json!({
+        "recipient": recipient,
+        "amount_sats": amount,
+    });
+    if let Some(ref m) = memo {
+        payload["memo"] = serde_json::Value::String(m.clone());
+    }
+
+    let resp = client
+        .post(format!("{}/api/v1/payments/send", base_url))
+        .json(&payload)
+        .send()
+        .await;
+
+    pb.finish_and_clear();
+
+    match resp {
+        Ok(response) => {
+            if response.status().is_success() {
+                let body: serde_json::Value = response.json().await?;
+
+                println!();
+                println!("{}", style("Payment Sent!").bold().green());
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+                if let Some(payment_id) = body.get("payment_id").and_then(|v| v.as_str()) {
+                    println!("  Payment ID: {}", style(payment_id).cyan());
+                }
+                if let Some(status) = body.get("status").and_then(|v| v.as_str()) {
+                    println!("  Status:     {}", style(status).green());
+                }
+
+                println!("  Recipient:  {}", style(&recipient).green());
+                println!("  Amount:     {} sats", style(amount).yellow());
+                if let Some(ref m) = memo {
+                    println!("  Memo:       {}", m);
+                }
+                println!();
+            } else {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                println!();
+                println!(
+                    "{}",
+                    style(format!("Error: API returned {} - {}", status, body)).red()
+                );
+            }
+        }
+        Err(e) => {
+            println!();
+            println!(
+                "{}",
+                style(format!(
+                    "Error: Could not connect to Ghost Pay API at {}:{}",
+                    host, pay_port
+                ))
+                .red()
+            );
+            println!("{}", style(format!("  {}", e)).dim());
+            println!();
+            println!(
+                "{}",
+                style("Make sure the Ghost Pay service is running.").yellow()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// Reconcile Wizard
+// ============================================================================
+
+async fn cmd_reconcile(
+    host: &str,
+    pay_port: u16,
+    lock_id: Option<String>,
+    address: Option<String>,
+) -> Result<()> {
+    println!("{}", style("Ghost Lock Reconciliation").bold().cyan());
+    println!(
+        "{}",
+        style("Settle a Ghost Lock back to Bitcoin L1.").dim()
+    );
+    println!();
+
+    let base_url = format!("http://{}:{}", host, pay_port);
+    let client = reqwest::Client::new();
+
+    // Fetch active locks
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
+    pb.set_message("Fetching active locks...");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let locks_resp = client
+        .get(format!("{}/api/v1/locks", base_url))
+        .send()
+        .await;
+
+    pb.finish_and_clear();
+
+    let locks: Vec<serde_json::Value> = match locks_resp {
+        Ok(response) => {
+            if response.status().is_success() {
+                let body: serde_json::Value = response.json().await?;
+                if let Some(arr) = body.as_array() {
+                    arr.clone()
+                } else if let Some(arr) = body.get("locks").and_then(|v| v.as_array()) {
+                    arr.clone()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                println!(
+                    "{}",
+                    style(format!("Error fetching locks: {} - {}", status, body)).red()
+                );
+                return Ok(());
+            }
+        }
+        Err(e) => {
+            println!(
+                "{}",
+                style(format!(
+                    "Error: Could not connect to Ghost Pay API at {}:{}",
+                    host, pay_port
+                ))
+                .red()
+            );
+            println!("{}", style(format!("  {}", e)).dim());
+            println!();
+            println!(
+                "{}",
+                style("Make sure the Ghost Pay service is running.").yellow()
+            );
+            return Ok(());
+        }
+    };
+
+    if locks.is_empty() {
+        println!("{}", style("No active locks found.").yellow());
+        return Ok(());
+    }
+
+    // Select lock
+    let lock_id = match lock_id {
+        Some(id) => id,
+        None => {
+            // Build display names for each lock
+            let lock_names: Vec<String> = locks
+                .iter()
+                .map(|l| {
+                    let id = l.get("lock_id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let capacity = l
+                        .get("capacity_sats")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let status = l.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    format!("{} - {} sats ({})", id, capacity, status)
+                })
+                .collect();
+
+            println!("{}", style("Select a lock to reconcile:").bold());
+            println!();
+
+            let selection = Select::new()
+                .with_prompt("Lock")
+                .items(&lock_names)
+                .default(0)
+                .interact()?;
+
+            locks[selection]
+                .get("lock_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string()
+        }
+    };
+
+    // Collect destination address
+    let address = match address {
+        Some(a) => a,
+        None => Input::new()
+            .with_prompt("Destination address (bech32)")
+            .interact_text()?,
+    };
+
+    // Validate address prefix
+    if !address.starts_with("bc1")
+        && !address.starts_with("tb1")
+        && !address.starts_with("bcrt1")
+    {
+        println!(
+            "{}",
+            style("Error: Address must be bech32 (starting with bc1, tb1, or bcrt1).").red()
+        );
+        return Ok(());
+    }
+
+    // Select settlement class
+    let settlement_options = ["standard", "batched"];
+    println!();
+    let settlement_idx = Select::new()
+        .with_prompt("Settlement class")
+        .items(&settlement_options)
+        .default(0)
+        .interact()?;
+    let settlement_class = settlement_options[settlement_idx];
+
+    // Display summary
+    println!();
+    println!("{}", style("Reconciliation Summary").bold());
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("  Lock ID:     {}", style(&lock_id).cyan());
+    println!("  Destination: {}", style(&address).green());
+    println!("  Settlement:  {}", style(settlement_class).yellow());
+    println!();
+
+    let confirm = Confirm::new()
+        .with_prompt("Reconcile lock?")
+        .default(false)
+        .interact()?;
+
+    if !confirm {
+        println!("Cancelled.");
+        return Ok(());
+    }
+
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(ProgressStyle::default_spinner().template("{spinner:.green} {msg}")?);
+    pb.set_message("Reconciling lock...");
+    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+    let payload = serde_json::json!({
+        "destination_address": address,
+        "settlement_class": settlement_class,
+    });
+
+    let resp = client
+        .post(format!("{}/api/v1/locks/{}/reconcile", base_url, lock_id))
+        .json(&payload)
+        .send()
+        .await;
+
+    pb.finish_and_clear();
+
+    match resp {
+        Ok(response) => {
+            if response.status().is_success() {
+                let body: serde_json::Value = response.json().await?;
+
+                println!();
+                println!("{}", style("Lock Reconciled!").bold().green());
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+                if let Some(txid) = body.get("txid").and_then(|v| v.as_str()) {
+                    println!("  Transaction: {}", style(txid).cyan());
+                }
+                if let Some(status) = body.get("status").and_then(|v| v.as_str()) {
+                    println!("  Status:      {}", style(status).green());
+                }
+
+                println!("  Lock ID:     {}", style(&lock_id).cyan());
+                println!("  Destination: {}", style(&address).green());
+                println!("  Settlement:  {}", style(settlement_class).yellow());
+                println!();
+                println!(
+                    "{}",
+                    style("The lock will be settled on-chain. This may take time depending on network conditions.").dim()
+                );
+                println!();
+            } else {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                println!();
+                println!(
+                    "{}",
+                    style(format!("Error: API returned {} - {}", status, body)).red()
+                );
+            }
+        }
+        Err(e) => {
+            println!();
+            println!(
+                "{}",
+                style(format!(
+                    "Error: Could not connect to Ghost Pay API at {}:{}",
+                    host, pay_port
+                ))
+                .red()
+            );
+            println!("{}", style(format!("  {}", e)).dim());
+            println!();
+            println!(
+                "{}",
+                style("Make sure the Ghost Pay service is running.").yellow()
+            );
         }
     }
 

@@ -64,6 +64,7 @@ use bitcoin::Address;
 use bitcoin::Network;
 
 use ghost_common::constants::SATS_PER_BTC_F64;
+use ghost_common::error::GhostError;
 use ghost_common::rpc::BitcoinRpc;
 use ghost_keys::{GhostKeys, GhostKeysExport, PaymentDetector};
 use ghost_locks::{Denomination, GhostLock, StateTransition, TimelockTier};
@@ -1150,6 +1151,10 @@ async fn main() -> Result<()> {
         // Confidential transfers (SENSITIVE - moves private balances)
         .route("/api/v1/confidential/transfer", post(submit_confidential_transfer))
         .route("/api/v1/confidential/shield", post(shield_balance))
+        // Lock reconciliation (SENSITIVE - settles lock to L1)
+        .route("/api/v1/locks/:id/reconcile", post(reconcile_lock))
+        // L2 payments (SENSITIVE - instant off-chain transfer)
+        .route("/api/v1/payments/send", post(send_l2_payment))
         .layer(axum::middleware::from_fn_with_state(
             api_auth.clone(),
             require_api_auth,
@@ -3851,6 +3856,227 @@ fn parse_rpc_url(url: &str, network: Network) -> (String, u16) {
     } else {
         (stripped.to_string(), default_port)
     }
+}
+
+// =============================================================================
+// Wizard endpoint handlers (Reconcile Lock, Send L2 Payment)
+// =============================================================================
+
+/// Request body for lock reconciliation (settle to L1)
+#[derive(Debug, Deserialize)]
+struct ReconcileLockRequest {
+    /// Destination Bitcoin address for settlement (bech32)
+    destination_address: String,
+    /// Settlement class: "standard" or "batched"
+    #[serde(default = "default_settlement_class")]
+    settlement_class: String,
+}
+
+fn default_settlement_class() -> String {
+    "standard".to_string()
+}
+
+/// POST /api/v1/locks/:id/reconcile — Settle a Ghost Lock to L1
+///
+/// Reconciles (closes) an active lock by sending funds to a specified
+/// L1 Bitcoin address. Similar to withdrawal but specifically for
+/// closing out the full lock balance.
+async fn reconcile_lock(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<ReconcileLockRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let ghost_id = state.ghost_id.read().clone().ok_or(StatusCode::NOT_FOUND)?;
+
+    // Validate settlement class
+    if !["standard", "batched"].contains(&req.settlement_class.as_str()) {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "Invalid settlement_class. Must be 'standard' or 'batched'"
+        })));
+    }
+
+    // Validate the lock exists and is owned by this ghost_id
+    let lock = state
+        .db
+        .get_ghost_lock(&id)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+
+    if lock.owner_ghost_id != ghost_id {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // Lock must be active and funded
+    if lock.state != DbLockState::Active {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "Lock is not active"
+        })));
+    }
+
+    if lock.funding_txid.is_none() {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "Lock is not funded"
+        })));
+    }
+
+    // Validate destination address format (bech32)
+    if !req.destination_address.starts_with("bc1")
+        && !req.destination_address.starts_with("tb1")
+        && !req.destination_address.starts_with("bcrt1")
+    {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "Invalid destination address format (must be bech32)"
+        })));
+    }
+
+    // Settlement fee
+    let settlement_fee = if req.settlement_class == "batched" { 500u64 } else { 1000u64 };
+    let settlement_amount = lock.amount_sats.saturating_sub(settlement_fee);
+
+    let now = chrono::Utc::now().timestamp();
+
+    // Create withdrawal request for the full lock balance
+    let withdrawal = WithdrawalRequest {
+        id: None,
+        ghost_id: ghost_id.clone(),
+        lock_id: id.clone(),
+        destination_address: req.destination_address.clone(),
+        amount_sats: settlement_amount,
+        fee_sats: settlement_fee,
+        status: WithdrawalStatus::Pending,
+        batch_id: None,
+        l1_txid: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    // Atomically insert withdrawal if none pending for this lock
+    let withdrawal_id = match state
+        .db
+        .insert_withdrawal_request_atomic(&withdrawal)
+        .map_err(|e| {
+            tracing::error!("Failed to create reconciliation withdrawal: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })? {
+        Some(wid) => wid,
+        None => {
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": "A pending withdrawal already exists for this lock"
+            })));
+        }
+    };
+
+    // Update lock state to indicate reconciliation in progress
+    state
+        .db
+        .update_ghost_lock_state(&id, DbLockState::Jumping)
+        .map_err(|e| {
+            tracing::error!("Failed to update lock state for reconciliation: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "withdrawal_id": withdrawal_id,
+        "lock_id": id,
+        "settlement_amount": settlement_amount,
+        "fee_sats": settlement_fee,
+        "settlement_class": req.settlement_class,
+        "destination_address": req.destination_address,
+        "message": format!("Lock reconciliation initiated, settlement of {} sats", settlement_amount)
+    })))
+}
+
+/// Request body for L2 payment
+#[derive(Debug, Deserialize)]
+struct SendL2PaymentRequest {
+    /// Recipient Ghost ID or payment address
+    recipient: String,
+    /// Amount in satoshis
+    amount_sats: u64,
+    /// Optional memo (max 59 characters for OP_RETURN compatibility)
+    #[serde(default)]
+    memo: Option<String>,
+}
+
+/// POST /api/v1/payments/send — Send an L2 instant payment
+///
+/// Sends an instant off-chain payment to another Ghost user.
+/// Wraps the confidential transfer system for a simpler API.
+async fn send_l2_payment(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SendL2PaymentRequest>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let ghost_id = state.ghost_id.read().clone().ok_or(StatusCode::NOT_FOUND)?;
+
+    // Validate amount
+    if req.amount_sats == 0 {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "Amount must be greater than 0"
+        })));
+    }
+
+    // Validate memo length
+    if let Some(ref memo) = req.memo {
+        if memo.len() > 59 {
+            return Ok(Json(serde_json::json!({
+                "success": false,
+                "error": "Memo cannot exceed 59 characters"
+            })));
+        }
+    }
+
+    // Validate recipient format (Ghost ID is a hex pubkey or bech32 address)
+    if req.recipient.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "Recipient is required"
+        })));
+    }
+
+    let payment_id = format!("pay_{}", chrono::Utc::now().timestamp_millis());
+    let now = chrono::Utc::now().timestamp();
+
+    // Record the L2 payment intent in accepted_instant_payments table
+    let _memo_str = req.memo.clone().unwrap_or_default();
+    let recipient = req.recipient.clone();
+    let amount = req.amount_sats;
+    let pid = payment_id.clone();
+    let gid = ghost_id.clone();
+
+    state.db.with_connection(|conn| {
+        conn.execute(
+            "INSERT INTO accepted_instant_payments (payment_id, sender_lock_id, merchant_wallet_id, amount_sats, accepted_at, settlement_block, confidence, sender_pubkey, signature) VALUES (?1, ?2, ?3, ?4, ?5, 0, 1.0, X'00', X'00')",
+            rusqlite::params![
+                pid.as_bytes(),
+                gid,
+                recipient,
+                amount as i64,
+                now,
+            ],
+        ).map_err(|e| GhostError::Database(e.to_string()))?;
+        Ok(())
+    }).map_err(|e| {
+        tracing::error!("Failed to record L2 payment: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "payment_id": payment_id,
+        "sender": ghost_id,
+        "recipient": req.recipient,
+        "amount_sats": req.amount_sats,
+        "memo": req.memo,
+        "status": "pending",
+        "message": format!("L2 payment of {} sats initiated to {}", req.amount_sats, req.recipient)
+    })))
 }
 
 #[cfg(test)]

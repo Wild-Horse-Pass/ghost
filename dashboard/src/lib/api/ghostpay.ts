@@ -144,3 +144,26 @@ export async function getGhostPayPayoutHistory(
     `/api/v1/ghostpay/payout-history?time_filter=${timeFilter}`
   );
 }
+
+// Lock reconciliation (settle lock to L1)
+export async function reconcileLock(lockId: string, config: {
+  destination_address: string;
+  settlement_class?: 'standard' | 'batched';
+}): Promise<{ success: boolean; withdrawal_id?: number; message: string }> {
+  return fetchApi(`/api/v1/locks/${lockId}/reconcile`, {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}
+
+// Send L2 instant payment
+export async function sendL2Payment(config: {
+  recipient: string;
+  amount_sats: number;
+  memo?: string;
+}): Promise<{ success: boolean; payment_id?: string; message: string }> {
+  return fetchApi('/api/v1/payments/send', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+}

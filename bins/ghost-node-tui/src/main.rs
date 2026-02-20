@@ -15,8 +15,11 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
-    Terminal,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
+    Frame, Terminal,
 };
 use tokio::sync::mpsc;
 use tracing::Level;
@@ -28,9 +31,11 @@ mod config;
 mod pages;
 mod theme;
 mod widgets;
+mod wizard;
 
 use app::{App, InputMode, Tab};
 use config::SwarmConfig;
+use wizard::WizardAction;
 
 #[derive(Parser, Debug)]
 #[command(name = "ghost-node-tui")]
@@ -195,6 +200,12 @@ async fn run_app(
             if matches!(app.input_mode, InputMode::ConfirmAction) {
                 widgets::render_confirm_dialog(f, f.area(), app);
             }
+            if matches!(app.input_mode, InputMode::WizardPicker) {
+                render_wizard_picker(f, f.area());
+            }
+            if let Some(ref wiz) = app.active_wizard {
+                wizard::render::render_wizard(f, f.area(), wiz);
+            }
         })?;
 
         // Handle events
@@ -223,6 +234,27 @@ async fn run_app(
 }
 
 async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
+    // Handle active wizard first — all keys go to wizard when one is open
+    if let Some(ref mut wiz) = app.active_wizard {
+        match wiz.handle_key(code) {
+            WizardAction::Continue => {}
+            WizardAction::Submit => {
+                // Wizard completed — identify which wizard by first step id
+                let wizard_id = app
+                    .active_wizard
+                    .as_ref()
+                    .and_then(|w| w.steps.first().map(|s| s.id))
+                    .unwrap_or("");
+                app.status_message = format!("Wizard '{}' submitted", wizard_id);
+                app.active_wizard = None;
+            }
+            WizardAction::Close => {
+                app.active_wizard = None;
+            }
+        }
+        return false;
+    }
+
     // Handle input mode first
     match app.input_mode {
         InputMode::Normal => {}
@@ -454,6 +486,70 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
                 _ => return false,
             }
         }
+        InputMode::WizardPicker => {
+            match code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    app.status_message.clear();
+                    return false;
+                }
+                KeyCode::Char('1') => {
+                    app.active_wizard = Some(wizard::initial_setup::create());
+                    app.input_mode = InputMode::Normal;
+                    app.status_message.clear();
+                    return false;
+                }
+                KeyCode::Char('2') => {
+                    app.active_wizard = Some(wizard::change_setup::create());
+                    app.input_mode = InputMode::Normal;
+                    app.status_message.clear();
+                    return false;
+                }
+                KeyCode::Char('3') => {
+                    app.active_wizard = Some(wizard::ghost_mode::create());
+                    app.input_mode = InputMode::Normal;
+                    app.status_message.clear();
+                    return false;
+                }
+                KeyCode::Char('4') => {
+                    app.active_wizard = Some(wizard::reaper::create());
+                    app.input_mode = InputMode::Normal;
+                    app.status_message.clear();
+                    return false;
+                }
+                KeyCode::Char('5') => {
+                    app.active_wizard = Some(wizard::pool_setup::create());
+                    app.input_mode = InputMode::Normal;
+                    app.status_message.clear();
+                    return false;
+                }
+                KeyCode::Char('6') => {
+                    app.active_wizard = Some(wizard::haze::create());
+                    app.input_mode = InputMode::Normal;
+                    app.status_message.clear();
+                    return false;
+                }
+                KeyCode::Char('7') => {
+                    app.active_wizard = Some(wizard::shroud::create());
+                    app.input_mode = InputMode::Normal;
+                    app.status_message.clear();
+                    return false;
+                }
+                KeyCode::Char('8') => {
+                    app.active_wizard = Some(wizard::mempool_policy::create());
+                    app.input_mode = InputMode::Normal;
+                    app.status_message.clear();
+                    return false;
+                }
+                KeyCode::Char('9') => {
+                    app.active_wizard = Some(wizard::build_run::create());
+                    app.input_mode = InputMode::Normal;
+                    app.status_message.clear();
+                    return false;
+                }
+                _ => return false,
+            }
+        }
     }
 
     // Normal mode key handling
@@ -535,6 +631,10 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
             app.input_mode = InputMode::InputPayoutAddress;
             app.input_buffer.clear();
             app.status_message = "Enter payout address:".to_string();
+        }
+        KeyCode::Char('w') if matches!(app.current_tab, Tab::Settings) => {
+            app.input_mode = InputMode::WizardPicker;
+            app.status_message = "Select wizard: 1=Setup 2=Change 3=Ghost Mode 4=Reaper 5=Pool 6=Haze 7=Shroud 8=Mempool 9=Build".to_string();
         }
 
         // Backup actions
@@ -850,4 +950,68 @@ fn save_swarm_config(app: &App) {
     if let Err(e) = config.save() {
         tracing::error!("Failed to save config: {}", e);
     }
+}
+
+/// Render the wizard picker overlay (shown when user presses 'w' on Settings page)
+fn render_wizard_picker(f: &mut Frame, area: Rect) {
+    let popup_width = 50u16;
+    let popup_height = 15u16;
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
+
+    f.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(Span::styled(
+            " Launch Wizard ",
+            Style::default()
+                .fg(Color::Rgb(234, 88, 12))
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(31, 41, 55)));
+
+    let inner = block.inner(popup_area);
+    f.render_widget(block, popup_area);
+
+    let entries = [
+        ("1", "Initial Setup"),
+        ("2", "Change Setup"),
+        ("3", "Ghost Mode"),
+        ("4", "Reaper"),
+        ("5", "Pool Setup"),
+        ("6", "Haze / Exorcism"),
+        ("7", "Shroud"),
+        ("8", "Mempool Policy"),
+        ("9", "Build / Run"),
+    ];
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "  Select a wizard:",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+
+    for (key, label) in &entries {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("    [{}]", key),
+                Style::default().fg(Color::Rgb(234, 88, 12)),
+            ),
+            Span::styled(format!("  {}", label), Style::default().fg(Color::Gray)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Esc to cancel",
+        Style::default().fg(Color::Rgb(156, 163, 175)),
+    )));
+
+    let paragraph = Paragraph::new(lines);
+    f.render_widget(paragraph, inner);
 }
