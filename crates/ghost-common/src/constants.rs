@@ -35,12 +35,13 @@ pub const SATS_PER_BTC: u64 = 100_000_000;
 pub const SATS_PER_BTC_F64: f64 = 100_000_000.0;
 
 // =============================================================================
-// ECONOMIC CONSTANTS
+// ECONOMIC CONSTANTS — PROTOCOL CONSTANTS, DO NOT MODIFY AFTER MAINNET
 // =============================================================================
 
 /// Pool fee in basis points (100 bps = 1% of block subsidy)
 /// SECURITY: Use basis points for integer arithmetic to avoid float ambiguity.
 /// This is the single source of truth for pool fee calculation.
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const POOL_FEE_BASIS_POINTS: u64 = 100;
 
 /// Pool fee percentage (1% of block subsidy)
@@ -49,47 +50,59 @@ pub const POOL_FEE_BASIS_POINTS: u64 = 100;
 pub const POOL_FEE_PERCENT: f64 = 1.0;
 
 /// Treasury threshold in satoshis (21 BTC)
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const TREASURY_THRESHOLD_SATS: u64 = 21 * SATS_PER_BTC;
 
 /// Treasury decay period in years
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const TREASURY_DECAY_YEARS: u32 = 5;
 
 /// Dust threshold in satoshis
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const DUST_THRESHOLD_SATS: u64 = 546;
 
 // =============================================================================
-// COINBASE OUTPUT LIMITS
+// COINBASE OUTPUT LIMITS — PROTOCOL CONSTANTS, DO NOT MODIFY AFTER MAINNET
 // =============================================================================
 
 /// Maximum miner outputs in coinbase
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const MAX_MINER_OUTPUTS: usize = 200;
 
 /// Maximum node reward outputs in coinbase
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const MAX_NODE_OUTPUTS: usize = 100;
 
 /// Maximum total coinbase outputs (1 treasury + 100 nodes + 200 miners)
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const MAX_COINBASE_OUTPUTS: usize = 301;
 
 // =============================================================================
-// NODE REWARD SHARES (5-4-3-2-1 SYSTEM)
+// NODE REWARD SHARES (5-4-3-2-1 SYSTEM) — PROTOCOL CONSTANTS, DO NOT MODIFY AFTER MAINNET
 // =============================================================================
 
 /// Archive mode capability shares
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const ARCHIVE_MODE_SHARES: i32 = 5;
 
 /// Ghost Pay capability shares
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const GHOST_PAY_SHARES: i32 = 4;
 
 /// Public mining capability shares
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const PUBLIC_MINING_SHARES: i32 = 3;
 
 /// Reaper strict mode capability shares
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const REAPER_SHARES: i32 = 2;
 
 /// Elder status capability shares
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const ELDER_STATUS_SHARES: i32 = 1;
 
 /// Maximum possible node shares
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const MAX_NODE_SHARES: i32 = 15;
 
 /// MEDIUM-STOR-1: Compile-time assertion that max shares cannot overflow i32
@@ -107,16 +120,19 @@ const _: () = {
 };
 
 // =============================================================================
-// UPTIME & ELDER
+// UPTIME & ELDER — PROTOCOL CONSTANTS, DO NOT MODIFY AFTER MAINNET
 // =============================================================================
 
 /// Uptime gatekeeper threshold percentage (95%)
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const UPTIME_GATEKEEPER_THRESHOLD: f64 = 95.0;
 
 /// Uptime window in days
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const UPTIME_WINDOW_DAYS: u64 = 7;
 
 /// Maximum number of elders
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const MAX_ELDERS: u32 = 101;
 
 /// Elder offline threshold in days (for revocation eligibility)
@@ -127,6 +143,7 @@ pub const ELDER_OFFLINE_THRESHOLD_DAYS: u64 = 7;
 // =============================================================================
 
 /// BFT threshold percentage (67%)
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const BFT_THRESHOLD_PERCENT: u64 = 67;
 
 /// Consensus voting timeout in milliseconds
@@ -143,6 +160,7 @@ pub const SHARE_CONVERGENCE_TIMEOUT_MS: u64 = 30000;
 // =============================================================================
 
 /// Verification interval in seconds (5 minutes)
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const VERIFICATION_INTERVAL_SECS: u64 = 300;
 
 /// Verification HTTP timeout in seconds
@@ -152,18 +170,23 @@ pub const VERIFICATION_TIMEOUT_SECS: u64 = 10;
 pub const NODES_TO_VERIFY_PER_ROUND: usize = 3;
 
 /// Minimum challenges required for capability qualification
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const MIN_CHALLENGES_FOR_QUALIFICATION: usize = 10;
 
 /// Archive mode pass rate threshold
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const ARCHIVE_PASS_RATE: f64 = 0.95;
 
 /// Policy challenge pass rate threshold
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const POLICY_PASS_RATE: f64 = 0.95;
 
 /// Stratum challenge pass rate threshold
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const STRATUM_PASS_RATE: f64 = 0.95;
 
 /// Ghost Pay challenge pass rate threshold
+/// PROTOCOL CONSTANT — DO NOT MODIFY AFTER MAINNET
 pub const GHOSTPAY_PASS_RATE: f64 = 0.90;
 
 // =============================================================================

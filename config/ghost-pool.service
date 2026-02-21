@@ -1,7 +1,7 @@
 [Unit]
 Description=Ghost Pool - Decentralized Bitcoin Mining Pool
 Documentation=https://github.com/bitcoin-ghost/ghost-pool
-After=network-online.target bitcoind.service
+After=network-online.target ghostd.service
 Wants=network-online.target
 
 [Service]

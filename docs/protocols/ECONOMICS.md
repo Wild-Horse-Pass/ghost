@@ -22,6 +22,12 @@
 
 # Economics
 
+## Mainnet Immutability Notice
+
+All parameters listed below are protocol constants hardcoded in `crates/ghost-common/src/constants.rs` and `bins/ghost-pool/src/treasury.rs`. They MUST NOT be modified after mainnet launch. Changing them would constitute a protocol-breaking change requiring network-wide consensus.
+
+---
+
 Fee structure, treasury management, and reward distribution.
 
 ## Overview
@@ -113,7 +119,7 @@ Nodes earn shares based on the services they provide:
 | Archive Mode | +5 | Random block retrieval challenges |
 | Ghost Pay | +4 | L2 block lookup challenges |
 | Public Mining | +3 | Stratum port accessibility |
-| Bitcoin Pure | +2 | Policy challenge (tx classification) |
+| Reaper | +2 | Reaper strict mode (mempool dead-code filtering) |
 | Elder Status | +1 | First 101 nodes, still active |
 
 **Maximum shares**: 15 (5+4+3+2+1)
@@ -272,9 +278,58 @@ Nodes verify each other's capabilities:
 | Archive Mode (+5) | 95% |
 | Ghost Pay (+4) | 90% |
 | Public Mining (+3) | 95% |
-| Bitcoin Pure (+2) | 95% |
+| Reaper (+2) | 95% |
 
 Failing challenges = losing shares = losing income.
+
+## Protocol Constants Reference
+
+All values below are hardcoded in the source. See `crates/ghost-common/src/constants.rs`.
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| Pool fee | 1% (100 basis points) | `POOL_FEE_BASIS_POINTS` |
+| Miner allocation | 99% of subsidy | `subsidy - pool_fee` |
+| Treasury threshold | 21 BTC (2,100,000,000 sats) | `TREASURY_THRESHOLD_SATS` |
+| Decay period | 5 years | `TREASURY_DECAY_YEARS` |
+| Dust threshold | 546 sats | `DUST_THRESHOLD_SATS` |
+| Max miner outputs | 200 | `MAX_MINER_OUTPUTS` |
+| Max node outputs | 100 | `MAX_NODE_OUTPUTS` |
+| Max coinbase outputs | 301 | `MAX_COINBASE_OUTPUTS` |
+| Archive shares | +5 | `ARCHIVE_MODE_SHARES` |
+| Ghost Pay shares | +4 | `GHOST_PAY_SHARES` |
+| Public Mining shares | +3 | `PUBLIC_MINING_SHARES` |
+| Reaper shares | +2 | `REAPER_SHARES` |
+| Elder shares | +1 | `ELDER_STATUS_SHARES` |
+| Max shares | 15 | `MAX_NODE_SHARES` |
+| Uptime gatekeeper | 95% over 7 days | `UPTIME_GATEKEEPER_THRESHOLD` / `UPTIME_WINDOW_DAYS` |
+| Max elders | 101 | `MAX_ELDERS` |
+| BFT threshold | 67% | `BFT_THRESHOLD_PERCENT` |
+| Verification interval | 300s (5 min) | `VERIFICATION_INTERVAL_SECS` |
+| Min challenges | 10 | `MIN_CHALLENGES_FOR_QUALIFICATION` |
+| Archive pass rate | 95% | `ARCHIVE_PASS_RATE` |
+| Policy pass rate | 95% | `POLICY_PASS_RATE` |
+| Stratum pass rate | 95% | `STRATUM_PASS_RATE` |
+| Ghost Pay pass rate | 90% | `GHOSTPAY_PASS_RATE` |
+| Ghost Pay fee | 0.1% (10 bps) + 10 sat min | `GHOSTPAY_FEE_BPS` / `GHOSTPAY_MIN_FEE_SATS` |
+| Wraith mixing fee | 1% | `WRAITH_FEE_PERCENT` |
+
+### Treasury Decay Schedule
+
+Source: `bins/ghost-pool/src/treasury.rs` (`DECAY_SCHEDULE_BPS`)
+
+| Period | Treasury (of pool fee) | Node Rewards (of pool fee) |
+|--------|------------------------|---------------------------|
+| Pre-threshold (< 21 BTC) | 50% | 50% |
+| Year 1 | 40% | 60% |
+| Year 2 | 30% | 70% |
+| Year 3 | 20% | 80% |
+| Year 4 | 10% | 90% |
+| Year 5+ | 0% | 100% |
+
+### TX Fee Allocation
+
+TX fees (transaction fees from included transactions) go 100% to the block-finding node operator. They are NOT subject to the pool fee and are NOT split with treasury or node reward pool.
 
 ## Economic Incentives Summary
 
@@ -284,7 +339,7 @@ Failing challenges = losing shares = losing income.
 | Node operators | TX fees | Build blocks with transactions |
 | Service providers | Node shares | Run Archive/GhostPay/etc |
 | Early adopters | Elder bonus | Be among first 101 nodes |
-| Treasury | Development funding | 0.5% (decaying) of subsidy |
+| Treasury | Development funding (decays to 0% over 5 years) | 0.5% (decaying) of subsidy |
 
 ## Related Documentation
 

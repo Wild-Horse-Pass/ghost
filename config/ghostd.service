@@ -1,0 +1,43 @@
+[Unit]
+Description=Ghost Core - Bitcoin Ghost Full Node
+Documentation=https://github.com/bitcoin-ghost
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ghost
+Group=ghost
+
+ExecStart=/opt/ghost/bin/ghostd \
+  -signet \
+  -datadir=/var/lib/bitcoin \
+  -server=1 \
+  -rpcbind=127.0.0.1 \
+  -rpcport=38332 \
+  -rpcuser=ghostrpc \
+  -rpcpassword=ghost_signet_rpc_2024 \
+  -rpcallowip=127.0.0.1/32 \
+  -disablewallet \
+  -maxconnections=32 \
+  -listen=1 \
+  -port=38333 \
+  -ghostreaper=moderate \
+  -zmqpubhashblock=tcp://127.0.0.1:28332 \
+  -zmqpubhashtx=tcp://127.0.0.1:28333 \
+  -zmqpubsequence=tcp://127.0.0.1:28334
+
+# Restart configuration
+Restart=on-failure
+RestartSec=30
+
+# Resource limits
+LimitNOFILE=65536
+
+# Security hardening
+ProtectSystem=full
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
