@@ -62,7 +62,7 @@ use ghost_buds::BudsClassifier;
 use ghost_common::config::{BitcoinNetwork, MiningMode};
 use ghost_reaper::ReaperConfig;
 use ghost_common::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
-use ghost_common::types::{PayoutProposal, TreasuryAddress};
+use ghost_common::types::{PayoutProposal, PayoutType, TreasuryAddress};
 use ghost_policy::PolicyProfile;
 use ghost_storage::Database;
 
@@ -105,7 +105,7 @@ pub struct BlockSubmittedInfo {
 
 /// Type alias for coinbase build result:
 /// (coinbase1, coinbase2, witness_data, outputs_serialized, outputs_count)
-type CoinbaseBuildResult = (Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32);
+type CoinbaseBuildResult = (Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32, Option<CoinbaseCommitment>);
 
 /// Template processor configuration
 #[derive(Debug, Clone)]
@@ -256,6 +256,8 @@ pub struct WorkState {
     pub height: u64,
     /// Total fees in template
     pub total_fees: u64,
+    /// Block subsidy (derived from Bitcoin Core's coinbasevalue, not calculated independently)
+    pub subsidy: u64,
     /// Transaction count (including coinbase)
     pub tx_count: usize,
     /// Total weight of transactions (for block weight validation)
@@ -635,7 +637,7 @@ impl TemplateProcessor {
                 address: treasury_addr,
                 amount: proposal.treasury_amount,
                 recipient_id: [0u8; 32],
-                payout_type: ghost_common::types::PayoutType::Treasury,
+                payout_type: PayoutType::Treasury,
             });
         }
 
@@ -737,7 +739,7 @@ impl TemplateProcessor {
         total_value: u64,
         witness_commitment: &Option<String>,
         payout_snapshot: Option<[u8; 32]>,
-    ) -> Result<(Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32), TemplateError> {
+    ) -> Result<CoinbaseBuildResult, TemplateError> {
         // H-MINE-2: Use the snapshot instead of reading from the lock
         // MED-POOL-6: If we have a snapshot hash but can't find the proposal, this is an ERROR.
         // Do NOT silently fall back to placeholder - that would lose all payout data.
@@ -761,6 +763,126 @@ impl TemplateProcessor {
             }
             None => None, // No approved payout, use fallback
         };
+
+        // Stale proposal detection: if the proposal's subsidy exceeds the current
+        // coinbase value, the proposal is from a different halving epoch (e.g. loaded
+        // from DB after restart at a different height). Clear it to break the deadlock
+        // where stale proposals prevent new blocks → prevent new proposals.
+        let proposal = proposal.and_then(|prop| {
+            if prop.subsidy > total_value {
+                error!(
+                    proposal_subsidy = prop.subsidy,
+                    total_value,
+                    proposal_height = prop.block_height,
+                    "Stale payout proposal: subsidy exceeds coinbase value — clearing approved payout"
+                );
+                self.clear_approved_payout();
+                return None;
+            }
+            Some(prop)
+        });
+
+        // Bidirectional fee adjustment: the BFT-approved proposal baked in tx_fees at
+        // creation time, but template filtering (Reaper/BUDS/mempool changes) and RBF can
+        // change available fees before the coinbase is built. Adjust the block finder's fee
+        // portion to match actual available fees — no BFT re-proposal needed.
+        let proposal = proposal.and_then(|mut prop| {
+            let available_fees = total_value.saturating_sub(prop.subsidy);
+            let original_fees = prop.tx_fees;
+
+            if available_fees != original_fees {
+                if available_fees < original_fees {
+                    // FEES DECREASED: reduce block finder's fee portion
+                    let excess = original_fees - available_fees;
+                    let mut remaining = excess;
+
+                    // Step 1: Reduce TxFees-type entries
+                    for entry in &mut prop.node_payouts {
+                        if remaining == 0 {
+                            break;
+                        }
+                        if entry.payout_type == PayoutType::TxFees {
+                            let reduction = remaining.min(entry.amount);
+                            entry.amount -= reduction;
+                            remaining -= reduction;
+                        }
+                    }
+
+                    // Step 2: Reduce proposer's entry (fees merged into NodeReward)
+                    if remaining > 0 {
+                        for entry in &mut prop.node_payouts {
+                            if remaining == 0 {
+                                break;
+                            }
+                            if entry.recipient_id == prop.proposer {
+                                let reduction = remaining.min(entry.amount);
+                                entry.amount -= reduction;
+                                remaining -= reduction;
+                            }
+                        }
+                    }
+
+                    // Step 3: Fallback if can't absorb
+                    if remaining > 0 {
+                        warn!(
+                            remaining, height,
+                            "Could not absorb fee decrease — using fallback"
+                        );
+                        return None;
+                    }
+
+                    info!(
+                        original_fees, available_fees, reduction = excess, height,
+                        "Adjusted payout: fees decreased"
+                    );
+                } else {
+                    // FEES INCREASED (RBF): add extra to block finder — uncapped
+                    let extra = available_fees - original_fees;
+                    let mut allocated = false;
+
+                    for entry in &mut prop.node_payouts {
+                        if entry.payout_type == PayoutType::TxFees
+                            || entry.recipient_id == prop.proposer
+                        {
+                            entry.amount = entry.amount.saturating_add(extra);
+                            allocated = true;
+                            break;
+                        }
+                    }
+
+                    if !allocated {
+                        debug!(
+                            extra, height,
+                            "Extra fees unclaimed — no block finder entry"
+                        );
+                    } else {
+                        info!(
+                            original_fees, available_fees, extra, height,
+                            "Adjusted payout: fees increased (RBF)"
+                        );
+                    }
+                }
+            }
+
+            // Final sanity: must not exceed available value
+            let adjusted_total: u64 = prop
+                .miner_payouts
+                .iter()
+                .map(|e| e.amount)
+                .sum::<u64>()
+                + prop.node_payouts.iter().map(|e| e.amount).sum::<u64>()
+                + prop.treasury_amount;
+
+            if adjusted_total > total_value {
+                error!(
+                    adjusted_total, total_value, height,
+                    "CRITICAL: Adjusted proposal exceeds available — using fallback"
+                );
+                return None;
+            }
+
+            Some(prop)
+        });
 
         // Build coinbase1 - NON-WITNESS format (no marker/flag)
         // Format: version | input_count | prev_txhash | prev_outindex | scriptsig_len | scriptsig_data
@@ -993,12 +1115,25 @@ impl TemplateProcessor {
         // The witness nonce is all zeros per BIP141 default
         witness_data.nonce = [0u8; 32];
 
+        // Compute commitment from the ADJUSTED proposal (post fee adjustment).
+        // The global coinbase_verifier commitment is stale — it was set from the
+        // original BFT-approved proposal before bidirectional fee adjustment.
+        let adjusted_commitment = proposal.as_ref().map(|prop| {
+            let treasury_addr = if !prop.treasury_address.is_empty() {
+                prop.treasury_address.clone()
+            } else {
+                self.config.treasury_address.address().as_bytes().to_vec()
+            };
+            CoinbaseCommitment::from_proposal(prop, &treasury_addr)
+        });
+
         Ok((
             coinbase1,
             coinbase2,
             witness_data,
             outputs_serialized,
             outputs_count,
+            adjusted_commitment,
         ))
     }
 
@@ -1210,6 +1345,7 @@ impl TemplateProcessor {
             witness_data,
             outputs_serialized,
             output_count as u32,
+            None, // Solo mode has no payout proposal commitment
         ))
     }
 
@@ -1428,10 +1564,11 @@ impl TemplateProcessor {
         // Returns NON-WITNESS serialization for TXID computation + separate witness data
         // Also returns serialized outputs for TDP to send to SRI Pool
         //
-        // Note: template.coinbasevalue from Bitcoin Core includes subsidy + ALL original tx fees
-        // but we may have filtered some transactions, so we calculate the correct value:
-        // subsidy (from halving schedule) + filtered tx fees
-        let subsidy = Self::calculate_subsidy(template.height);
+        // Derive subsidy from Bitcoin Core's authoritative coinbasevalue.
+        // coinbasevalue = subsidy + all_template_fees (before filtering).
+        // We need subsidy + filtered_fees for the coinbase we're building.
+        let all_template_fees: u64 = template.transactions.iter().map(|tx| tx.fee).sum();
+        let subsidy = template.coinbasevalue.saturating_sub(all_template_fees);
         let coinbase_value = subsidy + total_fees;
 
         // Always recompute witness commitment from filtered transactions (BIP141).
@@ -1450,6 +1587,7 @@ impl TemplateProcessor {
             witness_data,
             coinbase_outputs_serialized,
             coinbase_outputs_count,
+            adjusted_commitment,
         ) = self
             .build_coinbase_parts_with_payout_snapshot(
                 template.height,
@@ -1487,13 +1625,14 @@ impl TemplateProcessor {
             ntime: template.curtime as u32,
             height: template.height,
             total_fees, // Just the TX fees, NOT coinbasevalue (which includes subsidy)
+            subsidy,    // From Bitcoin Core's coinbasevalue (authoritative)
             tx_count: filtered_template.transactions.len() + 1, // +1 for coinbase
             total_weight,
             template: filtered_template,
             coinbase_outputs_serialized,
             coinbase_outputs_count,
             payout_snapshot, // H-MINE-2: Store snapshot for consistent coinbase reconstruction
-            commitment_snapshot: self.coinbase_verifier.get_commitment(), // M-28: Snapshot for per-template verification
+            commitment_snapshot: adjusted_commitment.or_else(|| self.coinbase_verifier.get_commitment()), // Use fee-adjusted commitment, fall back to global
         };
 
         *self.current_work.write() = Some(work);
@@ -2287,28 +2426,9 @@ impl TemplateProcessor {
     pub fn get_current_block_info(&self) -> (u64, u64, u64) {
         let work = self.current_work.read();
         match work.as_ref() {
-            Some(w) => {
-                // Calculate subsidy from height (Bitcoin halving schedule)
-                let subsidy = Self::calculate_subsidy(w.height);
-                (subsidy, w.total_fees, w.height)
-            }
+            Some(w) => (w.subsidy, w.total_fees, w.height),
             None => (0, 0, 0),
         }
-    }
-
-    /// Calculate block subsidy for a given height (Bitcoin halving schedule)
-    fn calculate_subsidy(height: u64) -> u64 {
-        // Initial subsidy is 50 BTC = 5_000_000_000 satoshis
-        // Halving every 210,000 blocks
-        const INITIAL_SUBSIDY: u64 = 5_000_000_000;
-        const HALVING_INTERVAL: u64 = 210_000;
-
-        let halvings = height / HALVING_INTERVAL;
-        if halvings >= 64 {
-            return 0; // After 64 halvings, subsidy is 0
-        }
-
-        INITIAL_SUBSIDY >> halvings
     }
 
     /// Submit a solved block
