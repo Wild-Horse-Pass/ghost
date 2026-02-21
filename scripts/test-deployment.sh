@@ -29,7 +29,7 @@ ALL_IPS=("$VM1_IP" "$VM2_IP" "$VM3_IP" "$VM4_IP")
 VM_NAMES=("signet-1" "signet-2" "signet-3" "signet-4")
 REAPER_IPS=("$VM1_IP" "$VM2_IP")
 STANDARD_IPS=("$VM3_IP" "$VM4_IP")
-HAZED_IPS=("$VM2_IP" "$VM4_IP")  # Ghost Core in haze mode — archive_mode disabled
+HAZED_IPS=()  # No nodes in haze mode currently — update when haze is enabled
 
 BTCLI="/opt/ghost/bin/ghost-cli -signet -datadir=/var/lib/bitcoin -rpcuser=ghostrpc -rpcpassword=ghost_signet_rpc_2024 -rpcwallet=signet_miner"
 BTCLI_WALLET="$BTCLI -rpcwallet=signet_miner"

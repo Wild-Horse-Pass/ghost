@@ -662,12 +662,14 @@ async fn main() -> Result<()> {
 
     // Initialize Bitcoin RPC
     info!("Connecting to Bitcoin Core at {}:{}", rpc_host, rpc_port);
-    let rpc = Arc::new(BitcoinRpc::new(
+    let mut rpc = BitcoinRpc::new(
         rpc_host,
         rpc_port,
         &config.bitcoin.rpc_user,
         &config.bitcoin.rpc_password,
-    )?);
+    )?;
+    rpc.set_network(config.bitcoin.network);
+    let rpc = Arc::new(rpc);
 
     // Test RPC connection
     let blockchain_info = match rpc.get_blockchain_info().await {

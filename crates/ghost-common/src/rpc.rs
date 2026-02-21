@@ -187,9 +187,22 @@ pub enum TemplateValidationError {
     InvalidHex(String),
 }
 
-/// Maximum valid target (minimum difficulty - bits = 0x1d00ffff on mainnet)
-/// This represents the easiest possible difficulty
-const MAX_TARGET_HEX: &str = "00000000ffff0000000000000000000000000000000000000000000000000000";
+/// Maximum valid target per network (minimum difficulty)
+/// Mainnet: bits = 0x1d00ffff (difficulty 1)
+/// Signet/Testnet/Regtest: bits = 0x1e0377ae or easier — use permissive limit
+const MAX_TARGET_HEX_MAINNET: &str =
+    "00000000ffff0000000000000000000000000000000000000000000000000000";
+/// Signet/testnet/regtest can have extremely low difficulty
+const MAX_TARGET_HEX_TESTNET: &str =
+    "7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
+/// Get the maximum valid target for a given network
+fn max_target_for_network(network: Option<&BitcoinNetwork>) -> &'static str {
+    match network {
+        Some(BitcoinNetwork::Mainnet) | None => MAX_TARGET_HEX_MAINNET,
+        Some(_) => MAX_TARGET_HEX_TESTNET,
+    }
+}
 
 /// Calculate block subsidy for a given height (halving schedule)
 ///
@@ -264,6 +277,7 @@ fn bits_to_target(bits_hex: &str) -> Option<[u8; 32]> {
 pub fn validate_block_template(
     template: &BlockTemplate,
     current_height: Option<u64>,
+    network: Option<&BitcoinNetwork>,
 ) -> Result<(), TemplateValidationError> {
     // Validate previousblockhash format (64 hex chars)
     if template.previousblockhash.len() != BLOCK_HASH_HEX_LEN {
@@ -342,8 +356,8 @@ pub fn validate_block_template(
         return Err(TemplateValidationError::ZeroTarget);
     }
 
-    // Validate target is not above maximum (minimum difficulty)
-    if template.target.as_str() > MAX_TARGET_HEX {
+    // Validate target is not above maximum (minimum difficulty) for this network
+    if template.target.as_str() > max_target_for_network(network) {
         return Err(TemplateValidationError::TargetOutOfRange);
     }
 
@@ -498,6 +512,8 @@ pub struct BitcoinRpc {
     circuit_breaker: Arc<CircuitBreaker>,
     /// Retry configuration
     retry_config: RpcRetryConfig,
+    /// Bitcoin network (for network-aware validation)
+    network: BitcoinNetwork,
 }
 
 impl std::fmt::Debug for BitcoinRpc {
@@ -596,7 +612,13 @@ impl BitcoinRpc {
             last_known_height: AtomicU64::new(0),
             circuit_breaker,
             retry_config,
+            network: BitcoinNetwork::Mainnet,
         })
+    }
+
+    /// Set the Bitcoin network for network-aware validation
+    pub fn set_network(&mut self, network: BitcoinNetwork) {
+        self.network = network;
     }
 
     /// Get a reference to the circuit breaker for manual control
@@ -836,7 +858,7 @@ impl BitcoinRpc {
             }
         };
 
-        validate_block_template(&template, current_height).map_err(|e| {
+        validate_block_template(&template, current_height, Some(&self.network)).map_err(|e| {
             tracing::error!("Block template validation failed: {}", e);
             GhostError::InvalidBlockTemplate(e.to_string())
         })?;
@@ -1906,7 +1928,7 @@ mod tests {
             default_witness_commitment: None,
         };
 
-        assert!(validate_block_template(&template, Some(800000)).is_ok());
+        assert!(validate_block_template(&template, Some(800000), None).is_ok());
     }
 
     #[test]
@@ -1934,7 +1956,7 @@ mod tests {
             default_witness_commitment: None,
         };
 
-        assert!(validate_block_template(&template, None).is_err());
+        assert!(validate_block_template(&template, None, None).is_err());
     }
 
     #[test]
@@ -1968,7 +1990,7 @@ mod tests {
         };
 
         assert!(matches!(
-            validate_block_template(&template, None),
+            validate_block_template(&template, None, None),
             Err(TemplateValidationError::TooManyCoinbaseAux(_))
         ));
     }
@@ -1999,7 +2021,7 @@ mod tests {
         };
 
         assert!(matches!(
-            validate_block_template(&template, Some(800000)),
+            validate_block_template(&template, Some(800000), None),
             Err(TemplateValidationError::HeightOutOfRange(_, _))
         ));
     }
@@ -2030,7 +2052,7 @@ mod tests {
         };
 
         assert!(matches!(
-            validate_block_template(&template, None),
+            validate_block_template(&template, None, None),
             Err(TemplateValidationError::InvalidCoinbaseValue(_))
         ));
     }
