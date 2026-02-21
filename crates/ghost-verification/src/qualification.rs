@@ -268,6 +268,25 @@ impl QualifiedCapabilityProvider {
         (scaled as u32).min(MAX_MIN_UNIQUE_CHALLENGERS)
     }
 
+    /// Scale minimum challenge count based on network size.
+    ///
+    /// With daily unique constraints (one challenge per challenger per target per day),
+    /// each node can receive at most (network_size - 1) challenges per day.
+    /// For small networks, requiring 10 challenges is impossible within a single day.
+    ///
+    /// Scaling:
+    /// - < 4 nodes: 3 (absolute minimum)
+    /// - 4-10 nodes: network_size - 1 (max achievable per day)
+    /// - 11+ nodes: min_challenges config value (protocol constant, easily achievable)
+    fn scaled_min_challenges(&self, network_size: usize) -> u32 {
+        const ABSOLUTE_MINIMUM: u32 = 3;
+        if network_size <= ABSOLUTE_MINIMUM as usize {
+            return ABSOLUTE_MINIMUM;
+        }
+        let max_per_day = (network_size - 1) as u32;
+        max_per_day.min(self.config.min_challenges)
+    }
+
     /// Get the lookback timestamp
     fn lookback_timestamp(&self) -> i64 {
         chrono::Utc::now().timestamp() - (self.config.lookback_days as i64 * SECONDS_PER_DAY)
@@ -366,6 +385,8 @@ impl QualifiedCapabilityProvider {
         let network_size = self.get_network_size_with_fallback();
         let min_unique_scaled = self.scaled_min_unique_challengers(network_size);
 
+        let scaled_min_challenges = self.scaled_min_challenges(network_size);
+
         // AUTH4-L3 + MED-VER-6: Log per-capability pass rate requirements
         info!(
             node = %&node_id_hex[..8],
@@ -378,11 +399,12 @@ impl QualifiedCapabilityProvider {
             stratum_unique = stratum_unique,
             ghostpay_unique = ghostpay_unique,
             min_challenges = self.config.min_challenges,
+            scaled_min_challenges = scaled_min_challenges,
             min_unique = min_unique_scaled,
             network_size = network_size,
             archive_rate = format!("{:.0}%", self.config.archive_pass_rate * 100.0),
             ghostpay_rate = format!("{:.0}%", self.config.ghostpay_pass_rate * 100.0),
-            "DIAG: Node challenge stats (MED-VER-6: scaled unique requirement)"
+            "DIAG: Node challenge stats (scaled min_challenges and unique requirement)"
         );
 
         // GATEKEEPER: Check uptime first
@@ -397,10 +419,11 @@ impl QualifiedCapabilityProvider {
 
         // M-16 FIX: Get qualified capabilities with per-capability pass rates
         // Each capability type has its own threshold (e.g., GhostPay is 90%, Archive is 95%)
+        // Use scaled min_challenges so small networks can qualify within a single day
         match self.db.get_qualified_capabilities_with_rates(
             &node_id_hex,
             since,
-            self.config.min_challenges,
+            scaled_min_challenges,
             self.config.archive_pass_rate,
             self.config.ghostpay_pass_rate,
             self.config.stratum_pass_rate,
@@ -527,13 +550,14 @@ impl QualifiedCapabilityProvider {
 
         // VER-1 FIX: Get qualified capabilities with per-capability pass rates
         // Each capability type has its own threshold (e.g., GhostPay is 90%, Archive is 95%)
-        // Previously used archive_pass_rate for ALL capabilities, which was incorrect.
+        // Use scaled min_challenges so small networks can qualify within a single day
+        let scaled_min_challenges = self.scaled_min_challenges(network_size);
         let mut caps = self
             .db
             .get_qualified_capabilities_with_rates(
                 node_id_hex,
                 since,
-                self.config.min_challenges,
+                scaled_min_challenges,
                 self.config.archive_pass_rate,
                 self.config.ghostpay_pass_rate,
                 self.config.stratum_pass_rate,
@@ -603,11 +627,13 @@ impl QualifiedCapabilityProvider {
             });
         }
         let min_unique = self.scaled_min_unique_challengers(network_size);
+        let scaled_min_challenges = self.scaled_min_challenges(network_size);
 
         info!(
             total_nodes = node_ids.len(),
             min_unique_challengers = min_unique,
-            "DIAG: Checking qualification for all nodes with payout addresses (M-5: scaled requirement)"
+            scaled_min_challenges = scaled_min_challenges,
+            "DIAG: Checking qualification for all nodes with payout addresses (scaled requirements)"
         );
 
         // MED-VER-10: Track DB failures for logging
@@ -658,12 +684,13 @@ impl QualifiedCapabilityProvider {
 
             // Get qualified capabilities with per-capability pass rates
             // Each capability type has its own threshold (e.g., GhostPay is 90%, Archive is 95%)
+            // Use scaled min_challenges so small networks can qualify within a single day
             let mut caps = self
                 .db
                 .get_qualified_capabilities_with_rates(
                     node_id_hex,
                     since,
-                    self.config.min_challenges,
+                    scaled_min_challenges,
                     self.config.archive_pass_rate,
                     self.config.ghostpay_pass_rate,
                     self.config.stratum_pass_rate,
@@ -1005,5 +1032,32 @@ mod tests {
             cache.is_some(),
             "Cache should be populated after first call"
         );
+    }
+
+    #[test]
+    fn test_scaled_min_challenges() {
+        let db = Arc::new(Database::in_memory().unwrap());
+        let provider = QualifiedCapabilityProvider::new(db);
+
+        // Very small networks: absolute minimum of 3
+        assert_eq!(provider.scaled_min_challenges(0), 3);
+        assert_eq!(provider.scaled_min_challenges(2), 3);
+        assert_eq!(provider.scaled_min_challenges(3), 3);
+
+        // 4 nodes: max 3 challenges/day (4-1), capped by min_challenges=10 → 3
+        assert_eq!(provider.scaled_min_challenges(4), 3);
+
+        // 5 nodes: max 4 challenges/day (5-1)
+        assert_eq!(provider.scaled_min_challenges(5), 4);
+
+        // 10 nodes: max 9 challenges/day (10-1)
+        assert_eq!(provider.scaled_min_challenges(10), 9);
+
+        // 11 nodes: max 10 challenges/day (11-1), capped at min_challenges=10
+        assert_eq!(provider.scaled_min_challenges(11), 10);
+
+        // Large networks: always capped at protocol constant (10)
+        assert_eq!(provider.scaled_min_challenges(100), 10);
+        assert_eq!(provider.scaled_min_challenges(1_000_000), 10);
     }
 }
