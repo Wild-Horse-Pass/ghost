@@ -29,6 +29,7 @@ ALL_IPS=("$VM1_IP" "$VM2_IP" "$VM3_IP" "$VM4_IP")
 VM_NAMES=("signet-1" "signet-2" "signet-3" "signet-4")
 REAPER_IPS=("$VM1_IP" "$VM2_IP")
 STANDARD_IPS=("$VM3_IP" "$VM4_IP")
+HAZED_IPS=("$VM2_IP" "$VM4_IP")  # Ghost Core in haze mode — archive_mode disabled
 
 BTCLI="bitcoin-cli -signet -datadir=/var/lib/bitcoin -rpcuser=ghostrpc -rpcpassword=ghost_signet_rpc_2024 -rpcwallet=signet_miner"
 BTCLI_WALLET="$BTCLI -rpcwallet=signet_miner"
@@ -85,7 +86,7 @@ api_get() {
 check_logs() {
     local ip="$1" pattern="$2" since="${3:-5 minutes ago}"
     local count
-    count=$(ssh_cmd "$ip" "journalctl -u ghost-pool --since '$since' --no-pager 2>/dev/null | grep -c '$pattern' 2>/dev/null || echo 0" 2>/dev/null)
+    count=$(ssh_cmd "$ip" "journalctl -u ghost-pool --since '$since' --no-pager 2>/dev/null | grep -ic '$pattern' 2>/dev/null || echo 0" 2>/dev/null)
     echo "${count:-0}" | tr -d '[:space:]'
 }
 
@@ -103,6 +104,24 @@ wait_for() {
         fi
         sleep 2
         elapsed=$((elapsed + 2))
+    done
+    return 1
+}
+
+wait_for_block() {
+    local timeout="${1:-120}"
+    local start_height
+    start_height=$(btc_on "$VM1_IP" "getblockcount")
+    local elapsed=0
+    while [[ $elapsed -lt $timeout ]]; do
+        local current
+        current=$(btc_on "$VM1_IP" "getblockcount")
+        if [[ "$current" -gt "$start_height" ]]; then
+            echo "$current"
+            return 0
+        fi
+        sleep 5
+        elapsed=$((elapsed + 5))
     done
     return 1
 }
@@ -942,8 +961,11 @@ phase_4() {
     # available fees when building the coinbase, triggering adjustment.
 
     # 4.1 Fee decrease scenario
+    # A fee decrease is logged when a block clears mempool txs and the next
+    # template has lower total fees.  If we don't already see one in recent
+    # logs, submit txs to build up fees, wait for a block to clear them, then
+    # recheck.
     run_test "4.1" "Fee decrease path exercised"
-    # The OP_RETURN txs from phase 2 create fee divergence. Check logs.
     local decrease_count=0
     for ip in "${ALL_IPS[@]}"; do
         local c
@@ -953,7 +975,8 @@ phase_4() {
     if [[ $decrease_count -gt 0 ]]; then
         pass
     else
-        # Create divergence: submit more T2 txs that only standard nodes include
+        # Submit OP_RETURN txs to build up fees in the mempool
+        echo "        submitting txs to build up mempool fees..."
         ssh_cmd "$VM1_IP" bash -s <<'FEE_DIV_EOF' >/dev/null 2>&1
             CLI="bitcoin-cli -signet -datadir=/var/lib/bitcoin -rpcuser=ghostrpc -rpcpassword=ghost_signet_rpc_2024 -rpcwallet=signet_miner"
             for i in $(seq 1 5); do
@@ -980,7 +1003,24 @@ for u in sorted(utxos, key=lambda x: x['amount']):
                 fi
             done
 FEE_DIV_EOF
-        skip "Fee decrease not yet observed — will recheck after block is found"
+        # Wait for a block to clear the mempool — triggers fee decrease
+        echo "        waiting up to 300s for a block to clear mempool..."
+        if wait_for_block 300 >/dev/null; then
+            sleep 10  # let template rebuild
+            decrease_count=0
+            for ip in "${ALL_IPS[@]}"; do
+                local c
+                c=$(check_logs "$ip" "fees decreased" "2 minutes ago")
+                decrease_count=$((decrease_count + c))
+            done
+            if [[ $decrease_count -gt 0 ]]; then
+                pass
+            else
+                fail "Block found but no fee decrease logged"
+            fi
+        else
+            fail "No block found in 300s to trigger fee decrease"
+        fi
     fi
 
     # 4.2 Fee increase scenario (RBF)
@@ -1129,18 +1169,32 @@ CBCHECK_EOF
 phase_5() {
     phase_header 5 "Payout Consensus" 5
 
+    # 5.1 & 5.2 need a fresh block to verify proposal + BFT logs.
+    # Wait up to 5 minutes for the ASIC to find one.
+    echo "  Waiting up to 300s for a block (5.1/5.2 need fresh logs)..."
+    local GOT_BLOCK=false
+    if BLOCK_HEIGHT=$(wait_for_block 300); then
+        GOT_BLOCK=true
+        echo "  Block found at height $BLOCK_HEIGHT"
+        sleep 10  # Wait for payout proposal + BFT cycle
+    else
+        echo -e "  ${YELLOW}No block in 300s — 5.1/5.2 will check broader window${NC}"
+    fi
+
     # 5.1 Proposal created
     run_test "5.1" "Payout proposal created after block"
+    local log_window="2 minutes ago"
+    $GOT_BLOCK || log_window="30 minutes ago"
     local proposal_count=0
     for ip in "${ALL_IPS[@]}"; do
         local c
-        c=$(check_logs "$ip" "Created payout proposal\|payout.*proposal.*created\|PayoutProposal" "24 hours ago")
+        c=$(check_logs "$ip" "Created payout proposal\|payout.*proposal.*created\|PayoutProposal" "$log_window")
         proposal_count=$((proposal_count + c))
     done
     if [[ $proposal_count -gt 0 ]]; then
         pass
     else
-        skip "No payout proposals observed (no blocks found recently?)"
+        fail "No payout proposals observed"
     fi
 
     # 5.2 BFT votes pass
@@ -1148,14 +1202,16 @@ phase_5() {
     local vote_count=0
     for ip in "${ALL_IPS[@]}"; do
         local c
-        c=$(check_logs "$ip" "proposal approved\|payout.*approved\|consensus.*reached\|vote.*passed" "24 hours ago")
+        c=$(check_logs "$ip" "proposal approved\|payout.*approved\|consensus.*reached\|vote.*passed" "$log_window")
         vote_count=$((vote_count + c))
     done
     if [[ $vote_count -gt 0 ]]; then
         pass
     else
-        skip "No BFT vote approvals observed"
+        fail "No BFT vote approvals observed"
     fi
+
+    # 5.3–5.5 check the latest block on chain (no fresh block needed)
 
     # 5.3 Coinbase outputs match expected structure
     run_test "5.3" "Coinbase has miner + node + treasury outputs"
@@ -1192,7 +1248,7 @@ CBOUTS_EOF
     local dust_count=0
     for ip in "${ALL_IPS[@]}"; do
         local c
-        c=$(check_logs "$ip" "dust\|below.*546\|redistribute" "24 hours ago")
+        c=$(check_logs "$ip" "dust\|below.*546\|redistribute" "30 minutes ago")
         dust_count=$((dust_count + c))
     done
     if [[ $dust_count -gt 0 ]]; then
@@ -1224,7 +1280,7 @@ TREASURY_EOF
     if [[ -n "$treasury_result" ]]; then
         pass
     else
-        skip "Could not parse treasury output"
+        fail "Could not parse treasury output"
     fi
 }
 
@@ -1235,8 +1291,8 @@ TREASURY_EOF
 phase_6() {
     phase_header 6 "Capability Verification" 4
 
-    # 6.1 Archive mode verified on all (claimed + real challenge)
-    run_test "6.1" "Archive mode: all 4 nodes claim + serve blocks"
+    # 6.1 Archive mode: non-hazed nodes claim archive + serve blocks, hazed nodes correctly disabled
+    run_test "6.1" "Archive mode: correct per haze status + block serving"
     local arch_ok=true
     local arch_fail_reason=""
     for i in "${!ALL_IPS[@]}"; do
@@ -1250,19 +1306,36 @@ d = json.load(sys.stdin)
 r = d.get('response', d)
 print(r.get('capabilities', {}).get('archive_mode', False))
 " 2>/dev/null)
-        if [[ "$archive" != "True" && "$archive" != "true" ]]; then
-            arch_ok=false
-            arch_fail_reason="${VM_NAMES[$i]} archive_mode=$archive (claimed)"
-            break
-        fi
-        # Real archive challenge: fetch a random early block via RPC
-        local challenge_height=$((RANDOM % 100 + 1))
-        local block_hash
-        block_hash=$(btc_on "$ip" "getblockhash $challenge_height" 2>/dev/null)
-        if [[ -z "$block_hash" || ! "$block_hash" =~ ^[0-9a-f]{64}$ ]]; then
-            arch_ok=false
-            arch_fail_reason="${VM_NAMES[$i]} cannot serve block at height $challenge_height"
-            break
+
+        # Check if this node is hazed
+        local is_hazed=false
+        for hzip in "${HAZED_IPS[@]}"; do
+            [[ "$ip" == "$hzip" ]] && is_hazed=true
+        done
+
+        if $is_hazed; then
+            # Hazed nodes should NOT claim archive (Ghost Core strips data)
+            if [[ "$archive" == "True" || "$archive" == "true" ]]; then
+                arch_ok=false
+                arch_fail_reason="${VM_NAMES[$i]} hazed but archive_mode=true (should be false)"
+                break
+            fi
+        else
+            # Non-hazed nodes should claim archive
+            if [[ "$archive" != "True" && "$archive" != "true" ]]; then
+                arch_ok=false
+                arch_fail_reason="${VM_NAMES[$i]} archive_mode=$archive (expected true)"
+                break
+            fi
+            # Real archive challenge: fetch a random early block via RPC
+            local challenge_height=$((RANDOM % 100 + 1))
+            local block_hash
+            block_hash=$(btc_on "$ip" "getblockhash $challenge_height" 2>/dev/null)
+            if [[ -z "$block_hash" || ! "$block_hash" =~ ^[0-9a-f]{64}$ ]]; then
+                arch_ok=false
+                arch_fail_reason="${VM_NAMES[$i]} cannot serve block at height $challenge_height"
+                break
+            fi
         fi
     done
     if $arch_ok; then pass; else fail "$arch_fail_reason"; fi
