@@ -61,8 +61,8 @@ pub fn create() -> WizardState {
                         field_type: FieldType::Toggle,
                     },
                     FieldDef {
-                        key: "bitcoin_pure",
-                        label: "Bitcoin Pure",
+                        key: "reaper",
+                        label: "Reaper",
                         field_type: FieldType::Toggle,
                     },
                     FieldDef {

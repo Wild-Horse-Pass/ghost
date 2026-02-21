@@ -33,7 +33,7 @@ Nodes earn shares in the node reward pool based on the services they provide. Mo
 | Archive Mode | +5 | Full blockchain storage and retrieval |
 | Ghost Pay | +4 | L2 payment network operation |
 | Public Mining | +3 | Stratum port open to public miners |
-| Bitcoin Pure | +2 | Transaction policy enforcement |
+| Reaper | +2 | Ghost Reaper strict mode enforcement |
 | Elder Status | +1 | First 101 nodes, still active |
 
 **Maximum**: 15 shares (5+4+3+2+1)
@@ -219,58 +219,58 @@ Response:
 }
 ```
 
-## Bitcoin Pure (+2 Shares)
+## Reaper (+2 Shares)
 
 ### What It Means
 
-Enforce a BUDS policy (transaction filtering):
-- Run with a policy profile
-- Correctly classify transactions
-- Reject policy-violating transactions
+Run Ghost Reaper in strict mode (dead code detection):
+- Filter all transactions containing dead code patterns
+- Detect inscription envelopes, drop stuffing, fake pubkeys, annex abuse
+- Enforce zero tolerance for dead bytes in witness scripts
 
 ### Requirements
 
 | Requirement | Value |
 |-------------|-------|
-| Policy | bitcoin_pure, permissive, or custom |
-| Classification | Accurate BUDS labeling |
-| Consistency | Same result for same transaction |
+| Reaper Mode | `strict` (`-ghostreaper=strict`) |
+| Detection | All 8 vectors active |
+| Filtering | Any dead code = Corpse (filtered) |
 
 ### Verification
 
-Policy classification challenges:
+Reaper strict mode challenges:
 
 ```
 Challenge:
-├── Verifier sends test transaction
-├── Transaction designed to test policy
-├── Target must correctly accept/reject
-├── Must identify correct BUDS labels
+├── Verifier sends test transaction with known dead code
+├── Transaction contains inscription envelope, drop stuffing, etc.
+├── Target must correctly reject as Corpse
+├── Must identify dead code vectors present
 
 Pass Criteria:
-├── Correct accept/reject decision
-├── Correct label identification
-├── Consistent with claimed policy
+├── Correct rejection of corpse transactions
+├── Correct dead code vector identification
+├── Consistent strict mode behavior
 └── 95% pass rate required
 ```
 
 ### Verification Endpoint
 
 ```
-POST /api/v1/verify/policy
+POST /api/v1/verify/reaper
 Content-Type: application/json
 
 {
     "test_tx": "0100000001...",
-    "policy": "bitcoin_pure"
+    "expected_vectors": ["inscription_envelope", "drop_stuffing"]
 }
 
 Response:
 {
-    "accepted": false,
-    "rejected_labels": ["meta.inscription"],
-    "arbda_score": 2,
-    "policy_matched": true,
+    "is_corpse": true,
+    "detected_vectors": ["inscription_envelope", "drop_stuffing"],
+    "dead_code_ratio": 0.85,
+    "reaper_mode": "strict",
     "verified": true
 }
 ```
@@ -337,7 +337,7 @@ Elders can lose status:
 | Archive Mode (+5) | 95% |
 | Ghost Pay (+4) | 90% |
 | Public Mining (+3) | 95% |
-| Bitcoin Pure (+2) | 95% |
+| Reaper (+2) | 95% |
 
 ## Challenge Process
 
@@ -359,7 +359,7 @@ Node A:
 ├── Archive Mode: Yes (+5)
 ├── Ghost Pay: Yes (+4)
 ├── Public Mining: Yes (+3)
-├── Bitcoin Pure: Yes (+2)
+├── Reaper: Yes (+2)
 ├── Elder #42: Yes (+1)
 └── Total: 15 shares
 
@@ -367,7 +367,7 @@ Node B:
 ├── Archive Mode: No (0)
 ├── Ghost Pay: Yes (+4)
 ├── Public Mining: Yes (+3)
-├── Bitcoin Pure: No (0)
+├── Reaper: No (0)
 ├── Elder: No (0)
 └── Total: 7 shares
 
@@ -375,7 +375,7 @@ Node C:
 ├── Archive Mode: Yes (+5)
 ├── Ghost Pay: No (0)
 ├── Public Mining: Yes (+3)
-├── Bitcoin Pure: Yes (+2)
+├── Reaper: Yes (+2)
 ├── Elder: No (0)
 └── Total: 10 shares
 ```
@@ -422,9 +422,12 @@ ghost_pay = true
 # Enable public mining (open stratum port)
 public_mining = true
 
-# Enable BUDS policy
-policy_enabled = true
-policy_profile = "bitcoin_pure"
+# Enable Ghost Reaper strict mode (+2 shares)
+reaper = true
+# reaper_mode is set in ghost-core: -ghostreaper=strict
+
+# BUDS policy (independent of Reaper capability)
+# policy_profile = "bitcoin_pure"  # Optional, does not affect shares
 
 # Elder status (cannot be configured, assigned by MPC contribution order)
 # elder_number = 42  # Read-only, from mpc_contributions table

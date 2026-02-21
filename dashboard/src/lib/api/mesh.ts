@@ -14,7 +14,7 @@ export interface MeshPeerCapabilities {
   archive_mode: boolean;    // +5
   ghost_pay: boolean;       // +4
   public_mining: boolean;   // +3
-  bitcoin_pure: boolean;    // +2
+  reaper: boolean;    // +2
   elder_rank: number | null; // +1
 }
 
@@ -70,7 +70,7 @@ function peerInfoToMeshPeer(peer: PeerInfo): MeshPeer {
       archive_mode: false,
       ghost_pay: false,
       public_mining: false,
-      bitcoin_pure: false,
+      reaper: false,
       elder_rank: null,
     },
   };
@@ -95,7 +95,7 @@ function buildChallengeStats(shares: SharesInfo): ChallengeServiceStats[] {
   stats.push(makeStats('archive', shares.archive_mode ?? false, 0.95));
   stats.push(makeStats('ghostpay', shares.ghost_pay ?? false, 0.90));
   stats.push(makeStats('stratum', shares.public_mining ?? false, 0.95));
-  stats.push(makeStats('policy', shares.bitcoin_pure ?? false, 0.95));
+  stats.push(makeStats('policy', shares.reaper ?? false, 0.95));
 
   return stats;
 }

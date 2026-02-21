@@ -15,7 +15,7 @@ import {
   useSetMiningPayoutAddress,
   useSetGhostMode,
   useSetArchiveMode,
-  useSetBitcoinPure,
+  useSetReaper,
   useSetGhostPay,
   useSetMempoolProfile,
 } from '@/hooks/queries';
@@ -27,7 +27,7 @@ interface ChangeSetupData {
   payout_address: string;
   ghost_mode: boolean;
   archive_mode: boolean;
-  bitcoin_pure: boolean;
+  reaper: boolean;
   ghost_pay: boolean;
   mempool_profile: string;
 }
@@ -67,7 +67,7 @@ export default function ChangeSetupWizard({ isOpen, onClose }: ChangeSetupWizard
   const setPayoutAddress = useSetMiningPayoutAddress();
   const setGhostMode = useSetGhostMode();
   const setArchiveMode = useSetArchiveMode();
-  const setBitcoinPure = useSetBitcoinPure();
+  const setReaper = useSetReaper();
   const setGhostPay = useSetGhostPay();
   const setMempoolProfile = useSetMempoolProfile();
   const toast = useToast();
@@ -84,7 +84,7 @@ export default function ChangeSetupWizard({ isOpen, onClose }: ChangeSetupWizard
         payout_address: '',
         ghost_mode: false,
         archive_mode: false,
-        bitcoin_pure: false,
+        reaper: false,
         ghost_pay: false,
         mempool_profile: 'standard',
       };
@@ -95,7 +95,7 @@ export default function ChangeSetupWizard({ isOpen, onClose }: ChangeSetupWizard
       payout_address: fullConfig.payout?.address || '',
       ghost_mode: fullConfig.ghost_mode ?? fullConfig.node?.ghost_mode ?? false,
       archive_mode: fullConfig.archive_mode ?? fullConfig.node?.archive_mode ?? false,
-      bitcoin_pure: fullConfig.bitcoin_pure ?? false,
+      reaper: fullConfig.reaper ?? false,
       ghost_pay: fullConfig.ghost_pay ?? false,
       mempool_profile: (fullConfig.mempool_profile ?? fullConfig.node?.mempool_profile ?? 'standard') as string,
     };
@@ -182,8 +182,8 @@ export default function ChangeSetupWizard({ isOpen, onClose }: ChangeSetupWizard
           await setArchiveMode.mutateAsync(data.archive_mode);
           changeCount++;
         }
-        if (data.bitcoin_pure !== original.bitcoin_pure) {
-          await setBitcoinPure.mutateAsync(data.bitcoin_pure);
+        if (data.reaper !== original.reaper) {
+          await setReaper.mutateAsync(data.reaper);
           changeCount++;
         }
         if (data.ghost_pay !== original.ghost_pay) {
@@ -208,7 +208,7 @@ export default function ChangeSetupWizard({ isOpen, onClose }: ChangeSetupWizard
     },
   ], [
     configLoading, setNickname, setPublicMiningConfig, setPayoutAddress,
-    setGhostMode, setArchiveMode, setBitcoinPure, setGhostPay,
+    setGhostMode, setArchiveMode, setReaper, setGhostPay,
     setMempoolProfile, toast, onClose,
   ]);
 
@@ -253,8 +253,8 @@ export default function ChangeSetupWizard({ isOpen, onClose }: ChangeSetupWizard
       description: 'Store full blockchain history. Enables archive challenges and earns the highest share bonus.',
     },
     {
-      key: 'bitcoin_pure' as const,
-      label: 'Bitcoin Pure',
+      key: 'reaper' as const,
+      label: 'Reaper',
       shares: '+2 shares',
       description: 'Strict transaction policy filtering. Only accept standard Bitcoin transactions.',
     },
@@ -493,8 +493,8 @@ export default function ChangeSetupWizard({ isOpen, onClose }: ChangeSetupWizard
                 if (hasChanged('archive_mode')) {
                   changes.push({ label: 'Archive Mode', from: original?.archive_mode ? 'Enabled' : 'Disabled', to: data.archive_mode ? 'Enabled' : 'Disabled' });
                 }
-                if (hasChanged('bitcoin_pure')) {
-                  changes.push({ label: 'Bitcoin Pure', from: original?.bitcoin_pure ? 'Enabled' : 'Disabled', to: data.bitcoin_pure ? 'Enabled' : 'Disabled' });
+                if (hasChanged('reaper')) {
+                  changes.push({ label: 'Reaper', from: original?.reaper ? 'Enabled' : 'Disabled', to: data.reaper ? 'Enabled' : 'Disabled' });
                 }
                 if (hasChanged('ghost_pay')) {
                   changes.push({ label: 'Ghost Pay', from: original?.ghost_pay ? 'Enabled' : 'Disabled', to: data.ghost_pay ? 'Enabled' : 'Disabled' });

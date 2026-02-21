@@ -6,11 +6,11 @@ pub fn create() -> WizardState {
         vec![
             WizardStepDef {
                 id: "enable",
-                title: "Bitcoin Pure",
-                description: "Enable Bitcoin Pure mode to filter non-monetary transactions.",
+                title: "Reaper",
+                description: "Enable Reaper mode to filter non-monetary transactions.",
                 fields: vec![FieldDef {
-                    key: "bitcoin_pure",
-                    label: "Enable Bitcoin Pure",
+                    key: "reaper",
+                    label: "Enable Reaper",
                     field_type: FieldType::Toggle,
                 }],
             },

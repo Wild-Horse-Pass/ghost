@@ -21,7 +21,7 @@ export interface BudsMempool {
 
 export interface BudsCapabilities {
   // Backend returns these
-  bitcoin_pure?: boolean;
+  reaper?: boolean;
   allowed_tiers?: string[];
   max_op_return_size?: number;
   allow_inscriptions?: boolean;

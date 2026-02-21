@@ -55,8 +55,8 @@ pub struct NodeCapabilities {
     pub ghost_pay: bool,
     /// Public mining enabled (+3 shares)
     pub public_mining: bool,
-    /// Bitcoin Pure policy enabled (+2 shares)
-    pub bitcoin_pure: bool,
+    /// Reaper strict mode enabled (+2 shares)
+    pub reaper: bool,
     /// Elder status (+1 share)
     pub elder_status: bool,
 }
@@ -94,10 +94,9 @@ impl NodeCapabilities {
                     "BUG: share calculation overflow - max possible shares verified < i32::MAX",
                 );
         }
-        if self.bitcoin_pure {
-            // Bitcoin Pure works with both private and public mining
+        if self.reaper {
             shares = shares
-                .checked_add(crate::constants::BITCOIN_PURE_SHARES)
+                .checked_add(crate::constants::REAPER_SHARES)
                 .expect(
                     "BUG: share calculation overflow - max possible shares verified < i32::MAX",
                 );
@@ -117,7 +116,7 @@ impl NodeCapabilities {
         self.archive_mode
             || self.ghost_pay
             || self.public_mining
-            || self.bitcoin_pure
+            || self.reaper
             || self.elder_status
     }
 }
@@ -625,7 +624,7 @@ mod tests {
         caps.public_mining = true;
         assert_eq!(caps.total_shares(), 8); // 5 + 3
 
-        caps.bitcoin_pure = true;
+        caps.reaper = true;
         assert_eq!(caps.total_shares(), 10); // 5 + 3 + 2
 
         caps.ghost_pay = true;
@@ -634,11 +633,11 @@ mod tests {
     }
 
     #[test]
-    fn test_bitcoin_pure_works_independently() {
-        // Bitcoin Pure works with private mining (no public_mining flag)
+    fn test_reaper_works_independently() {
+        // Reaper works with private mining (no public_mining flag)
         let mut caps = NodeCapabilities::new();
-        caps.bitcoin_pure = true;
-        assert_eq!(caps.total_shares(), 2); // Bitcoin Pure alone counts
+        caps.reaper = true;
+        assert_eq!(caps.total_shares(), 2); // Reaper alone counts
 
         // Also works with public mining
         caps.public_mining = true;

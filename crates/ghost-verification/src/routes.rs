@@ -275,8 +275,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             get(api_config_template_profile_handler),
         )
         .route(
-            "/api/v1/config/bitcoin_pure",
-            get(api_config_bitcoin_pure_handler),
+            "/api/v1/config/reaper",
+            get(api_config_reaper_handler),
         )
         .route(
             "/api/v1/config/ghost_pay",
@@ -373,8 +373,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             post(api_config_template_profile_post_handler),
         )
         .route(
-            "/api/v1/config/bitcoin_pure",
-            post(api_config_bitcoin_pure_post_handler),
+            "/api/v1/config/reaper",
+            post(api_config_reaper_post_handler),
         )
         .route(
             "/api/v1/config/ghost_pay",
@@ -1298,7 +1298,7 @@ async fn api_node_status_handler(State(state): State<Arc<VerificationState>>) ->
         "ghost_pay": config.ghost_pay,
         "public_mining": config.public_mining,
         "private_mining": false,
-        "bitcoin_pure": config.bitcoin_pure,
+        "reaper": config.reaper,
         "ghost_mode": config.ghost_mode
     }))
 }
@@ -1333,7 +1333,7 @@ async fn api_node_shares_handler(State(state): State<Arc<VerificationState>>) ->
     if config.public_mining {
         total += 3;
     }
-    if config.bitcoin_pure {
+    if config.reaper {
         total += 2;
     }
     if is_elder {
@@ -1348,7 +1348,7 @@ async fn api_node_shares_handler(State(state): State<Arc<VerificationState>>) ->
         "archive_mode": config.archive_mode,
         "ghost_pay": config.ghost_pay,
         "public_mining": config.public_mining,
-        "bitcoin_pure": config.bitcoin_pure,
+        "reaper": config.reaper,
         "elder": is_elder,
         "elder_slot": elder_slot,
         "estimated_reward_btc": 0.0
@@ -1378,7 +1378,7 @@ async fn api_node_info_handler(State(state): State<Arc<VerificationState>>) -> i
         "archive_mode": config.archive_mode,
         "ghost_pay": config.ghost_pay,
         "public_mining": config.public_mining,
-        "bitcoin_pure": config.bitcoin_pure,
+        "reaper": config.reaper,
         "mempool_profile": config.mempool_profile,
         "template_profile": config.template_profile
     }))
@@ -1692,7 +1692,7 @@ async fn api_config_handler(State(state): State<Arc<VerificationState>>) -> impl
         "archive_mode": config.archive_mode,
         "ghost_pay": config.ghost_pay,
         "public_mining": config.public_mining,
-        "bitcoin_pure": config.bitcoin_pure,
+        "reaper": config.reaper,
         "ghost_mode": config.ghost_mode,
         "mempool_profile": config.mempool_profile,
         "template_profile": config.template_profile
@@ -1881,8 +1881,8 @@ async fn api_buds_capabilities_handler(
 ) -> impl IntoResponse {
     let health = state.get_health().await;
     Json(serde_json::json!({
-        "bitcoin_pure": health.capabilities.bitcoin_pure,
-        "allowed_tiers": if health.capabilities.bitcoin_pure {
+        "reaper": health.capabilities.reaper,
+        "allowed_tiers": if health.capabilities.reaper {
             vec!["T0", "T1"]
         } else {
             vec!["T0", "T1", "T2"]
@@ -2015,7 +2015,7 @@ async fn api_rewards_current_handler(
     if config.public_mining {
         node_shares += 3;
     }
-    if config.bitcoin_pure {
+    if config.reaper {
         node_shares += 2;
     }
     if config.elder {
@@ -2217,7 +2217,7 @@ async fn api_rewards_full_handler(
     if config.public_mining {
         node_shares += 3;
     }
-    if config.bitcoin_pure {
+    if config.reaper {
         node_shares += 2;
     }
     if config.elder {
@@ -3240,7 +3240,7 @@ async fn api_config_full_handler(State(state): State<Arc<VerificationState>>) ->
         "archive_mode": config.archive_mode,
         "ghost_pay": config.ghost_pay,
         "public_mining": config.public_mining,
-        "bitcoin_pure": config.bitcoin_pure,
+        "reaper": config.reaper,
         "ghost_mode": config.ghost_mode,
         "mempool_profile": config.mempool_profile,
         "template_profile": config.template_profile,
@@ -3368,14 +3368,14 @@ async fn api_config_template_profile_handler(
     }))
 }
 
-/// API v1 Config bitcoin pure handler
-async fn api_config_bitcoin_pure_handler(
+/// API v1 Config reaper handler
+async fn api_config_reaper_handler(
     State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
     let config = state.dashboard_config.read();
     Json(serde_json::json!({
-        "enabled": config.bitcoin_pure,
-        "message": "Bitcoin pure mode configuration"
+        "enabled": config.reaper,
+        "message": "Reaper mode configuration"
     }))
 }
 
@@ -3513,17 +3513,17 @@ async fn api_config_public_mining_post_handler(
     }))
 }
 
-/// API v1 Config bitcoin_pure POST handler
-async fn api_config_bitcoin_pure_post_handler(
+/// API v1 Config reaper POST handler
+async fn api_config_reaper_post_handler(
     State(state): State<Arc<VerificationState>>,
     Json(payload): Json<ToggleRequest>,
 ) -> impl IntoResponse {
     let mut config = state.dashboard_config.write();
-    config.bitcoin_pure = payload.enabled;
+    config.reaper = payload.enabled;
     Json(serde_json::json!({
         "success": true,
         "enabled": payload.enabled,
-        "message": "Bitcoin pure mode updated"
+        "message": "Reaper mode updated"
     }))
 }
 
@@ -4623,68 +4623,46 @@ async fn api_haze_configure_handler(
 /// Request body for shroud configuration
 #[derive(Debug, Deserialize)]
 struct ShroudConfigureRequest {
-    /// Enable/disable shroud relay privacy
+    /// Enable/disable shroud relay privacy (random 0-5s delay before relay)
     enabled: bool,
-    /// Enable Dandelion++ relay
-    #[serde(default)]
-    dandelion: Option<bool>,
-    /// Maximum relay delay in milliseconds
-    #[serde(default)]
-    max_delay_ms: Option<u64>,
 }
 
 /// POST /api/v1/shroud/configure — Configure Shroud relay privacy
 ///
-/// Enables/configures transaction relay privacy features:
-/// - Shroud adds random delays before relaying transactions
-/// - Dandelion++ uses stem/fluff phases for origin privacy
+/// Persists shroud_enabled to node config and returns restart_required: true.
+/// Ghost-core must be restarted with -shroud=1 flag for the setting to take effect.
 async fn api_shroud_configure_handler(
     State(state): State<Arc<VerificationState>>,
     Json(payload): Json<ShroudConfigureRequest>,
 ) -> impl IntoResponse {
-    // Validate max_delay_ms if provided
-    if let Some(delay) = payload.max_delay_ms {
-        if delay > 30_000 {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "success": false,
-                    "error": "max_delay_ms cannot exceed 30000 (30 seconds)"
-                })),
-            );
-        }
-    }
-
-    // Try to sync with ghost-core via RPC
-    let rpc_synced = if let Some(ref rpc) = state.rpc {
-        // Ghost-core shroud is controlled by -shroud=1 flag at startup
-        // We can still inform the node via setghostmode-like RPC
-        match rpc.get_blockchain_info().await {
-            Ok(_) => true,
-            Err(e) => {
-                warn!("Ghost-core not reachable for shroud config: {}", e);
-                false
+    // Persist to node config
+    {
+        let mut node_config = state.node_config.write();
+        node_config.shroud_enabled = payload.enabled;
+        if let Some(ref path) = state.node_config_path {
+            if let Err(e) = node_config.save(path) {
+                error!("Failed to persist shroud config: {}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({
+                        "success": false,
+                        "error": format!("Failed to persist config: {}", e)
+                    })),
+                );
             }
         }
-    } else {
-        false
-    };
-
-    let max_delay = payload.max_delay_ms.unwrap_or(5000);
-    let dandelion = payload.dandelion.unwrap_or(true);
+    }
 
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "success": true,
             "enabled": payload.enabled,
-            "dandelion": dandelion,
-            "max_delay_ms": max_delay,
-            "rpc_synced": rpc_synced,
+            "restart_required": true,
             "message": if payload.enabled {
-                "Shroud relay privacy enabled"
+                "Shroud enabled — restart ghost-core with -shroud=1 to activate"
             } else {
-                "Shroud relay privacy disabled"
+                "Shroud disabled — restart ghost-core without -shroud flag to deactivate"
             }
         })),
     )
@@ -5506,7 +5484,7 @@ mod tests {
             "/api/v1/config/mempool_profile",
             "/api/v1/config/public_mining",
             "/api/v1/config/template_profile",
-            "/api/v1/config/bitcoin_pure",
+            "/api/v1/config/reaper",
             "/api/v1/config/ghost_pay",
             "/api/v1/config/elder",
             "/api/v1/config/prune_profile",

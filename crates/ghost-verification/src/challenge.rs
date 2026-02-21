@@ -341,8 +341,8 @@ pub struct CapabilityStatus {
     pub ghost_pay: bool,
     /// Public mining enabled
     pub public_mining: bool,
-    /// Bitcoin Pure policy enabled
-    pub bitcoin_pure: bool,
+    /// Reaper policy enabled
+    pub reaper: bool,
     /// Elder status
     pub elder_status: bool,
     /// GSP (Ghost Service Protocol) light wallet server enabled
@@ -357,7 +357,7 @@ impl From<ghost_common::types::NodeCapabilities> for CapabilityStatus {
             archive_mode: caps.archive_mode,
             ghost_pay: caps.ghost_pay,
             public_mining: caps.public_mining,
-            bitcoin_pure: caps.bitcoin_pure,
+            reaper: caps.reaper,
             elder_status: caps.elder_status,
             gsp_enabled: false, // Set via VerificationState.gsp_enabled()
             total_shares: caps.total_shares(),

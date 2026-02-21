@@ -516,7 +516,7 @@ CREATE TABLE nodes (
     archive_mode INTEGER DEFAULT 0,
     public_mining INTEGER DEFAULT 0,
     ghost_pay INTEGER DEFAULT 0,
-    bitcoin_pure INTEGER DEFAULT 0,
+    reaper INTEGER DEFAULT 0,
     elder_status INTEGER DEFAULT 0,
     elder_number INTEGER,                    -- 1-101 or NULL
     -- Calculated shares
@@ -677,7 +677,7 @@ port_offset = 0
 archive_mode = true
 public_mining = true
 ghost_pay = false
-bitcoin_pure = true
+reaper = true
 
 # Noise Protocol Encryption (P2P)
 noise_enabled = true                           # Enable Noise encryption (default: true)
@@ -809,7 +809,7 @@ Qualified nodes earn bonus shares from the node reward pool.
 | Archive Mode | +5 | Random block retrieval challenges |
 | Ghost Pay | +4 | L2 block lookup challenges |
 | Public Mining | +3 | Stratum port accessibility |
-| Bitcoin Pure | +2 | Policy challenge (tx classification) |
+| Reaper | +2 | Reaper strict mode verification |
 | Elder Status | +1 | First 101 nodes, active |
 
 **Maximum**: 15 shares (5+4+3+2+1)
@@ -832,7 +832,7 @@ Nodes verify each other's capabilities through periodic challenges:
 | Archive Mode (+5) | 95% |
 | Ghost Pay (+4) | 90% |
 | Public Mining (+3) | 95% |
-| Bitcoin Pure (+2) | 95% |
+| Reaper (+2) | 95% |
 
 **Challenge Process**:
 1. Every 5 minutes, node selects 3 random peers to verify
@@ -1131,10 +1131,10 @@ fn rebuild_merkle_tree(
 
 ### 12.4 Policy Verification
 
-For +2 shares (Bitcoin Pure):
-1. Other nodes send test transactions via HTTP POST
-2. Node classifies and returns accept/reject decision
-3. Challenger verifies response matches expected behavior
+For +2 shares (Reaper):
+1. Other nodes send test transactions containing dead code patterns
+2. Node must correctly detect and reject corpse transactions
+3. Challenger verifies Reaper strict mode is active and filtering correctly
 4. Results stored in database
 5. Qualification: 10+ challenges, 95% pass rate
 
@@ -2347,7 +2347,7 @@ Dead code detection engine for witness scripts. Analyzes transactions during blo
 
 Runs in `TemplateProcessor.apply_custom_policy()` **before** BUDS classification. Operates independently from BUDS -- classifies transaction *content* (dead bytes) rather than *purpose* (policy tiers).
 
-Not a node capability -- does not grant shares.
+Running in **strict** mode grants +2 shares in the 5-4-3-2-1 node capability system.
 
 See [Ghost Reaper](protocols/GHOST_REAPER.md) for the full specification.
 

@@ -61,8 +61,8 @@ pub fn create() -> WizardState {
                         field_type: FieldType::Toggle,
                     },
                     FieldDef {
-                        key: "bitcoin_pure",
-                        label: "Bitcoin Pure",
+                        key: "reaper",
+                        label: "Reaper",
                         field_type: FieldType::Toggle,
                     },
                     FieldDef {
@@ -108,7 +108,7 @@ pub fn create() -> WizardState {
 ///
 /// Expected JSON keys: `nickname` (string), `public_mining` (bool),
 /// `payout_address` (string), `ghost_mode` (bool), `archive_mode` (bool),
-/// `bitcoin_pure` (bool), `ghost_pay` (bool), `mempool_profile` (string).
+/// `reaper` (bool), `ghost_pay` (bool), `mempool_profile` (string).
 #[allow(dead_code)]
 pub fn create_with_config(config: &serde_json::Value) -> WizardState {
     let mut state = create();
@@ -128,8 +128,8 @@ pub fn create_with_config(config: &serde_json::Value) -> WizardState {
     if let Some(b) = config.get("archive_mode").and_then(|v| v.as_bool()) {
         state.set_field("archive_mode", FieldValue::Bool(b));
     }
-    if let Some(b) = config.get("bitcoin_pure").and_then(|v| v.as_bool()) {
-        state.set_field("bitcoin_pure", FieldValue::Bool(b));
+    if let Some(b) = config.get("reaper").and_then(|v| v.as_bool()) {
+        state.set_field("reaper", FieldValue::Bool(b));
     }
     if let Some(b) = config.get("ghost_pay").and_then(|v| v.as_bool()) {
         state.set_field("ghost_pay", FieldValue::Bool(b));

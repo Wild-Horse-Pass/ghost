@@ -2042,6 +2042,29 @@ impl Database {
         })
     }
 
+    /// Get the derivation index for a lock (count of locks created before it by the same owner).
+    ///
+    /// This corresponds to the key derivation index used in `GhostKeys::derive_lock_secret()`.
+    /// Locks are created sequentially, so the creation order matches the derivation order.
+    pub fn get_lock_index_for_owner(
+        &self,
+        owner_ghost_id: &str,
+        lock_id: &str,
+    ) -> GhostResult<u32> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM ghost_locks \
+                     WHERE owner_ghost_id = ?1 \
+                     AND created_at < (SELECT created_at FROM ghost_locks WHERE lock_id = ?2)",
+                    params![owner_ghost_id, lock_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u32)
+        })
+    }
+
     /// Update Ghost Lock funding info
     pub fn update_ghost_lock_funding(
         &self,
@@ -4223,7 +4246,7 @@ impl Database {
             archive_mode: archive_qualified,
             ghost_pay: ghostpay_qualified,
             public_mining: stratum_qualified,
-            bitcoin_pure: policy_qualified,
+            reaper: policy_qualified,
             elder_status: elder_qualified,
         })
     }

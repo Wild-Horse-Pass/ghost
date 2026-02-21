@@ -4,7 +4,7 @@ import {
   getFullConfig,
   setGhostMode,
   setArchiveMode,
-  setBitcoinPure,
+  setReaper,
   setMempoolProfile,
   setTemplateProfile,
   getMempoolProfiles,
@@ -76,11 +76,11 @@ export function useSetArchiveMode() {
   });
 }
 
-export function useSetBitcoinPure() {
+export function useSetReaper() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (enabled: boolean) => setBitcoinPure(enabled),
+    mutationFn: (enabled: boolean) => setReaper(enabled),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: configKeys.all });
     },
@@ -262,7 +262,7 @@ export function useConfigureHaze() {
 export function useConfigureShroud() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (config: { enabled: boolean; dandelion?: boolean; max_delay_ms?: number }) =>
+    mutationFn: (config: { enabled: boolean }) =>
       configureShroud(config),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: shroudKeys.all });

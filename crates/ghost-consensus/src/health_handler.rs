@@ -794,8 +794,8 @@ impl HealthPingHandler {
                         verified_ghost_pay = verified_caps.ghost_pay,
                         claimed_public_mining = ping.capabilities.public_mining,
                         verified_public_mining = verified_caps.public_mining,
-                        claimed_bitcoin_pure = ping.capabilities.bitcoin_pure,
-                        verified_bitcoin_pure = verified_caps.bitcoin_pure,
+                        claimed_reaper = ping.capabilities.reaper,
+                        verified_reaper = verified_caps.reaper,
                         claimed_elder = ping.capabilities.elder_status,
                         verified_elder = verified_caps.elder_status,
                         "Using verified capabilities instead of claimed"
@@ -879,11 +879,11 @@ impl HealthPingHandler {
 
             // Register node in nodes table (required for node reward payouts)
             let capabilities_str = format!(
-                "archive:{},ghost_pay:{},public_mining:{},bitcoin_pure:{}",
+                "archive:{},ghost_pay:{},public_mining:{},reaper:{}",
                 ping.capabilities.archive_mode,
                 ping.capabilities.ghost_pay,
                 ping.capabilities.public_mining,
-                ping.capabilities.bitcoin_pure
+                ping.capabilities.reaper
             );
             if let Err(e) = db.register_node_with_elder_check(
                 &node_id_hex,

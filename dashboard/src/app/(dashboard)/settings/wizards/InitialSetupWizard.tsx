@@ -13,7 +13,7 @@ import {
   useSetMiningPayoutAddress,
   useSetGhostMode,
   useSetArchiveMode,
-  useSetBitcoinPure,
+  useSetReaper,
   useSetGhostPay,
   useSetMempoolProfile,
 } from '@/hooks/queries';
@@ -25,7 +25,7 @@ interface InitialSetupData {
   payout_address: string;
   ghost_mode: boolean;
   archive_mode: boolean;
-  bitcoin_pure: boolean;
+  reaper: boolean;
   ghost_pay: boolean;
   mempool_profile: string;
 }
@@ -65,7 +65,7 @@ export default function InitialSetupWizard({ isOpen, onClose }: InitialSetupWiza
   const setPayoutAddress = useSetMiningPayoutAddress();
   const setGhostMode = useSetGhostMode();
   const setArchiveMode = useSetArchiveMode();
-  const setBitcoinPure = useSetBitcoinPure();
+  const setReaper = useSetReaper();
   const setGhostPay = useSetGhostPay();
   const setMempoolProfile = useSetMempoolProfile();
   const toast = useToast();
@@ -128,7 +128,7 @@ export default function InitialSetupWizard({ isOpen, onClose }: InitialSetupWiza
         }
         await setGhostMode.mutateAsync(data.ghost_mode);
         await setArchiveMode.mutateAsync(data.archive_mode);
-        await setBitcoinPure.mutateAsync(data.bitcoin_pure);
+        await setReaper.mutateAsync(data.reaper);
         await setGhostPay.mutateAsync(data.ghost_pay);
         await setMempoolProfile.mutateAsync(data.mempool_profile as MempoolProfile);
         toast.success(
@@ -140,7 +140,7 @@ export default function InitialSetupWizard({ isOpen, onClose }: InitialSetupWiza
     },
   ], [
     setNickname, setPublicMiningConfig, setPayoutAddress,
-    setGhostMode, setArchiveMode, setBitcoinPure, setGhostPay,
+    setGhostMode, setArchiveMode, setReaper, setGhostPay,
     setMempoolProfile, toast, onClose,
   ]);
 
@@ -152,7 +152,7 @@ export default function InitialSetupWizard({ isOpen, onClose }: InitialSetupWiza
       payout_address: '',
       ghost_mode: true,
       archive_mode: false,
-      bitcoin_pure: false,
+      reaper: false,
       ghost_pay: false,
       mempool_profile: 'standard',
     },
@@ -172,8 +172,8 @@ export default function InitialSetupWizard({ isOpen, onClose }: InitialSetupWiza
       description: 'Store full blockchain history. Enables archive challenges and earns the highest share bonus.',
     },
     {
-      key: 'bitcoin_pure' as const,
-      label: 'Bitcoin Pure',
+      key: 'reaper' as const,
+      label: 'Reaper',
       shares: '+2 shares',
       description: 'Strict transaction policy filtering. Only accept standard Bitcoin transactions.',
     },
@@ -397,9 +397,9 @@ export default function InitialSetupWizard({ isOpen, onClose }: InitialSetupWiza
                     </Badge>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span className="text-gray-400">Bitcoin Pure (+2)</span>
-                    <Badge variant={data.bitcoin_pure ? 'success' : 'default'}>
-                      {data.bitcoin_pure ? 'Enabled' : 'Disabled'}
+                    <span className="text-gray-400">Reaper (+2)</span>
+                    <Badge variant={data.reaper ? 'success' : 'default'}>
+                      {data.reaper ? 'Enabled' : 'Disabled'}
                     </Badge>
                   </div>
                   <div className="flex items-center justify-between">

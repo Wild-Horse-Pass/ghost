@@ -6,10 +6,10 @@ import { Toggle } from '@/components/ui/Toggle';
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { useToast } from '@/components/ui/Toast';
-import { useSetBitcoinPure, useConfig } from '@/hooks/queries';
+import { useSetReaper, useConfig } from '@/hooks/queries';
 
 interface ReaperData {
-  bitcoin_pure: boolean;
+  reaper: boolean;
   filter_inscriptions: boolean;
   filter_brc20: boolean;
   filter_runes: boolean;
@@ -24,21 +24,21 @@ interface ReaperWizardProps {
 
 export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
   const { data: config } = useConfig();
-  const setBitcoinPure = useSetBitcoinPure();
+  const setReaper = useSetReaper();
   const toast = useToast();
 
   const steps: WizardStep<ReaperData>[] = [
     {
       id: 'enable',
       title: 'Enable',
-      description: 'Enable or disable Ghost Reaper (Bitcoin Pure mode)',
+      description: 'Enable or disable Ghost Reaper mode',
     },
     {
       id: 'filters',
       title: 'Filters',
       description: 'Configure mempool filtering rules',
       validate: (data) => {
-        if (data.bitcoin_pure) {
+        if (data.reaper) {
           if (data.max_witness_size < 100) {
             return 'Maximum witness size must be at least 100 bytes';
           }
@@ -65,10 +65,10 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
       title: 'Confirm',
       description: 'Apply Ghost Reaper settings',
       onSubmit: async (data) => {
-        await setBitcoinPure.mutateAsync(data.bitcoin_pure);
+        await setReaper.mutateAsync(data.reaper);
         toast.success(
           'Ghost Reaper Updated',
-          data.bitcoin_pure
+          data.reaper
             ? 'Ghost Reaper enabled -- mempool filtering is now active'
             : 'Ghost Reaper disabled -- filtering is now inactive'
         );
@@ -80,7 +80,7 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
   const wizard = useWizard<ReaperData>({
     steps,
     initialData: {
-      bitcoin_pure: config?.bitcoin_pure ?? false,
+      reaper: config?.reaper ?? false,
       filter_inscriptions: true,
       filter_brc20: true,
       filter_runes: true,
@@ -105,25 +105,25 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
               <div className="p-4 rounded-lg bg-gray-800/50">
                 <div className="flex items-center justify-between">
                   <div>
-                    <span className="text-gray-100 font-medium">Bitcoin Pure Mode</span>
+                    <span className="text-gray-100 font-medium">Reaper Mode</span>
                     <p className="text-sm text-gray-400 mt-1">
                       Reject transactions with dead code in witness scripts. Filters inscriptions,
                       drop stuffing, and other non-financial data from your mempool.
                     </p>
                   </div>
                   <Toggle
-                    enabled={data.bitcoin_pure}
-                    onChange={(enabled) => setData({ bitcoin_pure: enabled })}
-                    label="Bitcoin Pure"
+                    enabled={data.reaper}
+                    onChange={(enabled) => setData({ reaper: enabled })}
+                    label="Reaper"
                   />
                 </div>
               </div>
-              {data.bitcoin_pure && (
+              {data.reaper && (
                 <div className="p-4 rounded-lg bg-green-900/20 border border-green-800">
                   <div className="flex items-center gap-2">
                     <Badge variant="success">+2 Shares</Badge>
                     <span className="text-sm text-green-300">
-                      Enables Bitcoin Pure capability verification for node rewards
+                      Enables Reaper capability verification for node rewards
                     </span>
                   </div>
                 </div>
@@ -155,10 +155,10 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
           {/* Step 2: Filters */}
           {wizard.currentStep === 1 && (
             <div className="space-y-4">
-              {!data.bitcoin_pure && (
+              {!data.reaper && (
                 <div className="p-4 rounded-lg bg-orange-900/20 border border-orange-800">
                   <p className="text-sm text-orange-300">
-                    Bitcoin Pure is disabled. These filters will not be active until you enable it.
+                    Reaper is disabled. These filters will not be active until you enable it.
                   </p>
                 </div>
               )}
@@ -175,7 +175,7 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
                     enabled={data.filter_inscriptions}
                     onChange={(v) => setData({ filter_inscriptions: v })}
                     label="Filter Inscriptions"
-                    disabled={!data.bitcoin_pure}
+                    disabled={!data.reaper}
                   />
                 </div>
                 <div className="flex items-center justify-between">
@@ -189,7 +189,7 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
                     enabled={data.filter_brc20}
                     onChange={(v) => setData({ filter_brc20: v })}
                     label="Filter BRC-20"
-                    disabled={!data.bitcoin_pure}
+                    disabled={!data.reaper}
                   />
                 </div>
                 <div className="flex items-center justify-between">
@@ -203,7 +203,7 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
                     enabled={data.filter_runes}
                     onChange={(v) => setData({ filter_runes: v })}
                     label="Filter Runes"
-                    disabled={!data.bitcoin_pure}
+                    disabled={!data.reaper}
                   />
                 </div>
               </div>
@@ -215,7 +215,7 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
                     type="number"
                     value={data.max_witness_size}
                     onChange={(e) => setData({ max_witness_size: Number(e.target.value) })}
-                    disabled={!data.bitcoin_pure}
+                    disabled={!data.reaper}
                   />
                   <p className="text-sm text-gray-400 mt-1">
                     Transactions with witness data exceeding this size will be rejected.
@@ -228,7 +228,7 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
                     type="number"
                     value={data.dust_limit}
                     onChange={(e) => setData({ dust_limit: Number(e.target.value) })}
-                    disabled={!data.bitcoin_pure}
+                    disabled={!data.reaper}
                   />
                   <p className="text-sm text-gray-400 mt-1">
                     Outputs below this value are considered dust and may be filtered.
@@ -246,28 +246,28 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
                 <h4 className="text-gray-100 font-medium mb-3">Configuration Summary</h4>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-gray-400">Bitcoin Pure Mode</span>
-                    <Badge variant={data.bitcoin_pure ? 'success' : 'default'}>
-                      {data.bitcoin_pure ? 'Enabled' : 'Disabled'}
+                    <span className="text-gray-400">Reaper Mode</span>
+                    <Badge variant={data.reaper ? 'success' : 'default'}>
+                      {data.reaper ? 'Enabled' : 'Disabled'}
                     </Badge>
                   </div>
                   <div className="border-t border-gray-700 pt-3 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-gray-400">Inscriptions</span>
-                      <Badge variant={data.filter_inscriptions && data.bitcoin_pure ? 'error' : 'default'}>
-                        {data.filter_inscriptions && data.bitcoin_pure ? 'Filtered' : 'Allowed'}
+                      <Badge variant={data.filter_inscriptions && data.reaper ? 'error' : 'default'}>
+                        {data.filter_inscriptions && data.reaper ? 'Filtered' : 'Allowed'}
                       </Badge>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-gray-400">BRC-20</span>
-                      <Badge variant={data.filter_brc20 && data.bitcoin_pure ? 'error' : 'default'}>
-                        {data.filter_brc20 && data.bitcoin_pure ? 'Filtered' : 'Allowed'}
+                      <Badge variant={data.filter_brc20 && data.reaper ? 'error' : 'default'}>
+                        {data.filter_brc20 && data.reaper ? 'Filtered' : 'Allowed'}
                       </Badge>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-gray-400">Runes</span>
-                      <Badge variant={data.filter_runes && data.bitcoin_pure ? 'error' : 'default'}>
-                        {data.filter_runes && data.bitcoin_pure ? 'Filtered' : 'Allowed'}
+                      <Badge variant={data.filter_runes && data.reaper ? 'error' : 'default'}>
+                        {data.filter_runes && data.reaper ? 'Filtered' : 'Allowed'}
                       </Badge>
                     </div>
                   </div>
@@ -283,7 +283,7 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
                   </div>
                 </div>
               </div>
-              {data.bitcoin_pure && (
+              {data.reaper && (
                 <div className="p-4 rounded-lg bg-green-900/20 border border-green-800">
                   <p className="text-sm text-green-300">
                     With these settings, your node will actively filter non-financial transactions
@@ -302,12 +302,12 @@ export default function ReaperWizard({ isOpen, onClose }: ReaperWizardProps) {
                 <div className="flex items-center justify-between">
                   <span className="text-gray-400">Ghost Reaper</span>
                   <div className="flex items-center gap-2">
-                    <Badge variant={config?.bitcoin_pure ? 'success' : 'default'}>
-                      {config?.bitcoin_pure ? 'Enabled' : 'Disabled'}
+                    <Badge variant={config?.reaper ? 'success' : 'default'}>
+                      {config?.reaper ? 'Enabled' : 'Disabled'}
                     </Badge>
                     <span className="text-gray-500">-&gt;</span>
-                    <Badge variant={data.bitcoin_pure ? 'success' : 'default'}>
-                      {data.bitcoin_pure ? 'Enabled' : 'Disabled'}
+                    <Badge variant={data.reaper ? 'success' : 'default'}>
+                      {data.reaper ? 'Enabled' : 'Disabled'}
                     </Badge>
                   </div>
                 </div>

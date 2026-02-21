@@ -250,15 +250,15 @@ export default function ConfigPage() {
           </div>
         </Card>
 
-        {/* Bitcoin Pure Info */}
+        {/* Reaper Info */}
         <Card>
           <CardHeader
-            title="Bitcoin Pure Mode"
+            title="Reaper Mode"
             subtitle="Spam-free operation (+2 shares)"
           />
           <div className="p-4 bg-yellow-900/20 border border-yellow-800 rounded-lg">
             <p className="text-yellow-300 text-sm">
-              Bitcoin Pure mode is automatically enabled when using Clean or Strict profiles
+              Reaper mode is automatically enabled when using Clean or Strict profiles
               for both mempool and template. This earns +2 additional shares.
             </p>
             <div className="mt-3 flex items-center gap-2">

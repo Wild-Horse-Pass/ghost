@@ -19,7 +19,7 @@ export interface NodeInfo {
   archive_mode?: boolean;
   ghost_pay?: boolean;
   public_mining?: boolean;
-  bitcoin_pure?: boolean;
+  reaper?: boolean;
   mempool_profile?: string;
   template_profile?: string;
 }
@@ -40,7 +40,7 @@ export interface NodeStatus {
   archive_mode?: boolean;
   public_mining?: boolean;
   private_mining?: boolean;
-  bitcoin_pure?: boolean;
+  reaper?: boolean;
   ghost_pay?: boolean;
   mempool_profile?: MempoolProfile | string;
   template_profile?: TemplateProfile | string;
@@ -49,7 +49,7 @@ export interface NodeStatus {
 export interface NodeConfig {
   ghost_mode?: boolean;
   archive_mode?: boolean;
-  bitcoin_pure?: boolean;
+  reaper?: boolean;
   public_mining?: boolean;
   ghost_pay?: boolean;
   mempool_profile?: MempoolProfile | string;
@@ -93,7 +93,7 @@ export interface FullNodeConfig {
   ghost_mode?: boolean;
   archive_mode?: boolean;
   public_mining?: boolean;
-  bitcoin_pure?: boolean;
+  reaper?: boolean;
   ghost_pay?: boolean;
   mempool_profile?: string;
   template_profile?: string;
@@ -122,7 +122,7 @@ export interface SharesInfo {
   archive_mode?: boolean;      // +5
   ghost_pay?: boolean;         // +4
   public_mining?: boolean;     // +3
-  bitcoin_pure?: boolean;      // +2
+  reaper?: boolean;      // +2
   elder?: boolean;             // +1
   elder_slot?: number | null;
   estimated_reward_btc?: number | null;
@@ -670,7 +670,7 @@ export interface SwarmNode {
   archive_mode?: boolean;
   ghost_pay?: boolean;
   public_mining?: boolean;
-  bitcoin_pure?: boolean;
+  reaper?: boolean;
   elder?: boolean;
   elder_slot?: number | null;
   hashrate_th?: number;

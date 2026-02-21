@@ -657,7 +657,7 @@ pub struct DashboardConfig {
     pub archive_mode: bool,
     pub ghost_pay: bool,
     pub public_mining: bool,
-    pub bitcoin_pure: bool,
+    pub reaper: bool,
     pub elder: bool,
     pub elder_slot: Option<u32>,
     pub mempool_profile: String,
@@ -706,7 +706,7 @@ impl Default for DashboardConfig {
             archive_mode: true,  // enabled by default
             ghost_pay: true,     // enabled by default
             public_mining: true, // enabled by default
-            bitcoin_pure: true,  // enabled by default
+            reaper: true,  // enabled by default
             elder: false,        // set per-node
             elder_slot: None,
             mempool_profile: "permissive".to_string(),

@@ -1045,7 +1045,7 @@ impl VerificationTask {
             }
         }
 
-        if capabilities.bitcoin_pure {
+        if capabilities.reaper {
             if let Err(e) = self
                 .verify_policy(peer, &peer_id_hex, &our_id_hex, timestamp)
                 .await

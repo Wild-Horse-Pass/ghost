@@ -34,7 +34,7 @@ const SHARE_TIERS = [
   { key: "archive_mode", name: "Archive Mode", bonus: 5 },
   { key: "ghost_pay", name: "Ghost Pay", bonus: 4 },
   { key: "public_mining", name: "Public Mining", bonus: 3 },
-  { key: "bitcoin_pure", name: "Bitcoin Pure", bonus: 2 },
+  { key: "reaper", name: "Reaper", bonus: 2 },
   { key: "elder", name: "Elder Status", bonus: 1 },
 ] as const;
 

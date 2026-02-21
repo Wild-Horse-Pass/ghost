@@ -454,7 +454,7 @@ export default function SwarmPage() {
                   <Badge variant={node.archive_mode ? "success" : "error"} className="text-xs px-1.5 py-0">+5</Badge>
                   <Badge variant={node.ghost_pay ? "success" : "error"} className="text-xs px-1.5 py-0">+4</Badge>
                   <Badge variant={node.public_mining ? "success" : "error"} className="text-xs px-1.5 py-0">+3</Badge>
-                  <Badge variant={node.bitcoin_pure ? "success" : "error"} className="text-xs px-1.5 py-0">+2</Badge>
+                  <Badge variant={node.reaper ? "success" : "error"} className="text-xs px-1.5 py-0">+2</Badge>
                   <Badge variant={node.elder ? "success" : "error"} className="text-xs px-1.5 py-0">+1</Badge>
                 </div>
 
@@ -549,7 +549,7 @@ export default function SwarmPage() {
                   <Badge variant={node.archive_mode ? "success" : "error"}>Archive +5</Badge>
                   <Badge variant={node.ghost_pay ? "success" : "error"}>Ghost Pay +4</Badge>
                   <Badge variant={node.public_mining ? "success" : "error"}>Public Mining +3</Badge>
-                  <Badge variant={node.bitcoin_pure ? "success" : "error"}>Bitcoin Pure +2</Badge>
+                  <Badge variant={node.reaper ? "success" : "error"}>Reaper +2</Badge>
                   <Badge variant={node.elder ? "success" : "error"}>
                     Elder {node.elder ? `#${node.elder_slot}` : ""} +1
                   </Badge>

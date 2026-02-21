@@ -6,7 +6,7 @@ import {
   useConfig,
   useSetGhostMode,
   useSetArchiveMode,
-  useSetBitcoinPure,
+  useSetReaper,
   useSetPublicMining,
   useGhostPayStatus,
 } from "@/hooks/queries";
@@ -20,7 +20,7 @@ export function ModesSection() {
 
   const setGhostMode = useSetGhostMode();
   const setArchiveMode = useSetArchiveMode();
-  const setBitcoinPure = useSetBitcoinPure();
+  const setReaper = useSetReaper();
   const setPublicMining = useSetPublicMining();
 
   const { success, error } = useToast();
@@ -45,7 +45,7 @@ export function ModesSection() {
 
   const handleGhostReaperToggle = async (enabled: boolean) => {
     try {
-      await setBitcoinPure.mutateAsync(enabled);
+      await setReaper.mutateAsync(enabled);
       success(
         "Mode Changed",
         enabled
@@ -118,11 +118,11 @@ export function ModesSection() {
       <ToggleRow
         label="Ghost Reaper"
         description="Reject transactions with dead code in witness scripts. Filters inscriptions, drop stuffing, and other non-financial data from your mempool. (+2 shares)"
-        enabled={config?.bitcoin_pure ?? false}
+        enabled={config?.reaper ?? false}
         onChange={handleGhostReaperToggle}
-        disabled={setBitcoinPure.isPending}
+        disabled={setReaper.isPending}
         badge={
-          config?.bitcoin_pure ? (
+          config?.reaper ? (
             <Badge variant="success">+2 Shares</Badge>
           ) : null
         }

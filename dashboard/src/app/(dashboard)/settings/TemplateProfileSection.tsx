@@ -91,11 +91,11 @@ export function TemplateProfileSection() {
         title="Block Template Profiles"
         subtitle="Configure which transactions to include when mining blocks"
       >
-        {config?.bitcoin_pure && (
+        {config?.reaper && (
           <div className="p-3 bg-yellow-900/30 border border-yellow-700/50 rounded-lg mb-4">
-            <div className="text-yellow-400 font-medium">Locked by Bitcoin Pure Mode</div>
+            <div className="text-yellow-400 font-medium">Locked by Reaper Mode</div>
             <div className="text-sm text-yellow-500/80">
-              Disable Bitcoin Pure to change template profiles
+              Disable Reaper to change template profiles
             </div>
           </div>
         )}
@@ -111,7 +111,7 @@ export function TemplateProfileSection() {
         </div>
 
         {/* Preset profiles */}
-        <div className={`grid grid-cols-1 md:grid-cols-2 gap-2 ${config?.bitcoin_pure ? "opacity-50 pointer-events-none" : ""}`}>
+        <div className={`grid grid-cols-1 md:grid-cols-2 gap-2 ${config?.reaper ? "opacity-50 pointer-events-none" : ""}`}>
           {[
             { name: "standard", desc: "Balanced fee optimization" },
             { name: "max_fee", desc: "Maximize fee revenue per block" },
@@ -129,7 +129,7 @@ export function TemplateProfileSection() {
                   : "bg-gray-800/50 border-gray-700 text-gray-300 hover:border-gray-500"
               }`}
               onClick={() => activateTemplateProfile.mutate(profile.name)}
-              disabled={config?.bitcoin_pure || (profile.name === "ghost_block" && !status?.ghost_mode)}
+              disabled={config?.reaper || (profile.name === "ghost_block" && !status?.ghost_mode)}
             >
               <div className="font-medium capitalize">{profile.name.replace(/_/g, " ")}</div>
               <div className="text-xs text-gray-500 mt-1">{profile.desc}</div>
@@ -158,7 +158,7 @@ export function TemplateProfileSection() {
           <>
             {/* Custom profiles */}
             {templateProfiles.length > 0 && (
-              <div className={`space-y-2 ${config?.bitcoin_pure ? "opacity-50 pointer-events-none" : ""}`}>
+              <div className={`space-y-2 ${config?.reaper ? "opacity-50 pointer-events-none" : ""}`}>
                 <h4 className="text-sm font-medium text-gray-300">Custom Profiles</h4>
                 {templateProfiles.map((profile) => (
                   <div
@@ -184,7 +184,7 @@ export function TemplateProfileSection() {
                         size="sm"
                         variant="secondary"
                         onClick={() => handleEdit(profile)}
-                        disabled={config?.bitcoin_pure}
+                        disabled={config?.reaper}
                       >
                         Edit
                       </Button>
@@ -192,7 +192,7 @@ export function TemplateProfileSection() {
                         size="sm"
                         variant="primary"
                         onClick={() => handleActivate(profile.name)}
-                        disabled={config?.bitcoin_pure}
+                        disabled={config?.reaper}
                       >
                         Use
                       </Button>
@@ -200,7 +200,7 @@ export function TemplateProfileSection() {
                         size="sm"
                         variant="ghost"
                         onClick={() => handleDelete(profile.name)}
-                        disabled={config?.bitcoin_pure}
+                        disabled={config?.reaper}
                       >
                         Delete
                       </Button>
@@ -214,7 +214,7 @@ export function TemplateProfileSection() {
               onClick={handleNew}
               variant="secondary"
               className="w-full"
-              disabled={config?.bitcoin_pure}
+              disabled={config?.reaper}
             >
               Create Custom Template Profile
             </Button>

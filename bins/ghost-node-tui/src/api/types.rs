@@ -43,7 +43,7 @@ pub struct NodeStatus {
     #[serde(default)]
     pub private_mining: bool,
     #[serde(default)]
-    pub bitcoin_pure: bool,
+    pub reaper: bool,
     #[serde(default)]
     pub ghost_mode: bool,
 
@@ -66,7 +66,7 @@ impl NodeStatus {
                 archive_mode: self.archive_mode,
                 ghost_pay: self.ghost_pay,
                 public_mining: self.public_mining,
-                bitcoin_pure: self.bitcoin_pure,
+                reaper: self.reaper,
                 elder_status: false,
                 elder_number: None,
                 gsp_enabled: false,
@@ -86,7 +86,7 @@ pub struct CapabilityStatus {
     #[serde(default)]
     pub public_mining: bool,
     #[serde(default)]
-    pub bitcoin_pure: bool,
+    pub reaper: bool,
     #[serde(default)]
     pub elder_status: bool,
     #[serde(default)]

@@ -83,8 +83,8 @@ pub const GHOST_PAY_SHARES: i32 = 4;
 /// Public mining capability shares
 pub const PUBLIC_MINING_SHARES: i32 = 3;
 
-/// Bitcoin Pure policy capability shares
-pub const BITCOIN_PURE_SHARES: i32 = 2;
+/// Reaper strict mode capability shares
+pub const REAPER_SHARES: i32 = 2;
 
 /// Elder status capability shares
 pub const ELDER_STATUS_SHARES: i32 = 1;
@@ -99,7 +99,7 @@ const _: () = {
         (ARCHIVE_MODE_SHARES as i64
             + GHOST_PAY_SHARES as i64
             + PUBLIC_MINING_SHARES as i64
-            + BITCOIN_PURE_SHARES as i64
+            + REAPER_SHARES as i64
             + ELDER_STATUS_SHARES as i64)
             < i32::MAX as i64,
         "Maximum possible node shares must be less than i32::MAX"
@@ -291,7 +291,7 @@ mod tests {
         let total = ARCHIVE_MODE_SHARES
             + GHOST_PAY_SHARES
             + PUBLIC_MINING_SHARES
-            + BITCOIN_PURE_SHARES
+            + REAPER_SHARES
             + ELDER_STATUS_SHARES;
         assert_eq!(total, MAX_NODE_SHARES);
     }

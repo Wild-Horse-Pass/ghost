@@ -760,7 +760,7 @@ impl VerificationClient {
         }
 
         // Policy verification
-        if result.claimed_capabilities.bitcoin_pure {
+        if result.claimed_capabilities.reaper {
             if let Some(tx) = test_tx_hex {
                 match self.verify_policy(node_address, tx).await {
                     Ok(resp) => result.policy_verified = resp.success,
@@ -824,7 +824,7 @@ impl VerificationSuiteResult {
             }
         }
 
-        if self.claimed_capabilities.bitcoin_pure {
+        if self.claimed_capabilities.reaper {
             checks += 1;
             if self.policy_verified {
                 passes += 1;

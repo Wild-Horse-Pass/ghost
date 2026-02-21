@@ -3,7 +3,7 @@
 import { Badge } from "@/components/ui/Badge";
 import {
   useConfig,
-  useSetBitcoinPure,
+  useSetReaper,
   useGhostPayStatus,
 } from "@/hooks/queries";
 import { useHazeStatus } from "@/hooks/queries/useHazeQueries";
@@ -30,12 +30,12 @@ export function ProtocolsSection() {
   const { data: ghostPayStatus } = useGhostPayStatus();
   const { data: hazeStatus } = useHazeStatus();
   const { data: shroudStatus } = useShroudStatus();
-  const setBitcoinPure = useSetBitcoinPure();
+  const setReaper = useSetReaper();
   const { success, error } = useToast();
 
   const handleGhostReaperToggle = async (enabled: boolean) => {
     try {
-      await setBitcoinPure.mutateAsync(enabled);
+      await setReaper.mutateAsync(enabled);
       success(
         "Protocol Updated",
         enabled
@@ -55,11 +55,11 @@ export function ProtocolsSection() {
       <ToggleRow
         label="Ghost Reaper"
         description="Reject dead code transactions from your mempool. Specifically targets non-financial witness data (inscriptions, drop stuffing, fake pubkeys)."
-        enabled={config?.bitcoin_pure ?? false}
+        enabled={config?.reaper ?? false}
         onChange={handleGhostReaperToggle}
-        disabled={setBitcoinPure.isPending}
+        disabled={setReaper.isPending}
         badge={
-          config?.bitcoin_pure ? (
+          config?.reaper ? (
             <Badge variant="success">+2 Shares</Badge>
           ) : null
         }

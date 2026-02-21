@@ -440,7 +440,7 @@ fn render_rewards_card(f: &mut Frame, area: Rect, app: &App) {
             Span::raw(" "),
             capability_span("Public", caps.public_mining, 3),
             Span::raw(" "),
-            capability_span("Policy", caps.bitcoin_pure, 2),
+            capability_span("Reaper", caps.reaper, 2),
             Span::raw(" "),
             capability_span("Elder", caps.elder_status, 1),
         ]));

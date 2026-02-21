@@ -8,7 +8,7 @@ const MODE_CONFIG_PRIMARY = [
   { key: "archive_mode", name: "Archive Mode" },
   { key: "ghost_pay", name: "Ghost Pay" },
   { key: "public_mining", name: "Public Mining" },
-  { key: "bitcoin_pure", name: "Bitcoin Pure" },
+  { key: "reaper", name: "Reaper" },
 ] as const;
 
 const MODE_CONFIG_SECONDARY = [

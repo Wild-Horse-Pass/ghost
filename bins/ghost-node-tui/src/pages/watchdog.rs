@@ -192,7 +192,7 @@ fn render_capabilities(f: &mut Frame, area: Rect, app: &App) {
             ("Archive Mode", caps.archive_mode, "+5 shares"),
             ("Ghost Pay", caps.ghost_pay, "+4 shares"),
             ("Public Mining", caps.public_mining, "+3 shares"),
-            ("Bitcoin Pure", caps.bitcoin_pure, "+2 shares"),
+            ("Reaper", caps.reaper, "+2 shares"),
             ("Elder Status", caps.elder_status, "+1 share"),
         ];
 

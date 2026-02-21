@@ -423,7 +423,7 @@ impl QualifiedCapabilityProvider {
                     caps.archive_mode = false;
                 }
                 if policy_unique < min_unique {
-                    if caps.bitcoin_pure {
+                    if caps.reaper {
                         info!(
                             node = %&node_id_hex[..8],
                             unique = policy_unique,
@@ -432,7 +432,7 @@ impl QualifiedCapabilityProvider {
                             "C-2/MED-VER-6: Policy capability disqualified - insufficient unique challengers"
                         );
                     }
-                    caps.bitcoin_pure = false;
+                    caps.reaper = false;
                 }
                 if stratum_unique < min_unique {
                     if caps.public_mining {
@@ -464,7 +464,7 @@ impl QualifiedCapabilityProvider {
                     archive = caps.archive_mode,
                     ghost_pay = caps.ghost_pay,
                     public_mining = caps.public_mining,
-                    bitcoin_pure = caps.bitcoin_pure,
+                    reaper = caps.reaper,
                     total_shares = caps.total_shares(),
                     "DIAG: Qualified capabilities result (after C-2 filter)"
                 );
@@ -546,7 +546,7 @@ impl QualifiedCapabilityProvider {
             caps.archive_mode = false;
         }
         if policy_unique < min_unique {
-            caps.bitcoin_pure = false;
+            caps.reaper = false;
         }
         if stratum_unique < min_unique {
             caps.public_mining = false;
@@ -676,7 +676,7 @@ impl QualifiedCapabilityProvider {
                 caps.archive_mode = false;
             }
             if policy_unique < min_unique {
-                caps.bitcoin_pure = false;
+                caps.reaper = false;
             }
             if stratum_unique < min_unique {
                 caps.public_mining = false;
@@ -697,7 +697,7 @@ impl QualifiedCapabilityProvider {
                             node = %&node_id_hex[..8],
                             shares = shares,
                             archive = caps.archive_mode,
-                            bitcoin_pure = caps.bitcoin_pure,
+                            reaper = caps.reaper,
                             "DIAG: Qualified node for payout"
                         );
 

@@ -743,10 +743,7 @@ async fn main() -> Result<()> {
         archive_mode: config.storage.archive_mode,
         ghost_pay: config.ghost_pay.is_some(),
         public_mining: is_public_mining, // Derived from mining_mode
-        bitcoin_pure: matches!(
-            config.policy.profile,
-            ghost_common::config::PolicyProfile::BitcoinPure
-        ),
+        reaper: config.reaper.enabled && config.reaper.mode == "strict",
         elder_status: false,
     };
 
@@ -755,11 +752,11 @@ async fn main() -> Result<()> {
     let public_address = config.network.public_address.as_deref();
     let display_name = config.identity.display_name.as_deref();
     let capabilities_str = format!(
-        "archive:{},ghost_pay:{},public_mining:{},bitcoin_pure:{}",
+        "archive:{},ghost_pay:{},public_mining:{},reaper:{}",
         capabilities.archive_mode,
         capabilities.ghost_pay,
         capabilities.public_mining,
-        capabilities.bitcoin_pure
+        capabilities.reaper
     );
 
     // Register node in database (for tracking/discovery purposes)
@@ -2049,6 +2046,10 @@ async fn main() -> Result<()> {
     // Pass database and RPC to verification state for API endpoints
     verification_state = verification_state.with_database((*db).clone());
     verification_state = verification_state.with_rpc(Arc::clone(&rpc));
+
+    // Wire node config path for persisting ghost_mode, shroud_enabled, etc.
+    verification_state =
+        verification_state.with_node_config_path(data_dir.join("node_config.json"));
 
     // Wire full node config for config update API
     // This allows the dashboard to modify settings via POST /api/internal/config/update

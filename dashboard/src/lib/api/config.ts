@@ -51,8 +51,8 @@ export async function setPublicMiningConfig(enabled: boolean): Promise<NodeConfi
   });
 }
 
-export async function setBitcoinPure(enabled: boolean): Promise<NodeConfig> {
-  return fetchApi<NodeConfig>('/api/v1/config/bitcoin_pure', {
+export async function setReaper(enabled: boolean): Promise<NodeConfig> {
+  return fetchApi<NodeConfig>('/api/v1/config/reaper', {
     method: 'POST',
     body: JSON.stringify({ enabled }),
   });
@@ -227,9 +227,7 @@ export async function configureHaze(mode: 'standard' | 'hazed' | 'full_archive')
 // Shroud configuration (wizard endpoint)
 export async function configureShroud(config: {
   enabled: boolean;
-  dandelion?: boolean;
-  max_delay_ms?: number;
-}): Promise<{ success: boolean; enabled: boolean; message: string }> {
+}): Promise<{ success: boolean; enabled: boolean; restart_required: boolean; message: string }> {
   return fetchApi('/api/v1/shroud/configure', {
     method: 'POST',
     body: JSON.stringify(config),
