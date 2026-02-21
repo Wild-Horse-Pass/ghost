@@ -18,7 +18,6 @@ ExecStart=/opt/ghost/bin/ghostd \
   -rpcuser=ghostrpc \
   -rpcpassword=ghost_signet_rpc_2024 \
   -rpcallowip=127.0.0.1/32 \
-  -disablewallet \
   -maxconnections=32 \
   -listen=1 \
   -port=38333 \
