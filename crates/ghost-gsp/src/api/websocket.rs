@@ -559,7 +559,7 @@ async fn handle_message(
             server_time: chrono::Utc::now().timestamp(),
         })),
 
-        ClientMessage::GetBalance => handle_get_balance(state, conn_state).await,
+        ClientMessage::GetBalance { max_k } => handle_get_balance(state, conn_state, max_k).await,
 
         ClientMessage::GetUtxos { min_confirmations } => {
             handle_get_utxos(state, conn_state, min_confirmations).await
@@ -789,14 +789,18 @@ async fn handle_authenticate(
 async fn handle_get_balance(
     state: &Arc<GspState>,
     conn_state: &ConnectionState,
+    max_k: Option<u32>,
 ) -> Result<Option<ServerMessage>, GspError> {
     let wallet_id = conn_state
         .wallet_id
         .as_ref()
         .ok_or(GspError::Unauthorized)?;
 
-    // Query pay node for balance
-    let balance = state.pay_node.get_balance(&wallet_id.to_string()).await?;
+    // Query pay node for balance, forwarding max_k for Silent Payment scanning depth
+    let balance = state
+        .pay_node
+        .get_balance(&wallet_id.to_string(), max_k)
+        .await?;
 
     Ok(Some(ServerMessage::BalanceUpdate {
         confirmed: balance.confirmed,

@@ -439,16 +439,13 @@ impl VerificationClient {
                 Ok(())
             }
             Err(e) => {
-                // If the hostname was already an IP address that failed to parse,
-                // this is a format error, not a DNS issue
-                warn!(
-                    host = %host,
-                    error = %e,
-                    "M-19: DNS resolution failed for host"
-                );
-                // We still allow the request to proceed since the hostname check passed.
-                // The actual HTTP client will fail if the host is truly unreachable.
-                Ok(())
+                // H-09: DNS resolution failure must block the request to prevent SSRF.
+                // If we can't resolve the host, we can't verify it doesn't point to
+                // an internal address. Allowing the request would bypass SSRF protection.
+                return Err(GhostError::Config(format!(
+                    "H-09: DNS resolution failed for {}: {} — blocking request to prevent SSRF",
+                    host, e
+                )));
             }
         }
     }
@@ -782,7 +779,16 @@ impl VerificationClient {
 
         // GhostPay verification
         if result.claimed_capabilities.ghost_pay {
-            match self.verify_ghostpay(node_address, None).await {
+            // M-10: Generate random nonce to prevent precomputed responses
+            let ghostpay_nonce = {
+                let mut nonce = [0u8; 32];
+                getrandom::getrandom(&mut nonce).ok();
+                Some(hex::encode(nonce))
+            };
+            match self
+                .verify_ghostpay_with_nonce(node_address, None, ghostpay_nonce.as_deref())
+                .await
+            {
                 Ok(resp) => result.ghostpay_verified = resp.success && resp.l2_enabled,
                 Err(e) => result.errors.push(format!("GhostPay: {}", e)),
             }

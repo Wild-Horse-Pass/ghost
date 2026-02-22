@@ -2023,6 +2023,7 @@ dependencies = [
  "ghost-zkp",
  "hex",
  "hmac",
+ "libc",
  "once_cell",
  "parking_lot",
  "serde",
@@ -2034,6 +2035,7 @@ dependencies = [
  "tokio",
  "tracing",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
@@ -6428,6 +6430,7 @@ dependencies = [
  "rand",
  "rand_chacha",
  "serde",
+ "serde_json",
  "sha2 0.10.9",
  "subtle",
  "thiserror 1.0.69",

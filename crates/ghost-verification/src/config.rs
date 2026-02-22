@@ -35,6 +35,10 @@ use ghost_common::error::{GhostError, GhostResult};
 pub struct NodeConfig {
     /// Ghost mode: do not relay/announce unconfirmed transactions
     pub ghost_mode: bool,
+    /// Shroud: enable random relay delay (0-5s) for transaction origin privacy.
+    /// Requires ghost-core restart with -shroud=1 flag to take effect.
+    #[serde(default)]
+    pub shroud_enabled: bool,
 }
 
 impl NodeConfig {
@@ -117,11 +121,15 @@ mod tests {
         let temp_file = NamedTempFile::new().unwrap();
         let path = temp_file.path();
 
-        let config = NodeConfig { ghost_mode: true };
+        let config = NodeConfig {
+            ghost_mode: true,
+            shroud_enabled: false,
+        };
         config.save(path).unwrap();
 
         let loaded = NodeConfig::load(path).unwrap();
         assert!(loaded.ghost_mode);
+        assert!(!loaded.shroud_enabled);
     }
 
     #[test]

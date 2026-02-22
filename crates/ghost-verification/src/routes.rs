@@ -123,7 +123,8 @@ fn get_system_resources(proc_paths_allowed: &[String]) -> (f64, f64, f64) {
                     0.0
                 }
             } else {
-                0.0
+                // L-05: Return -1.0 on statvfs failure to distinguish error from 0% usage
+                -1.0
             }
         }
         #[cfg(not(unix))]

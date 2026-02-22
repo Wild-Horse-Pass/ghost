@@ -48,7 +48,7 @@
 //! use ghost_gsp_proto::{ClientMessage, ServerMessage, WalletProof};
 //!
 //! // Create a balance request
-//! let request = ClientMessage::GetBalance;
+//! let request = ClientMessage::GetBalance { max_k: None };
 //!
 //! // Serialize for sending
 //! let json = serde_json::to_string(&request).unwrap();
@@ -99,12 +99,12 @@ mod tests {
 
     #[test]
     fn test_client_message_serialization() {
-        let msg = ClientMessage::GetBalance;
+        let msg = ClientMessage::GetBalance { max_k: None };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("get_balance"));
 
         let parsed: ClientMessage = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, ClientMessage::GetBalance));
+        assert!(matches!(parsed, ClientMessage::GetBalance { .. }));
     }
 
     #[test]

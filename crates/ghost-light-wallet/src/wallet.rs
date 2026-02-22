@@ -227,8 +227,8 @@ impl LightWallet {
 
         info!(gsp = gsp_url, "Connected to GSP");
 
-        // Fetch initial balance
-        self.refresh_balance().await?;
+        // Fetch initial balance (use server default max_k on connect)
+        self.refresh_balance(None).await?;
 
         Ok(())
     }
@@ -254,7 +254,10 @@ impl LightWallet {
     }
 
     /// Refresh balance from GSP
-    pub async fn refresh_balance(&self) -> WalletResult<WalletBalance> {
+    ///
+    /// `max_k` controls how many Silent Payment derivation indices to scan.
+    /// Default (None) uses the server's default (typically 10).
+    pub async fn refresh_balance(&self, max_k: Option<u32>) -> WalletResult<WalletBalance> {
         // Clone the client to release the lock before await
         let client = {
             let client_guard = self.gsp_client.read();
@@ -264,7 +267,7 @@ impl LightWallet {
                 .clone()
         };
 
-        let balance = client.get_balance().await?;
+        let balance = client.get_balance(max_k).await?;
 
         let wallet_balance = WalletBalance {
             confirmed: balance.confirmed,

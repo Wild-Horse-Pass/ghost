@@ -3312,6 +3312,11 @@ async fn run_settlement_loop(state: Arc<AppState>) {
     // Settlement check interval (5 minutes)
     let check_interval = std::time::Duration::from_secs(300);
 
+    // Fix 5: Track failed broadcast attempts per lock_id for exponential backoff
+    // Maps lock_id -> (attempt_count, last_attempt_time)
+    let mut retry_tracker: std::collections::HashMap<String, (u32, std::time::Instant)> =
+        std::collections::HashMap::new();
+
     // Create batch executor with treasury address from config
     // Note: Settlement loop only starts if treasury_address is configured (checked in main)
     let treasury_address = state.config.treasury_address.clone().unwrap_or_default();
@@ -3322,6 +3327,9 @@ async fn run_settlement_loop(state: Arc<AppState>) {
 
     loop {
         tokio::time::sleep(check_interval).await;
+
+        // Fix 5: Clean stale retry entries (>24 hours old) to prevent memory growth
+        retry_tracker.retain(|_, (_, last_try)| last_try.elapsed().as_secs() < 86400);
 
         // Get ghost_id
         let ghost_id = match state.ghost_id.read().clone() {
@@ -3414,6 +3422,21 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                 continue;
             }
 
+            // Fix 5: Check if lock is in cooldown from a previous failed broadcast
+            if let Some(&(attempts, last_try)) = retry_tracker.get(&lock.lock_id) {
+                let backoff_secs =
+                    std::cmp::min(300u64.saturating_mul(2u64.saturating_pow(attempts)), 7200);
+                if last_try.elapsed().as_secs() < backoff_secs {
+                    debug!(
+                        lock_id = %lock.lock_id,
+                        attempts = attempts,
+                        backoff_secs = backoff_secs,
+                        "Lock in cooldown after failed broadcast, skipping"
+                    );
+                    continue;
+                }
+            }
+
             // Get funding info
             let (txid, vout) = match (lock.funding_txid.as_ref(), lock.funding_vout) {
                 (Some(txid_str), Some(vout)) => {
@@ -3425,6 +3448,43 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                 }
                 _ => continue,
             };
+
+            // Fix 4: Verify UTXO exists on-chain before including in settlement
+            match state
+                .rpc
+                .get_tx_out(&txid.to_string(), vout, false)
+                .await
+            {
+                Ok(Some(_)) => { /* UTXO exists, proceed */ }
+                Ok(None) => {
+                    warn!(
+                        lock_id = %lock.lock_id,
+                        txid = %txid,
+                        vout = vout,
+                        "UTXO not found on-chain, skipping settlement"
+                    );
+                    if let Err(e) =
+                        state
+                            .db
+                            .update_ghost_lock_state(&lock.lock_id, DbLockState::Spent)
+                    {
+                        error!(
+                            lock_id = %lock.lock_id,
+                            error = %e,
+                            "Failed to mark lock as spent"
+                        );
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    warn!(
+                        lock_id = %lock.lock_id,
+                        error = %e,
+                        "Failed to verify UTXO existence, skipping this withdrawal"
+                    );
+                    continue;
+                }
+            }
 
             // Create settlement input
             let input = ReconciliationInput {
@@ -3521,9 +3581,165 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                 }
                             }
 
-                            // Serialize and broadcast via Bitcoin Core RPC
+                            // Fix 3: Sign each input using the lock owner's keys
+                            let secp = Secp256k1::new();
+                            let sign_result: Result<bitcoin::Transaction, String> = (|| {
+                                let keys_guard = state.keys.read();
+                                let keys = keys_guard
+                                    .as_ref()
+                                    .ok_or("No ghost keys loaded for settlement signing")?;
+
+                                let mut signed_tx = batch_tx.transaction.clone();
+                                let mut input_idx = 0usize;
+
+                                for withdrawal in &pending_withdrawals {
+                                    if !processed_withdrawal_ids
+                                        .contains(&withdrawal.id.unwrap_or(-1))
+                                    {
+                                        continue;
+                                    }
+
+                                    // Get lock record for pubkeys and timelock info
+                                    let lock = state
+                                        .db
+                                        .get_ghost_lock(&withdrawal.lock_id)
+                                        .map_err(|e| format!("DB error: {}", e))?
+                                        .ok_or_else(|| {
+                                            format!("Lock {} not found", withdrawal.lock_id)
+                                        })?;
+
+                                    // Get derivation index for this lock
+                                    let lock_index = state
+                                        .db
+                                        .get_lock_index_for_owner(
+                                            &lock.owner_ghost_id,
+                                            &lock.lock_id,
+                                        )
+                                        .map_err(|e| {
+                                            format!("Failed to get lock index: {}", e)
+                                        })?;
+
+                                    // Derive the lock secret key
+                                    let lock_secret = keys
+                                        .derive_lock_secret(lock_index)
+                                        .map_err(|e| format!("Key derivation error: {:?}", e))?;
+
+                                    // Parse stored pubkeys from hex
+                                    let lock_pubkey_bytes =
+                                        hex::decode(&lock.lock_pubkey).map_err(|e| {
+                                            format!("Invalid lock_pubkey hex: {}", e)
+                                        })?;
+                                    let lock_pubkey =
+                                        bitcoin::secp256k1::PublicKey::from_slice(
+                                            &lock_pubkey_bytes,
+                                        )
+                                        .map_err(|e| {
+                                            format!("Invalid lock_pubkey: {}", e)
+                                        })?;
+                                    let recovery_pubkey_bytes =
+                                        hex::decode(&lock.recovery_pubkey).map_err(|e| {
+                                            format!("Invalid recovery_pubkey hex: {}", e)
+                                        })?;
+                                    let recovery_pubkey =
+                                        bitcoin::secp256k1::PublicKey::from_slice(
+                                            &recovery_pubkey_bytes,
+                                        )
+                                        .map_err(|e| {
+                                            format!("Invalid recovery_pubkey: {}", e)
+                                        })?;
+
+                                    // Verify derived key matches stored key
+                                    let derived_pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
+                                    if derived_pubkey != lock_pubkey {
+                                        return Err(format!(
+                                            "Derived pubkey mismatch for lock {} at index {}",
+                                            lock.lock_id, lock_index
+                                        ));
+                                    }
+
+                                    // Compute recovery_blocks from stored heights
+                                    let recovery_blocks =
+                                        lock.recovery_height.saturating_sub(lock.creation_height);
+
+                                    // Reconstruct witness script
+                                    let witness_script =
+                                        ghost_locks::build_wsh_witness_script(
+                                            &lock_pubkey,
+                                            &recovery_pubkey,
+                                            recovery_blocks,
+                                        )
+                                        .map_err(|e| {
+                                            format!("Witness script error: {}", e)
+                                        })?;
+
+                                    // Compute P2WSH sighash
+                                    let sighash = {
+                                        let mut cache =
+                                            bitcoin::sighash::SighashCache::new(&signed_tx);
+                                        cache
+                                            .p2wsh_signature_hash(
+                                                input_idx,
+                                                &witness_script,
+                                                bitcoin::Amount::from_sat(lock.amount_sats),
+                                                bitcoin::EcdsaSighashType::All,
+                                            )
+                                            .map_err(|e| {
+                                                format!("Sighash error: {}", e)
+                                            })?
+                                    };
+
+                                    // Sign with ECDSA (P2WSH uses ECDSA, not Schnorr)
+                                    let sighash_bytes: [u8; 32] = sighash[..].try_into()
+                                        .map_err(|_| "Sighash not 32 bytes".to_string())?;
+                                    let msg = bitcoin::secp256k1::Message::from_digest(
+                                        sighash_bytes,
+                                    );
+                                    let sig = secp.sign_ecdsa(&msg, &lock_secret);
+
+                                    // Build DER signature with SIGHASH_ALL byte
+                                    let mut sig_bytes = sig.serialize_der().to_vec();
+                                    sig_bytes.push(0x01); // SIGHASH_ALL
+
+                                    // Build witness: [signature, 0x01 (IF branch), witness_script]
+                                    let witness_vec = ghost_locks::build_normal_witness(
+                                        &sig_bytes,
+                                        &witness_script,
+                                    );
+                                    signed_tx.input[input_idx].witness =
+                                        bitcoin::Witness::from_slice(&witness_vec);
+
+                                    input_idx += 1;
+                                }
+
+                                Ok(signed_tx)
+                            })();
+
+                            let signed_tx = match sign_result {
+                                Ok(tx) => tx,
+                                Err(e) => {
+                                    error!(
+                                        batch_id = %batch_id,
+                                        error = %e,
+                                        "Settlement transaction signing failed"
+                                    );
+                                    // Revert lock states on signing failure
+                                    for withdrawal in &pending_withdrawals {
+                                        if processed_withdrawal_ids
+                                            .contains(&withdrawal.id.unwrap_or(-1))
+                                        {
+                                            let _ = state.db.update_ghost_lock_state(
+                                                &withdrawal.lock_id,
+                                                DbLockState::Active,
+                                            );
+                                        }
+                                    }
+                                    continue;
+                                }
+                            };
+
+                            // Serialize signed transaction and broadcast via Bitcoin Core RPC
                             let tx_hex =
-                                bitcoin::consensus::encode::serialize_hex(&batch_tx.transaction);
+                                bitcoin::consensus::encode::serialize_hex(&signed_tx);
 
                             match state.rpc.send_raw_transaction(&tx_hex).await {
                                 Ok(broadcast_txid) => {
@@ -3558,6 +3774,15 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                             );
                                         }
                                     }
+
+                                    // Fix 5: Clear retry tracker on success
+                                    for withdrawal in &pending_withdrawals {
+                                        if processed_withdrawal_ids
+                                            .contains(&withdrawal.id.unwrap_or(-1))
+                                        {
+                                            retry_tracker.remove(&withdrawal.lock_id);
+                                        }
+                                    }
                                 }
                                 Err(e) => {
                                     error!(
@@ -3583,6 +3808,13 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                                     "Failed to revert lock state after broadcast failure"
                                                 );
                                             }
+
+                                            // Fix 5: Increment retry count with exponential backoff
+                                            let entry = retry_tracker
+                                                .entry(withdrawal.lock_id.clone())
+                                                .or_insert((0, std::time::Instant::now()));
+                                            entry.0 += 1;
+                                            entry.1 = std::time::Instant::now();
                                         }
                                     }
                                 }
@@ -4040,32 +4272,99 @@ async fn send_l2_payment(
         })));
     }
 
-    let payment_id = format!("pay_{}", chrono::Utc::now().timestamp_millis());
-    let now = chrono::Utc::now().timestamp();
+    // Query sender's available L2 balance:
+    // Sum of unsettled received payments + unspent lock amounts owned by sender
+    let sender_gid = ghost_id.clone();
+    let available_balance: i64 = state
+        .db
+        .with_connection(|conn| {
+            // L2 balance = received payments not yet settled + active lock funds
+            let received: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(amount_sats), 0) FROM accepted_instant_payments \
+                     WHERE merchant_wallet_id = ?1 AND settlement_block = 0",
+                    rusqlite::params![sender_gid],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
 
-    // Record the L2 payment intent in accepted_instant_payments table
-    let _memo_str = req.memo.clone().unwrap_or_default();
-    let recipient = req.recipient.clone();
-    let amount = req.amount_sats;
+            let lock_balance: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(SUM(amount_sats), 0) FROM ghost_locks \
+                     WHERE owner_ghost_id = ?1 AND state = 'Active'",
+                    rusqlite::params![sender_gid],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(received + lock_balance)
+        })
+        .map_err(|e| {
+            tracing::error!("Failed to query L2 balance: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if (req.amount_sats as i64) > available_balance {
+        return Ok(Json(serde_json::json!({
+            "success": false,
+            "error": "Insufficient L2 balance",
+            "available_sats": available_balance,
+            "requested_sats": req.amount_sats
+        })));
+    }
+
+    // Generate deterministic payment ID from (sender, recipient, amount, timestamp)
+    let now = chrono::Utc::now().timestamp();
+    let payment_id = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(ghost_id.as_bytes());
+        hasher.update(req.recipient.as_bytes());
+        hasher.update(req.amount_sats.to_le_bytes());
+        hasher.update(now.to_le_bytes());
+        format!("pay_{}", hex::encode(&hasher.finalize()[..16]))
+    };
+
+    // Get sender pubkey from loaded ghost keys
+    let sender_pubkey = {
+        let keys_guard = state.keys.read();
+        match keys_guard.as_ref() {
+            Some(keys) => hex::encode(keys.spend_pubkey().serialize()),
+            None => {
+                return Ok(Json(serde_json::json!({
+                    "success": false,
+                    "error": "Ghost keys not loaded"
+                })));
+            }
+        }
+    };
+
+    // Record the L2 payment intent with real sender pubkey.
+    // The ZK proof must be submitted separately via /api/v1/confidential/transfer
+    // since proof generation requires the sender's private key (client-side only).
     let pid = payment_id.clone();
     let gid = ghost_id.clone();
+    let recipient = req.recipient.clone();
+    let amount = req.amount_sats;
+    let pubkey_bytes = hex::decode(&sender_pubkey).unwrap_or_default();
 
-    state.db.with_connection(|conn| {
-        conn.execute(
-            "INSERT INTO accepted_instant_payments (payment_id, sender_lock_id, merchant_wallet_id, amount_sats, accepted_at, settlement_block, confidence, sender_pubkey, signature) VALUES (?1, ?2, ?3, ?4, ?5, 0, 1.0, X'00', X'00')",
-            rusqlite::params![
-                pid.as_bytes(),
-                gid,
-                recipient,
-                amount as i64,
-                now,
-            ],
-        ).map_err(|e| GhostError::Database(e.to_string()))?;
-        Ok(())
-    }).map_err(|e| {
-        tracing::error!("Failed to record L2 payment: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    state
+        .db
+        .with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO accepted_instant_payments \
+                 (payment_id, sender_lock_id, merchant_wallet_id, amount_sats, \
+                  accepted_at, settlement_block, confidence, sender_pubkey, signature) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0, 0.0, ?6, X'00')",
+                rusqlite::params![pid.as_bytes(), gid, recipient, amount as i64, now, pubkey_bytes,],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .map_err(|e| {
+            tracing::error!("Failed to record L2 payment: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     Ok(Json(serde_json::json!({
         "success": true,
@@ -4075,7 +4374,12 @@ async fn send_l2_payment(
         "amount_sats": req.amount_sats,
         "memo": req.memo,
         "status": "pending",
-        "message": format!("L2 payment of {} sats initiated to {}", req.amount_sats, req.recipient)
+        "proof_required": true,
+        "transfer_endpoint": "/api/v1/confidential/transfer",
+        "message": format!(
+            "L2 payment of {} sats recorded. Submit ZK proof via /api/v1/confidential/transfer to complete.",
+            req.amount_sats
+        )
     })))
 }
 

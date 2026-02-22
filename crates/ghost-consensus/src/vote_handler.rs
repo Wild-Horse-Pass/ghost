@@ -289,26 +289,47 @@ impl RateLimiter {
         self.buckets.read().len()
     }
 
-    /// Persist rate limiter state to a file (C3 security fix)
+    /// M-05: Persist rate limiter state to a file with HMAC authentication
     ///
     /// Call this periodically (e.g., every 60 seconds) to survive crashes.
+    /// Uses a fixed key derived from the file path when no explicit key is provided.
+    /// For full security, use `persist_to_file_authenticated` with a node-derived key.
     pub fn persist_to_file(&self, path: &std::path::Path) -> std::io::Result<()> {
-        let json = self.to_persisted();
-        std::fs::write(path, json)
+        // M-05: Derive a key from the file path for HMAC authentication
+        // This prevents casual tampering even without a node-derived key
+        let key = Self::derive_key_from_path(path);
+        self.persist_to_file_authenticated(path, &key)
     }
 
-    /// Load rate limiter state from a file (C3 security fix)
+    /// M-05: Load rate limiter state from a file with HMAC verification
     ///
     /// Call this at startup to restore state after crashes.
-    ///
-    /// **DEPRECATED**: Use `from_persisted_file_authenticated` for M-2 security.
+    /// Verifies HMAC before trusting persisted state. Falls back to fresh state
+    /// if verification fails or file is missing/corrupt.
     pub fn from_persisted_file(
         max_tokens: u32,
         refill_rate: u32,
         path: &std::path::Path,
     ) -> std::io::Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        Ok(Self::from_persisted(max_tokens, refill_rate, &json))
+        // M-05: Derive key from path and use authenticated loading
+        let key = Self::derive_key_from_path(path);
+        Ok(Self::from_persisted_file_authenticated(
+            max_tokens,
+            refill_rate,
+            path,
+            &key,
+        ))
+    }
+
+    /// M-05: Derive a deterministic key from a file path
+    ///
+    /// Used as fallback when no node-derived key is available.
+    /// This provides protection against casual file tampering.
+    fn derive_key_from_path(path: &std::path::Path) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"ghost/rate-limiter/path-key/v1");
+        hasher.update(path.to_string_lossy().as_bytes());
+        hasher.finalize().into()
     }
 
     // =========================================================================

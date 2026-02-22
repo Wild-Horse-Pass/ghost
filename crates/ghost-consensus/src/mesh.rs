@@ -1049,10 +1049,27 @@ impl MeshNetwork {
             } else {
                 // Generate and save new keypair with restrictive permissions
                 let kp = NoiseKeypair::generate();
+
+                // M-11: Set restrictive umask BEFORE writing to prevent TOCTOU race.
+                // The file is created with 0o600 permissions atomically (umask 0o077
+                // masks out group/other bits from the default 0o666 creation mode).
+                #[cfg(unix)]
+                let _umask_guard = {
+                    let old = unsafe { libc::umask(0o077) };
+                    struct UmaskRestore(libc::mode_t);
+                    impl Drop for UmaskRestore {
+                        fn drop(&mut self) {
+                            unsafe { libc::umask(self.0); }
+                        }
+                    }
+                    UmaskRestore(old)
+                };
+
                 if let Err(e) = std::fs::write(path, hex::encode(kp.private_key())) {
                     warn!(path = ?path, error = %e, "Failed to save Noise keypair");
                 } else {
-                    // Set restrictive file permissions (owner read/write only)
+                    // Belt-and-suspenders: also explicitly set permissions in case
+                    // the file already existed with wrong permissions before the write.
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
@@ -1064,6 +1081,11 @@ impl MeshNetwork {
                     }
                     info!(path = ?path, "Generated and saved new Noise keypair");
                 }
+
+                // M-11: Restore umask (guard dropped here)
+                #[cfg(unix)]
+                drop(_umask_guard);
+
                 kp
             }
         } else {

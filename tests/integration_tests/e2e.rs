@@ -372,7 +372,7 @@ mod gsp_protocol {
     #[test]
     fn test_client_message_serialization() {
         let messages = vec![
-            ClientMessage::GetBalance,
+            ClientMessage::GetBalance { max_k: None },
             ClientMessage::GetUtxos {
                 min_confirmations: 6,
             },
@@ -448,7 +448,7 @@ mod gsp_protocol {
     #[test]
     fn test_auth_requirements() {
         // These require auth
-        assert!(ClientMessage::GetBalance.requires_auth());
+        assert!(ClientMessage::GetBalance { max_k: None }.requires_auth());
         assert!(ClientMessage::GetUtxos {
             min_confirmations: 1
         }
@@ -657,7 +657,7 @@ mod full_stack {
         // If this compiles, all crates are compatible
         let _ = BudsTier::T0;
         let _ = VoteType::PayoutApproval;
-        let _ = ClientMessage::GetBalance;
+        let _ = ClientMessage::GetBalance { max_k: None };
         let _ = GhostKeys::generate();
         let _ = TimelockTier::Standard;
         let _ = Phase::Split;

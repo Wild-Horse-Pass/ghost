@@ -64,6 +64,7 @@ use snow::{Builder, HandshakeState, TransportState};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::{debug, info, warn};
+use zeroize::Zeroize;
 
 use ghost_common::types::NodeId;
 
@@ -108,12 +109,28 @@ pub enum NoiseError {
 }
 
 /// Noise keypair for node identity
-#[derive(Clone)]
 pub struct NoiseKeypair {
-    /// Static private key (32 bytes)
+    /// Static private key (32 bytes) -- zeroized on drop
     private_key: [u8; 32],
     /// Static public key (32 bytes)
     public_key: [u8; 32],
+}
+
+// C-05: Manual Clone so we can have a manual Drop that zeroizes the private key.
+impl Clone for NoiseKeypair {
+    fn clone(&self) -> Self {
+        Self {
+            private_key: self.private_key,
+            public_key: self.public_key,
+        }
+    }
+}
+
+// C-05: Zeroize private key material when NoiseKeypair is dropped.
+impl Drop for NoiseKeypair {
+    fn drop(&mut self) {
+        self.private_key.zeroize();
+    }
 }
 
 impl NoiseKeypair {
@@ -508,6 +525,18 @@ impl NoiseManager {
                     // from_hex() expects a private key to derive the keypair from.
                     if let Err(e) = std::fs::write(path, hex::encode(kp.private_key())) {
                         warn!("Failed to save Noise keypair: {}", e);
+                    } else {
+                        // H-08: Set restrictive permissions on keypair file (contains private key)
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Err(e) = std::fs::set_permissions(
+                                path,
+                                std::fs::Permissions::from_mode(0o600),
+                            ) {
+                                warn!("Failed to set keypair file permissions: {}", e);
+                            }
+                        }
                     }
                     kp
                 }

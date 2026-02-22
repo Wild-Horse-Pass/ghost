@@ -113,35 +113,63 @@ struct MinerRateLimitEntry {
 /// L-7: Per-miner cumulative tolerance tracking per round
 /// Tracks how much work tolerance a miner has exploited in a round.
 /// If cumulative exploitation exceeds 1% of their total work, reject further shares.
+///
+/// M-03: Uses integer arithmetic (u128 scaled values) instead of f64 to avoid
+/// floating-point precision issues that could be exploited to bypass the cap.
+/// Work values are scaled by TOLERANCE_SCALE to preserve precision without floating point.
 #[derive(Default)]
 struct MinerToleranceTracker {
-    /// Map of miner_id -> (total_work_credited, cumulative_tolerance_exploited)
-    /// Both values are in the same units as work values
-    entries: HashMap<String, (f64, f64)>,
+    /// Map of miner_id -> (total_work_scaled, cumulative_tolerance_scaled)
+    /// Values are work * TOLERANCE_SCALE to preserve precision in integer arithmetic
+    entries: HashMap<String, (u128, u128)>,
 }
 
 impl MinerToleranceTracker {
+    /// M-03: Scale factor for converting f64 work to integer
+    /// Using 10^9 gives sub-nanoscale precision which is more than sufficient
+    const TOLERANCE_SCALE: u128 = 1_000_000_000;
+
+    /// M-03: Maximum cumulative tolerance in basis points (100 = 1%)
+    const MAX_CUMULATIVE_TOLERANCE_BPS: u128 = 100;
+
+    /// Basis points denominator (10000 = 100%)
+    const BPS_DENOMINATOR: u128 = 10_000;
+
     /// Record tolerance exploitation for a miner
     /// Returns Err if cumulative exploitation exceeds 1% of total work
+    ///
+    /// M-03: Uses integer arithmetic with basis points comparison
     fn record_tolerance(
         &mut self,
         miner_id: &str,
         work_credited: f64,
         tolerance_exploited: f64,
     ) -> Result<(), f64> {
+        // M-03: Scale f64 to u128 for integer arithmetic
+        let work_scaled = (work_credited * Self::TOLERANCE_SCALE as f64) as u128;
+        let tolerance_scaled = (tolerance_exploited * Self::TOLERANCE_SCALE as f64) as u128;
+
         let entry = self
             .entries
             .entry(miner_id.to_string())
-            .or_insert((0.0, 0.0));
-        entry.0 += work_credited;
-        entry.1 += tolerance_exploited;
+            .or_insert((0, 0));
+        entry.0 = entry.0.saturating_add(work_scaled);
+        entry.1 = entry.1.saturating_add(tolerance_scaled);
 
-        // L-7: Check if cumulative exploitation exceeds 1% of total credited work
-        const MAX_CUMULATIVE_TOLERANCE_PERCENT: f64 = 0.01; // 1%
-        if entry.0 > 0.0 {
-            let exploitation_percent = entry.1 / entry.0;
-            if exploitation_percent > MAX_CUMULATIVE_TOLERANCE_PERCENT {
-                return Err(exploitation_percent * 100.0);
+        // M-03: Check using basis points: exploitation_bps = (tolerance * 10000) / total_work
+        // This avoids f64 division entirely
+        if entry.0 > 0 {
+            // Multiply tolerance by BPS_DENOMINATOR first to maintain precision
+            let exploitation_bps = entry
+                .1
+                .saturating_mul(Self::BPS_DENOMINATOR)
+                .checked_div(entry.0)
+                .unwrap_or(0);
+
+            if exploitation_bps > Self::MAX_CUMULATIVE_TOLERANCE_BPS {
+                // Convert back to percentage for error reporting
+                let exploitation_percent = exploitation_bps as f64 / 100.0;
+                return Err(exploitation_percent);
             }
         }
         Ok(())

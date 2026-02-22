@@ -175,7 +175,67 @@ impl ConnectionTracker {
         }
     }
 
-    /// Check if a new connection is allowed
+    /// M-13: Atomically check if a new connection is allowed and register it
+    ///
+    /// This replaces the separate `allow_connection()` + `connection_opened()` calls
+    /// which had a TOCTOU race: between the check and the registration, another
+    /// connection could sneak in and exceed the limit.
+    ///
+    /// Now, all checks and registration happen under a single write lock acquisition,
+    /// ensuring the limits cannot be bypassed by concurrent connections.
+    ///
+    /// Returns Ok(()) if the connection was accepted and registered.
+    /// Returns Err(RejectReason) if the connection was rejected (not registered).
+    pub fn try_open_connection(&self, ip: IpAddr) -> Result<(), RejectReason> {
+        // Check ban list first (separate lock is fine - bans are advisory)
+        {
+            let banned = self.banned_ips.read();
+            if let Some(&ban_until) = banned.get(&ip) {
+                if Instant::now() < ban_until {
+                    return Err(RejectReason::Banned { until: ban_until });
+                }
+                // Ban expired, will be cleaned up later
+            }
+        }
+
+        // M-13: Acquire BOTH write locks before checking limits, then register atomically
+        let mut total = self.total_connections.write();
+        let mut trackers = self.ip_trackers.write();
+
+        // Check total connections
+        if *total >= self.limits.max_total {
+            return Err(RejectReason::ServerFull {
+                current: *total,
+                max: self.limits.max_total,
+            });
+        }
+
+        // Check per-IP connections
+        if let Some(tracker) = trackers.get(&ip) {
+            if tracker.connections >= self.limits.max_per_ip {
+                return Err(RejectReason::TooManyFromIp {
+                    current: tracker.connections,
+                    max: self.limits.max_per_ip,
+                });
+            }
+        }
+
+        // All checks passed - register atomically under the same locks
+        *total += 1;
+        let tracker = trackers.entry(ip).or_default();
+        tracker.connections += 1;
+        tracker.last_activity = Instant::now();
+
+        debug!(ip = %ip, connections = tracker.connections, "Connection opened");
+
+        Ok(())
+    }
+
+    /// Check if a new connection is allowed (without registering)
+    ///
+    /// M-13: For most use cases, prefer `try_open_connection()` which atomically
+    /// checks and registers. This method is kept for cases where you need to
+    /// check without committing (e.g., diagnostics).
     pub fn allow_connection(&self, ip: IpAddr) -> Result<(), RejectReason> {
         // Check ban list first
         {
@@ -184,7 +244,6 @@ impl ConnectionTracker {
                 if Instant::now() < ban_until {
                     return Err(RejectReason::Banned { until: ban_until });
                 }
-                // Ban expired, will be cleaned up later
             }
         }
 
@@ -215,7 +274,10 @@ impl ConnectionTracker {
         Ok(())
     }
 
-    /// Register a new connection
+    /// Register a new connection (without checking limits)
+    ///
+    /// M-13: For most use cases, prefer `try_open_connection()` which atomically
+    /// checks and registers. This method is kept for backward compatibility.
     pub fn connection_opened(&self, ip: IpAddr) {
         // Increment total
         *self.total_connections.write() += 1;
@@ -543,5 +605,84 @@ mod tests {
         // Wait a bit and try again
         std::thread::sleep(Duration::from_millis(10));
         assert!(limiter.allow()); // Should have refilled
+    }
+
+    // =========================================================================
+    // M-13: Atomic try_open_connection tests
+    // =========================================================================
+
+    #[test]
+    fn test_m13_try_open_connection_basic() {
+        let tracker = ConnectionTracker::new(ConnectionLimits::default());
+        let ip = test_ip();
+
+        // Should atomically check and register
+        assert!(tracker.try_open_connection(ip).is_ok());
+        assert_eq!(tracker.connection_count(ip), 1);
+        assert_eq!(tracker.total_connections(), 1);
+
+        // Close and verify
+        tracker.connection_closed(ip);
+        assert_eq!(tracker.connection_count(ip), 0);
+        assert_eq!(tracker.total_connections(), 0);
+    }
+
+    #[test]
+    fn test_m13_try_open_connection_per_ip_limit() {
+        let limits = ConnectionLimits {
+            max_per_ip: 2,
+            ..Default::default()
+        };
+        let tracker = ConnectionTracker::new(limits);
+        let ip = test_ip();
+
+        // First two should succeed atomically
+        assert!(tracker.try_open_connection(ip).is_ok());
+        assert!(tracker.try_open_connection(ip).is_ok());
+        assert_eq!(tracker.connection_count(ip), 2);
+
+        // Third should be rejected and NOT registered
+        let result = tracker.try_open_connection(ip);
+        assert!(matches!(result, Err(RejectReason::TooManyFromIp { .. })));
+        assert_eq!(tracker.connection_count(ip), 2); // Still 2, not 3
+    }
+
+    #[test]
+    fn test_m13_try_open_connection_total_limit() {
+        let limits = ConnectionLimits {
+            max_total: 2,
+            ..Default::default()
+        };
+        let tracker = ConnectionTracker::new(limits);
+        let ip1 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let ip2 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let ip3 = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3));
+
+        assert!(tracker.try_open_connection(ip1).is_ok());
+        assert!(tracker.try_open_connection(ip2).is_ok());
+
+        // Third from different IP should be rejected (total limit)
+        let result = tracker.try_open_connection(ip3);
+        assert!(matches!(result, Err(RejectReason::ServerFull { .. })));
+        assert_eq!(tracker.total_connections(), 2);
+    }
+
+    #[test]
+    fn test_m13_try_open_connection_banned_ip() {
+        let limits = ConnectionLimits {
+            ban_duration: Duration::from_secs(60),
+            ..Default::default()
+        };
+        let tracker = ConnectionTracker::new(limits);
+        let ip = test_ip();
+
+        // Ban the IP
+        tracker.ban_ip(ip, "test");
+
+        // Should be rejected before any counting
+        let result = tracker.try_open_connection(ip);
+        assert!(matches!(result, Err(RejectReason::Banned { .. })));
+        assert_eq!(tracker.connection_count(ip), 0);
+        assert_eq!(tracker.total_connections(), 0);
     }
 }

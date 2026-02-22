@@ -240,7 +240,14 @@ def generate_bash_snippet(attack_type: str, params: dict) -> str:
     Since we can't sign transactions without the wallet, we construct the attack
     pattern using bitcoin-cli's createrawtransaction + manual scriptPubKey patching.
     """
-    cli = 'bitcoin-cli -signet -datadir=/var/lib/bitcoin -rpcuser=ghostrpc -rpcpassword=ghost_signet_rpc_2024 -rpcwallet=signet_miner'
+    # H-05: Read RPC credentials from environment variables
+    import os
+    rpc_user = os.environ.get('GHOST_RPC_USER', 'ghostrpc')
+    rpc_password = os.environ.get('GHOST_RPC_PASSWORD', '')
+    if not rpc_password:
+        print("ERROR: GHOST_RPC_PASSWORD environment variable is not set.", file=sys.stderr)
+        sys.exit(1)
+    cli = f'bitcoin-cli -signet -datadir=/var/lib/bitcoin -rpcuser={rpc_user} -rpcpassword={rpc_password} -rpcwallet=signet_miner'
 
     if attack_type == "inscription":
         # Inscriptions go in taproot witness — we need a taproot UTXO first

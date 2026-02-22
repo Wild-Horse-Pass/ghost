@@ -534,13 +534,15 @@ impl PayoutProposalCreator {
             tx_fees_unallocated,
         };
 
-        // Verify the distribution adds up
+        // H-02: Fee distribution verification is now a hard error
+        // Integer arithmetic should be exact — any mismatch indicates a bug
         if !fee_dist.verify(data.subsidy_sats, data.tx_fees_sats) {
-            warn!(
-                expected = data.subsidy_sats + data.tx_fees_sats,
-                actual = fee_dist.total(),
-                "Fee distribution verification failed - small rounding difference"
-            );
+            return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                "H-02: Fee distribution verification failed: expected {} sats, got {} sats (diff: {})",
+                data.subsidy_sats + data.tx_fees_sats,
+                fee_dist.total(),
+                (fee_dist.total() as i128) - ((data.subsidy_sats + data.tx_fees_sats) as i128)
+            )));
         }
 
         info!(
@@ -552,6 +554,20 @@ impl PayoutProposalCreator {
             decay_year = data.treasury_state.decay_year(data.block_timestamp),
             "Created payout proposal"
         );
+
+        // M-04: Final cross-check — sum all PayoutEntry amounts + treasury must equal subsidy + tx_fees
+        let total_miner: u64 = proposal.miner_payouts.iter().map(|p| p.amount).sum();
+        let total_node: u64 = proposal.node_payouts.iter().map(|p| p.amount).sum();
+        let proposal_total = total_miner
+            .saturating_add(total_node)
+            .saturating_add(proposal.treasury_amount);
+        let expected_total = data.subsidy_sats.saturating_add(data.tx_fees_sats);
+        if proposal_total != expected_total {
+            return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                "M-04: Payout cross-check failed: miners({}) + nodes({}) + treasury({}) = {} != expected {}",
+                total_miner, total_node, proposal.treasury_amount, proposal_total, expected_total
+            )));
+        }
 
         Ok(proposal)
     }
@@ -579,6 +595,9 @@ impl PayoutProposalCreator {
         // Solo miner gets 99% of subsidy + ALL tx fees
         let solo_miner_amount = fee_dist.miner_pool.saturating_add(data.tx_fees_sats);
 
+        // H-01: Validate solo payout address before building payout entry
+        self.validate_payout_address(data.solo_payout_address.as_bytes(), "solo miner")?;
+
         info!(
             subsidy = data.subsidy_sats,
             tx_fees = data.tx_fees_sats,
@@ -592,8 +611,7 @@ impl PayoutProposalCreator {
 
         // Create miner payout entry (single entry for solo operator)
         let mut miner_payouts = Vec::new();
-        if solo_miner_amount >= 546 {
-            // Dust threshold
+        if solo_miner_amount >= self.config.dust_threshold_sats {
             let mut recipient_id = [0u8; 32];
             let hash = ghost_common::identity::hash_message(data.solo_payout_address.as_bytes());
             recipient_id.copy_from_slice(&hash);
@@ -653,11 +671,17 @@ impl PayoutProposalCreator {
             self.consecutive_no_nodes.store(0, Ordering::Relaxed);
         }
 
-        // H-MINE-3: Use treasury address snapshot from SoloBlockFoundData
-        let treasury_address = data.treasury_address_snapshot.clone().unwrap_or_else(|| {
-            warn!("No treasury address snapshot in solo mode - using current config");
-            self.config.treasury_address.clone().unwrap_or_default()
-        });
+        // C-01: Use treasury address snapshot from SoloBlockFoundData (matching pool mode pattern)
+        let treasury_address = match data.treasury_address_snapshot.clone() {
+            Some(addr) => addr,
+            None => {
+                return Err(ghost_common::error::GhostError::PayoutCalculation(
+                    "No treasury address snapshot in SoloBlockFoundData — cannot build payout. \
+                     This indicates a bug: the round should always capture the treasury address at start."
+                        .to_string(),
+                ));
+            }
+        };
 
         let proposal = PayoutProposal {
             proposal_hash: [0u8; 32], // Will be computed by vote handler
@@ -903,10 +927,11 @@ impl PayoutProposalCreator {
             if address.is_empty() {
                 dust_total = dust_total.saturating_add(amount);
                 allocated_total = allocated_total.saturating_add(amount);
-                debug!(
+                warn!(
                     node_id = %hex::encode(&node_id[..8]),
                     amount,
-                    "Node has no payout address - adding to dust pool"
+                    "H-06: Node has no payout address — share redirected to dust pool. \
+                     Operator should configure a payout address."
                 );
                 continue;
             }
@@ -952,16 +977,17 @@ impl PayoutProposalCreator {
             );
         }
 
-        // L-16: Verify that allocated_total + rounding_remainder == total_sats
-        // This assertion catches any arithmetic bugs in basis point calculations
-        debug_assert_eq!(
-            allocated_total + rounding_remainder,
-            total_sats,
-            "L-16: Payout accounting error: allocated {} + remainder {} != total {}",
-            allocated_total,
-            rounding_remainder,
-            total_sats
-        );
+        // M-01: Runtime invariant check (not just debug builds)
+        // Fund accounting must be exact — any mismatch indicates an arithmetic bug
+        if allocated_total + rounding_remainder != total_sats {
+            return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                "M-01: Node payout accounting error: allocated {} + remainder {} = {} != total {}",
+                allocated_total,
+                rounding_remainder,
+                allocated_total + rounding_remainder,
+                total_sats
+            )));
+        }
 
         // Merge payouts going to the same address (e.g., multiple nodes using treasury)
         let mut merged_payouts: Vec<PayoutEntry> = Vec::new();
@@ -1084,11 +1110,14 @@ impl PayoutProposalCreator {
                 ))
             })?;
 
-        // Verify network matches (if we can determine it from the address)
-        // Note: We're lenient here - we just check that it parses.
-        // The actual network validation would require checking against self.config
-        // which we don't have access to in PayoutProposalCreator.
-        // For now, we just ensure it's a syntactically valid Bitcoin address.
+        // C-02: Verify address matches configured network to prevent cross-network fund loss
+        let expected_network = self.config.network.to_bitcoin_network();
+        _parsed_addr.require_network(expected_network).map_err(|e| {
+            ghost_common::error::GhostError::InvalidAddress(format!(
+                "{} address network mismatch: expected {:?}, got error: {}",
+                context, expected_network, e
+            ))
+        })?;
 
         Ok(())
     }

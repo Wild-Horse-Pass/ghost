@@ -98,7 +98,7 @@ impl ShareProofHandler {
 
         let miner_hex = hex::encode(&proof.miner_id[..8]);
         let from_node = hex::encode(&proof.received_by[..4]);
-        let payout_address = proof.payout_address.clone();
+        let _payout_address = proof.payout_address.clone(); // M-06: Not used for remote proofs
         let round_id = proof.round_id;
         let share_hash = hex::encode(proof.share_hash);
         let work = proof.work;
@@ -144,18 +144,10 @@ impl ShareProofHandler {
                     }
                 }
 
-                // Store payout address for this miner so payouts can find them
-                if let Some(ref addr) = payout_address {
-                    if !addr.is_empty() {
-                        if let Err(e) = self.db.update_miner_address(&miner_hex, addr) {
-                            warn!(
-                                miner = %miner_hex,
-                                error = %e,
-                                "Failed to store remote miner payout address"
-                            );
-                        }
-                    }
-                }
+                // M-06: Do NOT update miner payout address from remote P2P share proofs.
+                // A malicious node could broadcast share proofs with a legitimate miner's ID
+                // but substitute their own payout address, redirecting that miner's payouts.
+                // Payout addresses are only trusted from local stratum connections (main.rs).
 
                 debug!(
                     miner = %miner_hex,
@@ -244,7 +236,7 @@ mod tests {
             payout_address: None,
         };
         let msg = ShareProofMessage { proof };
-        let payload = serde_json::to_vec(&msg).unwrap();
+        let payload = serde_json::to_vec(&msg).expect("test serialization");
         let envelope = make_envelope(MessageType::ShareProof, payload);
 
         // Should silently skip (return Ok)
@@ -275,7 +267,7 @@ mod tests {
             payout_address: None,
         };
         let msg = ShareProofMessage { proof };
-        let payload = serde_json::to_vec(&msg).unwrap();
+        let payload = serde_json::to_vec(&msg).expect("test serialization");
         let envelope = make_envelope(MessageType::ShareProof, payload);
 
         // Should silently reject stale timestamp (return Ok, but not process)

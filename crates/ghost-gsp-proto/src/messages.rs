@@ -58,7 +58,11 @@ pub enum ClientMessage {
     // Balance & Queries
     // =========================================================================
     /// Request current balance
-    GetBalance,
+    GetBalance {
+        /// Max derivation index for Silent Payment scanning (default: 10)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_k: Option<u32>,
+    },
 
     /// Request UTXOs with minimum confirmations
     GetUtxos {
@@ -822,7 +826,7 @@ impl ClientMessage {
     pub fn requires_auth(&self) -> bool {
         matches!(
             self,
-            ClientMessage::GetBalance
+            ClientMessage::GetBalance { .. }
                 | ClientMessage::GetUtxos { .. }
                 | ClientMessage::GetGhostLocks
                 | ClientMessage::GetTransactions { .. }
@@ -869,7 +873,7 @@ mod tests {
 
     #[test]
     fn test_client_message_serialize() {
-        let msg = ClientMessage::GetBalance;
+        let msg = ClientMessage::GetBalance { max_k: None };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"get_balance\""));
 
@@ -894,7 +898,7 @@ mod tests {
 
     #[test]
     fn test_requires_auth() {
-        assert!(ClientMessage::GetBalance.requires_auth());
+        assert!(ClientMessage::GetBalance { max_k: None }.requires_auth());
         assert!(!ClientMessage::Ping { timestamp: None }.requires_auth());
     }
 

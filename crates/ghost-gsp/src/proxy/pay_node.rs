@@ -350,9 +350,12 @@ impl PayNodeProxy {
     ///
     /// Note: The pay node manages its own wallet, so this queries the node's balance.
     /// The ghost_id parameter is used for verification/routing purposes.
-    pub async fn get_balance(&self, ghost_id: &str) -> GspResult<WalletBalance> {
-        let url = format!("{}/api/v1/status", self.base_url);
-        debug!(url = %url, ghost_id = %ghost_id, "Getting balance");
+    pub async fn get_balance(&self, ghost_id: &str, max_k: Option<u32>) -> GspResult<WalletBalance> {
+        let mut url = format!("{}/api/v1/status", self.base_url);
+        if let Some(k) = max_k {
+            url = format!("{}?max_k={}", url, k);
+        }
+        debug!(url = %url, ghost_id = %ghost_id, max_k = ?max_k, "Getting balance");
 
         // M-15: Add internal auth header
         let response = self

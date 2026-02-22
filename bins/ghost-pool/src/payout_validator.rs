@@ -91,6 +91,13 @@ pub enum PayoutValidationError {
 
     #[error("Negative payout detected")]
     NegativeAmount,
+
+    #[error("M-09: Underpayment detected: distributing {distributed} sats but {available} available (minimum 90% = {minimum})")]
+    Underpayment {
+        distributed: u64,
+        available: u64,
+        minimum: u64,
+    },
 }
 
 /// Block data for validation context
@@ -178,6 +185,16 @@ fn validate_basic_sanity(
         return Err(PayoutValidationError::ExceedsAvailable {
             distributed: claimed_total,
             available: actual_total,
+        });
+    }
+
+    // M-09: Detect underpayment — distributing less than 90% of available is suspicious
+    let minimum_distribution = actual_total * 90 / 100;
+    if claimed_total < minimum_distribution {
+        return Err(PayoutValidationError::Underpayment {
+            distributed: claimed_total,
+            available: actual_total,
+            minimum: minimum_distribution,
         });
     }
 

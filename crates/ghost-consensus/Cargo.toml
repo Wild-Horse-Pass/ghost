@@ -51,6 +51,8 @@ aes-gcm = { workspace = true }
 getrandom = { workspace = true }
 bytes = { workspace = true }
 x25519-dalek = { workspace = true }
+zeroize = { workspace = true }
+libc = { workspace = true }
 
 [features]
 default = []

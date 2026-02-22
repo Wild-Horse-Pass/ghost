@@ -441,11 +441,8 @@ impl TemplateProcessor {
 
     /// Take the block submission receiver (can only be called once).
     /// Called by main.rs at startup to spawn the payout task.
-    pub fn take_block_submitted_rx(&self) -> mpsc::UnboundedReceiver<BlockSubmittedInfo> {
-        self.block_submitted_rx
-            .lock()
-            .take()
-            .expect("block_submitted_rx already taken")
+    pub fn take_block_submitted_rx(&self) -> Option<mpsc::UnboundedReceiver<BlockSubmittedInfo>> {
+        self.block_submitted_rx.lock().take()
     }
 
     /// Store a payout proposal (called when proposal is received)
@@ -779,6 +776,22 @@ impl TemplateProcessor {
                 self.clear_approved_payout();
                 return None;
             }
+            // M-07: Reject proposals with stale block heights
+            let height_diff = if prop.block_height > height {
+                prop.block_height - height
+            } else {
+                height - prop.block_height
+            };
+            if height_diff > 10 {
+                error!(
+                    proposal_height = prop.block_height,
+                    template_height = height,
+                    diff = height_diff,
+                    "M-07: Stale payout proposal: height mismatch exceeds 10 blocks — clearing"
+                );
+                self.clear_approved_payout();
+                return None;
+            }
             Some(prop)
         });
 
@@ -836,8 +849,17 @@ impl TemplateProcessor {
                         "Adjusted payout: fees decreased"
                     );
                 } else {
-                    // FEES INCREASED (RBF): add extra to block finder — uncapped
-                    let extra = available_fees - original_fees;
+                    // FEES INCREASED (RBF): add extra to block finder
+                    // H-04: Cap fee increase at 2x original to prevent disproportionate allocation
+                    let raw_extra = available_fees - original_fees;
+                    let max_extra = original_fees; // Cap at 2x total (original + original)
+                    let extra = raw_extra.min(max_extra);
+                    if raw_extra > max_extra {
+                        warn!(
+                            raw_extra, max_extra, height,
+                            "H-04: Fee increase exceeds 2x cap — capping extra allocation"
+                        );
+                    }
                     let mut allocated = false;
 
                     for entry in &mut prop.node_payouts {
@@ -2403,10 +2425,12 @@ impl TemplateProcessor {
     pub fn store_work_state(&self, template_id: u64, work_state: WorkState) {
         let mut states = self.work_states.write();
         states.insert(template_id, work_state);
-        // Keep only the last 10 work states to prevent memory growth
+        // L-02: Evict old work states, keeping only the 10 most recent
         if states.len() > 10 {
-            if let Some(&oldest_id) = states.keys().min() {
-                states.remove(&oldest_id);
+            let mut keys: Vec<u64> = states.keys().cloned().collect();
+            keys.sort();
+            for old_key in keys.iter().take(keys.len() - 10) {
+                states.remove(old_key);
             }
         }
     }
@@ -2496,8 +2520,8 @@ impl TemplateProcessor {
                 anyhow::anyhow!("Invalid header: insufficient bytes for version field")
             })?;
         let version = u32::from_le_bytes(version_bytes);
-        // Version 0 is invalid, and versions above 0x3FFFFFFF are reserved for BIP9
-        if version == 0 || version > 0x3FFFFFFF {
+        // H-12: Allow BIP320 version rolling — only reject version 0
+        if version == 0 {
             error!(version = version, "Invalid block version");
             return Err(anyhow::anyhow!("Invalid block version: {}", version));
         }
@@ -2530,7 +2554,7 @@ impl TemplateProcessor {
         block_data.extend_from_slice(&coinbase_witness);
 
         // 4. Other transactions from template
-        // SEC-TEMPLATE-1: Log hex decode failures (should never happen with valid templates)
+        // H-10: Abort on hex decode failure — do not submit a block with missing transactions
         for tx in &work.template.transactions {
             match hex::decode(&tx.data) {
                 Ok(tx_bytes) => block_data.extend_from_slice(&tx_bytes),
@@ -2538,8 +2562,12 @@ impl TemplateProcessor {
                     error!(
                         tx_hash = %tx.hash,
                         error = %e,
-                        "Failed to decode transaction hex from template - skipping (block may be rejected)"
+                        "H-10: Failed to decode transaction hex — aborting block assembly"
                     );
+                    return Err(anyhow::anyhow!(
+                        "H-10: Failed to decode transaction hex for tx {}: {}",
+                        tx.hash, e
+                    ));
                 }
             }
         }
@@ -2664,7 +2692,8 @@ impl TemplateProcessor {
                 anyhow::anyhow!("Invalid header: insufficient bytes for version field")
             })?;
         let version = u32::from_le_bytes(version_bytes);
-        if version == 0 || version > 0x3FFFFFFF {
+        // H-12: Allow BIP320 version rolling — only reject version 0
+        if version == 0 {
             error!(version = version, "Invalid block version");
             return Err(anyhow::anyhow!("Invalid block version: {}", version));
         }
@@ -2685,7 +2714,10 @@ impl TemplateProcessor {
                 }
             }
             None => {
-                warn!("M-28: No commitment snapshot for this template — skipping coinbase verification");
+                // H-11: Require coinbase commitment for block submission
+                return Err(anyhow::anyhow!(
+                    "H-11: Cannot submit block without verified coinbase commitment"
+                ));
             }
         }
 
@@ -2711,7 +2743,7 @@ impl TemplateProcessor {
         block_data.extend_from_slice(coinbase_witness);
 
         // 4. Other transactions from template
-        // SEC-TEMPLATE-1: Log hex decode failures (should never happen with valid templates)
+        // H-10: Abort on hex decode failure — do not submit a block with missing transactions
         for tx in &work.template.transactions {
             match hex::decode(&tx.data) {
                 Ok(tx_bytes) => block_data.extend_from_slice(&tx_bytes),
@@ -2719,8 +2751,12 @@ impl TemplateProcessor {
                     error!(
                         tx_hash = %tx.hash,
                         error = %e,
-                        "Failed to decode transaction hex from template - skipping (block may be rejected)"
+                        "H-10: Failed to decode transaction hex — aborting block assembly"
                     );
+                    return Err(anyhow::anyhow!(
+                        "H-10: Failed to decode transaction hex for tx {}: {}",
+                        tx.hash, e
+                    ));
                 }
             }
         }

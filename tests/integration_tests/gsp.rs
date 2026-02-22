@@ -46,12 +46,12 @@ mod protocol_validation {
 
     #[test]
     fn test_client_message_get_balance_serialization() {
-        let msg = ClientMessage::GetBalance;
+        let msg = ClientMessage::GetBalance { max_k: None };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(json.contains("\"type\":\"get_balance\""));
 
         let parsed: ClientMessage = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, ClientMessage::GetBalance));
+        assert!(matches!(parsed, ClientMessage::GetBalance { .. }));
     }
 
     #[test]
@@ -197,7 +197,7 @@ mod message_validation {
 
     #[test]
     fn test_validate_get_balance() {
-        let msg = ClientMessage::GetBalance;
+        let msg = ClientMessage::GetBalance { max_k: None };
         let result = validate_message(&msg);
         assert!(result.valid);
         assert!(result.errors.is_empty());
@@ -467,7 +467,7 @@ mod auth_requirements {
 
     #[test]
     fn test_requires_auth_balance_queries() {
-        assert!(ClientMessage::GetBalance.requires_auth());
+        assert!(ClientMessage::GetBalance { max_k: None }.requires_auth());
         assert!(ClientMessage::GetUtxos {
             min_confirmations: 1
         }
@@ -533,7 +533,7 @@ mod message_flow {
     #[test]
     fn test_balance_query_flow_simulation() {
         // Client requests balance
-        let request = ClientMessage::GetBalance;
+        let request = ClientMessage::GetBalance { max_k: None };
         assert!(request.requires_auth());
 
         // Server responds with balance

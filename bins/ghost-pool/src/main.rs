@@ -86,7 +86,7 @@ static ZMQ_SUBSCRIBER: OnceLock<ZmqSubscriber> = OnceLock::new();
 
 /// GSP handler that caches status from periodic HTTP polls to the GSP service
 struct CachedGspHandler {
-    cache: Arc<std::sync::RwLock<GspCachedState>>,
+    cache: Arc<parking_lot::RwLock<GspCachedState>>,
 }
 
 #[derive(Default)]
@@ -101,16 +101,33 @@ struct GspCachedState {
 
 impl CachedGspHandler {
     fn new(gsp_url: String) -> Self {
-        let cache = Arc::new(std::sync::RwLock::new(GspCachedState::default()));
+        let cache = Arc::new(parking_lot::RwLock::new(GspCachedState::default()));
         let poll_cache = Arc::clone(&cache);
+
+        // C-04: Validate GSP URL is a loopback address to prevent MITM on health checks
+        let is_loopback = gsp_url.contains("127.0.0.1")
+            || gsp_url.contains("localhost")
+            || gsp_url.contains("[::1]");
+
+        if !is_loopback {
+            tracing::warn!(
+                url = %gsp_url,
+                "C-04: GSP URL is not a loopback address — TLS verification enforced. \
+                 Use 127.0.0.1 or localhost for local GSP connections."
+            );
+        }
 
         // Background task polls GSP info every 30s
         tokio::spawn(async move {
             let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .danger_accept_invalid_certs(true)
-                .build()
-                .unwrap_or_default();
+                .timeout(std::time::Duration::from_secs(5));
+            // C-04: Only accept invalid certs for loopback addresses (self-signed localhost)
+            let client = if is_loopback {
+                client.danger_accept_invalid_certs(true)
+            } else {
+                client
+            };
+            let client = client.build().unwrap_or_default();
             loop {
                 match client
                     .get(format!("{}/api/v1/info", gsp_url))
@@ -121,7 +138,7 @@ impl CachedGspHandler {
                         if let Ok(info) =
                             resp.json::<serde_json::Value>().await
                         {
-                            let mut state = poll_cache.write().unwrap();
+                            let mut state = poll_cache.write();
                             state.enabled = true;
                             state.protocol_version = info
                                 .get("protocol_version")
@@ -146,7 +163,7 @@ impl CachedGspHandler {
                         }
                     }
                     _ => {
-                        poll_cache.write().unwrap().enabled = false;
+                        poll_cache.write().enabled = false;
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(30)).await;
@@ -159,25 +176,25 @@ impl CachedGspHandler {
 
 impl GspHandler for CachedGspHandler {
     fn is_enabled(&self) -> bool {
-        self.cache.read().unwrap().enabled
+        self.cache.read().enabled
     }
     fn get_protocol_version(&self) -> String {
-        self.cache.read().unwrap().protocol_version.clone()
+        self.cache.read().protocol_version.clone()
     }
     fn get_network(&self) -> String {
-        self.cache.read().unwrap().network.clone()
+        self.cache.read().network.clone()
     }
     fn get_connection_count(&self) -> u32 {
-        self.cache.read().unwrap().connections
+        self.cache.read().connections
     }
     fn get_registered_wallets(&self) -> u32 {
-        self.cache.read().unwrap().registered_wallets
+        self.cache.read().registered_wallets
     }
     fn get_sync_status(&self) -> String {
-        self.cache.read().unwrap().sync_status.clone()
+        self.cache.read().sync_status.clone()
     }
     fn health_check(&self) -> ghost_common::GhostResult<bool> {
-        Ok(self.cache.read().unwrap().enabled)
+        Ok(self.cache.read().enabled)
     }
 }
 
@@ -2442,7 +2459,9 @@ async fn main() -> Result<()> {
         let db_for_block = Arc::clone(&db);
         let solo_payout_address_for_block = config.network.solo_payout_address.clone();
         let metrics_for_block = Arc::clone(&metrics);
-        let mut block_rx = template_processor.take_block_submitted_rx();
+        let mut block_rx = template_processor
+            .take_block_submitted_rx()
+            .expect("M-02: block_submitted_rx already taken — startup bug");
 
         tokio::spawn(async move {
             while let Some(info) = block_rx.recv().await {

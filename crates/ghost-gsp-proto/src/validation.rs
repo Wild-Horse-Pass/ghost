@@ -128,8 +128,16 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
             // Ping is always valid
         }
 
-        ClientMessage::GetBalance => {
-            // No parameters to validate
+        ClientMessage::GetBalance { max_k } => {
+            if let Some(k) = max_k {
+                if *k == 0 || *k > 10_000 {
+                    return ValidationResult {
+                        valid: false,
+                        errors: vec!["max_k must be between 1 and 10,000".to_string()],
+                        warnings: vec![],
+                    };
+                }
+            }
         }
 
         ClientMessage::GetUtxos { min_confirmations } => {
@@ -586,9 +594,17 @@ mod tests {
 
     #[test]
     fn test_validate_get_balance() {
-        let msg = ClientMessage::GetBalance;
+        let msg = ClientMessage::GetBalance { max_k: None };
         let result = validate_message(&msg);
         assert!(result.valid);
+
+        let msg = ClientMessage::GetBalance { max_k: Some(100) };
+        let result = validate_message(&msg);
+        assert!(result.valid);
+
+        let msg = ClientMessage::GetBalance { max_k: Some(0) };
+        let result = validate_message(&msg);
+        assert!(!result.valid);
     }
 
     #[test]

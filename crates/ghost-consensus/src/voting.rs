@@ -553,6 +553,19 @@ impl VotingSession {
         // Remove their vote if present
         let had_vote = self.votes.remove(node_id).is_some();
 
+        // H-13: Check if remaining voters dropped below minimum for BFT
+        if self.eligible_voters.len() < Self::MIN_VOTERS_FOR_BFT {
+            tracing::warn!(
+                remaining = self.eligible_voters.len(),
+                min_required = Self::MIN_VOTERS_FOR_BFT,
+                round_id = self.round_id,
+                voter = hex::encode(&node_id[..8]),
+                "H-13: Voter count dropped below minimum after invalidation — suspending session"
+            );
+            self.result = None; // Suspend: session is undecidable
+            return had_vote;
+        }
+
         if had_vote {
             tracing::info!(
                 voter = hex::encode(&node_id[..8]),

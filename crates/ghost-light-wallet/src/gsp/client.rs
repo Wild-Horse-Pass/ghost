@@ -563,11 +563,11 @@ impl GspClient {
     }
 
     /// Get balance from GSP
-    pub async fn get_balance(&self) -> WalletResult<GspBalance> {
+    pub async fn get_balance(&self, max_k: Option<u32>) -> WalletResult<GspBalance> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         *self.pending_balance.write() = Some(tx);
 
-        self.send_message(ClientMessage::GetBalance).await?;
+        self.send_message(ClientMessage::GetBalance { max_k }).await?;
 
         match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
             Ok(Ok(balance)) => Ok(balance),

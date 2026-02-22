@@ -919,6 +919,16 @@ impl MiningMode {
 }
 
 impl BitcoinNetwork {
+    /// Convert to the `bitcoin` crate's `Network` type for address validation
+    pub fn to_bitcoin_network(&self) -> bitcoin::Network {
+        match self {
+            BitcoinNetwork::Mainnet => bitcoin::Network::Bitcoin,
+            BitcoinNetwork::Signet => bitcoin::Network::Signet,
+            BitcoinNetwork::Testnet => bitcoin::Network::Testnet,
+            BitcoinNetwork::Regtest => bitcoin::Network::Regtest,
+        }
+    }
+
     pub fn default_rpc_port(&self) -> u16 {
         match self {
             Self::Mainnet => BITCOIN_RPC_PORT_MAINNET,

@@ -421,6 +421,192 @@ impl PersistentSessionRegistry {
     }
 }
 
+// ============================================================================
+// M-12: File-backed SessionPersistence implementation
+// ============================================================================
+
+/// M-12: Serializable entry for file-based session persistence
+#[allow(dead_code)]
+#[derive(Clone, Serialize, Deserialize)]
+struct PersistedSessionEntry {
+    /// Session ID as hex string
+    session_id: String,
+    /// Unix timestamp when the session was stored
+    stored_at: u64,
+}
+
+/// M-12: Serializable file format for session persistence
+#[allow(dead_code)]
+#[derive(Serialize, Deserialize)]
+struct PersistedSessionFile {
+    /// All stored sessions
+    sessions: Vec<PersistedSessionEntry>,
+}
+
+/// M-12: File-backed implementation of SessionPersistence
+///
+/// Stores session IDs in a JSON file for crash-safe session tracking.
+/// Thread-safe via internal RwLock protecting both the in-memory cache
+/// and file writes.
+///
+/// On `store_session`: appends to in-memory list and writes entire file.
+/// On `session_exists`: checks in-memory list (fast path).
+/// On `load_all_sessions`: reads from file on disk.
+/// On `cleanup_expired`: removes old entries and rewrites file.
+#[allow(dead_code)]
+pub struct FileSessionPersistence {
+    /// Path to the JSON persistence file
+    path: std::path::PathBuf,
+    /// In-memory cache of sessions with timestamps for fast lookup
+    sessions: std::sync::RwLock<Vec<PersistedSessionEntry>>,
+}
+
+impl std::fmt::Debug for FileSessionPersistence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FileSessionPersistence")
+            .field("path", &self.path)
+            .field(
+                "session_count",
+                &self
+                    .sessions
+                    .read()
+                    .map(|s| s.len())
+                    .unwrap_or(0),
+            )
+            .finish()
+    }
+}
+
+#[allow(dead_code)]
+impl FileSessionPersistence {
+    /// Create a new file-backed session persistence
+    ///
+    /// If the file exists, loads sessions from it into memory.
+    /// If the file does not exist, starts with an empty set.
+    pub fn new(path: std::path::PathBuf) -> Result<Self, crate::WraithError> {
+        let sessions = if path.exists() {
+            let data = std::fs::read_to_string(&path).map_err(|e| {
+                crate::WraithError::InvalidInput(format!(
+                    "Failed to read session file {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+            let file: PersistedSessionFile = serde_json::from_str(&data).map_err(|e| {
+                crate::WraithError::InvalidInput(format!(
+                    "Failed to parse session file {}: {}",
+                    path.display(),
+                    e
+                ))
+            })?;
+            file.sessions
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self {
+            path,
+            sessions: std::sync::RwLock::new(sessions),
+        })
+    }
+
+    /// Write all sessions to the file
+    fn write_to_file(
+        &self,
+        sessions: &[PersistedSessionEntry],
+    ) -> Result<(), crate::WraithError> {
+        let file = PersistedSessionFile {
+            sessions: sessions.to_vec(),
+        };
+        let data = serde_json::to_string_pretty(&file).map_err(|e| {
+            crate::WraithError::InvalidInput(format!("Failed to serialize sessions: {}", e))
+        })?;
+        std::fs::write(&self.path, data).map_err(|e| {
+            crate::WraithError::InvalidInput(format!(
+                "Failed to write session file {}: {}",
+                self.path.display(),
+                e
+            ))
+        })
+    }
+}
+
+impl SessionPersistence for FileSessionPersistence {
+    fn store_session(&self, session_id: &[u8; 32]) -> Result<(), crate::WraithError> {
+        let hex_id = hex::encode(session_id);
+        let now = SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut sessions = self.sessions.write().map_err(|e| {
+            crate::WraithError::InvalidInput(format!("Session lock poisoned: {}", e))
+        })?;
+
+        // Check for duplicates
+        if sessions.iter().any(|s| s.session_id == hex_id) {
+            return Err(crate::WraithError::InvalidInput(format!(
+                "Session {} already exists",
+                hex_id
+            )));
+        }
+
+        sessions.push(PersistedSessionEntry {
+            session_id: hex_id,
+            stored_at: now,
+        });
+
+        self.write_to_file(&sessions)
+    }
+
+    fn session_exists(&self, session_id: &[u8; 32]) -> Result<bool, crate::WraithError> {
+        let hex_id = hex::encode(session_id);
+        let sessions = self.sessions.read().map_err(|e| {
+            crate::WraithError::InvalidInput(format!("Session lock poisoned: {}", e))
+        })?;
+        Ok(sessions.iter().any(|s| s.session_id == hex_id))
+    }
+
+    fn load_all_sessions(&self) -> Result<Vec<[u8; 32]>, crate::WraithError> {
+        let sessions = self.sessions.read().map_err(|e| {
+            crate::WraithError::InvalidInput(format!("Session lock poisoned: {}", e))
+        })?;
+
+        let mut result = Vec::with_capacity(sessions.len());
+        for entry in sessions.iter() {
+            let bytes = hex::decode(&entry.session_id).map_err(|e| {
+                crate::WraithError::InvalidInput(format!(
+                    "Invalid session ID hex {}: {}",
+                    entry.session_id, e
+                ))
+            })?;
+            if bytes.len() != 32 {
+                continue; // Skip malformed entries
+            }
+            let mut id = [0u8; 32];
+            id.copy_from_slice(&bytes);
+            result.push(id);
+        }
+        Ok(result)
+    }
+
+    fn cleanup_expired(&self, before_timestamp: u64) -> Result<usize, crate::WraithError> {
+        let mut sessions = self.sessions.write().map_err(|e| {
+            crate::WraithError::InvalidInput(format!("Session lock poisoned: {}", e))
+        })?;
+
+        let initial_count = sessions.len();
+        sessions.retain(|entry| entry.stored_at >= before_timestamp);
+        let removed = initial_count - sessions.len();
+
+        if removed > 0 {
+            self.write_to_file(&sessions)?;
+        }
+
+        Ok(removed)
+    }
+}
+
 /// State of a Wraith session
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SessionState {

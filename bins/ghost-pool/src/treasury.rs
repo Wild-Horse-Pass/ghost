@@ -19,17 +19,6 @@ pub const TREASURY_THRESHOLD_SATS: u64 = 21 * 100_000_000;
 /// This must match ghost_common::constants::POOL_FEE_BASIS_POINTS.
 pub const POOL_FEE_BASIS_POINTS: u64 = ghost_common::constants::POOL_FEE_BASIS_POINTS;
 
-/// Decay rates by year: (treasury_rate, node_rate) as fractions of the 1% pool fee
-/// DEPRECATED: Use DECAY_SCHEDULE_BPS for integer arithmetic
-const DECAY_SCHEDULE: [(f64, f64); 6] = [
-    (0.5, 0.5), // Pre-threshold / Year 0
-    (0.4, 0.6), // Year 1
-    (0.3, 0.7), // Year 2
-    (0.2, 0.8), // Year 3
-    (0.1, 0.9), // Year 4
-    (0.0, 1.0), // Year 5+
-];
-
 /// Decay rates by year in basis points: (treasury_bps, node_bps) as fractions of pool fee
 /// SECURITY: Use integer arithmetic to avoid floating point rounding errors.
 /// 5000 bps = 50% of the pool fee, 10000 bps = 100% of the pool fee
@@ -122,29 +111,6 @@ impl TreasuryState {
                 days / 365
             }
         }
-    }
-
-    /// Get current fee split rates (treasury_rate, node_rate)
-    /// Both rates are fractions of the 1% pool fee
-    /// DEPRECATED: Use get_fee_split_bps for integer arithmetic
-    ///
-    /// M-5 SECURITY: Takes a reference timestamp for deterministic calculation.
-    /// CRIT-PANIC-5: Use saturating arithmetic and .get() for safe array access.
-    pub fn get_fee_split(&self, reference_time: DateTime<Utc>) -> (f64, f64) {
-        // Pre-threshold: return first entry (50/50 split)
-        // Use .get() with fallback to handle potential array access issues
-        let pre_threshold = *DECAY_SCHEDULE.first().unwrap_or(&(0.5, 0.5));
-        if self.threshold_reached_at.is_none() {
-            return pre_threshold;
-        }
-
-        let years = self.years_since_threshold(reference_time) as usize;
-        // Use saturating_add to prevent overflow, then bound to array length
-        let index = years
-            .saturating_add(1)
-            .min(DECAY_SCHEDULE.len().saturating_sub(1));
-        // Use .get() with fallback to last valid entry (0% treasury, 100% nodes)
-        *DECAY_SCHEDULE.get(index).unwrap_or(&(0.0, 1.0))
     }
 
     /// Get current fee split rates in basis points (treasury_bps, node_bps)
@@ -244,17 +210,43 @@ impl FeeDistribution {
         let treasury_rate = treasury_rate_bps as f64 / 10000.0;
         let node_rate = node_rate_bps as f64 / 10000.0;
 
-        // SECURITY: Debug assertion to verify no satoshis are lost
-        debug_assert_eq!(
-            treasury_amount + node_reward_pool,
-            pool_fee,
-            "Treasury split must equal pool fee"
-        );
-        debug_assert_eq!(
-            miner_pool + pool_fee,
-            subsidy_sats,
-            "Miner pool + pool fee must equal subsidy"
-        );
+        // M-01: Runtime invariant checks (not just debug builds)
+        // Fund accounting must be exact in all builds
+        if treasury_amount + node_reward_pool != pool_fee {
+            tracing::error!(
+                treasury_amount, node_reward_pool, pool_fee,
+                "M-01 CRITICAL: Treasury split invariant violated"
+            );
+            // Return a zero-distribution rather than silently proceeding with wrong values
+            return Self {
+                tx_fees_to_block_finder,
+                treasury_amount: 0,
+                node_reward_pool: 0,
+                miner_pool: 0,
+                pool_fee: 0,
+                treasury_rate_bps,
+                node_rate_bps,
+                treasury_rate,
+                node_rate,
+            };
+        }
+        if miner_pool + pool_fee != subsidy_sats {
+            tracing::error!(
+                miner_pool, pool_fee, subsidy_sats,
+                "M-01 CRITICAL: Miner pool + pool fee invariant violated"
+            );
+            return Self {
+                tx_fees_to_block_finder,
+                treasury_amount: 0,
+                node_reward_pool: 0,
+                miner_pool: 0,
+                pool_fee: 0,
+                treasury_rate_bps,
+                node_rate_bps,
+                treasury_rate,
+                node_rate,
+            };
+        }
 
         Self {
             tx_fees_to_block_finder,
@@ -313,9 +305,9 @@ mod tests {
     fn test_pre_threshold_split() {
         let state = TreasuryState::new();
         let now = Utc::now();
-        let (treasury, node) = state.get_fee_split(now);
-        assert_eq!(treasury, 0.5);
-        assert_eq!(node, 0.5);
+        let (treasury_bps, node_bps) = state.get_fee_split_bps(now);
+        assert_eq!(treasury_bps, 5000); // 50%
+        assert_eq!(node_bps, 5000); // 50%
         assert_eq!(state.decay_year(now), 0);
     }
 
@@ -383,14 +375,14 @@ mod tests {
     }
 
     #[test]
-    fn test_decay_schedule_values() {
-        // Verify the decay schedule matches ECONOMICS.md
-        assert_eq!(DECAY_SCHEDULE[0], (0.5, 0.5)); // Pre-threshold
-        assert_eq!(DECAY_SCHEDULE[1], (0.4, 0.6)); // Year 1
-        assert_eq!(DECAY_SCHEDULE[2], (0.3, 0.7)); // Year 2
-        assert_eq!(DECAY_SCHEDULE[3], (0.2, 0.8)); // Year 3
-        assert_eq!(DECAY_SCHEDULE[4], (0.1, 0.9)); // Year 4
-        assert_eq!(DECAY_SCHEDULE[5], (0.0, 1.0)); // Year 5+
+    fn test_decay_schedule_bps_values() {
+        // Verify the BPS decay schedule matches ECONOMICS.md
+        assert_eq!(DECAY_SCHEDULE_BPS[0], (5000, 5000)); // Pre-threshold: 50/50
+        assert_eq!(DECAY_SCHEDULE_BPS[1], (4000, 6000)); // Year 1: 40/60
+        assert_eq!(DECAY_SCHEDULE_BPS[2], (3000, 7000)); // Year 2: 30/70
+        assert_eq!(DECAY_SCHEDULE_BPS[3], (2000, 8000)); // Year 3: 20/80
+        assert_eq!(DECAY_SCHEDULE_BPS[4], (1000, 9000)); // Year 4: 10/90
+        assert_eq!(DECAY_SCHEDULE_BPS[5], (0, 10000));    // Year 5+: 0/100
     }
 
     #[test]
@@ -400,9 +392,9 @@ mod tests {
         let threshold_time = now - chrono::Duration::days(365 * 6); // 6 years ago
         let state = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
 
-        let (treasury, node) = state.get_fee_split(now);
-        assert_eq!(treasury, 0.0);
-        assert_eq!(node, 1.0);
+        let (treasury_bps, node_bps) = state.get_fee_split_bps(now);
+        assert_eq!(treasury_bps, 0);
+        assert_eq!(node_bps, 10000);
 
         let dist = FeeDistribution::calculate(312_500_000, 10_000_000, &state, now);
 
@@ -420,17 +412,17 @@ mod tests {
         let threshold_time = now - chrono::Duration::days(365 * 2 + 100); // ~2.3 years ago
         let state = TreasuryState::from_stored(TREASURY_THRESHOLD_SATS, Some(threshold_time));
 
-        let (treasury, node) = state.get_fee_split(now);
-        assert_eq!(treasury, 0.2);
-        assert_eq!(node, 0.8);
+        let (treasury_bps, node_bps) = state.get_fee_split_bps(now);
+        assert_eq!(treasury_bps, 2000); // 20%
+        assert_eq!(node_bps, 8000); // 80%
 
         let dist = FeeDistribution::calculate(312_500_000, 10_000_000, &state, now);
 
         // Pool fee is 3,125,000
-        // Treasury gets 0.2 * 3,125,000 = 625,000
+        // Treasury gets 20% of 3,125,000 = 625,000
         assert_eq!(dist.treasury_amount, 625_000);
 
-        // Node pool gets 0.8 * 3,125,000 = 2,500,000
+        // Node pool gets 80% of 3,125,000 = 2,500,000
         assert_eq!(dist.node_reward_pool, 2_500_000);
     }
 
@@ -497,27 +489,9 @@ mod tests {
     }
 
     #[test]
-    fn test_decay_schedule_bps_matches_f64() {
-        // SECURITY TEST: Verify BPS schedule produces same results as f64 schedule
-        for (i, (f64_treasury, f64_node)) in DECAY_SCHEDULE.iter().enumerate() {
-            let (bps_treasury, bps_node) = DECAY_SCHEDULE_BPS[i];
-
-            // Convert f64 to bps for comparison
-            let expected_treasury_bps = (*f64_treasury * 10000.0) as u64;
-            let expected_node_bps = (*f64_node * 10000.0) as u64;
-
-            assert_eq!(
-                bps_treasury, expected_treasury_bps,
-                "Treasury BPS mismatch at index {}",
-                i
-            );
-            assert_eq!(
-                bps_node, expected_node_bps,
-                "Node BPS mismatch at index {}",
-                i
-            );
-
-            // Sum should always be 10000 (100%)
+    fn test_decay_schedule_bps_sum_100_percent() {
+        // Verify each BPS schedule entry sums to 10000 (100%)
+        for (i, (bps_treasury, bps_node)) in DECAY_SCHEDULE_BPS.iter().enumerate() {
             assert_eq!(
                 bps_treasury + bps_node,
                 10000,

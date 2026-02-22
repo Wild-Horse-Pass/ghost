@@ -595,8 +595,7 @@ async fn cmd_balance(config: WalletConfig, refresh: bool, max_k: u32) -> Result<
         pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
         wallet.connect(&wallet.config().gsp_urls[0]).await?;
-        // TODO: Pass max_k to wallet.refresh_balance() when API supports it
-        let balance = wallet.refresh_balance().await?;
+        let balance = wallet.refresh_balance(Some(max_k)).await?;
 
         pb.finish_and_clear();
         balance

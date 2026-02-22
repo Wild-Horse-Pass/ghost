@@ -31,6 +31,7 @@ description = "Two-phase mixing protocol for Ghost Pay privacy"
 [dependencies]
 # Serialization
 serde = { workspace = true }
+serde_json = { workspace = true }
 hex = { workspace = true }
 
 # Error handling
