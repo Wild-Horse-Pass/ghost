@@ -10,19 +10,29 @@ use std::process::Command;
 
 fn fetch_block_hash(height: u64) -> Option<String> {
     let output = Command::new("curl")
-        .args(["-sf", &format!("https://mempool.space/api/block-height/{}", height)])
+        .args([
+            "-sf",
+            &format!("https://mempool.space/api/block-height/{}", height),
+        ])
         .output()
         .ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn fetch_raw_block(hash: &str) -> Option<Vec<u8>> {
     let output = Command::new("curl")
-        .args(["-sf", &format!("https://mempool.space/api/block/{}/raw", hash)])
+        .args([
+            "-sf",
+            &format!("https://mempool.space/api/block/{}/raw", hash),
+        ])
         .output()
         .ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     Some(output.stdout)
 }
 
@@ -71,20 +81,31 @@ fn backtest_computational_only() {
 
         let hash = match fetch_block_hash(height) {
             Some(h) => h,
-            None => { println!("SKIP"); continue; }
+            None => {
+                println!("SKIP");
+                continue;
+            }
         };
         let raw = match fetch_raw_block(&hash) {
             Some(r) => r,
-            None => { println!("SKIP"); continue; }
+            None => {
+                println!("SKIP");
+                continue;
+            }
         };
         let block: Block = match deserialize(&raw) {
             Ok(b) => b,
-            Err(e) => { println!("SKIP ({})", e); continue; }
+            Err(e) => {
+                println!("SKIP ({})", e);
+                continue;
+            }
         };
 
         let mut block_corpse = 0;
         for tx in &block.txdata {
-            if tx.is_coinbase() { continue; }
+            if tx.is_coinbase() {
+                continue;
+            }
             total_txs += 1;
 
             let verdict = analyze(tx, &config);
@@ -100,17 +121,25 @@ fn backtest_computational_only() {
                 // Collect first 20 examples with details
                 if examples.len() < 20 {
                     let txid = tx.compute_txid();
-                    let types: Vec<_> = verdict.dead_regions.iter()
+                    let types: Vec<_> = verdict
+                        .dead_regions
+                        .iter()
                         .map(|r| format!("{:?}", r.dead_code_type))
                         .collect();
-                    let breakdown_info = verdict.input_analyses.iter()
+                    let breakdown_info = verdict
+                        .input_analyses
+                        .iter()
                         .filter_map(|a| a.witness_breakdown.as_ref())
-                        .map(|bd| format!(
-                            "essential={}B dead={}B stack={}/{} excess_stack={}",
-                            bd.essential_bytes, bd.dead_bytes,
-                            bd.essential_stack_items, bd.actual_stack_items,
-                            bd.excess_stack_items
-                        ))
+                        .map(|bd| {
+                            format!(
+                                "essential={}B dead={}B stack={}/{} excess_stack={}",
+                                bd.essential_bytes,
+                                bd.dead_bytes,
+                                bd.essential_stack_items,
+                                bd.actual_stack_items,
+                                bd.excess_stack_items
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join("; ");
                     examples.push(format!(
@@ -130,7 +159,10 @@ fn backtest_computational_only() {
     println!("============================================================");
     println!("Total transactions: {}", total_txs);
     println!("Corpse (computational only): {}", corpse);
-    println!("Corpse rate: {:.4}%", corpse as f64 / total_txs.max(1) as f64 * 100.0);
+    println!(
+        "Corpse rate: {:.4}%",
+        corpse as f64 / total_txs.max(1) as f64 * 100.0
+    );
 
     if !by_type.is_empty() {
         println!("\nDetection type breakdown:");
@@ -158,10 +190,17 @@ fn backtest_computational_only() {
     let block: Block = deserialize(&raw).unwrap();
     let block_txs = block.txdata.len() - 1; // minus coinbase
     for tx in &block.txdata {
-        if tx.is_coinbase() { continue; }
+        if tx.is_coinbase() {
+            continue;
+        }
         let v = analyze(tx, &full_config);
-        if v.verdict == Verdict::Corpse { full_corpse += 1; }
+        if v.verdict == Verdict::Corpse {
+            full_corpse += 1;
+        }
     }
-    println!("Block {} with FULL filters: {}/{} corpse", tip_height, full_corpse, block_txs);
+    println!(
+        "Block {} with FULL filters: {}/{} corpse",
+        tip_height, full_corpse, block_txs
+    );
     println!("Block {} with COMPUTATIONAL ONLY: see above", tip_height);
 }

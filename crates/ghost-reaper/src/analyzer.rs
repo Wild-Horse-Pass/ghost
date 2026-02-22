@@ -120,8 +120,7 @@ pub fn analyze(tx: &Transaction, config: &ReaperConfig) -> ReaperVerdict {
                 input_regions.push(region);
             }
 
-            if bd.excess_stack_items > 0
-                && bd.excess_stack_bytes > config.min_excess_witness_bytes
+            if bd.excess_stack_items > 0 && bd.excess_stack_bytes > config.min_excess_witness_bytes
             {
                 let region = DeadCodeRegion {
                     location: AnalysisLocation::Input(idx),

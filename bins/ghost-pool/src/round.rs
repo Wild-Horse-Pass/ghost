@@ -145,10 +145,7 @@ impl MinerToleranceTracker {
         let work_scaled = (work_credited * Self::TOLERANCE_SCALE as f64) as u128;
         let tolerance_scaled = (tolerance_exploited * Self::TOLERANCE_SCALE as f64) as u128;
 
-        let entry = self
-            .entries
-            .entry(miner_id.to_string())
-            .or_insert((0, 0));
+        let entry = self.entries.entry(miner_id.to_string()).or_insert((0, 0));
         entry.0 = entry.0.saturating_add(work_scaled);
         entry.1 = entry.1.saturating_add(tolerance_scaled);
 
@@ -1658,5 +1655,4 @@ mod tests {
             );
         }
     }
-
 }

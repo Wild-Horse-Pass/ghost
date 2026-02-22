@@ -24,11 +24,11 @@ pub use commitment::{
     pedersen_commit, pedersen_commit_native, COMMITMENT_DOMAIN_SEPARATOR,
     NULLIFIER_DOMAIN_SEPARATOR,
 };
+pub use confidential_transfer::ConfidentialTransferCircuit;
 pub use merkle::{MerkleCircuit, MerkleUpdateCircuit};
 pub use mimc::{bytes_to_field, field_to_bytes, mimc_hash, mimc_hash_native, MIMC_ROUNDS};
 pub use payment::{PaymentCircuit, PaymentCircuitError, PaymentOutputs};
 pub use payout::PayoutCircuit;
-pub use confidential_transfer::ConfidentialTransferCircuit;
 pub use range_proof::enforce_range;
 pub use state_transition::{PaymentStateTransitionCircuit, StateTransitionOutputs};
 

@@ -1112,12 +1112,14 @@ impl PayoutProposalCreator {
 
         // C-02: Verify address matches configured network to prevent cross-network fund loss
         let expected_network = self.config.network.to_bitcoin_network();
-        _parsed_addr.require_network(expected_network).map_err(|e| {
-            ghost_common::error::GhostError::InvalidAddress(format!(
-                "{} address network mismatch: expected {:?}, got error: {}",
-                context, expected_network, e
-            ))
-        })?;
+        _parsed_addr
+            .require_network(expected_network)
+            .map_err(|e| {
+                ghost_common::error::GhostError::InvalidAddress(format!(
+                    "{} address network mismatch: expected {:?}, got error: {}",
+                    context, expected_network, e
+                ))
+            })?;
 
         Ok(())
     }

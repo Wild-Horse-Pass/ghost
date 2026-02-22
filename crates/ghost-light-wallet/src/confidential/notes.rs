@@ -119,8 +119,9 @@ impl NoteStore {
 
     /// Deserialize notes from JSON (spending key provided separately)
     pub fn from_json(json: &str, spending_key: [u8; 32]) -> WalletResult<Self> {
-        let notes: Vec<OwnedNote> = serde_json::from_str(json)
-            .map_err(|e| LightWalletError::Storage(format!("Failed to deserialize notes: {}", e)))?;
+        let notes: Vec<OwnedNote> = serde_json::from_str(json).map_err(|e| {
+            LightWalletError::Storage(format!("Failed to deserialize notes: {}", e))
+        })?;
 
         let mut store = Self::new(spending_key);
         for note in notes {

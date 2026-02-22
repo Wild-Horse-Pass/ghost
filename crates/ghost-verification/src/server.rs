@@ -706,7 +706,7 @@ impl Default for DashboardConfig {
             archive_mode: true,  // enabled by default
             ghost_pay: true,     // enabled by default
             public_mining: true, // enabled by default
-            reaper: true,  // enabled by default
+            reaper: true,        // enabled by default
             elder: false,        // set per-node
             elder_slot: None,
             mempool_profile: "permissive".to_string(),

@@ -70,10 +70,12 @@ use ghost_keys::{GhostKeys, GhostKeysExport, PaymentDetector};
 use ghost_locks::{Denomination, GhostLock, StateTransition, TimelockTier};
 use ghost_reconciliation::{BatchExecutor, ReconciliationInput, Settlement};
 use ghost_storage::{
-    Database, GhostLockRecord, GhostLockState as DbLockState, WithdrawalRequest, WithdrawalStatus,
-    ConfidentialTransferRecord,
+    ConfidentialTransferRecord, Database, GhostLockRecord, GhostLockState as DbLockState,
+    WithdrawalRequest, WithdrawalStatus,
 };
-use ghost_zkp::{CommitmentTree, ConfidentialVerifier, ConfidentialTransferProof, ConfidentialPublicInputs};
+use ghost_zkp::{
+    CommitmentTree, ConfidentialPublicInputs, ConfidentialTransferProof, ConfidentialVerifier,
+};
 use wraith_protocol::{ParticipantTier, WraithCoordinator, WraithDenomination};
 
 // H-PAY-2: Cryptography for encrypted key storage
@@ -897,7 +899,10 @@ async fn main() -> Result<()> {
                 commitment_tree.spend_nullifier(*nullifier);
             }
             if !nullifiers.is_empty() {
-                info!(count = nullifiers.len(), "Loaded nullifiers into commitment tree");
+                info!(
+                    count = nullifiers.len(),
+                    "Loaded nullifiers into commitment tree"
+                );
             }
         }
         Err(e) => {
@@ -1149,7 +1154,10 @@ async fn main() -> Result<()> {
         .route("/api/v1/withdrawals/request", post(request_withdrawal))
         .route("/api/v1/withdrawals/:id/cancel", post(cancel_withdrawal))
         // Confidential transfers (SENSITIVE - moves private balances)
-        .route("/api/v1/confidential/transfer", post(submit_confidential_transfer))
+        .route(
+            "/api/v1/confidential/transfer",
+            post(submit_confidential_transfer),
+        )
         .route("/api/v1/confidential/shield", post(shield_balance))
         // Lock reconciliation (SENSITIVE - settles lock to L1)
         .route("/api/v1/locks/:id/reconcile", post(reconcile_lock))
@@ -1184,7 +1192,10 @@ async fn main() -> Result<()> {
         .route("/verify/ghostpay", get(verify_ghostpay))
         // Confidential transfer read-only endpoints
         .route("/api/v1/confidential/tree", get(get_tree_state))
-        .route("/api/v1/confidential/notes/:owner_pubkey", get(get_confidential_notes))
+        .route(
+            "/api/v1/confidential/notes/:owner_pubkey",
+            get(get_confidential_notes),
+        )
         .with_state(state.clone());
 
     // L-14 SECURITY: Read CORS origins from environment variable with secure defaults.
@@ -2395,9 +2406,7 @@ async fn verify_ghostpay(
 /// Parse a hex string into exactly 32 bytes, returning error on invalid input
 fn parse_hex_32(hex_str: &str) -> Result<[u8; 32], StatusCode> {
     let bytes = hex::decode(hex_str).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let arr: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let arr: [u8; 32] = bytes.try_into().map_err(|_| StatusCode::BAD_REQUEST)?;
     Ok(arr)
 }
 
@@ -2422,7 +2431,10 @@ async fn submit_confidential_transfer(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     // Parse all hex fields
     let proof_bytes = hex::decode(&req.proof_hex).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid proof hex"})))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid proof hex"})),
+        )
     })?;
     if proof_bytes.len() != 192 {
         return Err((
@@ -2432,22 +2444,39 @@ async fn submit_confidential_transfer(
     }
 
     let old_root = parse_hex_32(&req.old_commitment_root).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid old_commitment_root hex (need 32 bytes)"})))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid old_commitment_root hex (need 32 bytes)"})),
+        )
     })?;
     let new_root = parse_hex_32(&req.new_commitment_root).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid new_commitment_root hex (need 32 bytes)"})))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid new_commitment_root hex (need 32 bytes)"})),
+        )
     })?;
     let nullifier = parse_hex_32(&req.nullifier).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid nullifier hex (need 32 bytes)"})))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid nullifier hex (need 32 bytes)"})),
+        )
     })?;
     let sender_new_commitment = parse_hex_32(&req.sender_new_commitment).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid sender_new_commitment hex (need 32 bytes)"})))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid sender_new_commitment hex (need 32 bytes)"})),
+        )
     })?;
     let recipient_new_commitment = parse_hex_32(&req.recipient_new_commitment).map_err(|_| {
         (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid recipient_new_commitment hex (need 32 bytes)"})))
     })?;
     let recipient_owner_pubkey = parse_hex_32(&req.recipient_owner_pubkey).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid recipient_owner_pubkey hex (need 32 bytes)"})))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(
+                serde_json::json!({"error": "Invalid recipient_owner_pubkey hex (need 32 bytes)"}),
+            ),
+        )
     })?;
 
     // Step 1: Read-lock tree, verify old_commitment_root matches current
@@ -2455,7 +2484,10 @@ async fn submit_confidential_transfer(
         let tree = state.commitment_tree.read();
         let current_root = tree.root().map_err(|e| {
             error!(error = %e, "Failed to compute tree root");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Internal tree error"})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal tree error"})),
+            )
         })?;
         if current_root != old_root {
             return Err((
@@ -2514,7 +2546,10 @@ async fn submit_confidential_transfer(
 
     let valid = verifier.verify(&transfer_proof).map_err(|e| {
         warn!(error = %e, "Proof verification failed");
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("Invalid proof: {}", e)})))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("Invalid proof: {}", e)})),
+        )
     })?;
 
     if !valid {
@@ -2533,7 +2568,10 @@ async fn submit_confidential_transfer(
         // Re-check root under write lock
         let current_root = tree.root().map_err(|e| {
             error!(error = %e, "Failed to compute tree root");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Internal tree error"})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal tree error"})),
+            )
         })?;
         if current_root != old_root {
             return Err((
@@ -2561,7 +2599,10 @@ async fn submit_confidential_transfer(
         // Verify computed root matches expected
         computed_new_root = tree.root().map_err(|e| {
             error!(error = %e, "Failed to compute new tree root");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Internal tree error"})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal tree error"})),
+            )
         })?;
         if computed_new_root != new_root {
             // Rollback: this should not happen if proof is valid — indicates bug
@@ -2578,11 +2619,7 @@ async fn submit_confidential_transfer(
     }
 
     // Step 5: Persist to DB
-    let current_height = state
-        .rpc
-        .get_block_count()
-        .await
-        .unwrap_or(0);
+    let current_height = state.rpc.get_block_count().await.unwrap_or(0);
 
     // Insert notes
     if let Err(e) = state.db.insert_confidential_note(
@@ -2603,7 +2640,10 @@ async fn submit_confidential_transfer(
     }
 
     // Insert nullifier
-    if let Err(e) = state.db.insert_nullifier(&nullifier, current_height, &transfer_id) {
+    if let Err(e) = state
+        .db
+        .insert_nullifier(&nullifier, current_height, &transfer_id)
+    {
         warn!(error = %e, "Failed to persist nullifier");
     }
 
@@ -2654,10 +2694,16 @@ async fn shield_balance(
     Json(req): Json<ShieldBalanceRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let owner_pubkey = parse_hex_32(&req.owner_pubkey).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid owner_pubkey hex (need 32 bytes)"})))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid owner_pubkey hex (need 32 bytes)"})),
+        )
     })?;
     let blinding = parse_hex_32(&req.blinding_hex).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid blinding hex (need 32 bytes)"})))
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid blinding hex (need 32 bytes)"})),
+        )
     })?;
 
     if req.amount_sats == 0 {
@@ -2668,9 +2714,13 @@ async fn shield_balance(
     }
 
     // Compute commitment: C = MiMC(MiMC(value, blinding), domain_sep)
-    let commitment = ghost_zkp::compute_commitment_bytes(req.amount_sats, &blinding).map_err(|e| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("Invalid blinding: {}", e)})))
-    })?;
+    let commitment =
+        ghost_zkp::compute_commitment_bytes(req.amount_sats, &blinding).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid blinding: {}", e)})),
+            )
+        })?;
 
     // Get next index and insert into tree + DB
     let note_index;
@@ -2681,13 +2731,20 @@ async fn shield_balance(
         tree.insert(note_index, commitment);
         new_root = tree.root().map_err(|e| {
             error!(error = %e, "Failed to compute tree root after shield");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Internal tree error"})))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Internal tree error"})),
+            )
         })?;
     }
 
     // Persist
     let current_height = state.rpc.get_block_count().await.unwrap_or(0);
-    if let Err(e) = state.db.insert_confidential_note(note_index, &commitment, &owner_pubkey, current_height) {
+    if let Err(e) =
+        state
+            .db
+            .insert_confidential_note(note_index, &commitment, &owner_pubkey, current_height)
+    {
         warn!(error = %e, "Failed to persist shielded note");
     }
 
@@ -2705,9 +2762,7 @@ async fn shield_balance(
 }
 
 /// Get commitment tree state
-async fn get_tree_state(
-    State(state): State<Arc<AppState>>,
-) -> Json<serde_json::Value> {
+async fn get_tree_state(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let tree = state.commitment_tree.read();
     let root = tree.root().unwrap_or([0u8; 32]);
     let nullifier_count = tree.nullifier_count();
@@ -2728,13 +2783,10 @@ async fn get_confidential_notes(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let owner_pubkey = parse_hex_32(&owner_pubkey_hex).map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    let notes = state
-        .db
-        .get_notes_for_owner(&owner_pubkey)
-        .map_err(|e| {
-            error!(error = %e, "Failed to query notes");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let notes = state.db.get_notes_for_owner(&owner_pubkey).map_err(|e| {
+        error!(error = %e, "Failed to query notes");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let notes_json: Vec<serde_json::Value> = notes
         .iter()
@@ -3450,11 +3502,7 @@ async fn run_settlement_loop(state: Arc<AppState>) {
             };
 
             // Fix 4: Verify UTXO exists on-chain before including in settlement
-            match state
-                .rpc
-                .get_tx_out(&txid.to_string(), vout, false)
-                .await
-            {
+            match state.rpc.get_tx_out(&txid.to_string(), vout, false).await {
                 Ok(Some(_)) => { /* UTXO exists, proceed */ }
                 Ok(None) => {
                     warn!(
@@ -3463,10 +3511,9 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                         vout = vout,
                         "UTXO not found on-chain, skipping settlement"
                     );
-                    if let Err(e) =
-                        state
-                            .db
-                            .update_ghost_lock_state(&lock.lock_id, DbLockState::Spent)
+                    if let Err(e) = state
+                        .db
+                        .update_ghost_lock_state(&lock.lock_id, DbLockState::Spent)
                     {
                         error!(
                             lock_id = %lock.lock_id,
@@ -3615,9 +3662,7 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                             &lock.owner_ghost_id,
                                             &lock.lock_id,
                                         )
-                                        .map_err(|e| {
-                                            format!("Failed to get lock index: {}", e)
-                                        })?;
+                                        .map_err(|e| format!("Failed to get lock index: {}", e))?;
 
                                     // Derive the lock secret key
                                     let lock_secret = keys
@@ -3625,31 +3670,28 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                         .map_err(|e| format!("Key derivation error: {:?}", e))?;
 
                                     // Parse stored pubkeys from hex
-                                    let lock_pubkey_bytes =
-                                        hex::decode(&lock.lock_pubkey).map_err(|e| {
-                                            format!("Invalid lock_pubkey hex: {}", e)
-                                        })?;
-                                    let lock_pubkey =
-                                        bitcoin::secp256k1::PublicKey::from_slice(
-                                            &lock_pubkey_bytes,
-                                        )
+                                    let lock_pubkey_bytes = hex::decode(&lock.lock_pubkey)
+                                        .map_err(|e| format!("Invalid lock_pubkey hex: {}", e))?;
+                                    let lock_pubkey = bitcoin::secp256k1::PublicKey::from_slice(
+                                        &lock_pubkey_bytes,
+                                    )
+                                    .map_err(|e| format!("Invalid lock_pubkey: {}", e))?;
+                                    let recovery_pubkey_bytes = hex::decode(&lock.recovery_pubkey)
                                         .map_err(|e| {
-                                            format!("Invalid lock_pubkey: {}", e)
-                                        })?;
-                                    let recovery_pubkey_bytes =
-                                        hex::decode(&lock.recovery_pubkey).map_err(|e| {
                                             format!("Invalid recovery_pubkey hex: {}", e)
                                         })?;
                                     let recovery_pubkey =
                                         bitcoin::secp256k1::PublicKey::from_slice(
                                             &recovery_pubkey_bytes,
                                         )
-                                        .map_err(|e| {
-                                            format!("Invalid recovery_pubkey: {}", e)
-                                        })?;
+                                        .map_err(|e| format!("Invalid recovery_pubkey: {}", e))?;
 
                                     // Verify derived key matches stored key
-                                    let derived_pubkey = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &lock_secret);
+                                    let derived_pubkey =
+                                        bitcoin::secp256k1::PublicKey::from_secret_key(
+                                            &secp,
+                                            &lock_secret,
+                                        );
                                     if derived_pubkey != lock_pubkey {
                                         return Err(format!(
                                             "Derived pubkey mismatch for lock {} at index {}",
@@ -3662,15 +3704,12 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                         lock.recovery_height.saturating_sub(lock.creation_height);
 
                                     // Reconstruct witness script
-                                    let witness_script =
-                                        ghost_locks::build_wsh_witness_script(
-                                            &lock_pubkey,
-                                            &recovery_pubkey,
-                                            recovery_blocks,
-                                        )
-                                        .map_err(|e| {
-                                            format!("Witness script error: {}", e)
-                                        })?;
+                                    let witness_script = ghost_locks::build_wsh_witness_script(
+                                        &lock_pubkey,
+                                        &recovery_pubkey,
+                                        recovery_blocks,
+                                    )
+                                    .map_err(|e| format!("Witness script error: {}", e))?;
 
                                     // Compute P2WSH sighash
                                     let sighash = {
@@ -3683,17 +3722,15 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                                 bitcoin::Amount::from_sat(lock.amount_sats),
                                                 bitcoin::EcdsaSighashType::All,
                                             )
-                                            .map_err(|e| {
-                                                format!("Sighash error: {}", e)
-                                            })?
+                                            .map_err(|e| format!("Sighash error: {}", e))?
                                     };
 
                                     // Sign with ECDSA (P2WSH uses ECDSA, not Schnorr)
-                                    let sighash_bytes: [u8; 32] = sighash[..].try_into()
+                                    let sighash_bytes: [u8; 32] = sighash[..]
+                                        .try_into()
                                         .map_err(|_| "Sighash not 32 bytes".to_string())?;
-                                    let msg = bitcoin::secp256k1::Message::from_digest(
-                                        sighash_bytes,
-                                    );
+                                    let msg =
+                                        bitcoin::secp256k1::Message::from_digest(sighash_bytes);
                                     let sig = secp.sign_ecdsa(&msg, &lock_secret);
 
                                     // Build DER signature with SIGHASH_ALL byte
@@ -3712,7 +3749,8 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                                 }
 
                                 Ok(signed_tx)
-                            })();
+                            })(
+                            );
 
                             let signed_tx = match sign_result {
                                 Ok(tx) => tx,
@@ -3738,8 +3776,7 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                             };
 
                             // Serialize signed transaction and broadcast via Bitcoin Core RPC
-                            let tx_hex =
-                                bitcoin::consensus::encode::serialize_hex(&signed_tx);
+                            let tx_hex = bitcoin::consensus::encode::serialize_hex(&signed_tx);
 
                             match state.rpc.send_raw_transaction(&tx_hex).await {
                                 Ok(broadcast_txid) => {
@@ -4166,7 +4203,11 @@ async fn reconcile_lock(
     }
 
     // Settlement fee
-    let settlement_fee = if req.settlement_class == "batched" { 500u64 } else { 1000u64 };
+    let settlement_fee = if req.settlement_class == "batched" {
+        500u64
+    } else {
+        1000u64
+    };
     let settlement_amount = lock.amount_sats.saturating_sub(settlement_fee);
 
     let now = chrono::Utc::now().timestamp();
@@ -4356,7 +4397,14 @@ async fn send_l2_payment(
                  (payment_id, sender_lock_id, merchant_wallet_id, amount_sats, \
                   accepted_at, settlement_block, confidence, sender_pubkey, signature) \
                  VALUES (?1, ?2, ?3, ?4, ?5, 0, 0.0, ?6, X'00')",
-                rusqlite::params![pid.as_bytes(), gid, recipient, amount as i64, now, pubkey_bytes,],
+                rusqlite::params![
+                    pid.as_bytes(),
+                    gid,
+                    recipient,
+                    amount as i64,
+                    now,
+                    pubkey_bytes,
+                ],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())

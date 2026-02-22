@@ -21,11 +21,10 @@ use bitcoin::hashes::Hash;
 use bitcoin::transaction::Version;
 use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
 
+use crate::analyze;
 use crate::config::ReaperConfig;
-use crate::essential::{compute_witness_breakdown, count_stack_consumption, strip_to_essential};
-use crate::verdict::{AnalysisLocation, DeadCodeRegion, DeadCodeType, Verdict};
-use crate::witness::SpendType;
-use crate::{analyze, WitnessBreakdown};
+use crate::essential::{count_stack_consumption, strip_to_essential};
+use crate::verdict::{AnalysisLocation, DeadCodeRegion, DeadCodeType};
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -156,10 +155,17 @@ fn test_novel_excess_stack_items_bypass() {
 
     // Should be flagged
     assert!(
-        verdict.dead_regions.iter().any(|r| r.dead_code_type == DeadCodeType::ExcessWitnessData
-            || r.dead_code_type == DeadCodeType::ExcessStackItems),
+        verdict
+            .dead_regions
+            .iter()
+            .any(|r| r.dead_code_type == DeadCodeType::ExcessWitnessData
+                || r.dead_code_type == DeadCodeType::ExcessStackItems),
         "Should detect ExcessWitnessData or ExcessStackItems, got: {:?}",
-        verdict.dead_regions.iter().map(|r| &r.dead_code_type).collect::<Vec<_>>()
+        verdict
+            .dead_regions
+            .iter()
+            .map(|r| &r.dead_code_type)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -227,7 +233,10 @@ fn test_computational_quantifies_inscription() {
         bd.original_script_bytes > 100,
         "Original script has envelope + checksig"
     );
-    assert!(bd.control_block_bytes > 0, "Control block is always essential");
+    assert!(
+        bd.control_block_bytes > 0,
+        "Control block is always essential"
+    );
     assert!(
         bd.dead_bytes > bd.essential_bytes,
         "Dead should exceed essential: {} dead vs {} essential",
@@ -271,7 +280,11 @@ fn test_strip_essential_multi_region() {
 
     let (essential, removed) = strip_to_essential(&script, &[r1, r2]);
     assert_eq!(removed, 15);
-    assert_eq!(essential, vec![0xac, 0xad], "Only CHECKSIG + CHECKSIGVERIFY should remain");
+    assert_eq!(
+        essential,
+        vec![0xac, 0xad],
+        "Only CHECKSIG + CHECKSIGVERIFY should remain"
+    );
 }
 
 /// Verify count_stack_consumption for various opcode patterns
@@ -305,10 +318,17 @@ fn test_stack_consumption_comprehensive() {
     assert_eq!(count_stack_consumption(&[], true), 0);
 
     // 10) Just push data, no consumption opcodes = 0
-    assert_eq!(count_stack_consumption(&[0x20, 0xAA, 0xAA, 0xAA, 0xAA,
-        0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
-        0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
-        0xAA, 0xAA, 0xAA, 0xAA], true), 0);
+    assert_eq!(
+        count_stack_consumption(
+            &[
+                0x20, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+                0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,
+                0xAA, 0xAA, 0xAA, 0xAA, 0xAA
+            ],
+            true
+        ),
+        0
+    );
 }
 
 /// Verify breakdown for a minimal P2TR script-path (OP_CHECKSIG only)
@@ -373,7 +393,7 @@ fn test_breakdown_multiple_dead_regions() {
     script.push(80);
     script.extend(vec![0xAA; 80]);
     script.push(0x75); // OP_DROP
-    // Inscription envelope
+                       // Inscription envelope
     script.push(0x00);
     script.push(0x63);
     script.push(0x03);
@@ -475,12 +495,18 @@ fn test_legit_tapscript_exact_witness() {
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_accepted());
-    let bd = verdict.input_analyses[0].witness_breakdown.as_ref().unwrap();
+    let bd = verdict.input_analyses[0]
+        .witness_breakdown
+        .as_ref()
+        .unwrap();
     assert_eq!(bd.excess_stack_items, 0);
     assert_eq!(bd.dead_bytes, 0);
     assert!(
-        !verdict.dead_regions.iter().any(|r| r.dead_code_type == DeadCodeType::ExcessWitnessData
-            || r.dead_code_type == DeadCodeType::ExcessStackItems),
+        !verdict
+            .dead_regions
+            .iter()
+            .any(|r| r.dead_code_type == DeadCodeType::ExcessWitnessData
+                || r.dead_code_type == DeadCodeType::ExcessStackItems),
         "No excess regions for exact witness"
     );
 }
@@ -513,7 +539,10 @@ fn test_legit_htlc_conservative_count() {
     let config = ReaperConfig::strict();
     let verdict = analyze(&tx, &config);
 
-    let bd = verdict.input_analyses[0].witness_breakdown.as_ref().unwrap();
+    let bd = verdict.input_analyses[0]
+        .witness_breakdown
+        .as_ref()
+        .unwrap();
     // Conservative: counts BOTH branches → 2 CHECKSIG + 1 preimage = 3 from stack
     // We provided 2 items (sig + preimage), which is < 3, so no excess
     assert_eq!(bd.excess_stack_items, 0, "No excess for HTLC");
@@ -544,8 +573,14 @@ fn test_legit_checksigadd_exact() {
     let config = ReaperConfig::strict();
     let verdict = analyze(&tx, &config);
 
-    let bd = verdict.input_analyses[0].witness_breakdown.as_ref().unwrap();
-    assert_eq!(bd.essential_stack_items, 3, "3 CHECKSIG/ADD = 3 sigs needed");
+    let bd = verdict.input_analyses[0]
+        .witness_breakdown
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        bd.essential_stack_items, 3,
+        "3 CHECKSIG/ADD = 3 sigs needed"
+    );
     assert_eq!(bd.actual_stack_items, 3, "Provided exactly 3");
     assert_eq!(bd.excess_stack_items, 0);
     assert!(verdict.is_accepted(), "Exact CHECKSIGADD should Accept");
@@ -570,7 +605,10 @@ fn test_legit_2of3_multisig_exact() {
     let config = ReaperConfig::strict();
     let verdict = analyze(&tx, &config);
 
-    let bd = verdict.input_analyses[0].witness_breakdown.as_ref().unwrap();
+    let bd = verdict.input_analyses[0]
+        .witness_breakdown
+        .as_ref()
+        .unwrap();
     // 2-of-3 CHECKMULTISIG needs m+1 = 3 items
     assert_eq!(bd.essential_stack_items, 3);
     assert_eq!(bd.actual_stack_items, 3);
@@ -592,7 +630,10 @@ fn test_legit_p2wsh_hashlock_exact() {
     let config = ReaperConfig::strict();
     let verdict = analyze(&tx, &config);
 
-    let bd = verdict.input_analyses[0].witness_breakdown.as_ref().unwrap();
+    let bd = verdict.input_analyses[0]
+        .witness_breakdown
+        .as_ref()
+        .unwrap();
     assert_eq!(bd.excess_stack_items, 0);
     assert_eq!(bd.dead_bytes, 0);
     assert!(verdict.is_accepted());
@@ -675,12 +716,12 @@ fn test_legit_legacy_p2pkh_no_flag() {
     let config = ReaperConfig::strict();
     let verdict = analyze(&tx, &config);
 
+    assert!(verdict.is_accepted(), "Legacy P2PKH should Accept");
     assert!(
-        verdict.is_accepted(),
-        "Legacy P2PKH should Accept"
-    );
-    assert!(
-        !verdict.dead_regions.iter().any(|r| r.dead_code_type == DeadCodeType::LegacyScriptSigData),
+        !verdict
+            .dead_regions
+            .iter()
+            .any(|r| r.dead_code_type == DeadCodeType::LegacyScriptSigData),
         "No legacy data stuffing in legitimate P2PKH"
     );
 }
@@ -734,9 +775,11 @@ fn test_legit_p2sh_multisig_no_false_positive() {
 /// Real bare multisig with valid secp256k1 pubkeys → no FakePubkeyCurvePoint
 #[test]
 fn test_legit_bare_multisig_real_pubkeys() {
-    let pk1 = hex::decode("0279BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798").unwrap();
+    let pk1 =
+        hex::decode("0279BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798").unwrap();
     // G * 2
-    let pk2 = hex::decode("02C6047F9441ED7D6D3045406E95C07CD85C778E4B8CEF3CA7ABAC09B95C709EE5").unwrap();
+    let pk2 =
+        hex::decode("02C6047F9441ED7D6D3045406E95C07CD85C778E4B8CEF3CA7ABAC09B95C709EE5").unwrap();
 
     let mut script = vec![0x51]; // OP_1
     script.push(0x21);
@@ -759,10 +802,11 @@ fn test_legit_bare_multisig_real_pubkeys() {
         "Real secp256k1 pubkeys should Accept"
     );
     assert!(
-        !verdict.dead_regions.iter().any(|r|
-            r.dead_code_type == DeadCodeType::FakePubkey
-            || r.dead_code_type == DeadCodeType::FakePubkeyCurvePoint
-        ),
+        !verdict
+            .dead_regions
+            .iter()
+            .any(|r| r.dead_code_type == DeadCodeType::FakePubkey
+                || r.dead_code_type == DeadCodeType::FakePubkeyCurvePoint),
         "No fake pubkey flags for real keys"
     );
 }
@@ -771,7 +815,7 @@ fn test_legit_bare_multisig_real_pubkeys() {
 #[test]
 fn test_fake_multisig_ec_validation() {
     let mut script = vec![0x51]; // OP_1
-    // Fake: 0x02 + 0xFF*32 (not on curve)
+                                 // Fake: 0x02 + 0xFF*32 (not on curve)
     script.push(0x21);
     script.push(0x02);
     script.extend(vec![0xFF; 32]);
@@ -950,14 +994,20 @@ fn test_excess_below_threshold_not_flagged() {
     let verdict = analyze(&tx, &config);
 
     // There IS excess, but it's below the 500-byte threshold
-    let bd = verdict.input_analyses[0].witness_breakdown.as_ref().unwrap();
+    let bd = verdict.input_analyses[0]
+        .witness_breakdown
+        .as_ref()
+        .unwrap();
     assert_eq!(bd.excess_stack_items, 1);
     assert!(bd.excess_stack_bytes > 0);
 
     // But it should NOT create ExcessWitnessData/ExcessStackItems regions
     assert!(
-        !verdict.dead_regions.iter().any(|r| r.dead_code_type == DeadCodeType::ExcessWitnessData
-            || r.dead_code_type == DeadCodeType::ExcessStackItems),
+        !verdict
+            .dead_regions
+            .iter()
+            .any(|r| r.dead_code_type == DeadCodeType::ExcessWitnessData
+                || r.dead_code_type == DeadCodeType::ExcessStackItems),
         "Small excess below threshold should not create regions"
     );
     assert!(
@@ -981,8 +1031,11 @@ fn test_excess_above_threshold_flagged() {
     let verdict = analyze(&tx, &config);
 
     assert!(
-        verdict.dead_regions.iter().any(|r| r.dead_code_type == DeadCodeType::ExcessWitnessData
-            || r.dead_code_type == DeadCodeType::ExcessStackItems),
+        verdict
+            .dead_regions
+            .iter()
+            .any(|r| r.dead_code_type == DeadCodeType::ExcessWitnessData
+                || r.dead_code_type == DeadCodeType::ExcessStackItems),
         "Large excess above threshold should be flagged"
     );
 }

@@ -868,10 +868,7 @@ impl CeremonyManager {
             &self.files.confidential_params_path(0),
             &confidential_params,
         )?;
-        save_verifying_key(
-            &self.files.confidential_vk_path(),
-            &confidential_params.vk,
-        )?;
+        save_verifying_key(&self.files.confidential_vk_path(), &confidential_params.vk)?;
 
         // Update current symlinks
         update_current_params(&self.files, 0)?;

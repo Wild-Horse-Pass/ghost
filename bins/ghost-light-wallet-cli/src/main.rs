@@ -859,31 +859,37 @@ async fn cmd_lock(config: WalletConfig, action: LockCommands) -> Result<()> {
             // Interactive amount if not provided
             let amount = match amount {
                 Some(a) => a,
-                None => {
-                    Input::new()
-                        .with_prompt("Lock capacity (sats)")
-                        .validate_with(|input: &u64| {
-                            if *input > 0 {
-                                Ok(())
-                            } else {
-                                Err("Amount must be greater than 0")
-                            }
-                        })
-                        .interact_text()?
-                }
+                None => Input::new()
+                    .with_prompt("Lock capacity (sats)")
+                    .validate_with(|input: &u64| {
+                        if *input > 0 {
+                            Ok(())
+                        } else {
+                            Err("Amount must be greater than 0")
+                        }
+                    })
+                    .interact_text()?,
             };
 
             // Interactive label if not provided
             let label = match label {
                 Some(l) => {
-                    if l.is_empty() { None } else { Some(l) }
+                    if l.is_empty() {
+                        None
+                    } else {
+                        Some(l)
+                    }
                 }
                 None => {
                     let l: String = Input::new()
                         .with_prompt("Label (optional)")
                         .allow_empty(true)
                         .interact_text()?;
-                    if l.is_empty() { None } else { Some(l) }
+                    if l.is_empty() {
+                        None
+                    } else {
+                        Some(l)
+                    }
                 }
             };
 
@@ -1526,7 +1532,9 @@ async fn cmd_ghost_id(host: &str, pay_port: u16) -> Result<()> {
                 println!();
                 println!(
                     "{}",
-                    style("IMPORTANT: Back up your Ghost ID and associated keys!").bold().red()
+                    style("IMPORTANT: Back up your Ghost ID and associated keys!")
+                        .bold()
+                        .red()
                 );
                 println!(
                     "{}",
@@ -1618,7 +1626,11 @@ async fn cmd_pay(
                 println!("{}", style("Memo must be 59 characters or fewer.").red());
                 return Ok(());
             }
-            if m.is_empty() { None } else { Some(m) }
+            if m.is_empty() {
+                None
+            } else {
+                Some(m)
+            }
         }
         None => {
             let m: String = Input::new()
@@ -1746,10 +1758,7 @@ async fn cmd_reconcile(
     address: Option<String>,
 ) -> Result<()> {
     println!("{}", style("Ghost Lock Reconciliation").bold().cyan());
-    println!(
-        "{}",
-        style("Settle a Ghost Lock back to Bitcoin L1.").dim()
-    );
+    println!("{}", style("Settle a Ghost Lock back to Bitcoin L1.").dim());
     println!();
 
     let base_url = format!("http://{}:{}", host, pay_port);
@@ -1821,12 +1830,15 @@ async fn cmd_reconcile(
             let lock_names: Vec<String> = locks
                 .iter()
                 .map(|l| {
-                    let id = l.get("lock_id").and_then(|v| v.as_str()).unwrap_or("unknown");
-                    let capacity = l
-                        .get("capacity_sats")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let status = l.get("status").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let id = l
+                        .get("lock_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    let capacity = l.get("capacity_sats").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let status = l
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
                     format!("{} - {} sats ({})", id, capacity, status)
                 })
                 .collect();
@@ -1857,10 +1869,7 @@ async fn cmd_reconcile(
     };
 
     // Validate address prefix
-    if !address.starts_with("bc1")
-        && !address.starts_with("tb1")
-        && !address.starts_with("bcrt1")
-    {
+    if !address.starts_with("bc1") && !address.starts_with("tb1") && !address.starts_with("bcrt1") {
         println!(
             "{}",
             style("Error: Address must be bech32 (starting with bc1, tb1, or bcrt1).").red()

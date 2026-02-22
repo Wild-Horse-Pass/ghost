@@ -156,7 +156,8 @@ impl CommitmentTree {
 
         // Compute sender's new commitment (change)
         let sender_new_value = sender_value - amount;
-        let sender_new_commit = pedersen_commit_native(Fr::from(sender_new_value), sender_new_blinding);
+        let sender_new_commit =
+            pedersen_commit_native(Fr::from(sender_new_value), sender_new_blinding);
 
         // Replace sender's leaf with new commitment
         self.insert(sender_index, field_to_bytes(sender_new_commit));
@@ -165,12 +166,13 @@ impl CommitmentTree {
         let recipient_merkle_proof = self.get_proof(recipient_index)?;
 
         // Compute recipient's new commitment
-        let recipient_new_value = recipient_old_value
-            .checked_add(amount)
-            .ok_or(ZkError::BalanceOverflow {
-                balance: recipient_old_value,
-                amount,
-            })?;
+        let recipient_new_value =
+            recipient_old_value
+                .checked_add(amount)
+                .ok_or(ZkError::BalanceOverflow {
+                    balance: recipient_old_value,
+                    amount,
+                })?;
         let recipient_new_commit =
             pedersen_commit_native(Fr::from(recipient_new_value), recipient_new_blinding);
 
@@ -179,8 +181,10 @@ impl CommitmentTree {
 
         // Record nullifier
         let sender_commit = pedersen_commit_native(Fr::from(sender_value), sender_blinding);
-        let note_id = crate::circuit::commitment::compute_note_id_native(sender_index, sender_commit);
-        let nullifier = crate::circuit::commitment::compute_nullifier_native(sender_spending_key, note_id);
+        let note_id =
+            crate::circuit::commitment::compute_note_id_native(sender_index, sender_commit);
+        let nullifier =
+            crate::circuit::commitment::compute_nullifier_native(sender_spending_key, note_id);
         let nullifier_bytes = field_to_bytes(nullifier);
 
         if !self.spend_nullifier(nullifier_bytes) {
@@ -309,7 +313,10 @@ mod tests {
         let tree_root_bytes = tree.root().unwrap();
         let tree_root: Fr = bytes_to_field(&tree_root_bytes).unwrap();
 
-        assert_eq!(circuit_root, tree_root, "Tree root must match circuit computation");
+        assert_eq!(
+            circuit_root, tree_root,
+            "Tree root must match circuit computation"
+        );
     }
 
     #[test]
@@ -488,6 +495,8 @@ mod tests {
         let verifier = ConfidentialVerifier::for_prover(&prover);
 
         let proof = prover.prove(&witness).expect("Proof should succeed");
-        assert!(verifier.verify(&proof).expect("Verification should succeed"));
+        assert!(verifier
+            .verify(&proof)
+            .expect("Verification should succeed"));
     }
 }

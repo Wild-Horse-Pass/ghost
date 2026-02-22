@@ -67,14 +67,12 @@ pub fn identify_spend(input: &TxIn) -> SpendType {
         n => {
             // 3+ items: check if last is a control block (P2TR script path)
             // With annex: second-to-last is control block, last starts with 0x50
-            let (potential_cb_idx, has_annex) = if items[n - 1].first() == Some(&0x50)
-                && items[n - 1].len() > 1
-                && n >= 3
-            {
-                (n - 2, true)
-            } else {
-                (n - 1, false)
-            };
+            let (potential_cb_idx, has_annex) =
+                if items[n - 1].first() == Some(&0x50) && items[n - 1].len() > 1 && n >= 3 {
+                    (n - 2, true)
+                } else {
+                    (n - 1, false)
+                };
 
             let potential_cb = items[potential_cb_idx];
             if is_control_block(potential_cb) {

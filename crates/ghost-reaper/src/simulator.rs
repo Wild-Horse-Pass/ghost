@@ -384,8 +384,7 @@ fn simulate_range(
             //         OP_LESSTHAN(0x9f), OP_GREATERTHAN(0xa0),
             //         OP_LESSTHANOREQUAL(0xa1), OP_GREATERTHANOREQUAL(0xa2),
             //         OP_MIN(0xa3), OP_MAX(0xa4)
-            0x93 | 0x94 | 0x9a | 0x9b | 0x9c | 0x9e | 0x9f | 0xa0 | 0xa1 | 0xa2 | 0xa3
-            | 0xa4 => {
+            0x93 | 0x94 | 0x9a | 0x9b | 0x9c | 0x9e | 0x9f | 0xa0 | 0xa1 | 0xa2 | 0xa3 | 0xa4 => {
                 let b = state.stack.pop()?;
                 let a = state.stack.pop()?;
                 state.stack.push(SimItem {
@@ -612,14 +611,7 @@ fn simulate_range(
                     let skip_state_essential = state.essential.clone();
 
                     // Simulate IF branch
-                    simulate_range(
-                        ops,
-                        script,
-                        if_body_start,
-                        if_body_end,
-                        is_tapscript,
-                        state,
-                    )?;
+                    simulate_range(ops, script, if_body_start, if_body_end, is_tapscript, state)?;
 
                     // Different stack depths → bail
                     if state.stack.len() != skip_state_stack.len() {
@@ -688,7 +680,11 @@ fn count_if_depth(ops: &[ScriptOp], if_idx: usize) -> usize {
 
 /// Find the small integer (OP_0..OP_16) that was the N value for CHECKMULTISIG.
 /// The N is right before the CHECKMULTISIG in standard scripts (after pubkey pushes).
-fn find_preceding_small_int(ops: &[ScriptOp], checkmultisig_idx: usize, script: &[u8]) -> Option<usize> {
+fn find_preceding_small_int(
+    ops: &[ScriptOp],
+    checkmultisig_idx: usize,
+    script: &[u8],
+) -> Option<usize> {
     // Walk backward to find the last OP_N or OP_0 before the multisig
     // that was directly before the pubkey pushes
     if checkmultisig_idx == 0 {

@@ -60,10 +60,10 @@ use bitcoin::consensus::deserialize;
 use ghost_accounting::CoinbaseBuilder;
 use ghost_buds::BudsClassifier;
 use ghost_common::config::{BitcoinNetwork, MiningMode};
-use ghost_reaper::ReaperConfig;
 use ghost_common::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
 use ghost_common::types::{PayoutProposal, PayoutType, TreasuryAddress};
 use ghost_policy::PolicyProfile;
+use ghost_reaper::ReaperConfig;
 use ghost_storage::Database;
 
 // M-28: Import CoinbaseVerifier for pre-submission verification
@@ -105,7 +105,14 @@ pub struct BlockSubmittedInfo {
 
 /// Type alias for coinbase build result:
 /// (coinbase1, coinbase2, witness_data, outputs_serialized, outputs_count)
-type CoinbaseBuildResult = (Vec<u8>, Vec<u8>, WitnessData, Vec<u8>, u32, Option<CoinbaseCommitment>);
+type CoinbaseBuildResult = (
+    Vec<u8>,
+    Vec<u8>,
+    WitnessData,
+    Vec<u8>,
+    u32,
+    Option<CoinbaseCommitment>,
+);
 
 /// Template processor configuration
 #[derive(Debug, Clone)]
@@ -838,14 +845,17 @@ impl TemplateProcessor {
                     // Step 3: Fallback if can't absorb
                     if remaining > 0 {
                         warn!(
-                            remaining, height,
-                            "Could not absorb fee decrease — using fallback"
+                            remaining,
+                            height, "Could not absorb fee decrease — using fallback"
                         );
                         return None;
                     }
 
                     info!(
-                        original_fees, available_fees, reduction = excess, height,
+                        original_fees,
+                        available_fees,
+                        reduction = excess,
+                        height,
                         "Adjusted payout: fees decreased"
                     );
                 } else {
@@ -856,7 +866,9 @@ impl TemplateProcessor {
                     let extra = raw_extra.min(max_extra);
                     if raw_extra > max_extra {
                         warn!(
-                            raw_extra, max_extra, height,
+                            raw_extra,
+                            max_extra,
+                            height,
                             "H-04: Fee increase exceeds 2x cap — capping extra allocation"
                         );
                     }
@@ -874,30 +886,28 @@ impl TemplateProcessor {
 
                     if !allocated {
                         debug!(
-                            extra, height,
-                            "Extra fees unclaimed — no block finder entry"
+                            extra,
+                            height, "Extra fees unclaimed — no block finder entry"
                         );
                     } else {
                         info!(
-                            original_fees, available_fees, extra, height,
-                            "Adjusted payout: fees increased (RBF)"
+                            original_fees,
+                            available_fees, extra, height, "Adjusted payout: fees increased (RBF)"
                         );
                     }
                 }
             }
 
             // Final sanity: must not exceed available value
-            let adjusted_total: u64 = prop
-                .miner_payouts
-                .iter()
-                .map(|e| e.amount)
-                .sum::<u64>()
+            let adjusted_total: u64 = prop.miner_payouts.iter().map(|e| e.amount).sum::<u64>()
                 + prop.node_payouts.iter().map(|e| e.amount).sum::<u64>()
                 + prop.treasury_amount;
 
             if adjusted_total > total_value {
                 error!(
-                    adjusted_total, total_value, height,
+                    adjusted_total,
+                    total_value,
+                    height,
                     "CRITICAL: Adjusted proposal exceeds available — using fallback"
                 );
                 return None;
@@ -1654,7 +1664,8 @@ impl TemplateProcessor {
             coinbase_outputs_serialized,
             coinbase_outputs_count,
             payout_snapshot, // H-MINE-2: Store snapshot for consistent coinbase reconstruction
-            commitment_snapshot: adjusted_commitment.or_else(|| self.coinbase_verifier.get_commitment()), // Use fee-adjusted commitment, fall back to global
+            commitment_snapshot: adjusted_commitment
+                .or_else(|| self.coinbase_verifier.get_commitment()), // Use fee-adjusted commitment, fall back to global
         };
 
         *self.current_work.write() = Some(work);
@@ -2566,7 +2577,8 @@ impl TemplateProcessor {
                     );
                     return Err(anyhow::anyhow!(
                         "H-10: Failed to decode transaction hex for tx {}: {}",
-                        tx.hash, e
+                        tx.hash,
+                        e
                     ));
                 }
             }
@@ -2755,7 +2767,8 @@ impl TemplateProcessor {
                     );
                     return Err(anyhow::anyhow!(
                         "H-10: Failed to decode transaction hex for tx {}: {}",
-                        tx.hash, e
+                        tx.hash,
+                        e
                     ));
                 }
             }
@@ -2951,8 +2964,12 @@ mod tests {
     #[test]
     fn test_height_encoding() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
-        let processor =
-            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict());
+        let processor = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::permissive(),
+            ReaperConfig::strict(),
+        );
 
         // Test various heights
         assert_eq!(processor.encode_height(0), vec![0x01, 0x00]);
@@ -2964,8 +2981,12 @@ mod tests {
     #[test]
     fn test_reverse_hex() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
-        let processor =
-            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict());
+        let processor = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::permissive(),
+            ReaperConfig::strict(),
+        );
 
         // Valid hex string
         let hex = "0102030405060708";
@@ -2995,8 +3016,12 @@ mod tests {
     #[test]
     fn test_witness_conversion() {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
-        let processor =
-            TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict());
+        let processor = TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::permissive(),
+            ReaperConfig::strict(),
+        );
 
         // Create a minimal non-witness coinbase:
         // version(4) | input_count(1) | prev_hash(32) | prev_index(4) | scriptsig_len(1) | scriptsig(4) | sequence(4) | output_count(1) | value(8) | scriptpubkey_len(1) | scriptpubkey(22) | locktime(4)
@@ -3395,7 +3420,12 @@ mod tests {
     /// Helper to create a TemplateProcessor for sorting tests
     fn test_processor() -> TemplateProcessor {
         let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
-        TemplateProcessor::new(TemplateConfig::default(), rpc, PolicyProfile::permissive(), ReaperConfig::strict())
+        TemplateProcessor::new(
+            TemplateConfig::default(),
+            rpc,
+            PolicyProfile::permissive(),
+            ReaperConfig::strict(),
+        )
     }
 
     /// Test that CPFP package with high package fee rate sorts above lower independent txs
@@ -3743,7 +3773,11 @@ mod tests {
         let (kept_all, stats_all) = processor_disabled.filter_transactions(&txs);
 
         assert_eq!(stats_all.reaped, 0, "disabled reaper should not reap");
-        assert_eq!(kept_all.len(), 2, "both txs should survive with reaper disabled");
+        assert_eq!(
+            kept_all.len(),
+            2,
+            "both txs should survive with reaper disabled"
+        );
     }
 
     /// Test that ghost-reaper detects OP_DROP stuffing in witness scripts
@@ -3758,7 +3792,7 @@ mod tests {
         // Build a tapscript with large data push followed by OP_DROP (data stuffing)
         let mut tapscript: Vec<u8> = Vec::new();
         tapscript.push(0x4c); // OP_PUSHDATA1
-        tapscript.push(100);  // 100 bytes of junk (exceeds strict threshold of 76)
+        tapscript.push(100); // 100 bytes of junk (exceeds strict threshold of 76)
         tapscript.extend([0xDE; 100]); // junk data
         tapscript.push(0x75); // OP_DROP
         tapscript.push(0x51); // OP_TRUE (makes script succeed)
@@ -4036,7 +4070,7 @@ mod tests {
         let mut op_return_script: Vec<u8> = Vec::new();
         op_return_script.push(0x6a); // OP_RETURN
         op_return_script.push(0x4c); // OP_PUSHDATA1
-        op_return_script.push(100);  // 100 bytes payload
+        op_return_script.push(100); // 100 bytes payload
         op_return_script.extend([0xAB; 100]); // junk data
 
         let txid = Txid::from_byte_array([70u8; 32]);
@@ -4141,8 +4175,14 @@ mod tests {
         cb1.extend([0x11; 32]);
         w1.push(&cb1);
         let tx1 = Transaction {
-            version: Version::TWO, lock_time: LockTime::ZERO,
-            input: vec![TxIn { previous_output: make_outpoint(1), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w1 }],
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: make_outpoint(1),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: w1,
+            }],
             output: vec![p2wpkh_out()],
         };
 
@@ -4158,8 +4198,14 @@ mod tests {
         cb2.extend([0x22; 32]);
         w2.push(&cb2);
         let tx2 = Transaction {
-            version: Version::TWO, lock_time: LockTime::ZERO,
-            input: vec![TxIn { previous_output: make_outpoint(2), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w2 }],
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: make_outpoint(2),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: w2,
+            }],
             output: vec![p2wpkh_out()],
         };
 
@@ -4172,24 +4218,41 @@ mod tests {
         cb3.extend([0x33; 32]);
         w3.push(&cb3);
         let tx3 = Transaction {
-            version: Version::TWO, lock_time: LockTime::ZERO,
-            input: vec![TxIn { previous_output: make_outpoint(3), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w3 }],
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: make_outpoint(3),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: w3,
+            }],
             output: vec![p2wpkh_out()],
         };
 
         // 4. Fake pubkey multisig
         let mut ms = vec![0x51, 0x21]; // OP_1, PUSHBYTES_33
-        ms.push(0x02); ms.extend([0xAA; 32]); // valid pk
+        ms.push(0x02);
+        ms.extend([0xAA; 32]); // valid pk
         ms.push(0x21);
-        ms.push(0x04); ms.extend([0xBB; 32]); // fake pk (0x04 prefix)
+        ms.push(0x04);
+        ms.extend([0xBB; 32]); // fake pk (0x04 prefix)
         ms.extend([0x52, 0xae]); // OP_2 OP_CHECKMULTISIG
         let mut w4 = Witness::new();
         w4.push([0x30; 72]);
         w4.push([0x02; 33]);
         let tx4 = Transaction {
-            version: Version::TWO, lock_time: LockTime::ZERO,
-            input: vec![TxIn { previous_output: make_outpoint(4), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w4 }],
-            output: vec![TxOut { value: Amount::from_sat(30_000), script_pubkey: ScriptBuf::from(ms) }],
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: make_outpoint(4),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: w4,
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(30_000),
+                script_pubkey: ScriptBuf::from(ms),
+            }],
         };
 
         // 5. Annex present
@@ -4203,8 +4266,14 @@ mod tests {
         annex.extend([0xFF; 50]);
         w5.push(&annex);
         let tx5 = Transaction {
-            version: Version::TWO, lock_time: LockTime::ZERO,
-            input: vec![TxIn { previous_output: make_outpoint(5), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w5 }],
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: make_outpoint(5),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: w5,
+            }],
             output: vec![p2wpkh_out()],
         };
 
@@ -4215,9 +4284,21 @@ mod tests {
         w6.push([0x30; 72]);
         w6.push([0x02; 33]);
         let tx6 = Transaction {
-            version: Version::TWO, lock_time: LockTime::ZERO,
-            input: vec![TxIn { previous_output: make_outpoint(6), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w6 }],
-            output: vec![p2wpkh_out(), TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::from(opret) }],
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: make_outpoint(6),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: w6,
+            }],
+            output: vec![
+                p2wpkh_out(),
+                TxOut {
+                    value: Amount::ZERO,
+                    script_pubkey: ScriptBuf::from(opret),
+                },
+            ],
         };
 
         // 7. Clean transaction (should survive)
@@ -4225,14 +4306,24 @@ mod tests {
         w7.push([0x30; 72]);
         w7.push([0x02; 33]);
         let tx7 = Transaction {
-            version: Version::TWO, lock_time: LockTime::ZERO,
-            input: vec![TxIn { previous_output: make_outpoint(7), script_sig: ScriptBuf::new(), sequence: Sequence::MAX, witness: w7 }],
+            version: Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: make_outpoint(7),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::MAX,
+                witness: w7,
+            }],
             output: vec![p2wpkh_out()],
         };
 
         let txs = vec![
-            make_tt(&tx1, 5000), make_tt(&tx2, 4000), make_tt(&tx3, 3500),
-            make_tt(&tx4, 3000), make_tt(&tx5, 4000), make_tt(&tx6, 2000),
+            make_tt(&tx1, 5000),
+            make_tt(&tx2, 4000),
+            make_tt(&tx3, 3500),
+            make_tt(&tx4, 3000),
+            make_tt(&tx5, 4000),
+            make_tt(&tx6, 2000),
             make_tt(&tx7, 3000),
         ];
 
@@ -4248,6 +4339,10 @@ mod tests {
         assert_eq!(stats.original, 7, "started with 7 txs");
         assert_eq!(stats.reaped, 6, "6 attack vector txs should be reaped");
         assert_eq!(kept.len(), 1, "only clean tx should survive");
-        assert_eq!(kept[0].txid, tx7.compute_txid().to_string(), "clean tx survives");
+        assert_eq!(
+            kept[0].txid,
+            tx7.compute_txid().to_string(),
+            "clean tx survives"
+        );
     }
 }

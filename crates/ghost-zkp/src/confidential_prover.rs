@@ -85,10 +85,7 @@ impl ConfidentialProver {
     }
 
     /// Create a prover with MPC-generated parameters
-    pub fn new_with_params(
-        params: Arc<Parameters<Bls12>>,
-        tree_depth: usize,
-    ) -> Self {
+    pub fn new_with_params(params: Arc<Parameters<Bls12>>, tree_depth: usize) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"ghost-zkp-confidential-prover-v1");
         hasher.update(tree_depth.to_le_bytes());
@@ -273,30 +270,28 @@ impl ConfidentialProver {
         let recipient_new_value = Fr::from(witness.recipient_old_value + witness.amount);
 
         let sender_commit = pedersen_commit_native(sender_value, sender_blinding);
-        let sender_new_commit =
-            pedersen_commit_native(sender_new_value, sender_new_blinding);
-        let _recipient_old_commit =
-            pedersen_commit_native(Fr::from(witness.recipient_old_value), recipient_old_blinding);
+        let sender_new_commit = pedersen_commit_native(sender_new_value, sender_new_blinding);
+        let _recipient_old_commit = pedersen_commit_native(
+            Fr::from(witness.recipient_old_value),
+            recipient_old_blinding,
+        );
         let recipient_new_commit =
             pedersen_commit_native(recipient_new_value, recipient_new_blinding);
 
         // Compute roots
-        let sender_sibs: Vec<Fr> = sender_siblings.iter().map(|s| s.unwrap_or(Fr::ZERO)).collect();
+        let sender_sibs: Vec<Fr> = sender_siblings
+            .iter()
+            .map(|s| s.unwrap_or(Fr::ZERO))
+            .collect();
         let recipient_sibs: Vec<Fr> = recipient_siblings
             .iter()
             .map(|s| s.unwrap_or(Fr::ZERO))
             .collect();
 
-        let old_root = compute_commitment_root_native(
-            sender_commit,
-            witness.sender_index,
-            &sender_sibs,
-        );
-        let intermediate_root = compute_commitment_root_native(
-            sender_new_commit,
-            witness.sender_index,
-            &sender_sibs,
-        );
+        let old_root =
+            compute_commitment_root_native(sender_commit, witness.sender_index, &sender_sibs);
+        let intermediate_root =
+            compute_commitment_root_native(sender_new_commit, witness.sender_index, &sender_sibs);
         let _ = intermediate_root; // used implicitly in tree update verification
         let new_root = compute_commitment_root_native(
             recipient_new_commit,
@@ -346,8 +341,7 @@ impl ConfidentialProver {
         let recipient_new_value = Fr::from(witness.recipient_old_value + witness.amount);
 
         let sender_commit = pedersen_commit_native(sender_value, sender_blinding);
-        let sender_new_commit =
-            pedersen_commit_native(sender_new_value, sender_new_blinding);
+        let sender_new_commit = pedersen_commit_native(sender_new_value, sender_new_blinding);
         let recipient_new_commit =
             pedersen_commit_native(recipient_new_value, recipient_new_blinding);
 
@@ -364,11 +358,8 @@ impl ConfidentialProver {
             .map(|s| bytes_to_field(s).unwrap_or(Fr::ZERO))
             .collect();
 
-        let old_root = compute_commitment_root_native(
-            sender_commit,
-            witness.sender_index,
-            &sender_sibs,
-        );
+        let old_root =
+            compute_commitment_root_native(sender_commit, witness.sender_index, &sender_sibs);
         let new_root = compute_commitment_root_native(
             recipient_new_commit,
             witness.recipient_index,
@@ -430,10 +421,8 @@ mod tests {
         let recipient_old_value = 500u64;
 
         // Compute commitments for building sibling structure
-        let sender_new_commit = pedersen_commit_native(
-            Fr::from(sender_value - amount),
-            sender_new_blinding,
-        );
+        let sender_new_commit =
+            pedersen_commit_native(Fr::from(sender_value - amount), sender_new_blinding);
         let recipient_old_commit =
             pedersen_commit_native(Fr::from(recipient_old_value), recipient_old_blinding);
 

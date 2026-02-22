@@ -680,7 +680,10 @@ mod tests {
     #[test]
     fn test_nullifier_merkle_root_empty() {
         let root = compute_nullifier_merkle_root(&[]);
-        assert_eq!(root, [0u8; 32], "Empty nullifier set should return all zeros");
+        assert_eq!(
+            root, [0u8; 32],
+            "Empty nullifier set should return all zeros"
+        );
     }
 
     #[test]
@@ -691,7 +694,10 @@ mod tests {
         // Should produce the same result as compute_merkle_root with one leaf
         let expected = compute_merkle_root(&[nullifier]);
         assert_eq!(root, expected);
-        assert_ne!(root, [0u8; 32], "Single nullifier should not produce zero root");
+        assert_ne!(
+            root, [0u8; 32],
+            "Single nullifier should not produce zero root"
+        );
     }
 
     #[test]
@@ -716,6 +722,9 @@ mod tests {
         let root_a = compute_nullifier_merkle_root(&set_a);
         let root_b = compute_nullifier_merkle_root(&set_b);
 
-        assert_ne!(root_a, root_b, "Different nullifier sets must produce different roots");
+        assert_ne!(
+            root_a, root_b,
+            "Different nullifier sets must produce different roots"
+        );
     }
 }

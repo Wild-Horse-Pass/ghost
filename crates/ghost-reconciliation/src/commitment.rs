@@ -500,14 +500,26 @@ mod tests {
         commitment.nullifier_merkle_root = Some([0xCCu8; 32]);
 
         let serializable = L1CommitmentSerializable::from(&commitment);
-        assert_eq!(serializable.commitment_tree_root, Some(hex::encode([0xBBu8; 32])));
+        assert_eq!(
+            serializable.commitment_tree_root,
+            Some(hex::encode([0xBBu8; 32]))
+        );
         assert_eq!(serializable.nullifier_count, Some(7));
-        assert_eq!(serializable.nullifier_merkle_root, Some(hex::encode([0xCCu8; 32])));
+        assert_eq!(
+            serializable.nullifier_merkle_root,
+            Some(hex::encode([0xCCu8; 32]))
+        );
 
         let restored = L1Commitment::from(&serializable);
-        assert_eq!(restored.commitment_tree_root, commitment.commitment_tree_root);
+        assert_eq!(
+            restored.commitment_tree_root,
+            commitment.commitment_tree_root
+        );
         assert_eq!(restored.nullifier_count, commitment.nullifier_count);
-        assert_eq!(restored.nullifier_merkle_root, commitment.nullifier_merkle_root);
+        assert_eq!(
+            restored.nullifier_merkle_root,
+            commitment.nullifier_merkle_root
+        );
     }
 
     #[test]

@@ -727,9 +727,7 @@ async fn handle_message(
                 .await
         }
 
-        ClientMessage::GetCommitmentTreeState => {
-            handle_get_commitment_tree_state(state).await
-        }
+        ClientMessage::GetCommitmentTreeState => handle_get_commitment_tree_state(state).await,
 
         ClientMessage::GetConfidentialNotes { owner_pubkey } => {
             handle_get_confidential_notes(state, &owner_pubkey).await
@@ -2316,8 +2314,14 @@ async fn handle_submit_confidential_transfer(
 
     match state.pay_node.submit_confidential_transfer(&body).await {
         Ok(result) => {
-            let transfer_id = result.get("transfer_id").and_then(|v| v.as_str()).map(String::from);
-            let new_root = result.get("new_commitment_root").and_then(|v| v.as_str()).map(String::from);
+            let transfer_id = result
+                .get("transfer_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let new_root = result
+                .get("new_commitment_root")
+                .and_then(|v| v.as_str())
+                .map(String::from);
 
             Ok(Some(ServerMessage::ConfidentialTransferResult {
                 success: true,
@@ -2352,8 +2356,14 @@ async fn handle_shield_balance(
     match state.pay_node.shield_balance(&body).await {
         Ok(result) => {
             let note_index = result.get("note_index").and_then(|v| v.as_u64());
-            let commitment = result.get("commitment").and_then(|v| v.as_str()).map(String::from);
-            let new_root = result.get("new_root").and_then(|v| v.as_str()).map(String::from);
+            let commitment = result
+                .get("commitment")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let new_root = result
+                .get("new_root")
+                .and_then(|v| v.as_str())
+                .map(String::from);
 
             Ok(Some(ServerMessage::ShieldResult {
                 success: true,
@@ -2380,11 +2390,27 @@ async fn handle_get_commitment_tree_state(
     let result = state.pay_node.get_commitment_tree_state().await?;
 
     Ok(Some(ServerMessage::CommitmentTreeState {
-        root: result.get("root").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        note_count: result.get("note_count").and_then(|v| v.as_u64()).unwrap_or(0),
-        next_index: result.get("next_index").and_then(|v| v.as_u64()).unwrap_or(0),
-        tree_depth: result.get("tree_depth").and_then(|v| v.as_u64()).unwrap_or(20) as usize,
-        nullifier_count: result.get("nullifier_count").and_then(|v| v.as_u64()).unwrap_or(0),
+        root: result
+            .get("root")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        note_count: result
+            .get("note_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        next_index: result
+            .get("next_index")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        tree_depth: result
+            .get("tree_depth")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(20) as usize,
+        nullifier_count: result
+            .get("nullifier_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
     }))
 }
 

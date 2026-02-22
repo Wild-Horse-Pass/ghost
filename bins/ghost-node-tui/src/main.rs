@@ -395,161 +395,155 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
                 _ => return false,
             }
         }
-        InputMode::ConfirmAction => {
-            match code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    execute_action(app).await;
-                    app.input_mode = InputMode::Normal;
-                    return false;
-                }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    app.pending_action = None;
-                    app.input_mode = InputMode::Normal;
-                    app.status_message.clear();
-                    return false;
-                }
-                _ => return false,
+        InputMode::ConfirmAction => match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                execute_action(app).await;
+                app.input_mode = InputMode::Normal;
+                return false;
             }
-        }
-        InputMode::InputNickname => {
-            match code {
-                KeyCode::Esc => {
-                    app.input_mode = InputMode::Normal;
-                    app.input_buffer.clear();
-                    app.status_message.clear();
-                    return false;
-                }
-                KeyCode::Enter => {
-                    if !app.input_buffer.is_empty() {
-                        let nickname = app.input_buffer.clone();
-                        if let Some(client) = &app.api_client {
-                            match client.set_nickname(&nickname).await {
-                                Ok(_) => {
-                                    app.status_message = format!("Nickname set: {}", nickname);
-                                }
-                                Err(e) => {
-                                    app.status_message = format!("Failed: {}", e);
-                                }
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                app.pending_action = None;
+                app.input_mode = InputMode::Normal;
+                app.status_message.clear();
+                return false;
+            }
+            _ => return false,
+        },
+        InputMode::InputNickname => match code {
+            KeyCode::Esc => {
+                app.input_mode = InputMode::Normal;
+                app.input_buffer.clear();
+                app.status_message.clear();
+                return false;
+            }
+            KeyCode::Enter => {
+                if !app.input_buffer.is_empty() {
+                    let nickname = app.input_buffer.clone();
+                    if let Some(client) = &app.api_client {
+                        match client.set_nickname(&nickname).await {
+                            Ok(_) => {
+                                app.status_message = format!("Nickname set: {}", nickname);
+                            }
+                            Err(e) => {
+                                app.status_message = format!("Failed: {}", e);
                             }
                         }
                     }
-                    app.input_mode = InputMode::Normal;
-                    app.input_buffer.clear();
-                    return false;
                 }
-                KeyCode::Char(c) => {
-                    app.input_buffer.push(c);
-                    return false;
-                }
-                KeyCode::Backspace => {
-                    app.input_buffer.pop();
-                    return false;
-                }
-                _ => return false,
+                app.input_mode = InputMode::Normal;
+                app.input_buffer.clear();
+                return false;
             }
-        }
-        InputMode::InputPayoutAddress => {
-            match code {
-                KeyCode::Esc => {
-                    app.input_mode = InputMode::Normal;
-                    app.input_buffer.clear();
-                    app.status_message.clear();
-                    return false;
-                }
-                KeyCode::Enter => {
-                    if !app.input_buffer.is_empty() {
-                        let addr = app.input_buffer.clone();
-                        if let Some(client) = &app.api_client {
-                            match client.set_payout_address(&addr).await {
-                                Ok(_) => {
-                                    app.status_message =
-                                        format!("Payout address set: {}...", &addr[..addr.len().min(16)]);
-                                }
-                                Err(e) => {
-                                    app.status_message = format!("Failed: {}", e);
-                                }
+            KeyCode::Char(c) => {
+                app.input_buffer.push(c);
+                return false;
+            }
+            KeyCode::Backspace => {
+                app.input_buffer.pop();
+                return false;
+            }
+            _ => return false,
+        },
+        InputMode::InputPayoutAddress => match code {
+            KeyCode::Esc => {
+                app.input_mode = InputMode::Normal;
+                app.input_buffer.clear();
+                app.status_message.clear();
+                return false;
+            }
+            KeyCode::Enter => {
+                if !app.input_buffer.is_empty() {
+                    let addr = app.input_buffer.clone();
+                    if let Some(client) = &app.api_client {
+                        match client.set_payout_address(&addr).await {
+                            Ok(_) => {
+                                app.status_message = format!(
+                                    "Payout address set: {}...",
+                                    &addr[..addr.len().min(16)]
+                                );
+                            }
+                            Err(e) => {
+                                app.status_message = format!("Failed: {}", e);
                             }
                         }
                     }
-                    app.input_mode = InputMode::Normal;
-                    app.input_buffer.clear();
-                    return false;
                 }
-                KeyCode::Char(c) => {
-                    app.input_buffer.push(c);
-                    return false;
-                }
-                KeyCode::Backspace => {
-                    app.input_buffer.pop();
-                    return false;
-                }
-                _ => return false,
+                app.input_mode = InputMode::Normal;
+                app.input_buffer.clear();
+                return false;
             }
-        }
-        InputMode::WizardPicker => {
-            match code {
-                KeyCode::Esc => {
-                    app.input_mode = InputMode::Normal;
-                    app.status_message.clear();
-                    return false;
-                }
-                KeyCode::Char('1') => {
-                    app.active_wizard = Some(wizard::initial_setup::create());
-                    app.input_mode = InputMode::Normal;
-                    app.status_message.clear();
-                    return false;
-                }
-                KeyCode::Char('2') => {
-                    app.active_wizard = Some(wizard::change_setup::create());
-                    app.input_mode = InputMode::Normal;
-                    app.status_message.clear();
-                    return false;
-                }
-                KeyCode::Char('3') => {
-                    app.active_wizard = Some(wizard::ghost_mode::create());
-                    app.input_mode = InputMode::Normal;
-                    app.status_message.clear();
-                    return false;
-                }
-                KeyCode::Char('4') => {
-                    app.active_wizard = Some(wizard::reaper::create());
-                    app.input_mode = InputMode::Normal;
-                    app.status_message.clear();
-                    return false;
-                }
-                KeyCode::Char('5') => {
-                    app.active_wizard = Some(wizard::pool_setup::create());
-                    app.input_mode = InputMode::Normal;
-                    app.status_message.clear();
-                    return false;
-                }
-                KeyCode::Char('6') => {
-                    app.active_wizard = Some(wizard::haze::create());
-                    app.input_mode = InputMode::Normal;
-                    app.status_message.clear();
-                    return false;
-                }
-                KeyCode::Char('7') => {
-                    app.active_wizard = Some(wizard::shroud::create());
-                    app.input_mode = InputMode::Normal;
-                    app.status_message.clear();
-                    return false;
-                }
-                KeyCode::Char('8') => {
-                    app.active_wizard = Some(wizard::mempool_policy::create());
-                    app.input_mode = InputMode::Normal;
-                    app.status_message.clear();
-                    return false;
-                }
-                KeyCode::Char('9') => {
-                    app.active_wizard = Some(wizard::build_run::create());
-                    app.input_mode = InputMode::Normal;
-                    app.status_message.clear();
-                    return false;
-                }
-                _ => return false,
+            KeyCode::Char(c) => {
+                app.input_buffer.push(c);
+                return false;
             }
-        }
+            KeyCode::Backspace => {
+                app.input_buffer.pop();
+                return false;
+            }
+            _ => return false,
+        },
+        InputMode::WizardPicker => match code {
+            KeyCode::Esc => {
+                app.input_mode = InputMode::Normal;
+                app.status_message.clear();
+                return false;
+            }
+            KeyCode::Char('1') => {
+                app.active_wizard = Some(wizard::initial_setup::create());
+                app.input_mode = InputMode::Normal;
+                app.status_message.clear();
+                return false;
+            }
+            KeyCode::Char('2') => {
+                app.active_wizard = Some(wizard::change_setup::create());
+                app.input_mode = InputMode::Normal;
+                app.status_message.clear();
+                return false;
+            }
+            KeyCode::Char('3') => {
+                app.active_wizard = Some(wizard::ghost_mode::create());
+                app.input_mode = InputMode::Normal;
+                app.status_message.clear();
+                return false;
+            }
+            KeyCode::Char('4') => {
+                app.active_wizard = Some(wizard::reaper::create());
+                app.input_mode = InputMode::Normal;
+                app.status_message.clear();
+                return false;
+            }
+            KeyCode::Char('5') => {
+                app.active_wizard = Some(wizard::pool_setup::create());
+                app.input_mode = InputMode::Normal;
+                app.status_message.clear();
+                return false;
+            }
+            KeyCode::Char('6') => {
+                app.active_wizard = Some(wizard::haze::create());
+                app.input_mode = InputMode::Normal;
+                app.status_message.clear();
+                return false;
+            }
+            KeyCode::Char('7') => {
+                app.active_wizard = Some(wizard::shroud::create());
+                app.input_mode = InputMode::Normal;
+                app.status_message.clear();
+                return false;
+            }
+            KeyCode::Char('8') => {
+                app.active_wizard = Some(wizard::mempool_policy::create());
+                app.input_mode = InputMode::Normal;
+                app.status_message.clear();
+                return false;
+            }
+            KeyCode::Char('9') => {
+                app.active_wizard = Some(wizard::build_run::create());
+                app.input_mode = InputMode::Normal;
+                app.status_message.clear();
+                return false;
+            }
+            _ => return false,
+        },
     }
 
     // Normal mode key handling
@@ -683,15 +677,51 @@ async fn handle_input(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> 
         }
 
         // Tab navigation (general number keys)
-        KeyCode::Char('1') => { app.current_tab = Tab::Overview; app.scroll_offset = 0; app.selected_row = 0; }
-        KeyCode::Char('2') => { app.current_tab = Tab::Bitcoin; app.scroll_offset = 0; app.selected_row = 0; }
-        KeyCode::Char('3') => { app.current_tab = Tab::L2Service; app.scroll_offset = 0; app.selected_row = 0; }
-        KeyCode::Char('4') => { app.current_tab = Tab::Mining; app.scroll_offset = 0; app.selected_row = 0; }
-        KeyCode::Char('5') => { app.current_tab = Tab::Swarm; app.scroll_offset = 0; app.selected_row = 0; }
-        KeyCode::Char('6') => { app.current_tab = Tab::Logs; app.scroll_offset = 0; app.selected_row = 0; }
-        KeyCode::Char('7') => { app.current_tab = Tab::Watchdog; app.scroll_offset = 0; app.selected_row = 0; }
-        KeyCode::Char('8') => { app.current_tab = Tab::Backup; app.scroll_offset = 0; app.selected_row = 0; }
-        KeyCode::Char('9') => { app.current_tab = Tab::Settings; app.scroll_offset = 0; app.selected_row = 0; }
+        KeyCode::Char('1') => {
+            app.current_tab = Tab::Overview;
+            app.scroll_offset = 0;
+            app.selected_row = 0;
+        }
+        KeyCode::Char('2') => {
+            app.current_tab = Tab::Bitcoin;
+            app.scroll_offset = 0;
+            app.selected_row = 0;
+        }
+        KeyCode::Char('3') => {
+            app.current_tab = Tab::L2Service;
+            app.scroll_offset = 0;
+            app.selected_row = 0;
+        }
+        KeyCode::Char('4') => {
+            app.current_tab = Tab::Mining;
+            app.scroll_offset = 0;
+            app.selected_row = 0;
+        }
+        KeyCode::Char('5') => {
+            app.current_tab = Tab::Swarm;
+            app.scroll_offset = 0;
+            app.selected_row = 0;
+        }
+        KeyCode::Char('6') => {
+            app.current_tab = Tab::Logs;
+            app.scroll_offset = 0;
+            app.selected_row = 0;
+        }
+        KeyCode::Char('7') => {
+            app.current_tab = Tab::Watchdog;
+            app.scroll_offset = 0;
+            app.selected_row = 0;
+        }
+        KeyCode::Char('8') => {
+            app.current_tab = Tab::Backup;
+            app.scroll_offset = 0;
+            app.selected_row = 0;
+        }
+        KeyCode::Char('9') => {
+            app.current_tab = Tab::Settings;
+            app.scroll_offset = 0;
+            app.selected_row = 0;
+        }
 
         KeyCode::Tab => {
             app.current_tab = app.current_tab.next();
@@ -958,7 +988,12 @@ fn render_wizard_picker(f: &mut Frame, area: Rect) {
     let popup_height = 15u16;
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
-    let popup_area = Rect::new(x, y, popup_width.min(area.width), popup_height.min(area.height));
+    let popup_area = Rect::new(
+        x,
+        y,
+        popup_width.min(area.width),
+        popup_height.min(area.height),
+    );
 
     f.render_widget(Clear, popup_area);
 

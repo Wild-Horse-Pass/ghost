@@ -750,13 +750,12 @@ impl ConfidentialTransferWitness {
                 amount: self.amount,
             });
         }
-        let recipient_new = self
-            .recipient_old_value
-            .checked_add(self.amount)
-            .ok_or(WitnessValidationError::BalanceOverflow {
+        let recipient_new = self.recipient_old_value.checked_add(self.amount).ok_or(
+            WitnessValidationError::BalanceOverflow {
                 balance: self.recipient_old_value,
                 amount: self.amount,
-            })?;
+            },
+        )?;
         // Ensure result fits in 64 bits (always true for u64, but check overflow above)
         let _ = recipient_new;
         Ok(())

@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! End-to-End Stratum → Payout → Consensus Integration Tests
 //!
 //! Tests the complete flow from miner share submission through payout proposal
@@ -503,8 +481,8 @@ fn test_complete_share_to_consensus_flow() {
     .unwrap();
 
     // 5 out of 7 voters approve (71% > 67%)
-    for i in 0..5 {
-        let vote = create_signed_vote_for_round(&voters[i], round_id, &proposal_hash, true);
+    for (i, voter) in voters.iter().enumerate().take(5) {
+        let vote = create_signed_vote_for_round(voter, round_id, &proposal_hash, true);
         let result = session.add_vote(vote);
 
         if i == 4 {
@@ -546,8 +524,8 @@ fn test_consensus_with_minimum_voters() {
 
     // With 7 voters, 67% = 5 votes needed (ceiling of 4.69)
     // Votes 1-4: pending
-    for i in 0..4 {
-        let vote = create_signed_vote_for_round(&voters[i], round_id, &proposal_hash, true);
+    for voter in voters.iter().take(4) {
+        let vote = create_signed_vote_for_round(voter, round_id, &proposal_hash, true);
         let result = session.add_vote(vote);
         assert!(matches!(result, VoteResult::ApprovalRecorded));
     }
@@ -580,14 +558,14 @@ fn test_consensus_with_split_votes() {
     .unwrap();
 
     // 2 yes votes
-    for i in 0..2 {
-        let vote = create_signed_vote_for_round(&voters[i], round_id, &proposal_hash, true);
+    for voter in voters.iter().take(2) {
+        let vote = create_signed_vote_for_round(voter, round_id, &proposal_hash, true);
         session.add_vote(vote);
     }
 
     // 5 no votes
-    for i in 2..7 {
-        let vote = create_signed_vote_for_round(&voters[i], round_id, &proposal_hash, false);
+    for voter in voters.iter().skip(2).take(5) {
+        let vote = create_signed_vote_for_round(voter, round_id, &proposal_hash, false);
         session.add_vote(vote);
     }
 
@@ -642,8 +620,8 @@ fn test_large_voter_set() {
 
     // 67% of 21 = 14.07, ceil = 15 votes needed
     // Cast 15 yes votes
-    for i in 0..15 {
-        let vote = create_signed_vote_for_round(&voters[i], round_id, &proposal_hash, true);
+    for (i, voter) in voters.iter().enumerate().take(15) {
+        let vote = create_signed_vote_for_round(voter, round_id, &proposal_hash, true);
         let result = session.add_vote(vote);
 
         if i == 14 {

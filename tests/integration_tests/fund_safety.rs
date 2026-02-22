@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Fund Safety Tests - The Ten Most Likely Ways This System Loses User Funds
 //!
 //! These tests verify the system doesn't lose user funds through:
@@ -174,7 +152,7 @@ fn test_004_dust_threshold_doesnt_silently_lose_funds() {
     let harmonic_sum: f64 = (1..=num_miners).map(|i| 1.0 / i as f64).sum();
 
     let mut total_distributed: u64 = 0;
-    let mut total_dust_filtered: u64 = 0;
+    let _total_dust_filtered: u64 = 0;
     let mut dust_ledger_credit: u64 = 0; // Alternative: track for L2 credit
     let mut miners_paid = 0;
     let mut miners_filtered = 0;
@@ -260,6 +238,7 @@ fn test_005_ledger_credit_alternative_for_dust() {
             }
         }
 
+        #[allow(dead_code)]
         fn total_credits(&self) -> u64 {
             self.credits.values().sum()
         }
@@ -296,7 +275,7 @@ const BFT_THRESHOLD_PERCENT: u64 = 67;
 
 fn calculate_threshold(total_nodes: u32) -> u32 {
     // Current implementation from ghost-consensus
-    ((total_nodes as u64 * BFT_THRESHOLD_PERCENT + 99) / 100) as u32
+    (total_nodes as u64 * BFT_THRESHOLD_PERCENT).div_ceil(100) as u32
 }
 
 #[test]
@@ -364,6 +343,7 @@ fn test_007_consensus_with_node_dropout() {
             self.votes_for += 1;
         }
 
+        #[allow(dead_code)]
         fn vote_against(&mut self) {
             self.votes_against += 1;
         }
@@ -372,6 +352,7 @@ fn test_007_consensus_with_node_dropout() {
             self.votes_for >= self.threshold()
         }
 
+        #[allow(dead_code)]
         fn is_rejected(&self) -> bool {
             self.votes_against >= self.threshold()
         }
@@ -388,6 +369,7 @@ fn test_007_consensus_with_node_dropout() {
             self.votes_for + self.missing_votes() >= self.threshold()
         }
 
+        #[allow(dead_code)]
         fn can_still_reject(&self) -> bool {
             self.votes_against + self.missing_votes() >= self.threshold()
         }
@@ -438,6 +420,7 @@ fn test_007_consensus_with_node_dropout() {
 enum VotingState {
     InProgress,
     Approved,
+    #[allow(dead_code)]
     Rejected,
     Timeout, // DANGEROUS: What happens to funds?
 }
@@ -467,10 +450,10 @@ fn test_008_timeout_state_has_defined_fund_handling() {
         }
 
         fn check_timeout(&mut self, current_time: u64) {
-            if current_time > self.started_at + self.timeout_secs {
-                if self.state == VotingState::InProgress {
-                    self.state = VotingState::Timeout;
-                }
+            if current_time > self.started_at + self.timeout_secs
+                && self.state == VotingState::InProgress
+            {
+                self.state = VotingState::Timeout;
             }
         }
 
@@ -592,8 +575,8 @@ fn test_010_wraith_split_with_fair_remainder_distribution() {
         let mut outputs = vec![base_amount; SPLIT_RATIO];
 
         // Distribute remainder: first `remainder` outputs get +1 sat
-        for i in 0..remainder {
-            outputs[i] += 1;
+        for output in outputs.iter_mut().take(remainder) {
+            *output += 1;
         }
 
         outputs
@@ -872,6 +855,7 @@ fn test_013_merkle_root_collision_resistance() {
 #[test]
 fn test_014_address_parsing_no_silent_fallback() {
     // Simulate the address parsing logic
+    #[allow(dead_code)]
     enum AddressParseResult {
         ValidBech32(String),
         FallbackToRawBytes(Vec<u8>), // DANGEROUS
@@ -897,10 +881,11 @@ fn test_014_address_parsing_no_silent_fallback() {
 
     fn parse_address_safe(addr_str: &str) -> AddressParseResult {
         // Try to parse as Bitcoin address ONLY
-        if addr_str.starts_with("bc1") || addr_str.starts_with("tb1") {
-            if addr_str.len() >= 42 && addr_str.len() <= 62 {
-                return AddressParseResult::ValidBech32(addr_str.to_string());
-            }
+        if (addr_str.starts_with("bc1") || addr_str.starts_with("tb1"))
+            && addr_str.len() >= 42
+            && addr_str.len() <= 62
+        {
+            return AddressParseResult::ValidBech32(addr_str.to_string());
         }
 
         // NO FALLBACK - reject invalid addresses

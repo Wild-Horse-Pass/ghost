@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 10: Wraith Mixing Protocol Tests (37 tests)
 //!
 //! Tests for two-phase CoinJoin-style mixing:
@@ -37,7 +15,8 @@ use wraith_protocol::{
         RotationReason,
     },
     entry_timing::{EntryConfig, EntryScheduler, EntryTimingError},
-    ParticipantTier, Phase, SessionState, TimeoutAction, WraithDenomination, WraithSession,
+    ParticipantTier, Phase, SessionConfig, SessionState, TimeoutAction, WraithDenomination,
+    WraithMode, WraithSession,
 };
 
 // =============================================================================
@@ -94,9 +73,10 @@ fn test_433_add_participant_to_session() {
 
 #[test]
 fn test_434_session_can_start_when_min_reached() {
-    let mut session = WraithSession::new(
-        ParticipantTier::Whale, // 160 minimum (smallest tier)
+    let mut session = WraithSession::with_config(
+        ParticipantTier::Whale, // 160 minimum in Mature mode
         WraithDenomination::Small,
+        SessionConfig::with_mode(WraithMode::Mature),
     );
 
     // Not enough participants
@@ -112,7 +92,11 @@ fn test_434_session_can_start_when_min_reached() {
 
 #[test]
 fn test_435_session_start_transitions_state() {
-    let mut session = WraithSession::new(ParticipantTier::Whale, WraithDenomination::Small);
+    let mut session = WraithSession::with_config(
+        ParticipantTier::Whale,
+        WraithDenomination::Small,
+        SessionConfig::with_mode(WraithMode::Mature),
+    );
 
     for _ in 0..160 {
         session.add_participant();
@@ -133,7 +117,11 @@ fn test_436_session_start_fails_without_minimum() {
 
 #[test]
 fn test_437_phase_progression() {
-    let mut session = WraithSession::new(ParticipantTier::Whale, WraithDenomination::Small);
+    let mut session = WraithSession::with_config(
+        ParticipantTier::Whale,
+        WraithDenomination::Small,
+        SessionConfig::with_mode(WraithMode::Mature),
+    );
 
     // Fill session with minimum participants
     for _ in 0..160 {

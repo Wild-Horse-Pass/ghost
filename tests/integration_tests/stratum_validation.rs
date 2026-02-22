@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 4: Stratum Protocol Tests (75 tests)
 //!
 //! Comprehensive tests for Stratum protocol validation including:
@@ -37,9 +15,11 @@ const MAX_WORKER_NAME_LEN: usize = 64;
 const MAX_USER_AGENT_LEN: usize = 256;
 const MAX_JOB_ID_LEN: usize = 64;
 const MAX_EXTRANONCE2_LEN: usize = 16;
+#[allow(dead_code)]
 const MAX_NTIME_ADJUSTMENT: u32 = 7200; // 2 hours
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum ValidationError {
     Empty(String),
     TooLong(usize, usize),
@@ -141,6 +121,7 @@ fn validate_job_id(job_id: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn validate_extranonce2(extranonce2: &str, expected_len: usize) -> Result<(), ValidationError> {
     if extranonce2.is_empty() {
         return Err(ValidationError::Empty("extranonce2".into()));
@@ -223,6 +204,7 @@ fn validate_share_params(
     })
 }
 
+#[allow(dead_code)]
 fn validate_ntime_adjustment(share_ntime: u32, job_ntime: u32) -> Result<(), ValidationError> {
     let diff = share_ntime.abs_diff(job_ntime);
 
@@ -235,6 +217,7 @@ fn validate_ntime_adjustment(share_ntime: u32, job_ntime: u32) -> Result<(), Val
     Ok(())
 }
 
+#[allow(dead_code)]
 fn validate_difficulty(difficulty: f64) -> Result<(), ValidationError> {
     if difficulty <= 0.0 || difficulty.is_nan() || difficulty.is_infinite() {
         return Err(ValidationError::InvalidFormat("invalid difficulty".into()));

@@ -34,9 +34,7 @@ pub fn render_wizard(f: &mut Frame, area: Rect, wizard: &WizardState) {
     let outer_block = Block::default()
         .title(Span::styled(
             title_text,
-            Style::default()
-                .fg(ORANGE)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
         ))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(GRAY_800));
@@ -54,7 +52,7 @@ pub fn render_wizard(f: &mut Frame, area: Rect, wizard: &WizardState) {
         .constraints([
             Constraint::Length(3), // Step indicator dots
             Constraint::Length(3), // Step title + description
-            Constraint::Min(4),   // Fields area
+            Constraint::Min(4),    // Fields area
             Constraint::Length(2), // Footer keybindings
         ])
         .split(inner_area);
@@ -74,7 +72,7 @@ pub fn render_wizard(f: &mut Frame, area: Rect, wizard: &WizardState) {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(2), // Error message
-                Constraint::Min(2),   // Fields
+                Constraint::Min(2),    // Fields
             ])
             .split(sections[2]);
         render_error(f, error_split[0], wizard);
@@ -94,10 +92,7 @@ fn render_step_indicator(f: &mut Frame, area: Rect, wizard: &WizardState) {
 
     for (i, step) in wizard.steps.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(
-                " - ",
-                Style::default().fg(GRAY_400),
-            ));
+            spans.push(Span::styled(" - ", Style::default().fg(GRAY_400)));
         }
 
         let dot = if i == wizard.current_step {
@@ -107,9 +102,7 @@ fn render_step_indicator(f: &mut Frame, area: Rect, wizard: &WizardState) {
         };
 
         let style = if i == wizard.current_step {
-            Style::default()
-                .fg(ORANGE)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
         } else if i < wizard.current_step {
             Style::default().fg(Color::Green)
         } else {
@@ -119,8 +112,7 @@ fn render_step_indicator(f: &mut Frame, area: Rect, wizard: &WizardState) {
         spans.push(Span::styled(format!("{} {}", dot, step.title), style));
     }
 
-    let indicator = Paragraph::new(Line::from(spans))
-        .wrap(Wrap { trim: false });
+    let indicator = Paragraph::new(Line::from(spans)).wrap(Wrap { trim: false });
 
     f.render_widget(indicator, area);
 }
@@ -142,8 +134,7 @@ fn render_step_header(f: &mut Frame, area: Rect, wizard: &WizardState) {
         )),
     ];
 
-    let header = Paragraph::new(lines)
-        .wrap(Wrap { trim: false });
+    let header = Paragraph::new(lines).wrap(Wrap { trim: false });
 
     f.render_widget(header, area);
 }
@@ -153,9 +144,7 @@ fn render_error(f: &mut Frame, area: Rect, wizard: &WizardState) {
     if let Some(ref err) = wizard.error {
         let error_line = Paragraph::new(Line::from(Span::styled(
             format!("  Error: {}", err),
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )));
         f.render_widget(error_line, area);
     }
@@ -163,10 +152,7 @@ fn render_error(f: &mut Frame, area: Rect, wizard: &WizardState) {
 
 /// Render the completion/result message in green
 fn render_completion(f: &mut Frame, area: Rect, wizard: &WizardState) {
-    let msg = wizard
-        .result_message
-        .as_deref()
-        .unwrap_or("Complete!");
+    let msg = wizard.result_message.as_deref().unwrap_or("Complete!");
 
     let lines = vec![
         Line::from(""),
@@ -183,8 +169,7 @@ fn render_completion(f: &mut Frame, area: Rect, wizard: &WizardState) {
         )),
     ];
 
-    let paragraph = Paragraph::new(lines)
-        .wrap(Wrap { trim: false });
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     f.render_widget(paragraph, area);
 }
 
@@ -259,15 +244,10 @@ fn render_fields(f: &mut Frame, area: Rect, wizard: &WizardState) {
 /// Render an informational (read-only) field
 fn render_info_field(f: &mut Frame, area: Rect, label: &str, text: &str) {
     let line = Line::from(vec![
-        Span::styled(
-            format!("  {}: ", label),
-            Style::default().fg(GRAY_400),
-        ),
+        Span::styled(format!("  {}: ", label), Style::default().fg(GRAY_400)),
         Span::styled(
             text.to_string(),
-            Style::default()
-                .fg(GRAY_400)
-                .add_modifier(Modifier::DIM),
+            Style::default().fg(GRAY_400).add_modifier(Modifier::DIM),
         ),
     ]);
 
@@ -278,9 +258,7 @@ fn render_info_field(f: &mut Frame, area: Rect, label: &str, text: &str) {
 /// Render a text input field with cursor indicator when active
 fn render_text_field(f: &mut Frame, area: Rect, label: &str, value: &str, is_active: bool) {
     let label_style = if is_active {
-        Style::default()
-            .fg(ORANGE)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(GRAY_400)
     };
@@ -305,9 +283,7 @@ fn render_text_field(f: &mut Frame, area: Rect, label: &str, value: &str, is_act
 /// Render a boolean toggle field
 fn render_toggle_field(f: &mut Frame, area: Rect, label: &str, value: bool, is_active: bool) {
     let label_style = if is_active {
-        Style::default()
-            .fg(ORANGE)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(GRAY_400)
     };
@@ -321,10 +297,7 @@ fn render_toggle_field(f: &mut Frame, area: Rect, label: &str, value: bool, is_a
     let line = Line::from(vec![
         Span::styled(format!("  {}: ", label), label_style),
         Span::styled("[", Style::default().fg(GRAY_400)),
-        Span::styled(
-            indicator.to_string(),
-            Style::default().fg(indicator_color),
-        ),
+        Span::styled(indicator.to_string(), Style::default().fg(indicator_color)),
         Span::styled("]", Style::default().fg(GRAY_400)),
     ]);
 
@@ -342,9 +315,7 @@ fn render_select_field(
     is_active: bool,
 ) {
     let label_style = if is_active {
-        Style::default()
-            .fg(ORANGE)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(GRAY_400)
     };
@@ -363,9 +334,7 @@ fn render_select_field(
         let prefix = if is_selected { ">" } else { " " };
 
         let option_style = if is_selected && is_active {
-            Style::default()
-                .fg(ORANGE)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
         } else if is_selected {
             Style::default()
                 .fg(Color::White)

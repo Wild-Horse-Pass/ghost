@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 6: Transaction Classification (BUDS) Tests (27 tests)
 //!
 //! Tests for the REAL ghost-buds BUDS transaction classification:
@@ -32,9 +10,7 @@ use bitcoin::{
     absolute::LockTime, blockdata::script::Builder, hashes::Hash, transaction::Version, Amount,
     ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
 };
-use ghost_buds::{
-    BudsClassifier, BudsTier, ClassificationReason, DetectedFeature, FilteredCount, PolicyPreset,
-};
+use ghost_buds::{BudsClassifier, BudsTier, ClassificationReason, PolicyPreset};
 
 // =============================================================================
 // Helper functions for creating test transactions
@@ -65,6 +41,7 @@ fn create_p2tr_script() -> ScriptBuf {
 }
 
 /// Create a P2SH script (OP_HASH160 <20-byte-hash> OP_EQUAL)
+#[allow(dead_code)]
 fn create_p2sh_script() -> ScriptBuf {
     let bytes = vec![
         0xa9, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -79,13 +56,13 @@ fn create_op_return_script(data_size: usize) -> ScriptBuf {
 
     if data_size <= 75 {
         bytes.push(data_size as u8);
-        bytes.extend(std::iter::repeat(0u8).take(data_size));
+        bytes.extend(std::iter::repeat_n(0u8, data_size));
     } else {
         // For larger sizes, use multiple pushes
         bytes.push(50); // OP_PUSHBYTES_50
-        bytes.extend(std::iter::repeat(0u8).take(50));
+        bytes.extend(std::iter::repeat_n(0u8, 50));
         bytes.push(50); // OP_PUSHBYTES_50
-        bytes.extend(std::iter::repeat(0u8).take(50));
+        bytes.extend(std::iter::repeat_n(0u8, 50));
     }
 
     ScriptBuf::from(bytes)

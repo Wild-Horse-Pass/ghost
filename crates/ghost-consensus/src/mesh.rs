@@ -1059,7 +1059,9 @@ impl MeshNetwork {
                     struct UmaskRestore(libc::mode_t);
                     impl Drop for UmaskRestore {
                         fn drop(&mut self) {
-                            unsafe { libc::umask(self.0); }
+                            unsafe {
+                                libc::umask(self.0);
+                            }
                         }
                     }
                     UmaskRestore(old)

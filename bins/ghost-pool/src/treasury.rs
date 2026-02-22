@@ -214,7 +214,9 @@ impl FeeDistribution {
         // Fund accounting must be exact in all builds
         if treasury_amount + node_reward_pool != pool_fee {
             tracing::error!(
-                treasury_amount, node_reward_pool, pool_fee,
+                treasury_amount,
+                node_reward_pool,
+                pool_fee,
                 "M-01 CRITICAL: Treasury split invariant violated"
             );
             // Return a zero-distribution rather than silently proceeding with wrong values
@@ -232,7 +234,9 @@ impl FeeDistribution {
         }
         if miner_pool + pool_fee != subsidy_sats {
             tracing::error!(
-                miner_pool, pool_fee, subsidy_sats,
+                miner_pool,
+                pool_fee,
+                subsidy_sats,
                 "M-01 CRITICAL: Miner pool + pool fee invariant violated"
             );
             return Self {
@@ -382,7 +386,7 @@ mod tests {
         assert_eq!(DECAY_SCHEDULE_BPS[2], (3000, 7000)); // Year 2: 30/70
         assert_eq!(DECAY_SCHEDULE_BPS[3], (2000, 8000)); // Year 3: 20/80
         assert_eq!(DECAY_SCHEDULE_BPS[4], (1000, 9000)); // Year 4: 10/90
-        assert_eq!(DECAY_SCHEDULE_BPS[5], (0, 10000));    // Year 5+: 0/100
+        assert_eq!(DECAY_SCHEDULE_BPS[5], (0, 10000)); // Year 5+: 0/100
     }
 
     #[test]

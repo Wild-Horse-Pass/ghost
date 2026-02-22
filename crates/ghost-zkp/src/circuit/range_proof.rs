@@ -132,10 +132,8 @@ mod tests {
         // 2^64 - 1 should pass 64-bit range proof (it's u64::MAX)
         let mut cs = TestConstraintSystem::<Fr>::new();
         let max_val = (1u128 << 64) - 1;
-        let value = AllocatedNum::alloc(cs.namespace(|| "value"), || {
-            Ok(Fr::from(max_val as u64))
-        })
-        .unwrap();
+        let value =
+            AllocatedNum::alloc(cs.namespace(|| "value"), || Ok(Fr::from(max_val as u64))).unwrap();
         enforce_range(cs.namespace(|| "range"), &value, 64).unwrap();
         assert!(cs.is_satisfied());
     }
@@ -144,8 +142,7 @@ mod tests {
     fn test_range_proof_exceeds_fails() {
         // A value that requires more than 8 bits should fail an 8-bit range proof
         let mut cs = TestConstraintSystem::<Fr>::new();
-        let value =
-            AllocatedNum::alloc(cs.namespace(|| "value"), || Ok(Fr::from(256u64))).unwrap();
+        let value = AllocatedNum::alloc(cs.namespace(|| "value"), || Ok(Fr::from(256u64))).unwrap();
         enforce_range(cs.namespace(|| "range"), &value, 8).unwrap();
 
         assert!(
@@ -157,8 +154,7 @@ mod tests {
     #[test]
     fn test_range_proof_8bit_max() {
         let mut cs = TestConstraintSystem::<Fr>::new();
-        let value =
-            AllocatedNum::alloc(cs.namespace(|| "value"), || Ok(Fr::from(255u64))).unwrap();
+        let value = AllocatedNum::alloc(cs.namespace(|| "value"), || Ok(Fr::from(255u64))).unwrap();
         enforce_range(cs.namespace(|| "range"), &value, 8).unwrap();
 
         assert!(cs.is_satisfied(), "255 should satisfy 8-bit range proof");
@@ -167,8 +163,7 @@ mod tests {
     #[test]
     fn test_range_proof_constraint_count() {
         let mut cs = TestConstraintSystem::<Fr>::new();
-        let value =
-            AllocatedNum::alloc(cs.namespace(|| "value"), || Ok(Fr::from(42u64))).unwrap();
+        let value = AllocatedNum::alloc(cs.namespace(|| "value"), || Ok(Fr::from(42u64))).unwrap();
         enforce_range(cs.namespace(|| "range"), &value, 64).unwrap();
 
         // 64 boolean constraints (AllocatedBit) + 1 reconstruction = 65

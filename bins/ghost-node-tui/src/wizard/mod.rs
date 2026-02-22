@@ -4,15 +4,15 @@ use std::collections::HashMap;
 
 pub mod render;
 
-pub mod ghost_mode;
-pub mod reaper;
-pub mod pool_setup;
-pub mod haze;
-pub mod shroud;
-pub mod mempool_policy;
 pub mod build_run;
-pub mod initial_setup;
 pub mod change_setup;
+pub mod ghost_mode;
+pub mod haze;
+pub mod initial_setup;
+pub mod mempool_policy;
+pub mod pool_setup;
+pub mod reaper;
+pub mod shroud;
 
 /// Field types for wizard forms
 #[derive(Debug, Clone)]

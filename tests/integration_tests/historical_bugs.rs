@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Historical Bitcoin Bug Regression Tests
 //!
 //! End-to-end tests that would have caught real bugs in Bitcoin's history,
@@ -54,7 +32,7 @@ const COIN: i64 = 100_000_000;
 
 /// Check if value is in valid money range
 fn money_range(value: i64) -> bool {
-    value >= 0 && value <= MAX_MONEY
+    (0..=MAX_MONEY).contains(&value)
 }
 
 // =============================================================================
@@ -71,6 +49,7 @@ struct OutPoint {
 }
 
 /// Transaction input
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct TxIn {
     /// Previous output being spent
@@ -82,6 +61,7 @@ struct TxIn {
 }
 
 /// Transaction output
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct TxOut {
     /// Value in satoshis
@@ -91,6 +71,7 @@ struct TxOut {
 }
 
 /// A Bitcoin transaction
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct Transaction {
     version: i32,
@@ -1346,6 +1327,7 @@ mod ghost_pay_l2 {
     #[test]
     fn test_022_reconciliation_no_duplicate_settlements() {
         // Simulate a reconciliation batch
+        #[allow(dead_code)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         struct Settlement {
             ghost_id: [u8; 32],
@@ -1392,8 +1374,6 @@ mod ghost_pay_l2 {
     /// Test: Ghost Lock output values validated
     #[test]
     fn test_024_ghost_lock_value_validation() {
-        // Ghost Lock minimum is dust threshold
-        const DUST_THRESHOLD: i64 = 546;
         const MIN_GHOST_LOCK: i64 = 10_000; // 0.0001 BTC
 
         let lock_amounts = vec![

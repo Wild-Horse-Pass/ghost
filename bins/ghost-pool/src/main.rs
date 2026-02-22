@@ -119,8 +119,7 @@ impl CachedGspHandler {
 
         // Background task polls GSP info every 30s
         tokio::spawn(async move {
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5));
+            let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(5));
             // C-04: Only accept invalid certs for loopback addresses (self-signed localhost)
             let client = if is_loopback {
                 client.danger_accept_invalid_certs(true)
@@ -129,15 +128,9 @@ impl CachedGspHandler {
             };
             let client = client.build().unwrap_or_default();
             loop {
-                match client
-                    .get(format!("{}/api/v1/info", gsp_url))
-                    .send()
-                    .await
-                {
+                match client.get(format!("{}/api/v1/info", gsp_url)).send().await {
                     Ok(resp) if resp.status().is_success() => {
-                        if let Ok(info) =
-                            resp.json::<serde_json::Value>().await
-                        {
+                        if let Ok(info) = resp.json::<serde_json::Value>().await {
                             let mut state = poll_cache.write();
                             state.enabled = true;
                             state.protocol_version = info
@@ -150,11 +143,10 @@ impl CachedGspHandler {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("unknown")
                                 .to_string();
-                            state.connections = info
-                                .get("connections")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0)
-                                as u32;
+                            state.connections =
+                                info.get("connections")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0) as u32;
                             state.sync_status = info
                                 .get("sync_status")
                                 .and_then(|v| v.as_str())
@@ -746,7 +738,11 @@ async fn main() -> Result<()> {
     };
     info!(
         "Reaper: {} (mode: {})",
-        if reaper_config.enabled { "enabled" } else { "disabled" },
+        if reaper_config.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
         config.reaper.mode
     );
 
@@ -882,8 +878,13 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
     let template_processor = Arc::new(
-        TemplateProcessor::new(template_config, Arc::clone(&rpc), policy.clone(), reaper_config)
-            .with_database(Arc::clone(&db)),
+        TemplateProcessor::new(
+            template_config,
+            Arc::clone(&rpc),
+            policy.clone(),
+            reaper_config,
+        )
+        .with_database(Arc::clone(&db)),
     );
     // Restore any previously approved payout proposal from database
     template_processor.restore_from_db();
@@ -1418,8 +1419,8 @@ async fn main() -> Result<()> {
         let params_dir_for_callback = ceremony_manager.params_dir().clone();
         let ceremony_mgr_for_callback = Arc::clone(&ceremony_manager);
         let seed_nodes_for_callback = config.network.seed_nodes.clone();
-        let params_update_callback: Arc<dyn Fn(&[u8; 32], &[u8; 32]) + Send + Sync> =
-            Arc::new(move |expected_hash: &[u8; 32], _contributor: &[u8; 32]| {
+        let params_update_callback: Arc<dyn Fn(&[u8; 32], &[u8; 32]) + Send + Sync> = Arc::new(
+            move |expected_hash: &[u8; 32], _contributor: &[u8; 32]| {
                 let params_dir = params_dir_for_callback.clone();
                 let ceremony_mgr = Arc::clone(&ceremony_mgr_for_callback);
                 let seeds = seed_nodes_for_callback.clone();
@@ -1451,15 +1452,22 @@ async fn main() -> Result<()> {
                                         // Load and verify hash before committing
                                         match ghost_mpc::params::load_parameters(&tmp_path) {
                                             Ok(params) => {
-                                                match ghost_mpc::contribution::hash_parameters(&params) {
+                                                match ghost_mpc::contribution::hash_parameters(
+                                                    &params,
+                                                ) {
                                                     Ok(hash) if hash == expected => {
                                                         // Hash matches! Move to current
-                                                        let current = params_dir.join("block_params_current.bin");
-                                                        if let Err(e) = std::fs::rename(&tmp_path, &current) {
+                                                        let current = params_dir
+                                                            .join("block_params_current.bin");
+                                                        if let Err(e) =
+                                                            std::fs::rename(&tmp_path, &current)
+                                                        {
                                                             tracing::warn!(error = %e, "MPC params_callback: Failed to rename params");
                                                             continue;
                                                         }
-                                                        if let Err(e) = ceremony_mgr.load_current_params() {
+                                                        if let Err(e) =
+                                                            ceremony_mgr.load_current_params()
+                                                        {
                                                             tracing::warn!(error = %e, "MPC params_callback: Failed to reload");
                                                         } else {
                                                             tracing::info!(
@@ -1504,7 +1512,8 @@ async fn main() -> Result<()> {
                         "MPC params_callback: No peer had matching params"
                     );
                 });
-            });
+            },
+        );
 
         let mpc_handler = Arc::new(
             MpcHandler::new(Arc::clone(&identity), Arc::clone(&db))
@@ -2022,7 +2031,10 @@ async fn main() -> Result<()> {
                         use rand::Rng;
                         rand::thread_rng().gen_range(10..=100)
                     };
-                    info!(attempt, delay_secs, "MPC: Waiting before retry (randomized to prevent races)");
+                    info!(
+                        attempt,
+                        delay_secs, "MPC: Waiting before retry (randomized to prevent races)"
+                    );
                     tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
 
                     // Sync contributors from peers to detect if our contribution was approved
@@ -2120,7 +2132,8 @@ async fn main() -> Result<()> {
                                     Ok(data) if data.len() > 1000 => {
                                         // Ensure params directory exists (may have been wiped)
                                         let _ = std::fs::create_dir_all(&params_dir);
-                                        let params_path = params_dir.join("block_params_current.bin");
+                                        let params_path =
+                                            params_dir.join("block_params_current.bin");
                                         // Resolve symlink target or overwrite directly
                                         let write_path = std::fs::read_link(&params_path)
                                             .unwrap_or(params_path.clone());
@@ -2129,7 +2142,9 @@ async fn main() -> Result<()> {
                                             continue;
                                         }
                                         // Reload into ceremony manager
-                                        if let Err(e) = ceremony_manager_for_startup.load_current_params() {
+                                        if let Err(e) =
+                                            ceremony_manager_for_startup.load_current_params()
+                                        {
                                             warn!(error = %e, "MPC: Failed to reload refreshed params");
                                         } else {
                                             info!(size = data.len(), peer = %host, "MPC: Refreshed params from network for retry");

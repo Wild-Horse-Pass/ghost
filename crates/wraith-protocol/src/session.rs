@@ -467,11 +467,7 @@ impl std::fmt::Debug for FileSessionPersistence {
             .field("path", &self.path)
             .field(
                 "session_count",
-                &self
-                    .sessions
-                    .read()
-                    .map(|s| s.len())
-                    .unwrap_or(0),
+                &self.sessions.read().map(|s| s.len()).unwrap_or(0),
             )
             .finish()
     }
@@ -511,10 +507,7 @@ impl FileSessionPersistence {
     }
 
     /// Write all sessions to the file
-    fn write_to_file(
-        &self,
-        sessions: &[PersistedSessionEntry],
-    ) -> Result<(), crate::WraithError> {
+    fn write_to_file(&self, sessions: &[PersistedSessionEntry]) -> Result<(), crate::WraithError> {
         let file = PersistedSessionFile {
             sessions: sessions.to_vec(),
         };
@@ -814,12 +807,14 @@ impl WraithSession {
 
     /// Check if session has minimum participants (mode-aware)
     pub fn has_minimum_participants(&self) -> bool {
-        self.tier.meets_minimum_for_mode(self.participant_count, self.mode)
+        self.tier
+            .meets_minimum_for_mode(self.participant_count, self.mode)
     }
 
     /// Get fill percentage (mode-aware)
     pub fn fill_percentage(&self) -> f64 {
-        self.tier.fill_percentage_for_mode(self.participant_count, self.mode)
+        self.tier
+            .fill_percentage_for_mode(self.participant_count, self.mode)
     }
 
     /// Check if session can force execute (50% threshold, mode-aware)

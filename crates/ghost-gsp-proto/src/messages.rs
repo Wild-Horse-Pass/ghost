@@ -231,7 +231,6 @@ pub enum ClientMessage {
     // =========================================================================
     // Confidential Transfers
     // =========================================================================
-
     /// Submit a confidential transfer with Groth16 proof
     SubmitConfidentialTransfer {
         /// Groth16 proof (192 bytes hex)
@@ -664,7 +663,6 @@ pub enum ServerMessage {
     // =========================================================================
     // Confidential Transfers
     // =========================================================================
-
     /// Result of a confidential transfer submission
     ConfidentialTransferResult {
         success: bool,
@@ -692,9 +690,7 @@ pub enum ServerMessage {
     },
 
     /// Notes owned by a specific pubkey
-    ConfidentialNotes {
-        notes: Vec<ConfidentialNoteInfo>,
-    },
+    ConfidentialNotes { notes: Vec<ConfidentialNoteInfo> },
 
     /// Push notification: a confidential transfer was received
     ConfidentialTransferReceived {

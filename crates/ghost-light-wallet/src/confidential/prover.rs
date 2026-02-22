@@ -6,9 +6,7 @@
 
 use tracing::info;
 
-use ghost_zkp::{
-    CommitmentTree, ConfidentialProver as ZkProver, ConfidentialTransferProof,
-};
+use ghost_zkp::{CommitmentTree, ConfidentialProver as ZkProver, ConfidentialTransferProof};
 
 use crate::confidential::notes::{NoteStore, OwnedNote};
 use crate::error::{LightWalletError, WalletResult};
@@ -62,9 +60,8 @@ impl ClientProver {
     /// production but allows local proof generation during development.
     #[cfg(not(feature = "zk-production"))]
     pub fn new_with_setup(tree_depth: usize) -> WalletResult<Self> {
-        let prover = ZkProver::new_with_setup(tree_depth).map_err(|e| {
-            LightWalletError::Internal(format!("ZK setup failed: {}", e))
-        })?;
+        let prover = ZkProver::new_with_setup(tree_depth)
+            .map_err(|e| LightWalletError::Internal(format!("ZK setup failed: {}", e)))?;
         Ok(Self { prover })
     }
 
@@ -89,14 +86,12 @@ impl ClientProver {
         block_height: u64,
     ) -> WalletResult<ConfidentialTransferResult> {
         // Look up sender note
-        let sender_note = note_store
-            .get_note(sender_note_index)
-            .ok_or_else(|| {
-                LightWalletError::PaymentFailed(format!(
-                    "Note at index {} not found in local store",
-                    sender_note_index
-                ))
-            })?;
+        let sender_note = note_store.get_note(sender_note_index).ok_or_else(|| {
+            LightWalletError::PaymentFailed(format!(
+                "Note at index {} not found in local store",
+                sender_note_index
+            ))
+        })?;
 
         if sender_note.spent {
             return Err(LightWalletError::PaymentFailed(
@@ -141,9 +136,7 @@ impl ClientProver {
                 recipient_old_blinding_fr,
                 recipient_new_blinding_fr,
             )
-            .map_err(|e| {
-                LightWalletError::PaymentFailed(format!("Transfer failed: {}", e))
-            })?;
+            .map_err(|e| LightWalletError::PaymentFailed(format!("Transfer failed: {}", e)))?;
 
         // Get new root after transfer
         let new_root = tree.root().map_err(|e| {
@@ -259,12 +252,12 @@ mod tests {
             .create_transfer(
                 &mut tree,
                 &note_store,
-                0,    // sender_note_index
-                300,  // amount
-                1,    // recipient_index
-                500,  // recipient_old_value
+                0,   // sender_note_index
+                300, // amount
+                1,   // recipient_index
+                500, // recipient_old_value
                 recipient_old_blinding,
-                101,  // block_height
+                101, // block_height
             )
             .unwrap();
 
@@ -344,16 +337,7 @@ mod tests {
         });
 
         let prover = ClientProver::new(depth);
-        let result = prover.create_transfer(
-            &mut tree,
-            &note_store,
-            0,
-            300,
-            1,
-            0,
-            [0u8; 32],
-            101,
-        );
+        let result = prover.create_transfer(&mut tree, &note_store, 0, 300, 1, 0, [0u8; 32], 101);
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();

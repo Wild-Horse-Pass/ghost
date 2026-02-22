@@ -62,8 +62,7 @@ pub(crate) fn parse_ops(script: &[u8]) -> Vec<ScriptOp> {
                 if pos + 2 >= len {
                     break;
                 }
-                let n =
-                    u16::from_le_bytes([script[pos + 1], script[pos + 2]]) as usize;
+                let n = u16::from_le_bytes([script[pos + 1], script[pos + 2]]) as usize;
                 if pos + 3 + n > len {
                     break;
                 }
@@ -330,10 +329,7 @@ fn detect_dead_after_return(
                         op.offset,
                         remaining,
                         DeadCodeType::UnreachableCode,
-                        format!(
-                            "Unreachable: {} bytes after OP_RETURN",
-                            remaining - 1
-                        ),
+                        format!("Unreachable: {} bytes after OP_RETURN", remaining - 1),
                     )];
                 }
                 return Vec::new();

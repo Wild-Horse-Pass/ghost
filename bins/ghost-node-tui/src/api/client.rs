@@ -278,8 +278,7 @@ impl NodeApiClient {
 
     /// Trigger a backup export
     pub async fn trigger_backup(&self) -> Result<String> {
-        self.post_authenticated("/api/v1/backup/export", b"")
-            .await
+        self.post_authenticated("/api/v1/backup/export", b"").await
     }
 
     /// Delete a backup by filename

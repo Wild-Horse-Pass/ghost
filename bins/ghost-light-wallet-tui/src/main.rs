@@ -596,13 +596,13 @@ where
                                 }
                                 KeyCode::Char('g') => {
                                     if app.wallet.is_some() {
-                                        app.wallet_wizard = Some(ActiveWalletWizard::CreateGhostId(
-                                            CreateGhostIdState {
+                                        app.wallet_wizard = Some(
+                                            ActiveWalletWizard::CreateGhostId(CreateGhostIdState {
                                                 step: CreateGhostIdStep::Welcome,
                                                 ghost_id: None,
                                                 error: None,
-                                            },
-                                        ));
+                                            }),
+                                        );
                                         app.input_mode = InputMode::GhostIdWizard;
                                         app.status_message = "Ghost ID Wizard - Press Enter to generate, Esc to cancel".to_string();
                                     } else {
@@ -610,20 +610,23 @@ where
                                     }
                                     continue;
                                 }
-                                KeyCode::Char('c') if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                KeyCode::Char('c')
+                                    if !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
                                     if app.wallet.is_some() {
-                                        app.wallet_wizard = Some(ActiveWalletWizard::CreateLock(
-                                            CreateLockState {
+                                        app.wallet_wizard =
+                                            Some(ActiveWalletWizard::CreateLock(CreateLockState {
                                                 step: CreateLockStep::SelectDenomination,
                                                 denomination: None,
                                                 timelock_tier: String::new(),
                                                 label: String::new(),
                                                 lock_id: None,
                                                 error: None,
-                                            },
-                                        ));
+                                            }));
                                         app.input_mode = InputMode::CreateLockDenom;
-                                        app.status_message = "Create Lock - Enter capacity in sats (min 10000):".to_string();
+                                        app.status_message =
+                                            "Create Lock - Enter capacity in sats (min 10000):"
+                                                .to_string();
                                     } else {
                                         app.status_message = "Unlock wallet first".to_string();
                                     }
@@ -635,21 +638,27 @@ where
                                             .locks
                                             .iter()
                                             .filter(|l| l.status == "active")
-                                            .map(|l| (l.lock_id.clone(), l.status.clone(), l.capacity_sats))
+                                            .map(|l| {
+                                                (
+                                                    l.lock_id.clone(),
+                                                    l.status.clone(),
+                                                    l.capacity_sats,
+                                                )
+                                            })
                                             .collect();
                                         if lock_entries.is_empty() {
-                                            app.status_message = "No active locks to jump".to_string();
+                                            app.status_message =
+                                                "No active locks to jump".to_string();
                                         } else {
-                                            app.wallet_wizard = Some(ActiveWalletWizard::JumpLock(
-                                                JumpLockState {
+                                            app.wallet_wizard =
+                                                Some(ActiveWalletWizard::JumpLock(JumpLockState {
                                                     step: JumpLockStep::SelectLock,
                                                     locks: lock_entries,
                                                     selected_lock: 0,
                                                     new_lock_id: None,
                                                     txid: None,
                                                     error: None,
-                                                },
-                                            ));
+                                                }));
                                             app.input_mode = InputMode::JumpLockSelect;
                                             app.status_message = "Jump Lock - Select lock with Up/Down, Enter to confirm:".to_string();
                                         }
@@ -664,21 +673,29 @@ where
                                             .locks
                                             .iter()
                                             .filter(|l| l.status == "active")
-                                            .map(|l| (l.lock_id.clone(), l.status.clone(), l.capacity_sats))
+                                            .map(|l| {
+                                                (
+                                                    l.lock_id.clone(),
+                                                    l.status.clone(),
+                                                    l.capacity_sats,
+                                                )
+                                            })
                                             .collect();
                                         if lock_entries.is_empty() {
-                                            app.status_message = "No active locks to reconcile".to_string();
+                                            app.status_message =
+                                                "No active locks to reconcile".to_string();
                                         } else {
-                                            app.wallet_wizard = Some(ActiveWalletWizard::ReconcileLock(
-                                                ReconcileLockState {
-                                                    step: ReconcileLockStep::SelectLock,
-                                                    locks: lock_entries,
-                                                    selected_lock: 0,
-                                                    destination_address: String::new(),
-                                                    settlement_class: 0,
-                                                    error: None,
-                                                },
-                                            ));
+                                            app.wallet_wizard =
+                                                Some(ActiveWalletWizard::ReconcileLock(
+                                                    ReconcileLockState {
+                                                        step: ReconcileLockStep::SelectLock,
+                                                        locks: lock_entries,
+                                                        selected_lock: 0,
+                                                        destination_address: String::new(),
+                                                        settlement_class: 0,
+                                                        error: None,
+                                                    },
+                                                ));
                                             app.input_mode = InputMode::ReconcileLockSelect;
                                             app.status_message = "Reconcile Lock - Select lock with Up/Down, Enter to confirm:".to_string();
                                         }
@@ -689,18 +706,19 @@ where
                                 }
                                 KeyCode::Char('l') => {
                                     if app.wallet.is_some() {
-                                        app.wallet_wizard = Some(ActiveWalletWizard::SendL2(
-                                            SendL2State {
+                                        app.wallet_wizard =
+                                            Some(ActiveWalletWizard::SendL2(SendL2State {
                                                 step: SendL2Step::EnterRecipient,
                                                 recipient: String::new(),
                                                 amount: String::new(),
                                                 memo: String::new(),
                                                 payment_id: None,
                                                 error: None,
-                                            },
-                                        ));
+                                            }));
                                         app.input_mode = InputMode::SendL2Recipient;
-                                        app.status_message = "Send L2 - Enter recipient Ghost ID or address:".to_string();
+                                        app.status_message =
+                                            "Send L2 - Enter recipient Ghost ID or address:"
+                                                .to_string();
                                     } else {
                                         app.status_message = "Unlock wallet first".to_string();
                                     }
@@ -962,7 +980,9 @@ where
                     // ── Ghost ID Wizard ──
                     InputMode::GhostIdWizard => match key.code {
                         KeyCode::Enter => {
-                            if let Some(ActiveWalletWizard::CreateGhostId(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::CreateGhostId(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 match state.step {
                                     CreateGhostIdStep::Welcome => {
                                         state.step = CreateGhostIdStep::Generating;
@@ -971,7 +991,8 @@ where
                                                 Ok(id) => {
                                                     state.ghost_id = Some(id.clone());
                                                     state.step = CreateGhostIdStep::Complete;
-                                                    app.status_message = format!("Ghost ID: {}", id);
+                                                    app.status_message =
+                                                        format!("Ghost ID: {}", id);
                                                 }
                                                 Err(e) => {
                                                     state.error = Some(format!("{}", e));
@@ -996,8 +1017,12 @@ where
                         }
                         _ => {
                             // Any key dismisses on Complete/Failed
-                            if let Some(ActiveWalletWizard::CreateGhostId(ref state)) = app.wallet_wizard {
-                                if state.step == CreateGhostIdStep::Complete || state.step == CreateGhostIdStep::Failed {
+                            if let Some(ActiveWalletWizard::CreateGhostId(ref state)) =
+                                app.wallet_wizard
+                            {
+                                if state.step == CreateGhostIdStep::Complete
+                                    || state.step == CreateGhostIdStep::Failed
+                                {
                                     app.wallet_wizard = None;
                                     app.input_mode = InputMode::Normal;
                                 }
@@ -1007,10 +1032,13 @@ where
                     // ── Create Lock: Denomination (capacity input) ──
                     InputMode::CreateLockDenom => match key.code {
                         KeyCode::Enter => {
-                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 let denom = state.denomination.clone().unwrap_or_default();
                                 if denom.is_empty() {
-                                    app.status_message = "Enter a capacity amount in sats:".to_string();
+                                    app.status_message =
+                                        "Enter a capacity amount in sats:".to_string();
                                 } else {
                                     match denom.parse::<u64>() {
                                         Ok(v) if v >= 10_000 => {
@@ -1019,7 +1047,8 @@ where
                                             app.status_message = "Select timelock tier (1=30d, 2=90d, 3=180d, 4=365d):".to_string();
                                         }
                                         _ => {
-                                            app.status_message = "Invalid capacity. Minimum 10000 sats:".to_string();
+                                            app.status_message =
+                                                "Invalid capacity. Minimum 10000 sats:".to_string();
                                         }
                                     }
                                 }
@@ -1031,12 +1060,16 @@ where
                             app.status_message = "Create Lock wizard cancelled".to_string();
                         }
                         KeyCode::Char(c) if c.is_ascii_digit() => {
-                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.denomination.get_or_insert_with(String::new).push(c);
                             }
                         }
                         KeyCode::Backspace => {
-                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 if let Some(ref mut d) = state.denomination {
                                     d.pop();
                                 }
@@ -1047,7 +1080,9 @@ where
                     // ── Create Lock: Timelock tier selection ──
                     InputMode::CreateLockTier => match key.code {
                         KeyCode::Char(c @ '1'..='4') => {
-                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 let tier = match c {
                                     '1' => "30d",
                                     '2' => "90d",
@@ -1057,7 +1092,8 @@ where
                                 state.timelock_tier = tier.to_string();
                                 state.step = CreateLockStep::EnterLabel;
                                 app.input_mode = InputMode::CreateLockLabel;
-                                app.status_message = "Enter lock label (optional, Enter to skip):".to_string();
+                                app.status_message =
+                                    "Enter lock label (optional, Enter to skip):".to_string();
                             }
                         }
                         KeyCode::Esc => {
@@ -1070,15 +1106,20 @@ where
                     // ── Create Lock: Label input ──
                     InputMode::CreateLockLabel => match key.code {
                         KeyCode::Enter => {
-                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.step = CreateLockStep::Creating;
-                                let capacity: u64 = state.denomination.as_deref().unwrap_or("0").parse().unwrap_or(0);
+                                let capacity: u64 = state
+                                    .denomination
+                                    .as_deref()
+                                    .unwrap_or("0")
+                                    .parse()
+                                    .unwrap_or(0);
 
                                 app.status_message = format!(
                                     "Lock request: {} sats, tier {}, label '{}'",
-                                    capacity,
-                                    state.timelock_tier,
-                                    state.label
+                                    capacity, state.timelock_tier, state.label
                                 );
 
                                 // Lock creation requires GSP round-trip via wallet.create_lock()
@@ -1100,12 +1141,16 @@ where
                             app.status_message = "Create Lock wizard cancelled".to_string();
                         }
                         KeyCode::Char(c) => {
-                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.label.push(c);
                             }
                         }
                         KeyCode::Backspace => {
-                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::CreateLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.label.pop();
                             }
                         }
@@ -1114,14 +1159,18 @@ where
                     // ── Jump Lock: Select lock ──
                     InputMode::JumpLockSelect => match key.code {
                         KeyCode::Up => {
-                            if let Some(ActiveWalletWizard::JumpLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::JumpLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 if state.selected_lock > 0 {
                                     state.selected_lock -= 1;
                                 }
                             }
                         }
                         KeyCode::Down => {
-                            if let Some(ActiveWalletWizard::JumpLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::JumpLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 let max = state.locks.len().saturating_sub(1);
                                 if state.selected_lock < max {
                                     state.selected_lock += 1;
@@ -1129,7 +1178,9 @@ where
                             }
                         }
                         KeyCode::Enter => {
-                            if let Some(ActiveWalletWizard::JumpLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::JumpLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.step = JumpLockStep::ConfirmJump;
                                 let (ref id, _, cap) = state.locks[state.selected_lock];
                                 app.input_mode = InputMode::JumpLockConfirm;
@@ -1150,13 +1201,16 @@ where
                     // ── Jump Lock: Confirm ──
                     InputMode::JumpLockConfirm => match key.code {
                         KeyCode::Enter => {
-                            if let Some(ActiveWalletWizard::JumpLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::JumpLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.step = JumpLockStep::Processing;
                                 let lock_id = state.locks[state.selected_lock].0.clone();
 
                                 // Jump requires GSP round-trip via wallet lock API
                                 // which is not yet exposed as a public wallet method.
-                                state.new_lock_id = Some(format!("jump_{}", &lock_id[..16.min(lock_id.len())]));
+                                state.new_lock_id =
+                                    Some(format!("jump_{}", &lock_id[..16.min(lock_id.len())]));
                                 state.step = JumpLockStep::Complete;
                                 app.status_message = format!(
                                     "Jump request queued for lock {}. Execute via CLI.",
@@ -1176,14 +1230,18 @@ where
                     // ── Reconcile Lock: Select lock ──
                     InputMode::ReconcileLockSelect => match key.code {
                         KeyCode::Up => {
-                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 if state.selected_lock > 0 {
                                     state.selected_lock -= 1;
                                 }
                             }
                         }
                         KeyCode::Down => {
-                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 let max = state.locks.len().saturating_sub(1);
                                 if state.selected_lock < max {
                                     state.selected_lock += 1;
@@ -1191,10 +1249,13 @@ where
                             }
                         }
                         KeyCode::Enter => {
-                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.step = ReconcileLockStep::EnterAddress;
                                 app.input_mode = InputMode::ReconcileLockAddress;
-                                app.status_message = "Enter destination Bitcoin address:".to_string();
+                                app.status_message =
+                                    "Enter destination Bitcoin address:".to_string();
                             }
                         }
                         KeyCode::Esc => {
@@ -1207,7 +1268,9 @@ where
                     // ── Reconcile Lock: Enter address ──
                     InputMode::ReconcileLockAddress => match key.code {
                         KeyCode::Enter => {
-                            if let Some(ActiveWalletWizard::ReconcileLock(ref state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::ReconcileLock(ref state)) =
+                                app.wallet_wizard
+                            {
                                 if state.destination_address.is_empty() {
                                     app.status_message = "Address cannot be empty:".to_string();
                                 } else {
@@ -1222,79 +1285,114 @@ where
                             app.status_message = "Reconcile wizard cancelled".to_string();
                         }
                         KeyCode::Char(c) => {
-                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.destination_address.push(c);
                             }
                         }
                         KeyCode::Backspace => {
-                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.destination_address.pop();
                             }
                         }
                         _ => {}
                     },
                     // ── Reconcile Lock: Settlement class ──
-                    InputMode::ReconcileLockSettlement => match key.code {
-                        KeyCode::Up | KeyCode::Down => {
-                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) = app.wallet_wizard {
-                                state.settlement_class = if state.settlement_class == 0 { 1 } else { 0 };
-                                let label = if state.settlement_class == 0 { "Standard" } else { "Batched" };
-                                app.status_message = format!("Settlement: {} — Enter to confirm, Esc to cancel", label);
+                    InputMode::ReconcileLockSettlement => {
+                        match key.code {
+                            KeyCode::Up | KeyCode::Down => {
+                                if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) =
+                                    app.wallet_wizard
+                                {
+                                    state.settlement_class =
+                                        if state.settlement_class == 0 { 1 } else { 0 };
+                                    let label = if state.settlement_class == 0 {
+                                        "Standard"
+                                    } else {
+                                        "Batched"
+                                    };
+                                    app.status_message = format!(
+                                        "Settlement: {} — Enter to confirm, Esc to cancel",
+                                        label
+                                    );
+                                }
                             }
-                        }
-                        KeyCode::Char('1') => {
-                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) = app.wallet_wizard {
-                                state.settlement_class = 0;
-                                state.step = ReconcileLockStep::Confirm;
-                                app.input_mode = InputMode::ReconcileLockConfirm;
-                                let (ref id, _, cap) = state.locks[state.selected_lock];
-                                app.status_message = format!(
+                            KeyCode::Char('1') => {
+                                if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) =
+                                    app.wallet_wizard
+                                {
+                                    state.settlement_class = 0;
+                                    state.step = ReconcileLockStep::Confirm;
+                                    app.input_mode = InputMode::ReconcileLockConfirm;
+                                    let (ref id, _, cap) = state.locks[state.selected_lock];
+                                    app.status_message = format!(
                                     "Reconcile {}... ({} sats) to {} via Standard? Enter=confirm",
                                     &id[..16.min(id.len())], cap, &state.destination_address
                                 );
+                                }
                             }
-                        }
-                        KeyCode::Char('2') => {
-                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) = app.wallet_wizard {
-                                state.settlement_class = 1;
-                                state.step = ReconcileLockStep::Confirm;
-                                app.input_mode = InputMode::ReconcileLockConfirm;
-                                let (ref id, _, cap) = state.locks[state.selected_lock];
-                                app.status_message = format!(
+                            KeyCode::Char('2') => {
+                                if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) =
+                                    app.wallet_wizard
+                                {
+                                    state.settlement_class = 1;
+                                    state.step = ReconcileLockStep::Confirm;
+                                    app.input_mode = InputMode::ReconcileLockConfirm;
+                                    let (ref id, _, cap) = state.locks[state.selected_lock];
+                                    app.status_message = format!(
                                     "Reconcile {}... ({} sats) to {} via Batched? Enter=confirm",
                                     &id[..16.min(id.len())], cap, &state.destination_address
                                 );
+                                }
                             }
-                        }
-                        KeyCode::Enter => {
-                            if let Some(ActiveWalletWizard::ReconcileLock(ref state)) = app.wallet_wizard {
-                                let settlement = if state.settlement_class == 0 { "Standard" } else { "Batched" };
-                                let (ref id, _, cap) = state.locks[state.selected_lock];
-                                app.input_mode = InputMode::ReconcileLockConfirm;
-                                app.status_message = format!(
-                                    "Reconcile {}... ({} sats) to {} via {}? Enter=confirm",
-                                    &id[..16.min(id.len())], cap, &state.destination_address, settlement
-                                );
+                            KeyCode::Enter => {
+                                if let Some(ActiveWalletWizard::ReconcileLock(ref state)) =
+                                    app.wallet_wizard
+                                {
+                                    let settlement = if state.settlement_class == 0 {
+                                        "Standard"
+                                    } else {
+                                        "Batched"
+                                    };
+                                    let (ref id, _, cap) = state.locks[state.selected_lock];
+                                    app.input_mode = InputMode::ReconcileLockConfirm;
+                                    app.status_message = format!(
+                                        "Reconcile {}... ({} sats) to {} via {}? Enter=confirm",
+                                        &id[..16.min(id.len())],
+                                        cap,
+                                        &state.destination_address,
+                                        settlement
+                                    );
+                                }
                             }
+                            KeyCode::Esc => {
+                                app.wallet_wizard = None;
+                                app.input_mode = InputMode::Normal;
+                                app.status_message = "Reconcile wizard cancelled".to_string();
+                            }
+                            _ => {}
                         }
-                        KeyCode::Esc => {
-                            app.wallet_wizard = None;
-                            app.input_mode = InputMode::Normal;
-                            app.status_message = "Reconcile wizard cancelled".to_string();
-                        }
-                        _ => {}
-                    },
+                    }
                     // ── Reconcile Lock: Confirm ──
                     InputMode::ReconcileLockConfirm => match key.code {
                         KeyCode::Enter => {
-                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::ReconcileLock(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.step = ReconcileLockStep::Processing;
                                 let lock_id = state.locks[state.selected_lock].0.clone();
                                 let address = state.destination_address.clone();
 
                                 // Reconciliation requires GSP round-trip via wallet lock API
                                 // which is not yet exposed as a public wallet method.
-                                let settlement = if state.settlement_class == 0 { "standard" } else { "batched" };
+                                let settlement = if state.settlement_class == 0 {
+                                    "standard"
+                                } else {
+                                    "batched"
+                                };
                                 state.step = ReconcileLockStep::Complete;
                                 app.status_message = format!(
                                     "Reconcile request queued: lock {} to {} ({}). Execute via CLI.",
@@ -1331,12 +1429,16 @@ where
                             app.status_message = "Send L2 wizard cancelled".to_string();
                         }
                         KeyCode::Char(c) => {
-                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.recipient.push(c);
                             }
                         }
                         KeyCode::Backspace => {
-                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.recipient.pop();
                             }
                         }
@@ -1350,7 +1452,8 @@ where
                                     app.status_message = "Amount cannot be empty:".to_string();
                                 } else {
                                     app.input_mode = InputMode::SendL2Memo;
-                                    app.status_message = "Enter memo (optional, Enter to skip):".to_string();
+                                    app.status_message =
+                                        "Enter memo (optional, Enter to skip):".to_string();
                                 }
                             }
                         }
@@ -1360,12 +1463,16 @@ where
                             app.status_message = "Send L2 wizard cancelled".to_string();
                         }
                         KeyCode::Char(c) if c.is_ascii_digit() => {
-                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.amount.push(c);
                             }
                         }
                         KeyCode::Backspace => {
-                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.amount.pop();
                             }
                         }
@@ -1380,7 +1487,8 @@ where
                                 app.input_mode = InputMode::SendL2Confirm;
                                 app.status_message = format!(
                                     "Send {} sats to {}? Enter=confirm, Esc=cancel",
-                                    amount_str, &recipient[..20.min(recipient.len())]
+                                    amount_str,
+                                    &recipient[..20.min(recipient.len())]
                                 );
                             }
                         }
@@ -1390,12 +1498,16 @@ where
                             app.status_message = "Send L2 wizard cancelled".to_string();
                         }
                         KeyCode::Char(c) => {
-                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.memo.push(c);
                             }
                         }
                         KeyCode::Backspace => {
-                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.memo.pop();
                             }
                         }
@@ -1404,7 +1516,9 @@ where
                     // ── Send L2: Confirm ──
                     InputMode::SendL2Confirm => match key.code {
                         KeyCode::Enter => {
-                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) = app.wallet_wizard {
+                            if let Some(ActiveWalletWizard::SendL2(ref mut state)) =
+                                app.wallet_wizard
+                            {
                                 state.step = SendL2Step::Sending;
                                 let recipient = state.recipient.clone();
                                 let amount: u64 = state.amount.parse().unwrap_or(0);
@@ -1559,13 +1673,11 @@ fn ui(f: &mut Frame, app: &App) {
         app.label_input.clone()
     } else if let Some(ref wiz) = app.wallet_wizard {
         match wiz {
-            ActiveWalletWizard::CreateLock(s) => {
-                match app.input_mode {
-                    InputMode::CreateLockDenom => s.denomination.clone().unwrap_or_default(),
-                    InputMode::CreateLockLabel => s.label.clone(),
-                    _ => String::new(),
-                }
-            }
+            ActiveWalletWizard::CreateLock(s) => match app.input_mode {
+                InputMode::CreateLockDenom => s.denomination.clone().unwrap_or_default(),
+                InputMode::CreateLockLabel => s.label.clone(),
+                _ => String::new(),
+            },
             ActiveWalletWizard::ReconcileLock(s) => {
                 if app.input_mode == InputMode::ReconcileLockAddress {
                     s.destination_address.clone()
@@ -1573,14 +1685,12 @@ fn ui(f: &mut Frame, app: &App) {
                     String::new()
                 }
             }
-            ActiveWalletWizard::SendL2(s) => {
-                match app.input_mode {
-                    InputMode::SendL2Recipient => s.recipient.clone(),
-                    InputMode::SendL2Amount => s.amount.clone(),
-                    InputMode::SendL2Memo => s.memo.clone(),
-                    _ => String::new(),
-                }
-            }
+            ActiveWalletWizard::SendL2(s) => match app.input_mode {
+                InputMode::SendL2Recipient => s.recipient.clone(),
+                InputMode::SendL2Amount => s.amount.clone(),
+                InputMode::SendL2Memo => s.memo.clone(),
+                _ => String::new(),
+            },
             _ => String::new(),
         }
     } else {
@@ -2099,14 +2209,17 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
             ];
             match state.step {
                 CreateGhostIdStep::Welcome => {
-                    lines.push(Line::from("  Your Ghost ID is your identity for receiving payments."));
+                    lines.push(Line::from(
+                        "  Your Ghost ID is your identity for receiving payments.",
+                    ));
                     lines.push(Line::from(""));
                     lines.push(Line::from("  Press Enter to retrieve your Ghost ID."));
                 }
                 CreateGhostIdStep::Generating => {
-                    lines.push(Line::from(vec![
-                        Span::styled("  Generating...", Style::default().fg(Color::Yellow)),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        "  Generating...",
+                        Style::default().fg(Color::Yellow),
+                    )]));
                 }
                 CreateGhostIdStep::Complete => {
                     if let Some(ref id) = state.ghost_id {
@@ -2114,7 +2227,9 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                             Span::raw("  Ghost ID: "),
                             Span::styled(
                                 id.clone(),
-                                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                                Style::default()
+                                    .fg(Color::Green)
+                                    .add_modifier(Modifier::BOLD),
                             ),
                         ]));
                         lines.push(Line::from(""));
@@ -2154,12 +2269,17 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     lines.push(Line::from(vec![
                         Span::raw("  Capacity: "),
                         Span::styled(
-                            format!("{} sats", state.denomination.as_deref().unwrap_or("(enter amount)")),
+                            format!(
+                                "{} sats",
+                                state.denomination.as_deref().unwrap_or("(enter amount)")
+                            ),
                             Style::default().fg(Color::Yellow),
                         ),
                     ]));
                     lines.push(Line::from(""));
-                    lines.push(Line::from("  Minimum: 10,000 sats. Maximum: 100,000,000 sats (1 BTC)"));
+                    lines.push(Line::from(
+                        "  Minimum: 10,000 sats. Maximum: 100,000,000 sats (1 BTC)",
+                    ));
                 }
                 CreateLockStep::SelectTimelock => {
                     lines.push(Line::from(vec![
@@ -2198,21 +2318,29 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     ]));
                     lines.push(Line::from(vec![
                         Span::raw("  Timelock: "),
-                        Span::styled(state.timelock_tier.clone(), Style::default().fg(Color::Green)),
+                        Span::styled(
+                            state.timelock_tier.clone(),
+                            Style::default().fg(Color::Green),
+                        ),
                     ]));
                     lines.push(Line::from(""));
                     lines.push(Line::from(vec![
                         Span::raw("  Label: "),
                         Span::styled(
-                            if state.label.is_empty() { "(optional, Enter to skip)".to_string() } else { state.label.clone() },
+                            if state.label.is_empty() {
+                                "(optional, Enter to skip)".to_string()
+                            } else {
+                                state.label.clone()
+                            },
                             Style::default().fg(Color::Yellow),
                         ),
                     ]));
                 }
                 CreateLockStep::Creating => {
-                    lines.push(Line::from(vec![
-                        Span::styled("  Creating lock...", Style::default().fg(Color::Yellow)),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        "  Creating lock...",
+                        Style::default().fg(Color::Yellow),
+                    )]));
                 }
                 CreateLockStep::Complete => {
                     if let Some(ref id) = state.lock_id {
@@ -2243,9 +2371,7 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                 Line::from(""),
                 Line::from(vec![Span::styled(
                     "  Jump Lock (Emergency Exit)",
-                    Style::default()
-                        .fg(Color::Red)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                 )]),
                 Line::from(""),
             ];
@@ -2255,9 +2381,15 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     lines.push(Line::from(""));
                     for (i, (id, _status, cap)) in state.locks.iter().enumerate() {
                         let prefix = if i == state.selected_lock { "> " } else { "  " };
-                        let id_short = if id.len() > 20 { format!("{}...", &id[..20]) } else { id.clone() };
+                        let id_short = if id.len() > 20 {
+                            format!("{}...", &id[..20])
+                        } else {
+                            id.clone()
+                        };
                         let style = if i == state.selected_lock {
-                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD)
                         } else {
                             Style::default()
                         };
@@ -2267,13 +2399,22 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                         )]));
                     }
                     lines.push(Line::from(""));
-                    lines.push(Line::from("  [Up/Down] Select  [Enter] Confirm  [Esc] Cancel"));
+                    lines.push(Line::from(
+                        "  [Up/Down] Select  [Enter] Confirm  [Esc] Cancel",
+                    ));
                 }
                 JumpLockStep::ConfirmJump => {
                     let (ref id, _, cap) = state.locks[state.selected_lock];
-                    let id_short = if id.len() > 24 { format!("{}...", &id[..24]) } else { id.clone() };
+                    let id_short = if id.len() > 24 {
+                        format!("{}...", &id[..24])
+                    } else {
+                        id.clone()
+                    };
                     lines.push(Line::from(vec![
-                        Span::styled("  WARNING: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            "  WARNING: ",
+                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                        ),
                         Span::raw("This is a unilateral exit. The lock will be closed."),
                     ]));
                     lines.push(Line::from(""));
@@ -2289,9 +2430,10 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     lines.push(Line::from("  Press Enter to confirm jump, Esc to cancel."));
                 }
                 JumpLockStep::Processing => {
-                    lines.push(Line::from(vec![
-                        Span::styled("  Processing jump...", Style::default().fg(Color::Yellow)),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        "  Processing jump...",
+                        Style::default().fg(Color::Yellow),
+                    )]));
                 }
                 JumpLockStep::Complete => {
                     if let Some(ref jid) = state.new_lock_id {
@@ -2337,9 +2479,15 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     lines.push(Line::from(""));
                     for (i, (id, _status, cap)) in state.locks.iter().enumerate() {
                         let prefix = if i == state.selected_lock { "> " } else { "  " };
-                        let id_short = if id.len() > 20 { format!("{}...", &id[..20]) } else { id.clone() };
+                        let id_short = if id.len() > 20 {
+                            format!("{}...", &id[..20])
+                        } else {
+                            id.clone()
+                        };
                         let style = if i == state.selected_lock {
-                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD)
                         } else {
                             Style::default()
                         };
@@ -2349,11 +2497,17 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                         )]));
                     }
                     lines.push(Line::from(""));
-                    lines.push(Line::from("  [Up/Down] Select  [Enter] Confirm  [Esc] Cancel"));
+                    lines.push(Line::from(
+                        "  [Up/Down] Select  [Enter] Confirm  [Esc] Cancel",
+                    ));
                 }
                 ReconcileLockStep::EnterAddress => {
                     let (ref id, _, cap) = state.locks[state.selected_lock];
-                    let id_short = if id.len() > 20 { format!("{}...", &id[..20]) } else { id.clone() };
+                    let id_short = if id.len() > 20 {
+                        format!("{}...", &id[..20])
+                    } else {
+                        id.clone()
+                    };
                     lines.push(Line::from(vec![
                         Span::raw("  Lock: "),
                         Span::styled(id_short, Style::default().fg(Color::Cyan)),
@@ -2363,43 +2517,79 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     lines.push(Line::from(vec![
                         Span::raw("  Destination: "),
                         Span::styled(
-                            if state.destination_address.is_empty() { "(enter address)".to_string() } else { state.destination_address.clone() },
+                            if state.destination_address.is_empty() {
+                                "(enter address)".to_string()
+                            } else {
+                                state.destination_address.clone()
+                            },
                             Style::default().fg(Color::Yellow),
                         ),
                     ]));
                 }
                 ReconcileLockStep::SelectSettlement => {
-                    let settlement_label = if state.settlement_class == 0 { "Standard" } else { "Batched" };
+                    let settlement_label = if state.settlement_class == 0 {
+                        "Standard"
+                    } else {
+                        "Batched"
+                    };
                     lines.push(Line::from("  Select settlement class:"));
                     lines.push(Line::from(""));
                     let s0_style = if state.settlement_class == 0 {
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
                     };
                     let s1_style = if state.settlement_class == 1 {
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
                     };
-                    let s0_prefix = if state.settlement_class == 0 { "> " } else { "  " };
-                    let s1_prefix = if state.settlement_class == 1 { "> " } else { "  " };
+                    let s0_prefix = if state.settlement_class == 0 {
+                        "> "
+                    } else {
+                        "  "
+                    };
+                    let s1_prefix = if state.settlement_class == 1 {
+                        "> "
+                    } else {
+                        "  "
+                    };
                     let _ = settlement_label; // used in status message
                     lines.push(Line::from(vec![Span::styled(
-                        format!("{}[1] Standard  - Individual on-chain settlement", s0_prefix),
+                        format!(
+                            "{}[1] Standard  - Individual on-chain settlement",
+                            s0_prefix
+                        ),
                         s0_style,
                     )]));
                     lines.push(Line::from(vec![Span::styled(
-                        format!("{}[2] Batched   - Aggregated settlement (lower fees)", s1_prefix),
+                        format!(
+                            "{}[2] Batched   - Aggregated settlement (lower fees)",
+                            s1_prefix
+                        ),
                         s1_style,
                     )]));
                     lines.push(Line::from(""));
-                    lines.push(Line::from("  [1/2] Select  [Up/Down] Toggle  [Enter] Confirm  [Esc] Cancel"));
+                    lines.push(Line::from(
+                        "  [1/2] Select  [Up/Down] Toggle  [Enter] Confirm  [Esc] Cancel",
+                    ));
                 }
                 ReconcileLockStep::Confirm => {
                     let (ref id, _, cap) = state.locks[state.selected_lock];
-                    let id_short = if id.len() > 20 { format!("{}...", &id[..20]) } else { id.clone() };
-                    let settlement = if state.settlement_class == 0 { "Standard" } else { "Batched" };
+                    let id_short = if id.len() > 20 {
+                        format!("{}...", &id[..20])
+                    } else {
+                        id.clone()
+                    };
+                    let settlement = if state.settlement_class == 0 {
+                        "Standard"
+                    } else {
+                        "Batched"
+                    };
                     lines.push(Line::from("  Confirm reconciliation:"));
                     lines.push(Line::from(""));
                     lines.push(Line::from(vec![
@@ -2412,7 +2602,10 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     ]));
                     lines.push(Line::from(vec![
                         Span::raw("  To: "),
-                        Span::styled(state.destination_address.clone(), Style::default().fg(Color::Green)),
+                        Span::styled(
+                            state.destination_address.clone(),
+                            Style::default().fg(Color::Green),
+                        ),
                     ]));
                     lines.push(Line::from(vec![
                         Span::raw("  Settlement: "),
@@ -2422,14 +2615,16 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     lines.push(Line::from("  Press Enter to submit, Esc to cancel."));
                 }
                 ReconcileLockStep::Processing => {
-                    lines.push(Line::from(vec![
-                        Span::styled("  Processing reconciliation...", Style::default().fg(Color::Yellow)),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        "  Processing reconciliation...",
+                        Style::default().fg(Color::Yellow),
+                    )]));
                 }
                 ReconcileLockStep::Complete => {
-                    lines.push(Line::from(vec![
-                        Span::styled("  Reconciliation submitted!", Style::default().fg(Color::Green)),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        "  Reconciliation submitted!",
+                        Style::default().fg(Color::Green),
+                    )]));
                 }
                 ReconcileLockStep::Failed => {
                     if let Some(ref err) = state.error {
@@ -2460,7 +2655,11 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     lines.push(Line::from(vec![
                         Span::raw("  Recipient: "),
                         Span::styled(
-                            if state.recipient.is_empty() { "(enter Ghost ID or address)".to_string() } else { state.recipient.clone() },
+                            if state.recipient.is_empty() {
+                                "(enter Ghost ID or address)".to_string()
+                            } else {
+                                state.recipient.clone()
+                            },
                             Style::default().fg(Color::Yellow),
                         ),
                     ]));
@@ -2473,7 +2672,11 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     lines.push(Line::from(vec![
                         Span::raw("  Amount: "),
                         Span::styled(
-                            if state.amount.is_empty() { "(enter sats)".to_string() } else { format!("{} sats", state.amount) },
+                            if state.amount.is_empty() {
+                                "(enter sats)".to_string()
+                            } else {
+                                format!("{} sats", state.amount)
+                            },
                             Style::default().fg(Color::Yellow),
                         ),
                     ]));
@@ -2485,12 +2688,19 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     ]));
                     lines.push(Line::from(vec![
                         Span::raw("  Amount: "),
-                        Span::styled(format!("{} sats", state.amount), Style::default().fg(Color::Green)),
+                        Span::styled(
+                            format!("{} sats", state.amount),
+                            Style::default().fg(Color::Green),
+                        ),
                     ]));
                     lines.push(Line::from(vec![
                         Span::raw("  Memo: "),
                         Span::styled(
-                            if state.memo.is_empty() { "(optional, Enter to skip)".to_string() } else { state.memo.clone() },
+                            if state.memo.is_empty() {
+                                "(optional, Enter to skip)".to_string()
+                            } else {
+                                state.memo.clone()
+                            },
                             Style::default().fg(Color::Yellow),
                         ),
                     ]));
@@ -2504,7 +2714,10 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     ]));
                     lines.push(Line::from(vec![
                         Span::raw("  Amount: "),
-                        Span::styled(format!("{} sats", state.amount), Style::default().fg(Color::Yellow)),
+                        Span::styled(
+                            format!("{} sats", state.amount),
+                            Style::default().fg(Color::Yellow),
+                        ),
                     ]));
                     if !state.memo.is_empty() {
                         lines.push(Line::from(vec![
@@ -2516,9 +2729,10 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     lines.push(Line::from("  Press Enter to send, Esc to cancel."));
                 }
                 SendL2Step::Sending => {
-                    lines.push(Line::from(vec![
-                        Span::styled("  Sending...", Style::default().fg(Color::Yellow)),
-                    ]));
+                    lines.push(Line::from(vec![Span::styled(
+                        "  Sending...",
+                        Style::default().fg(Color::Yellow),
+                    )]));
                 }
                 SendL2Step::Complete => {
                     if let Some(ref pid) = state.payment_id {

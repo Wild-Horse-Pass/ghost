@@ -79,7 +79,10 @@ fn render_service_status(f: &mut Frame, area: Rect, app: &App) {
 
         lines.push(Line::from(vec![
             Span::styled("Peers: ", Style::default().fg(Color::Gray)),
-            Span::styled(gp.peer_count.to_string(), Style::default().fg(theme::PRIMARY_DIM)),
+            Span::styled(
+                gp.peer_count.to_string(),
+                Style::default().fg(theme::PRIMARY_DIM),
+            ),
         ]));
 
         let wraith_status = gp.wraith_enabled.unwrap_or(false);

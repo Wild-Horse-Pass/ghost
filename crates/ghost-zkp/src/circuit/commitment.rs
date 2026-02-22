@@ -101,9 +101,7 @@ pub fn compute_nullifier<F: PrimeField, CS: ConstraintSystem<F>>(
     let domain_value = F::from(NULLIFIER_DOMAIN_SEPARATOR);
 
     // Allocate domain separator
-    let domain = AllocatedNum::alloc(cs.namespace(|| "nullifier_domain_sep"), || {
-        Ok(domain_value)
-    })?;
+    let domain = AllocatedNum::alloc(cs.namespace(|| "nullifier_domain_sep"), || Ok(domain_value))?;
 
     // Constrain domain separator to the constant
     cs.enforce(
@@ -178,8 +176,7 @@ mod tests {
         let mut cs = TestConstraintSystem::<Fr>::new();
         let key_var =
             AllocatedNum::alloc(cs.namespace(|| "spending_key"), || Ok(spending_key)).unwrap();
-        let note_var =
-            AllocatedNum::alloc(cs.namespace(|| "note_id"), || Ok(note_id)).unwrap();
+        let note_var = AllocatedNum::alloc(cs.namespace(|| "note_id"), || Ok(note_id)).unwrap();
         let circuit_nullifier =
             compute_nullifier(cs.namespace(|| "nullifier"), &key_var, &note_var).unwrap();
 
@@ -200,7 +197,10 @@ mod tests {
 
         let null1 = compute_nullifier_native(key1, note_id);
         let null2 = compute_nullifier_native(key2, note_id);
-        assert_ne!(null1, null2, "Different keys must produce different nullifiers");
+        assert_ne!(
+            null1, null2,
+            "Different keys must produce different nullifiers"
+        );
 
         // Different note IDs produce different nullifiers
         let note1 = Fr::from(1u64);

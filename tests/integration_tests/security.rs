@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 18: Security Tests (25 tests)
 //!
 //! Security-focused tests including:
@@ -555,7 +533,7 @@ fn validate_username(username: &str) -> Result<(), String> {
     }
 
     // Reject non-ASCII (including Unicode homoglyphs)
-    if !username.chars().all(|c| c.is_ascii()) {
+    if !username.is_ascii() {
         return Err("non-ascii".into());
     }
 
@@ -594,6 +572,7 @@ fn validate_share_params(
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ValidatedShareParams {
     job_id: String,
     extranonce2: String,
@@ -765,12 +744,14 @@ fn test_655_noise_trusted_peer_verification() {
 fn test_656_noise_message_size_limits() {
     use ghost_consensus::noise::{MAX_MESSAGE_SIZE, MAX_PAYLOAD_SIZE, NOISE_OVERHEAD};
 
-    // Verify size constants are correct
-    assert!(MAX_PAYLOAD_SIZE < MAX_MESSAGE_SIZE);
+    // Verify size constants are correct: payload + overhead = message
     assert_eq!(MAX_PAYLOAD_SIZE + NOISE_OVERHEAD, MAX_MESSAGE_SIZE);
 
     // Verify encryption overhead is reasonable (16 bytes for AEAD tag)
     assert_eq!(NOISE_OVERHEAD, 16);
+
+    // Verify payload is smaller than total message size
+    assert_eq!(MAX_MESSAGE_SIZE - MAX_PAYLOAD_SIZE, NOISE_OVERHEAD);
 }
 
 #[tokio::test]

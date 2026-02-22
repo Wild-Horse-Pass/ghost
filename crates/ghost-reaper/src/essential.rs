@@ -11,16 +11,16 @@ use crate::witness::SpendType;
 /// Takes the original script and dead regions identified by `detect_dead_code()`.
 /// Removes those regions and concatenates the remaining bytes.
 /// The stripped script executes identically for validation purposes.
-pub fn strip_to_essential(script_bytes: &[u8], dead_regions: &[DeadCodeRegion]) -> (Vec<u8>, usize) {
+pub fn strip_to_essential(
+    script_bytes: &[u8],
+    dead_regions: &[DeadCodeRegion],
+) -> (Vec<u8>, usize) {
     if dead_regions.is_empty() {
         return (script_bytes.to_vec(), 0);
     }
 
     // Collect (offset, size) pairs for regions within this script, sorted by offset
-    let mut ranges: Vec<(usize, usize)> = dead_regions
-        .iter()
-        .map(|r| (r.offset, r.size))
-        .collect();
+    let mut ranges: Vec<(usize, usize)> = dead_regions.iter().map(|r| (r.offset, r.size)).collect();
     ranges.sort_by_key(|&(offset, _)| offset);
 
     let mut essential = Vec::with_capacity(script_bytes.len());
@@ -133,9 +133,7 @@ pub fn count_stack_consumption(script_bytes: &[u8], is_tapscript: bool) -> usize
             0xa7..=0xaa => {
                 // Look ahead past any data push to find EQUAL/EQUALVERIFY
                 let next = skip_push(script_bytes, pos + 1);
-                if next < len
-                    && (script_bytes[next] == 0x87 || script_bytes[next] == 0x88)
-                {
+                if next < len && (script_bytes[next] == 0x87 || script_bytes[next] == 0x88) {
                     count += 1;
                 }
                 pos += 1;
@@ -246,7 +244,9 @@ pub fn compute_witness_breakdown(
             // Stack items = all witness items except the tapscript and control block
             // With annex: last item is annex, second-to-last is control block, third-to-last is script
             let has_annex = witness_items.len() >= 3
-                && witness_items.last().is_some_and(|a| a.first() == Some(&0x50) && a.len() > 1);
+                && witness_items
+                    .last()
+                    .is_some_and(|a| a.first() == Some(&0x50) && a.len() > 1);
 
             let overhead_items = if has_annex { 3 } else { 2 }; // script + control_block [+ annex]
             let actual_stack_items = witness_items.len().saturating_sub(overhead_items);
@@ -260,8 +260,12 @@ pub fn compute_witness_breakdown(
             let excess_stack_items = actual_stack_items.saturating_sub(essential_stack_items);
 
             // Compute stack byte sizes — precise when simulator provides indices
-            let (essential_stack_bytes, excess_stack_bytes) =
-                compute_stack_bytes(&witness_items, actual_stack_items, &essential_indices, essential_stack_items);
+            let (essential_stack_bytes, excess_stack_bytes) = compute_stack_bytes(
+                &witness_items,
+                actual_stack_items,
+                &essential_indices,
+                essential_stack_items,
+            );
 
             let essential_bytes =
                 essential_script_bytes + control_block_bytes + essential_stack_bytes;
@@ -301,8 +305,12 @@ pub fn compute_witness_breakdown(
                 };
             let excess_stack_items = actual_stack_items.saturating_sub(essential_stack_items);
 
-            let (essential_stack_bytes, excess_stack_bytes) =
-                compute_stack_bytes(&witness_items, actual_stack_items, &essential_indices, essential_stack_items);
+            let (essential_stack_bytes, excess_stack_bytes) = compute_stack_bytes(
+                &witness_items,
+                actual_stack_items,
+                &essential_indices,
+                essential_stack_items,
+            );
 
             let essential_bytes = essential_script_bytes + essential_stack_bytes;
             let dead_bytes = total_witness_bytes.saturating_sub(essential_bytes);
@@ -420,7 +428,7 @@ mod tests {
         }
         script.push(0x53); // OP_3
         script.push(0xae); // OP_CHECKMULTISIG
-        // Should consume 2 sigs + 1 dummy = 3
+                           // Should consume 2 sigs + 1 dummy = 3
         assert_eq!(count_stack_consumption(&script, false), 3);
     }
 

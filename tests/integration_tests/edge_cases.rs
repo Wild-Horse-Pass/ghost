@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 19: Edge Cases and Boundary Tests (30 tests)
 //!
 //! Tests for unusual conditions and boundary cases including:
@@ -189,14 +167,14 @@ fn test_821_empty_transaction_list() {
 
 #[test]
 fn test_822_max_transactions() {
-    let txs: Vec<Transaction> = (0..10_000).map(|i| Transaction::dummy(i)).collect();
+    let txs: Vec<Transaction> = (0..10_000).map(Transaction::dummy).collect();
     let result = validate_transaction_list(&txs);
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_823_over_max_transactions() {
-    let txs: Vec<Transaction> = (0..10_001).map(|i| Transaction::dummy(i)).collect();
+    let txs: Vec<Transaction> = (0..10_001).map(Transaction::dummy).collect();
     let result = validate_transaction_list(&txs);
     assert!(result.is_err(), "Over max transactions should be rejected");
 }
@@ -471,7 +449,7 @@ fn validate_timestamp(ts: u64) -> Result<(), String> {
     const GENESIS: u64 = 1231006505;
     const YEAR_3000: u64 = 32503680000;
 
-    if ts < GENESIS || ts > YEAR_3000 {
+    if !(GENESIS..=YEAR_3000).contains(&ts) {
         return Err("timestamp out of range".into());
     }
     Ok(())
@@ -518,6 +496,7 @@ fn validate_hex_string(s: &str) -> Result<(), String> {
     Ok(())
 }
 
+#[allow(dead_code)]
 struct Transaction {
     id: u64,
 }

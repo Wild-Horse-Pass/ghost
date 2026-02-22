@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 5: Consensus & Voting Tests (60 tests)
 //!
 //! Comprehensive tests for BFT consensus including:
@@ -36,8 +14,8 @@ use std::time::{Duration, Instant};
 use ghost_common::constants::BFT_THRESHOLD_PERCENT;
 use ghost_common::types::NodeId;
 use ghost_consensus::{
-    BadBehavior, PeerReputation, ReputationManager, DISCONNECT_THRESHOLD, INITIAL_REPUTATION,
-    MAX_REPUTATION, TRUST_MIN_GOOD_MESSAGES, TRUST_THRESHOLD,
+    BadBehavior, ReputationManager, DISCONNECT_THRESHOLD, INITIAL_REPUTATION, MAX_REPUTATION,
+    TRUST_THRESHOLD,
 };
 
 // =============================================================================
@@ -97,7 +75,7 @@ fn test_239_prevent_double_voting() {
 
 #[test]
 fn test_240_session_timeout() {
-    let mut session = LocalVotingSession::new([0u8; 32], 1); // 1ms timeout
+    let session = LocalVotingSession::new([0u8; 32], 1); // 1ms timeout
     std::thread::sleep(Duration::from_millis(10));
 
     assert!(session.is_expired());
@@ -631,7 +609,7 @@ fn calculate_bft_quorum(total_nodes: usize) -> usize {
         return 0;
     }
     // Ceiling division: (total * 67 + 99) / 100
-    ((total_nodes as u64 * BFT_THRESHOLD_PERCENT + 99) / 100) as usize
+    (total_nodes as u64 * BFT_THRESHOLD_PERCENT).div_ceil(100) as usize
 }
 
 /// Calculate quorum with custom percentage
@@ -639,7 +617,7 @@ fn calculate_quorum(total_nodes: usize, percent: usize) -> usize {
     if total_nodes == 0 {
         return 0;
     }
-    ((total_nodes * percent + 99) / 100).max(1)
+    (total_nodes * percent).div_ceil(100).max(1)
 }
 
 #[derive(Debug, Clone)]
@@ -745,12 +723,14 @@ impl LocalVotingSession {
 
 // Payout types
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum PayoutType {
     Mining,
     PoolFee,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PayoutEntry {
     recipient_id: [u8; 32],
     address: Vec<u8>,
@@ -773,6 +753,7 @@ struct ValidationContext {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum PayoutValidationError {
     ExceedsAvailable { requested: u64, available: u64 },
     UnreasonableReward(u64),

@@ -567,7 +567,8 @@ impl GspClient {
         let (tx, rx) = tokio::sync::oneshot::channel();
         *self.pending_balance.write() = Some(tx);
 
-        self.send_message(ClientMessage::GetBalance { max_k }).await?;
+        self.send_message(ClientMessage::GetBalance { max_k })
+            .await?;
 
         match tokio::time::timeout(std::time::Duration::from_secs(10), rx).await {
             Ok(Ok(balance)) => Ok(balance),

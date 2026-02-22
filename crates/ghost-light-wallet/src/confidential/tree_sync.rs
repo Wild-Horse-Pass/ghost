@@ -147,9 +147,8 @@ impl TreeSync {
 
 /// Parse hex string to 32-byte array
 fn hex_to_32_bytes(hex_str: &str) -> WalletResult<[u8; 32]> {
-    let bytes = hex::decode(hex_str).map_err(|e| {
-        LightWalletError::Internal(format!("Invalid hex: {}", e))
-    })?;
+    let bytes = hex::decode(hex_str)
+        .map_err(|e| LightWalletError::Internal(format!("Invalid hex: {}", e)))?;
     if bytes.len() != 32 {
         return Err(LightWalletError::Internal(format!(
             "Expected 32 bytes, got {}",

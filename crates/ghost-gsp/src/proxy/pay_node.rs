@@ -350,7 +350,11 @@ impl PayNodeProxy {
     ///
     /// Note: The pay node manages its own wallet, so this queries the node's balance.
     /// The ghost_id parameter is used for verification/routing purposes.
-    pub async fn get_balance(&self, ghost_id: &str, max_k: Option<u32>) -> GspResult<WalletBalance> {
+    pub async fn get_balance(
+        &self,
+        ghost_id: &str,
+        max_k: Option<u32>,
+    ) -> GspResult<WalletBalance> {
         let mut url = format!("{}/api/v1/status", self.base_url);
         if let Some(k) = max_k {
             url = format!("{}?max_k={}", url, k);
@@ -1457,10 +1461,7 @@ impl PayNodeProxy {
     }
 
     /// Shield balance via Ghost Pay
-    pub async fn shield_balance(
-        &self,
-        body: &serde_json::Value,
-    ) -> GspResult<serde_json::Value> {
+    pub async fn shield_balance(&self, body: &serde_json::Value) -> GspResult<serde_json::Value> {
         let url = format!("{}/api/v1/confidential/shield", self.base_url);
         debug!(url = %url, "Shielding balance");
 
@@ -1507,10 +1508,7 @@ impl PayNodeProxy {
     }
 
     /// Get confidential notes for an owner from Ghost Pay
-    pub async fn get_confidential_notes(
-        &self,
-        owner_pubkey: &str,
-    ) -> GspResult<serde_json::Value> {
+    pub async fn get_confidential_notes(&self, owner_pubkey: &str) -> GspResult<serde_json::Value> {
         let url = format!(
             "{}/api/v1/confidential/notes/{}",
             self.base_url, owner_pubkey
@@ -1523,7 +1521,9 @@ impl PayNodeProxy {
             .map_err(|e| GspError::PayNodeUnavailable(e.to_string()))?;
 
         if !response.status().is_success() {
-            return Err(GspError::PayNodeError("Failed to get confidential notes".into()));
+            return Err(GspError::PayNodeError(
+                "Failed to get confidential notes".into(),
+            ));
         }
 
         response

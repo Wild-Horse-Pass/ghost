@@ -24,10 +24,7 @@ pub struct ConfidentialVerifier {
 
 impl ConfidentialVerifier {
     /// Create a verifier with a Groth16 verification key
-    pub fn new(
-        prepared_vk: Arc<PreparedVerifyingKey<Bls12>>,
-        prover_id: [u8; 32],
-    ) -> Self {
+    pub fn new(prepared_vk: Arc<PreparedVerifyingKey<Bls12>>, prover_id: [u8; 32]) -> Self {
         Self {
             prepared_vk: Some(prepared_vk),
             prover_id,
@@ -77,7 +74,10 @@ impl ConfidentialVerifier {
 
             match self.verify_groth16(proof, prepared_vk) {
                 Ok(valid) => {
-                    info!("Confidential transfer proof verified in {:?}", start.elapsed());
+                    info!(
+                        "Confidential transfer proof verified in {:?}",
+                        start.elapsed()
+                    );
                     return Ok(valid);
                 }
                 Err(e) => {
@@ -123,10 +123,7 @@ impl ConfidentialVerifier {
     }
 
     /// Build public inputs in circuit order
-    fn build_public_inputs(
-        &self,
-        inputs: &ConfidentialPublicInputs,
-    ) -> ZkResult<Vec<Fr>> {
+    fn build_public_inputs(&self, inputs: &ConfidentialPublicInputs) -> ZkResult<Vec<Fr>> {
         Ok(vec![
             bytes_to_field(&inputs.old_commitment_root)?,
             bytes_to_field(&inputs.new_commitment_root)?,
@@ -217,10 +214,8 @@ mod tests {
         let amount = 300u64;
         let recipient_old_value = 500u64;
 
-        let sender_new_commit = pedersen_commit_native(
-            Fr::from(sender_value - amount),
-            sender_new_blinding,
-        );
+        let sender_new_commit =
+            pedersen_commit_native(Fr::from(sender_value - amount), sender_new_blinding);
         let recipient_old_commit =
             pedersen_commit_native(Fr::from(recipient_old_value), recipient_old_blinding);
 
@@ -294,6 +289,8 @@ mod tests {
         assert!(proof.is_real_proof());
         assert_eq!(proof.proof.len(), GROTH16_PROOF_SIZE);
 
-        assert!(verifier.verify(&proof).expect("Verification should succeed"));
+        assert!(verifier
+            .verify(&proof)
+            .expect("Verification should succeed"));
     }
 }

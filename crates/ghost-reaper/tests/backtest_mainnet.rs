@@ -90,10 +90,21 @@ fn backtest_recent_mainnet_blocks() {
     let start_height = tip_height - 9;
     let end_height = tip_height;
 
-    println!("\n{}", "============================================================");
+    println!(
+        "\n{}",
+        "============================================================"
+    );
     println!("Ghost Reaper — Mainnet Backtest");
-    println!("Blocks {} to {} ({} blocks)", start_height, end_height, end_height - start_height + 1);
-    println!("{}", "============================================================\n");
+    println!(
+        "Blocks {} to {} ({} blocks)",
+        start_height,
+        end_height,
+        end_height - start_height + 1
+    );
+    println!(
+        "{}",
+        "============================================================\n"
+    );
 
     let mut stats = BacktestStats::default();
 
@@ -200,9 +211,15 @@ fn backtest_recent_mainnet_blocks() {
     }
 
     // Print results
-    println!("\n{}", "============================================================");
+    println!(
+        "\n{}",
+        "============================================================"
+    );
     println!("RESULTS");
-    println!("{}", "============================================================");
+    println!(
+        "{}",
+        "============================================================"
+    );
     println!("Blocks analyzed:   {}", stats.total_blocks);
     println!("Total transactions: {}", stats.total_txs);
     println!("  Coinbase (skip):  {}", stats.total_coinbase);
@@ -276,9 +293,15 @@ fn backtest_inscription_heavy_blocks() {
     // Block 840000 — post-halving inscriptions
     let interesting_heights: Vec<u64> = vec![774628, 776000, 800000, 840000];
 
-    println!("\n{}", "============================================================");
+    println!(
+        "\n{}",
+        "============================================================"
+    );
     println!("Ghost Reaper — Inscription-Heavy Block Backtest");
-    println!("{}", "============================================================\n");
+    println!(
+        "{}",
+        "============================================================\n"
+    );
 
     let mut total_txs = 0;
     let mut total_corpse = 0;
@@ -366,8 +389,10 @@ fn backtest_inscription_heavy_blocks() {
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }
 
-    println!("\nSummary: {}/{} corpse ({:.2}%), {} novel flags",
-        total_corpse, total_txs,
+    println!(
+        "\nSummary: {}/{} corpse ({:.2}%), {} novel flags",
+        total_corpse,
+        total_txs,
         total_corpse as f64 / total_txs.max(1) as f64 * 100.0,
         novel_flags
     );

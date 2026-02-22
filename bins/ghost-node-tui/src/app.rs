@@ -203,7 +203,10 @@ pub enum PendingAction {
     #[allow(dead_code)]
     StartService(String),
     #[allow(dead_code)]
-    ToggleCapability { name: String, new_value: bool },
+    ToggleCapability {
+        name: String,
+        new_value: bool,
+    },
     TriggerBackup,
     DeleteBackup(String),
 }
@@ -321,10 +324,22 @@ impl App {
             Tab::Swarm => self.swarm.nodes.len(),
             Tab::Mining => self.node_data.miners.as_ref().map_or(0, |m| m.len()),
             Tab::Bitcoin => self.node_data.peers.as_ref().map_or(0, |p| p.len()),
-            Tab::Backup => self.node_data.backup_history.as_ref().map_or(0, |b| b.len()),
+            Tab::Backup => self
+                .node_data
+                .backup_history
+                .as_ref()
+                .map_or(0, |b| b.len()),
             Tab::Logs => self.node_data.logs.as_ref().map_or(0, |l| l.len()),
-            Tab::L2Service => self.node_data.wraith_sessions.as_ref().map_or(0, |s| s.len()),
-            Tab::Watchdog => self.node_data.watchdog.as_ref().map_or(0, |w| w.recent_events.len()),
+            Tab::L2Service => self
+                .node_data
+                .wraith_sessions
+                .as_ref()
+                .map_or(0, |s| s.len()),
+            Tab::Watchdog => self
+                .node_data
+                .watchdog
+                .as_ref()
+                .map_or(0, |w| w.recent_events.len()),
             _ => 0,
         }
     }

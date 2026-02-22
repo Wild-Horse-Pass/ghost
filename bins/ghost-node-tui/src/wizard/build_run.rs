@@ -11,9 +11,7 @@ pub fn create() -> WizardState {
                 fields: vec![FieldDef {
                     key: "preflight_info",
                     label: "Pre-flight",
-                    field_type: FieldType::Info(
-                        "Running pre-flight checks...".to_string(),
-                    ),
+                    field_type: FieldType::Info("Running pre-flight checks...".to_string()),
                 }],
             },
             WizardStepDef {

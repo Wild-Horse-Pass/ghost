@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 1: Cryptography & Identity Tests (85 tests)
 //!
 //! Comprehensive tests for all cryptographic operations including:
@@ -210,7 +188,7 @@ fn test_012_load_identity_fails_for_wrong_length() {
 #[test]
 fn test_013_from_hex_parses_valid_64_char_hex() {
     let identity = NodeIdentity::generate();
-    let key_bytes = identity.node_id();
+    let _key_bytes = identity.node_id();
 
     // Create a deterministic key from known bytes (for testing)
     let hex_key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";

@@ -252,10 +252,9 @@ impl<F: PrimeField> Circuit<F> for ConfidentialTransferCircuit<F> {
 
         // Allocate nullifier domain separator
         let nullifier_domain_value = F::from(NULLIFIER_DOMAIN_SEPARATOR);
-        let nullifier_domain =
-            AllocatedNum::alloc(cs.namespace(|| "nullifier_domain"), || {
-                Ok(nullifier_domain_value)
-            })?;
+        let nullifier_domain = AllocatedNum::alloc(cs.namespace(|| "nullifier_domain"), || {
+            Ok(nullifier_domain_value)
+        })?;
         cs.enforce(
             || "nullifier_domain_constant",
             |lc| lc + nullifier_domain.get_variable(),
@@ -287,14 +286,11 @@ impl<F: PrimeField> Circuit<F> for ConfidentialTransferCircuit<F> {
         //    recipient_new_value = recipient_old_value + amount
         // ====================================================================
 
-        let sender_new_value =
-            AllocatedNum::alloc(cs.namespace(|| "sender_new_value"), || {
-                let sv = self
-                    .sender_value
-                    .ok_or(SynthesisError::AssignmentMissing)?;
-                let a = self.amount.ok_or(SynthesisError::AssignmentMissing)?;
-                Ok(F::from(sv.saturating_sub(a)))
-            })?;
+        let sender_new_value = AllocatedNum::alloc(cs.namespace(|| "sender_new_value"), || {
+            let sv = self.sender_value.ok_or(SynthesisError::AssignmentMissing)?;
+            let a = self.amount.ok_or(SynthesisError::AssignmentMissing)?;
+            Ok(F::from(sv.saturating_sub(a)))
+        })?;
 
         // Constrain: sender_value = sender_new_value + amount
         cs.enforce(
@@ -601,8 +597,7 @@ mod tests {
         let recipient_new_blinding = Fr::from(444u64);
 
         // Compute commitments
-        let sender_commit =
-            pedersen_commit_native(Fr::from(sender_value), sender_blinding);
+        let sender_commit = pedersen_commit_native(Fr::from(sender_value), sender_blinding);
         let sender_new_commit =
             pedersen_commit_native(Fr::from(sender_new_value), sender_new_blinding);
         let recipient_old_commit =
@@ -629,7 +624,7 @@ mod tests {
 
         // Level 0 siblings
         level_siblings_sender[0] = recipient_old_commit; // sibling of sender is recipient
-        // After replacing sender, recipient's sibling at level 0 is sender_new_commit
+                                                         // After replacing sender, recipient's sibling at level 0 is sender_new_commit
         level_siblings_recipient[0] = sender_new_commit;
 
         // Higher levels: compute hash of the pair from previous level
@@ -639,18 +634,12 @@ mod tests {
         // We need to propagate up for each level > 0
 
         // Compute old tree root
-        let old_root = compute_commitment_root_native(
-            sender_commit,
-            sender_index,
-            &level_siblings_sender,
-        );
+        let old_root =
+            compute_commitment_root_native(sender_commit, sender_index, &level_siblings_sender);
 
         // Compute intermediate root (sender replaced)
-        let intermediate_root = compute_commitment_root_native(
-            sender_new_commit,
-            sender_index,
-            &level_siblings_sender,
-        );
+        let intermediate_root =
+            compute_commitment_root_native(sender_new_commit, sender_index, &level_siblings_sender);
 
         // Verify recipient_old exists in intermediate root
         let check_intermediate = compute_commitment_root_native(
@@ -841,8 +830,7 @@ mod tests {
         let recipient_new_value = recipient_old_value;
         let recipient_new_blinding = Fr::from(444u64);
 
-        let sender_commit =
-            pedersen_commit_native(Fr::from(sender_value), sender_blinding);
+        let sender_commit = pedersen_commit_native(Fr::from(sender_value), sender_blinding);
         let sender_new_commit =
             pedersen_commit_native(Fr::from(sender_new_value), sender_new_blinding);
         let recipient_old_commit =
@@ -913,8 +901,7 @@ mod tests {
         let recipient_new_value = 1500u64;
         let recipient_new_blinding = Fr::from(444u64);
 
-        let sender_commit =
-            pedersen_commit_native(Fr::from(sender_value), sender_blinding);
+        let sender_commit = pedersen_commit_native(Fr::from(sender_value), sender_blinding);
         let sender_new_commit =
             pedersen_commit_native(Fr::from(sender_new_value), sender_new_blinding);
         let recipient_old_commit =

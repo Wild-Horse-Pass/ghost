@@ -424,7 +424,10 @@ pub fn validate_message(msg: &ClientMessage) -> ValidationResult {
                 ("new_commitment_root", new_commitment_root.as_str()),
                 ("nullifier", nullifier.as_str()),
                 ("sender_new_commitment", sender_new_commitment.as_str()),
-                ("recipient_new_commitment", recipient_new_commitment.as_str()),
+                (
+                    "recipient_new_commitment",
+                    recipient_new_commitment.as_str(),
+                ),
                 ("recipient_owner_pubkey", recipient_owner_pubkey.as_str()),
             ] {
                 if val.len() != 64 {

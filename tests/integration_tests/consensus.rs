@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Multi-Node Consensus Integration Tests
 //!
 //! Tests BFT consensus across multiple nodes:
@@ -69,7 +47,7 @@ impl ConsensusSession {
     /// Calculate required threshold using real BFT_THRESHOLD_PERCENT constant
     /// Uses ceiling division: (total * 67 + 99) / 100
     fn threshold(&self) -> usize {
-        ((self.total_nodes as u64 * BFT_THRESHOLD_PERCENT + 99) / 100) as usize
+        (self.total_nodes as u64 * BFT_THRESHOLD_PERCENT).div_ceil(100) as usize
     }
 
     fn is_approved(&self) -> bool {
@@ -97,8 +75,8 @@ fn test_bft_threshold() {
     let mut session = ConsensusSession::new(proposal, 10);
 
     // 6 approvals should not be enough (need 67% = 7)
-    for i in 0..6 {
-        session.add_vote(node_ids[i], true);
+    for node_id in node_ids.iter().take(6) {
+        session.add_vote(*node_id, true);
     }
     assert!(
         !session.is_approved(),
@@ -120,8 +98,8 @@ fn test_rejection_threshold() {
     let mut session = ConsensusSession::new(proposal, 10);
 
     // Need 67% (7) to approve, so 4 rejections can block
-    for i in 0..3 {
-        session.add_vote(node_ids[i], false);
+    for node_id in node_ids.iter().take(3) {
+        session.add_vote(*node_id, false);
     }
     assert!(!session.is_rejected(), "3/10 rejections should not block");
 
@@ -185,11 +163,11 @@ fn test_mixed_votes_consensus() {
 
     // 15 nodes, need 67% = 10.05 -> 11 approvals
     // 8 approve, 2 reject, 5 pending
-    for i in 0..8 {
-        session.add_vote(node_ids[i], true);
+    for node_id in node_ids.iter().take(8) {
+        session.add_vote(*node_id, true);
     }
-    for i in 8..10 {
-        session.add_vote(node_ids[i], false);
+    for node_id in &node_ids[8..10] {
+        session.add_vote(*node_id, false);
     }
 
     assert!(!session.is_approved(), "8/15 approvals not enough");
@@ -203,8 +181,8 @@ fn test_mixed_votes_consensus() {
     );
 
     // 3 more approvals
-    for i in 10..13 {
-        session.add_vote(node_ids[i], true);
+    for node_id in &node_ids[10..13] {
+        session.add_vote(*node_id, true);
     }
 
     assert!(
@@ -267,8 +245,8 @@ fn test_multiple_proposals() {
     assert_eq!(manager.session_count(), 3);
 
     // Vote on proposal 0 - all approve
-    for i in 0..4 {
-        let result = manager.vote(&proposals[0], node_ids[i], true);
+    for (i, node_id) in node_ids.iter().enumerate().take(4) {
+        let result = manager.vote(&proposals[0], *node_id, true);
         if i < 3 {
             assert!(result.is_none(), "Not enough votes yet");
         } else {
@@ -279,8 +257,8 @@ fn test_multiple_proposals() {
     // Vote on proposal 1 - rejections
     // With 5 nodes and 67% threshold, need 4 approvals
     // So 2 rejections (5 - 4 + 1 = 2) can block
-    for i in 0..3 {
-        let result = manager.vote(&proposals[1], node_ids[i], false);
+    for (i, node_id) in node_ids.iter().enumerate().take(3) {
+        let result = manager.vote(&proposals[1], *node_id, false);
         if i < 1 {
             assert!(result.is_none(), "1 rejection not enough to block");
         } else {
@@ -303,13 +281,13 @@ fn test_network_partition() {
     let mut partition_b = ConsensusSession::new(proposal, 5);
 
     // Partition A: all 5 nodes approve
-    for i in 0..5 {
-        partition_a.add_vote(node_ids[i], true);
+    for node_id in node_ids.iter().take(5) {
+        partition_a.add_vote(*node_id, true);
     }
 
     // Partition B: all 5 nodes approve
-    for i in 5..10 {
-        partition_b.add_vote(node_ids[i], true);
+    for node_id in &node_ids[5..10] {
+        partition_b.add_vote(*node_id, true);
     }
 
     // Each partition thinks it has consensus
@@ -320,8 +298,8 @@ fn test_network_partition() {
     let mut full_view = ConsensusSession::new(proposal, 10);
 
     // Only partition A's votes are received before partition heals
-    for i in 0..5 {
-        full_view.add_vote(node_ids[i], true);
+    for node_id in node_ids.iter().take(5) {
+        full_view.add_vote(*node_id, true);
     }
 
     assert!(
@@ -330,8 +308,8 @@ fn test_network_partition() {
     );
 
     // After partition heals, more votes come in
-    for i in 5..7 {
-        full_view.add_vote(node_ids[i], true);
+    for node_id in &node_ids[5..7] {
+        full_view.add_vote(*node_id, true);
     }
 
     assert!(full_view.is_approved(), "7/10 = 70% reaches threshold");
@@ -473,10 +451,10 @@ mod async_consensus_tests {
 
         // Spawn tasks to simulate nodes voting
         let mut handles = Vec::new();
-        for i in 0..10 {
+        for (i, node_id) in node_ids.iter().enumerate().take(10) {
             let session = Arc::clone(&session);
             let votes_collected = Arc::clone(&votes_collected);
-            let node_id = node_ids[i];
+            let node_id = *node_id;
 
             handles.push(tokio::spawn(async move {
                 // Simulate network delay

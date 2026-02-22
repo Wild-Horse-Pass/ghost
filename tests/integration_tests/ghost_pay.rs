@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 11: Ghost Pay L2 Payment Tests (40 tests)
 //!
 //! Tests for Lightning-inspired L2 payment channel including:
@@ -631,8 +609,8 @@ fn test_685_close_dust_output_trimmed() {
     let close_tx = pool.create_closing_tx(&channel_id).unwrap();
 
     // Pool output should be trimmed if below dust
-    if close_tx.pool_output.is_some() {
-        assert!(close_tx.pool_output.unwrap().value >= 546);
+    if let Some(pool_output) = &close_tx.pool_output {
+        assert!(pool_output.value >= 546);
     }
 }
 
@@ -729,6 +707,7 @@ enum ChannelState {
     Closed,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct Channel {
     channel_id: String,
@@ -776,6 +755,7 @@ struct Htlc {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum FailureReason {
     Timeout,
     InvalidPreimage,
@@ -794,6 +774,7 @@ struct ClosingTx {
     miner_output: Option<TxOutput>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct TxOutput {
     address: String,

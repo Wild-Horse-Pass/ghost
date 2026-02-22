@@ -275,10 +275,7 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             "/api/v1/config/template_profile",
             get(api_config_template_profile_handler),
         )
-        .route(
-            "/api/v1/config/reaper",
-            get(api_config_reaper_handler),
-        )
+        .route("/api/v1/config/reaper", get(api_config_reaper_handler))
         .route(
             "/api/v1/config/ghost_pay",
             get(api_config_ghost_pay_handler),
@@ -526,10 +523,7 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         // Dashboard: Unredacted miners list (for dashboard mining page)
         .route("/api/v1/mining/miners/full", get(api_miners_full_handler))
         // Dashboard: Haze/Shroud configuration (wizard endpoints)
-        .route(
-            "/api/v1/haze/configure",
-            post(api_haze_configure_handler),
-        )
+        .route("/api/v1/haze/configure", post(api_haze_configure_handler))
         .route(
             "/api/v1/shroud/configure",
             post(api_shroud_configure_handler),
@@ -1811,15 +1805,24 @@ async fn fetch_ghostpay_from_service() -> Option<GhostPayLiveStatus> {
     let json: serde_json::Value = resp.json().await.ok()?;
     let inner = json.get("response")?;
 
-    let success = inner.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+    let success = inner
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     if !success {
         return None;
     }
 
     Some(GhostPayLiveStatus {
         epoch: inner.get("epoch").and_then(|v| v.as_u64()).unwrap_or(0),
-        virtual_block: inner.get("virtual_block").and_then(|v| v.as_u64()).unwrap_or(0),
-        wraith_enabled: inner.get("wraith_enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+        virtual_block: inner
+            .get("virtual_block")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        wraith_enabled: inner
+            .get("wraith_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         sync_state: "synced",
     })
 }
@@ -1828,7 +1831,12 @@ async fn fetch_ghostpay_from_service() -> Option<GhostPayLiveStatus> {
 fn check_ghostpay_local(state: &VerificationState) -> Option<GhostPayLiveStatus> {
     let config = state.dashboard_config.read();
     if !config.ghost_pay {
-        return Some(GhostPayLiveStatus { epoch: 0, virtual_block: 0, wraith_enabled: false, sync_state: "disabled" });
+        return Some(GhostPayLiveStatus {
+            epoch: 0,
+            virtual_block: 0,
+            wraith_enabled: false,
+            sync_state: "disabled",
+        });
     }
     drop(config);
 
@@ -1853,7 +1861,12 @@ async fn api_ghostpay_status_handler(
             // Ghost-pay runs as separate service on port 8800 — query via spawned task
             match tokio::spawn(fetch_ghostpay_from_service()).await {
                 Ok(Some(status)) => status,
-                _ => GhostPayLiveStatus { epoch: 0, virtual_block: 0, wraith_enabled: false, sync_state: "unavailable" },
+                _ => GhostPayLiveStatus {
+                    epoch: 0,
+                    virtual_block: 0,
+                    wraith_enabled: false,
+                    sync_state: "unavailable",
+                },
             }
         }
     };
@@ -2444,7 +2457,12 @@ async fn api_watchdog_status_handler(
         Some(status) => status,
         None => match tokio::spawn(fetch_ghostpay_from_service()).await {
             Ok(Some(status)) => status,
-            _ => GhostPayLiveStatus { epoch: 0, virtual_block: 0, wraith_enabled: false, sync_state: "unavailable" },
+            _ => GhostPayLiveStatus {
+                epoch: 0,
+                virtual_block: 0,
+                wraith_enabled: false,
+                sync_state: "unavailable",
+            },
         },
     };
     let ghost_pay_status = match gp.sync_state {
@@ -4487,9 +4505,7 @@ async fn api_mpc_contributors_handler(
 ///
 /// Proxies blockchain info from Ghost Core to show haze mode, storage savings,
 /// and block counts. Uses the existing `hazed` field from `getblockchaininfo`.
-async fn api_haze_status_handler(
-    State(state): State<Arc<VerificationState>>,
-) -> impl IntoResponse {
+async fn api_haze_status_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let archive_mode = { state.dashboard_config.read().archive_mode };
 
     let rpc_result = match state.rpc {
@@ -4505,8 +4521,21 @@ async fn api_haze_status_handler(
 
     let (hazed, blocks, size_on_disk, pruned, chain, mode) = match rpc_result {
         Some(info) => {
-            let mode = if archive_mode { "full_archive" } else if info.hazed { "hazed" } else { "standard" };
-            (info.hazed, info.blocks, info.size_on_disk, info.pruned, info.chain, mode)
+            let mode = if archive_mode {
+                "full_archive"
+            } else if info.hazed {
+                "hazed"
+            } else {
+                "standard"
+            };
+            (
+                info.hazed,
+                info.blocks,
+                info.size_on_disk,
+                info.pruned,
+                info.chain,
+                mode,
+            )
         }
         None => (false, 0, 0, false, String::new(), "unknown"),
     };
@@ -4684,12 +4713,10 @@ async fn api_node_restart_handler(
         .await;
 
     match result {
-        Ok(output) if output.status.success() => {
-            Json(serde_json::json!({
-                "success": true,
-                "message": "Node restart initiated"
-            }))
-        }
+        Ok(output) if output.status.success() => Json(serde_json::json!({
+            "success": true,
+            "message": "Node restart initiated"
+        })),
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             error!("Node restart failed: {}", stderr);

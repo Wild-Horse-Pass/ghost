@@ -30,7 +30,9 @@ pub fn analyze_legacy_scriptsig(
 
     // Last push might be a P2SH redeemScript — check it for dead code
     let last = &pushes[pushes.len() - 1];
-    if last.size > 1 && looks_like_redeem_script(&script_sig_bytes[last.data_start..last.data_start + last.size]) {
+    if last.size > 1
+        && looks_like_redeem_script(&script_sig_bytes[last.data_start..last.data_start + last.size])
+    {
         let redeem_script = &script_sig_bytes[last.data_start..last.data_start + last.size];
         let inner_regions = detect_dead_code(redeem_script, input_index, config);
         // Adjust offsets: inner regions are relative to the redeemScript start,
@@ -46,9 +48,8 @@ pub fn analyze_legacy_scriptsig(
         pushes.len() - 1
     } else {
         // If there's only one push, still check it (unless it's a redeemScript)
-        if looks_like_redeem_script(
-            &script_sig_bytes[last.data_start..last.data_start + last.size],
-        ) {
+        if looks_like_redeem_script(&script_sig_bytes[last.data_start..last.data_start + last.size])
+        {
             return regions;
         }
         pushes.len()
@@ -134,8 +135,7 @@ fn parse_pushes(script: &[u8]) -> Vec<PushInfo> {
                 if pos + 2 >= len {
                     break;
                 }
-                let push_len =
-                    u16::from_le_bytes([script[pos + 1], script[pos + 2]]) as usize;
+                let push_len = u16::from_le_bytes([script[pos + 1], script[pos + 2]]) as usize;
                 if pos + 3 + push_len > len {
                     break;
                 }
@@ -281,9 +281,6 @@ mod tests {
         let config = ReaperConfig::strict();
         let regions = analyze_legacy_scriptsig(&script_sig, 0, &config);
         assert_eq!(regions.len(), 1);
-        assert_eq!(
-            regions[0].dead_code_type,
-            DeadCodeType::LegacyScriptSigData
-        );
+        assert_eq!(regions[0].dead_code_type, DeadCodeType::LegacyScriptSigData);
     }
 }

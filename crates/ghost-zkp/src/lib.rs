@@ -93,8 +93,8 @@ pub use types::{
 pub use verifier::BlockVerifier;
 
 // Re-export state tree utilities
-pub use state_tree::{BalanceTree, BalanceTreeBuilder};
 pub use commitment_tree::{CommitmentTree, CommitmentTreeBuilder};
+pub use state_tree::{BalanceTree, BalanceTreeBuilder};
 
 // Re-export payout types
 pub use payout_prover::{PayoutProof, PayoutProver, PayoutWitness};
@@ -106,12 +106,12 @@ pub use confidential_verifier::ConfidentialVerifier;
 
 // Re-export circuit types for advanced usage
 pub use circuit::{
-    BlockCircuit, BlockCircuitBuilder, ConfidentialTransferCircuit, MerkleCircuit, PaymentCircuit,
-    PaymentStateTransitionCircuit, StateTransitionOutputs,
-};
-pub use circuit::{
     compute_nullifier_native, pedersen_commit_native, COMMITMENT_DOMAIN_SEPARATOR,
     NULLIFIER_DOMAIN_SEPARATOR,
+};
+pub use circuit::{
+    BlockCircuit, BlockCircuitBuilder, ConfidentialTransferCircuit, MerkleCircuit, PaymentCircuit,
+    PaymentStateTransitionCircuit, StateTransitionOutputs,
 };
 
 // ============================================================================
@@ -507,10 +507,7 @@ pub fn load_confidential_verifier(
 /// - `confidential_params_current.bin` - Full proving parameters
 /// - `confidential_vk.bin` - Verification key only
 #[cfg(not(feature = "zk-production"))]
-pub fn generate_confidential_params(
-    dir: &std::path::Path,
-    tree_depth: usize,
-) -> ZkResult<()> {
+pub fn generate_confidential_params(dir: &std::path::Path, tree_depth: usize) -> ZkResult<()> {
     use bellperson::groth16::{generate_random_parameters, Parameters};
     use blstrs::Bls12;
     use std::io::{BufWriter, Write};
@@ -536,8 +533,13 @@ pub fn generate_confidential_params(
         params
             .write(&mut writer)
             .map_err(|e| ZkError::SetupError(format!("Failed to write params: {}", e)))?;
-        writer.flush().map_err(|e| ZkError::SetupError(format!("Flush failed: {}", e)))?;
-        writer.get_ref().sync_all().map_err(|e| ZkError::SetupError(format!("Sync failed: {}", e)))?;
+        writer
+            .flush()
+            .map_err(|e| ZkError::SetupError(format!("Flush failed: {}", e)))?;
+        writer
+            .get_ref()
+            .sync_all()
+            .map_err(|e| ZkError::SetupError(format!("Sync failed: {}", e)))?;
     }
 
     // Save VK separately
@@ -550,16 +552,19 @@ pub fn generate_confidential_params(
             .vk
             .write(&mut writer)
             .map_err(|e| ZkError::SetupError(format!("Failed to write VK: {}", e)))?;
-        writer.flush().map_err(|e| ZkError::SetupError(format!("Flush failed: {}", e)))?;
-        writer.get_ref().sync_all().map_err(|e| ZkError::SetupError(format!("Sync failed: {}", e)))?;
+        writer
+            .flush()
+            .map_err(|e| ZkError::SetupError(format!("Flush failed: {}", e)))?;
+        writer
+            .get_ref()
+            .sync_all()
+            .map_err(|e| ZkError::SetupError(format!("Sync failed: {}", e)))?;
     }
 
     let params_size = std::fs::metadata(&params_path)
         .map(|m| m.len())
         .unwrap_or(0);
-    let vk_size = std::fs::metadata(&vk_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let vk_size = std::fs::metadata(&vk_path).map(|m| m.len()).unwrap_or(0);
 
     tracing::info!(
         params_path = %params_path.display(),

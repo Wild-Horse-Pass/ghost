@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 8: Block Template Tests (45 tests)
 //!
 //! Tests for block template management including:
@@ -567,6 +545,7 @@ fn test_545_job_generation() {
 // HELPER TYPES AND FUNCTIONS
 // =============================================================================
 
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 struct BlockTemplate {
     version: u32,
@@ -623,6 +602,7 @@ impl BlockTemplate {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 struct TemplateTransaction {
     data: String,
@@ -749,6 +729,7 @@ impl Coinbase {
     }
 }
 
+#[allow(dead_code)]
 struct ScriptSig {
     height: u64,
     pool_tag: Option<String>,
@@ -768,11 +749,13 @@ impl ScriptSig {
     }
 }
 
+#[allow(dead_code)]
 struct TxOutput {
     address: String,
     value: u64,
 }
 
+#[allow(dead_code)]
 fn calculate_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
     if txids.is_empty() {
         return [0u8; 32];
@@ -783,7 +766,7 @@ fn calculate_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
 
     let mut level: Vec<[u8; 32]> = txids.to_vec();
     while level.len() > 1 {
-        if level.len() % 2 != 0 {
+        if !level.len().is_multiple_of(2) {
             level.push(*level.last().unwrap());
         }
         let mut next_level = vec![];
@@ -803,16 +786,21 @@ fn calculate_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
     level[0]
 }
 
+#[allow(dead_code)]
 fn calculate_merkle_branch(txids: &[[u8; 32]], index: usize) -> Vec<[u8; 32]> {
     let mut branch = vec![];
     let mut level = txids.to_vec();
     let mut idx = index;
 
     while level.len() > 1 {
-        if level.len() % 2 != 0 {
+        if !level.len().is_multiple_of(2) {
             level.push(*level.last().unwrap());
         }
-        let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+        let sibling_idx = if idx.is_multiple_of(2) {
+            idx + 1
+        } else {
+            idx - 1
+        };
         if sibling_idx < level.len() {
             branch.push(level[sibling_idx]);
         }
@@ -831,10 +819,12 @@ fn calculate_merkle_branch(txids: &[[u8; 32]], index: usize) -> Vec<[u8; 32]> {
     branch
 }
 
+#[allow(dead_code)]
 fn calculate_witness_merkle_root(wtxids: &[[u8; 32]]) -> [u8; 32] {
     calculate_merkle_root(wtxids)
 }
 
+#[allow(dead_code)]
 fn construct_witness_commitment(root: &[u8; 32], nonce: &[u8; 32]) -> [u8; 32] {
     let mut combined = [0u8; 32];
     for i in 0..32 {
@@ -909,8 +899,8 @@ impl VarDiff {
             self.shares.iter().map(|d| d.as_secs_f64()).sum::<f64>() / self.shares.len() as f64;
 
         let ratio = self.target_time.as_secs_f64() / avg_time;
-        let new_diff = (self.current * ratio).clamp(self.minimum, self.maximum);
-        new_diff
+
+        (self.current * ratio).clamp(self.minimum, self.maximum)
     }
 }
 
@@ -918,6 +908,7 @@ fn hash_meets_target(hash: &str, target: &str) -> bool {
     hash <= target
 }
 
+#[allow(dead_code)]
 struct MiningJob {
     id: String,
     template: BlockTemplate,

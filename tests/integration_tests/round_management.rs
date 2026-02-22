@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 13: Round Management Tests (30 tests)
 //!
 //! Tests for mining round lifecycle including:
@@ -377,7 +355,7 @@ fn test_721_pps_payout_calculation() {
         })
         .unwrap();
 
-    let payouts = manager.calculate_payouts(0, PayoutScheme::PPS).unwrap();
+    let payouts = manager.calculate_payouts(0, PayoutScheme::Pps).unwrap();
 
     // Each miner should get ~50% of reward
     let miner1_payout = payouts.get("miner1").unwrap();
@@ -419,7 +397,7 @@ fn test_722_pplns_payout_calculation() {
         })
         .unwrap();
 
-    let payouts = manager.calculate_payouts(0, PayoutScheme::PPLNS).unwrap();
+    let payouts = manager.calculate_payouts(0, PayoutScheme::Pplns).unwrap();
 
     let miner1_payout = *payouts.get("miner1").unwrap();
     let miner2_payout = *payouts.get("miner2").unwrap();
@@ -493,7 +471,7 @@ fn test_724_pool_fee_deduction() {
         })
         .unwrap();
 
-    let payouts = manager.calculate_payouts(0, PayoutScheme::PPS).unwrap();
+    let payouts = manager.calculate_payouts(0, PayoutScheme::Pps).unwrap();
 
     // Miner should get 98% (2% fee)
     let miner_payout = *payouts.get("miner1").unwrap();
@@ -526,7 +504,7 @@ fn test_725_minimum_payout_threshold() {
         })
         .unwrap();
 
-    let payouts = manager.calculate_payouts(0, PayoutScheme::PPS).unwrap();
+    let payouts = manager.calculate_payouts(0, PayoutScheme::Pps).unwrap();
 
     // Payout below threshold should be 0 (held for next round)
     let miner_payout = payouts.get("miner1").copied().unwrap_or(0);
@@ -557,7 +535,7 @@ fn test_726_payout_rounding() {
         })
         .unwrap();
 
-    let payouts = manager.calculate_payouts(0, PayoutScheme::PPS).unwrap();
+    let payouts = manager.calculate_payouts(0, PayoutScheme::Pps).unwrap();
 
     // Total payouts should not exceed reward
     let total: u64 = payouts.values().sum();
@@ -572,7 +550,7 @@ fn test_727_zero_shares_round() {
     // No shares submitted
     manager.finalize_current(BlockInfo::default()).unwrap();
 
-    let payouts = manager.calculate_payouts(0, PayoutScheme::PPS).unwrap();
+    let payouts = manager.calculate_payouts(0, PayoutScheme::Pps).unwrap();
     assert!(payouts.is_empty());
 }
 
@@ -653,7 +631,7 @@ fn test_730_payout_history_recorded() {
         })
         .unwrap();
 
-    let payouts = manager.calculate_payouts(0, PayoutScheme::PPS).unwrap();
+    let payouts = manager.calculate_payouts(0, PayoutScheme::Pps).unwrap();
     manager.execute_payouts(0, &payouts).unwrap();
 
     let history = manager.get_payout_history("miner1");
@@ -714,6 +692,7 @@ struct BlockInfo {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ShareRecord {
     miner_id: String,
     difficulty: f64,
@@ -722,8 +701,8 @@ struct ShareRecord {
 
 #[derive(Debug, Clone)]
 enum PayoutScheme {
-    PPS,
-    PPLNS,
+    Pps,
+    Pplns,
     Proportional,
 }
 
@@ -742,6 +721,7 @@ struct RoundManager {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PayoutRecord {
     round_id: u64,
     amount: u64,

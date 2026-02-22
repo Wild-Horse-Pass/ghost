@@ -15,8 +15,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
 use ghost_zkp::{
-    CommitmentTree, ConfidentialProver, ConfidentialVerifier,
-    compute_commitment_bytes,
+    compute_commitment_bytes, CommitmentTree, ConfidentialProver, ConfidentialVerifier,
 };
 
 const TREE_DEPTH: usize = 20;
@@ -25,10 +24,12 @@ fn main() {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
-    let api_url = get_arg(&args, "--api-url").unwrap_or_else(|| "http://127.0.0.1:8800".to_string());
+    let api_url =
+        get_arg(&args, "--api-url").unwrap_or_else(|| "http://127.0.0.1:8800".to_string());
     let api_secret = get_arg(&args, "--api-secret").expect("--api-secret required");
-    let params_path = get_arg(&args, "--params-path")
-        .unwrap_or_else(|| "/tmp/ghost_confidential_params/confidential_params_current.bin".to_string());
+    let params_path = get_arg(&args, "--params-path").unwrap_or_else(|| {
+        "/tmp/ghost_confidential_params/confidential_params_current.bin".to_string()
+    });
 
     println!("=== Ghost Pay Confidential Transfer E2E Test ===");
     println!("API: {}", api_url);
@@ -39,11 +40,14 @@ fn main() {
     println!("[1/6] Loading Groth16 proving parameters...");
     let file = std::fs::File::open(&params_path).expect("Failed to open params file");
     let reader = std::io::BufReader::new(file);
-    let params: Parameters<Bls12> =
-        Parameters::read(reader, false).expect("Failed to read params");
+    let params: Parameters<Bls12> = Parameters::read(reader, false).expect("Failed to read params");
     let prover = ConfidentialProver::new_with_params(std::sync::Arc::new(params), TREE_DEPTH);
     let verifier = ConfidentialVerifier::for_prover(&prover);
-    println!("  Loaded OK (has_groth16={}, has_vk={})", prover.has_groth16_params(), verifier.has_groth16_vk());
+    println!(
+        "  Loaded OK (has_groth16={}, has_vk={})",
+        prover.has_groth16_params(),
+        verifier.has_groth16_vk()
+    );
 
     // Step 2: Get current tree state from server
     println!("[2/6] Fetching current tree state...");
@@ -85,7 +89,10 @@ fn main() {
     let recipient_index = shield2["note_index"].as_u64().unwrap();
     let new_root_after_shield = shield2["new_root"].as_str().unwrap().to_string();
     println!("  Recipient note created at index {}", recipient_index);
-    println!("  Tree root after shields: {}...", &new_root_after_shield[..16]);
+    println!(
+        "  Tree root after shields: {}...",
+        &new_root_after_shield[..16]
+    );
 
     // Step 5: Generate confidential transfer proof
     println!("[5/6] Generating Groth16 confidential transfer proof...");
@@ -93,11 +100,16 @@ fn main() {
 
     // Build a local tree matching the server state
     // We need ALL notes in the tree, not just ours. Fetch from server.
-    let notes_url = format!("{}/api/v1/confidential/notes/{}", api_url, hex::encode(sender_owner));
+    let notes_url = format!(
+        "{}/api/v1/confidential/notes/{}",
+        api_url,
+        hex::encode(sender_owner)
+    );
     // Since we can't easily fetch all notes, rebuild from our known commitments
     // and any prior notes. Use the server's next_index to detect prior notes.
     let sender_commitment = compute_commitment_bytes(sender_amount, &sender_blinding).unwrap();
-    let recipient_commitment = compute_commitment_bytes(recipient_amount, &recipient_blinding).unwrap();
+    let recipient_commitment =
+        compute_commitment_bytes(recipient_amount, &recipient_blinding).unwrap();
 
     let mut local_tree = CommitmentTree::new(TREE_DEPTH);
     // Insert all notes up to our indices (zeros for unknown prior notes)
@@ -119,7 +131,10 @@ fn main() {
         // Use a workaround: query the tree state which includes the root,
         // then use it to verify our computed root matches.
         // For a clean test, we should start with an empty tree.
-        println!("  WARNING: Tree has prior notes (index {}). Wiping and re-shielding...", sender_index);
+        println!(
+            "  WARNING: Tree has prior notes (index {}). Wiping and re-shielding...",
+            sender_index
+        );
 
         // Wipe the confidential tables on VM and restart
         // Actually, let's just work with what we have by building the tree correctly.
@@ -187,11 +202,18 @@ fn main() {
     let proof = prover.prove(&witness).expect("Proof generation failed");
     let proof_time = start.elapsed();
     println!("  Proof generated in {:?}", proof_time);
-    println!("  Proof size: {} bytes (real Groth16: {})", proof.proof.len(), proof.is_real_proof());
+    println!(
+        "  Proof size: {} bytes (real Groth16: {})",
+        proof.proof.len(),
+        proof.is_real_proof()
+    );
 
     // Verify locally first
     let local_valid = verifier.verify(&proof).expect("Local verification failed");
-    println!("  Local verification: {}", if local_valid { "PASS" } else { "FAIL" });
+    println!(
+        "  Local verification: {}",
+        if local_valid { "PASS" } else { "FAIL" }
+    );
     assert!(local_valid, "Local proof verification failed!");
 
     // Step 6: Submit transfer to server
@@ -214,7 +236,10 @@ fn main() {
         &body,
     );
 
-    println!("  Server response: {}", serde_json::to_string_pretty(&result).unwrap());
+    println!(
+        "  Server response: {}",
+        serde_json::to_string_pretty(&result).unwrap()
+    );
 
     // Verify final tree state
     let final_state: serde_json::Value = http_get(&format!("{}/api/v1/confidential/tree", api_url));
@@ -224,11 +249,20 @@ fn main() {
 
     println!();
     println!("=== RESULTS ===");
-    println!("  Transfer ID: {}", result.get("transfer_id").and_then(|v| v.as_str()).unwrap_or("N/A"));
+    println!(
+        "  Transfer ID: {}",
+        result
+            .get("transfer_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("N/A")
+    );
     println!("  Final root: {}...", &final_root[..16]);
     println!("  Note count: {}", final_note_count);
     println!("  Nullifier count: {}", final_nullifier_count);
-    println!("  Expected root match: {}", final_root == hex::encode(new_root_after_transfer));
+    println!(
+        "  Expected root match: {}",
+        final_root == hex::encode(new_root_after_transfer)
+    );
 
     if result.get("transfer_id").is_some() {
         println!();
@@ -236,7 +270,13 @@ fn main() {
     } else {
         println!();
         println!("  *** E2E TEST FAILED ***");
-        println!("  Error: {}", result.get("error").and_then(|v| v.as_str()).unwrap_or("unknown"));
+        println!(
+            "  Error: {}",
+            result
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+        );
         std::process::exit(1);
     }
 }
@@ -311,11 +351,16 @@ fn http_post_authed(url: &str, secret: &str, body: &serde_json::Value) -> serde_
     let output = std::process::Command::new("curl")
         .args([
             "-s",
-            "-X", "POST",
-            "-H", "Content-Type: application/json",
-            "-H", &format!("X-Ghost-Timestamp: {}", timestamp),
-            "-H", &format!("X-Ghost-Signature: {}", signature),
-            "-d", &body_str,
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            &format!("X-Ghost-Timestamp: {}", timestamp),
+            "-H",
+            &format!("X-Ghost-Signature: {}", signature),
+            "-d",
+            &body_str,
             url,
         ])
         .output()
@@ -324,7 +369,10 @@ fn http_post_authed(url: &str, secret: &str, body: &serde_json::Value) -> serde_
     let response = String::from_utf8_lossy(&output.stdout);
     if response.is_empty() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("Empty response from server. Status code likely non-200. Stderr: {}", stderr);
+        panic!(
+            "Empty response from server. Status code likely non-200. Stderr: {}",
+            stderr
+        );
     }
     serde_json::from_str(&response).unwrap_or_else(|e| {
         panic!("Invalid JSON: {} — Response: {}", e, response);

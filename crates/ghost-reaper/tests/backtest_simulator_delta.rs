@@ -13,41 +13,55 @@ use std::process::Command;
 
 fn fetch_block_hash(height: u64) -> Option<String> {
     let output = Command::new("curl")
-        .args(["-sf", &format!("https://mempool.space/api/block-height/{}", height)])
+        .args([
+            "-sf",
+            &format!("https://mempool.space/api/block-height/{}", height),
+        ])
         .output()
         .ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn fetch_raw_block(hash: &str) -> Option<Vec<u8>> {
     let output = Command::new("curl")
-        .args(["-sf", &format!("https://mempool.space/api/block/{}/raw", hash)])
+        .args([
+            "-sf",
+            &format!("https://mempool.space/api/block/{}/raw", hash),
+        ])
         .output()
         .ok()?;
-    if !output.status.success() { return None; }
+    if !output.status.success() {
+        return None;
+    }
     Some(output.stdout)
 }
 
 /// Classify a corpse tx: is it flagged by known spam patterns, or ONLY by
 /// computational / EC checks? The latter is the danger zone for false positives.
 fn classify_corpse(regions: &[ghost_reaper::DeadCodeRegion]) -> CorpseClass {
-    let has_pattern = regions.iter().any(|r| matches!(
-        r.dead_code_type,
-        DeadCodeType::InscriptionEnvelope
-            | DeadCodeType::DropStuffing
-            | DeadCodeType::UnreachableCode
-            | DeadCodeType::FakePubkey
-            | DeadCodeType::AnnexPresent
-            | DeadCodeType::OversizedOpReturn
-            | DeadCodeType::LegacyScriptSigData
-    ));
-    let has_computational = regions.iter().any(|r| matches!(
-        r.dead_code_type,
-        DeadCodeType::ExcessWitnessData
-            | DeadCodeType::ExcessStackItems
-            | DeadCodeType::FakePubkeyCurvePoint
-    ));
+    let has_pattern = regions.iter().any(|r| {
+        matches!(
+            r.dead_code_type,
+            DeadCodeType::InscriptionEnvelope
+                | DeadCodeType::DropStuffing
+                | DeadCodeType::UnreachableCode
+                | DeadCodeType::FakePubkey
+                | DeadCodeType::AnnexPresent
+                | DeadCodeType::OversizedOpReturn
+                | DeadCodeType::LegacyScriptSigData
+        )
+    });
+    let has_computational = regions.iter().any(|r| {
+        matches!(
+            r.dead_code_type,
+            DeadCodeType::ExcessWitnessData
+                | DeadCodeType::ExcessStackItems
+                | DeadCodeType::FakePubkeyCurvePoint
+        )
+    });
 
     match (has_pattern, has_computational) {
         (true, _) => CorpseClass::PatternCaught,
@@ -88,7 +102,10 @@ fn backtest_simulator_delta() {
 
     println!("\n============================================================");
     println!("Ghost Reaper — 100-Block Delta: Patterns vs Full");
-    println!("Blocks {} to {} ({} blocks)", start_height, tip_height, num_blocks);
+    println!(
+        "Blocks {} to {} ({} blocks)",
+        start_height, tip_height, num_blocks
+    );
     println!("============================================================\n");
 
     let mut total_txs: usize = 0;
@@ -119,21 +136,27 @@ fn backtest_simulator_delta() {
         let hash = match fetch_block_hash(height) {
             Some(h) => h,
             None => {
-                if block_num % 10 == 1 { println!("SKIP"); }
+                if block_num % 10 == 1 {
+                    println!("SKIP");
+                }
                 continue;
             }
         };
         let raw = match fetch_raw_block(&hash) {
             Some(r) => r,
             None => {
-                if block_num % 10 == 1 { println!("SKIP"); }
+                if block_num % 10 == 1 {
+                    println!("SKIP");
+                }
                 continue;
             }
         };
         let block: Block = match deserialize(&raw) {
             Ok(b) => b,
             Err(e) => {
-                if block_num % 10 == 1 { println!("SKIP ({})", e); }
+                if block_num % 10 == 1 {
+                    println!("SKIP ({})", e);
+                }
                 continue;
             }
         };
@@ -142,7 +165,9 @@ fn backtest_simulator_delta() {
         let mut block_delta = 0;
 
         for tx in &block.txdata {
-            if tx.is_coinbase() { continue; }
+            if tx.is_coinbase() {
+                continue;
+            }
             total_txs += 1;
 
             let v_patterns = analyze(tx, &patterns_only);
@@ -151,7 +176,9 @@ fn backtest_simulator_delta() {
             let is_corpse_patterns = v_patterns.verdict == Verdict::Corpse;
             let is_corpse_full = v_full.verdict == Verdict::Corpse;
 
-            if is_corpse_patterns { patterns_corpse += 1; }
+            if is_corpse_patterns {
+                patterns_corpse += 1;
+            }
             if is_corpse_full {
                 full_corpse += 1;
 
@@ -165,10 +192,14 @@ fn backtest_simulator_delta() {
                         // These are the danger zone — log ALL of them
                         if computational_only_details.len() < 50 {
                             let txid = tx.compute_txid();
-                            let types: Vec<_> = v_full.dead_regions.iter()
+                            let types: Vec<_> = v_full
+                                .dead_regions
+                                .iter()
                                 .map(|r| format!("{:?}", r.dead_code_type))
                                 .collect();
-                            let spend_types: Vec<_> = v_full.input_analyses.iter()
+                            let spend_types: Vec<_> = v_full
+                                .input_analyses
+                                .iter()
                                 .map(|a| a.spend_type.clone())
                                 .collect();
                             let breakdown = v_full.input_analyses.iter()
@@ -184,8 +215,12 @@ fn backtest_simulator_delta() {
                                 .join("; ");
                             computational_only_details.push(format!(
                                 "  {} block={} dead={}B\n    types={:?} spends={:?}\n    [{}]",
-                                txid, height, v_full.total_dead_bytes,
-                                types, spend_types, breakdown
+                                txid,
+                                height,
+                                v_full.total_dead_bytes,
+                                types,
+                                spend_types,
+                                breakdown
                             ));
                         }
                     }
@@ -195,7 +230,9 @@ fn backtest_simulator_delta() {
                 // Spend type breakdown
                 for analysis in &v_full.input_analyses {
                     if analysis.dead_bytes > 0 {
-                        *corpse_spend_types.entry(analysis.spend_type.clone()).or_insert(0) += 1;
+                        *corpse_spend_types
+                            .entry(analysis.spend_type.clone())
+                            .or_insert(0) += 1;
                     }
                 }
             }
@@ -213,17 +250,26 @@ fn backtest_simulator_delta() {
 
                 if delta_catches.len() < 50 {
                     let txid = tx.compute_txid();
-                    let types: Vec<_> = v_full.dead_regions.iter()
+                    let types: Vec<_> = v_full
+                        .dead_regions
+                        .iter()
                         .map(|r| format!("{:?}", r.dead_code_type))
                         .collect();
-                    let breakdown = v_full.input_analyses.iter()
+                    let breakdown = v_full
+                        .input_analyses
+                        .iter()
                         .filter_map(|a| a.witness_breakdown.as_ref())
-                        .map(|bd| format!(
-                            "essential={}B dead={}B stack={}/{} excess={}({}B)",
-                            bd.essential_bytes, bd.dead_bytes,
-                            bd.essential_stack_items, bd.actual_stack_items,
-                            bd.excess_stack_items, bd.excess_stack_bytes
-                        ))
+                        .map(|bd| {
+                            format!(
+                                "essential={}B dead={}B stack={}/{} excess={}({}B)",
+                                bd.essential_bytes,
+                                bd.dead_bytes,
+                                bd.essential_stack_items,
+                                bd.actual_stack_items,
+                                bd.excess_stack_items,
+                                bd.excess_stack_bytes
+                            )
+                        })
                         .collect::<Vec<_>>()
                         .join("; ");
                     delta_catches.push(format!(
@@ -235,10 +281,7 @@ fn backtest_simulator_delta() {
         }
 
         if block_num % 10 == 1 || block_num == num_blocks {
-            println!(
-                "{} txs | delta=+{}",
-                block.txdata.len(), block_delta
-            );
+            println!("{} txs | delta=+{}", block.txdata.len(), block_delta);
         }
         // 250ms to stay under mempool.space rate limit (100 blocks ~= 25s)
         std::thread::sleep(std::time::Duration::from_millis(250));
@@ -269,8 +312,14 @@ fn backtest_simulator_delta() {
     println!("FALSE POSITIVE AUDIT — Every corpse classified");
     println!("============================================================");
     println!("Total corpse txs:           {}", full_corpse);
-    println!("  Pattern-caught:           {} (known spam — safe)", corpse_pattern_caught);
-    println!("  Computational-only:       {} (REVIEW THESE)", corpse_computational_only);
+    println!(
+        "  Pattern-caught:           {} (known spam — safe)",
+        corpse_pattern_caught
+    );
+    println!(
+        "  Computational-only:       {} (REVIEW THESE)",
+        corpse_computational_only
+    );
 
     if corpse_computational_only > 0 {
         println!("\n*** COMPUTATIONAL-ONLY CORPSE DETAILS ***");

@@ -95,11 +95,9 @@ impl NodeCapabilities {
                 );
         }
         if self.reaper {
-            shares = shares
-                .checked_add(crate::constants::REAPER_SHARES)
-                .expect(
-                    "BUG: share calculation overflow - max possible shares verified < i32::MAX",
-                );
+            shares = shares.checked_add(crate::constants::REAPER_SHARES).expect(
+                "BUG: share calculation overflow - max possible shares verified < i32::MAX",
+            );
         }
         if self.elder_status {
             shares = shares

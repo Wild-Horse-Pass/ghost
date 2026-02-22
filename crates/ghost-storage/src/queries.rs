@@ -5505,7 +5505,10 @@ impl Database {
     /// Get all notes owned by a specific pubkey
     ///
     /// H-7: Limited to MAX_QUERY_RESULTS to prevent OOM.
-    pub fn get_notes_for_owner(&self, owner_pubkey: &[u8; 32]) -> GhostResult<Vec<ConfidentialNoteRecord>> {
+    pub fn get_notes_for_owner(
+        &self,
+        owner_pubkey: &[u8; 32],
+    ) -> GhostResult<Vec<ConfidentialNoteRecord>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -5516,14 +5519,17 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let rows = stmt
-                .query_map(params![owner_pubkey.as_slice(), Self::MAX_QUERY_RESULTS], |row| {
-                    let idx: i64 = row.get(0)?;
-                    let commitment: Vec<u8> = row.get(1)?;
-                    let owner: Vec<u8> = row.get(2)?;
-                    let created_h: i64 = row.get(3)?;
-                    let spent_h: Option<i64> = row.get(4)?;
-                    Ok((idx, commitment, owner, created_h, spent_h))
-                })
+                .query_map(
+                    params![owner_pubkey.as_slice(), Self::MAX_QUERY_RESULTS],
+                    |row| {
+                        let idx: i64 = row.get(0)?;
+                        let commitment: Vec<u8> = row.get(1)?;
+                        let owner: Vec<u8> = row.get(2)?;
+                        let created_h: i64 = row.get(3)?;
+                        let spent_h: Option<i64> = row.get(4)?;
+                        Ok((idx, commitment, owner, created_h, spent_h))
+                    },
+                )
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             let mut notes = Vec::new();
@@ -5546,8 +5552,10 @@ impl Database {
                     created_at_height: i64_to_u64_sats(created_h, "created_at_height")
                         .map_err(|e| GhostError::Database(e.to_string()))?,
                     spent_at_height: spent_h
-                        .map(|h| i64_to_u64_sats(h, "spent_at_height")
-                            .map_err(|e| GhostError::Database(e.to_string())))
+                        .map(|h| {
+                            i64_to_u64_sats(h, "spent_at_height")
+                                .map_err(|e| GhostError::Database(e.to_string()))
+                        })
                         .transpose()?,
                 });
             }
@@ -5605,7 +5613,8 @@ impl Database {
 
             match result {
                 Some(max_idx) => Ok(i64_to_u64_sats(max_idx, "max_tree_index")
-                    .map_err(|e| GhostError::Database(e.to_string()))? + 1),
+                    .map_err(|e| GhostError::Database(e.to_string()))?
+                    + 1),
                 None => Ok(0),
             }
         })
@@ -5721,7 +5730,10 @@ impl Database {
     // =========================================================================
 
     /// Insert a confidential transfer record
-    pub fn insert_confidential_transfer(&self, record: &ConfidentialTransferRecord) -> GhostResult<()> {
+    pub fn insert_confidential_transfer(
+        &self,
+        record: &ConfidentialTransferRecord,
+    ) -> GhostResult<()> {
         if record.proof.len() > MAX_CONFIDENTIAL_PROOF_SIZE {
             return Err(GhostError::Database(format!(
                 "Proof size {} exceeds maximum {}",
@@ -5765,19 +5777,15 @@ impl Database {
     ) -> GhostResult<()> {
         self.with_connection(|conn| {
             match block_height {
-                Some(h) => {
-                    conn.execute(
-                        "UPDATE confidential_transfers SET status = ?1, block_height = ?2
+                Some(h) => conn.execute(
+                    "UPDATE confidential_transfers SET status = ?1, block_height = ?2
                          WHERE transfer_id = ?3",
-                        params![status, h as i64, transfer_id],
-                    )
-                }
-                None => {
-                    conn.execute(
-                        "UPDATE confidential_transfers SET status = ?1 WHERE transfer_id = ?2",
-                        params![status, transfer_id],
-                    )
-                }
+                    params![status, h as i64, transfer_id],
+                ),
+                None => conn.execute(
+                    "UPDATE confidential_transfers SET status = ?1 WHERE transfer_id = ?2",
+                    params![status, transfer_id],
+                ),
             }
             .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
@@ -5788,11 +5796,9 @@ impl Database {
     pub fn get_confidential_note_count(&self) -> GhostResult<u64> {
         self.with_connection(|conn| {
             let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM confidential_notes",
-                    [],
-                    |row| row.get(0),
-                )
+                .query_row("SELECT COUNT(*) FROM confidential_notes", [], |row| {
+                    row.get(0)
+                })
                 .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(count as u64)
         })
@@ -6807,12 +6813,16 @@ mod tests {
                 .expect("Failed to insert note");
         }
 
-        let all = db.load_all_confidential_notes().expect("Failed to load all");
+        let all = db
+            .load_all_confidential_notes()
+            .expect("Failed to load all");
         assert_eq!(all.len(), 5);
         assert_eq!(all[0].0, 0);
         assert_eq!(all[4].0, 4);
 
-        let next = db.get_next_confidential_note_index().expect("Failed to get next");
+        let next = db
+            .get_next_confidential_note_index()
+            .expect("Failed to get next");
         assert_eq!(next, 5);
     }
 
@@ -6821,12 +6831,16 @@ mod tests {
         let db = Database::in_memory().expect("Failed to create in-memory database");
 
         let nullifier = [0xFFu8; 32];
-        assert!(!db.is_nullifier_spent(&nullifier).expect("Failed to check nullifier"));
+        assert!(!db
+            .is_nullifier_spent(&nullifier)
+            .expect("Failed to check nullifier"));
 
         db.insert_nullifier(&nullifier, 100, "tx-001")
             .expect("Failed to insert nullifier");
 
-        assert!(db.is_nullifier_spent(&nullifier).expect("Failed to check nullifier"));
+        assert!(db
+            .is_nullifier_spent(&nullifier)
+            .expect("Failed to check nullifier"));
 
         // Duplicate insert should fail (PRIMARY KEY constraint)
         assert!(db.insert_nullifier(&nullifier, 101, "tx-002").is_err());
@@ -6862,7 +6876,9 @@ mod tests {
         }
 
         // Get nullifiers in range [30, 60]
-        let range = db.get_nullifiers_in_range(30, 60).expect("Failed to get range");
+        let range = db
+            .get_nullifiers_in_range(30, 60)
+            .expect("Failed to get range");
         assert_eq!(range.len(), 4); // heights 30, 40, 50, 60
     }
 
@@ -6892,7 +6908,9 @@ mod tests {
             .expect("Failed to update status");
 
         // Verify note count
-        let count = db.get_confidential_note_count().expect("Failed to get count");
+        let count = db
+            .get_confidential_note_count()
+            .expect("Failed to get count");
         assert_eq!(count, 0); // No notes inserted directly, only transfer record
     }
 
@@ -6920,7 +6938,9 @@ mod tests {
     #[test]
     fn test_next_index_empty_table() {
         let db = Database::in_memory().expect("Failed to create in-memory database");
-        let next = db.get_next_confidential_note_index().expect("Failed to get next");
+        let next = db
+            .get_next_confidential_note_index()
+            .expect("Failed to get next");
         assert_eq!(next, 0);
     }
 }

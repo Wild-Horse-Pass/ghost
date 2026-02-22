@@ -851,7 +851,10 @@ impl WraithCoordinator {
         }
 
         // WR4-L5: Check participant limit before registration (mode-aware)
-        let max_participants = self.session.tier().max_participants_for_mode(self.session.mode());
+        let max_participants = self
+            .session
+            .tier()
+            .max_participants_for_mode(self.session.mode());
         if self.participants.len() >= max_participants {
             return Err(WraithError::SessionFull {
                 current: self.participants.len(),

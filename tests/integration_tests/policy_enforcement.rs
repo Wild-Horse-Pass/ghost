@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 7: Policy Enforcement Tests (35 tests)
 //!
 //! Tests for mining pool policy rules including:
@@ -36,10 +14,7 @@ use bitcoin::{
     ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness,
 };
 use ghost_buds::BudsTier;
-use ghost_policy::{
-    PolicyDecision, PolicyEngine, PolicyProfile, ProfileBuilder, ProfilePreset, RejectionReason,
-    TransactionValidator,
-};
+use ghost_policy::{PolicyDecision, PolicyEngine, PolicyProfile, ProfileBuilder, RejectionReason};
 
 // =============================================================================
 // TRANSACTION CREATION HELPERS
@@ -54,6 +29,7 @@ fn create_p2wpkh_script() -> ScriptBuf {
 }
 
 /// Create a P2TR script (OP_1 <32-byte-key>)
+#[allow(dead_code)]
 fn create_p2tr_script() -> ScriptBuf {
     Builder::new()
         .push_int(1)
@@ -70,12 +46,12 @@ fn create_op_return_script(data_size: usize) -> ScriptBuf {
     } else if data_size <= 75 {
         // Direct push
         bytes.push(data_size as u8);
-        bytes.extend(std::iter::repeat(0x42u8).take(data_size));
+        bytes.extend(std::iter::repeat_n(0x42u8, data_size));
     } else {
         // OP_PUSHDATA1 for larger data
         bytes.push(0x4c); // OP_PUSHDATA1
         bytes.push(data_size.min(255) as u8);
-        bytes.extend(std::iter::repeat(0x42u8).take(data_size.min(255)));
+        bytes.extend(std::iter::repeat_n(0x42u8, data_size.min(255)));
     }
 
     ScriptBuf::from(bytes)
@@ -130,6 +106,7 @@ fn create_op_return_tx(data_size: usize) -> Transaction {
 }
 
 /// Create a multisig-like transaction (T1)
+#[allow(dead_code)]
 fn create_multisig_tx() -> Transaction {
     // Use a 2-of-3 P2SH pattern (simplified)
     let p2sh_script = Builder::new()
@@ -155,6 +132,7 @@ fn create_multisig_tx() -> Transaction {
 }
 
 /// Create a transaction with many outputs
+#[allow(dead_code)]
 fn create_many_outputs_tx(count: usize) -> Transaction {
     let outputs: Vec<TxOut> = (0..count)
         .map(|_| TxOut {
@@ -282,7 +260,7 @@ fn test_410_fee_estimation_accuracy() {
     // P2WPKH output: ~31 vbytes
     // Overhead: ~11 vbytes
     let estimated = estimate_tx_vsize(1, 2); // 1 input, 2 outputs
-    assert!(estimated >= 100 && estimated <= 150);
+    assert!((100..=150).contains(&estimated));
 }
 
 // =============================================================================
@@ -621,7 +599,7 @@ fn calculate_weight(base_size: u32, total_size: u32) -> u32 {
 }
 
 fn vsize_from_weight(weight: u32) -> u32 {
-    (weight + 3) / 4
+    weight.div_ceil(4)
 }
 
 // Fee policy struct (local helper)
@@ -725,6 +703,7 @@ impl SizePolicy {
 
 // Output type enum (local helper)
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 enum OutputType {
     P2PKH,
     P2WPKH,
@@ -737,6 +716,7 @@ enum OutputType {
 
 // Dust policy struct (local helper)
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 struct DustPolicy {
     p2pkh_dust: u64,
     p2wpkh_dust: u64,

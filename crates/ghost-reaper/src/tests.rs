@@ -221,20 +221,20 @@ fn test_legitimate_htlc() {
     script.push(0x14); // PUSH20
     script.extend([0xAA; 20]);
     script.push(0x88); // OP_EQUALVERIFY
-    // OP_ELSE
+                       // OP_ELSE
     script.push(0x67);
     // <timeout> OP_CLTV OP_DROP
     script.push(0x04); // PUSH4
     script.extend(500000u32.to_le_bytes());
     script.push(0xb1); // OP_CLTV
     script.push(0x75); // OP_DROP (small push, below threshold)
-    // <pubkey_hash>
+                       // <pubkey_hash>
     script.push(0x76); // OP_DUP
     script.push(0xa9); // OP_HASH160
     script.push(0x14); // PUSH20
     script.extend([0xBB; 20]);
     script.push(0x88); // OP_EQUALVERIFY
-    // OP_ENDIF OP_CHECKSIG
+                       // OP_ENDIF OP_CHECKSIG
     script.push(0x68);
     script.push(0xac);
 
@@ -470,7 +470,7 @@ fn test_legitimate_plus_dead_envelope() {
     script.extend([0xAA; 20]);
     script.push(0x88); // OP_EQUALVERIFY
     script.push(0xac); // OP_CHECKSIG
-    // Dead envelope after legitimate code
+                       // Dead envelope after legitimate code
     script.push(0x00); // OP_FALSE
     script.push(0x63); // OP_IF
     script.push(0x03);
@@ -569,7 +569,7 @@ fn test_moderate_under_threshold() {
     script.push(76);
     script.extend(vec![0xAA; 76]);
     script.push(0x75); // OP_DROP
-    // Pad with legitimate code to keep ratio low
+                       // Pad with legitimate code to keep ratio low
     for _ in 0..800 {
         script.push(0x51); // OP_1
     }
@@ -830,7 +830,7 @@ fn test_multiple_dead_regions() {
     script.push(80);
     script.extend(vec![0xAA; 80]);
     script.push(0x75); // OP_DROP
-    // Then inscription envelope
+                       // Then inscription envelope
     script.push(0x00);
     script.push(0x63);
     script.push(0x03);
@@ -845,8 +845,14 @@ fn test_multiple_dead_regions() {
 
     assert!(verdict.is_corpse());
     // Both pattern and flow analysis detect these regions (may overlap)
-    assert!(verdict.dead_regions.iter().any(|r| r.dead_code_type == DeadCodeType::DropStuffing));
-    assert!(verdict.dead_regions.iter().any(|r| r.dead_code_type == DeadCodeType::InscriptionEnvelope));
+    assert!(verdict
+        .dead_regions
+        .iter()
+        .any(|r| r.dead_code_type == DeadCodeType::DropStuffing));
+    assert!(verdict
+        .dead_regions
+        .iter()
+        .any(|r| r.dead_code_type == DeadCodeType::InscriptionEnvelope));
 }
 
 /// OP_NOTIF increases envelope depth
@@ -885,7 +891,7 @@ fn test_witness_breakdown_inscription() {
     script.push(content.len() as u8);
     script.extend(content);
     script.push(0x68); // OP_ENDIF
-    // OP_CHECKSIG
+                       // OP_CHECKSIG
     script.push(0xac);
 
     let sig = [0x30; 64];
@@ -911,12 +917,12 @@ fn test_witness_breakdown_drop_stuffing() {
     script.push(100);
     script.extend(vec![0xDE; 100]);
     script.push(0x75); // OP_DROP
-    // Push another 100 bytes + DROP
+                       // Push another 100 bytes + DROP
     script.push(0x4c);
     script.push(100);
     script.extend(vec![0xBE; 100]);
     script.push(0x75); // OP_DROP
-    // Legitimate
+                       // Legitimate
     script.push(0xac); // OP_CHECKSIG
 
     let sig = [0x30; 64];
@@ -940,7 +946,7 @@ fn test_excess_stack_items() {
     let mut script = vec![0x21]; // OP_PUSHBYTES_33
     script.extend([0x02; 33]); // compressed pubkey
     script.push(0xac); // OP_CHECKSIG
-    // Provide 3 witness items (only 1 needed): excess at bottom, sig on top
+                       // Provide 3 witness items (only 1 needed): excess at bottom, sig on top
     let item1 = [0xAA; 600]; // excess item 1
     let item2 = [0xBB; 600]; // excess item 2
     let item3 = [0x30; 64]; // "signature" (on top where CHECKSIG consumes it)
@@ -1024,10 +1030,8 @@ fn test_ec_point_valid_prefix_invalid_point() {
 fn test_ec_point_real_pubkey() {
     // Use the well-known Bitcoin genesis block pubkey (compressed form)
     // This is 0x02 + a valid x-coordinate
-    let real_pubkey = hex::decode(
-        "0279BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798",
-    )
-    .unwrap();
+    let real_pubkey =
+        hex::decode("0279BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798").unwrap();
 
     let mut script = vec![0x51]; // OP_1
     script.push(0x21);

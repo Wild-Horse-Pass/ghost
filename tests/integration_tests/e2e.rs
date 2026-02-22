@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! End-to-End Tests for Bitcoin Ghost
 //!
 //! These tests verify complete workflows across the entire stack.
@@ -607,7 +585,7 @@ mod consensus {
         // For n nodes, need ceil(2n/3) votes
 
         fn required_votes(total: usize) -> usize {
-            (total * 2 + 2) / 3 // Ceiling of 2/3
+            (total * 2).div_ceil(3) // Ceiling of 2/3
         }
 
         assert_eq!(required_votes(3), 2); // 2 out of 3
@@ -621,7 +599,7 @@ mod consensus {
     #[test]
     fn test_quorum_scenarios() {
         fn has_quorum(votes: usize, total: usize) -> bool {
-            votes >= (total * 2 + 2) / 3
+            votes >= (total * 2).div_ceil(3)
         }
 
         // 3 node cluster

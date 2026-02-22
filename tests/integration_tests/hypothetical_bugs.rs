@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Hypothetical Bug Tests
 //!
 //! Tests for bugs we don't know exist yet. These are speculative tests based on
@@ -75,8 +53,10 @@ mod state_machine_violations {
         /// Phase 2 transaction broadcast, waiting for confirmation
         WaitingPhase2Confirmation,
         /// Session complete
+        #[allow(dead_code)]
         Complete,
         /// Session failed/cancelled
+        #[allow(dead_code)]
         Failed,
     }
 
@@ -319,6 +299,7 @@ mod cryptographic_misuse {
             }
 
             // SAFE: Random nonce
+            #[allow(dead_code)]
             fn generate_safe(&self) -> [u8; 32] {
                 let mut nonce = [0u8; 32];
                 // In real code: getrandom::getrandom(&mut nonce).unwrap();
@@ -378,9 +359,7 @@ mod cryptographic_misuse {
         // Test timing with different numbers of matching prefix bytes
         for matching_bytes in 0..=32 {
             let mut guess = [0u8; 32];
-            for i in 0..matching_bytes {
-                guess[i] = secret[i];
-            }
+            guess[..matching_bytes].copy_from_slice(&secret[..matching_bytes]);
 
             // Time vulnerable comparison
             let start = Instant::now();
@@ -413,6 +392,7 @@ mod cryptographic_misuse {
     fn test_007_invalid_point_attack() {
         // Hypothesis: Accepting invalid EC points could break signature security
 
+        #[allow(dead_code)]
         #[derive(Debug, Clone, Copy)]
         struct Point {
             x: [u8; 32],
@@ -421,6 +401,7 @@ mod cryptographic_misuse {
         }
 
         impl Point {
+            #[allow(dead_code)]
             fn identity() -> Self {
                 Self {
                     x: [0u8; 32],
@@ -565,7 +546,6 @@ mod cryptographic_misuse {
 // or division-by-zero bugs that cause fund loss.
 
 mod arithmetic_edge_cases {
-    use super::*;
 
     /// Test: Accumulated rounding error in percentage calculations
     #[test]
@@ -573,7 +553,7 @@ mod arithmetic_edge_cases {
         // Hypothesis: Small rounding errors accumulate over many operations
 
         let total_reward: u64 = 312_500_000; // 3.125 BTC
-        let num_miners = 1000;
+        let _num_miners = 1000;
 
         // Method 1: Float percentage (DANGEROUS)
         let float_method =
@@ -618,6 +598,7 @@ mod arithmetic_edge_cases {
     fn test_010_division_by_zero_shares() {
         // Hypothesis: Zero total shares causes panic or incorrect distribution
 
+        #[allow(dead_code)]
         fn calculate_share_vulnerable(my_shares: u64, total_shares: u64, pool: u64) -> u64 {
             // VULNERABLE: No check for zero
             pool * my_shares / total_shares
@@ -721,6 +702,7 @@ mod arithmetic_edge_cases {
             }
 
             // Secure version: Track dust for later redistribution
+            #[allow(dead_code)]
             fn calculate_payout_with_credit(&mut self, amount: u64) -> (u64, u64) {
                 if amount < DUST_THRESHOLD {
                     self.total_filtered_dust += amount;
@@ -763,7 +745,7 @@ mod arithmetic_edge_cases {
 
         fn calculate_threshold_ceiling(total: usize) -> usize {
             // Ceiling division: (total * 67 + 99) / 100
-            (total * 67 + 99) / 100
+            (total * 67).div_ceil(100)
         }
 
         fn calculate_threshold_proper(total: usize) -> usize {
@@ -838,6 +820,7 @@ mod race_conditions {
             }
 
             // VULNERABLE: Check-then-act without atomicity
+            #[allow(dead_code)]
             fn try_spend_vulnerable(&self, outpoint: [u8; 32]) -> bool {
                 let spent = self.spent.lock().unwrap();
                 if spent.contains(&outpoint) {
@@ -903,6 +886,7 @@ mod race_conditions {
             }
 
             // VULNERABLE: Non-atomic check and update
+            #[allow(dead_code)]
             fn submit_vote_vulnerable(&self) -> bool {
                 let current = self.votes.load(Ordering::Relaxed);
 
@@ -1114,6 +1098,7 @@ mod time_based_attacks {
             }
 
             // VULNERABLE: Unlimited extensions
+            #[allow(dead_code)]
             fn extend_timeout_vulnerable(&mut self, extension: Duration) {
                 self.timeout_at = Instant::now() + extension;
             }
@@ -1159,7 +1144,6 @@ mod time_based_attacks {
         // Hypothesis: Miner could manipulate block timestamp to affect protocol
 
         const MAX_FUTURE_SECONDS: u64 = 7200; // 2 hours
-        const MEDIAN_TIME_PAST_BLOCKS: usize = 11;
 
         fn validate_block_time(
             block_time: u64,
@@ -1220,6 +1204,7 @@ mod resource_exhaustion {
     fn test_020_unbounded_retry() {
         // Hypothesis: Cryptographic operations with unbounded retry could hang
 
+        #[allow(dead_code)]
         fn generate_key_vulnerable<F>(validator: F) -> [u8; 32]
         where
             F: Fn(&[u8; 32]) -> bool,
@@ -1279,6 +1264,7 @@ mod resource_exhaustion {
 
         const MAX_MESSAGE_SIZE: usize = 1_000_000; // 1 MB
 
+        #[allow(dead_code)]
         fn process_message_vulnerable(data: &[u8]) -> Vec<u8> {
             // VULNERABLE: No size limit
             data.to_vec()
@@ -1304,7 +1290,7 @@ mod resource_exhaustion {
         let mut allocations: Vec<Vec<u8>> = Vec::new();
         const MAX_ALLOCATIONS: usize = 1000;
 
-        for i in 0..MAX_ALLOCATIONS {
+        for _i in 0..MAX_ALLOCATIONS {
             let data = vec![0u8; 1000];
             if let Ok(processed) = process_message_safe(&data) {
                 allocations.push(processed);
@@ -1325,6 +1311,7 @@ mod resource_exhaustion {
 
         const MAX_HASH_ITERATIONS: u32 = 10_000;
 
+        #[allow(dead_code)]
         fn hash_with_iterations_vulnerable(data: &[u8], iterations: u32) -> [u8; 32] {
             let mut result = [0u8; 32];
             result[..data.len().min(32)].copy_from_slice(&data[..data.len().min(32)]);
@@ -1332,8 +1319,8 @@ mod resource_exhaustion {
             // VULNERABLE: No iteration limit
             for _ in 0..iterations {
                 // Simulate expensive hash
-                for i in 0..32 {
-                    result[i] = result[i].wrapping_add(1);
+                for byte in result.iter_mut() {
+                    *byte = byte.wrapping_add(1);
                 }
             }
             result
@@ -1351,8 +1338,8 @@ mod resource_exhaustion {
             result[..data.len().min(32)].copy_from_slice(&data[..data.len().min(32)]);
 
             for _ in 0..iterations {
-                for i in 0..32 {
-                    result[i] = result[i].wrapping_add(1);
+                for byte in result.iter_mut() {
+                    *byte = byte.wrapping_add(1);
                 }
             }
             Ok(result)
@@ -1440,6 +1427,7 @@ mod economic_attacks {
     fn test_024_fee_sniping() {
         // Hypothesis: Miner could reorg to steal high-fee transactions
 
+        #[allow(dead_code)]
         struct Block {
             height: u64,
             total_fees: u64,
@@ -1524,6 +1512,7 @@ mod economic_attacks {
         // Hypothesis: Attacker could join sessions and refuse to complete,
         // locking legitimate participants' funds
 
+        #[allow(dead_code)]
         struct WraithGriefAnalysis {
             session_timeout: Duration,
             join_cost: u64,    // Cost to join (if any)
@@ -1539,6 +1528,7 @@ mod economic_attacks {
                 self.grief_damage as f64 / self.join_cost as f64
             }
 
+            #[allow(dead_code)]
             fn is_economically_viable(&self, attacker_budget: u64) -> bool {
                 // Attack is viable if attacker can grief profitably
                 // (In practice, grieving is usually not profitable, just annoying)
@@ -1576,6 +1566,7 @@ mod economic_attacks {
     fn test_026_settlement_frontrun() {
         // Hypothesis: Miner could see settlement transaction and extract value
 
+        #[allow(dead_code)]
         struct SettlementTx {
             epoch: u64,
             total_amount: u64,
@@ -1618,6 +1609,7 @@ mod economic_attacks {
     fn test_027_treasury_drain() {
         // Hypothesis: Attacker could manipulate parameters to drain treasury
 
+        #[allow(dead_code)]
         struct Treasury {
             balance: u64,
             decay_start_height: u64,

@@ -1,25 +1,3 @@
-// Allow common test-code patterns that clippy flags
-#![allow(dead_code)]
-#![allow(unused_variables)]
-#![allow(unused_imports)]
-#![allow(unused_mut)]
-#![allow(clippy::field_reassign_with_default)]
-#![allow(clippy::needless_range_loop)]
-#![allow(clippy::manual_div_ceil)]
-#![allow(clippy::let_and_return)]
-#![allow(clippy::iter_nth_zero)]
-#![allow(clippy::manual_is_multiple_of)]
-#![allow(clippy::manual_repeat_n)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::manual_range_contains)]
-#![allow(clippy::collapsible_if)]
-#![allow(clippy::unnecessary_unwrap)]
-#![allow(clippy::manual_memcpy)]
-#![allow(clippy::upper_case_acronyms)]
-#![allow(clippy::needless_character_iteration)]
-#![allow(clippy::assertions_on_constants)]
-#![allow(clippy::bool_assert_comparison)]
-
 //! Category 2: Configuration & Validation Tests (65 tests)
 //!
 //! Comprehensive tests for all configuration validation including:
@@ -509,12 +487,14 @@ fn test_131_wal_mode_defaults_enabled() {
 
 #[test]
 fn test_132_zero_virtual_block_secs_rejected() {
-    let mut config = NodeConfig::default();
-    config.ghost_pay = Some(GhostPayConfig {
-        enabled: true,
-        virtual_block_secs: 0,
-        ..GhostPayConfig::default()
-    });
+    let config = NodeConfig {
+        ghost_pay: Some(GhostPayConfig {
+            enabled: true,
+            virtual_block_secs: 0,
+            ..GhostPayConfig::default()
+        }),
+        ..NodeConfig::default()
+    };
 
     let result = config.validate();
     assert!(!result.is_valid());
@@ -526,12 +506,14 @@ fn test_132_zero_virtual_block_secs_rejected() {
 
 #[test]
 fn test_133_zero_epoch_blocks_rejected() {
-    let mut config = NodeConfig::default();
-    config.ghost_pay = Some(GhostPayConfig {
-        enabled: true,
-        epoch_blocks: 0,
-        ..GhostPayConfig::default()
-    });
+    let config = NodeConfig {
+        ghost_pay: Some(GhostPayConfig {
+            enabled: true,
+            epoch_blocks: 0,
+            ..GhostPayConfig::default()
+        }),
+        ..NodeConfig::default()
+    };
 
     let result = config.validate();
     assert!(!result.is_valid());
@@ -543,12 +525,14 @@ fn test_133_zero_epoch_blocks_rejected() {
 
 #[test]
 fn test_134_high_transfer_fee_warning() {
-    let mut config = NodeConfig::default();
-    config.ghost_pay = Some(GhostPayConfig {
-        enabled: true,
-        transfer_fee_bps: 1500, // 15% - very high
-        ..GhostPayConfig::default()
-    });
+    let config = NodeConfig {
+        ghost_pay: Some(GhostPayConfig {
+            enabled: true,
+            transfer_fee_bps: 1500, // 15% - very high
+            ..GhostPayConfig::default()
+        }),
+        ..NodeConfig::default()
+    };
 
     let result = config.validate();
     assert!(result
@@ -559,13 +543,15 @@ fn test_134_high_transfer_fee_warning() {
 
 #[test]
 fn test_135_wraith_fee_out_of_range_rejected() {
-    let mut config = NodeConfig::default();
-    config.ghost_pay = Some(GhostPayConfig {
-        enabled: true,
-        wraith_enabled: true,
-        wraith_fee_percent: 15.0, // > 10%
-        ..GhostPayConfig::default()
-    });
+    let config = NodeConfig {
+        ghost_pay: Some(GhostPayConfig {
+            enabled: true,
+            wraith_enabled: true,
+            wraith_fee_percent: 15.0, // > 10%
+            ..GhostPayConfig::default()
+        }),
+        ..NodeConfig::default()
+    };
 
     let result = config.validate();
     assert!(!result.is_valid());
@@ -623,6 +609,7 @@ fn test_pool_config_validate_success() {
         payout_interval_blocks: 100,
         node_payout_address: None,
         coinbase_extra: None,
+        genesis_password: None,
     };
 
     let result = config.validate();
