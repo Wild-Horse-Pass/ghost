@@ -1,3 +1,4 @@
+```
 //|======================================================================================================================|
 //|                                                                                                                      |
 //|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
@@ -19,6 +20,7 @@
 //| LICENSE: MIT                                                                                                         |
 //| FILE: ARCHITECTURE.md                                                                                                |
 //|======================================================================================================================|
+```
 
 # Architecture
 
@@ -100,6 +102,47 @@ bitcoin-ghost/
 ├── docs/                    # Documentation
 └── tests/                   # Integration & load tests
 ```
+
+### Core Components
+
+| Crate | Purpose |
+|-------|---------|
+| ghost-common | Shared types, configuration, node identity |
+| ghost-consensus | ZK-BFT consensus engine, P2P mesh network |
+| ghost-accounting | Share tracking, payout calculations |
+| ghost-verification | Node capability verification, challenge system |
+| ghost-zkp | Zero-knowledge proof generation and verification |
+| ghost-storage | SQLite database layer with encrypted sensitive fields |
+
+### Payment Layer
+
+| Crate | Purpose |
+|-------|---------|
+| ghost-keys | BIP-352 Silent Payment key derivation |
+| ghost-locks | P2TR timelocked recovery outputs |
+| ghost-pay | L2 instant payment channels |
+| wraith-protocol | CoinJoin mixing coordination |
+| ghost-reconciliation | L1 settlement and on-chain finalization |
+
+### Wallet Infrastructure
+
+| Crate | Purpose |
+|-------|---------|
+| ghost-gsp | Ghost Service Provider for light wallets |
+| ghost-light-wallet | Light wallet library (connects to GSP) |
+| ghost-gsp-proto | WebSocket protocol for GSP communication |
+
+### Binaries
+
+| Binary | Purpose |
+|--------|---------|
+| ghost-pool | Main pool node - mining, consensus, payouts |
+| ghost-pay | L2 payment server |
+| ghost-gsp | Light wallet backend service |
+| translator | SV1<>SV2 bridge (legacy, optional) |
+| ghost-cli | Administration and status CLI |
+| ghost-light-wallet-cli | Command-line wallet |
+| ghost-light-wallet-tui | Terminal UI wallet |
 
 ## Node Architecture
 
