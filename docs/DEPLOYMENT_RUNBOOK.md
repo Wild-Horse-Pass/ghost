@@ -66,7 +66,7 @@ source $HOME/.cargo/env
                     │  (Mining Pool)    │◄────────┤  (Optional)     │
                     └─────────┬─────────┘         └─────────────────┘
                               │ Stratum V1
-                              │ (port 34255)
+                              │ (port 3333)
                               ▼
                     ┌─────────────────┐
                     │    SV1 Miners   │
@@ -213,7 +213,7 @@ zmq_hashtx = "tcp://127.0.0.1:28333"
 [network]
 public_address = "pool.example.com"
 sv2_port = 34255                   # Stratum V2 miners
-sv1_port = 3333                    # Stratum V1 (via translator)
+sv1_port = 3333                    # Stratum V1 (native)
 http_port = 8080                   # API
 max_miners = 1000
 public_mining = true

@@ -261,7 +261,7 @@ L2 payment network (optional). Features:
 | Port | Protocol | Component | Purpose |
 |------|----------|-----------|---------|
 | 3333 | TCP/JSON | ghost-pool | SV1 Stratum (miners) |
-| 34255 | TCP/Noise | (reserved) | SV2 Stratum (future use) |
+| 34255 | TCP/Noise | SRI pool | SV2 Stratum (via SRI pool_sv2) |
 | 8080 | HTTP | ghost-pool | Verification API |
 | 38333 | TCP | ghost-core | Bitcoin P2P (signet) |
 | 8333 | TCP | ghost-core | Bitcoin P2P (mainnet) |
@@ -2181,7 +2181,7 @@ Adjustments are sent via `mining.set_difficulty` notification after share accept
 | Timestamp bounds | Prevent replay | +/- 2min future, +/- 10min past |
 | Rate limiting | Prevent spam | 100 shares/sec/miner |
 | Work anomaly | Detect inflation | 1.0x network difficulty max |
-| Share cap | Prevent pool dominance | 10% per miner |
+
 
 ### 20.4 Round Management
 
@@ -2257,7 +2257,7 @@ Parameters are generated through a rolling Multi-Party Computation ceremony. See
 Summary:
 - First 101 contributors become Elders (+1 share)
 - 1-of-N security model (one honest participant sufficient)
-- Time-based ossification after 30 days
+
 - Parameters stored in `~/.ghost/mpc_params/`
 
 ### 21.4 Verification
@@ -2322,7 +2322,7 @@ Payment metadata (labels and memos) is encrypted with ChaCha20-Poly1305:
 | Forged proofs | Groth16 soundness + MPC ceremony |
 | Simulated proofs | Runtime check + feature gate |
 | Cross-ceremony replay | Unique ceremony_id binding |
-| Indefinite ceremony | 30-day auto-ossification |
+| Indefinite ceremony | 101-contribution ossification |
 | Parameter corruption | Magic markers + version gaps |
 
 ---

@@ -344,13 +344,13 @@ curl http://localhost:8080/health
    sudo ufw status | grep 8442
    ```
 
-6. **SV1 miners not connecting through translator**
+6. **SV1 miners not connecting**
    ```bash
-   # Check translator is running and listening
+   # Check ghost-pool native stratum is listening
    ss -tlnp | grep 3333
 
-   # Verify translator upstream config points to SRI pool
-   grep -A5 upstreams /etc/ghost/sri/translator-config.toml
+   # Check stratum logs
+   journalctl -u ghost-pool | grep stratum
    ```
 
 ## Log Analysis

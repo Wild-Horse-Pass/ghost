@@ -172,7 +172,8 @@ For Stratum V2 support, ghost-pool can run in TDP mode, serving block templates 
 
 | Port | Protocol | Component | Purpose |
 |------|----------|-----------|---------|
-| 34255 | TCP/JSON | ghost-pool | Native Stratum (SV1 miners) |
+| 3333 | TCP/JSON | ghost-pool | Native Stratum (SV1 miners) |
+| 34255 | TCP/Noise | SRI pool | SV2 Stratum (via SRI pool_sv2) |
 | 8442 | TCP/Noise | ghost-pool | TDP server (SRI integration) |
 | 34256 | TCP/Noise | SRI Pool | SV2 connections (TDP mode) |
 | 3333 | TCP/JSON | SRI Translator | SV1 miners (TDP mode) |

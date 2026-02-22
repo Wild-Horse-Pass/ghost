@@ -199,7 +199,7 @@ ARBDA = T2 (highest tier present)
 
 Pre-defined policy profiles for common use cases:
 
-### bitcoin_pure (T0 Only)
+### bitcoin_pure (T0 + T1)
 
 Only financial transactions:
 - Payments (P2PKH, P2WPKH, P2TR)
@@ -213,11 +213,10 @@ Only financial transactions:
 
 Allows most transaction types:
 - Everything in bitcoin_pure
-- Ordinals inscriptions
-- BRC-20 tokens
+- Data anchoring (small OP_RETURN, commitments)
 - Larger OP_RETURN
 
-**Rejects**: Unknown/obfuscated data only
+**Rejects**: Inscriptions, BRC-20, Runes
 
 ### full_open (All Tiers)
 

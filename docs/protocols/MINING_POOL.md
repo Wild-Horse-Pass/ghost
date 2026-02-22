@@ -186,7 +186,7 @@ Direct miner connections using Stratum V1 (JSON-RPC over TCP):
 
 | Setting | Value |
 |---------|-------|
-| Port | 34255 |
+| Port | 3333 |
 | Protocol | TCP/JSON-RPC |
 | Encryption | Optional TLS |
 

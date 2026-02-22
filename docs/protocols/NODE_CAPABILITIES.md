@@ -329,7 +329,7 @@ Elders can lose status:
 |-----------|-------|
 | Verification Interval | 300 seconds (5 minutes) |
 | Challenge Timeout | 10 seconds |
-| Nodes Verified Per Round | 2 nodes |
+| Nodes Verified Per Round | 3 nodes |
 | Min Challenges for Qualification | 3 |
 
 | Capability | Pass Rate Required |

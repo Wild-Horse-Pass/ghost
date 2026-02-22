@@ -88,7 +88,7 @@
 | Feature | Description |
 |---------|-------------|
 | **Verification Rewards** | Earn Bitcoin by proving you run a valid full node |
-| **5-4-3-2-1 Share System** | More capabilities = higher rewards (Archive +5, GhostPay +4, Mining +3, BitcoinPure +2, Elder +1) |
+| **5-4-3-2-1 Share System** | More capabilities = higher rewards (Archive +5, GhostPay +4, PublicMining +3, Reaper +2, Elder +1) |
 | **Challenge-Response Proofs** | Cryptographic verification of block data and node capabilities |
 | **Pool Revenue Share** | Node operators share in mining pool profits |
 
@@ -97,7 +97,7 @@
 | Feature | Description |
 |---------|-------------|
 | **ZK-BFT Consensus** | Zero-knowledge proofs replace trust - validators verify proofs, never re-execute |
-| **Stratum V2** | Modern mining protocol with improved security and job negotiation |
+| **Native Stratum** | SV1 on port 3333 (direct), SV2 via SRI pool on 34255 |
 | **BUDS Classification** | Transaction filtering based on Bitcoin Use-case Differentiation System |
 | **No Single Point of Failure** | Fully distributed pool with BFT fault tolerance |
 
@@ -201,7 +201,7 @@ network = "main"
 
 [network]
 sv2_port = 34255         # Stratum V2 miners
-sv1_port = 3333          # Stratum V1 (via translator)
+sv1_port = 3333          # Stratum V1 (native)
 http_port = 8080         # REST API
 
 [pool]
@@ -255,7 +255,7 @@ enabled = true
 | `ghost-pool` | Main pool node - mining, consensus, payouts |
 | `ghost-pay` | L2 payment server |
 | `ghost-gsp` | Light wallet backend service |
-| `translator` | SV1 to SV2 protocol bridge |
+| `translator` | SV1↔SV2 bridge (legacy, optional) |
 | `ghost-cli` | Administration and status CLI |
 | `ghost-light-wallet-cli` | Command-line wallet |
 | `ghost-light-wallet-tui` | Terminal UI wallet |
@@ -266,8 +266,8 @@ enabled = true
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
-| 34255 | TCP | Stratum V2 miners |
-| 3333 | TCP | Stratum V1 miners (via translator) |
+| 34255 | TCP | SV2 Stratum (via SRI pool) |
+| 3333 | TCP | Stratum V1 miners (native) |
 | 8080 | HTTP | REST API |
 | 8555-8562 | TCP | P2P consensus mesh |
 | 8800 | HTTP | Ghost Pay L2 API |
@@ -287,7 +287,7 @@ The **Bitcoin Use-case Differentiation System** classifies transactions into tie
 | **T3** | Heavy Data | Inscriptions, large witness, stamps | Opt-in only |
 
 **Policy Profiles:**
-- `bitcoin_pure` - T0 only (maximally conservative)
+- `bitcoin_pure` - T0 + T1 (financial transactions only, no data embedding)
 - `permissive` - T0 + T1 + T2 (recommended default)
 - `full_open` - All tiers (no filtering)
 
