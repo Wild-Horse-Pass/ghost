@@ -1393,10 +1393,106 @@ async fn main() -> Result<()> {
                 })
             });
 
-        // Create MPC handler
+        // Create MPC handler with params update callback.
+        // When the handler applies a BFT-approved contribution from another node,
+        // we need to fetch the actual params binary from the contributor so our
+        // local params stay current. Without this, /api/v1/mpc/params serves stale
+        // genesis params and new contributors can't build valid hash chains.
+        let params_dir_for_callback = ceremony_manager.params_dir().clone();
+        let ceremony_mgr_for_callback = Arc::clone(&ceremony_manager);
+        let seed_nodes_for_callback = config.network.seed_nodes.clone();
+        let params_update_callback: Arc<dyn Fn(&[u8; 32], &[u8; 32]) + Send + Sync> =
+            Arc::new(move |expected_hash: &[u8; 32], _contributor: &[u8; 32]| {
+                let params_dir = params_dir_for_callback.clone();
+                let ceremony_mgr = Arc::clone(&ceremony_mgr_for_callback);
+                let seeds = seed_nodes_for_callback.clone();
+                let expected = *expected_hash;
+                tokio::spawn(async move {
+                    // Small delay to let the contributing node finish writing
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    let _ = std::fs::create_dir_all(&params_dir);
+                    // Try each seed node, verify the fetched params hash matches
+                    for seed in &seeds {
+                        let host = seed.split(':').next().unwrap_or(seed);
+                        let url = format!("http://{}:8080/api/v1/mpc/params", host);
+                        match reqwest::Client::new()
+                            .get(&url)
+                            .timeout(std::time::Duration::from_secs(60))
+                            .send()
+                            .await
+                        {
+                            Ok(resp) if resp.status().is_success() => {
+                                match resp.bytes().await {
+                                    Ok(data) if data.len() > 1000 => {
+                                        // Write to temp file, load, verify hash
+                                        let tmp_path = params_dir.join("block_params_tmp.bin");
+                                        if let Err(e) = std::fs::write(&tmp_path, &data) {
+                                            tracing::warn!(error = %e, peer = %host,
+                                                "MPC params_callback: Failed to write temp params");
+                                            continue;
+                                        }
+                                        // Load and verify hash before committing
+                                        match ghost_mpc::params::load_parameters(&tmp_path) {
+                                            Ok(params) => {
+                                                match ghost_mpc::contribution::hash_parameters(&params) {
+                                                    Ok(hash) if hash == expected => {
+                                                        // Hash matches! Move to current
+                                                        let current = params_dir.join("block_params_current.bin");
+                                                        if let Err(e) = std::fs::rename(&tmp_path, &current) {
+                                                            tracing::warn!(error = %e, "MPC params_callback: Failed to rename params");
+                                                            continue;
+                                                        }
+                                                        if let Err(e) = ceremony_mgr.load_current_params() {
+                                                            tracing::warn!(error = %e, "MPC params_callback: Failed to reload");
+                                                        } else {
+                                                            tracing::info!(
+                                                                size = data.len(),
+                                                                peer = %host,
+                                                                hash = %hex::encode(&hash[..8]),
+                                                                "MPC params_callback: Verified and updated params"
+                                                            );
+                                                        }
+                                                        return;
+                                                    }
+                                                    Ok(hash) => {
+                                                        tracing::debug!(
+                                                            peer = %host,
+                                                            got = %hex::encode(&hash[..8]),
+                                                            expected = %hex::encode(&expected[..8]),
+                                                            "MPC params_callback: Hash mismatch, trying next peer"
+                                                        );
+                                                        let _ = std::fs::remove_file(&tmp_path);
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(error = %e, "MPC params_callback: Hash computation failed");
+                                                        let _ = std::fs::remove_file(&tmp_path);
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(error = %e, peer = %host,
+                                                    "MPC params_callback: Failed to load params for verification");
+                                                let _ = std::fs::remove_file(&tmp_path);
+                                            }
+                                        }
+                                    }
+                                    _ => continue,
+                                }
+                            }
+                            _ => continue,
+                        }
+                    }
+                    tracing::warn!(
+                        expected = %hex::encode(&expected[..8]),
+                        "MPC params_callback: No peer had matching params"
+                    );
+                });
+            });
+
         let mpc_handler = Arc::new(
             MpcHandler::new(Arc::clone(&identity), Arc::clone(&db))
                 .with_broadcaster(mpc_broadcast)
+                .with_params_callback(params_update_callback)
                 .with_state(
                     ceremony_manager.contribution_count(),
                     ceremony_manager.is_ossified(),
@@ -1440,9 +1536,11 @@ async fn main() -> Result<()> {
                 return;
             }
 
-            // Retry loop: attempt contribution up to 5 times with 30s intervals.
+            // Retry loop: attempt contribution up to 5 times with random 10-100s intervals.
             // This handles race conditions where multiple nodes try the same position
             // simultaneously — the loser retries at the next position.
+            // Between retries: sync contributors, re-fetch latest params from network
+            // (prevents stale prev_params_hash), and randomize delay to avoid races.
             // Cache the signed message so retries broadcast the same hash (votes accumulate).
             let mut cached_msg: Option<(ghost_consensus::message::MpcContributionMessage, u32)> =
                 None;
@@ -1724,8 +1822,10 @@ async fn main() -> Result<()> {
                                 "MPC contribution generated for position {}", position,
                             );
 
-                            // Genesis case: auto-apply when DB has no contributors
-                            if db_count == 0 {
+                            // Genesis case: ONLY the genesis node auto-applies position 1.
+                            // Non-genesis nodes must wait for BFT approval from existing elders.
+                            // Without this guard, all nodes race to auto-apply their own position 1.
+                            if db_count == 0 && is_genesis_node {
                                 info!("MPC genesis: Auto-applying first contribution (no existing contributors to vote)");
                                 if let Err(e) = ceremony_manager_for_startup
                                     .apply_contribution(new_params, &contribution)
@@ -1757,6 +1857,26 @@ async fn main() -> Result<()> {
                                         );
                                     }
                                 }
+                            } else {
+                                // Non-genesis: save params to disk for serving via API.
+                                // We can't use apply_contribution here because it modifies
+                                // internal state (contribution_count) which breaks retries
+                                // if BFT rejects. Instead, write the binary directly.
+                                let params_dir = ceremony_manager_for_startup.params_dir().clone();
+                                let _ = std::fs::create_dir_all(&params_dir);
+                                let current_path = params_dir.join("block_params_current.bin");
+                                let mut buf = Vec::new();
+                                if new_params.write(&mut buf).is_ok() {
+                                    if let Err(e) = std::fs::write(&current_path, &buf) {
+                                        warn!(error = %e, "MPC: Failed to save params to disk");
+                                    } else {
+                                        info!(
+                                            position = position,
+                                            size = buf.len(),
+                                            "MPC: Saved generated params to disk for serving"
+                                        );
+                                    }
+                                }
                             }
 
                             // Build and sign the broadcast message
@@ -1783,8 +1903,10 @@ async fn main() -> Result<()> {
 
                             cached_msg = Some((msg, db_count));
 
-                            // If this was genesis (auto-applied), broadcast and we're done
-                            if db_count == 0 {
+                            // If this was genesis (auto-applied), broadcast and we're done.
+                            // Only genesis node returns early — non-genesis nodes must
+                            // continue the retry loop to get BFT approval.
+                            if db_count == 0 && is_genesis_node {
                                 if let Some((ref cached, _)) = cached_msg {
                                     match mesh_for_mpc_startup
                                         .broadcast_message(
@@ -1834,10 +1956,15 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                // Wait before retry, then sync contributor list from peers
-                // This picks up approvals that happened on other nodes (e.g., genesis approved us)
+                // Wait random 10-100s before retry to prevent race conditions
+                // where multiple nodes fight for the same position simultaneously.
                 if attempt < 5 {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+                    let delay_secs = {
+                        use rand::Rng;
+                        rand::thread_rng().gen_range(10..=100)
+                    };
+                    info!(attempt, delay_secs, "MPC: Waiting before retry (randomized to prevent races)");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
 
                     // Sync contributors from peers to detect if our contribution was approved
                     for seed in &seed_nodes_for_mpc {
@@ -1911,6 +2038,51 @@ async fn main() -> Result<()> {
                                     break;
                                 }
                             }
+                        }
+                    }
+
+                    // Re-fetch latest MPC params from network before next attempt.
+                    // Without this, the ceremony manager holds stale params and any
+                    // new contribution will fail hash-chain validation because
+                    // prev_params_hash won't match the latest applied contribution.
+                    let params_dir = ceremony_manager_for_startup.params_dir().clone();
+                    for seed in &seed_nodes_for_mpc {
+                        let host = seed.split(':').next().unwrap_or(seed);
+                        let url = format!("http://{}:8080/api/v1/mpc/params", host);
+
+                        match reqwest::Client::new()
+                            .get(&url)
+                            .timeout(std::time::Duration::from_secs(60))
+                            .send()
+                            .await
+                        {
+                            Ok(response) if response.status().is_success() => {
+                                match response.bytes().await {
+                                    Ok(data) if data.len() > 1000 => {
+                                        // Ensure params directory exists (may have been wiped)
+                                        let _ = std::fs::create_dir_all(&params_dir);
+                                        let params_path = params_dir.join("block_params_current.bin");
+                                        // Resolve symlink target or overwrite directly
+                                        let write_path = std::fs::read_link(&params_path)
+                                            .unwrap_or(params_path.clone());
+                                        if let Err(e) = std::fs::write(&write_path, &data) {
+                                            warn!(error = %e, "MPC: Failed to save refreshed params");
+                                            continue;
+                                        }
+                                        // Reload into ceremony manager
+                                        if let Err(e) = ceremony_manager_for_startup.load_current_params() {
+                                            warn!(error = %e, "MPC: Failed to reload refreshed params");
+                                        } else {
+                                            info!(size = data.len(), peer = %host, "MPC: Refreshed params from network for retry");
+                                            // Invalidate cached contribution since params changed
+                                            cached_msg = None;
+                                        }
+                                        break;
+                                    }
+                                    _ => continue,
+                                }
+                            }
+                            _ => continue,
                         }
                     }
                 }

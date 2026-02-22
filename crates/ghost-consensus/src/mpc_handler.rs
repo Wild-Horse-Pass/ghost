@@ -79,8 +79,9 @@ const RATE_LIMIT_REFILL_RATE: u32 = 2; // 2 per second
 /// Callback for broadcasting MPC messages to the network
 pub type MpcBroadcastFn = Arc<dyn Fn(MessageType, Vec<u8>) -> GhostResult<()> + Send + Sync>;
 
-/// Callback invoked when parameters are updated
-pub type ParamsUpdateCallback = Arc<dyn Fn(&[u8; 32]) + Send + Sync>;
+/// Callback invoked when parameters are updated.
+/// Arguments: (new_params_hash, contributor_node_id)
+pub type ParamsUpdateCallback = Arc<dyn Fn(&[u8; 32], &[u8; 32]) + Send + Sync>;
 
 /// Token bucket for rate limiting
 #[derive(Clone)]
@@ -602,9 +603,9 @@ impl MpcHandler {
                 info!("MPC ceremony OSSIFIED at 101 contributions");
             }
 
-            // Notify callback
+            // Notify callback with contributor's node_id so caller can fetch params
             if let Some(callback) = &self.params_callback {
-                callback(&msg.new_params_hash);
+                callback(&msg.new_params_hash, &msg.candidate);
             }
 
             info!(
