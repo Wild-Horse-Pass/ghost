@@ -18,6 +18,7 @@ import type { MinerInfo, BestHashEntry } from "@/types/api";
 import type { ColumnDef } from "@tanstack/react-table";
 
 const TOOLTIPS = {
+  network_hashrate: "Estimated total hashrate of the Bitcoin network, derived from current difficulty. This is the global network, not just Ghost.",
   hashrate: "Combined hashrate of all miners connected to your node's stratum port. Updated every few seconds from share submissions.",
   connected_miners: "Number of mining devices currently connected to your stratum port and actively submitting shares.",
   shares_round: "Total accepted shares in the current mining round. The accept rate shows valid vs rejected shares.",
@@ -70,7 +71,10 @@ const minerColumns: ColumnDef<MinerInfo>[] = [
     accessorKey: "connected_at",
     header: "Uptime",
     cell: ({ row }) => {
-      const uptime = Math.floor(Date.now() / 1000 - (row.original.connected_at ?? 0));
+      const connectedAt = row.original.connected_at ?? 0;
+      if (!connectedAt) return <span className="text-gray-500">N/A</span>;
+      const uptime = Math.floor(Date.now() / 1000 - connectedAt);
+      if (uptime < 0 || uptime > 86400 * 365) return <span className="text-gray-500">N/A</span>;
       return <span className="text-gray-400">{formatDuration(uptime)}</span>;
     },
   },
@@ -145,20 +149,21 @@ export default function MiningPage() {
   const handleModeChange = async (mode: MiningMode) => {
     if (mode === currentMode || isPending) return;
     try {
-      switch (mode) {
-        case "private_solo":
-          await setPublicMining.mutateAsync(false);
-          await setPrivateMining.mutateAsync(true);
-          break;
-        case "private_pool":
-          await setPrivateMining.mutateAsync(true);
-          await setPublicMining.mutateAsync(true);
-          break;
-        case "pool":
-          await setPrivateMining.mutateAsync(false);
-          await setPublicMining.mutateAsync(true);
-          break;
+      // Set both flags - order doesn't matter since both must succeed
+      const privateMining = mode === "private_solo" || mode === "private_pool";
+      const publicMining = mode === "private_pool" || mode === "pool";
+
+      const results = await Promise.allSettled([
+        setPrivateMining.mutateAsync(privateMining),
+        setPublicMining.mutateAsync(publicMining),
+      ]);
+
+      const failures = results.filter((r) => r.status === "rejected");
+      if (failures.length > 0) {
+        const reason = (failures[0] as PromiseRejectedResult).reason;
+        throw reason instanceof Error ? reason : new Error(String(reason));
       }
+
       await queryClient.invalidateQueries({ queryKey: ["mining"] });
       await queryClient.invalidateQueries({ queryKey: ["config"] });
       addToast({ type: "success", title: `Mining mode: ${MODES.find(m => m.key === mode)?.label}` });
@@ -185,11 +190,18 @@ export default function MiningPage() {
       <PageHeader title="Mining" subtitle="Hashrate, miners, and mining configuration" />
 
       {/* Stats row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard
-          label="Hashrate"
+          label="Network Hashrate"
+          value={bestHashData?.network_hashrate ? formatHashrate(bestHashData.network_hashrate) : "--"}
+          sublabel="global estimate"
+          tooltip={TOOLTIPS.network_hashrate}
+          loading={bestHashLoading}
+        />
+        <StatCard
+          label="Pool Hashrate"
           value={status ? formatHashrate((status.hashrate_th ?? 0) * 1e12) : "--"}
-          sublabel="pool combined"
+          sublabel="your node"
           tooltip={TOOLTIPS.hashrate}
           loading={statusLoading}
         />

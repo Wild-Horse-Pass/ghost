@@ -10,7 +10,7 @@ import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { SkeletonCard } from "@/components/ui/Skeleton";
 import { useNodeInfo, useNodeStatus, useShares, useNickname } from "@/hooks/queries/useNodeQueries";
 import { useWatchdogStatus } from "@/hooks/queries/useWatchdogQueries";
-import { useMiningStatus } from "@/hooks/queries/useMiningQueries";
+import { useMiningStatus, useBestHash } from "@/hooks/queries/useMiningQueries";
 import { useGhostPayStatus } from "@/hooks/queries/useGhostPayQueries";
 import { useHazeStatus } from "@/hooks/queries/useHazeQueries";
 import { useShroudStatus } from "@/hooks/queries/useShroudQueries";
@@ -20,6 +20,7 @@ const TOOLTIPS = {
   block_height: "The current block height of the Bitcoin blockchain your node has synced to. During Initial Block Download (IBD), this shows sync progress.",
   l1_peers: "Number of Ghost mesh peers your node is directly connected to via P2P.",
   l1_hashrate: "Combined mining hashrate of miners connected to YOUR node's stratum port. This is your pool's hashrate, not the total Ghost network.",
+  network_hashrate: "Estimated total hashrate of the Bitcoin network, derived from current difficulty. This is the global network, not just Ghost.",
   l2_height: "The current block height of the Ghost Pay L2 network. Format: era:block. During IBD, shows syncing state.",
   l2_peers: "Number of Ghost Pay L2 peers your node is connected to.",
   l2_wraith: "Wraith privacy mixing is available when Ghost Pay is running. Any L2 participant can initiate a mixing session.",
@@ -50,6 +51,7 @@ function InfoIcon() {
 function L1Card() {
   const { data: status, isLoading: statusLoading } = useNodeStatus();
   const { data: mining, isLoading: miningLoading } = useMiningStatus();
+  const { data: bestHash, isLoading: bestHashLoading } = useBestHash();
   const isLoading = statusLoading || miningLoading;
 
   const syncStatus = status?.is_synced;
@@ -93,6 +95,14 @@ function L1Card() {
             <div className="text-xs text-gray-500 mb-1">Mesh Peers <InfoIcon /></div>
             <div className="text-lg font-mono font-semibold text-gray-100">
               {isLoading ? "..." : `${status?.peer_count ?? 0} connected`}
+            </div>
+          </div>
+        </Tooltip>
+        <Tooltip content={TOOLTIPS.network_hashrate}>
+          <div className="p-3 bg-orange-900/10 rounded-lg">
+            <div className="text-xs text-gray-500 mb-1">Network Hashrate <InfoIcon /></div>
+            <div className="text-lg font-mono font-semibold text-gray-100">
+              {bestHashLoading ? "..." : bestHash?.network_hashrate ? formatHashrate(bestHash.network_hashrate) : "--"}
             </div>
           </div>
         </Tooltip>
