@@ -16,7 +16,7 @@ Bitcoin Ghost uses Groth16 zero-knowledge proofs for block validity and payout d
 - Genesis auto-approval: position 1 is auto-approved locally on the genesis node
 - Subsequent positions require 67% BFT approval from existing MPC contributors
 - Permanent, non-transferable positions (lost if elder goes offline >7 days)
-- Parameters ossify after 101 contributions or 30 days, whichever comes first
+- Parameters ossify permanently after 101 contributions
 - MPC messages route through Noise encryption, never plaintext ZMQ
 
 ---
@@ -147,19 +147,7 @@ Only nodes that have already contributed to the MPC ceremony (existing elders) c
 
 The ceremony closes permanently after 101 contributions. This hard cap matches the elder limit and ensures a finite ceremony window.
 
-### 4.2 Time-Based Ossification
-
-The ceremony auto-ossifies 30 days after genesis, regardless of how many contributors have participated:
-
-```rust
-if now - genesis_timestamp >= 30_days {
-    ceremony.is_ossified = true;
-}
-```
-
-This prevents an indefinitely open contribution window.
-
-### 4.3 Post-Ossification
+### 4.2 Post-Ossification
 
 Once ossified:
 - No new contributions accepted

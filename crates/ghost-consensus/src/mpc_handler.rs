@@ -295,6 +295,20 @@ impl MpcHandler {
 
         // Check for genesis case: first contribution is auto-approved
         let contributor_count = self.mpc_contributor_count();
+
+        // Genesis protection layer 3: Ceremony ID matching
+        // If we already have contributors, reject incoming genesis (position 1) contributions.
+        // This catches conflicting genesis from a node that mistakenly ran --genesis on an
+        // existing network — their position-1 contribution targets different genesis params.
+        if msg.elder_position == 1 && contributor_count > 0 {
+            warn!(
+                sender = %hex::encode(&msg.candidate[..8]),
+                our_count = contributor_count,
+                "Rejecting conflicting genesis contribution — network already has MPC contributors"
+            );
+            return Ok(());
+        }
+
         if contributor_count == 0 && msg.elder_position == 1 {
             info!(
                 "MPC genesis: Auto-approving first contribution (no existing contributors to vote)"

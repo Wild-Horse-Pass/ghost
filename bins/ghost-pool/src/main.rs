@@ -291,6 +291,10 @@ struct Args {
     #[arg(long)]
     genesis: bool,
 
+    /// Password for genesis initialization (must match genesis_password in pool config)
+    #[arg(long)]
+    genesis_password: Option<String>,
+
     /// Show node status in load balancer and exit
     #[arg(long)]
     status: bool,
@@ -836,12 +840,9 @@ async fn main() -> Result<()> {
     let metrics = Metrics::default_metrics();
 
     // Initialize round manager with mining mode
-    // On non-mainnet networks (signet/testnet/regtest), disable the per-miner share cap
-    // since there may be only one miner and the 10% cap wastes ~80% of hash power.
     let is_mainnet_round = config.bitcoin.network == ghost_common::config::BitcoinNetwork::Mainnet;
     let round_config = RoundConfig {
         mining_mode,
-        max_miner_share_percent: if is_mainnet_round { 0.10 } else { 1.0 },
         ..Default::default()
     };
     let mut round_manager_inner = RoundManager::new(identity.node_id(), round_config);
@@ -1367,7 +1368,6 @@ async fn main() -> Result<()> {
                 payout_vk_hash: s.payout_vk_hash,
                 updated_at: s.updated_at,
                 // Fields added in later versions - derive ceremony_id from params hash
-                genesis_timestamp: None,
                 ceremony_id: s.current_params_hash, // Use params hash as ceremony ID for continuity
                 pending_commitment_count: 0,
             }),
@@ -1530,6 +1530,8 @@ async fn main() -> Result<()> {
         let round_manager_for_mpc = Arc::clone(&round_manager);
         let initial_capabilities = capabilities; // Copy for MPC task to update after elder promotion
         let is_genesis_node = args.genesis;
+        let args_genesis_password = args.genesis_password.clone();
+        let genesis_password = config.pool.genesis_password.clone();
         let seed_nodes_for_mpc = config.network.seed_nodes.clone();
 
         tokio::spawn(async move {
@@ -1583,6 +1585,46 @@ async fn main() -> Result<()> {
                     let db_count = db_for_mpc.get_mpc_elder_count().unwrap_or(0) as u32;
 
                     if db_count == 0 && is_genesis_node {
+                        // Genesis protection layer 1: Query seed peers for existing contributors
+                        // If any peer already has MPC contributors, abort genesis to prevent dual-genesis
+                        let mut network_has_contributors = false;
+                        for seed in &seed_nodes_for_mpc {
+                            let host = seed.split(':').next().unwrap_or(seed);
+                            let url = format!("http://{}:8080/api/v1/mpc/contributors", host);
+                            if let Ok(resp) = reqwest::Client::new()
+                                .get(&url)
+                                .timeout(std::time::Duration::from_secs(10))
+                                .send()
+                                .await
+                            {
+                                if let Ok(body) = resp.text().await {
+                                    // If response is a non-empty JSON array, contributors exist
+                                    let trimmed = body.trim();
+                                    if trimmed.starts_with('[') && trimmed != "[]" {
+                                        error!(
+                                            seed = %seed,
+                                            "Cannot init genesis: network already has MPC contributors (via {})",
+                                            host
+                                        );
+                                        network_has_contributors = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if network_has_contributors {
+                            warn!("MPC: Aborting genesis — existing contributors detected on network. Remove --genesis flag.");
+                            return;
+                        }
+
+                        // Genesis protection layer 2: Password check
+                        if let Some(ref required_pw) = genesis_password {
+                            if args_genesis_password.as_deref() != Some(required_pw.as_str()) {
+                                error!("MPC: genesis_password is configured but --genesis-password was not provided or does not match");
+                                return;
+                            }
+                        }
+
                         // Truly the first node — no contributors exist anywhere, create genesis
                         info!("MPC: Genesis node with empty DB - creating initial parameters");
                         if let Err(e) = ceremony_manager_for_startup.ensure_genesis_initialized() {

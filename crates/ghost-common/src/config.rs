@@ -1367,6 +1367,11 @@ pub struct PoolConfig {
     /// If not set, auto-derives from mining_mode (e.g. "- G H O S T - PublicPool").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coinbase_extra: Option<String>,
+    /// Optional password required for --genesis flag. When set in the config,
+    /// the operator must also pass --genesis-password on the CLI for genesis to proceed.
+    /// Prevents accidental dual-genesis if someone mistakenly runs --genesis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub genesis_password: Option<String>,
 }
 
 impl PoolConfig {
@@ -1416,6 +1421,7 @@ impl Default for PoolConfig {
             payout_interval_blocks: 100,
             node_payout_address: None,
             coinbase_extra: None,
+            genesis_password: None,
         }
     }
 }
