@@ -208,6 +208,11 @@ impl BalanceTree {
         self.leaves.keys().copied().collect()
     }
 
+    /// Get all leaf balances (index → balance)
+    pub fn balances(&self) -> &HashMap<u64, u64> {
+        &self.leaves
+    }
+
     /// Get total balance across all accounts
     pub fn total_balance(&self) -> u64 {
         self.leaves.values().sum()

@@ -10,8 +10,6 @@
 
 use bellperson::groth16::{verify_proof, PreparedVerifyingKey, Proof};
 use blstrs::{Bls12, G1Affine, G2Affine, Scalar as Fr};
-use ff::{Field, PrimeField};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, error, info, instrument, warn};
@@ -22,18 +20,15 @@ use crate::types::GROTH16_PROOF_SIZE;
 
 /// Compute metadata commitment for binding proof to metadata.
 /// This prevents replay or modification of metadata fields.
+///
+/// Uses polynomial encoding matching the circuit (circuit/payout.rs):
+/// commitment = epoch * 2^64 + miner_count * 2^32 + node_count
+///
+/// This encoding is injective (unique for each tuple) and efficient in-circuit.
 pub fn compute_metadata_commitment(epoch: u64, miner_count: u32, node_count: u32) -> Fr {
-    let mut hasher = Sha256::new();
-    hasher.update(b"ghost-zkp-metadata-v1");
-    hasher.update(epoch.to_le_bytes());
-    hasher.update(miner_count.to_le_bytes());
-    hasher.update(node_count.to_le_bytes());
-    let hash = hasher.finalize();
-
-    // Convert hash to field element (take first 31 bytes to ensure it fits in the field)
-    let mut repr = [0u8; 32];
-    repr[..31].copy_from_slice(&hash[..31]);
-    Fr::from_repr_vartime(repr).unwrap_or(Fr::ZERO)
+    let two32 = Fr::from(1u64 << 32);
+    let two64 = two32 * two32;
+    Fr::from(epoch) * two64 + Fr::from(miner_count as u64) * two32 + Fr::from(node_count as u64)
 }
 
 /// Verifies ZK proofs for payout distribution validity

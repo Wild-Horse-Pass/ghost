@@ -74,7 +74,8 @@ use ghost_storage::{
     WithdrawalRequest, WithdrawalStatus,
 };
 use ghost_zkp::{
-    CommitmentTree, ConfidentialPublicInputs, ConfidentialTransferProof, ConfidentialVerifier,
+    BalanceTree, CommitmentTree, ConfidentialPublicInputs, ConfidentialTransferProof,
+    ConfidentialVerifier,
 };
 use wraith_protocol::{ParticipantTier, WraithCoordinator, WraithDenomination};
 
@@ -733,6 +734,8 @@ struct AppState {
     rpc: Arc<BitcoinRpc>,
     /// Confidential transfer commitment tree (MiMC-based, depth 20)
     commitment_tree: RwLock<CommitmentTree>,
+    /// L2 balance tree for state transition witnesses
+    balance_tree: RwLock<BalanceTree>,
     /// Groth16 confidential transfer verifier (None if MPC params not available)
     confidential_verifier: Option<Arc<ConfidentialVerifier>>,
 }
@@ -848,6 +851,49 @@ async fn main() -> Result<()> {
     let db = Arc::new(Database::open(&db_path)?);
     info!("Database opened: {}", db_path.display());
 
+    // Create pending_transfers table for L2 block production
+    db.with_connection(|conn| {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pending_transfers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sender_index INTEGER NOT NULL,
+                recipient_index INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                sender_balance_before INTEGER NOT NULL,
+                recipient_balance_before INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS l2_balances (
+                account_index INTEGER PRIMARY KEY,
+                balance INTEGER NOT NULL
+            );"
+        ).map_err(|e| ghost_common::error::GhostError::Database(e.to_string()))?;
+        Ok(())
+    })?;
+
+    // Load L2 balance tree from persisted state
+    let mut balance_tree = BalanceTree::new(COMMITMENT_TREE_DEPTH);
+    db.with_connection(|conn| {
+        let mut stmt = conn
+            .prepare("SELECT account_index, balance FROM l2_balances")
+            .map_err(|e| ghost_common::error::GhostError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64))
+            })
+            .map_err(|e| ghost_common::error::GhostError::Database(e.to_string()))?;
+        for row in rows {
+            let (index, bal) =
+                row.map_err(|e| ghost_common::error::GhostError::Database(e.to_string()))?;
+            balance_tree.set_balance(index, bal);
+        }
+        Ok(())
+    })?;
+    info!(
+        accounts = balance_tree.account_count(),
+        "L2 balance tree loaded"
+    );
+
     // M-16 FIX: Require explicit RPC credentials - no defaults
     let rpc_user = args.rpc_user.as_ref().ok_or_else(|| {
         anyhow::anyhow!(
@@ -927,6 +973,7 @@ async fn main() -> Result<()> {
         db: db.clone(),
         rpc,
         commitment_tree: RwLock::new(commitment_tree),
+        balance_tree: RwLock::new(balance_tree),
         confidential_verifier,
     });
 
@@ -1196,6 +1243,10 @@ async fn main() -> Result<()> {
             "/api/v1/confidential/notes/:owner_pubkey",
             get(get_confidential_notes),
         )
+        // L2 block production endpoints (localhost-only, called by ghost-pool)
+        .route("/api/v1/l2/state", get(l2_state_handler))
+        .route("/api/v1/l2/pending", get(l2_pending_handler))
+        .route("/api/v1/l2/finalize", post(l2_finalize_handler))
         .with_state(state.clone());
 
     // L-14 SECURITY: Read CORS origins from environment variable with secure defaults.
@@ -4428,6 +4479,324 @@ async fn send_l2_payment(
             "L2 payment of {} sats recorded. Submit ZK proof via /api/v1/confidential/transfer to complete.",
             req.amount_sats
         )
+    })))
+}
+
+// =============================================================================
+// L2 BLOCK PRODUCTION ENDPOINTS
+// =============================================================================
+
+/// GET /api/v1/l2/state — Current L2 state for block producer
+async fn l2_state_handler(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let tree = state.commitment_tree.read();
+    let state_root = tree.root().unwrap_or([0u8; 32]);
+
+    // Get latest L2 block height from blocks table (matches verify_ghostpay)
+    let height: u64 = state
+        .db
+        .with_connection(|conn| {
+            let result: Option<i64> = conn
+                .query_row(
+                    "SELECT height FROM blocks ORDER BY height DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
+            Ok(result.unwrap_or(0) as u64)
+        })
+        .unwrap_or(0);
+
+    // Count pending transfers
+    let pending_count: i64 = state
+        .db
+        .with_connection(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM pending_transfers",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))
+        })
+        .unwrap_or(0);
+
+    Json(serde_json::json!({
+        "height": height,
+        "state_root": hex::encode(state_root),
+        "pending_count": pending_count,
+    }))
+}
+
+/// GET /api/v1/l2/pending — Build a block witness from pending transfers
+async fn l2_pending_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let tree = state.commitment_tree.read();
+    let prev_state_root = tree.root().unwrap_or([0u8; 32]);
+
+    // Load pending transfers ordered by creation time
+    let pending: Vec<(i64, u64, u64, u64, u64, u64)> = state
+        .db
+        .with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, sender_index, recipient_index, amount, \
+                     sender_balance_before, recipient_balance_before \
+                     FROM pending_transfers ORDER BY created_at ASC LIMIT 100",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)? as u64,
+                        row.get::<_, i64>(2)? as u64,
+                        row.get::<_, i64>(3)? as u64,
+                        row.get::<_, i64>(4)? as u64,
+                        row.get::<_, i64>(5)? as u64,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            let mut result = Vec::new();
+            for row in rows {
+                result.push(row.map_err(|e| GhostError::Database(e.to_string()))?);
+            }
+            Ok(result)
+        })
+        .map_err(|e| {
+            error!(error = %e, "Failed to load pending transfers");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if pending.is_empty() {
+        // Empty block witness — state doesn't change
+        return Ok(Json(serde_json::json!({
+            "prev_state_root": hex::encode(prev_state_root),
+            "new_state_root": hex::encode(prev_state_root),
+            "tx_count": 0,
+            "tx_ids": [],
+            "transitions": [],
+            "intermediate_roots": [],
+        })));
+    }
+
+    // Build witness by applying transfers to a cloned balance tree
+    let balance_tree = state.balance_tree.read();
+    let mut work_tree = balance_tree.clone();
+    drop(balance_tree);
+
+    let prev_root = work_tree.root().unwrap_or([0u8; 32]);
+    let mut transitions = Vec::new();
+    let mut intermediate_roots = Vec::new();
+    let mut included_ids = Vec::new();
+
+    for (id, sender_idx, recipient_idx, amount, _, _) in &pending {
+        match work_tree.apply_payment(*sender_idx, *recipient_idx, *amount) {
+            Ok(witness) => {
+                let root = work_tree.root().unwrap_or([0u8; 32]);
+                intermediate_roots.push(root);
+                transitions.push(witness);
+                included_ids.push(*id);
+            }
+            Err(e) => {
+                warn!(id, error = %e, "Skipping invalid L2 transfer");
+            }
+        }
+    }
+
+    let new_root = work_tree.root().unwrap_or([0u8; 32]);
+
+    Ok(Json(serde_json::json!({
+        "prev_state_root": hex::encode(prev_root),
+        "new_state_root": hex::encode(new_root),
+        "tx_count": transitions.len(),
+        "tx_ids": included_ids,
+        "transitions": transitions.iter().map(|t| serde_json::json!({
+            "sender_index": t.sender_index,
+            "recipient_index": t.recipient_index,
+            "amount": t.amount,
+            "sender_balance_before": t.sender_balance_before,
+            "recipient_balance_before": t.recipient_balance_before,
+            "sender_merkle_proof": {
+                "siblings": t.sender_merkle_proof.siblings.iter()
+                    .map(|s| hex::encode(s)).collect::<Vec<_>>(),
+                "index": t.sender_merkle_proof.leaf_index,
+            },
+            "recipient_merkle_proof": {
+                "siblings": t.recipient_merkle_proof.siblings.iter()
+                    .map(|s| hex::encode(s)).collect::<Vec<_>>(),
+                "index": t.recipient_merkle_proof.leaf_index,
+            },
+        })).collect::<Vec<_>>(),
+        "intermediate_roots": intermediate_roots.iter()
+            .map(|r| hex::encode(r)).collect::<Vec<_>>(),
+    })))
+}
+
+/// POST /api/v1/l2/finalize — Called by ghost-pool when consensus approves a block
+async fn l2_finalize_handler(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let height = req["height"].as_u64().ok_or(StatusCode::BAD_REQUEST)?;
+    let state_root_hex = req["state_root"].as_str().ok_or(StatusCode::BAD_REQUEST)?;
+    let attestation_count = req["attestation_count"].as_u64().unwrap_or(0);
+
+    let state_root_bytes = parse_hex_32(state_root_hex).map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    // Delete included transfers
+    let included_ids: Vec<i64> = req["included_tx_ids"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_i64())
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if !included_ids.is_empty() {
+        // Load the transfers we're about to finalize (for balance tree application)
+        let finalized_transfers: Vec<(i64, u64, u64, u64)> = state
+            .db
+            .with_connection(|conn| {
+                let placeholders: String = included_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT id, sender_index, recipient_index, amount \
+                         FROM pending_transfers WHERE id IN ({})",
+                        placeholders
+                    ))
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)? as u64,
+                            row.get::<_, i64>(2)? as u64,
+                            row.get::<_, i64>(3)? as u64,
+                        ))
+                    })
+                    .map_err(|e| GhostError::Database(e.to_string()))?;
+                let mut result = Vec::new();
+                for row in rows {
+                    result.push(row.map_err(|e| GhostError::Database(e.to_string()))?);
+                }
+                Ok(result)
+            })
+            .map_err(|e| {
+                error!(error = %e, "Failed to load finalized transfers");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        // Apply finalized transfers to the persistent balance tree
+        {
+            let mut tree = state.balance_tree.write();
+            for (_id, sender_idx, recipient_idx, amount) in &finalized_transfers {
+                if let Err(e) = tree.apply_payment(*sender_idx, *recipient_idx, *amount) {
+                    warn!(error = %e, "Failed to apply finalized transfer to balance tree");
+                }
+            }
+
+            // Persist updated balances
+            state
+                .db
+                .with_connection(|conn| {
+                    for (&idx, &bal) in tree.balances() {
+                        conn.execute(
+                            "INSERT OR REPLACE INTO l2_balances (account_index, balance) \
+                             VALUES (?1, ?2)",
+                            rusqlite::params![idx as i64, bal as i64],
+                        )
+                        .map_err(|e| GhostError::Database(e.to_string()))?;
+                    }
+                    Ok(())
+                })
+                .map_err(|e| {
+                    error!(error = %e, "Failed to persist L2 balances");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+        }
+
+        // Delete the finalized transfers from pending
+        state
+            .db
+            .with_connection(|conn| {
+                let placeholders: String = included_ids
+                    .iter()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                conn.execute(
+                    &format!(
+                        "DELETE FROM pending_transfers WHERE id IN ({})",
+                        placeholders
+                    ),
+                    [],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+                Ok(())
+            })
+            .map_err(|e| {
+                error!(error = %e, "Failed to delete finalized transfers");
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    }
+
+    // Verify state root consistency
+    {
+        let tree = state.balance_tree.read();
+        let current_root = tree.root().unwrap_or([0u8; 32]);
+        if current_root != state_root_bytes && !included_ids.is_empty() {
+            warn!(
+                height,
+                expected = hex::encode(state_root_bytes),
+                actual = hex::encode(current_root),
+                "L2 balance tree root mismatch on finalize — tree may need resync"
+            );
+        }
+    }
+
+    // Record L2 block in the `blocks` table (read by verify_ghostpay endpoint)
+    let epoch_id = height / 2160; // 2160 blocks per epoch (6 hours at 10s intervals)
+    state
+        .db
+        .with_connection(|conn| {
+            // Ensure blocks table exists (schema from old binary, not in migrations)
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS blocks (
+                    height INTEGER PRIMARY KEY,
+                    epoch_id INTEGER NOT NULL,
+                    state_root TEXT NOT NULL
+                );"
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            conn.execute(
+                "INSERT OR REPLACE INTO blocks (height, epoch_id, state_root) \
+                 VALUES (?1, ?2, ?3)",
+                rusqlite::params![height as i64, epoch_id as i64, state_root_hex],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+        .map_err(|e| {
+            error!(error = %e, "Failed to record L2 block");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    info!(
+        height,
+        attestation_count,
+        state_root = state_root_hex,
+        "L2 block finalized"
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "height": height,
+        "state_root": state_root_hex,
     })))
 }
 

@@ -61,8 +61,9 @@ pub type ZkPayoutConsensusCallback =
     Arc<dyn Fn(ZkPayoutConsensusResult) -> GhostResult<()> + Send + Sync>;
 
 /// Callback for verifying ZK payout proofs
-/// Arguments: (proof_bytes, total_available, miner_sum, node_sum, treasury_amount)
-pub type ZkPayoutVerifyFn = Arc<dyn Fn(&[u8], u64, u64, u64, u64) -> bool + Send + Sync>;
+/// Arguments: (proof_bytes, total_available, miner_sum, node_sum, treasury_amount, epoch, miner_count, node_count)
+pub type ZkPayoutVerifyFn =
+    Arc<dyn Fn(&[u8], u64, u64, u64, u64, u64, u32, u32) -> bool + Send + Sync>;
 
 /// Create a ZK payout verifier callback from a PayoutVerifier
 ///
@@ -79,18 +80,24 @@ pub fn create_payout_verifier(
     verifier: std::sync::Arc<ghost_zkp::PayoutVerifier>,
 ) -> ZkPayoutVerifyFn {
     Arc::new(
-        move |proof_bytes, total_available, miner_sum, node_sum, treasury_amount| {
-            // Construct a PayoutProof for verification
+        move |proof_bytes,
+              total_available,
+              miner_sum,
+              node_sum,
+              treasury_amount,
+              epoch,
+              miner_count,
+              node_count| {
             let proof = ghost_zkp::PayoutProof {
-                epoch: 0, // Epoch is verified separately via proposal validation
+                epoch,
                 total_available,
-                miner_count: 0, // Not part of cryptographic sum verification
-                node_count: 0,
+                miner_count,
+                node_count,
                 miner_sum,
                 node_sum,
                 treasury_amount,
                 proof: proof_bytes.to_vec(),
-                prover_id: verifier.prover_id(), // Must match verifier's expected prover
+                prover_id: verifier.prover_id(),
             };
             verifier.verify(&proof).unwrap_or(false)
         },
@@ -424,6 +431,9 @@ impl ZkPayoutVoteHandler {
                 proposal.miner_sum,
                 proposal.node_sum,
                 proposal.treasury_amount,
+                proposal.epoch,
+                proposal.miner_count,
+                proposal.node_count,
             )
         } else {
             // SECURITY: No verifier configured - REJECT all proofs
@@ -814,7 +824,8 @@ mod tests {
     /// Create a handler with a permissive test verifier
     /// This is needed because we implement fail-closed: no verifier = reject all proofs
     fn create_test_handler(identity: Arc<NodeIdentity>) -> ZkPayoutVoteHandler {
-        ZkPayoutVoteHandler::new(identity).with_verifier(Arc::new(|_, _, _, _, _| true))
+        ZkPayoutVoteHandler::new(identity)
+            .with_verifier(Arc::new(|_, _, _, _, _, _, _, _| true))
     }
 
     #[test]
