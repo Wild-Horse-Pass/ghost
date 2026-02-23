@@ -173,11 +173,11 @@ function L2Card() {
             <div className="text-xs text-gray-500 mb-1">Wraith <InfoIcon /></div>
             <div className="flex items-center gap-2">
               <StatusDot
-                status={isRunning ? "online" : "offline"}
+                status={isRunning && gp?.wraith_enabled ? "online" : "offline"}
                 size="sm"
               />
               <span className="text-sm font-mono text-gray-100">
-                {isLoading ? "..." : isRunning ? "Available" : "Offline"}
+                {isLoading ? "..." : (isRunning && gp?.wraith_enabled) ? "Active" : "Inactive"}
               </span>
             </div>
             {isRunning && gp?.wraith_enabled && (

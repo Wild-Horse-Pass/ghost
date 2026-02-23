@@ -64,7 +64,7 @@ use ghost_common::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
 use ghost_common::types::{PayoutProposal, PayoutType, TreasuryAddress};
 use ghost_policy::PolicyProfile;
 use ghost_reaper::ReaperConfig;
-use ghost_storage::Database;
+use ghost_storage::{Database, PayoutRecord, PayoutStatus, RecipientType};
 
 // M-28: Import CoinbaseVerifier for pre-submission verification
 use crate::coinbase_verifier::{CoinbaseCommitment, CoinbaseOutput, CoinbaseVerifier};
@@ -540,12 +540,120 @@ impl TemplateProcessor {
                     "Failed to persist payout approval to database"
                 );
             }
+
+            // Record individual payout entries for history/dashboard
+            self.record_payout_entries(db, &proposal);
         }
 
         *self.approved_payout.write() = Some(proposal_hash);
         info!(
             hash = %hex::encode(&proposal_hash[..8]),
             "Set approved payout for coinbase"
+        );
+    }
+
+    /// Record individual payout entries to the database for history tracking.
+    ///
+    /// Converts each `PayoutEntry` from the proposal into a `PayoutRecord`
+    /// and inserts it into the `payouts` table. Also records treasury and
+    /// tx_fees entries so the dashboard can display complete payout breakdowns.
+    fn record_payout_entries(&self, db: &Database, proposal: &PayoutProposal) {
+        let created_at = proposal.timestamp as i64;
+        let round_id = proposal.round_id;
+        let mut recorded = 0u32;
+
+        // Miner payouts
+        for entry in &proposal.miner_payouts {
+            let record = PayoutRecord {
+                id: None,
+                round_id,
+                recipient_id: hex::encode(entry.recipient_id),
+                recipient_type: RecipientType::Miner,
+                address: hex::encode(&entry.address),
+                amount_sats: entry.amount,
+                txid: None,
+                vout: None,
+                status: PayoutStatus::Approved,
+                created_at,
+                confirmed_at: None,
+            };
+            if let Err(e) = db.insert_payout(&record) {
+                warn!(error = %e, "Failed to record miner payout entry");
+            } else {
+                recorded += 1;
+            }
+        }
+
+        // Node payouts
+        for entry in &proposal.node_payouts {
+            let record = PayoutRecord {
+                id: None,
+                round_id,
+                recipient_id: hex::encode(entry.recipient_id),
+                recipient_type: RecipientType::Node,
+                address: hex::encode(&entry.address),
+                amount_sats: entry.amount,
+                txid: None,
+                vout: None,
+                status: PayoutStatus::Approved,
+                created_at,
+                confirmed_at: None,
+            };
+            if let Err(e) = db.insert_payout(&record) {
+                warn!(error = %e, "Failed to record node payout entry");
+            } else {
+                recorded += 1;
+            }
+        }
+
+        // Treasury
+        if proposal.treasury_amount > 0 {
+            let record = PayoutRecord {
+                id: None,
+                round_id,
+                recipient_id: "treasury".to_string(),
+                recipient_type: RecipientType::Treasury,
+                address: hex::encode(&proposal.treasury_address),
+                amount_sats: proposal.treasury_amount,
+                txid: None,
+                vout: None,
+                status: PayoutStatus::Approved,
+                created_at,
+                confirmed_at: None,
+            };
+            if let Err(e) = db.insert_payout(&record) {
+                warn!(error = %e, "Failed to record treasury payout entry");
+            } else {
+                recorded += 1;
+            }
+        }
+
+        // TX fees
+        if proposal.tx_fees > 0 {
+            let record = PayoutRecord {
+                id: None,
+                round_id,
+                recipient_id: hex::encode(proposal.proposer),
+                recipient_type: RecipientType::TxFees,
+                address: String::new(),
+                amount_sats: proposal.tx_fees,
+                txid: None,
+                vout: None,
+                status: PayoutStatus::Approved,
+                created_at,
+                confirmed_at: None,
+            };
+            if let Err(e) = db.insert_payout(&record) {
+                warn!(error = %e, "Failed to record tx_fees payout entry");
+            } else {
+                recorded += 1;
+            }
+        }
+
+        info!(
+            round_id = round_id,
+            count = recorded,
+            "Recorded payout entries to database"
         );
     }
 
