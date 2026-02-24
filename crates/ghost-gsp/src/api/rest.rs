@@ -266,30 +266,35 @@ pub async fn create_session(
         return Err(GspError::BadRequest("Invalid proof action".to_string()));
     }
 
-    // Get wallet ID
-    let wallet_id = req
+    // Get permanent wallet ID for registration lookup
+    let permanent_id = req
         .proof
         .wallet_id()
         .map_err(|e| GspError::BadRequest(format!("Invalid wallet ID: {}", e)))?;
 
-    // Check if registered
-    if !state.registry.is_registered(&wallet_id)? {
+    // Check if registered (using permanent ID)
+    if !state.registry.is_registered(&permanent_id)? {
         return Err(GspError::WalletNotRegistered);
     }
 
     // Verify signature
     state.registry.verify_proof(&req.proof)?;
 
+    // Derive session-rotating wallet ID (requires session nonce for privacy)
+    let session_id = req
+        .derive_wallet_id()
+        .map_err(|e| GspError::BadRequest(format!("Session nonce error: {}", e)))?;
+
     // CRIT-AUTH-3: Create session token bound to client IP
-    // This prevents session hijacking if the token is stolen
+    // Uses rotating session ID to prevent cross-session linking
     let token = state
         .jwt
-        .create_token_with_ip(&wallet_id, client_ip.clone())?;
+        .create_token_with_ip(&session_id, client_ip.clone())?;
 
     if let Some(ref ip) = client_ip {
-        info!(wallet_id = %wallet_id, client_ip = %ip, "Session created with IP binding");
+        info!(wallet_id = %session_id, client_ip = %ip, "Session created with IP binding");
     } else {
-        warn!(wallet_id = %wallet_id, "Session created without IP binding - client IP not available");
+        warn!(wallet_id = %session_id, "Session created without IP binding - client IP not available");
     }
 
     Ok(Json(SessionResponse {

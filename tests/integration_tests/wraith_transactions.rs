@@ -10,9 +10,10 @@ use std::str::FromStr;
 
 use bitcoin::{Address, Network, ScriptBuf, Txid};
 use wraith_protocol::{
-    check_legacy_marker, generate_encrypted_marker, verify_encrypted_marker, Phase,
-    PhaseExecution, PhaseState, WraithDenomination, WraithInput, WraithTransactionBuilder,
-    FEE_PERCENTAGE, SPLIT_RATIO, WRAITH_PHASE1_MARKER, WRAITH_PHASE2_MARKER,
+    check_legacy_marker, generate_encrypted_marker, generate_encrypted_marker_v3,
+    verify_encrypted_marker, verify_encrypted_marker_v3, Phase, PhaseExecution, PhaseState,
+    WraithDenomination, WraithInput, WraithTransactionBuilder, FEE_PERCENTAGE, SPLIT_RATIO,
+    WRAITH_PHASE1_MARKER, WRAITH_PHASE2_MARKER,
 };
 
 // =============================================================================
@@ -115,24 +116,17 @@ fn test_703_intermediate_sats_equals_output_div_split_ratio() {
 }
 
 #[test]
-fn test_704_intermediate_sats_randomized_within_five_percent() {
-    // Sample 100 times for each denomination and verify range
+fn test_704_intermediate_sats_identical_across_calls() {
+    // All intermediate amounts must be identical for privacy — no variance allowed.
+    // Variable amounts would create a correlation vector for chain analysis.
     for denom in WraithDenomination::all() {
-        let base = denom.intermediate_sats();
-        let variance = base / 20; // 5%
-        let min_expected = base.saturating_sub(variance);
-        let max_expected = base + variance;
-
+        let expected = denom.intermediate_sats();
         for _ in 0..100 {
-            let randomized = denom.intermediate_sats_randomized();
-            assert!(
-                randomized >= min_expected && randomized <= max_expected,
-                "{:?}: randomized {} not in range [{}, {}] (base={})",
-                denom,
-                randomized,
-                min_expected,
-                max_expected,
-                base
+            assert_eq!(
+                denom.intermediate_sats(),
+                expected,
+                "{:?}: intermediate_sats must return identical values on every call",
+                denom
             );
         }
     }
@@ -537,64 +531,67 @@ fn test_719_merge_tx_consumes_all_intermediate_inputs() {
 // =============================================================================
 
 #[test]
-fn test_720_generate_encrypted_marker_returns_32_bytes() {
+fn test_720_v3_marker_is_exactly_32_bytes() {
     let session_id = [0xABu8; 32];
-    let marker = generate_encrypted_marker(1, &session_id);
-    assert_eq!(marker.len(), 32);
+    let marker = generate_encrypted_marker_v3(1, &session_id, 250);
+    assert_eq!(marker.len(), 32, "v3 marker must be exactly 32 bytes — no plaintext leak");
+
+    // Legacy v2 also 32 bytes
+    let legacy = generate_encrypted_marker(1, &session_id);
+    assert_eq!(legacy.len(), 32);
 }
 
 #[test]
-fn test_721_verify_encrypted_marker_roundtrip() {
+fn test_721_v3_verify_marker_roundtrip() {
     let session_id = [0x42u8; 32];
+    let count = 250u16;
 
-    let marker_phase1 = generate_encrypted_marker(1, &session_id);
-    assert_eq!(
-        verify_encrypted_marker(&marker_phase1, &session_id),
-        Some(1),
-        "Phase 1 marker should verify as phase 1"
-    );
+    let marker_p1 = generate_encrypted_marker_v3(1, &session_id, count);
+    let result = verify_encrypted_marker_v3(&marker_p1, &session_id, 400);
+    assert_eq!(result, Some((1, count)), "Phase 1 v3 marker should verify with correct count");
 
-    let marker_phase2 = generate_encrypted_marker(2, &session_id);
-    assert_eq!(
-        verify_encrypted_marker(&marker_phase2, &session_id),
-        Some(2),
-        "Phase 2 marker should verify as phase 2"
-    );
+    let marker_p2 = generate_encrypted_marker_v3(2, &session_id, count);
+    let result = verify_encrypted_marker_v3(&marker_p2, &session_id, 400);
+    assert_eq!(result, Some((2, count)), "Phase 2 v3 marker should verify with correct count");
 }
 
 #[test]
-fn test_722_different_session_ids_produce_different_markers() {
+fn test_722_v3_different_sessions_and_counts_produce_different_markers() {
     let session_a = [0x01u8; 32];
     let session_b = [0x02u8; 32];
 
-    let marker_a = generate_encrypted_marker(1, &session_a);
-    let marker_b = generate_encrypted_marker(1, &session_b);
+    // Different sessions, same count
+    let marker_a = generate_encrypted_marker_v3(1, &session_a, 250);
+    let marker_b = generate_encrypted_marker_v3(1, &session_b, 250);
+    assert_ne!(marker_a, marker_b, "Different sessions must produce different markers");
 
-    assert_ne!(
-        marker_a, marker_b,
-        "Different session IDs must produce different markers"
-    );
+    // Same session, different counts
+    let marker_c = generate_encrypted_marker_v3(1, &session_a, 100);
+    assert_ne!(marker_a, marker_c, "Different counts must produce different markers");
 
-    // Cross-verify: marker from session A should not verify with session B
-    assert_eq!(verify_encrypted_marker(&marker_a, &session_b), None);
-    assert_eq!(verify_encrypted_marker(&marker_b, &session_a), None);
+    // Cross-verify: wrong session fails
+    assert_eq!(verify_encrypted_marker_v3(&marker_a, &session_b, 400), None);
 }
 
 #[test]
-fn test_723_phase1_vs_phase2_different_markers_same_session() {
+fn test_723_v3_phase1_vs_phase2_different_markers() {
     let session_id = [0xFFu8; 32];
+    let count = 250u16;
 
-    let marker_p1 = generate_encrypted_marker(1, &session_id);
-    let marker_p2 = generate_encrypted_marker(2, &session_id);
+    let marker_p1 = generate_encrypted_marker_v3(1, &session_id, count);
+    let marker_p2 = generate_encrypted_marker_v3(2, &session_id, count);
 
-    assert_ne!(
-        marker_p1, marker_p2,
-        "Phase 1 and Phase 2 markers must differ for the same session"
-    );
+    assert_ne!(marker_p1, marker_p2, "Phase 1 and Phase 2 must differ");
 
     // Each verifies to its own phase
-    assert_eq!(verify_encrypted_marker(&marker_p1, &session_id), Some(1));
-    assert_eq!(verify_encrypted_marker(&marker_p2, &session_id), Some(2));
+    let r1 = verify_encrypted_marker_v3(&marker_p1, &session_id, 400);
+    assert_eq!(r1, Some((1, count)));
+    let r2 = verify_encrypted_marker_v3(&marker_p2, &session_id, 400);
+    assert_eq!(r2, Some((2, count)));
+
+    // Legacy v2 verification still works for old markers
+    let legacy_p1 = generate_encrypted_marker(1, &session_id);
+    assert_eq!(verify_encrypted_marker(&legacy_p1, &session_id), Some(1));
 }
 
 #[test]

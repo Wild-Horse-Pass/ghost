@@ -64,61 +64,13 @@ impl WraithDenomination {
         self.output_sats() + self.fee_sats()
     }
 
-    /// Get the base intermediate UTXO size (output / SPLIT_RATIO)
+    /// Get the intermediate UTXO size (output / SPLIT_RATIO)
     ///
-    /// This returns the fixed base amount. For privacy-enhanced intermediate amounts
-    /// with random offsets, use `intermediate_sats_randomized()`.
+    /// Privacy: All intermediates MUST be identical to prevent output clustering.
+    /// Variable amounts would create a correlation vector allowing chain analysis
+    /// to link split outputs by matching their unique sizes.
     pub fn intermediate_sats(&self) -> u64 {
         self.output_sats() / SPLIT_RATIO as u64
-    }
-
-    /// Get intermediate UTXO size with random offset (3.17 privacy fix)
-    ///
-    /// Adds a random offset of ±5% to the intermediate amount to prevent
-    /// amount fingerprinting. This makes it harder for chain analysis to
-    /// correlate intermediate UTXOs based on their exact values.
-    ///
-    /// M-5 FIX: Uses rejection sampling instead of modulo to eliminate bias.
-    ///
-    /// # Returns
-    /// The base intermediate amount plus a random offset in range [-5%, +5%]
-    pub fn intermediate_sats_randomized(&self) -> u64 {
-        let base = self.intermediate_sats();
-
-        // 5% variance range (±5% of base)
-        let variance_range = base / 20; // 5% = 1/20
-
-        if variance_range == 0 {
-            return base; // Too small for meaningful variance
-        }
-
-        // Total range is [0, 2 * variance_range] inclusive
-        let range_size = 2 * variance_range + 1;
-
-        // M-5 FIX: Use rejection sampling to eliminate modulo bias
-        // We need an unbiased random number in [0, range_size)
-        // Compute the largest multiple of range_size that fits in u64
-        let max_valid = u64::MAX - (u64::MAX % range_size);
-
-        let offset_magnitude = loop {
-            let mut rng_bytes = [0u8; 8];
-            if getrandom::getrandom(&mut rng_bytes).is_err() {
-                return base; // Fallback to base on RNG failure
-            }
-
-            let random_value = u64::from_le_bytes(rng_bytes);
-
-            // Reject values that would cause bias
-            if random_value < max_valid {
-                break random_value % range_size;
-            }
-            // Otherwise, retry with fresh random bytes
-        };
-
-        // Apply offset: base + offset - variance_range gives us [-variance_range, +variance_range]
-        // Use saturating arithmetic to prevent underflow
-        base.saturating_add(offset_magnitude)
-            .saturating_sub(variance_range)
     }
 
     /// Get the output amount in BTC

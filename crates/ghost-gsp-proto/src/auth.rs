@@ -46,9 +46,30 @@ use crate::PROOF_TIMESTAMP_TOLERANCE_SECS;
 pub struct WalletId(pub String);
 
 impl WalletId {
-    /// Create a WalletId from a public key
+    /// Create a WalletId from a public key (deterministic, permanent)
+    ///
+    /// This produces a constant ID for a given pubkey. For session-rotating IDs
+    /// that prevent cross-session linking, use `session_wallet_id()`.
     pub fn from_pubkey(pubkey: &[u8; 32]) -> Self {
         let hash = Sha256::digest(pubkey);
+        let id_bytes = &hash[0..16];
+        WalletId(hex::encode(id_bytes))
+    }
+
+    /// Derive a per-session wallet ID that rotates every connection
+    ///
+    /// The client generates a fresh `session_nonce` per connection. The server
+    /// verifies Schnorr key ownership but stores state under this rotating ID.
+    /// Cross-session linking requires the auth pubkey, which the server verifies
+    /// but does not need to retain after session setup.
+    ///
+    /// `WalletId = SHA256("ghost/session-wallet-id/v1" || auth_pubkey || session_nonce)[0:16]`
+    pub fn session_wallet_id(auth_pubkey: &[u8; 32], session_nonce: &[u8; 32]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"ghost/session-wallet-id/v1");
+        hasher.update(auth_pubkey);
+        hasher.update(session_nonce);
+        let hash = hasher.finalize();
         let id_bytes = &hash[0..16];
         WalletId(hex::encode(id_bytes))
     }
@@ -302,6 +323,43 @@ pub struct RegisterResponse {
 pub struct SessionRequest {
     /// Wallet proof with "session" action
     pub proof: WalletProof,
+
+    /// Per-session nonce for wallet ID rotation (32 bytes as hex)
+    ///
+    /// Client generates a fresh CSPRNG nonce per connection. The server
+    /// derives a session-specific wallet ID from this nonce + the auth pubkey,
+    /// preventing cross-session linking in logs and external interfaces.
+    #[serde(default)]
+    pub session_nonce: Option<String>,
+}
+
+impl SessionRequest {
+    /// Extract session nonce as 32 bytes, if provided and valid
+    pub fn session_nonce_bytes(&self) -> Option<[u8; 32]> {
+        let nonce_hex = self.session_nonce.as_deref()?;
+        let bytes = hex::decode(nonce_hex).ok()?;
+        if bytes.len() != 32 {
+            return None;
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(&bytes);
+        Some(arr)
+    }
+
+    /// Derive the session-rotating wallet ID from the session nonce.
+    ///
+    /// Requires a valid session nonce. Clients must generate a fresh 32-byte
+    /// CSPRNG nonce per session to prevent cross-session wallet ID linking.
+    /// Falling back to a static wallet ID would allow privacy regression,
+    /// so this returns an error when the nonce is missing.
+    pub fn derive_wallet_id(&self) -> Result<WalletId, GspProtoError> {
+        let pubkey = self.proof.public_key_bytes()?;
+        if let Some(nonce) = self.session_nonce_bytes() {
+            Ok(WalletId::session_wallet_id(&pubkey, &nonce))
+        } else {
+            Err(GspProtoError::SessionNonceRequired)
+        }
+    }
 }
 
 /// Session creation response
@@ -508,5 +566,102 @@ mod tests {
         // Verify nonce is properly formatted (32 hex chars = 16 bytes)
         assert_eq!(proof1.nonce.len(), 32);
         assert!(proof1.nonce.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_session_wallet_id_differs_from_static() {
+        let pubkey = [0x42u8; 32];
+        let nonce = [0xABu8; 32];
+
+        let static_id = WalletId::from_pubkey(&pubkey);
+        let session_id = WalletId::session_wallet_id(&pubkey, &nonce);
+
+        assert_ne!(
+            static_id, session_id,
+            "Session wallet ID must differ from static ID"
+        );
+        assert!(session_id.is_valid());
+    }
+
+    #[test]
+    fn test_session_wallet_id_varies_per_nonce() {
+        let pubkey = [0x42u8; 32];
+        let nonce_a = [0x01u8; 32];
+        let nonce_b = [0x02u8; 32];
+
+        let id_a = WalletId::session_wallet_id(&pubkey, &nonce_a);
+        let id_b = WalletId::session_wallet_id(&pubkey, &nonce_b);
+
+        assert_ne!(id_a, id_b, "Different nonces must produce different IDs");
+    }
+
+    #[test]
+    fn test_session_wallet_id_deterministic() {
+        let pubkey = [0x42u8; 32];
+        let nonce = [0xABu8; 32];
+
+        let id1 = WalletId::session_wallet_id(&pubkey, &nonce);
+        let id2 = WalletId::session_wallet_id(&pubkey, &nonce);
+
+        assert_eq!(id1, id2, "Same inputs must produce same session ID");
+    }
+
+    #[test]
+    fn test_session_request_derive_wallet_id_with_nonce() {
+        let pubkey = [1u8; 32];
+        let mut proof = WalletProof::new("session", &pubkey).expect("nonce generation failed");
+        proof.signature = hex::encode([2u8; 64]);
+
+        let nonce = [0xCDu8; 32];
+        let request = SessionRequest {
+            proof: proof.clone(),
+            session_nonce: Some(hex::encode(nonce)),
+        };
+
+        let derived = request.derive_wallet_id().unwrap();
+        let expected = WalletId::session_wallet_id(&pubkey, &nonce);
+        assert_eq!(derived, expected);
+    }
+
+    #[test]
+    fn test_session_request_derive_wallet_id_without_nonce_errors() {
+        let pubkey = [1u8; 32];
+        let mut proof = WalletProof::new("session", &pubkey).expect("nonce generation failed");
+        proof.signature = hex::encode([2u8; 64]);
+
+        let request = SessionRequest {
+            proof: proof.clone(),
+            session_nonce: None,
+        };
+
+        let result = request.derive_wallet_id();
+        assert!(
+            result.is_err(),
+            "derive_wallet_id() must reject missing session nonce"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, GspProtoError::SessionNonceRequired),
+            "Expected SessionNonceRequired, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_session_request_derive_wallet_id_with_invalid_nonce_errors() {
+        let pubkey = [1u8; 32];
+        let mut proof = WalletProof::new("session", &pubkey).expect("nonce generation failed");
+        proof.signature = hex::encode([2u8; 64]);
+
+        // Too short nonce (16 bytes instead of 32)
+        let request = SessionRequest {
+            proof: proof.clone(),
+            session_nonce: Some(hex::encode([0xAAu8; 16])),
+        };
+
+        let result = request.derive_wallet_id();
+        assert!(
+            result.is_err(),
+            "derive_wallet_id() must reject invalid-length nonce"
+        );
     }
 }

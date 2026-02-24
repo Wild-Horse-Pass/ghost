@@ -128,11 +128,14 @@ pub const WRAITH_PHASE1_MARKER: &[u8] = b"WR1";
 /// These constants are kept for backwards compatibility with existing transactions.
 pub const WRAITH_PHASE2_MARKER: &[u8] = b"WR2";
 
-/// 3.16 SECURITY: Generate encrypted OP_RETURN marker
+/// 3.16 SECURITY: Generate encrypted OP_RETURN marker (v2 — legacy)
 ///
 /// Encrypts the phase marker using the session ID as a key, making the marker
 /// indistinguishable from random data to observers who don't know the session ID.
 /// This prevents blockchain fingerprinting of Wraith transactions.
+///
+/// **Deprecated**: Use `generate_encrypted_marker_v3()` which absorbs the participant
+/// count into the hash, eliminating the plaintext count leak.
 ///
 /// # Arguments
 /// * `phase` - 1 for split, 2 for merge
@@ -150,7 +153,64 @@ pub fn generate_encrypted_marker(phase: u8, session_id: &[u8; 32]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// 3.16 SECURITY: Verify an encrypted OP_RETURN marker
+/// Generate encrypted OP_RETURN marker v3 — absorbs participant count
+///
+/// The participant count is included in the SHA256 input, so the OP_RETURN is
+/// exactly 32 bytes of opaque data. An observer cannot determine the number of
+/// participants without knowing the session ID and trying all plausible counts.
+///
+/// # Arguments
+/// * `phase` - 1 for split, 2 for merge
+/// * `session_id` - The 32-byte session ID used as encryption key
+/// * `participant_count` - Number of participants in this session
+///
+/// # Returns
+/// A 32-byte encrypted marker embedding phase + participant count
+pub fn generate_encrypted_marker_v3(
+    phase: u8,
+    session_id: &[u8; 32],
+    participant_count: u16,
+) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"wraith/op-return-marker/v3");
+    hasher.update([phase]);
+    hasher.update(session_id);
+    hasher.update(participant_count.to_le_bytes());
+    hasher.finalize().into()
+}
+
+/// Verify an encrypted v3 OP_RETURN marker by brute-forcing participant count
+///
+/// Iterates over both phases and all participant counts from 1..=max_count,
+/// performing ~2*max_count SHA256 operations (sub-ms for max_count=400).
+///
+/// # Arguments
+/// * `marker` - The 32-byte marker from the OP_RETURN output
+/// * `session_id` - The 32-byte session ID used as encryption key
+/// * `max_count` - Maximum participant count to try (e.g., 400 for Micro tier)
+///
+/// # Returns
+/// * `Some((phase, count))` if a match is found
+/// * `None` if no match for any phase/count combination
+pub fn verify_encrypted_marker_v3(
+    marker: &[u8; 32],
+    session_id: &[u8; 32],
+    max_count: u16,
+) -> Option<(u8, u16)> {
+    for phase in 1..=2u8 {
+        for count in 1..=max_count {
+            let expected = generate_encrypted_marker_v3(phase, session_id, count);
+            if marker == &expected {
+                return Some((phase, count));
+            }
+        }
+    }
+    None
+}
+
+/// 3.16 SECURITY: Verify an encrypted OP_RETURN marker (v2 — legacy)
 ///
 /// Checks if a marker matches the expected encrypted marker for a given phase
 /// and session ID. Returns the phase number (1 or 2) if valid, None otherwise.

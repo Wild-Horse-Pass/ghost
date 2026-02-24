@@ -367,7 +367,7 @@ fn test_762_exit_mix_in_mix_to_active() {
 #[test]
 fn test_763_spend_active_to_spent() {
     let mut lock = make_lock();
-    assert!(lock.transition(StateTransition::Spend).is_ok());
+    assert!(lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] }).is_ok());
     assert_eq!(lock.state(), LockState::Spent);
     assert!(lock.state().is_terminal());
 }
@@ -431,7 +431,7 @@ fn test_769_spent_and_recovered_reject_all_transitions() {
         StateTransition::ExitMix,
         StateTransition::StartJump,
         StateTransition::CompleteJump,
-        StateTransition::Spend,
+        StateTransition::SettlementSpend { batch_id: [0u8; 32] },
         StateTransition::Recover,
         StateTransition::Freeze,
         StateTransition::Unfreeze,
@@ -440,7 +440,7 @@ fn test_769_spent_and_recovered_reject_all_transitions() {
     // Test from Spent
     for transition in &transitions {
         let mut lock = make_lock();
-        lock.transition(StateTransition::Spend).unwrap();
+        lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] }).unwrap();
         assert!(
             lock.transition(*transition).is_err(),
             "Spent state must reject {:?}",
@@ -552,7 +552,7 @@ fn test_774_recover_transition_active_to_recovered() {
 fn test_775_needs_jump_false_before_true_after_deadline() {
     let secp = Secp256k1::new();
 
-    // Large denomination = High risk tier = 7-day (1008-block) rotation
+    // Large denomination = High risk tier = 7-14 day randomized rotation
     let lock = GhostLock::new(
         &secp,
         &lock_secret(),
@@ -565,22 +565,29 @@ fn test_775_needs_jump_false_before_true_after_deadline() {
 
     assert_eq!(lock.jump_risk_tier(), JumpRiskTier::High);
 
-    let rotation = JumpRiskTier::High.rotation_blocks(); // 1008
+    // Deadline is randomized — use the lock's actual stored deadline
+    let deadline = lock.jump_schedule().deadline_height;
+
+    // Verify deadline is within the expected range
+    let min = HEIGHT + JumpRiskTier::High.min_rotation_blocks();
+    let max = HEIGHT + JumpRiskTier::High.max_rotation_blocks();
+    assert!(deadline >= min && deadline <= max,
+        "deadline {} must be in [{}, {}]", deadline, min, max);
 
     assert!(
         !lock.needs_jump(HEIGHT),
         "needs_jump must be false at creation height"
     );
     assert!(
-        !lock.needs_jump(HEIGHT + rotation - 1),
+        !lock.needs_jump(deadline - 1),
         "needs_jump must be false one block before deadline"
     );
     assert!(
-        lock.needs_jump(HEIGHT + rotation),
+        lock.needs_jump(deadline),
         "needs_jump must be true at exactly the deadline"
     );
     assert!(
-        lock.needs_jump(HEIGHT + rotation + 100),
+        lock.needs_jump(deadline + 100),
         "needs_jump must be true past the deadline"
     );
 }
@@ -599,10 +606,15 @@ fn test_776_jump_urgency_progresses_toward_one() {
     )
     .unwrap();
 
+    // Deadline is randomized — use the lock's actual stored deadline
+    let deadline = lock.jump_schedule().deadline_height;
+    let total_blocks = deadline - HEIGHT;
+    let midpoint = HEIGHT + total_blocks / 2;
+
     let urgency_start = lock.jump_urgency(HEIGHT);
-    let urgency_mid = lock.jump_urgency(HEIGHT + JumpRiskTier::High.rotation_blocks() / 2);
-    let urgency_deadline = lock.jump_urgency(HEIGHT + JumpRiskTier::High.rotation_blocks());
-    let urgency_past = lock.jump_urgency(HEIGHT + JumpRiskTier::High.rotation_blocks() * 2);
+    let urgency_mid = lock.jump_urgency(midpoint);
+    let urgency_deadline = lock.jump_urgency(deadline);
+    let urgency_past = lock.jump_urgency(deadline + total_blocks);
 
     assert!(
         (urgency_start - 0.0).abs() < 0.01,
@@ -610,7 +622,7 @@ fn test_776_jump_urgency_progresses_toward_one() {
         urgency_start
     );
     assert!(
-        (urgency_mid - 0.5).abs() < 0.01,
+        (urgency_mid - 0.5).abs() < 0.02,
         "urgency at midpoint must be ~0.5, got {}",
         urgency_mid
     );

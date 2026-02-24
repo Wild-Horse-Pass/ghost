@@ -100,6 +100,9 @@ impl std::fmt::Display for LockState {
 }
 
 /// Lock state transition
+///
+/// All Ghost Lock spends must go through settlement batches — there is no direct
+/// `Spend` transition. Use `SettlementSpend` which requires a batch context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateTransition {
     /// Start a Wraith mix
@@ -110,8 +113,11 @@ pub enum StateTransition {
     StartJump,
     /// Complete a jump (new lock created)
     CompleteJump,
-    /// Spend the lock
-    Spend,
+    /// Spend the lock through a settlement batch (requires batch_id)
+    ///
+    /// All Ghost Lock L1 spends must go through settlement batches.
+    /// The batch_id ties the spend to a specific settlement batch for auditability.
+    SettlementSpend { batch_id: [u8; 32] },
     /// Recover via timelock
     Recover,
     /// Freeze the lock
@@ -127,7 +133,7 @@ impl StateTransition {
             (state, self),
             (LockState::Active, StateTransition::EnterMix)
                 | (LockState::Active, StateTransition::StartJump)
-                | (LockState::Active, StateTransition::Spend)
+                | (LockState::Active, StateTransition::SettlementSpend { .. })
                 | (LockState::Active, StateTransition::Recover)
                 | (LockState::Active, StateTransition::Freeze)
                 | (LockState::InMix, StateTransition::ExitMix)
@@ -143,7 +149,7 @@ impl StateTransition {
             StateTransition::ExitMix => LockState::Active,
             StateTransition::StartJump => LockState::Jumping,
             StateTransition::CompleteJump => LockState::Spent, // Old lock is spent
-            StateTransition::Spend => LockState::Spent,
+            StateTransition::SettlementSpend { .. } => LockState::Spent,
             StateTransition::Recover => LockState::Recovered,
             StateTransition::Freeze => LockState::Frozen,
             StateTransition::Unfreeze => LockState::Active,
@@ -178,16 +184,22 @@ mod tests {
     fn test_valid_transitions() {
         assert!(StateTransition::EnterMix.is_valid_from(LockState::Active));
         assert!(StateTransition::StartJump.is_valid_from(LockState::Active));
-        assert!(StateTransition::Spend.is_valid_from(LockState::Active));
+        let batch_id = [0u8; 32];
+        assert!(StateTransition::SettlementSpend { batch_id }.is_valid_from(LockState::Active));
 
         assert!(!StateTransition::EnterMix.is_valid_from(LockState::InMix));
         assert!(!StateTransition::StartJump.is_valid_from(LockState::Spent));
+        assert!(!StateTransition::SettlementSpend { batch_id }.is_valid_from(LockState::Spent));
     }
 
     #[test]
     fn test_transition_results() {
         assert_eq!(StateTransition::EnterMix.result_state(), LockState::InMix);
         assert_eq!(StateTransition::ExitMix.result_state(), LockState::Active);
-        assert_eq!(StateTransition::Spend.result_state(), LockState::Spent);
+        let batch_id = [0u8; 32];
+        assert_eq!(
+            StateTransition::SettlementSpend { batch_id }.result_state(),
+            LockState::Spent
+        );
     }
 }

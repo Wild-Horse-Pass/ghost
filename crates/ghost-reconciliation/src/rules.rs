@@ -120,6 +120,17 @@ pub fn validate_fee(fee_sats: u64) -> ReconciliationResult<()> {
     Ok(())
 }
 
+/// Wraith coordinator fee divisor (100 = 1%)
+const WRAITH_FEE_DIVISOR: u64 = 100;
+
+/// Calculate Wraith coordinator fee (1% for WraithJump settlements)
+///
+/// Uses the same ceiling division and clamping as calculate_fee().
+pub fn calculate_wraith_fee(amount_sats: u64) -> u64 {
+    let fee = amount_sats.div_ceil(WRAITH_FEE_DIVISOR);
+    fee.clamp(1, MAX_FEE_SATS)
+}
+
 /// Calculate net amount after fee
 pub fn calculate_net_amount(amount_sats: u64) -> u64 {
     amount_sats.saturating_sub(calculate_fee(amount_sats))

@@ -270,6 +270,11 @@ impl ReconciliationTx {
         &self.outputs
     }
 
+    /// Get mutable reference to outputs (for CSPRNG shuffling)
+    pub fn outputs_mut(&mut self) -> &mut Vec<TxOutput> {
+        &mut self.outputs
+    }
+
     /// Get batch ID
     pub fn batch_id(&self) -> u32 {
         self.batch_id

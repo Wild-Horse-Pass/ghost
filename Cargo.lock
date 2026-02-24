@@ -2230,6 +2230,7 @@ name = "ghost-locks"
 version = "1.8.0"
 dependencies = [
  "bitcoin",
+ "getrandom 0.2.17",
  "hex",
  "rand",
  "serde",

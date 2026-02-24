@@ -1106,6 +1106,38 @@ async fn main() -> Result<()> {
         Arc::clone(&vote_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>
     );
 
+    // Periodic timeout checker for payout proposals
+    // Without this, voting sessions that don't get enough votes never expire,
+    // which can cause stale proposals to accumulate and block new ones.
+    {
+        let vh_for_timeouts = Arc::clone(&vote_handler);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let timeouts = vh_for_timeouts.check_timeouts();
+                for result in &timeouts {
+                    if let ghost_common::types::ConsensusResult::Timeout {
+                        proposal_hash,
+                        approvals,
+                        total_nodes,
+                        ..
+                    } = result
+                    {
+                        tracing::warn!(
+                            hash = %hex::encode(&proposal_hash[..8]),
+                            approvals,
+                            total_nodes,
+                            "Payout proposal timed out"
+                        );
+                    }
+                }
+                vh_for_timeouts.cleanup_rate_limiter();
+            }
+        });
+    }
+
     // Create and register health ping handler for peer tracking and voter discovery
     // ALL active nodes participate in BFT consensus - the callback registers discovered nodes as voters
     let vh_for_callback = Arc::clone(&vote_handler);
@@ -2655,9 +2687,178 @@ async fn main() -> Result<()> {
         Ok(())
     });
 
+    // Configure block_found callback: triggers payout proposal BEFORE block submission.
+    // This breaks the bootstrap deadlock where:
+    //   1. submitblock requires an approved coinbase commitment
+    //   2. Coinbase commitment requires an approved payout proposal
+    //   3. Payout proposals were only created from block_submitted_rx (AFTER submitblock)
+    // By creating the proposal when a block-difficulty share is found (before submission),
+    // the next template will include the committed coinbase and submitblock will succeed.
+    {
+        let rm_for_bf = Arc::clone(&round_manager);
+        let tp_for_bf = Arc::clone(&template_processor);
+        let payout_for_bf = Arc::clone(&payout_handler);
+        let identity_for_bf = Arc::clone(&identity);
+        let db_for_bf = Arc::clone(&db);
+        let solo_payout_address_for_bf = config.network.solo_payout_address.clone();
+        let metrics_for_bf = Arc::clone(&metrics);
+
+        verification_state = verification_state.with_block_found_callback(move |block_info| {
+            let round_id = rm_for_bf.current_round_id();
+            let is_solo_mode = rm_for_bf.is_solo_mode();
+
+            info!(
+                round = round_id,
+                share_hash = %block_info.share_hash,
+                miner = %block_info.miner_id,
+                solo_mode = is_solo_mode,
+                "Block-difficulty share found, creating pre-submission payout proposal..."
+            );
+
+            // Use the share hash as block hash — the share met block difficulty,
+            // so this IS the candidate block hash. Can't use [0u8;32] because
+            // PO4-M1 validation rejects zero block hashes.
+            let mut block_hash = [0u8; 32];
+            if let Ok(decoded) = hex::decode(&block_info.share_hash) {
+                let len = decoded.len().min(32);
+                block_hash[..len].copy_from_slice(&decoded[..len]);
+            }
+
+            let node_shares = rm_for_bf.get_node_shares(round_id);
+            let (subsidy, fees, height) = tp_for_bf.get_current_block_info();
+
+            // Load treasury state from database
+            let treasury_state = match db_for_bf.get_treasury_balance() {
+                Ok(balance) => {
+                    let threshold_ts = match db_for_bf.get_treasury_threshold_reached() {
+                        Ok(ts_opt) => ts_opt
+                            .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+                            .map(|dt| dt.with_timezone(&chrono::Utc)),
+                        Err(e) => {
+                            warn!(error = %e, "Failed to load treasury threshold timestamp, using None");
+                            None
+                        }
+                    };
+                    TreasuryState::from_stored(balance, threshold_ts)
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to load treasury state, using default");
+                    TreasuryState::new()
+                }
+            };
+
+            let winning_node_id = identity_for_bf.node_id();
+
+            if is_solo_mode {
+                let solo_address = match &solo_payout_address_for_bf {
+                    Some(addr) if !addr.is_empty() => addr.clone(),
+                    _ => {
+                        error!("Solo mode block found but solo_payout_address not configured!");
+                        return;
+                    }
+                };
+
+                let treasury_address_snapshot =
+                    payout_for_bf.get_treasury_address_snapshot();
+
+                let solo_data = SoloBlockFoundData {
+                    round_id,
+                    block_hash,
+                    block_height: height,
+                    block_timestamp: chrono::Utc::now(),
+                    solo_payout_address: solo_address,
+                    subsidy_sats: subsidy,
+                    treasury_address_snapshot,
+                    tx_fees_sats: fees,
+                    node_shares,
+                    treasury_state,
+                };
+
+                match payout_for_bf.handle_solo_block_found(solo_data) {
+                    Ok(proposal_hash) => {
+                        if proposal_hash != [0u8; 32] {
+                            info!(
+                                round = round_id,
+                                hash = %hex::encode(&proposal_hash[..8]),
+                                "Solo pre-submission payout proposal submitted for consensus"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        error!(error = %e, round = round_id, "Failed to create solo pre-submission payout proposal");
+                    }
+                }
+            } else {
+                // Pool mode: proportional distribution to all miners
+                let miner_work = {
+                    use ghost_accounting::shares::WORK_SCALE;
+                    let db_work = db_for_bf.get_round_miners(round_id).unwrap_or_default();
+                    let db_work = if db_work.is_empty() && round_id > 0 {
+                        db_for_bf
+                            .get_round_miners(round_id - 1)
+                            .unwrap_or_default()
+                    } else {
+                        db_work
+                    };
+                    if db_work.is_empty() {
+                        warn!(
+                            round = round_id,
+                            "No miner work in DB for pre-submission proposal, falling back to in-memory data"
+                        );
+                        rm_for_bf.get_miner_work_scaled(round_id)
+                    } else {
+                        db_work
+                            .into_iter()
+                            .take(200)
+                            .map(|(id, w)| (id, (w * WORK_SCALE as f64) as u128))
+                            .collect()
+                    }
+                };
+
+                let treasury_address_snapshot =
+                    payout_for_bf.get_treasury_address_snapshot();
+
+                let block_data = BlockFoundData {
+                    round_id,
+                    block_hash,
+                    block_height: height,
+                    block_timestamp: chrono::Utc::now(),
+                    winning_miner_id: "pool".to_string(),
+                    winning_miner_payout_address: Some(block_info.payout_address.clone()),
+                    treasury_address_snapshot,
+                    winning_node_id,
+                    subsidy_sats: subsidy,
+                    tx_fees_sats: fees,
+                    miner_work,
+                    node_shares,
+                    treasury_state,
+                };
+
+                match payout_for_bf.handle_block_found(block_data) {
+                    Ok(proposal_hash) => {
+                        if proposal_hash != [0u8; 32] {
+                            metrics_for_bf.payouts_total.inc();
+                            info!(
+                                round = round_id,
+                                hash = %hex::encode(&proposal_hash[..8]),
+                                "Pre-submission payout proposal submitted for consensus"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        metrics_for_bf.payout_errors_total.inc();
+                        error!(error = %e, round = round_id, "Failed to create pre-submission payout proposal");
+                    }
+                }
+            }
+        });
+    }
+
     // Spawn async payout task: triggers payout proposal creation when a block is
     // submitted to Bitcoin Core via SubmitSolution (channel from TemplateProcessor).
-    // This replaces the previous webhook-based approach which had a ~3s race condition.
+    // This is the SECONDARY path — the primary path is now the block_found callback above.
+    // This path handles the case where the block was successfully submitted and we need
+    // to create a proposal for the NEXT block's coinbase.
     {
         let rm_for_block = Arc::clone(&round_manager);
         let tp_for_block = Arc::clone(&template_processor);

@@ -213,7 +213,7 @@ fn test_858_lock_transitions_to_spent_after_settlement() {
 
     // Lock starts Active, settlement initiated means we spend it
     assert_eq!(lock.state(), LockState::Active);
-    lock.transition(StateTransition::Spend)
+    lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] })
         .expect("Active -> Spent should succeed");
     assert_eq!(lock.state(), LockState::Spent);
 }
@@ -272,7 +272,7 @@ fn test_860_full_state_progression_active_inmix_active_spent() {
     assert!(lock.state().can_spend());
 
     // Spend via settlement
-    lock.transition(StateTransition::Spend).unwrap();
+    lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] }).unwrap();
     assert_eq!(lock.state(), LockState::Spent);
     assert!(!lock.state().can_spend());
     assert!(lock.state().is_terminal());
@@ -463,7 +463,7 @@ fn test_867_frozen_lock_cannot_settle() {
     );
 
     // Attempting to spend a frozen lock should fail
-    let result = lock.transition(StateTransition::Spend);
+    let result = lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] });
     assert!(
         result.is_err(),
         "Spending a frozen lock should fail with InvalidStateTransition"
@@ -484,7 +484,7 @@ fn test_868_inmix_lock_cannot_settle() {
     );
 
     // Attempting to spend an InMix lock should fail
-    let result = lock.transition(StateTransition::Spend);
+    let result = lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] });
     assert!(
         result.is_err(),
         "Spending an InMix lock should fail with InvalidStateTransition"

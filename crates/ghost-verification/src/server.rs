@@ -685,6 +685,25 @@ pub struct ShareBatch {
 /// Callback for recording shares (from SRI Pool notifications)
 pub type RecordShareFn = Arc<dyn Fn(ShareNotification) -> GhostResult<()> + Send + Sync>;
 
+/// Data passed to the block_found callback when a block-difficulty share arrives
+#[derive(Debug, Clone)]
+pub struct BlockFoundInfo {
+    /// Share hash that met block difficulty
+    pub share_hash: String,
+    /// Miner ID (user_identity string)
+    pub miner_id: String,
+    /// Payout address extracted from user_identity
+    pub payout_address: String,
+    /// Share work/difficulty value
+    pub work: f64,
+}
+
+/// Callback invoked when a block-difficulty share is found via SRI webhook.
+/// This triggers payout proposal creation BEFORE block submission, breaking
+/// the bootstrap deadlock where submitblock requires an approved coinbase
+/// commitment but the commitment requires a submitted block.
+pub type BlockFoundFn = Arc<dyn Fn(BlockFoundInfo) + Send + Sync>;
+
 /// Parse user_identity string to extract payout address and worker name.
 /// Format: <payout_address>.<worker_name>
 /// Returns (payout_address, worker_name) or (user_identity, "default") if no dot found.
@@ -851,6 +870,8 @@ pub struct VerificationState {
     test_proposal_fn: Option<TestProposalFn>,
     /// Share recording callback (from SRI Pool notifications)
     record_share_fn: Option<RecordShareFn>,
+    /// Block found callback (triggers payout proposal before block submission)
+    block_found_fn: Option<BlockFoundFn>,
     /// Internal API authentication (H10/H11 security fix)
     /// When Some, internal endpoints require HMAC-SHA256 authentication
     pub internal_auth: Option<Arc<crate::auth::InternalAuth>>,
@@ -990,6 +1011,7 @@ impl VerificationState {
             ws_state: Arc::new(WsState::new()),
             test_proposal_fn: None,
             record_share_fn: None,
+            block_found_fn: None,
             internal_auth: None,
             // VF-C2: Default to requiring internal auth for security
             require_internal_auth: true,
@@ -1083,6 +1105,20 @@ impl VerificationState {
         self
     }
 
+    /// Set block found callback (triggers payout proposal before block submission)
+    ///
+    /// This callback fires when a block-difficulty share arrives via the SRI webhook,
+    /// BEFORE the block is submitted to Bitcoin Core. This breaks the bootstrap deadlock
+    /// where submitblock requires an approved coinbase commitment but no proposal can be
+    /// created without a successful submitblock.
+    pub fn with_block_found_callback<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(BlockFoundInfo) + Send + Sync + 'static,
+    {
+        self.block_found_fn = Some(Arc::new(callback));
+        self
+    }
+
     /// Record a share (called from HTTP endpoint)
     pub fn record_share(&self, share: ShareNotification) -> GhostResult<()> {
         if let Some(ref recorder) = self.record_share_fn {
@@ -1159,8 +1195,24 @@ impl VerificationState {
                     "Block found via SRI webhook - triggering payout proposal"
                 );
 
-                // Block found handling is done via TemplateProcessor.block_submitted_rx channel
-                // in main.rs, not via this webhook path.
+                // Trigger payout proposal BEFORE block submission to break bootstrap deadlock.
+                // Without this, submitblock requires an approved coinbase commitment, but the
+                // commitment requires a payout proposal, which previously only came from
+                // block_submitted_rx (which fires AFTER submitblock succeeds).
+                if let Some(ref callback) = self.block_found_fn {
+                    let info = BlockFoundInfo {
+                        share_hash: share.share_hash.clone(),
+                        miner_id: miner_id.clone(),
+                        payout_address: payout_address.clone(),
+                        work: share.share_work,
+                    };
+                    callback(info);
+                } else {
+                    tracing::warn!(
+                        "Block found but no block_found_fn callback configured - \
+                         payout proposal will not be created until block_submitted_rx fires"
+                    );
+                }
             }
         }
 

@@ -49,6 +49,58 @@ use crate::MIN_SETTLEMENT_SATS;
 /// The "v2" domain indicates signatures include epoch and batch_id.
 const SETTLEMENT_OWNERSHIP_DOMAIN: &[u8] = b"GhostSettlement/Ownership/v2";
 
+/// The kind of settlement determines fee treatment and output construction.
+///
+/// All Ghost Lock L1 spends go through settlement batches — no direct spends allowed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SettlementKind {
+    /// User exiting Ghost Pay to an external Bitcoin address.
+    /// Pays the 0.1% protocol fee + mining fee share.
+    Exit,
+
+    /// Key rotation to new Ghost Lock address(es).
+    /// Fee-exempt: only pays mining fee share, not the 0.1% protocol fee.
+    /// Can optionally re-split into different denominations.
+    Jump,
+
+    /// Key rotation routed through a Wraith mix cycle for maximum privacy.
+    /// Pays Wraith coordinator fees + mining fee share (no 0.1% protocol fee).
+    /// Gets full 250+ anonymity set through split/merge mixing.
+    WraithJump,
+}
+
+impl SettlementKind {
+    /// Whether this settlement kind is fee-exempt (no 0.1% protocol fee)
+    pub fn is_fee_exempt(&self) -> bool {
+        matches!(self, SettlementKind::Jump)
+    }
+
+    /// Whether this kind produces Ghost Lock outputs (vs external Bitcoin addresses)
+    pub fn produces_ghost_lock_outputs(&self) -> bool {
+        matches!(self, SettlementKind::Jump | SettlementKind::WraithJump)
+    }
+
+    /// Whether this kind routes through Wraith mixing
+    pub fn routes_through_wraith(&self) -> bool {
+        matches!(self, SettlementKind::WraithJump)
+    }
+
+    /// Display name
+    pub fn name(&self) -> &'static str {
+        match self {
+            SettlementKind::Exit => "Exit",
+            SettlementKind::Jump => "Jump",
+            SettlementKind::WraithJump => "WraithJump",
+        }
+    }
+}
+
+impl std::fmt::Display for SettlementKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name())
+    }
+}
+
 /// Ownership proof for a settlement request (C-1, C-7)
 ///
 /// Proves that the requester owns the lock being spent by providing a
@@ -386,15 +438,17 @@ impl std::fmt::Display for SettlementState {
 pub struct Settlement {
     /// Unique settlement ID
     id: [u8; 32],
+    /// Settlement kind (Exit, Jump, or WraithJump)
+    kind: SettlementKind,
     /// Source Ghost ID (L2 account)
     source_ghost_id: String,
     /// Source lock ID (the Ghost Lock being spent)
     source_lock_id: [u8; 32],
-    /// Destination Bitcoin address
+    /// Destination Bitcoin address (or new Ghost Lock address for Jump/WraithJump)
     destination_address: String,
     /// Amount in satoshis
     amount_sats: u64,
-    /// Fee in satoshis
+    /// Fee in satoshis (0 for Jump, Wraith fees for WraithJump, 0.1% for Exit)
     fee_sats: u64,
     /// Current state
     state: SettlementState,
@@ -411,8 +465,61 @@ pub struct Settlement {
 }
 
 impl Settlement {
-    /// Create a new settlement
+    /// Create a new Exit settlement (leaving Ghost Pay to external Bitcoin address)
     pub fn new(
+        source_ghost_id: String,
+        source_lock_id: [u8; 32],
+        destination_address: String,
+        amount_sats: u64,
+    ) -> ReconciliationResult<Self> {
+        Self::new_with_kind(
+            SettlementKind::Exit,
+            source_ghost_id,
+            source_lock_id,
+            destination_address,
+            amount_sats,
+        )
+    }
+
+    /// Create a new Jump settlement (key rotation to new Ghost Lock address)
+    ///
+    /// Fee-exempt: only mining fee share, no 0.1% protocol fee.
+    pub fn new_jump(
+        source_ghost_id: String,
+        source_lock_id: [u8; 32],
+        destination_address: String,
+        amount_sats: u64,
+    ) -> ReconciliationResult<Self> {
+        Self::new_with_kind(
+            SettlementKind::Jump,
+            source_ghost_id,
+            source_lock_id,
+            destination_address,
+            amount_sats,
+        )
+    }
+
+    /// Create a new WraithJump settlement (key rotation through Wraith mix cycle)
+    ///
+    /// Pays Wraith coordinator fees but not the 0.1% protocol fee.
+    pub fn new_wraith_jump(
+        source_ghost_id: String,
+        source_lock_id: [u8; 32],
+        destination_address: String,
+        amount_sats: u64,
+    ) -> ReconciliationResult<Self> {
+        Self::new_with_kind(
+            SettlementKind::WraithJump,
+            source_ghost_id,
+            source_lock_id,
+            destination_address,
+            amount_sats,
+        )
+    }
+
+    /// Internal constructor with settlement kind
+    fn new_with_kind(
+        kind: SettlementKind,
         source_ghost_id: String,
         source_lock_id: [u8; 32],
         destination_address: String,
@@ -426,12 +533,24 @@ impl Settlement {
             });
         }
 
-        // Calculate fee (0.1%)
-        // PAY-M1: Use integer arithmetic to avoid floating-point precision errors
-        // H-9: Use ceiling division and minimum 1 sat via calculate_fee()
-        let fee_sats = crate::rules::calculate_fee(amount_sats);
+        // Calculate fee based on settlement kind
+        let fee_sats = match kind {
+            SettlementKind::Exit => {
+                // 0.1% protocol fee
+                crate::rules::calculate_fee(amount_sats)
+            }
+            SettlementKind::Jump => {
+                // Fee-exempt: no protocol fee (only mining fee share, handled at batch level)
+                0
+            }
+            SettlementKind::WraithJump => {
+                // Wraith coordinator fee (1% per the Wraith protocol)
+                // Mining fee share handled at batch level
+                crate::rules::calculate_wraith_fee(amount_sats)
+            }
+        };
 
-        // L-26: Validate fee is less than amount to ensure positive net value
+        // L-26: Validate fee is less than amount for non-exempt settlements
         if fee_sats >= amount_sats {
             return Err(ReconciliationError::InvalidSettlement(format!(
                 "L-26: Calculated fee {} sats >= amount {} sats - this indicates a bug in fee calculation",
@@ -460,6 +579,7 @@ impl Settlement {
 
         Ok(Self {
             id,
+            kind,
             source_ghost_id,
             source_lock_id,
             destination_address,
@@ -472,6 +592,11 @@ impl Settlement {
             merkle_proof: None,
             l1_txid: None,
         })
+    }
+
+    /// Get settlement kind
+    pub fn kind(&self) -> SettlementKind {
+        self.kind
     }
 
     /// Get settlement ID

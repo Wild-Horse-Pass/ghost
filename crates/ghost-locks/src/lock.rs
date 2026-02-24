@@ -453,7 +453,9 @@ mod tests {
 
         assert_eq!(lock.jump_risk_tier(), JumpRiskTier::High);
         assert!(!lock.needs_jump(800_000));
-        assert!(lock.needs_jump(800_000 + 144 * 7 + 1)); // After 7 days
+        // Deadline is randomized within 7-14 days (1008-2016 blocks)
+        // After max rotation period, jump is always needed
+        assert!(lock.needs_jump(800_000 + JumpRiskTier::High.max_rotation_blocks() + 1));
     }
 
     #[test]
@@ -503,7 +505,7 @@ mod tests {
         assert_eq!(lock.state(), LockState::Active);
 
         // Valid transition: Active -> Spent
-        assert!(lock.transition(StateTransition::Spend).is_ok());
+        assert!(lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] }).is_ok());
         assert_eq!(lock.state(), LockState::Spent);
     }
 
@@ -554,7 +556,7 @@ mod tests {
         assert!(lock.is_recovery_available(recovery_height));
 
         // Mark as spent
-        lock.transition(StateTransition::Spend).unwrap();
+        lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] }).unwrap();
 
         // Recovery not available when spent
         assert!(!lock.is_recovery_available(recovery_height));

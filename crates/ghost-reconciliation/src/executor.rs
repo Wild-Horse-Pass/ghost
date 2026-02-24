@@ -651,12 +651,25 @@ impl BatchExecutor {
         }
 
         // Add settlement outputs (H-8: handle overflow)
+        // All settlement types use Payment output type — the destination address
+        // determines whether it's an external address (Exit) or a new Ghost Lock
+        // address (Jump/WraithJump). This is intentional: jump outputs are
+        // indistinguishable from exit outputs at the L1 transaction level.
         for settlement in &self.current_batch_settlements {
-            recon_tx.add_output(TxOutput::Payment {
-                address: settlement.destination_address().to_string(),
-                amount: settlement.net_amount_sats(),
-                from_lock: *settlement.source_lock_id(),
-            })?;
+            let output_type = match settlement.kind() {
+                crate::settlement::SettlementKind::Exit => TxOutput::Exit {
+                    address: settlement.destination_address().to_string(),
+                    amount: settlement.net_amount_sats(),
+                    from_lock: *settlement.source_lock_id(),
+                },
+                crate::settlement::SettlementKind::Jump
+                | crate::settlement::SettlementKind::WraithJump => TxOutput::Payment {
+                    address: settlement.destination_address().to_string(),
+                    amount: settlement.net_amount_sats(),
+                    from_lock: *settlement.source_lock_id(),
+                },
+            };
+            recon_tx.add_output(output_type)?;
         }
 
         // Add treasury fee output (H-8: handle overflow)
@@ -669,6 +682,12 @@ impl BatchExecutor {
 
         // Add OP_RETURN
         recon_tx.add_op_return();
+
+        // CSPRNG-based shuffling of outputs to prevent position-based correlation
+        // Inputs are not shuffled (Bitcoin transaction inputs don't reveal order semantics)
+        // but outputs are shuffled so an observer cannot tell which output corresponds
+        // to which settlement by position alone.
+        shuffle_outputs(&mut recon_tx, batch.id())?;
 
         // Build actual Bitcoin transaction
         let bitcoin_tx = recon_tx.to_bitcoin_transaction(&input_outpoints, self.network)?;
@@ -882,6 +901,94 @@ fn estimate_transaction_vsize(input_count: usize, output_count: usize) -> u64 {
     let output_vsize = output_count as u64 * 43;
     let overhead = 10;
     input_vsize + output_vsize + overhead
+}
+
+/// CSPRNG-based Fisher-Yates shuffle of transaction outputs.
+///
+/// Seeded from `SHA256(batch_id || entropy)` where entropy is from the OS CSPRNG.
+/// This prevents output position from leaking which settlement produced which output.
+/// OP_RETURN outputs are kept at the end (standard Bitcoin convention).
+fn shuffle_outputs(
+    recon_tx: &mut ReconciliationTx,
+    batch_id: &[u8; 32],
+) -> Result<(), ReconciliationError> {
+    use sha2::{Digest, Sha256};
+
+    let outputs = recon_tx.outputs_mut();
+    let len = outputs.len();
+    if len <= 1 {
+        return Ok(());
+    }
+
+    // Separate OP_RETURN outputs (keep at end, Bitcoin convention)
+    // Partition: [non-OP_RETURN outputs..., OP_RETURN outputs...]
+    let op_return_start = outputs
+        .iter()
+        .position(|o| matches!(o, TxOutput::OpReturn { .. }))
+        .unwrap_or(len);
+
+    if op_return_start <= 1 {
+        return Ok(()); // 0 or 1 shuffleable outputs
+    }
+
+    // Generate seed: SHA256(batch_id || OS entropy)
+    let mut entropy = [0u8; 32];
+    getrandom::getrandom(&mut entropy).map_err(|_| ReconciliationError::RngFailure)?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"ghost/batch-shuffle/v1");
+    hasher.update(batch_id);
+    hasher.update(entropy);
+    let seed: [u8; 32] = hasher.finalize().into();
+
+    // Fisher-Yates shuffle using the seed as a stream of random bytes
+    // We re-hash when we exhaust the current block of randomness
+    let mut random_state = seed;
+    let mut byte_idx = 0;
+
+    for i in (1..op_return_start).rev() {
+        // Get random index in [0, i]
+        let bound = (i + 1) as u32;
+        let j = bounded_rand_from_state(&mut random_state, &mut byte_idx, bound) as usize;
+        outputs.swap(i, j);
+    }
+
+    Ok(())
+}
+
+/// Extract a bounded random u32 from a hash state, re-hashing when exhausted
+fn bounded_rand_from_state(state: &mut [u8; 32], byte_idx: &mut usize, bound: u32) -> u32 {
+    use sha2::{Digest, Sha256};
+
+    if bound <= 1 {
+        return 0;
+    }
+
+    let max_valid = u32::MAX - (u32::MAX % bound);
+
+    loop {
+        if *byte_idx + 4 > 32 {
+            // Re-hash to get more randomness
+            let mut hasher = Sha256::new();
+            hasher.update(b"ghost/batch-shuffle/chain");
+            hasher.update(*state);
+            *state = hasher.finalize().into();
+            *byte_idx = 0;
+        }
+
+        let value = u32::from_le_bytes([
+            state[*byte_idx],
+            state[*byte_idx + 1],
+            state[*byte_idx + 2],
+            state[*byte_idx + 3],
+        ]);
+        *byte_idx += 4;
+
+        if value < max_valid {
+            return value % bound;
+        }
+        // Rejection sampling: re-hash and try again
+    }
 }
 
 #[cfg(test)]
