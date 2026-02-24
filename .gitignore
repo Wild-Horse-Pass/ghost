@@ -59,3 +59,6 @@ tasks/
 .claude/
 PAYOUT_FIX_PLAN.md
 TODO_VERIFY_NODE_PAYOUTS.md
+
+# Ops docs (contain IPs, deployment procedures)
+docs/ops/
