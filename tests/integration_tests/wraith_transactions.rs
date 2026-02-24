@@ -250,10 +250,7 @@ fn test_711_add_input_sufficient_amount_succeeds() {
         Network::Signet,
     );
 
-    let result = builder.add_input(make_input(
-        WraithDenomination::Small.input_sats(),
-        0,
-    ));
+    let result = builder.add_input(make_input(WraithDenomination::Small.input_sats(), 0));
     assert!(result.is_ok());
     assert_eq!(builder.participant_count(), 1);
 
@@ -275,10 +272,7 @@ fn test_712_input_below_denomination_rejected() {
     );
 
     // One sat below the required input amount
-    let result = builder.add_input(make_input(
-        WraithDenomination::Small.input_sats() - 1,
-        0,
-    ));
+    let result = builder.add_input(make_input(WraithDenomination::Small.input_sats() - 1, 0));
     assert!(result.is_err());
     assert_eq!(builder.participant_count(), 0);
 }
@@ -402,10 +396,7 @@ fn test_717_split_wrong_address_set_count_error() {
     // Provide only 1 address set (need 2)
     let addresses = vec![address_set_for_participant(1)];
     let result = builder.build_split_transaction(&addresses);
-    assert!(
-        result.is_err(),
-        "Mismatched address set count should fail"
-    );
+    assert!(result.is_err(), "Mismatched address set count should fail");
 
     // Provide 3 address sets (need 2)
     let addresses = vec![
@@ -414,10 +405,7 @@ fn test_717_split_wrong_address_set_count_error() {
         address_set_for_participant(3),
     ];
     let result = builder.build_split_transaction(&addresses);
-    assert!(
-        result.is_err(),
-        "Too many address sets should also fail"
-    );
+    assert!(result.is_err(), "Too many address sets should also fail");
 }
 
 #[test]
@@ -458,9 +446,7 @@ fn test_718_merge_tx_output_count() {
         })
         .collect();
 
-    let final_addresses: Vec<String> = (0..n)
-        .map(|p| signet_p2tr_address((p + 1) as u8))
-        .collect();
+    let final_addresses: Vec<String> = (0..n).map(|p| signet_p2tr_address((p + 1) as u8)).collect();
 
     let merge_tx = builder
         .build_merge_transaction(&intermediate_inputs, &final_addresses)
@@ -534,7 +520,11 @@ fn test_719_merge_tx_consumes_all_intermediate_inputs() {
 fn test_720_v3_marker_is_exactly_32_bytes() {
     let session_id = [0xABu8; 32];
     let marker = generate_encrypted_marker_v3(1, &session_id, 250);
-    assert_eq!(marker.len(), 32, "v3 marker must be exactly 32 bytes — no plaintext leak");
+    assert_eq!(
+        marker.len(),
+        32,
+        "v3 marker must be exactly 32 bytes — no plaintext leak"
+    );
 
     // Legacy v2 also 32 bytes
     let legacy = generate_encrypted_marker(1, &session_id);
@@ -548,11 +538,19 @@ fn test_721_v3_verify_marker_roundtrip() {
 
     let marker_p1 = generate_encrypted_marker_v3(1, &session_id, count);
     let result = verify_encrypted_marker_v3(&marker_p1, &session_id, 400);
-    assert_eq!(result, Some((1, count)), "Phase 1 v3 marker should verify with correct count");
+    assert_eq!(
+        result,
+        Some((1, count)),
+        "Phase 1 v3 marker should verify with correct count"
+    );
 
     let marker_p2 = generate_encrypted_marker_v3(2, &session_id, count);
     let result = verify_encrypted_marker_v3(&marker_p2, &session_id, 400);
-    assert_eq!(result, Some((2, count)), "Phase 2 v3 marker should verify with correct count");
+    assert_eq!(
+        result,
+        Some((2, count)),
+        "Phase 2 v3 marker should verify with correct count"
+    );
 }
 
 #[test]
@@ -563,11 +561,17 @@ fn test_722_v3_different_sessions_and_counts_produce_different_markers() {
     // Different sessions, same count
     let marker_a = generate_encrypted_marker_v3(1, &session_a, 250);
     let marker_b = generate_encrypted_marker_v3(1, &session_b, 250);
-    assert_ne!(marker_a, marker_b, "Different sessions must produce different markers");
+    assert_ne!(
+        marker_a, marker_b,
+        "Different sessions must produce different markers"
+    );
 
     // Same session, different counts
     let marker_c = generate_encrypted_marker_v3(1, &session_a, 100);
-    assert_ne!(marker_a, marker_c, "Different counts must produce different markers");
+    assert_ne!(
+        marker_a, marker_c,
+        "Different counts must produce different markers"
+    );
 
     // Cross-verify: wrong session fails
     assert_eq!(verify_encrypted_marker_v3(&marker_a, &session_b, 400), None);

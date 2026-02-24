@@ -67,8 +67,8 @@ fn test_733_with_config_accepts_custom_grace_period() {
         grace_period_secs: 3600, // 1 hour instead of default 7 days
     };
 
-    let signer = CoordinatorSigner::with_config(&session_id, config)
-        .expect("with_config should succeed");
+    let signer =
+        CoordinatorSigner::with_config(&session_id, config).expect("with_config should succeed");
 
     // Signer should be functional with custom config
     assert_ne!(signer.key_id(), &[0u8; 32]);
@@ -109,8 +109,7 @@ fn test_735_create_nonce_returns_public_nonce_with_session_id() {
 
     // The nonce should have a valid session_id (derived from nonce point + ghost_id)
     assert_ne!(
-        nonce.session_id,
-        [0u8; 32],
+        nonce.session_id, [0u8; 32],
         "Nonce session_id must not be all zeros"
     );
 
@@ -196,11 +195,7 @@ fn test_738_nonces_per_participant_tracks_counts() {
         Some(1),
         "bob should have 1 nonce"
     );
-    assert_eq!(
-        counts.get("charlie"),
-        None,
-        "charlie should have no nonces"
-    );
+    assert_eq!(counts.get("charlie"), None, "charlie should have no nonces");
 }
 
 #[test]
@@ -299,8 +294,7 @@ fn test_742_sign_blinded_challenge_returns_response() {
     let response = response.unwrap();
     // Signature scalar should not be all zeros
     assert_ne!(
-        response.signature_scalar,
-        [0u8; 32],
+        response.signature_scalar, [0u8; 32],
         "Signature scalar must not be all zeros"
     );
     assert_eq!(
@@ -397,10 +391,7 @@ fn test_744_tampered_token_fails_verification() {
     let verifier = TokenVerifier::new(coordinator_pubkey, &session_id);
     let result = verifier.verify(&tampered_token);
     match result {
-        Ok(valid) => assert!(
-            !valid,
-            "Tampered token must not verify as valid"
-        ),
+        Ok(valid) => assert!(!valid, "Tampered token must not verify as valid"),
         Err(_) => {
             // An error (e.g., invalid scalar) is also acceptable for tampered data
         }
@@ -511,8 +502,8 @@ fn test_748_nonce_bound_to_participant_a_rejects_signing_by_participant_b() {
 
     // Build blinding context (any participant can create one from the public nonce)
     let message = b"alice output address".to_vec();
-    let context = BlindingContext::new(message, signer.public_key(), &nonce)
-        .expect("blinding context");
+    let context =
+        BlindingContext::new(message, signer.public_key(), &nonce).expect("blinding context");
     let blinded_challenge = context.create_blinded_challenge().expect("challenge");
 
     // Bob tries to sign with alice's nonce - should be rejected
@@ -561,8 +552,7 @@ fn test_749_multiple_participants_get_independent_nonces_and_signatures() {
         .iter()
         .zip(nonces.iter())
         .map(|(msg, nonce)| {
-            BlindingContext::new(msg.clone(), &coordinator_pubkey, nonce)
-                .expect("blinding context")
+            BlindingContext::new(msg.clone(), &coordinator_pubkey, nonce).expect("blinding context")
         })
         .collect();
 

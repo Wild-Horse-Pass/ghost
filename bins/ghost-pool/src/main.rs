@@ -877,9 +877,11 @@ async fn main() -> Result<()> {
         .coinbase_extra
         .clone()
         .or_else(|| {
-            config.pool.pool_name.as_ref().map(|name| {
-                format!("- G H O S T - {}", name)
-            })
+            config
+                .pool
+                .pool_name
+                .as_ref()
+                .map(|name| format!("- G H O S T - {}", name))
         })
         .unwrap_or_else(|| mining_mode.default_coinbase_tag().to_string());
 
@@ -1416,7 +1418,9 @@ async fn main() -> Result<()> {
                 interval.tick().await;
                 let timeouts = zk_vote_handler_for_timeouts.check_timeouts();
                 for result in &timeouts {
-                    if let ghost_consensus::message::ZkConsensusResult::Timeout { height, .. } = result {
+                    if let ghost_consensus::message::ZkConsensusResult::Timeout { height, .. } =
+                        result
+                    {
                         tracing::debug!(height, "ZK proposal timed out and cleaned up");
                     }
                 }
@@ -2478,7 +2482,8 @@ async fn main() -> Result<()> {
 
     // Wire Tor mode status from Ghost Core RPC
     if let Some(ref ts) = tor_status {
-        verification_state = verification_state.with_tor_status(ts.enabled, ts.onion_address.clone());
+        verification_state =
+            verification_state.with_tor_status(ts.enabled, ts.onion_address.clone());
     }
 
     // Wire full node config for config update API
@@ -3165,6 +3170,46 @@ async fn main() -> Result<()> {
         }
     });
     info!("Rate limit cleanup task started (60s interval)");
+
+    // Dedup cache cleanup — evict expired seen messages every 60s
+    let mesh_for_dedup_cleanup = Arc::clone(&mesh);
+    let mut dedup_cleanup_shutdown = shutdown_tx.subscribe();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    mesh_for_dedup_cleanup.cleanup_seen_messages(300);
+                }
+                _ = dedup_cleanup_shutdown.recv() => {
+                    tracing::info!("Dedup cache cleanup task shutting down");
+                    break;
+                }
+            }
+        }
+    });
+    info!("Dedup cache cleanup task started (60s interval, 5min TTL)");
+
+    // Noise connection pool cleanup — evict stale connections every 60s
+    if let Some(noise_pool) = mesh.noise_pool() {
+        let pool_for_cleanup = Arc::clone(noise_pool);
+        let mut noise_cleanup_shutdown = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        pool_for_cleanup.cleanup_stale();
+                    }
+                    _ = noise_cleanup_shutdown.recv() => {
+                        tracing::info!("Noise pool cleanup task shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+        info!("Noise pool cleanup task started (60s interval)");
+    }
 
     // Periodic share pruning — delete shares older than 24 hours, run every hour
     let db_for_pruning = Arc::clone(&db);
@@ -4145,7 +4190,10 @@ async fn main() -> Result<()> {
     info!("  Shares:     {}/15", capabilities.total_shares());
     if let Some(ref ts) = tor_status {
         if ts.enabled {
-            info!("  Tor:        active ({})", ts.onion_address.as_deref().unwrap_or("pending"));
+            info!(
+                "  Tor:        active ({})",
+                ts.onion_address.as_deref().unwrap_or("pending")
+            );
         }
     }
     info!("════════════════════════════════════════════════════════════════");

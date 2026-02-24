@@ -345,7 +345,7 @@ impl Database {
             PRAGMA synchronous = FULL;
             PRAGMA foreign_keys = ON;
             PRAGMA busy_timeout = 5000;
-            PRAGMA cache_size = -64000;
+            PRAGMA cache_size = -16000;
             PRAGMA wal_autocheckpoint = 1000;
             PRAGMA secure_delete = ON;
             ",

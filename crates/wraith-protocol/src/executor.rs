@@ -739,7 +739,11 @@ mod tests {
         let result = verify_encrypted_marker_v3(&marker, &session_key, 400);
         // 0 participants won't match (range is 1..=max), which is expected for empty builder
         // The marker was generated with count=0, test that data is opaque
-        assert_eq!(data.len(), 32, "OP_RETURN must be exactly 32 bytes with no plaintext leak");
+        assert_eq!(
+            data.len(),
+            32,
+            "OP_RETURN must be exactly 32 bytes with no plaintext leak"
+        );
     }
 
     /// WR-C1 Security Test: Verify shuffle uses CSPRNG entropy

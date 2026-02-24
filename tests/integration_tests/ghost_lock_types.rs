@@ -87,12 +87,7 @@ fn test_751_create_lock_all_denominations() {
             "denomination mismatch for {:?}",
             denom
         );
-        assert_eq!(
-            lock.sats(),
-            expected_sats,
-            "sats mismatch for {:?}",
-            denom
-        );
+        assert_eq!(lock.sats(), expected_sats, "sats mismatch for {:?}", denom);
     }
 }
 
@@ -113,7 +108,11 @@ fn test_752_script_pubkey_is_p2wsh() {
     let bytes = spk.as_bytes();
 
     // P2WSH: OP_0 (0x00) + PUSH32 (0x20) + 32-byte hash = 34 bytes
-    assert_eq!(bytes.len(), 34, "P2WSH scriptPubKey must be exactly 34 bytes");
+    assert_eq!(
+        bytes.len(),
+        34,
+        "P2WSH scriptPubKey must be exactly 34 bytes"
+    );
     assert_eq!(bytes[0], 0x00, "first byte must be OP_0");
     assert_eq!(bytes[1], 0x20, "second byte must be PUSH32");
 }
@@ -367,7 +366,11 @@ fn test_762_exit_mix_in_mix_to_active() {
 #[test]
 fn test_763_spend_active_to_spent() {
     let mut lock = make_lock();
-    assert!(lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] }).is_ok());
+    assert!(lock
+        .transition(StateTransition::SettlementSpend {
+            batch_id: [0u8; 32]
+        })
+        .is_ok());
     assert_eq!(lock.state(), LockState::Spent);
     assert!(lock.state().is_terminal());
 }
@@ -412,10 +415,7 @@ fn test_768_enter_mix_from_in_mix_rejected() {
     assert_eq!(lock.state(), LockState::InMix);
 
     let result = lock.transition(StateTransition::EnterMix);
-    assert!(
-        result.is_err(),
-        "EnterMix from InMix must be rejected"
-    );
+    assert!(result.is_err(), "EnterMix from InMix must be rejected");
     assert!(matches!(
         result.unwrap_err(),
         GhostLockError::InvalidStateTransition(_)
@@ -431,7 +431,9 @@ fn test_769_spent_and_recovered_reject_all_transitions() {
         StateTransition::ExitMix,
         StateTransition::StartJump,
         StateTransition::CompleteJump,
-        StateTransition::SettlementSpend { batch_id: [0u8; 32] },
+        StateTransition::SettlementSpend {
+            batch_id: [0u8; 32],
+        },
         StateTransition::Recover,
         StateTransition::Freeze,
         StateTransition::Unfreeze,
@@ -440,7 +442,10 @@ fn test_769_spent_and_recovered_reject_all_transitions() {
     // Test from Spent
     for transition in &transitions {
         let mut lock = make_lock();
-        lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] }).unwrap();
+        lock.transition(StateTransition::SettlementSpend {
+            batch_id: [0u8; 32],
+        })
+        .unwrap();
         assert!(
             lock.transition(*transition).is_err(),
             "Spent state must reject {:?}",
@@ -571,8 +576,13 @@ fn test_775_needs_jump_false_before_true_after_deadline() {
     // Verify deadline is within the expected range
     let min = HEIGHT + JumpRiskTier::High.min_rotation_blocks();
     let max = HEIGHT + JumpRiskTier::High.max_rotation_blocks();
-    assert!(deadline >= min && deadline <= max,
-        "deadline {} must be in [{}, {}]", deadline, min, max);
+    assert!(
+        deadline >= min && deadline <= max,
+        "deadline {} must be in [{}, {}]",
+        deadline,
+        min,
+        max
+    );
 
     assert!(
         !lock.needs_jump(HEIGHT),
@@ -644,17 +654,23 @@ fn test_777_optimal_denominations_breakdown() {
     let result = optimal_denominations(111_000_000);
 
     assert!(
-        result.iter().any(|&(d, c)| d == Denomination::Large && c == 1),
+        result
+            .iter()
+            .any(|&(d, c)| d == Denomination::Large && c == 1),
         "must include 1 Large, got: {:?}",
         result
     );
     assert!(
-        result.iter().any(|&(d, c)| d == Denomination::Medium && c == 1),
+        result
+            .iter()
+            .any(|&(d, c)| d == Denomination::Medium && c == 1),
         "must include 1 Medium, got: {:?}",
         result
     );
     assert!(
-        result.iter().any(|&(d, c)| d == Denomination::Small && c == 1),
+        result
+            .iter()
+            .any(|&(d, c)| d == Denomination::Small && c == 1),
         "must include 1 Small, got: {:?}",
         result
     );

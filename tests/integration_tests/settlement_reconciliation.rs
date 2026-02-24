@@ -49,10 +49,8 @@ fn make_settlement_unique(index: u32) -> Settlement {
 
 fn dummy_txid() -> bitcoin::Txid {
     use std::str::FromStr;
-    bitcoin::Txid::from_str(
-        "0000000000000000000000000000000000000000000000000000000000000001",
-    )
-    .unwrap()
+    bitcoin::Txid::from_str("0000000000000000000000000000000000000000000000000000000000000001")
+        .unwrap()
 }
 
 // =============================================================================
@@ -327,10 +325,8 @@ fn test_796_build_message_is_deterministic() {
     let destination = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
     let amount = 50_000u64;
 
-    let msg1 =
-        OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
-    let msg2 =
-        OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
+    let msg1 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
+    let msg2 = OwnershipProof::build_message(epoch, &batch_id, &settlement_id, destination, amount);
 
     assert_eq!(msg1, msg2, "Same inputs must produce the same hash");
     // The hash should be 32 bytes (non-zero with overwhelming probability)
@@ -344,10 +340,8 @@ fn test_797_build_message_varies_with_settlement_id() {
     let destination = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
     let amount = 50_000u64;
 
-    let msg_a =
-        OwnershipProof::build_message(epoch, &batch_id, &[1u8; 32], destination, amount);
-    let msg_b =
-        OwnershipProof::build_message(epoch, &batch_id, &[2u8; 32], destination, amount);
+    let msg_a = OwnershipProof::build_message(epoch, &batch_id, &[1u8; 32], destination, amount);
+    let msg_b = OwnershipProof::build_message(epoch, &batch_id, &[2u8; 32], destination, amount);
 
     assert_ne!(
         msg_a, msg_b,
@@ -492,7 +486,10 @@ fn test_805_seal_fails_below_min_batch_size() {
 
     assert!(!batch.has_minimum());
     let result = batch.seal();
-    assert!(result.is_err(), "seal() must fail with fewer than MIN_BATCH_SIZE settlements");
+    assert!(
+        result.is_err(),
+        "seal() must fail with fewer than MIN_BATCH_SIZE settlements"
+    );
 }
 
 #[test]
@@ -501,7 +498,9 @@ fn test_806_full_batch_lifecycle() {
 
     // Collecting: add settlements
     for i in 0..MIN_BATCH_SIZE {
-        batch.add_settlement(&make_settlement_unique(i as u32)).unwrap();
+        batch
+            .add_settlement(&make_settlement_unique(i as u32))
+            .unwrap();
     }
     assert_eq!(batch.state(), BatchState::Collecting);
 
@@ -564,10 +563,15 @@ fn test_808_multiple_batches_have_unique_ids() {
 #[test]
 fn test_809_merkle_root_is_some_after_seal() {
     let mut batch = Batch::new().unwrap();
-    assert!(batch.merkle_root().is_none(), "merkle_root should be None before seal");
+    assert!(
+        batch.merkle_root().is_none(),
+        "merkle_root should be None before seal"
+    );
 
     for i in 0..MIN_BATCH_SIZE {
-        batch.add_settlement(&make_settlement_unique(i as u32)).unwrap();
+        batch
+            .add_settlement(&make_settlement_unique(i as u32))
+            .unwrap();
     }
 
     batch.seal().unwrap();
@@ -586,7 +590,9 @@ fn test_809_merkle_root_is_some_after_seal() {
 fn test_810_terminal_state_rejects_further_transitions() {
     let mut batch = Batch::new().unwrap();
     for i in 0..MIN_BATCH_SIZE {
-        batch.add_settlement(&make_settlement_unique(i as u32)).unwrap();
+        batch
+            .add_settlement(&make_settlement_unique(i as u32))
+            .unwrap();
     }
     batch.seal().unwrap();
     batch.mark_submitted("txid".to_string()).unwrap();
@@ -640,7 +646,10 @@ fn test_812_compute_merkle_root_is_deterministic() {
     let root1 = compute_merkle_root(&leaves);
     let root2 = compute_merkle_root(&leaves);
 
-    assert_eq!(root1, root2, "Same leaves must produce the same merkle root");
+    assert_eq!(
+        root1, root2,
+        "Same leaves must produce the same merkle root"
+    );
     assert_ne!(root1, [0u8; 32], "Root should not be all zeros");
 }
 
@@ -701,7 +710,10 @@ fn test_815_single_leaf_produces_valid_proof() {
     let root = compute_merkle_root(&leaves);
 
     // Root should not be the raw leaf -- it includes domain separation
-    assert_ne!(root, leaf, "Single-leaf root must be hashed with domain separator");
+    assert_ne!(
+        root, leaf,
+        "Single-leaf root must be hashed with domain separator"
+    );
 
     let proof = compute_merkle_proof(&leaves, 0);
     assert!(
@@ -716,7 +728,10 @@ fn test_816_empty_leaves_produce_deterministic_root() {
     let root2 = compute_merkle_root(&[]);
 
     assert_eq!(root1, root2, "Empty merkle root must be deterministic");
-    assert_ne!(root1, [0u8; 32], "Empty root uses domain separation, not raw zeros");
+    assert_ne!(
+        root1, [0u8; 32],
+        "Empty root uses domain separation, not raw zeros"
+    );
 
     // Empty root must differ from single-leaf root
     let single_root = compute_merkle_root(&[[0u8; 32]]);

@@ -80,18 +80,18 @@ impl JumpRiskTier {
     /// Get the minimum rotation period in blocks for this tier
     pub fn min_rotation_blocks(&self) -> u32 {
         match self {
-            JumpRiskTier::High => Self::BLOCKS_PER_DAY * 7,     // 7 days = 1,008 blocks
-            JumpRiskTier::Medium => Self::BLOCKS_PER_DAY * 14,  // 14 days = 2,016 blocks
-            JumpRiskTier::Low => Self::BLOCKS_PER_DAY * 30,     // 30 days = 4,320 blocks
+            JumpRiskTier::High => Self::BLOCKS_PER_DAY * 7, // 7 days = 1,008 blocks
+            JumpRiskTier::Medium => Self::BLOCKS_PER_DAY * 14, // 14 days = 2,016 blocks
+            JumpRiskTier::Low => Self::BLOCKS_PER_DAY * 30, // 30 days = 4,320 blocks
         }
     }
 
     /// Get the maximum rotation period in blocks for this tier
     pub fn max_rotation_blocks(&self) -> u32 {
         match self {
-            JumpRiskTier::High => Self::BLOCKS_PER_DAY * 14,    // 14 days = 2,016 blocks
-            JumpRiskTier::Medium => Self::BLOCKS_PER_DAY * 30,  // 30 days = 4,320 blocks
-            JumpRiskTier::Low => Self::BLOCKS_PER_DAY * 60,     // 60 days = 8,640 blocks
+            JumpRiskTier::High => Self::BLOCKS_PER_DAY * 14, // 14 days = 2,016 blocks
+            JumpRiskTier::Medium => Self::BLOCKS_PER_DAY * 30, // 30 days = 4,320 blocks
+            JumpRiskTier::Low => Self::BLOCKS_PER_DAY * 60,  // 60 days = 8,640 blocks
         }
     }
 

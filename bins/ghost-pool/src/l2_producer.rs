@@ -133,21 +133,18 @@ impl L2BlockProducer {
         // 5. Generate ZK proof (CPU-bound Groth16 ~14s — must not block tokio runtime)
         let prover_clone = Arc::clone(prover);
         let witness_clone = witness.clone();
-        let proof = match tokio::task::spawn_blocking(move || {
-            prover_clone.prove(&witness_clone)
-        })
-        .await
-        {
-            Ok(Ok(p)) => p,
-            Ok(Err(e)) => {
-                error!(error = %e, height = next_height, "ZK proof generation failed");
-                return Ok(());
-            }
-            Err(e) => {
-                error!(error = %e, height = next_height, "ZK proof task panicked");
-                return Ok(());
-            }
-        };
+        let proof =
+            match tokio::task::spawn_blocking(move || prover_clone.prove(&witness_clone)).await {
+                Ok(Ok(p)) => p,
+                Ok(Err(e)) => {
+                    error!(error = %e, height = next_height, "ZK proof generation failed");
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!(error = %e, height = next_height, "ZK proof task panicked");
+                    return Ok(());
+                }
+            };
 
         // 6. Build proposal message
         let timestamp = std::time::SystemTime::now()
@@ -288,9 +285,7 @@ fn parse_hex_root(value: &serde_json::Value) -> anyhow::Result<[u8; 32]> {
 }
 
 /// Parse transitions array from the ghost-pay response
-fn parse_transitions(
-    value: &serde_json::Value,
-) -> anyhow::Result<Vec<PaymentTransitionWitness>> {
+fn parse_transitions(value: &serde_json::Value) -> anyhow::Result<Vec<PaymentTransitionWitness>> {
     let arr = value
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Expected transitions array"))?;
@@ -341,22 +336,13 @@ fn parse_merkle_proof(
         .ok_or_else(|| anyhow::anyhow!("Missing {} proof index in transition {}", role, tx_idx))?;
 
     let siblings_arr = value["siblings"].as_array().ok_or_else(|| {
-        anyhow::anyhow!(
-            "Missing {} proof siblings in transition {}",
-            role,
-            tx_idx
-        )
+        anyhow::anyhow!("Missing {} proof siblings in transition {}", role, tx_idx)
     })?;
 
     let mut siblings = Vec::with_capacity(siblings_arr.len());
     for (j, s) in siblings_arr.iter().enumerate() {
         let hex_str = s.as_str().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Invalid {} sibling {} in transition {}",
-                role,
-                j,
-                tx_idx
-            )
+            anyhow::anyhow!("Invalid {} sibling {} in transition {}", role, j, tx_idx)
         })?;
         let mut sibling = [0u8; 32];
         hex::decode_to_slice(hex_str, &mut sibling)?;

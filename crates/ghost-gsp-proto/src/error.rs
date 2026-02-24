@@ -51,7 +51,9 @@ pub enum GspProtoError {
     InvalidPublicKey(String),
 
     /// Session nonce is required but was not provided
-    #[error("Session nonce required: clients must generate a fresh 32-byte CSPRNG nonce per session")]
+    #[error(
+        "Session nonce required: clients must generate a fresh 32-byte CSPRNG nonce per session"
+    )]
     SessionNonceRequired,
 
     /// Session expired

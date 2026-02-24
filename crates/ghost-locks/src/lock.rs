@@ -505,7 +505,11 @@ mod tests {
         assert_eq!(lock.state(), LockState::Active);
 
         // Valid transition: Active -> Spent
-        assert!(lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] }).is_ok());
+        assert!(lock
+            .transition(StateTransition::SettlementSpend {
+                batch_id: [0u8; 32]
+            })
+            .is_ok());
         assert_eq!(lock.state(), LockState::Spent);
     }
 
@@ -556,7 +560,10 @@ mod tests {
         assert!(lock.is_recovery_available(recovery_height));
 
         // Mark as spent
-        lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] }).unwrap();
+        lock.transition(StateTransition::SettlementSpend {
+            batch_id: [0u8; 32],
+        })
+        .unwrap();
 
         // Recovery not available when spent
         assert!(!lock.is_recovery_available(recovery_height));

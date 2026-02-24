@@ -1429,8 +1429,7 @@ async fn api_mining_status_handler(
                         // This avoids inflated hashrate from short sample periods
                         let elapsed = (now - m.first_seen).max(1) as f64;
                         // Hashrate = SUM(difficulty) * 2^32 / elapsed_time / 1e12 (TH/s)
-                        total_hr +=
-                            m.total_work * 4294967296.0 / elapsed / 1e12;
+                        total_hr += m.total_work * 4294967296.0 / elapsed / 1e12;
                         total_shares += m.total_shares;
                         valid_shares += m.valid_shares;
                     }
@@ -1924,7 +1923,9 @@ async fn api_ghostpay_status_handler(
             match tokio::time::timeout(
                 std::time::Duration::from_secs(5),
                 tokio::spawn(fetch_ghostpay_from_service()),
-            ).await {
+            )
+            .await
+            {
                 Ok(Ok(Some(status))) => status,
                 _ => GhostPayLiveStatus {
                     epoch: 0,
@@ -2501,10 +2502,9 @@ async fn api_watchdog_status_handler(
 
     // Check ghost-core status via RPC
     let ghost_core_status = if let Some(ref rpc) = state.rpc {
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            rpc.get_blockchain_info(),
-        ).await {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), rpc.get_blockchain_info())
+            .await
+        {
             Ok(Ok(info)) => serde_json::json!({
                 "status": "running",
                 "chain": info.chain,
@@ -2534,7 +2534,9 @@ async fn api_watchdog_status_handler(
         None => match tokio::time::timeout(
             std::time::Duration::from_secs(5),
             tokio::spawn(fetch_ghostpay_from_service()),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(Some(status))) => status,
             _ => GhostPayLiveStatus {
                 epoch: 0,
@@ -5368,7 +5370,10 @@ async fn api_mining_pool_name_post_handler(
                 Json(serde_json::json!({"error": "Pool name must be 30 characters or fewer"})),
             )
                 .into_response();
-        } else if !trimmed.chars().all(|c| c.is_ascii() && !c.is_ascii_control()) {
+        } else if !trimmed
+            .chars()
+            .all(|c| c.is_ascii() && !c.is_ascii_control())
+        {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "Pool name must be ASCII printable characters only"})),
@@ -5439,8 +5444,7 @@ async fn api_miners_full_handler(State(state): State<Arc<VerificationState>>) ->
                         // Use time from first share to now for stable estimate
                         let elapsed = (now - m.first_seen).max(1) as f64;
                         // Hashrate = SUM(difficulty) * 2^32 / elapsed / 1e12 (TH/s)
-                        let hashrate_th =
-                            m.total_work * 4294967296.0 / elapsed / 1e12;
+                        let hashrate_th = m.total_work * 4294967296.0 / elapsed / 1e12;
                         serde_json::json!({
                             "worker_name": m.miner_id,
                             "hashrate_th": hashrate_th,

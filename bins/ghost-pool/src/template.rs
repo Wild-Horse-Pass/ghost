@@ -485,7 +485,36 @@ impl TemplateProcessor {
             }
         }
 
-        self.payout_proposals.write().insert(hash, proposal);
+        // Lock ordering: approved_payout before payout_proposals
+        let approved_hash = *self.approved_payout.read();
+
+        let mut proposals = self.payout_proposals.write();
+        proposals.insert(hash, proposal);
+
+        // Evict old proposals: keep approved + most recent 10 by round_id
+        if proposals.len() > 10 {
+            let mut entries: Vec<([u8; 32], u64)> =
+                proposals.iter().map(|(k, v)| (*k, v.round_id)).collect();
+            entries.sort_by_key(|(_, round)| std::cmp::Reverse(*round));
+            let keep: HashSet<[u8; 32]> = entries
+                .iter()
+                .take(10)
+                .map(|(k, _)| *k)
+                .chain(approved_hash.iter().copied())
+                .collect();
+            let before = proposals.len();
+            proposals.retain(|k, _| keep.contains(k));
+            let evicted = before - proposals.len();
+            if evicted > 0 {
+                debug!(
+                    evicted,
+                    remaining = proposals.len(),
+                    "Evicted old payout proposals"
+                );
+            }
+        }
+        drop(proposals);
+
         info!(
             hash = %hex::encode(&hash[..8]),
             miners = miners,

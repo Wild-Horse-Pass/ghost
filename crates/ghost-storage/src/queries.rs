@@ -469,10 +469,7 @@ impl Database {
     /// Get detailed miner stats for a round (includes timing and difficulty data)
     ///
     /// Returns per-miner aggregate stats needed for hashrate calculation.
-    pub fn get_round_miners_detailed(
-        &self,
-        round_id: u64,
-    ) -> GhostResult<Vec<MinerSearchResult>> {
+    pub fn get_round_miners_detailed(&self, round_id: u64) -> GhostResult<Vec<MinerSearchResult>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(

@@ -866,8 +866,9 @@ async fn main() -> Result<()> {
             CREATE TABLE IF NOT EXISTS l2_balances (
                 account_index INTEGER PRIMARY KEY,
                 balance INTEGER NOT NULL
-            );"
-        ).map_err(|e| ghost_common::error::GhostError::Database(e.to_string()))?;
+            );",
+        )
+        .map_err(|e| ghost_common::error::GhostError::Database(e.to_string()))?;
         Ok(())
     })?;
 
@@ -4510,11 +4511,9 @@ async fn l2_state_handler(State(state): State<Arc<AppState>>) -> Json<serde_json
     let pending_count: i64 = state
         .db
         .with_connection(|conn| {
-            conn.query_row(
-                "SELECT COUNT(*) FROM pending_transfers",
-                [],
-                |row| row.get(0),
-            )
+            conn.query_row("SELECT COUNT(*) FROM pending_transfers", [], |row| {
+                row.get(0)
+            })
             .map_err(|e| GhostError::Database(e.to_string()))
         })
         .unwrap_or(0);
@@ -4646,11 +4645,7 @@ async fn l2_finalize_handler(
     // Delete included transfers
     let included_ids: Vec<i64> = req["included_tx_ids"]
         .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_i64())
-                .collect()
-        })
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
         .unwrap_or_default();
 
     if !included_ids.is_empty() {
@@ -4770,7 +4765,7 @@ async fn l2_finalize_handler(
                     height INTEGER PRIMARY KEY,
                     epoch_id INTEGER NOT NULL,
                     state_root TEXT NOT NULL
-                );"
+                );",
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
             conn.execute(

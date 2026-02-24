@@ -202,7 +202,9 @@ mod payment_messages {
         let msg = ServerMessage::PaymentSubmitted {
             success: true,
             payment_id: "pay-test-003".to_string(),
-            txid: Some("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string()),
+            txid: Some(
+                "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string(),
+            ),
             error: None,
         };
 
@@ -376,10 +378,7 @@ mod lock_messages {
             } => {
                 assert_eq!(lock_id, "lock-002");
                 assert_eq!(priority, "urgent");
-                assert_eq!(
-                    target_address,
-                    "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq"
-                );
+                assert_eq!(target_address, "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq");
             }
             _ => panic!("Expected RequestJump"),
         }
@@ -1022,9 +1021,7 @@ mod flow_simulations {
         let prepared_msg = ServerMessage::LockPrepared {
             success: true,
             lock_id: Some(lock_id.clone()),
-            funding_address: Some(
-                "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".to_string(),
-            ),
+            funding_address: Some("bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq".to_string()),
             required_sats: Some(500_546),
             error: None,
         };
@@ -1187,10 +1184,8 @@ mod flow_simulations {
         let pubkey = [1u8; 32];
 
         // Create two proofs in rapid succession with the same parameters
-        let proof1 =
-            WalletProof::new("payment", &pubkey).expect("nonce generation should succeed");
-        let proof2 =
-            WalletProof::new("payment", &pubkey).expect("nonce generation should succeed");
+        let proof1 = WalletProof::new("payment", &pubkey).expect("nonce generation should succeed");
+        let proof2 = WalletProof::new("payment", &pubkey).expect("nonce generation should succeed");
 
         // Nonces MUST be different (CSPRNG guarantees this)
         assert_ne!(

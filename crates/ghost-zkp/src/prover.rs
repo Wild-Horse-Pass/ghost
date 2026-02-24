@@ -196,11 +196,8 @@ impl BlockProver {
         seed.copy_from_slice(&seed_hasher.finalize());
         let mut rng = rand::rngs::StdRng::from_seed(seed);
 
-        let params =
-            generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rng)
-                .map_err(|e| {
-                    ZkError::SetupError(format!("Parameter generation failed: {:?}", e))
-                })?;
+        let params = generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rng)
+            .map_err(|e| ZkError::SetupError(format!("Parameter generation failed: {:?}", e)))?;
 
         info!(
             "Groth16 parameters generated in {:?}",

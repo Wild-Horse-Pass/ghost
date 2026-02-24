@@ -213,8 +213,10 @@ fn test_858_lock_transitions_to_spent_after_settlement() {
 
     // Lock starts Active, settlement initiated means we spend it
     assert_eq!(lock.state(), LockState::Active);
-    lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] })
-        .expect("Active -> Spent should succeed");
+    lock.transition(StateTransition::SettlementSpend {
+        batch_id: [0u8; 32],
+    })
+    .expect("Active -> Spent should succeed");
     assert_eq!(lock.state(), LockState::Spent);
 }
 
@@ -272,7 +274,10 @@ fn test_860_full_state_progression_active_inmix_active_spent() {
     assert!(lock.state().can_spend());
 
     // Spend via settlement
-    lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] }).unwrap();
+    lock.transition(StateTransition::SettlementSpend {
+        batch_id: [0u8; 32],
+    })
+    .unwrap();
     assert_eq!(lock.state(), LockState::Spent);
     assert!(!lock.state().can_spend());
     assert!(lock.state().is_terminal());
@@ -425,12 +430,12 @@ fn test_865_micro_intermediate_above_dust() {
 fn test_866_settlement_fee_correct_per_denomination() {
     // Verify settlement fee (0.1% with ceiling division, min 1 sat, max 1M sat) for each denomination
     let test_cases: Vec<(Denomination, u64)> = vec![
-        (Denomination::Micro, 10),       // 10_000 / 1000 = 10
-        (Denomination::Tiny, 100),       // 100_000 / 1000 = 100
-        (Denomination::Small, 1_000),    // 1_000_000 / 1000 = 1_000
-        (Denomination::Medium, 10_000),  // 10_000_000 / 1000 = 10_000
-        (Denomination::Large, 100_000),  // 100_000_000 / 1000 = 100_000
-        (Denomination::XL, 1_000_000),   // 1_000_000_000 / 1000 = 1_000_000 (at cap)
+        (Denomination::Micro, 10),      // 10_000 / 1000 = 10
+        (Denomination::Tiny, 100),      // 100_000 / 1000 = 100
+        (Denomination::Small, 1_000),   // 1_000_000 / 1000 = 1_000
+        (Denomination::Medium, 10_000), // 10_000_000 / 1000 = 10_000
+        (Denomination::Large, 100_000), // 100_000_000 / 1000 = 100_000
+        (Denomination::XL, 1_000_000),  // 1_000_000_000 / 1000 = 1_000_000 (at cap)
     ];
 
     for (denom, expected_fee) in &test_cases {
@@ -463,7 +468,9 @@ fn test_867_frozen_lock_cannot_settle() {
     );
 
     // Attempting to spend a frozen lock should fail
-    let result = lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] });
+    let result = lock.transition(StateTransition::SettlementSpend {
+        batch_id: [0u8; 32],
+    });
     assert!(
         result.is_err(),
         "Spending a frozen lock should fail with InvalidStateTransition"
@@ -484,7 +491,9 @@ fn test_868_inmix_lock_cannot_settle() {
     );
 
     // Attempting to spend an InMix lock should fail
-    let result = lock.transition(StateTransition::SettlementSpend { batch_id: [0u8; 32] });
+    let result = lock.transition(StateTransition::SettlementSpend {
+        batch_id: [0u8; 32],
+    });
     assert!(
         result.is_err(),
         "Spending an InMix lock should fail with InvalidStateTransition"

@@ -500,11 +500,13 @@ fn is_valid_cors_origin(origin: &str) -> bool {
 #[derive(Clone)]
 struct RateLimitState {
     key_extractor: NodeIdKeyExtractor,
-    limiter: Arc<governor::RateLimiter<
-        NodeIdOrIpKey,
-        governor::state::keyed::DashMapStateStore<NodeIdOrIpKey>,
-        governor::clock::DefaultClock,
-    >>,
+    limiter: Arc<
+        governor::RateLimiter<
+            NodeIdOrIpKey,
+            governor::state::keyed::DashMapStateStore<NodeIdOrIpKey>,
+            governor::clock::DefaultClock,
+        >,
+    >,
 }
 
 /// Rate limiting middleware that exempts loopback (localhost) connections.
@@ -530,14 +532,12 @@ async fn rate_limit_middleware(
     match state.key_extractor.extract(&request) {
         Ok(key) => match state.limiter.check_key(&key) {
             Ok(_) => next.run(request).await,
-            Err(_not_until) => {
-                axum::http::Response::builder()
-                    .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
-                    .body(axum::body::Body::from("rate limited"))
-                    .unwrap_or_else(|_| {
-                        axum::http::Response::new(axum::body::Body::from("rate limited"))
-                    })
-            }
+            Err(_not_until) => axum::http::Response::builder()
+                .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
+                .body(axum::body::Body::from("rate limited"))
+                .unwrap_or_else(|_| {
+                    axum::http::Response::new(axum::body::Body::from("rate limited"))
+                }),
         },
         Err(_) => {
             // Unable to extract key - allow request rather than failing
