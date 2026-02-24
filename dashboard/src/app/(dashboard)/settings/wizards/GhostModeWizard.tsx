@@ -79,23 +79,23 @@ export default function GhostModeWizard({ isOpen, onClose }: GhostModeWizardProp
                 </p>
               </div>
               <div className="p-4 rounded-lg bg-gray-800/50">
-                <h4 className="text-gray-100 font-medium mb-2">What Ghost Mode enables</h4>
+                <h4 className="text-gray-100 font-medium mb-2">What Ghost Mode does</h4>
                 <ul className="space-y-2 text-sm text-gray-400">
                   <li className="flex items-center gap-2">
                     <span className="text-orange-300">--</span>
-                    Ghost Pay L2 payment network participation
+                    Signals your node as a Ghost protocol participant
                   </li>
                   <li className="flex items-center gap-2">
                     <span className="text-orange-300">--</span>
-                    Node capability verification and share rewards
+                    Enables node capability verification eligibility
                   </li>
                   <li className="flex items-center gap-2">
                     <span className="text-orange-300">--</span>
-                    Privacy protocols (Haze, Shroud, Wraith)
+                    Individual capabilities (Ghost Pay, Archive, etc.) are configured separately
                   </li>
                   <li className="flex items-center gap-2">
                     <span className="text-orange-300">--</span>
-                    P2P mesh network participation
+                    Does not grant shares on its own — shares come from verified capabilities
                   </li>
                 </ul>
               </div>

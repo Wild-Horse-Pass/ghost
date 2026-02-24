@@ -442,10 +442,10 @@ impl VerificationClient {
                 // H-09: DNS resolution failure must block the request to prevent SSRF.
                 // If we can't resolve the host, we can't verify it doesn't point to
                 // an internal address. Allowing the request would bypass SSRF protection.
-                return Err(GhostError::Config(format!(
+                Err(GhostError::Config(format!(
                     "H-09: DNS resolution failed for {}: {} — blocking request to prevent SSRF",
                     host, e
-                )));
+                )))
             }
         }
     }

@@ -47,7 +47,6 @@ pub use ghost_common::config::NodeConfig as FullNodeConfig;
 use tokio::net::TcpListener;
 use tower_governor::{
     errors::GovernorError, governor::GovernorConfigBuilder, key_extractor::KeyExtractor,
-    GovernorLayer,
 };
 use tower_http::cors::CorsLayer;
 use tracing::info;
@@ -497,6 +496,56 @@ fn is_valid_cors_origin(origin: &str) -> bool {
     true
 }
 
+/// Rate limiting state shared with the rate_limit_middleware
+#[derive(Clone)]
+struct RateLimitState {
+    key_extractor: NodeIdKeyExtractor,
+    limiter: Arc<governor::RateLimiter<
+        NodeIdOrIpKey,
+        governor::state::keyed::DashMapStateStore<NodeIdOrIpKey>,
+        governor::clock::DefaultClock,
+    >>,
+}
+
+/// Rate limiting middleware that exempts loopback (localhost) connections.
+/// External traffic is rate-limited per NodeId/IP as before.
+async fn rate_limit_middleware(
+    axum::extract::State(state): axum::extract::State<RateLimitState>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    // Check peer IP from ConnectInfo
+    let is_loopback = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().is_loopback())
+        .unwrap_or(false);
+
+    // Exempt localhost from rate limiting - it's the node's own dashboard
+    if is_loopback {
+        return next.run(request).await;
+    }
+
+    // Extract key and check rate limit for external traffic
+    match state.key_extractor.extract(&request) {
+        Ok(key) => match state.limiter.check_key(&key) {
+            Ok(_) => next.run(request).await,
+            Err(_not_until) => {
+                axum::http::Response::builder()
+                    .status(axum::http::StatusCode::TOO_MANY_REQUESTS)
+                    .body(axum::body::Body::from("rate limited"))
+                    .unwrap_or_else(|_| {
+                        axum::http::Response::new(axum::body::Body::from("rate limited"))
+                    })
+            }
+        },
+        Err(_) => {
+            // Unable to extract key - allow request rather than failing
+            next.run(request).await
+        }
+    }
+}
+
 /// HIGH-API-5: Middleware to add X-Request-ID header for request correlation
 ///
 /// This middleware:
@@ -695,8 +744,14 @@ pub struct DashboardConfig {
     pub private_mining: Option<bool>,
     /// Payout address for mining rewards
     pub payout_address: Option<String>,
+    /// Custom pool name for coinbase tag (formatted as "- G H O S T - {pool_name}")
+    pub pool_name: Option<String>,
     /// Operator pruning window (blocks)
     pub operator_window: Option<u64>,
+    /// Tor mode active (ghostd -tormode)
+    pub tor_mode: bool,
+    /// Onion address (if tor mode active)
+    pub onion_address: Option<String>,
 }
 
 impl Default for DashboardConfig {
@@ -735,7 +790,10 @@ impl Default for DashboardConfig {
             ghostpay_payout_address: None,
             private_mining: None,
             payout_address: None,
+            pool_name: None,
             operator_window: None,
+            tor_mode: false,
+            onion_address: None,
         }
     }
 }
@@ -1127,6 +1185,15 @@ impl VerificationState {
         }
         self.node_config = parking_lot::RwLock::new(config);
         self.node_config_path = Some(path);
+        self
+    }
+
+    /// Set Tor mode status (queried from Ghost Core RPC at startup)
+    pub fn with_tor_status(self, enabled: bool, onion_address: Option<String>) -> Self {
+        let mut config = self.dashboard_config.write();
+        config.tor_mode = enabled;
+        config.onion_address = onion_address;
+        drop(config);
         self
     }
 
@@ -1836,17 +1903,23 @@ pub async fn start_server(
     });
 
     // Build service with security layers
-    // HIGH-VER-5: Tightened rate limiting: 20 req/s burst, 5 req/s sustained per NodeId/IP
+    // HIGH-VER-5: Rate limiting: 20 req/s burst, 5 req/s sustained per NodeId/IP
+    // Localhost (dashboard) is exempt - rate limiter protects against external abuse
     // - CORS: restrict to allowed origins
     // - Request body limit: 1MB max to prevent DoS
     // - HIGH-API-5: Request correlation IDs for distributed tracing
     // - LOW-API-1: Security headers (X-Content-Type-Options, X-Frame-Options, etc.)
+    let rate_limit_state = RateLimitState {
+        key_extractor: NodeIdKeyExtractor::new(),
+        limiter: governor_conf.limiter().clone(),
+    };
     let app = create_router(state)
         .layer(axum::middleware::from_fn(security_headers_middleware))
         .layer(axum::middleware::from_fn(correlation_id_middleware))
-        .layer(GovernorLayer {
-            config: governor_conf,
-        })
+        .layer(axum::middleware::from_fn_with_state(
+            rate_limit_state,
+            rate_limit_middleware,
+        ))
         .layer(cors)
         .layer(DefaultBodyLimit::max(1024 * 1024)); // 1MB limit
 

@@ -5,6 +5,7 @@
 #include <mapport.h>
 
 #include <clientversion.h>
+#include <common/args.h>
 #include <common/netif.h>
 #include <common/pcp.h>
 #include <common/system.h>
@@ -32,6 +33,13 @@ static constexpr auto PORT_MAPPING_RETRY_PERIOD{5min};
 
 static void ProcessPCP()
 {
+    // Defense-in-depth: never map ports when Tor mode is active,
+    // even if NAT-PMP was somehow enabled despite parameter interactions.
+    if (gArgs.GetBoolArg("-tormode", false)) {
+        LogPrintLevel(BCLog::NET, BCLog::Level::Debug, "portmap: skipped (Tor mode active)\n");
+        return;
+    }
+
     // The same nonce is used for all mappings, this is allowed by the spec, and simplifies keeping track of them.
     PCPMappingNonce pcp_nonce;
     GetRandBytes(pcp_nonce);

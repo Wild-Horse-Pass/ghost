@@ -1363,8 +1363,14 @@ pub struct PoolConfig {
     /// Must be a valid bech32 address for the configured network.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_payout_address: Option<String>,
+    /// Optional custom pool name shown in coinbase (e.g. "SatoshiPool").
+    /// Formatted as "- G H O S T - {pool_name}" in the coinbase scriptsig.
+    /// If not set, falls back to mining_mode default (PublicPool, PrivatePool, PrivateSolo).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool_name: Option<String>,
     /// Optional coinbase scriptsig tag shown on block explorers.
-    /// If not set, auto-derives from mining_mode (e.g. "- G H O S T - PublicPool").
+    /// Advanced override — takes priority over pool_name if both are set.
+    /// If not set, auto-derives from pool_name or mining_mode.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coinbase_extra: Option<String>,
     /// Optional password required for --genesis flag. When set in the config,
@@ -1420,6 +1426,7 @@ impl Default for PoolConfig {
             min_payout_sats: 100_000,  // 0.001 BTC minimum
             payout_interval_blocks: 100,
             node_payout_address: None,
+            pool_name: None,
             coinbase_extra: None,
             genesis_password: None,
         }

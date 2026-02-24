@@ -1,11 +1,13 @@
 "use client";
 
-import { PageHeader } from "@/components/ui/PageHeader";
+import { StatusRow } from "@/components/ui/StatusRow";
+import { FlowDiagram } from "@/components/ui/FlowDiagram";
 import { Card, CardHeader } from "@/components/ui/Card";
+import { PageHeader } from "@/components/ui/PageHeader";
+import { StatCard } from "@/components/ui/StatCard";
 import { Badge } from "@/components/ui/Badge";
 import { StatusDot } from "@/components/ui/StatusDot";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
-import { Tooltip } from "@/components/ui/Tooltip";
 import { SkeletonCard } from "@/components/ui/Skeleton";
 import { useShroudStatus } from "@/hooks/queries/useShroudQueries";
 
@@ -18,48 +20,6 @@ const TOOLTIPS = {
   topology_mapping: "Adversaries map the network graph by observing relay timing patterns between nodes.",
 };
 
-function StatusRow({ label, tooltip, children }: { label: string; tooltip?: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-center justify-between py-3 border-b border-gray-800 last:border-b-0">
-      <div className="flex items-center gap-2">
-        {tooltip ? (
-          <Tooltip content={tooltip}>
-            <span className="text-gray-400 text-sm cursor-help">{label}</span>
-          </Tooltip>
-        ) : (
-          <span className="text-gray-400 text-sm">{label}</span>
-        )}
-      </div>
-      <div>{children}</div>
-    </div>
-  );
-}
-
-function FlowStep({ label, sublabel, accent }: { label: string; sublabel: string; accent?: boolean }) {
-  return (
-    <div className={`flex-1 text-center px-3 py-4 rounded-lg border ${
-      accent
-        ? "bg-blue-900/10 border-blue-600/30"
-        : "bg-gray-800/50 border-gray-700"
-    }`}>
-      <div className={`text-sm font-medium ${accent ? "text-blue-400" : "text-gray-100"}`}>
-        {label}
-      </div>
-      <div className="text-xs text-gray-500 mt-1">{sublabel}</div>
-    </div>
-  );
-}
-
-function FlowArrow() {
-  return (
-    <div className="flex items-center px-1 text-gray-600 flex-shrink-0">
-      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
-      </svg>
-    </div>
-  );
-}
-
 export default function ShroudPage() {
   const { data: status, isLoading } = useShroudStatus({ refetchInterval: 10_000 });
 
@@ -67,9 +27,10 @@ export default function ShroudPage() {
 
   return (
     <div className="space-y-6">
+      {/* 1. PageHeader */}
       <PageHeader
         title="Ghost Shroud"
-        subtitle="Transaction relay privacy layer"
+        subtitle="Transaction relay privacy"
         actions={
           status ? (
             <Badge variant={status.enabled ? "success" : "default"}>
@@ -79,26 +40,67 @@ export default function ShroudPage() {
         }
       />
 
-      {/* Hero Explanation */}
-      <Card className="border-blue-600/30 bg-blue-900/10">
-        <div className="flex items-start gap-4">
-          <div className="w-10 h-10 rounded-lg bg-blue-900/30 border border-blue-600/30 flex items-center justify-center flex-shrink-0">
-            <svg className="w-5 h-5 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-            </svg>
-          </div>
-          <div>
-            <h3 className="text-lg font-semibold text-blue-400 mb-2">Relay Privacy Protection</h3>
-            <p className="text-gray-300 text-sm leading-relaxed">
-              Ghost Shroud adds random delays before relaying transactions, breaking timing-based
-              origin detection. Your transactions enter your mempool instantly — only relay to peers
-              is delayed.
-            </p>
-          </div>
+      {/* 2. StatCards row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard
+          label="Status"
+          value={status ? (status.enabled ? "Active" : "Inactive") : "--"}
+          tooltip={TOOLTIPS.enabled}
+          loading={showSkeleton}
+        />
+        <StatCard
+          label="Ghost Core"
+          value={status ? (status.ghost_core_connected ? "Connected" : "Disconnected") : "--"}
+          tooltip={TOOLTIPS.ghost_core}
+          loading={showSkeleton}
+        />
+        <StatCard
+          label="Max Delay"
+          value={status ? `${status.max_delay_ms} ms` : "--"}
+          tooltip={TOOLTIPS.max_delay}
+          loading={showSkeleton}
+        />
+        <StatCard
+          label="Avg Delay"
+          value={status ? `${status.avg_delay_ms} ms` : "--"}
+          tooltip={TOOLTIPS.avg_delay}
+          loading={showSkeleton}
+        />
+      </div>
+
+      {/* 3. How It Works — collapsible */}
+      <Card collapsible defaultCollapsed>
+        <CardHeader
+          title="How It Works"
+          subtitle="Transaction relay flow with Shroud enabled"
+        />
+        <p className="text-gray-300 text-sm leading-relaxed mb-4">
+          Ghost Shroud adds random delays before relaying transactions to peers, breaking
+          timing-based origin detection. Your transactions enter your mempool instantly for
+          mining and validation — only the outbound relay to other nodes is delayed, making it
+          impossible for observers to determine whether your node originated a transaction or
+          simply forwarded it.
+        </p>
+        <FlowDiagram
+          accentColor="blue"
+          steps={[
+            { label: "TX received", sublabel: "From wallet or peer" },
+            { label: "Mempool", sublabel: "Instant" },
+            { label: "Random delay", sublabel: "0-5s", accent: true },
+            { label: "Relay to peers", sublabel: "Delayed broadcast" },
+          ]}
+        />
+        <div className="mt-4 p-3 bg-gray-800/50 rounded-lg border border-gray-700">
+          <p className="text-xs text-gray-400 leading-relaxed">
+            <span className="text-blue-400 font-medium">Note:</span> The mempool addition is
+            instant — your node can mine and validate the transaction immediately. Shroud only
+            affects the <span className="text-blue-400">outbound relay</span> timing, ensuring
+            adversaries cannot correlate relay order with transaction origin.
+          </p>
         </div>
       </Card>
 
-      {/* Status Card */}
+      {/* 4. Primary Content — Status rows */}
       <SectionErrorBoundary section="Shroud Status">
         {showSkeleton ? (
           <SkeletonCard />
@@ -138,123 +140,90 @@ export default function ShroudPage() {
         ) : null}
       </SectionErrorBoundary>
 
-      {/* How It Works — Flow Diagram */}
-      <SectionErrorBoundary section="How It Works">
-        <Card>
-          <CardHeader
-            title="How It Works"
-            subtitle="Transaction relay flow with Shroud enabled"
-          />
-          <div className="flex items-center gap-0 overflow-x-auto pb-2">
-            <FlowStep label="TX received" sublabel="From wallet or peer" />
-            <FlowArrow />
-            <FlowStep label="Mempool" sublabel="Instant" />
-            <FlowArrow />
-            <FlowStep label="Random delay" sublabel="0-5s" accent />
-            <FlowArrow />
-            <FlowStep label="Relay to peers" sublabel="Delayed broadcast" />
+      {/* 5. Technical Details — collapsible */}
+      <Card collapsible defaultCollapsed>
+        <CardHeader
+          title="Privacy Properties"
+          subtitle="What Shroud does and does not protect against"
+        />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Protects Against */}
+          <div className="p-4 bg-blue-900/10 rounded-lg border border-blue-600/30">
+            <h4 className="text-sm font-medium text-blue-400 mb-3 flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+              </svg>
+              Protects Against
+            </h4>
+            <ul className="space-y-3">
+              <li className="flex items-start gap-2">
+                <span className="text-green-400 mt-0.5 flex-shrink-0">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                </span>
+                <div>
+                  <span className="text-gray-200 text-sm font-medium">Timing Analysis</span>
+                  <p className="text-gray-500 text-xs mt-0.5">
+                    Random delays make it impossible to identify the originating node by relay timing.
+                  </p>
+                </div>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-green-400 mt-0.5 flex-shrink-0">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                  </svg>
+                </span>
+                <div>
+                  <span className="text-gray-200 text-sm font-medium">Topology Mapping</span>
+                  <p className="text-gray-500 text-xs mt-0.5">
+                    Obscures the network graph by preventing relay order inference between peers.
+                  </p>
+                </div>
+              </li>
+            </ul>
           </div>
-          <div className="mt-4 p-3 bg-gray-800/50 rounded-lg border border-gray-700">
-            <p className="text-xs text-gray-400 leading-relaxed">
-              When a transaction arrives, it is immediately added to your local mempool for mining
-              and validation. Shroud only delays the <span className="text-blue-400">outbound relay</span> to
-              other peers, making it impossible for observers to determine whether your node originated
-              the transaction or simply forwarded it.
-            </p>
-          </div>
-        </Card>
-      </SectionErrorBoundary>
 
-      {/* Privacy Properties */}
-      <SectionErrorBoundary section="Privacy Properties">
-        <Card>
-          <CardHeader
-            title="Privacy Properties"
-            subtitle="What Shroud does and does not protect against"
-          />
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Protects Against */}
-            <div className="p-4 bg-blue-900/10 rounded-lg border border-blue-600/30">
-              <h4 className="text-sm font-medium text-blue-400 mb-3 flex items-center gap-2">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-                </svg>
-                Protects Against
-              </h4>
-              <ul className="space-y-3">
-                <Tooltip content={TOOLTIPS.timing_analysis}>
-                  <li className="flex items-start gap-2 cursor-help">
-                    <span className="text-green-400 mt-0.5 flex-shrink-0">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                      </svg>
-                    </span>
-                    <div>
-                      <span className="text-gray-200 text-sm font-medium">Timing Analysis</span>
-                      <p className="text-gray-500 text-xs mt-0.5">
-                        Random delays make it impossible to identify the originating node by relay timing.
-                      </p>
-                    </div>
-                  </li>
-                </Tooltip>
-                <Tooltip content={TOOLTIPS.topology_mapping}>
-                  <li className="flex items-start gap-2 cursor-help">
-                    <span className="text-green-400 mt-0.5 flex-shrink-0">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                      </svg>
-                    </span>
-                    <div>
-                      <span className="text-gray-200 text-sm font-medium">Topology Mapping</span>
-                      <p className="text-gray-500 text-xs mt-0.5">
-                        Obscures the network graph by preventing relay order inference between peers.
-                      </p>
-                    </div>
-                  </li>
-                </Tooltip>
-              </ul>
-            </div>
-
-            {/* Does Not Protect Against */}
-            <div className="p-4 bg-gray-800/50 rounded-lg border border-gray-700">
-              <h4 className="text-sm font-medium text-gray-400 mb-3 flex items-center gap-2">
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                Does Not Protect Against
-              </h4>
-              <ul className="space-y-3">
-                <li className="flex items-start gap-2">
-                  <span className="text-gray-500 mt-0.5 flex-shrink-0">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </span>
-                  <div>
-                    <span className="text-gray-300 text-sm font-medium">Content Encryption</span>
-                    <p className="text-gray-500 text-xs mt-0.5">
-                      Transaction contents are not encrypted. Shroud only affects relay timing, not data.
-                    </p>
-                  </div>
-                </li>
-                <li className="flex items-start gap-2">
-                  <span className="text-gray-500 mt-0.5 flex-shrink-0">
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </span>
-                  <div>
-                    <span className="text-gray-300 text-sm font-medium">Global Observer</span>
-                    <p className="text-gray-500 text-xs mt-0.5">
-                      An adversary monitoring all network links simultaneously may still correlate transactions.
-                    </p>
-                  </div>
-                </li>
-              </ul>
-            </div>
+          {/* Does Not Protect Against */}
+          <div className="p-4 bg-gray-800/50 rounded-lg border border-gray-700">
+            <h4 className="text-sm font-medium text-gray-400 mb-3 flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Does Not Protect Against
+            </h4>
+            <ul className="space-y-3">
+              <li className="flex items-start gap-2">
+                <span className="text-gray-500 mt-0.5 flex-shrink-0">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </span>
+                <div>
+                  <span className="text-gray-300 text-sm font-medium">Content Encryption</span>
+                  <p className="text-gray-500 text-xs mt-0.5">
+                    Transaction contents are not encrypted. Shroud only affects relay timing, not data.
+                  </p>
+                </div>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="text-gray-500 mt-0.5 flex-shrink-0">
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </span>
+                <div>
+                  <span className="text-gray-300 text-sm font-medium">Global Observer</span>
+                  <p className="text-gray-500 text-xs mt-0.5">
+                    An adversary monitoring all network links simultaneously may still correlate transactions.
+                  </p>
+                </div>
+              </li>
+            </ul>
           </div>
-        </Card>
-      </SectionErrorBoundary>
+        </div>
+      </Card>
     </div>
   );
 }

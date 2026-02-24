@@ -1,3 +1,25 @@
+//|======================================================================================================================|
+//|                                                                                                                      |
+//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+//|       ░              ░                                                                                               |
+//|----------------------------------------------------------------------------------------------------------------------|
+//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|----------------------------------------------------------------------------------------------------------------------|
+//| PROJECT: Bitcoin Ghost                                                                                               |
+//| REPO: https://github.com/bitcoin-ghost                                                                               |
+//| WEB: https://bitcoinghost.org/                                                                                       |
+//| LICENSE: MIT                                                                                                         |
+//| FILE: prover.rs                                                                                                      |
+//|======================================================================================================================|
+
 //! Block proof generation
 //!
 //! The BlockProver generates ZK proofs that a block's state transition is valid.
@@ -43,6 +65,7 @@ use bellperson::{
     Circuit,
 };
 use blstrs::{Bls12, Scalar as Fr};
+use rand::SeedableRng;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Instant;
@@ -159,12 +182,22 @@ impl BlockProver {
         let dummy_circuit = BlockCircuit::<Fr>::dummy_with_tree_depth(max_txs, tree_depth);
 
         // Generate Groth16 parameters (trusted setup)
-        // SECURITY: This uses random toxic waste - FOR TESTING ONLY
+        // SECURITY: Uses deterministic seed so all nodes produce identical params.
+        // This is INSECURE for production — production MUST use MPC-generated params.
         info!("Generating Groth16 parameters (TESTING ONLY - NOT SECURE FOR PRODUCTION)...");
         let setup_start = Instant::now();
-        // H-3 FIX: Use OsRng for cryptographic security instead of thread_rng()
+        // Deterministic RNG: all nodes with same (max_txs, tree_depth) get identical params,
+        // allowing cross-node proof verification on signet/testnet.
+        let mut seed = [0u8; 32];
+        let mut seed_hasher = Sha256::new();
+        seed_hasher.update(b"ghost-zkp-test-params-deterministic-v1");
+        seed_hasher.update(max_txs.to_le_bytes());
+        seed_hasher.update(tree_depth.to_le_bytes());
+        seed.copy_from_slice(&seed_hasher.finalize());
+        let mut rng = rand::rngs::StdRng::from_seed(seed);
+
         let params =
-            generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rand::rngs::OsRng)
+            generate_random_parameters::<Bls12, _, _>(dummy_circuit, &mut rng)
                 .map_err(|e| {
                     ZkError::SetupError(format!("Parameter generation failed: {:?}", e))
                 })?;
@@ -705,22 +738,23 @@ mod tests {
 
     #[test]
     fn test_prove_v2_empty_block() {
-        // Note: Empty blocks with V2 proving will fail because padding
-        // creates dummy state transitions with invalid merkle proofs.
-        // This is expected behavior - for empty blocks, use legacy mode (prove)
-        // which doesn't require merkle proof validity.
         let prover = BlockProver::new_with_state_transitions(5, 10).unwrap();
         let witness = BlockWitnessV2::empty(1, [42u8; 32], 10);
 
         let proof = prover.prove_v2(&witness);
 
-        // Empty V2 blocks will fail due to dummy padding with invalid proofs
-        // This is by design - V2 mode requires valid merkle proofs for all txs
-        // including padding. Use legacy mode for empty blocks.
+        // Empty blocks succeed — dummy padding transitions have self-consistent
+        // merkle proofs (computed root matches input/output root)
         assert!(
-            proof.is_err(),
-            "Empty block V2 proof should fail due to invalid padding merkle proofs"
+            proof.is_ok(),
+            "Empty block V2 proof should succeed: {:?}",
+            proof.err()
         );
+        let proof = proof.unwrap();
+        assert_eq!(proof.height, 1);
+        assert_eq!(proof.tx_count, 0);
+        assert_eq!(proof.prev_state_root, [42u8; 32]);
+        assert_eq!(proof.new_state_root, [42u8; 32]);
     }
 
     #[test]

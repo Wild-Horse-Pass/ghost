@@ -71,6 +71,7 @@
 #include <scheduler.h>
 #include <script/sigcache.h>
 #include <sync.h>
+#include <tor/tor_process.h>
 #include <torcontrol.h>
 #include <txdb.h>
 #include <txmempool.h>
@@ -117,6 +118,9 @@
 #ifndef WIN32
 #include <csignal>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 #endif
 
 #include <boost/signals2/signal.hpp>
@@ -281,6 +285,7 @@ void Interrupt(NodeContext& node)
     InterruptRPC();
     InterruptREST();
     InterruptTorControl();
+    if (node.tor_process) node.tor_process->Interrupt();
     InterruptMapPort();
     if (node.connman)
         node.connman->Interrupt();
@@ -333,6 +338,12 @@ void Shutdown(NodeContext& node)
     if (node.connman) node.connman->Stop();
 
     StopTorControl();
+
+    // Stop embedded Tor subprocess
+    if (node.tor_process) {
+        node.tor_process->Stop();
+        node.tor_process.reset();
+    }
 
     if (node.background_init_thread.joinable()) node.background_init_thread.join();
     // After everything has been shut down, but before things get flushed, stop the
@@ -519,6 +530,15 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-shroud", "Add random delay (0-5s) before relaying transactions to peers, "
         "preventing timing-based origin detection. Does not affect mining. "
         "(default: 1)", ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-tormode", strprintf("Route all outbound connections through Tor SOCKS5 proxy. "
+        "Reaches both clearnet peers (via exit nodes) and .onion peers. "
+        "Inbound accepted only via auto-generated .onion address. "
+        "Requires Tor with SOCKS on 127.0.0.1:%u and control on 127.0.0.1:%u. "
+        "Disables UPnP/NAT-PMP and clearnet address discovery. "
+        "Restart required to toggle. (default: %u)", DEFAULT_TOR_SOCKS_PORT, DEFAULT_TOR_CONTROL_PORT, DEFAULT_TOR_MODE),
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
+    argsman.AddArg("-torbin=<path>", "Path to Tor binary for embedded mode (default: auto-detect)",
+        ArgsManager::ALLOW_ANY, OptionsCategory::CONNECTION);
     argsman.AddArg("-hazemode=<mode>", "Set Ghost Haze operating mode: 'hazed' strips witness/scriptSig/OP_RETURN data before writing to disk (~60%% storage reduction); 'full_archive' stores all data unchanged. Choice is permanent for this datadir. (default: interactive prompt on first launch, then persisted)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-haze-status", "Print Ghost Haze status and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-legal-packet", "Generate legal compliance packet JSON and exit", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -835,6 +855,21 @@ void InitParameterInteraction(ArgsManager& args)
         // to protect privacy, do not discover addresses by default
         if (args.SoftSetBoolArg("-discover", false))
             LogInfo("parameter interaction: -proxy set -> setting -discover=0\n");
+    }
+
+    // Tor mode: route all outbound through Tor SOCKS5 proxy, accept inbound via .onion only.
+    // The -proxy interaction already disables -dnsseed (system DNS resolver would leak).
+    // We keep -dns=true so hostname resolution goes through the SOCKS5 proxy (Tor-safe).
+    // We keep -fixedseeds so the node can bootstrap clearnet peers (reached via Tor exit nodes).
+    if (args.GetBoolArg("-tormode", DEFAULT_TOR_MODE)) {
+        if (args.SoftSetArg("-proxy", strprintf("127.0.0.1:%u", DEFAULT_TOR_SOCKS_PORT)))
+            LogInfo("parameter interaction: -tormode set -> setting -proxy=127.0.0.1:%u\n", DEFAULT_TOR_SOCKS_PORT);
+        if (args.SoftSetBoolArg("-listenonion", true))
+            LogInfo("parameter interaction: -tormode set -> setting -listenonion=1\n");
+        if (args.SoftSetBoolArg("-natpmp", false))
+            LogInfo("parameter interaction: -tormode set -> setting -natpmp=0\n");
+        if (args.SoftSetBoolArg("-discover", false))
+            LogInfo("parameter interaction: -tormode set -> setting -discover=0\n");
     }
 
     if (!args.GetBoolArg("-listen", DEFAULT_LISTEN)) {
@@ -1581,6 +1616,22 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
         }
     }
 
+    // Tor mode: validate conflicting flags. All outbound goes through Tor SOCKS5 proxy
+    // (reaching both clearnet and onion peers), inbound accepted only via .onion.
+    // We do NOT restrict reachable networks — clearnet peers are reachable via Tor exit nodes.
+    if (args.GetBoolArg("-tormode", DEFAULT_TOR_MODE)) {
+        if (args.IsArgNegated("proxy") || args.GetArg("-proxy", "") == "0") {
+            return InitError(_("Incompatible options: -tormode cannot be used with -noproxy"));
+        }
+        if (args.IsArgNegated("onion")) {
+            return InitError(_("Incompatible options: -tormode cannot be used with -noonion"));
+        }
+        if (!args.GetArgs("-externalip").empty()) {
+            return InitError(_("Incompatible options: -tormode cannot be used with -externalip (would leak clearnet address)"));
+        }
+        LogInfo("Tor mode: all outbound routed through Tor SOCKS5 proxy, inbound via .onion only\n");
+    }
+
     if (!args.IsArgSet("-cjdnsreachable")) {
         if (!onlynets.empty() && g_reachable_nets.Contains(NET_CJDNS)) {
             return InitError(
@@ -1682,6 +1733,12 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     if (args.GetBoolArg("-ghostmode", false)) {
         node.connman->SetGhostMode(true);
         LogPrintf("Ghost mode enabled: no transaction relay/announce\n");
+    }
+
+    // Initialize tor mode flag on connman
+    if (args.GetBoolArg("-tormode", DEFAULT_TOR_MODE)) {
+        node.connman->SetTorMode(true);
+        LogPrintf("Tor mode enabled: all outbound via Tor proxy, inbound via .onion only\n");
     }
 
     assert(!node.fee_estimator);
@@ -2319,6 +2376,47 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     }
     LogInfo("nBestHeight = %d", chain_active_height);
     if (node.peerman) node.peerman->SetBestBlock(chain_active_height, std::chrono::seconds{best_block_time});
+
+    // Start embedded Tor subprocess if -tormode is active and no external Tor is running
+    if (args.GetBoolArg("-tormode", DEFAULT_TOR_MODE)) {
+        // Probe SOCKS port to detect an already-running Tor instance
+        bool external_tor_running = false;
+        {
+            int sock = socket(AF_INET, SOCK_STREAM, 0);
+            if (sock >= 0) {
+                struct sockaddr_in addr{};
+                addr.sin_family = AF_INET;
+                addr.sin_port = htons(DEFAULT_TOR_SOCKS_PORT);
+                addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+                if (connect(sock, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
+                    external_tor_running = true;
+                }
+                close(sock);
+            }
+        }
+
+        if (external_tor_running) {
+            LogPrintf("Tor mode: external Tor already listening on 127.0.0.1:%u, using it\n",
+                      DEFAULT_TOR_SOCKS_PORT);
+        } else {
+            auto tor_binary = FindTorBinary(args);
+            if (tor_binary) {
+                node.tor_process = std::make_unique<TorProcess>(
+                    *tor_binary,
+                    args.GetDataDirNet() / "tor",
+                    DEFAULT_TOR_SOCKS_PORT,
+                    static_cast<uint16_t>(DEFAULT_TOR_CONTROL_PORT),
+                    Assert(node.shutdown_request));
+                if (!node.tor_process->Start(std::chrono::seconds{120})) {
+                    return InitError(_("Tor mode: Tor failed to bootstrap within 120 seconds. "
+                        "Ensure Tor binary is functional or use an external Tor instance."));
+                }
+            } else {
+                LogPrintf("Tor mode: no Tor binary found, assuming external Tor on 127.0.0.1:%u\n",
+                          DEFAULT_TOR_SOCKS_PORT);
+            }
+        }
+    }
 
     // Map ports with NAT-PMP
     StartMapPort(args.GetBoolArg("-natpmp", DEFAULT_NATPMP));

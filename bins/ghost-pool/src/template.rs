@@ -892,11 +892,7 @@ impl TemplateProcessor {
                 return None;
             }
             // M-07: Reject proposals with stale block heights
-            let height_diff = if prop.block_height > height {
-                prop.block_height - height
-            } else {
-                height - prop.block_height
-            };
+            let height_diff = prop.block_height.abs_diff(height);
             if height_diff > 10 {
                 error!(
                     proposal_height = prop.block_height,

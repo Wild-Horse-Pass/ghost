@@ -466,6 +466,95 @@ impl Database {
         })
     }
 
+    /// Get detailed miner stats for a round (includes timing and difficulty data)
+    ///
+    /// Returns per-miner aggregate stats needed for hashrate calculation.
+    pub fn get_round_miners_detailed(
+        &self,
+        round_id: u64,
+    ) -> GhostResult<Vec<MinerSearchResult>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        miner_id,
+                        COUNT(*) as total_shares,
+                        SUM(work) as total_work,
+                        SUM(CASE WHEN valid = 1 THEN 1 ELSE 0 END) as valid_shares,
+                        MIN(timestamp) as first_seen,
+                        MAX(timestamp) as last_seen,
+                        AVG(difficulty) as avg_difficulty
+                     FROM shares WHERE round_id = ?1
+                     GROUP BY miner_id ORDER BY total_work DESC LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let miners = stmt
+                .query_map(params![round_id, Self::MAX_QUERY_RESULTS], |row| {
+                    Ok(MinerSearchResult {
+                        miner_id: row.get(0)?,
+                        total_shares: row.get(1)?,
+                        total_work: row.get(2)?,
+                        valid_shares: row.get(3)?,
+                        first_seen: row.get(4)?,
+                        last_seen: row.get(5)?,
+                        avg_difficulty: row.get(6)?,
+                    })
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(miners)
+        })
+    }
+
+    /// Get aggregate miner stats for hashrate calculation
+    ///
+    /// Uses a 10-minute window for accurate hashrate estimation.
+    pub fn get_all_miners_stats(&self) -> GhostResult<Vec<MinerSearchResult>> {
+        self.with_connection(|conn| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let window_start = now - 600; // 10 minute window
+            let mut stmt = conn
+                .prepare(
+                    "SELECT
+                        miner_id,
+                        COUNT(*) as total_shares,
+                        SUM(work) as total_work,
+                        SUM(CASE WHEN valid = 1 THEN 1 ELSE 0 END) as valid_shares,
+                        MIN(timestamp) as first_seen,
+                        MAX(timestamp) as last_seen,
+                        AVG(difficulty) as avg_difficulty
+                     FROM shares
+                     WHERE timestamp >= ?1
+                     GROUP BY miner_id ORDER BY total_work DESC LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let miners = stmt
+                .query_map(params![window_start, Self::MAX_QUERY_RESULTS], |row| {
+                    Ok(MinerSearchResult {
+                        miner_id: row.get(0)?,
+                        total_shares: row.get(1)?,
+                        total_work: row.get(2)?,
+                        valid_shares: row.get(3)?,
+                        first_seen: row.get(4)?,
+                        last_seen: row.get(5)?,
+                        avg_difficulty: row.get(6)?,
+                    })
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(miners)
+        })
+    }
+
     /// Get the highest round_id from the shares table
     ///
     /// Returns 0 if no shares exist (fresh install).
@@ -3076,6 +3165,20 @@ impl Database {
         })
     }
 
+    /// Get total blocks found (distinct block heights from payout proposals)
+    pub fn get_blocks_found_count(&self) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT block_height) FROM payout_proposals",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            i64_to_u64(count, "blocks_found").map_err(|e| GhostError::Database(e.to_string()))
+        })
+    }
+
     // =========================================================================
     // KEY ROTATION WITH ELDER STATUS TRANSFER
     // =========================================================================
@@ -4394,6 +4497,25 @@ impl Database {
                 }
                 None => Ok((0, [0u8; 32])),
             }
+        })
+    }
+
+    /// Save block proposer record for L2 block tracking
+    pub fn save_block_proposer(
+        &self,
+        height: u64,
+        proposer_id: &str,
+        state_root: &str,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            let now = chrono::Utc::now().timestamp();
+            conn.execute(
+                "INSERT OR REPLACE INTO block_proposers (height, proposer_id, state_root, timestamp) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![height as i64, proposer_id, state_root, now],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
         })
     }
 

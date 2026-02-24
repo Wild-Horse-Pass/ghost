@@ -1,3 +1,25 @@
+//|======================================================================================================================|
+//|                                                                                                                      |
+//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+//|       ░              ░                                                                                               |
+//|----------------------------------------------------------------------------------------------------------------------|
+//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|----------------------------------------------------------------------------------------------------------------------|
+//| PROJECT: Bitcoin Ghost                                                                                               |
+//| REPO: https://github.com/bitcoin-ghost                                                                               |
+//| WEB: https://bitcoinghost.org/                                                                                       |
+//| LICENSE: MIT                                                                                                         |
+//| FILE: state_transition.rs                                                                                            |
+//|======================================================================================================================|
+
 //! State transition circuit for ZK-proven state root changes
 //!
 //! Proves that a single payment correctly transitions state from one root
@@ -111,17 +133,35 @@ impl<F: PrimeField> PaymentStateTransitionCircuit<F> {
         })
     }
 
-    /// Create a dummy circuit for parameter generation
+    /// Create a dummy circuit for parameter generation and padding
+    ///
+    /// Computes the actual merkle root for balance=0 at index=0 with
+    /// all-zero siblings so all internal constraints are self-consistent.
+    /// Both sender and recipient are at index 0 (no-op: amount=0).
     pub fn dummy(tree_depth: usize) -> Self {
+        use super::mimc::mimc_hash_native;
+
+        // Compute the merkle root that hash_leaf(0) + all-zero siblings produces.
+        // This must match compute_root(balance=0, index=0, siblings=[0; depth]).
+        let domain_sep = F::from(0x4c454146u64);
+        let leaf_hash = mimc_hash_native(F::ZERO, domain_sep);
+
+        // Index 0 = all bits zero = always left child: H(current, sibling)
+        let mut current = leaf_hash;
+        for _ in 0..tree_depth {
+            current = mimc_hash_native(current, F::ZERO);
+        }
+        let root = current;
+
         Self {
             payment: PaymentCircuit::dummy(),
             sender_index: Some(0),
             sender_siblings: vec![Some(F::ZERO); tree_depth],
-            recipient_index: Some(1),
+            recipient_index: Some(0),
             recipient_old_balance: Some(0),
             recipient_siblings: vec![Some(F::ZERO); tree_depth],
-            input_root: Some(F::ZERO),
-            output_root: Some(F::ZERO),
+            input_root: Some(root),
+            output_root: Some(root),
             tree_depth,
         }
     }

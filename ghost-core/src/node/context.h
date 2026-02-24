@@ -18,6 +18,7 @@ class BanMan;
 class BaseIndex;
 class CBlockPolicyEstimator;
 class CConnman;
+class TorProcess;
 class ValidationSignals;
 class CScheduler;
 class CTxMemPool;
@@ -95,6 +96,8 @@ struct NodeContext {
     std::thread background_init_thread;
     //! GSP (Ghost Service Protocol) light wallet server
     std::unique_ptr<gsp::GspServer> gsp;
+    //! Embedded Tor subprocess (when -tormode is active)
+    std::unique_ptr<TorProcess> tor_process;
 
     //! Declare default constructor and destructor that are not inline, so code
     //! instantiating the NodeContext struct doesn't need to #include class

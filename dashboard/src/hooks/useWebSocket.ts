@@ -16,6 +16,9 @@ function getWsUrl(): string {
 
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error";
 
+const MAX_RECONNECT_DELAY = 30000;
+const INITIAL_RECONNECT_DELAY = 1000;
+
 interface UseWebSocketOptions {
   onStatusChange?: (data: NodeEvent & { type: "StatusChange" }) => void;
   onConfigChange?: (data: NodeEvent & { type: "ConfigChange" }) => void;
@@ -23,29 +26,25 @@ interface UseWebSocketOptions {
   onHealthChange?: (data: NodeEvent & { type: "HealthChange" }) => void;
   onMessage?: (event: NodeEvent) => void;
   autoReconnect?: boolean;
-  reconnectInterval?: number;
 }
 
 export function useWebSocket(options: UseWebSocketOptions = {}) {
-  const {
-    onStatusChange,
-    onConfigChange,
-    onSharesUpdate,
-    onHealthChange,
-    onMessage,
-    autoReconnect = true,
-    reconnectInterval = 5000,
-  } = options;
+  const { autoReconnect = true } = options;
 
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
   const [lastMessage, setLastMessage] = useState<NodeEvent | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const mountedRef = useRef(true);
+  const reconnectDelayRef = useRef(INITIAL_RECONNECT_DELAY);
+
+  // Store callbacks in refs so connect() doesn't depend on them
+  const callbacksRef = useRef(options);
+  callbacksRef.current = options;
 
   const connect = useCallback(() => {
     if (typeof window === "undefined") return;
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return;
 
     setConnectionState("connecting");
 
@@ -56,6 +55,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
       ws.onopen = () => {
         if (mountedRef.current) {
           setConnectionState("connected");
+          reconnectDelayRef.current = INITIAL_RECONNECT_DELAY;
         }
       };
 
@@ -65,20 +65,20 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         try {
           const data = JSON.parse(event.data) as NodeEvent;
           setLastMessage(data);
-          onMessage?.(data);
+          callbacksRef.current.onMessage?.(data);
 
           switch (data.type) {
             case "StatusChange":
-              onStatusChange?.(data as NodeEvent & { type: "StatusChange" });
+              callbacksRef.current.onStatusChange?.(data as NodeEvent & { type: "StatusChange" });
               break;
             case "ConfigChange":
-              onConfigChange?.(data as NodeEvent & { type: "ConfigChange" });
+              callbacksRef.current.onConfigChange?.(data as NodeEvent & { type: "ConfigChange" });
               break;
             case "SharesUpdate":
-              onSharesUpdate?.(data as NodeEvent & { type: "SharesUpdate" });
+              callbacksRef.current.onSharesUpdate?.(data as NodeEvent & { type: "SharesUpdate" });
               break;
             case "HealthChange":
-              onHealthChange?.(data as NodeEvent & { type: "HealthChange" });
+              callbacksRef.current.onHealthChange?.(data as NodeEvent & { type: "HealthChange" });
               break;
           }
         } catch (err) {
@@ -93,12 +93,13 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
         wsRef.current = null;
 
         if (autoReconnect) {
+          const delay = reconnectDelayRef.current;
+          reconnectDelayRef.current = Math.min(delay * 2, MAX_RECONNECT_DELAY);
           reconnectTimeoutRef.current = setTimeout(() => {
             if (mountedRef.current) {
-              // eslint-disable-next-line react-hooks/immutability
               connect();
             }
-          }, reconnectInterval);
+          }, delay);
         }
       };
 
@@ -110,7 +111,7 @@ export function useWebSocket(options: UseWebSocketOptions = {}) {
     } catch {
       setConnectionState("error");
     }
-  }, [onStatusChange, onConfigChange, onSharesUpdate, onHealthChange, onMessage, autoReconnect, reconnectInterval]);
+  }, [autoReconnect]);
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {

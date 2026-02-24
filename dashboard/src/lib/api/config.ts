@@ -257,3 +257,11 @@ export async function setMiningPayoutAddress(address: string): Promise<{ success
   });
 }
 
+// Mining pool name (coinbase tag)
+export async function setPoolName(name: string | null): Promise<{ success: boolean }> {
+  return fetchApi('/api/v1/mining/pool_name', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+

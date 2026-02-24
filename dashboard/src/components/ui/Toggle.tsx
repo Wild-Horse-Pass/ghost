@@ -16,7 +16,7 @@ export function Toggle({ enabled, onChange, label, disabled = false }: TogglePro
       onClick={() => !disabled && onChange(!enabled)}
       disabled={disabled}
       className={`
-        relative inline-flex h-6 w-11 items-center rounded-full
+        relative inline-flex h-6 w-11 min-w-[2.75rem] shrink-0 items-center rounded-full
         transition-colors focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 focus:ring-offset-gray-900
         ${enabled ? "bg-orange-600" : "bg-gray-700"}
         ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}

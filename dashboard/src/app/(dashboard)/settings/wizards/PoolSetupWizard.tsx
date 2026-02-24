@@ -9,12 +9,18 @@ import { useToast } from '@/components/ui/Toast';
 import {
   useSetPublicMiningConfig,
   useSetMiningPayoutAddress,
+  useSetPoolName,
 } from '@/hooks/queries/useConfigQueries';
-import { useNodeStatus } from '@/hooks/queries';
+import { useSetPrivateMining, useSetPublicMining } from '@/hooks/queries';
+import { useNodeStatus, useMiningStatus } from '@/hooks/queries';
+
+type MiningMode = 'private_solo' | 'private_pool' | 'pool';
 
 interface PoolSetupData {
+  mining_mode: MiningMode;
   public_mining: boolean;
   payout_address: string;
+  pool_name: string;
 }
 
 interface PoolSetupWizardProps {
@@ -36,25 +42,43 @@ function isValidBech32Address(address: string): boolean {
   return bech32Chars.test(trimmed);
 }
 
+const MODES: { key: MiningMode; label: string; desc: string }[] = [
+  { key: 'private_solo', label: 'Private Solo', desc: 'Your miners only. Stratum port closed to external connections. All block rewards go to you.' },
+  { key: 'private_pool', label: 'Private Pool', desc: 'Your miners + accept public miners. You operate a pool and share rewards with connected miners.' },
+  { key: 'pool', label: 'Public Pool', desc: 'Public pool only. Your node acts as a pool server for external miners.' },
+];
+
+function getMiningMode(privateMining?: boolean, publicMining?: boolean): MiningMode {
+  if (privateMining && publicMining) return 'private_pool';
+  if (publicMining) return 'pool';
+  return 'private_solo';
+}
+
 export default function PoolSetupWizard({ isOpen, onClose }: PoolSetupWizardProps) {
   const { data: nodeStatus } = useNodeStatus();
+  const { data: miningStatus } = useMiningStatus();
   const setPublicMiningConfig = useSetPublicMiningConfig();
   const setMiningPayoutAddress = useSetMiningPayoutAddress();
+  const setPoolName = useSetPoolName();
+  const setPrivateMining = useSetPrivateMining();
+  const setPublicMining = useSetPublicMining();
   const toast = useToast();
+
+  const currentMode = getMiningMode(miningStatus?.private_mining, miningStatus?.public_mining ?? nodeStatus?.public_mining);
 
   const steps: WizardStep<PoolSetupData>[] = [
     {
-      id: 'mining',
-      title: 'Public Mining',
-      description: 'Enable or disable public mining connections',
+      id: 'mode',
+      title: 'Mining Mode',
+      description: 'Choose how your node participates in mining',
     },
     {
       id: 'payout',
       title: 'Payout Address',
       description: 'Set your mining payout address',
       validate: (data) => {
-        if (data.public_mining && !data.payout_address.trim()) {
-          return 'Payout address is required when public mining is enabled';
+        if ((data.mining_mode === 'private_pool' || data.mining_mode === 'pool') && !data.payout_address.trim()) {
+          return 'Payout address is required for pool modes';
         }
         if (data.payout_address.trim() && !isValidBech32Address(data.payout_address)) {
           return 'Invalid address. Must be a valid bech32 address starting with bc1, tb1, or bcrt1';
@@ -72,15 +96,24 @@ export default function PoolSetupWizard({ isOpen, onClose }: PoolSetupWizardProp
       title: 'Confirm',
       description: 'Review and apply changes',
       onSubmit: async (data) => {
-        await setPublicMiningConfig.mutateAsync(data.public_mining);
+        const privateMining = data.mining_mode === 'private_solo' || data.mining_mode === 'private_pool';
+        const publicMining = data.mining_mode === 'private_pool' || data.mining_mode === 'pool';
+
+        await Promise.all([
+          setPrivateMining.mutateAsync(privateMining),
+          setPublicMining.mutateAsync(publicMining),
+          setPublicMiningConfig.mutateAsync(publicMining),
+        ]);
         if (data.payout_address.trim()) {
           await setMiningPayoutAddress.mutateAsync(data.payout_address.trim());
         }
+        if (data.pool_name.trim()) {
+          await setPoolName.mutateAsync(data.pool_name.trim());
+        }
+        const modeLabel = MODES.find(m => m.key === data.mining_mode)?.label ?? data.mining_mode;
         toast.success(
-          'Pool Setup Updated',
-          data.public_mining
-            ? 'Public mining enabled and payout address configured'
-            : 'Pool configuration has been updated'
+          'Mining Setup Updated',
+          `Mining mode set to ${modeLabel}`
         );
         onClose();
       },
@@ -90,8 +123,10 @@ export default function PoolSetupWizard({ isOpen, onClose }: PoolSetupWizardProp
   const wizard = useWizard<PoolSetupData>({
     steps,
     initialData: {
+      mining_mode: currentMode,
       public_mining: nodeStatus?.public_mining ?? false,
       payout_address: '',
+      pool_name: '',
     },
   });
 
@@ -99,51 +134,44 @@ export default function PoolSetupWizard({ isOpen, onClose }: PoolSetupWizardProp
     <WizardDialog
       isOpen={isOpen}
       onClose={onClose}
-      title="Pool Setup Wizard"
+      title="Mining Setup Wizard"
       wizard={wizard}
       size="lg"
     >
       {(data, setData) => (
         <div className="space-y-6">
-          {/* Step 1: Public Mining Toggle */}
+          {/* Step 1: Mining Mode Selection */}
           {wizard.currentStep === 0 && (
             <div className="space-y-4">
-              <div className="p-4 rounded-lg bg-gray-800/50">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-gray-100 font-medium">Public Mining</span>
-                    <p className="text-sm text-gray-400 mt-1">
-                      Accept mining connections from public miners on your Stratum port (3333).
-                      Earns +3 shares in the node reward pool.
-                    </p>
-                  </div>
-                  <Toggle
-                    enabled={data.public_mining}
-                    onChange={(enabled) => setData({ public_mining: enabled })}
-                    label="Public Mining"
-                  />
-                </div>
-              </div>
-              {data.public_mining && (
-                <div className="p-4 rounded-lg bg-green-900/20 border border-green-800">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Badge variant="success">+3 Shares</Badge>
-                    <span className="text-sm text-green-300">Public Mining capability bonus</span>
-                  </div>
-                  <p className="text-sm text-green-300">
-                    Your node will accept external miner connections. Miners connect using
-                    the worker name format: address.worker_id
-                  </p>
-                </div>
-              )}
-              {!data.public_mining && (
-                <div className="p-4 rounded-lg bg-gray-800/50">
-                  <p className="text-sm text-gray-400">
-                    With public mining disabled, your node will only process blocks from the
-                    pool network. External miners will not be able to connect.
-                  </p>
-                </div>
-              )}
+              {MODES.map(({ key, label, desc }) => {
+                const isActive = data.mining_mode === key;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setData({
+                      mining_mode: key,
+                      public_mining: key === 'private_pool' || key === 'pool',
+                    })}
+                    className={`w-full p-4 rounded-lg border text-left transition-all ${
+                      isActive
+                        ? 'bg-orange-900/20 border-orange-600 ring-1 ring-orange-600/50'
+                        : 'bg-gray-800/30 border-gray-700 hover:border-gray-600'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className={`w-3 h-3 rounded-full border-2 flex items-center justify-center ${
+                        isActive ? 'border-orange-500' : 'border-gray-600'
+                      }`}>
+                        {isActive && <div className="w-1.5 h-1.5 rounded-full bg-orange-500" />}
+                      </div>
+                      <span className={`font-medium ${isActive ? 'text-orange-400' : 'text-gray-300'}`}>{label}</span>
+                      {isActive && <Badge variant="success">Selected</Badge>}
+                      {(key === 'private_pool' || key === 'pool') && <Badge variant="info">+3 Shares</Badge>}
+                    </div>
+                    <div className="text-xs text-gray-500 ml-5">{desc}</div>
+                  </button>
+                );
+              })}
             </div>
           )}
 
@@ -200,6 +228,27 @@ export default function PoolSetupWizard({ isOpen, onClose }: PoolSetupWizardProp
           {wizard.currentStep === 2 && (
             <div className="space-y-4">
               <div className="p-4 rounded-lg bg-gray-800/50">
+                <Input
+                  label="Pool Name (optional)"
+                  value={data.pool_name}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val.length <= 30 && /^[\x20-\x7E]*$/.test(val)) {
+                      setData({ pool_name: val });
+                    }
+                  }}
+                  placeholder="e.g. SatoshiPool"
+                />
+                <p className="text-sm text-gray-400 mt-1">
+                  Custom name shown in block coinbase. ASCII only, max 30 characters.
+                </p>
+                {data.pool_name.trim() && (
+                  <div className="mt-2 p-2 rounded bg-gray-900 font-mono text-sm text-orange-300">
+                    - G H O S T - {data.pool_name.trim()}
+                  </div>
+                )}
+              </div>
+              <div className="p-4 rounded-lg bg-gray-800/50">
                 <h4 className="text-gray-100 font-medium mb-3">Pool Configuration</h4>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
@@ -246,14 +295,14 @@ export default function PoolSetupWizard({ isOpen, onClose }: PoolSetupWizardProp
                 <h4 className="text-gray-100 font-medium mb-3">Configuration Summary</h4>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-gray-400">Public Mining</span>
+                    <span className="text-gray-400">Mining Mode</span>
                     <div className="flex items-center gap-2">
-                      <Badge variant={nodeStatus?.public_mining ? 'success' : 'default'}>
-                        {nodeStatus?.public_mining ? 'Enabled' : 'Disabled'}
+                      <Badge variant="default">
+                        {MODES.find(m => m.key === currentMode)?.label ?? currentMode}
                       </Badge>
                       <span className="text-gray-500">-&gt;</span>
-                      <Badge variant={data.public_mining ? 'success' : 'default'}>
-                        {data.public_mining ? 'Enabled' : 'Disabled'}
+                      <Badge variant="success">
+                        {MODES.find(m => m.key === data.mining_mode)?.label ?? data.mining_mode}
                       </Badge>
                     </div>
                   </div>
@@ -266,12 +315,20 @@ export default function PoolSetupWizard({ isOpen, onClose }: PoolSetupWizardProp
                       </span>
                     </div>
                   )}
+                  {data.pool_name.trim() && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-400">Pool Name</span>
+                      <span className="text-orange-300 font-mono text-sm">
+                        - G H O S T - {data.pool_name.trim()}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="p-4 rounded-lg bg-orange-900/20 border border-orange-800">
                 <p className="text-sm text-orange-300">
-                  Click Finish to apply pool settings. Changes will take effect immediately.
-                  {data.public_mining
+                  Click Finish to apply mining settings. Changes will take effect immediately.
+                  {data.mining_mode !== 'private_solo'
                     ? ' Miners will be able to connect to your node on port 3333.'
                     : ''}
                 </p>

@@ -27,8 +27,10 @@ const TOOLTIPS = {
   shares: "Your node's share count determines your portion of the node reward pool. Based on the 5-4-3-2-1 system.",
   health: "Overall health of the services running on your node.",
   ghost_mode: "Ghost Mode isolates your node — stops relaying transactions and messages to peers (except block propagation). Useful for privacy.",
+  privacy_tor: "Tor Mode routes all P2P connections through the Tor network, hiding your node's IP address from peers.",
   privacy_haze: "Ghost Haze strips privacy-sensitive data (signatures, witness data, inscriptions) from stored blocks.",
   privacy_shroud: "Ghost Shroud adds random delays before relaying transactions, protecting against timing analysis.",
+  privacy_wraith: "Wraith Protocol enables CoinJoin mixing on the L2 network, breaking transaction linkability.",
 };
 
 const SHARE_TIERS = [
@@ -315,6 +317,7 @@ function PrivacySection() {
   const { data: status } = useNodeStatus();
   const { data: haze } = useHazeStatus();
   const { data: shroud } = useShroudStatus();
+  const { data: gp } = useGhostPayStatus();
 
   const hazeActive = haze?.mode === "hazed" || haze?.mode === "full_archive";
   const hazeLabel = haze?.mode === "hazed" ? "Hazed" : haze?.mode === "full_archive" ? "Full Archive" : haze?.mode === "standard" ? "Off" : haze ? "Off" : "Loading...";
@@ -323,11 +326,14 @@ function PrivacySection() {
   const shroudLabel = shroud ? (shroudActive ? "Active" : "Off") : "Loading...";
 
   const ghostModeActive = status?.ghost_mode ?? false;
+  const torActive = status?.tor_mode ?? false;
+  const gpRunning = gp && gp.sync_state !== "disabled" && gp.sync_state !== "unavailable";
+  const wraithActive = gpRunning && gp?.wraith_enabled;
 
   return (
     <Card className="border-red-600/30">
       <CardHeader title={<span className="text-red-400">Privacy Status</span>} />
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <Tooltip content={TOOLTIPS.ghost_mode}>
           <div className="p-3 bg-red-900/10 rounded-lg">
             <div className="text-xs text-gray-500 mb-1">Ghost Mode <InfoIcon /></div>
@@ -337,6 +343,18 @@ function PrivacySection() {
                 size="sm"
               />
               <span className="text-sm text-gray-100">{ghostModeActive ? "Active" : "Off"}</span>
+            </div>
+          </div>
+        </Tooltip>
+        <Tooltip content={TOOLTIPS.privacy_tor}>
+          <div className="p-3 bg-red-900/10 rounded-lg">
+            <div className="text-xs text-gray-500 mb-1">Tor Mode <InfoIcon /></div>
+            <div className="flex items-center gap-2">
+              <StatusDot
+                status={torActive ? "online" : "offline"}
+                size="sm"
+              />
+              <span className="text-sm text-gray-100">{torActive ? "Active" : "Off"}</span>
             </div>
           </div>
         </Tooltip>
@@ -361,6 +379,18 @@ function PrivacySection() {
                 size="sm"
               />
               <span className="text-sm text-gray-100">{shroudLabel}</span>
+            </div>
+          </div>
+        </Tooltip>
+        <Tooltip content={TOOLTIPS.privacy_wraith}>
+          <div className="p-3 bg-red-900/10 rounded-lg">
+            <div className="text-xs text-gray-500 mb-1">Wraith <InfoIcon /></div>
+            <div className="flex items-center gap-2">
+              <StatusDot
+                status={wraithActive ? "online" : "offline"}
+                size="sm"
+              />
+              <span className="text-sm text-gray-100">{wraithActive ? "Active" : "Off"}</span>
             </div>
           </div>
         </Tooltip>

@@ -5,6 +5,7 @@
 #include <rpc/server.h>
 
 #include <addrman.h>
+#include <tor/tor_process.h>
 #include <addrman_impl.h>
 #include <banman.h>
 #include <chainparams.h>
@@ -647,6 +648,7 @@ static RPCHelpMan getnetworkinfo()
                         {RPCResult::Type::NUM, "connections_in", "the number of inbound connections"},
                         {RPCResult::Type::NUM, "connections_out", "the number of outbound connections"},
                         {RPCResult::Type::BOOL, "networkactive", "whether p2p networking is enabled"},
+                        {RPCResult::Type::BOOL, "tormode", "whether Tor mode is active (onion-only networking)"},
                         {RPCResult::Type::ARR, "networks", "information per network",
                         {
                             {RPCResult::Type::OBJ, "", "",
@@ -703,6 +705,7 @@ static RPCHelpMan getnetworkinfo()
     }
     if (node.connman) {
         obj.pushKV("networkactive", node.connman->GetNetworkActive());
+        obj.pushKV("tormode", node.connman->GetTorMode());
         obj.pushKV("connections", node.connman->GetNodeCount(ConnectionDirection::Both));
         obj.pushKV("connections_in", node.connman->GetNodeCount(ConnectionDirection::In));
         obj.pushKV("connections_out", node.connman->GetNodeCount(ConnectionDirection::Out));
@@ -962,6 +965,60 @@ static RPCHelpMan getghostmode()
 
     UniValue result(UniValue::VOBJ);
     result.pushKV("ghost_mode", connman.GetGhostMode());
+    return result;
+},
+    };
+}
+
+static RPCHelpMan gettormode()
+{
+    return RPCHelpMan{
+        "gettormode",
+        "Returns Tor mode status including embedded Tor subprocess information.\n",
+                {},
+                RPCResult{RPCResult::Type::OBJ, "", "", {
+                    {RPCResult::Type::BOOL, "enabled", "Whether Tor mode is active"},
+                    {RPCResult::Type::STR, "onion_address", /*optional=*/true, "Local .onion address if available"},
+                    {RPCResult::Type::BOOL, "embedded_tor", "Whether ghostd is managing an embedded Tor subprocess"},
+                    {RPCResult::Type::NUM, "tor_pid", /*optional=*/true, "PID of the embedded Tor process"},
+                    {RPCResult::Type::BOOL, "tor_running", /*optional=*/true, "Whether the embedded Tor process is running"},
+                }},
+                RPCExamples{
+                    HelpExampleCli("gettormode", "")
+                    + HelpExampleRpc("gettormode", "")
+                },
+        [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
+{
+    NodeContext& node = EnsureAnyNodeContext(request.context);
+    CConnman& connman = EnsureConnman(node);
+
+    UniValue result(UniValue::VOBJ);
+    bool enabled = connman.GetTorMode();
+    result.pushKV("enabled", enabled);
+
+    if (enabled) {
+        // Find onion local address
+        {
+            LOCK(g_maplocalhost_mutex);
+            for (const auto& [addr, info] : mapLocalHost) {
+                if (addr.IsTor()) {
+                    result.pushKV("onion_address", addr.ToStringAddr());
+                    break;
+                }
+            }
+        }
+
+        // Embedded Tor subprocess info
+        bool has_embedded = node.tor_process != nullptr;
+        result.pushKV("embedded_tor", has_embedded);
+        if (has_embedded) {
+            result.pushKV("tor_pid", static_cast<int64_t>(node.tor_process->GetPid()));
+            result.pushKV("tor_running", node.tor_process->IsRunning());
+        }
+    } else {
+        result.pushKV("embedded_tor", false);
+    }
+
     return result;
 },
     };
@@ -1370,6 +1427,7 @@ void RegisterNetRPCCommands(CRPCTable& t)
         {"network", &setnetworkactive},
         {"network", &setghostmode},
         {"network", &getghostmode},
+        {"network", &gettormode},
         {"network", &getnodeaddresses},
         {"network", &getaddrmaninfo},
         {"network", &getgspnodes},

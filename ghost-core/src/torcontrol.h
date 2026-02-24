@@ -23,6 +23,7 @@ constexpr uint16_t DEFAULT_TOR_SOCKS_PORT{9050};
 constexpr int DEFAULT_TOR_CONTROL_PORT = 9051;
 extern const std::string DEFAULT_TOR_CONTROL;
 static const bool DEFAULT_LISTEN_ONION = true;
+constexpr bool DEFAULT_TOR_MODE{false};
 
 void StartTorControl(CService onion_service_target);
 void InterruptTorControl();

@@ -20,6 +20,9 @@ interface MpcStatus {
   contribution_count: number;
   max_contributors: number;
   is_ossified: boolean;
+  is_elder: boolean;
+  elder_slot: number | null;
+  phase: string;
   has_params: boolean;
   node_id: string;
 }
@@ -128,6 +131,13 @@ function getCeremonyPhase(mpc: MpcStatus | undefined): {
   variant: "success" | "warning" | "info" | "default";
 } {
   if (!mpc) return { label: "Unknown", variant: "default" };
+  // Use backend phase field if available
+  switch (mpc.phase) {
+    case "ossified": return { label: "Ossified", variant: "success" };
+    case "contributing": return { label: "Active", variant: "info" };
+    case "initializing": return { label: "Awaiting Genesis", variant: "warning" };
+  }
+  // Fallback
   if (mpc.is_ossified) return { label: "Ossified", variant: "success" };
   if (mpc.contribution_count > 0) return { label: "Active", variant: "info" };
   return { label: "Awaiting Genesis", variant: "warning" };
@@ -137,8 +147,10 @@ function getYourMpcStatus(
   mpc: MpcStatus | undefined,
   elder: { is_elder?: boolean; elder_slot?: number | null } | undefined,
 ): { label: string; variant: "success" | "warning" | "info" | "default" } {
-  if (!mpc || !elder) return { label: "Loading...", variant: "default" };
-  if (elder.is_elder) return { label: `Contributor #${elder.elder_slot}`, variant: "success" };
+  if (!mpc) return { label: "Loading...", variant: "default" };
+  // Use MPC status fields directly (more authoritative than elder endpoint)
+  if (mpc.is_elder) return { label: `Contributor #${mpc.elder_slot}`, variant: "success" };
+  if (elder?.is_elder) return { label: `Contributor #${elder.elder_slot}`, variant: "success" };
   if (mpc.is_ossified) return { label: "Ceremony Closed", variant: "default" };
   return { label: "Not Contributed", variant: "warning" };
 }
@@ -157,6 +169,8 @@ export default function EldersPage() {
   const spotsRemaining = maxContributors - contributionCount;
   const ceremonyPhase = getCeremonyPhase(mpc);
   const yourStatus = getYourMpcStatus(mpc, elder);
+  const isElder = mpc?.is_elder || elder?.is_elder;
+  const elderSlot = mpc?.elder_slot ?? elder?.elder_slot;
   const statsLoading = elderLoading || poolLoading || mpcLoading;
 
   return (
@@ -166,8 +180,8 @@ export default function EldersPage() {
         title="Elders & MPC"
         subtitle="MPC ceremony status, elder registry, and zero-knowledge proof parameters"
         actions={
-          elder?.is_elder && elder.elder_slot != null ? (
-            <Badge variant="success">Elder #{elder.elder_slot}</Badge>
+          isElder && elderSlot != null ? (
+            <Badge variant="success">Elder #{elderSlot}</Badge>
           ) : undefined
         }
       />
@@ -190,8 +204,8 @@ export default function EldersPage() {
         />
         <StatCard
           label="Your Position"
-          value={elder?.is_elder ? `#${elder.elder_slot}` : "None"}
-          sublabel={elder?.is_elder ? "MPC contributor" : "Not an elder"}
+          value={isElder ? `#${elderSlot}` : "None"}
+          sublabel={isElder ? "MPC contributor" : "Not an elder"}
           tooltip={TOOLTIPS.yourPosition}
           loading={statsLoading}
         />

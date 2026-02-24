@@ -982,6 +982,11 @@ impl BitcoinRpc {
         self.call("getnetworkinfo", vec![]).await
     }
 
+    /// Get Tor mode status
+    pub async fn get_tor_mode(&self) -> GhostResult<TorModeStatus> {
+        self.call("gettormode", vec![]).await
+    }
+
     /// Get mining info
     pub async fn get_mining_info(&self) -> GhostResult<MiningInfo> {
         self.call("getmininginfo", vec![]).await
@@ -1504,6 +1509,8 @@ pub struct NetworkInfo {
     pub localrelay: bool,
     pub timeoffset: i64,
     pub networkactive: bool,
+    #[serde(default)]
+    pub tormode: bool,
     pub connections: u64,
     pub connections_in: u64,
     pub connections_out: u64,
@@ -1512,6 +1519,19 @@ pub struct NetworkInfo {
     pub incrementalfee: f64,
     pub localaddresses: Vec<LocalAddress>,
     pub warnings: String,
+}
+
+/// Tor mode status from gettormode RPC
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TorModeStatus {
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub onion_address: Option<String>,
+    pub embedded_tor: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tor_pid: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tor_running: Option<bool>,
 }
 
 /// Network type
@@ -1540,7 +1560,8 @@ pub struct MiningInfo {
     pub networkhashps: f64,
     pub pooledtx: u64,
     pub chain: String,
-    pub warnings: String,
+    #[serde(default)]
+    pub warnings: serde_json::Value,
 }
 
 /// Mempool accept result

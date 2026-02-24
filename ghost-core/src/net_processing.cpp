@@ -2218,8 +2218,11 @@ void PeerManagerImpl::RelayTransaction(const Txid& txid, const Wtxid& wtxid)
 
     if (m_opts.shroud) {
         LOCK(m_shroud_mutex);
-        auto delay = FastRandomContext().randrange<std::chrono::milliseconds>(
-            std::chrono::milliseconds{5000});
+        // Tor mode: reduce max Shroud delay to 1s (Tor already provides timing obfuscation)
+        const auto max_delay = m_connman.GetTorMode()
+            ? std::chrono::milliseconds{1000}
+            : std::chrono::milliseconds{5000};
+        auto delay = FastRandomContext().randrange<std::chrono::milliseconds>(max_delay);
         m_shroud_queue.push_back({txid, wtxid,
             GetTime<std::chrono::microseconds>() +
             std::chrono::duration_cast<std::chrono::microseconds>(delay)});

@@ -113,11 +113,11 @@ test_endpoint() {
     local id="$1" name="$2" url="$3"
     run_test "$id" "$name"
     local response http_code body attempt
-    for attempt in 1 2; do
+    for attempt in 1 2 3; do
         response=$(curl -s --connect-timeout 5 --max-time 15 -w "\n%{http_code}" "$url" 2>/dev/null)
         http_code=$(echo "$response" | tail -1)
-        if [[ "$http_code" == "429" ]] && [[ $attempt -eq 1 ]]; then
-            sleep 3  # Back off on rate limit, retry once
+        if [[ "$attempt" -lt 3 ]] && { [[ "$http_code" == "429" ]] || [[ "$http_code" == "000" ]] || [[ -z "$response" ]]; }; then
+            sleep 3  # Back off and retry on rate limit or connection failure
             continue
         fi
         break
@@ -136,7 +136,7 @@ test_endpoint() {
         return
     fi
     pass
-    sleep 0.3  # Stay under 5 req/s rate limit
+    sleep 0.5  # Stay under 5 req/s rate limit
 }
 
 # Test endpoint that may return non-JSON (health, metrics)
@@ -144,9 +144,9 @@ test_endpoint_raw() {
     local id="$1" name="$2" url="$3"
     run_test "$id" "$name"
     local http_code attempt
-    for attempt in 1 2; do
+    for attempt in 1 2 3; do
         http_code=$(curl -s --connect-timeout 5 --max-time 15 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null)
-        if [[ "$http_code" == "429" ]] && [[ $attempt -eq 1 ]]; then
+        if [[ "$attempt" -lt 3 ]] && { [[ "$http_code" == "429" ]] || [[ "$http_code" == "000" ]] || [[ -z "$http_code" ]]; }; then
             sleep 3
             continue
         fi
@@ -161,7 +161,7 @@ test_endpoint_raw() {
         return
     fi
     pass
-    sleep 0.3
+    sleep 0.5
 }
 
 # ── Test Groups ──────────────────────────────────────────────────────

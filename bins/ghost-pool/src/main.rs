@@ -701,6 +701,25 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Query Tor mode status from Ghost Core
+    let tor_status = match rpc.get_tor_mode().await {
+        Ok(status) => {
+            if status.enabled {
+                info!(
+                    onion_address = status.onion_address.as_deref().unwrap_or("pending"),
+                    embedded = status.embedded_tor,
+                    "Tor mode active on Ghost Core"
+                );
+            }
+            Some(status)
+        }
+        Err(e) => {
+            // gettormode may not exist on older Ghost Core versions
+            debug!(error = %e, "Could not query Tor mode (older ghostd?)");
+            None
+        }
+    };
+
     // Initialize database
     let db_path = data_dir.join("ghost.db");
     let db = Arc::new(Database::open(&db_path)?);
@@ -852,11 +871,16 @@ async fn main() -> Result<()> {
     // Reload pre-restart share data from database so miners don't lose credit
     round_manager.reload_from_db(&db);
 
-    // Resolve coinbase tag: explicit config overrides mode-based default
+    // Resolve coinbase tag: coinbase_extra > pool_name formatted > mode default
     let coinbase_tag = config
         .pool
         .coinbase_extra
         .clone()
+        .or_else(|| {
+            config.pool.pool_name.as_ref().map(|name| {
+                format!("- G H O S T - {}", name)
+            })
+        })
         .unwrap_or_else(|| mining_mode.default_coinbase_tag().to_string());
 
     // Write tag file so SRI pool service can pick it up via ExecStartPre
@@ -1167,6 +1191,10 @@ async fn main() -> Result<()> {
     // DEFERRED INITIALIZATION: ZK parameter generation is memory-intensive and can take minutes.
     // We spawn it in a background task so the node can start serving immediately.
     #[cfg(feature = "zk-consensus")]
+    let block_prover_cell: Arc<tokio::sync::OnceCell<Arc<ghost_zkp::BlockProver>>> =
+        Arc::new(tokio::sync::OnceCell::new());
+
+    #[cfg(feature = "zk-consensus")]
     {
         use ghost_consensus::{ZkPayoutVoteHandler, ZkVoteHandler};
 
@@ -1250,8 +1278,82 @@ async fn main() -> Result<()> {
             });
 
         // Create ZK handlers WITHOUT verifiers initially - they'll be set when params are ready
+        // Wire consensus callback to persist finalized blocks and notify ghost-pay
+        let db_for_cb = Arc::clone(&db);
+        let ghost_pay_url = "http://127.0.0.1:8800".to_string();
+        let ghost_pay_url_for_cb = ghost_pay_url.clone();
+        let consensus_client = reqwest::Client::new();
+        let consensus_callback: ghost_consensus::zk_vote_handler::ZkConsensusCallback =
+            Arc::new(move |result| {
+                use ghost_consensus::message::ZkConsensusResult;
+                match result {
+                    ZkConsensusResult::Approved {
+                        height,
+                        new_state_root,
+                        approvals,
+                        ..
+                    } => {
+                        // Persist L2 state to ghost-pool's DB
+                        if let Err(e) = db_for_cb.save_l2_state(height, new_state_root) {
+                            tracing::error!(height, error = %e, "Failed to save L2 state");
+                        }
+
+                        // Record block proposer
+                        if let Err(e) = db_for_cb.save_block_proposer(
+                            height,
+                            "self",
+                            &hex::encode(new_state_root),
+                        ) {
+                            tracing::error!(height, error = %e, "Failed to record block proposer");
+                        }
+
+                        // Snapshot every 100 blocks
+                        if height % 100 == 0 {
+                            let _ = db_for_cb.save_l2_snapshot(height, new_state_root);
+                            let _ = db_for_cb.prune_l2_snapshots(50);
+                        }
+
+                        // Notify ghost-pay to finalize (fire-and-forget)
+                        let url = ghost_pay_url_for_cb.clone();
+                        let client = consensus_client.clone();
+                        tokio::spawn(async move {
+                            let _ = client
+                                .post(format!("{}/api/v1/l2/finalize", url))
+                                .json(&serde_json::json!({
+                                    "height": height,
+                                    "state_root": hex::encode(new_state_root),
+                                    "attestation_count": approvals,
+                                    "timestamp": std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs()
+                                }))
+                                .send()
+                                .await;
+                        });
+
+                        tracing::info!(height, approvals, "L2 block finalized");
+                        Ok(())
+                    }
+                    ZkConsensusResult::Rejected {
+                        height,
+                        primary_reason,
+                        ..
+                    } => {
+                        tracing::warn!(height, ?primary_reason, "L2 block rejected");
+                        Ok(())
+                    }
+                    ZkConsensusResult::Timeout { height, .. } => {
+                        tracing::warn!(height, "L2 block timed out");
+                        Ok(())
+                    }
+                }
+            });
+
         let zk_vote_handler = Arc::new(
-            ZkVoteHandler::new(Arc::clone(&identity)).with_broadcaster(zk_block_broadcast),
+            ZkVoteHandler::new(Arc::clone(&identity))
+                .with_broadcaster(zk_block_broadcast)
+                .with_consensus_callback(consensus_callback),
         );
 
         let zk_payout_handler = Arc::new(
@@ -1273,10 +1375,49 @@ async fn main() -> Result<()> {
 
         info!("ZK consensus handlers registered (verifiers initializing in background...)");
 
+        // Periodic timeout checker for ZK proposals
+        let zk_vote_handler_for_timeouts = Arc::clone(&zk_vote_handler);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let timeouts = zk_vote_handler_for_timeouts.check_timeouts();
+                for result in &timeouts {
+                    if let ghost_consensus::message::ZkConsensusResult::Timeout { height, .. } = result {
+                        tracing::debug!(height, "ZK proposal timed out and cleaned up");
+                    }
+                }
+                zk_vote_handler_for_timeouts.cleanup_rate_limiter();
+            }
+        });
+
+        // Restore L2 state from database on startup
+        if let Ok((height, state_root)) = db.get_l2_state() {
+            if height > 0 {
+                zk_vote_handler.set_state(height, state_root);
+                info!(height, "Restored L2 state from database");
+            }
+        }
+
+        // Spawn L2 block producer if ghost-pay is configured
+        if config.ghost_pay.is_some() {
+            let producer = ghost_pool::l2_producer::L2BlockProducer::new(
+                Arc::clone(&identity),
+                Arc::clone(&block_prover_cell),
+                Arc::clone(&zk_vote_handler),
+                Arc::clone(&db),
+                ghost_pay_url,
+            );
+            tokio::spawn(async move { producer.run().await });
+            info!("L2 block producer spawned (10s interval)");
+        }
+
         // Spawn background task to generate ZK parameters
         // This is memory-intensive and can take several minutes
         let zk_vote_handler_for_init = Arc::clone(&zk_vote_handler);
         let zk_payout_handler_for_init = Arc::clone(&zk_payout_handler);
+        let prover_cell_for_init = Arc::clone(&block_prover_cell);
         tokio::spawn(async move {
             use ghost_zkp::{BlockProver, BlockVerifier, PayoutProver, PayoutVerifier};
 
@@ -1287,6 +1428,9 @@ async fn main() -> Result<()> {
             match BlockProver::new_with_setup_and_state_transitions(100, 20) {
                 Ok(block_prover) => {
                     let block_prover = Arc::new(block_prover);
+                    // Store prover in OnceCell for L2 block producer
+                    let _ = prover_cell_for_init.set(Arc::clone(&block_prover));
+
                     match if let Some(vk) = block_prover.prepared_verifying_key() {
                         BlockVerifier::new_with_groth16_vk(&block_prover.verification_key(), vk)
                     } else {
@@ -1419,7 +1563,8 @@ async fn main() -> Result<()> {
         let params_dir_for_callback = ceremony_manager.params_dir().clone();
         let ceremony_mgr_for_callback = Arc::clone(&ceremony_manager);
         let seed_nodes_for_callback = config.network.seed_nodes.clone();
-        let params_update_callback: Arc<dyn Fn(&[u8; 32], &[u8; 32]) + Send + Sync> = Arc::new(
+        type ParamsUpdateFn = dyn Fn(&[u8; 32], &[u8; 32]) + Send + Sync;
+        let params_update_callback: Arc<ParamsUpdateFn> = Arc::new(
             move |expected_hash: &[u8; 32], _contributor: &[u8; 32]| {
                 let params_dir = params_dir_for_callback.clone();
                 let ceremony_mgr = Arc::clone(&ceremony_mgr_for_callback);
@@ -2298,6 +2443,11 @@ async fn main() -> Result<()> {
     // Wire node config path for persisting ghost_mode, shroud_enabled, etc.
     verification_state =
         verification_state.with_node_config_path(data_dir.join("node_config.json"));
+
+    // Wire Tor mode status from Ghost Core RPC
+    if let Some(ref ts) = tor_status {
+        verification_state = verification_state.with_tor_status(ts.enabled, ts.onion_address.clone());
+    }
 
     // Wire full node config for config update API
     // This allows the dashboard to modify settings via POST /api/internal/config/update
@@ -3792,6 +3942,11 @@ async fn main() -> Result<()> {
     info!("  HTTP API:   0.0.0.0:{}", http_port);
     info!("  Policy:     {}", policy.name);
     info!("  Shares:     {}/15", capabilities.total_shares());
+    if let Some(ref ts) = tor_status {
+        if ts.enabled {
+            info!("  Tor:        active ({})", ts.onion_address.as_deref().unwrap_or("pending"));
+        }
+    }
     info!("════════════════════════════════════════════════════════════════");
 
     // Verify template processor has work (for TDP job delivery)

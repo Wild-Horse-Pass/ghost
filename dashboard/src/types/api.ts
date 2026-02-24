@@ -37,6 +37,8 @@ export interface NodeStatus {
   uptime_seconds?: number;
   uptime_secs?: number;
   ghost_mode?: boolean;
+  tor_mode?: boolean;
+  onion_address?: string;
   archive_mode?: boolean;
   public_mining?: boolean;
   private_mining?: boolean;
@@ -193,6 +195,7 @@ export interface MiningStatus {
   stratum_v1_endpoint?: string;
   stratum_v2_endpoint?: string;
   payout_address?: string | null;
+  pool_name?: string | null;
   block_height?: number;
   sync_height?: number;
   round_id?: number;
@@ -962,4 +965,13 @@ export interface ShroudStatus {
   ghost_core_connected: boolean;
   max_delay_ms: number;
   avg_delay_ms: number;
+}
+
+// Tor mode status from gettormode RPC
+export interface TorModeStatus {
+  enabled: boolean;
+  onion_address?: string;
+  embedded_tor: boolean;
+  tor_pid?: number;
+  tor_running?: boolean;
 }

@@ -21,7 +21,7 @@ export function AppearanceSection() {
                   key={key}
                   onClick={() => setAccentColor(key)}
                   className={`
-                    relative w-full aspect-square rounded-lg transition-all duration-200
+                    relative h-10 w-10 rounded-lg transition-all duration-200
                     ${accentColor === key
                       ? 'ring-2 ring-white ring-offset-2 ring-offset-gray-900 scale-110'
                       : 'hover:scale-105'

@@ -1,8 +1,8 @@
 "use client";
 
+import { Card, CardHeader } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard } from "@/components/ui/StatCard";
-import { Card, CardHeader } from "@/components/ui/Card";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 
 const DETECTION_VECTORS = [
@@ -43,12 +43,13 @@ const DETECTION_VECTORS = [
 export default function ReaperPage() {
   return (
     <div className="space-y-6">
+      {/* 1. PageHeader */}
       <PageHeader
         title="Ghost Reaper"
         subtitle="Dead code detection and mempool filtering"
       />
 
-      {/* Stats row — placeholder data */}
+      {/* 2. StatCards row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Mode" value="--" sublabel="coming soon" />
         <StatCard label="Dead TXs Filtered" value="--" sublabel="coming soon" />
@@ -56,9 +57,13 @@ export default function ReaperPage() {
         <StatCard label="False Positive Rate" value="--" sublabel="coming soon" />
       </div>
 
-      {/* Hero card */}
-      <SectionErrorBoundary section="Ghost Reaper Overview">
-        <Card className="border-orange-600/30 bg-orange-900/10">
+      {/* 3. How It Works — collapsible, NOT wrapped in SectionErrorBoundary */}
+      <Card collapsible defaultCollapsed>
+        <CardHeader
+          title="How It Works"
+          subtitle="Dead code detection and mempool filtering"
+        />
+        <div className="space-y-4">
           <div className="flex items-start gap-4">
             <div className="w-10 h-10 rounded-lg bg-orange-900/30 border border-orange-600/30 flex items-center justify-center flex-shrink-0">
               <svg className="w-5 h-5 text-orange-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -66,18 +71,29 @@ export default function ReaperPage() {
               </svg>
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-orange-400 mb-2">What is Ghost Reaper?</h2>
               <p className="text-gray-300 text-sm leading-relaxed">
-                Ghost Reaper detects non-financial data embedded in transaction witnesses — inscriptions,
+                Ghost Reaper detects non-financial data embedded in transaction witnesses -- inscriptions,
                 drop stuffing, fake pubkeys, and other dead code patterns. When enabled, your mempool rejects
                 transactions carrying dead weight, keeping your node focused on real monetary transactions.
               </p>
             </div>
           </div>
-        </Card>
-      </SectionErrorBoundary>
+          <div className="p-3 bg-green-900/10 rounded-lg border border-green-600/30 flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-green-900/30 border border-green-600/30 flex items-center justify-center flex-shrink-0">
+              <span className="text-green-400 font-bold text-sm">+2</span>
+            </div>
+            <div>
+              <p className="text-gray-300 text-sm leading-relaxed">
+                Nodes running Ghost Reaper earn <span className="text-green-400 font-semibold">+2 shares</span> in
+                the node reward pool. This is part of the 5-4-3-2-1 capability system: Archive (+5), Ghost Pay (+4),
+                Public Mining (+3), <span className="text-orange-400 font-semibold">Ghost Reaper (+2)</span>, Elder (+1).
+              </p>
+            </div>
+          </div>
+        </div>
+      </Card>
 
-      {/* Detection Vectors */}
+      {/* 4. Primary Content — Detection Vectors */}
       <SectionErrorBoundary section="Detection Vectors">
         <Card>
           <CardHeader
@@ -104,32 +120,13 @@ export default function ReaperPage() {
         </Card>
       </SectionErrorBoundary>
 
-      {/* +2 Shares */}
-      <SectionErrorBoundary section="Share Bonus">
-        <Card className="border-green-600/30 bg-green-900/10">
-          <div className="flex items-start gap-4">
-            <div className="w-10 h-10 rounded-lg bg-green-900/30 border border-green-600/30 flex items-center justify-center flex-shrink-0">
-              <span className="text-green-400 font-bold text-sm">+2</span>
-            </div>
-            <div>
-              <h2 className="text-lg font-semibold text-green-400 mb-2">Share Bonus</h2>
-              <p className="text-gray-300 text-sm leading-relaxed">
-                Nodes running Ghost Reaper earn <span className="text-green-400 font-semibold">+2 shares</span> in
-                the node reward pool. This is part of the 5-4-3-2-1 capability system: Archive (+5), Ghost Pay (+4),
-                Public Mining (+3), <span className="text-orange-400 font-semibold">Ghost Reaper (+2)</span>, Elder (+1).
-              </p>
-            </div>
-          </div>
-        </Card>
-      </SectionErrorBoundary>
-
-      {/* Reaper vs Mempool Policy */}
-      <SectionErrorBoundary section="Reaper vs Mempool Policy">
-        <Card>
-          <CardHeader
-            title="Reaper vs Mempool Policy"
-            subtitle="Understanding the distinction"
-          />
+      {/* 5. Technical Details — collapsible, NOT wrapped in SectionErrorBoundary */}
+      <Card collapsible defaultCollapsed>
+        <CardHeader
+          title="Reaper vs Mempool Policy"
+          subtitle="Understanding the distinction"
+        />
+        <div className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="p-4 bg-orange-900/10 rounded-lg border border-orange-600/30">
               <h4 className="text-sm font-medium text-orange-400 mb-2">Ghost Reaper</h4>
@@ -169,20 +166,20 @@ export default function ReaperPage() {
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="text-gray-500 mt-0.5 flex-shrink-0">&bull;</span>
-                  Independent of Ghost Reaper — they complement each other
+                  Independent of Ghost Reaper -- they complement each other
                 </li>
               </ul>
             </div>
           </div>
-          <div className="mt-4 p-3 bg-gray-800/50 rounded-lg border border-gray-700">
+          <div className="p-3 bg-gray-800/50 rounded-lg border border-gray-700">
             <p className="text-xs text-gray-400 leading-relaxed">
               <span className="text-orange-400 font-medium">Key point:</span> Ghost Reaper is NOT a mempool policy.
               You can run Ghost Reaper alongside any mempool policy (standard, strict, clean, etc.). Mempool policies
               filter by economic rules; Ghost Reaper filters by content analysis of witness scripts.
             </p>
           </div>
-        </Card>
-      </SectionErrorBoundary>
+        </div>
+      </Card>
     </div>
   );
 }

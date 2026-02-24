@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode, useState } from 'react';
+import { ReactNode, useState, Children } from 'react';
 
 interface CardProps {
   children: ReactNode;
@@ -20,8 +20,11 @@ export function Card({ children, className = '', collapsible, defaultCollapsed =
     );
   }
 
-  // When collapsible, the first child should be a CardHeader — we render all children
-  // but hide non-header content when collapsed
+  // Split children: first child is the header (always visible), rest is body (toggled)
+  const childArray = Children.toArray(children);
+  const header = childArray[0];
+  const body = childArray.slice(1);
+
   return (
     <div className={`bg-gray-900 border border-gray-800 rounded-lg p-6 ${className}`}>
       <div
@@ -29,7 +32,7 @@ export function Card({ children, className = '', collapsible, defaultCollapsed =
         onClick={() => setCollapsed(!collapsed)}
       >
         <div className="flex items-center justify-between">
-          <div className="flex-1">{/* CardHeader rendered by children */}</div>
+          <div className="flex-1">{header}</div>
           <svg
             className={`w-5 h-5 text-gray-400 transition-transform flex-shrink-0 ml-2 ${collapsed ? '' : 'rotate-180'}`}
             fill="none"
@@ -41,7 +44,7 @@ export function Card({ children, className = '', collapsible, defaultCollapsed =
           </svg>
         </div>
       </div>
-      {!collapsed && <div className="mt-4">{children}</div>}
+      {!collapsed && <div className="mt-4">{body}</div>}
     </div>
   );
 }

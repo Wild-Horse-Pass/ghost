@@ -50,6 +50,20 @@ export function ToggleRow({
   );
 }
 
+export function StatusRow({ label, description, badge }: { label: string; description: string; badge: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between p-3 bg-gray-800/50 rounded-lg">
+      <div className="flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-gray-100 font-medium">{label}</span>
+          {badge}
+        </div>
+        <div className="text-sm text-gray-400">{description}</div>
+      </div>
+    </div>
+  );
+}
+
 export function NumberInput({
   label,
   value,

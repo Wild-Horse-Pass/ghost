@@ -24,6 +24,7 @@ import {
   restartNode,
   setGhostPay,
   setMiningPayoutAddress,
+  setPoolName,
   setPublicMiningConfig,
   type CustomMempoolProfile,
   type CustomTemplateProfile,
@@ -291,6 +292,17 @@ export function useSetMiningPayoutAddress() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (address: string) => setMiningPayoutAddress(address),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: configKeys.all });
+      queryClient.invalidateQueries({ queryKey: ['mining'] });
+    },
+  });
+}
+
+export function useSetPoolName() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string | null) => setPoolName(name),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: configKeys.all });
       queryClient.invalidateQueries({ queryKey: ['mining'] });

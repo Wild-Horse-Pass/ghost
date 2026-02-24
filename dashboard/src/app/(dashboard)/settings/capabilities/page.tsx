@@ -4,35 +4,26 @@ import { Badge } from "@/components/ui/Badge";
 import {
   useNodeStatus,
   useConfig,
-  useSetGhostMode,
   useSetArchiveMode,
   useSetReaper,
   useSetPublicMining,
   useGhostPayStatus,
+  useShares,
 } from "@/hooks/queries";
 import { useToast } from "@/components/ui/Toast";
-import { SettingsSection, ToggleRow } from "./shared";
+import { SettingsSection, ToggleRow, StatusRow } from "../shared";
 
-export function ModesSection() {
+export default function CapabilitiesSettingsPage() {
   const { data: status } = useNodeStatus();
   const { data: config } = useConfig();
   const { data: ghostPayStatus } = useGhostPayStatus();
+  const { data: shares } = useShares();
 
-  const setGhostMode = useSetGhostMode();
   const setArchiveMode = useSetArchiveMode();
   const setReaper = useSetReaper();
   const setPublicMining = useSetPublicMining();
 
   const { success, error } = useToast();
-
-  const handleGhostModeToggle = async (enabled: boolean) => {
-    try {
-      await setGhostMode.mutateAsync(enabled);
-      success("Mode Changed", `Ghost Mode ${enabled ? "enabled" : "disabled"}`);
-    } catch (err) {
-      error("Failed", err instanceof Error ? err.message : "Unknown error");
-    }
-  };
 
   const handleArchiveModeToggle = async (enabled: boolean) => {
     try {
@@ -43,7 +34,7 @@ export function ModesSection() {
     }
   };
 
-  const handleGhostReaperToggle = async (enabled: boolean) => {
+  const handleReaperToggle = async (enabled: boolean) => {
     try {
       await setReaper.mutateAsync(enabled);
       success(
@@ -58,22 +49,10 @@ export function ModesSection() {
   };
 
   return (
-    <SettingsSection title="Operating Modes" subtitle="Configure node operation modes">
-      <ToggleRow
-        label="Ghost Mode"
-        description="Enable Ghost protocol features and L2 participation"
-        enabled={status?.ghost_mode ?? false}
-        onChange={handleGhostModeToggle}
-        disabled={setGhostMode.isPending}
-        badge={
-          status?.ghost_mode ? (
-            <Badge variant="success">Active</Badge>
-          ) : (
-            <Badge variant="default">Inactive</Badge>
-          )
-        }
-      />
-
+    <SettingsSection
+      title="Node Capabilities"
+      subtitle="Earn shares in the node reward pool — 5-4-3-2-1 system"
+    >
       <ToggleRow
         label="Archive Mode"
         description="Store full blockchain history (+5 shares bonus)"
@@ -87,15 +66,12 @@ export function ModesSection() {
         }
       />
 
-      <ToggleRow
+      <StatusRow
         label="Ghost Pay"
-        description="Enable L2 payment network participation - requires ghost-pay-node running"
-        enabled={ghostPayStatus?.l2_height ? true : false}
-        onChange={() => {}}
-        disabled
+        description={`L2 payment network participation — requires ghost-pay-node${ghostPayStatus?.l2_height ? ` (L2 height: ${ghostPayStatus.l2_height})` : ''}`}
         badge={
           ghostPayStatus?.l2_height ? (
-            <Badge variant="success">Active (L2: {ghostPayStatus.l2_height})</Badge>
+            <Badge variant="success">+4 Shares</Badge>
           ) : (
             <Badge variant="warning">Not Running</Badge>
           )
@@ -119,12 +95,28 @@ export function ModesSection() {
         label="Ghost Reaper"
         description="Reject transactions with dead code in witness scripts. Filters inscriptions, drop stuffing, and other non-financial data from your mempool. (+2 shares)"
         enabled={config?.reaper ?? false}
-        onChange={handleGhostReaperToggle}
+        onChange={handleReaperToggle}
         disabled={setReaper.isPending}
         badge={
           config?.reaper ? (
             <Badge variant="success">+2 Shares</Badge>
           ) : null
+        }
+      />
+
+      <StatusRow
+        label="Elder Status"
+        description={
+          shares?.elder
+            ? `MPC contributor — Elder slot #${shares.elder_slot ?? '?'}`
+            : "Contribute to the MPC ceremony to earn Elder status (+1 share)"
+        }
+        badge={
+          shares?.elder ? (
+            <Badge variant="success">+1 Share</Badge>
+          ) : (
+            <Badge variant="default">Not Elder</Badge>
+          )
         }
       />
     </SettingsSection>

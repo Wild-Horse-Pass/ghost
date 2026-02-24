@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { Card, CardHeader } from "@/components/ui/Card";
 import { PageHeader } from "@/components/ui/PageHeader";
-import { Card } from "@/components/ui/Card";
+import { StatCard } from "@/components/ui/StatCard";
 import { Badge } from "@/components/ui/Badge";
 import { SectionErrorBoundary } from "@/components/ui/SectionErrorBoundary";
 import { SkeletonCard } from "@/components/ui/Skeleton";
@@ -99,12 +100,54 @@ export default function GhostPayPage() {
 
   return (
     <div className="space-y-6">
+      {/* 1. PageHeader */}
       <PageHeader
         title="Ghost Pay"
         subtitle="L2 instant payments and privacy toolkit"
       />
 
-      {/* Status Banner */}
+      {/* 2. StatCards Row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard
+          label="L2 Block"
+          value={status ? formatL2Block(l2Era, l2Height) : "--"}
+          loading={statusLoading}
+        />
+        <StatCard
+          label="Active Locks"
+          value={activeLocks || 0}
+          loading={statusLoading}
+        />
+        <StatCard
+          label="Wraith Sessions"
+          value={activeSessions || 0}
+          loading={statusLoading}
+        />
+        <StatCard
+          label="Peers"
+          value={status?.peer_count ?? 0}
+          loading={statusLoading}
+        />
+      </div>
+
+      {/* 3. How It Works — collapsible, defaultCollapsed */}
+      <Card collapsible defaultCollapsed>
+        <CardHeader
+          title="How It Works"
+          subtitle="How privacy layers stack together"
+        />
+        <div className="space-y-3">
+          <p className="text-gray-300 text-sm leading-relaxed">
+            Ghost Pay combines multiple privacy layers. <span className="text-purple-400">Ghost Keys</span> hide
+            your identity with unique addresses per payment. <span className="text-red-400">Ghost Wraith</span> breaks
+            transaction links through CoinJoin mixing. <span className="text-blue-400">Ghost Shroud</span> hides
+            relay timing to prevent network-level correlation. <span className="text-green-400">Ghost Locks</span> secure
+            your funds with timelocked P2TR recovery paths and automatic key rotation via Jump Locks.
+          </p>
+        </div>
+      </Card>
+
+      {/* 4. Primary Content — Status Banner + Feature Cards */}
       <SectionErrorBoundary section="Status Banner">
         {statusLoading ? <SkeletonCard /> : (
           <div className="flex items-center gap-6 px-4 py-3 rounded-lg border border-purple-600/20 bg-purple-900/10">
@@ -133,7 +176,6 @@ export default function GhostPayPage() {
         )}
       </SectionErrorBoundary>
 
-      {/* Privacy Feature Cards */}
       <SectionErrorBoundary section="Privacy Features">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <FeatureCard
@@ -216,68 +258,36 @@ export default function GhostPayPage() {
         </div>
       </SectionErrorBoundary>
 
-      {/* Fee Structure */}
-      <SectionErrorBoundary section="Fee Structure">
-        <Card className="border-purple-600/20">
-          <div className="flex items-start gap-4 mb-4">
-            <div className="w-9 h-9 rounded-lg bg-purple-900/30 border border-purple-600/30 flex items-center justify-center flex-shrink-0">
-              <svg className="w-4.5 h-4.5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v12m-3-2.818l.879.659c1.171.879 3.07.879 4.242 0 1.172-.879 1.172-2.303 0-3.182C13.536 12.219 12.768 12 12 12c-.725 0-1.45-.22-2.003-.659-1.106-.879-1.106-2.303 0-3.182s2.9-.879 4.006 0l.415.33M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-purple-400">Fee Structure</h2>
-              <p className="text-gray-400 text-xs mt-0.5">Ghost Pay transaction and mixing fees</p>
-            </div>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-800">
-                  <th className="text-left py-2 px-3 text-gray-400 font-medium">Service</th>
-                  <th className="text-right py-2 px-3 text-gray-400 font-medium">Fee</th>
-                  <th className="text-left py-2 px-3 text-gray-400 font-medium">Description</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr className="border-b border-gray-800/50">
-                  <td className="py-2.5 px-3 text-gray-100 font-medium">L2 Transfer</td>
-                  <td className="py-2.5 px-3 text-right font-mono text-purple-400">10 sats + 0.1%</td>
-                  <td className="py-2.5 px-3 text-gray-500">Instant Ghost Pay transfers between wallets</td>
-                </tr>
-                <tr>
-                  <td className="py-2.5 px-3 text-gray-100 font-medium">Wraith Mix</td>
-                  <td className="py-2.5 px-3 text-right font-mono text-red-400">1%</td>
-                  <td className="py-2.5 px-3 text-gray-500">CoinJoin mixing via Ghost Wraith</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      </SectionErrorBoundary>
-
-      {/* How Privacy Layers Stack */}
-      <SectionErrorBoundary section="Privacy Layers">
-        <Card className="border-purple-600/20 bg-purple-900/5">
-          <div className="flex items-start gap-4">
-            <div className="w-9 h-9 rounded-lg bg-purple-900/30 border border-purple-600/30 flex items-center justify-center flex-shrink-0">
-              <svg className="w-4.5 h-4.5 text-purple-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6.429 9.75L2.25 12l4.179 2.25m0-4.5l5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0L12 12.75 6.43 9.75m11.142 0l4.179 2.25L12 17.25 2.25 12l4.179-2.25m11.142 0l4.179 2.25L12 22.5 2.25 17.25l4.179-2.25" />
-              </svg>
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-purple-400 mb-2">How Privacy Layers Stack</h2>
-              <p className="text-gray-300 text-sm leading-relaxed">
-                Ghost Pay combines multiple privacy layers. <span className="text-purple-400">Ghost Keys</span> hide
-                your identity with unique addresses per payment. <span className="text-red-400">Ghost Wraith</span> breaks
-                transaction links through CoinJoin mixing. <span className="text-blue-400">Ghost Shroud</span> hides
-                relay timing to prevent network-level correlation. <span className="text-green-400">Ghost Locks</span> secure
-                your funds with timelocked P2TR recovery paths and automatic key rotation via Jump Locks.
-              </p>
-            </div>
-          </div>
-        </Card>
-      </SectionErrorBoundary>
+      {/* 5. Technical Details — collapsible, defaultCollapsed */}
+      <Card collapsible defaultCollapsed>
+        <CardHeader
+          title="Fee Structure"
+          subtitle="Ghost Pay transaction and mixing fees"
+        />
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800">
+                <th className="text-left py-2 px-3 text-gray-400 font-medium">Service</th>
+                <th className="text-right py-2 px-3 text-gray-400 font-medium">Fee</th>
+                <th className="text-left py-2 px-3 text-gray-400 font-medium">Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr className="border-b border-gray-800/50">
+                <td className="py-2.5 px-3 text-gray-100 font-medium">L2 Transfer</td>
+                <td className="py-2.5 px-3 text-right font-mono text-purple-400">10 sats + 0.1%</td>
+                <td className="py-2.5 px-3 text-gray-500">Instant Ghost Pay transfers between wallets</td>
+              </tr>
+              <tr>
+                <td className="py-2.5 px-3 text-gray-100 font-medium">Wraith Mix</td>
+                <td className="py-2.5 px-3 text-right font-mono text-red-400">1%</td>
+                <td className="py-2.5 px-3 text-gray-500">CoinJoin mixing via Ghost Wraith</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </Card>
     </div>
   );
 }

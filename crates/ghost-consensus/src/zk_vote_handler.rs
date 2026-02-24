@@ -1,3 +1,25 @@
+//|======================================================================================================================|
+//|                                                                                                                      |
+//|  ▄▄▄▄    ██▓▄▄▄█████▓ ▄████▄   ▒█████   ██▓ ███▄    █      ▄████  ██░ ██  ▒█████    ██████ ▄▄▄█████▓   ▄████████▄    |
+//| ▓█████▄ ▓██▒▓  ██▒ ▓▒▒██▀ ▀█  ▒██▒  ██▒▓██▒ ██ ▀█   █     ██▒ ▀█▒▓██░ ██▒▒██▒  ██▒▒██    ▒ ▓  ██▒ ▓▒   ███▀██▀███    |
+//| ▒██▒ ▄██▒██▒▒ ▓██░ ▒░▒▓█    ▄ ▒██░  ██▒▒██▒▓██  ▀█ ██▒   ▒██░▄▄▄░▒██▀▀██░▒██░  ██▒░ ▓██▄   ▒ ▓██░ ▒░   ██████████░   |
+//| ▒██░█▀  ░██░░ ▓██▓ ░ ▒▓▓▄ ▄██▒▒██   ██░░██░▓██▒  ▐▌██▒   ░▓█  ██▓░▓█ ░██ ▒██   ██░  ▒   ██▒░ ▓██▓ ░    ██████████░░▒ |
+//| ░▓█  ▀█▓░██░  ▒██▒ ░ ▒ ▓███▀ ░░ ████▓▒░░██░▒██░   ▓██░   ░▒▓███▀▒░▓█▒░██▓░ ████▓▒░▒██████▒▒  ▒██▒ ░    ██▀▀██▀▀██░▒  |
+//| ░▒▓███▀▒░▓    ▒ ░░   ░ ░▒ ▒  ░░ ▒░▒░▒░ ░▓  ░ ▒░   ▒ ▒     ░▒   ▒  ▒ ░░▒░▒░ ▒░▒░▒░ ▒ ▒▓▒ ▒ ░  ▒ ░░      ▒ ░░▒░▒ ░░▒░  |
+//| ▒░▒   ░  ▒ ░    ░      ░  ▒     ░ ▒ ▒░  ▒ ░░ ░░   ░ ▒░     ░   ░  ▒ ░▒░ ░  ░ ▒ ▒░ ░ ░▒  ░ ░    ░         ▒ ░░▒░▒░ ░  |
+//|  ░    ░  ▒ ░  ░      ░        ░ ░ ░ ▒   ▒ ░   ░   ░ ░    ░ ░   ░  ░  ░░ ░░ ░ ░ ▒  ░  ░  ░    ░               ░  ░    |
+//|  ░       ░           ░ ░          ░ ░   ░           ░          ░  ░  ░  ░    ░ ░        ░                            |
+//|       ░              ░                                                                                               |
+//|----------------------------------------------------------------------------------------------------------------------|
+//|             < B I T C O I N  G H O S T > < D E F E N W Y C K E > < R E A D  T H E  W H I T E P A P E R >             |
+//|----------------------------------------------------------------------------------------------------------------------|
+//| PROJECT: Bitcoin Ghost                                                                                               |
+//| REPO: https://github.com/bitcoin-ghost                                                                               |
+//| WEB: https://bitcoinghost.org/                                                                                       |
+//| LICENSE: MIT                                                                                                         |
+//| FILE: zk_vote_handler.rs                                                                                             |
+//|======================================================================================================================|
+
 //! ZK Vote Handler - Processes ZK block proposals and votes for ZK-BFT consensus
 //!
 //! This handler implements the ZK-BFT consensus protocol:
@@ -219,6 +241,11 @@ impl ZkVoteHandler {
         info!("ZK block verifier set (deferred initialization complete)");
     }
 
+    /// Check if verifier is ready (for producer to wait before proposing)
+    pub fn has_verifier(&self) -> bool {
+        self.verify_fn.read().is_some()
+    }
+
     /// Set current state (call at startup or after reorg)
     pub fn set_state(&self, height: u64, state_root: [u8; 32]) {
         *self.current_height.write() = height;
@@ -254,6 +281,14 @@ impl ZkVoteHandler {
     /// Get validator count
     pub fn validator_count(&self) -> usize {
         self.validators.read().len()
+    }
+
+    /// Get sorted validator list (for deterministic proposer election)
+    pub fn get_sorted_validators(&self) -> Vec<NodeId> {
+        let validators = self.validators.read();
+        let mut sorted: Vec<NodeId> = validators.iter().copied().collect();
+        sorted.sort();
+        sorted
     }
 
     /// Calculate the threshold for BFT consensus
@@ -319,6 +354,16 @@ impl ZkVoteHandler {
             "Received ZK block proposal"
         );
 
+        // Broadcast proposal to peers (dedup prevents loops — peers that already
+        // have this proposal will return early at "Already have proposal")
+        if let Some(ref broadcast) = self.broadcast_fn {
+            let payload = serde_json::to_vec(&proposal)
+                .map_err(|e| ghost_common::error::GhostError::Serialization(e.to_string()))?;
+            if let Err(e) = broadcast(MessageType::ZkBlockProposal, payload) {
+                warn!(height, error = %e, "Failed to broadcast ZK proposal");
+            }
+        }
+
         // If we're a validator, verify and vote
         if self.validators.read().contains(&self.identity.node_id()) {
             self.verify_and_vote(height, &proposal)?;
@@ -346,8 +391,9 @@ impl ZkVoteHandler {
         }
 
         // Timestamp should be reasonable (within 60 seconds)
-        let now = chrono::Utc::now().timestamp_millis() as u64;
-        let tolerance = 60_000; // 60 seconds
+        // Proposal timestamps are in seconds (UNIX epoch)
+        let now = chrono::Utc::now().timestamp() as u64;
+        let tolerance = 60; // 60 seconds
         if proposal.timestamp < now.saturating_sub(tolerance)
             || proposal.timestamp > now.saturating_add(tolerance)
         {
@@ -711,6 +757,15 @@ impl ZkVoteHandler {
         height > 0 && height.is_multiple_of(snapshot_interval)
     }
 
+    /// Check if there's an active (undecided) proposal for a given height
+    pub fn has_pending_proposal(&self, height: u64) -> bool {
+        self.pending_proposals
+            .read()
+            .get(&height)
+            .map(|s| !s.decided)
+            .unwrap_or(false)
+    }
+
     /// Get all heights with pending (undecided) proposals
     pub fn get_pending_heights(&self) -> Vec<u64> {
         self.pending_proposals
@@ -792,7 +847,7 @@ mod tests {
             transactions: vec![],
             proof: vec![0u8; 72],
             proposer_signature: [0u8; 64],
-            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            timestamp: chrono::Utc::now().timestamp() as u64,
         }
     }
 

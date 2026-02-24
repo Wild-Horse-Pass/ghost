@@ -17,6 +17,7 @@ const TOOLTIPS = {
   avg_latency: "Average round-trip time to your connected peers. Lower is better.",
   synced_peers: "How many of your peers are fully synced with the Bitcoin blockchain.",
   mesh_channels: "Number of active mesh communication channels (share, block, voting, health, etc).",
+  active_nodes: "Total number of Ghost nodes currently online in the pool network, including your own node.",
 };
 
 const peerColumns: ColumnDef<PeerInfo>[] = [
@@ -38,7 +39,8 @@ const peerColumns: ColumnDef<PeerInfo>[] = [
     accessorKey: "latency_ms",
     header: "Latency",
     cell: ({ row }) => {
-      const latency = row.original.latency_ms ?? 0;
+      const latency = row.original.latency_ms;
+      if (latency == null) return <span className="text-gray-500">--</span>;
       return (
         <Badge variant={latency < 100 ? "success" : latency < 500 ? "warning" : "error"}>
           {latency}ms
@@ -61,7 +63,10 @@ const peerColumns: ColumnDef<PeerInfo>[] = [
     accessorKey: "connected_at",
     header: "Connected",
     cell: ({ row }) => {
-      const connectedAgo = Math.floor(Date.now() / 1000 - (row.original.connected_at ?? 0));
+      const connectedAt = row.original.connected_at ?? 0;
+      if (!connectedAt) return <span className="text-gray-500">N/A</span>;
+      const connectedAgo = Math.floor(Date.now() / 1000 - connectedAt);
+      if (connectedAgo < 0 || connectedAgo > 86400 * 365) return <span className="text-gray-500">N/A</span>;
       return <span className="text-gray-400">{formatDuration(connectedAgo)}</span>;
     },
   },
@@ -105,7 +110,7 @@ export default function PeersPage() {
         <StatCard
           label="Active Nodes"
           value={pool?.active_nodes ?? "--"}
-          sublabel="pool-wide"
+          tooltip={TOOLTIPS.active_nodes}
           loading={poolLoading}
         />
       </div>
