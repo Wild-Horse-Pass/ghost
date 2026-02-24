@@ -2,7 +2,7 @@
 //!
 //! These tests verify end-to-end functionality across multiple components.
 //!
-//! # Test Categories (~600 tests total)
+//! # Test Categories (~860 tests total)
 //!
 //! | Category | Module | Tests |
 //! |----------|--------|-------|
@@ -23,6 +23,12 @@
 //! | 20 | fund_safety | 16 - Fund loss prevention |
 //! | 21 | historical_bugs | 25 - CVE-2010-5139, 2013 fork, CVE-2018-17144 |
 //! | 22 | hypothetical_bugs | 29 - Undiscovered vulnerability patterns |
+//! | 23 | wraith_transactions | 30 - Wraith tx builder, denomination math (700-729) |
+//! | 24 | wraith_blind_signatures | 20 - Blind signature protocol (730-749) |
+//! | 25 | ghost_lock_types | 30 - Ghost Lock creation, state machine (750-779) |
+//! | 26 | settlement_reconciliation | 40 - Settlement, batches, merkle proofs (780-819) |
+//! | 27 | gsp_payment_messages | 30 - GSP payment/lock/reorg messages (820-849) |
+//! | 28 | l2_cross_layer | 20 - Cross-layer L2 integration (850-869) |
 //!
 //! # Running Tests
 //!
@@ -41,6 +47,12 @@
 //! cargo test --test integration ghost_pay
 //! cargo test --test integration round_management
 //! cargo test --test integration edge_cases
+//! cargo test --test integration wraith_transactions
+//! cargo test --test integration wraith_blind_signatures
+//! cargo test --test integration ghost_lock_types
+//! cargo test --test integration settlement_reconciliation
+//! cargo test --test integration gsp_payment_messages
+//! cargo test --test integration l2_cross_layer
 //! ```
 
 pub mod block_template;
@@ -52,18 +64,24 @@ pub mod cryptography;
 pub mod e2e;
 pub mod edge_cases;
 pub mod fund_safety;
+pub mod ghost_lock_types;
 pub mod ghost_pay;
 pub mod gsp;
+pub mod gsp_payment_messages;
 pub mod helpers;
 pub mod historical_bugs;
 pub mod hypothetical_bugs;
+pub mod l2_cross_layer;
 pub mod policy_enforcement;
 pub mod pool_cycle;
 pub mod round_management;
 pub mod rpc_client;
 pub mod security;
+pub mod settlement_reconciliation;
 pub mod silent_payment_v2;
 pub mod storage;
 pub mod stratum_payout_consensus;
 pub mod stratum_validation;
+pub mod wraith_blind_signatures;
 pub mod wraith_protocol;
+pub mod wraith_transactions;

@@ -608,6 +608,7 @@ fn test_pool_config_validate_success() {
         min_payout_sats: 10000,
         payout_interval_blocks: 100,
         node_payout_address: None,
+        pool_name: None,
         coinbase_extra: None,
         genesis_password: None,
     };
