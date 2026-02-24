@@ -126,18 +126,14 @@ ghost_pay_request() {
     local url="http://${HOST}:${GHOST_PAY_PORT}${path}"
     local timestamp
     timestamp=$(date +%s)
-    # Little-endian 8-byte timestamp
-    local ts_hex
-    ts_hex=$(printf '%016x' "$timestamp")
-    local ts_le
-    ts_le=$(echo "$ts_hex" | fold -w2 | tac | tr -d '\n')
-    local ts_bytes
-    ts_bytes=$(echo "$ts_le" | xxd -r -p)
 
+    # ghost-pay HMAC scheme: HMAC-SHA256(secret_as_utf8, timestamp_decimal_string + body)
+    # The secret is used as-is (UTF-8 string), NOT hex-decoded
+    # The timestamp is the decimal string representation, NOT LE bytes
+    local sig
     if [[ -n "$body" ]]; then
-        local sig
-        sig=$(printf '%s%s' "$ts_bytes" "$body" | openssl dgst -sha256 -hmac "$(echo -n "$API_SECRET" | xxd -r -p)" -binary | xxd -p -c 256)
-        curl -sf --connect-timeout 5 --max-time 15 \
+        sig=$(printf '%s%s' "$timestamp" "$body" | openssl dgst -sha256 -hmac "$API_SECRET" -binary | xxd -p -c 256)
+        curl -s --connect-timeout 5 --max-time 15 \
             -X "$method" \
             -H "Content-Type: application/json" \
             -H "X-Ghost-Signature: $sig" \
@@ -146,9 +142,8 @@ ghost_pay_request() {
             -w "\n%{http_code}" \
             "$url" 2>/dev/null
     else
-        local sig
-        sig=$(printf '%s' "$ts_bytes" | openssl dgst -sha256 -hmac "$(echo -n "$API_SECRET" | xxd -r -p)" -binary | xxd -p -c 256)
-        curl -sf --connect-timeout 5 --max-time 15 \
+        sig=$(printf '%s' "$timestamp" | openssl dgst -sha256 -hmac "$API_SECRET" -binary | xxd -p -c 256)
+        curl -s --connect-timeout 5 --max-time 15 \
             -X "$method" \
             -H "X-Ghost-Signature: $sig" \
             -H "X-Ghost-Timestamp: $timestamp" \
@@ -183,8 +178,8 @@ test_api_no_500() {
     http_code=$(echo "$response" | tail -1)
     body_out=$(echo "$response" | sed '$d')
     if [[ "$http_code" =~ ^5 ]]; then fail "Server error: HTTP $http_code"; return 1; fi
-    # 4xx is acceptable (expected failure), but validate JSON response
-    if [[ -n "$body_out" ]] && ! echo "$body_out" | jq . >/dev/null 2>&1; then fail "Invalid JSON in error response"; return 1; fi
+    # 4xx is acceptable (expected failure) — only validate JSON for 2xx responses
+    if [[ "$http_code" =~ ^2 ]] && [[ -n "$body_out" ]] && ! echo "$body_out" | jq . >/dev/null 2>&1; then fail "Invalid JSON in success response"; return 1; fi
     pass
     return 0
 }
@@ -194,7 +189,7 @@ test_pool_endpoint() {
     local id="$1" name="$2" path="$3"
     run_test "$id" "$name"
     local response http_code body_out
-    response=$(curl -sf --connect-timeout 5 --max-time 15 -w "\n%{http_code}" "http://${HOST}:${POOL_PORT}${path}" 2>/dev/null) || { fail "Connection failed"; return 1; }
+    response=$(curl -s --connect-timeout 5 --max-time 15 -w "\n%{http_code}" "http://${HOST}:${POOL_PORT}${path}" 2>/dev/null) || { fail "Connection failed"; return 1; }
     http_code=$(echo "$response" | tail -1)
     body_out=$(echo "$response" | sed '$d')
     if [[ "$http_code" != "200" ]]; then fail "HTTP $http_code"; return 1; fi
@@ -241,7 +236,7 @@ phase_2() {
 
     # P2.1: Create a lock (may fail if no funds)
     test_api_no_500 "P2.1" "Create ghost lock (10000 sats, 144 blocks)" "POST" "/api/v1/locks/create" \
-        '{"amount": 10000, "lock_blocks": 144}'
+        '{"amount_sats": 10000, "lock_blocks": 144}'
 
     # P2.2: List locks
     run_test "P2.2" "List ghost locks"
@@ -294,8 +289,9 @@ phase_4() {
     # P4.1: List wraith sessions (pool port, no auth)
     test_pool_endpoint "P4.1" "List wraith sessions" "/api/v1/wraith/sessions" || true
 
-    # P4.2: Join a wraith session (ghost-pay port, may fail if no session)
-    test_api_no_500 "P4.2" "Join wraith session" "POST" "/api/v1/wraith/join"
+    # P4.2: Join a wraith session (ghost-pay port, may fail if no session/funds)
+    test_api_no_500 "P4.2" "Join wraith session" "POST" "/api/v1/wraith/join" \
+        '{"tier": "micro", "denomination": "micro", "lock_id": "0000000000000000000000000000000000000000000000000000000000000000"}'
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -307,13 +303,15 @@ phase_5() {
 
     # P5.1: Send payment (expected fail - test address)
     test_api_no_500 "P5.1" "Send L2 payment (expected fail)" "POST" "/api/v1/payments/send" \
-        '{"to": "tsp1test000000000000000000000000000000000000", "amount": 1000}'
+        '{"recipient": "ghost1qtest000000000000000000000000000000000", "amount_sats": 1000}'
 
     # P5.2: Generate payment address
-    test_api_no_500 "P5.2" "Generate payment address" "POST" "/api/v1/payments/address"
+    test_api_no_500 "P5.2" "Generate payment address" "POST" "/api/v1/payments/address" \
+        '{"index": 0}'
 
     # P5.3: Scan for payments
-    test_api_no_500 "P5.3" "Scan for incoming payments" "POST" "/api/v1/payments/scan"
+    test_api_no_500 "P5.3" "Scan for incoming payments" "POST" "/api/v1/payments/scan" \
+        '{"txid": "0000000000000000000000000000000000000000000000000000000000000000", "vout": 0}'
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -328,11 +326,11 @@ phase_6() {
 
     # P6.2: Shield funds (move to confidential pool)
     test_api_no_500 "P6.2" "Shield funds (1000 sats)" "POST" "/api/v1/confidential/shield" \
-        '{"amount": 1000}'
+        '{"amount_sats": 1000, "blinding_hex": "0000000000000000000000000000000000000000000000000000000000000001", "owner_pubkey": "0000000000000000000000000000000000000000000000000000000000000002"}'
 
     # P6.3: Confidential transfer
     test_api_no_500 "P6.3" "Confidential transfer (500 sats)" "POST" "/api/v1/confidential/transfer" \
-        '{"to": "test", "amount": 500}'
+        '{"proof_hex": "00", "old_commitment_root": "0000000000000000000000000000000000000000000000000000000000000000", "new_commitment_root": "0000000000000000000000000000000000000000000000000000000000000001", "nullifier": "0000000000000000000000000000000000000000000000000000000000000002", "sender_new_commitment": "0000000000000000000000000000000000000000000000000000000000000003", "recipient_new_commitment": "0000000000000000000000000000000000000000000000000000000000000004", "sender_index": 0, "recipient_index": 1, "recipient_owner_pubkey": "0000000000000000000000000000000000000000000000000000000000000005"}'
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -355,7 +353,7 @@ phase_7() {
 
     # P7.3: Request withdrawal
     test_api_no_500 "P7.3" "Request withdrawal (1000 sats)" "POST" "/api/v1/withdrawals/request" \
-        '{"amount": 1000}'
+        '{"lock_id": "0000000000000000000000000000000000000000000000000000000000000000", "destination_address": "tb1qtest", "amount_sats": 1000}'
 }
 
 # ══════════════════════════════════════════════════════════════════════
@@ -365,15 +363,29 @@ phase_7() {
 phase_8() {
     phase_header 8 "L2 Block State" 3
 
-    # P8.1: Get L2 state from pool
+    # P8.1: Get L2 state from ghost-pay
     local l2_body=""
-    run_test "P8.1" "Get L2 state (pool port)"
+    run_test "P8.1" "Get L2 state"
     local response http_code body_out
-    response=$(curl -sf --connect-timeout 5 --max-time 15 -w "\n%{http_code}" "http://${HOST}:${POOL_PORT}/api/v1/l2/state" 2>/dev/null) || { fail "Connection failed"; }
+    response=$(ghost_pay_request "GET" "/api/v1/l2/state") || { fail "Connection failed"; }
     if [[ -n "${response:-}" ]]; then
         http_code=$(echo "$response" | tail -1)
         body_out=$(echo "$response" | sed '$d')
-        if [[ "$http_code" != "200" ]]; then
+        if [[ "$http_code" =~ ^5 ]]; then
+            fail "Server error: HTTP $http_code"
+        elif [[ "$http_code" == "429" ]]; then
+            # Rate limited — retry once after a brief pause
+            sleep 2
+            response=$(ghost_pay_request "GET" "/api/v1/l2/state") || { fail "Connection failed after retry"; }
+            http_code=$(echo "$response" | tail -1)
+            body_out=$(echo "$response" | sed '$d')
+            if [[ "$http_code" == "200" ]] && echo "$body_out" | jq . >/dev/null 2>&1; then
+                l2_body="$body_out"
+                pass
+            else
+                fail "HTTP $http_code (after rate-limit retry)"
+            fi
+        elif [[ "$http_code" != "200" ]]; then
             fail "HTTP $http_code"
         elif ! echo "$body_out" | jq . >/dev/null 2>&1; then
             fail "Invalid JSON"

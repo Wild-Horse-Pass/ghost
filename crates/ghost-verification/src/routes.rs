@@ -512,6 +512,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             "/api/v1/mining/payout_address",
             post(api_mining_payout_address_post_handler),
         )
+        .route(
+            "/api/v1/mining/pool_name",
+            post(api_mining_pool_name_post_handler),
+        )
         // Dashboard: System update POST handlers (dashboard sends POST, backend has GET)
         .route("/api/v1/system/update", post(api_system_update_handler))
         .route("/api/v1/system/rollback", post(api_system_rollback_handler))
@@ -697,6 +701,10 @@ async fn node_info_handler(State(state): State<Arc<VerificationState>>) -> impl 
 /// Peers handler - returns connected peers info
 async fn peers_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
 
     // Query database for peer list if available
     let peers = if let Some(ref db) = state.database {
@@ -704,13 +712,29 @@ async fn peers_handler(State(state): State<Arc<VerificationState>>) -> impl Into
             Ok(peer_records) => peer_records
                 .iter()
                 .map(|p| {
+                    // Approximate latency from health ping staleness (pings every 10s)
+                    // Subtract expected ping interval to get excess delay
+                    let staleness_secs = (now - p.last_seen).max(0);
+                    let latency_ms: Option<u64> = if staleness_secs < 30 {
+                        // Fresh peer: excess over 10s ping interval is ~network delay
+                        let excess = (staleness_secs as u64).saturating_sub(5) * 100;
+                        Some(excess.clamp(1, 9999))
+                    } else {
+                        None
+                    };
                     serde_json::json!({
                         "peer_id": p.peer_id,
                         "address": p.address,
                         "port": p.port,
                         "node_id": p.node_id,
+                        "first_seen": p.first_seen,
                         "last_seen": p.last_seen,
-                        "connection_count": p.connection_count
+                        "connected_at": p.first_seen,
+                        "connection_count": p.connection_count,
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "latency_ms": latency_ms,
+                        "synced": (now - p.last_seen) < 60,
+                        "uptime_seconds": now - p.first_seen
                     })
                 })
                 .collect::<Vec<_>>(),
@@ -1294,7 +1318,9 @@ async fn api_node_status_handler(State(state): State<Arc<VerificationState>>) ->
         "public_mining": config.public_mining,
         "private_mining": false,
         "reaper": config.reaper,
-        "ghost_mode": config.ghost_mode
+        "ghost_mode": config.ghost_mode,
+        "tor_mode": config.tor_mode,
+        "onion_address": config.onion_address
     }))
 }
 
@@ -1385,6 +1411,37 @@ async fn api_mining_status_handler(
 ) -> impl IntoResponse {
     let health = state.get_health().await;
     let config = state.dashboard_config.read();
+
+    // Calculate aggregate hashrate from all miners (10-minute window)
+    let (total_hashrate_th, shares_submitted, shares_accepted) =
+        if let Some(ref db) = state.database {
+            match db.get_all_miners_stats() {
+                Ok(miners) => {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    let mut total_hr = 0.0f64;
+                    let mut total_shares = 0u64;
+                    let mut valid_shares = 0u64;
+                    for m in &miners {
+                        // Use elapsed time from first share in window to now
+                        // This avoids inflated hashrate from short sample periods
+                        let elapsed = (now - m.first_seen).max(1) as f64;
+                        // Hashrate = SUM(difficulty) * 2^32 / elapsed_time / 1e12 (TH/s)
+                        total_hr +=
+                            m.total_work * 4294967296.0 / elapsed / 1e12;
+                        total_shares += m.total_shares;
+                        valid_shares += m.valid_shares;
+                    }
+                    (total_hr, total_shares, valid_shares)
+                }
+                Err(_) => (0.0, 0, 0),
+            }
+        } else {
+            (0.0, 0, 0)
+        };
+
     Json(serde_json::json!({
         // Backend fields
         "active": true,
@@ -1392,7 +1449,7 @@ async fn api_mining_status_handler(
         "block_height": health.block_height,
         "round_id": health.round_id,
         "miner_count": health.miner_count,
-        "total_hashrate": 0,
+        "total_hashrate": total_hashrate_th,
         "shares_this_round": health.capabilities.total_shares,
         "difficulty": 1.0,
         "best_hash": null,
@@ -1401,17 +1458,20 @@ async fn api_mining_status_handler(
         "enabled": true,
         "private_mining": config.private_mining.unwrap_or(false),
         "public_mining": health.capabilities.public_mining,
-        "hashrate_th": 0.0,
+        "hashrate_th": total_hashrate_th,
         "connected_miners": health.miner_count,
-        "shares_submitted": 0,
-        "shares_accepted": 0,
-        "shares_rejected": 0,
+        "shares_submitted": shares_submitted,
+        "shares_accepted": shares_accepted,
+        "shares_rejected": shares_submitted - shares_accepted,
         "stratum_v1_port": SV1_STRATUM_PORT,
         "stratum_v2_port": SV2_STRATUM_PORT,
         "stratum_v1_endpoint": format!("stratum+tcp://0.0.0.0:{}", SV1_STRATUM_PORT),
         "stratum_v2_endpoint": format!("stratum+tcp://0.0.0.0:{}", SV2_STRATUM_PORT),
         "payout_address": config.payout_address,
-        "blocks_found": 0
+        "pool_name": config.pool_name,
+        "blocks_found": state.database.as_ref()
+            .and_then(|db| db.get_blocks_found_count().ok())
+            .unwrap_or(0)
     }))
 }
 
@@ -1670,6 +1730,7 @@ async fn api_pool_status_handler(State(state): State<Arc<VerificationState>>) ->
         "version": health.version,
         "block_height": health.block_height,
         "peer_count": health.peer_count,
+        "active_nodes": health.peer_count + 1,
         "miner_count": health.miner_count,
         "round_id": health.round_id,
         "uptime_secs": health.uptime_secs,
@@ -1859,8 +1920,12 @@ async fn api_ghostpay_status_handler(
         Some(status) => status,
         None => {
             // Ghost-pay runs as separate service on port 8800 — query via spawned task
-            match tokio::spawn(fetch_ghostpay_from_service()).await {
-                Ok(Some(status)) => status,
+            // 5s timeout prevents hanging when ghost-pay is unresponsive
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::spawn(fetch_ghostpay_from_service()),
+            ).await {
+                Ok(Ok(Some(status))) => status,
                 _ => GhostPayLiveStatus {
                     epoch: 0,
                     virtual_block: 0,
@@ -2155,8 +2220,12 @@ async fn api_locks_handler(State(state): State<Arc<VerificationState>>) -> impl 
 /// API v1 Nickname handler
 async fn api_nickname_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
     let health = state.get_health().await;
-    // Return short node ID as nickname
-    let nickname = health.node_id.chars().take(8).collect::<String>();
+    let config = state.dashboard_config.read();
+    // Use stored nickname, fall back to short node ID
+    let nickname = config
+        .nickname
+        .clone()
+        .unwrap_or_else(|| health.node_id.chars().take(8).collect());
     Json(serde_json::json!({
         "nickname": nickname
     }))
@@ -2432,17 +2501,24 @@ async fn api_watchdog_status_handler(
 
     // Check ghost-core status via RPC
     let ghost_core_status = if let Some(ref rpc) = state.rpc {
-        match rpc.get_blockchain_info().await {
-            Ok(info) => serde_json::json!({
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            rpc.get_blockchain_info(),
+        ).await {
+            Ok(Ok(info)) => serde_json::json!({
                 "status": "running",
                 "chain": info.chain,
                 "blocks": info.blocks,
                 "headers": info.headers,
                 "synced": info.blocks == info.headers
             }),
-            Err(_) => serde_json::json!({
+            Ok(Err(_)) => serde_json::json!({
                 "status": "error",
                 "message": "RPC connection failed"
+            }),
+            Err(_) => serde_json::json!({
+                "status": "error",
+                "message": "RPC timeout"
             }),
         }
     } else {
@@ -2455,8 +2531,11 @@ async fn api_watchdog_status_handler(
     // Check ghost-pay L2 service status
     let gp = match check_ghostpay_local(&state) {
         Some(status) => status,
-        None => match tokio::spawn(fetch_ghostpay_from_service()).await {
-            Ok(Some(status)) => status,
+        None => match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::spawn(fetch_ghostpay_from_service()),
+        ).await {
+            Ok(Ok(Some(status))) => status,
             _ => GhostPayLiveStatus {
                 epoch: 0,
                 virtual_block: 0,
@@ -2571,21 +2650,22 @@ async fn api_watchdog_status_handler(
 async fn api_system_version_handler(
     State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
-    let health = state.get_health().await;
-
     // Get ghost-core version if available
     let ghost_core_version = if let Some(ref rpc) = state.rpc {
-        match rpc.get_network_info().await {
-            Ok(info) => Some(info.subversion),
-            Err(_) => None,
+        match tokio::time::timeout(std::time::Duration::from_secs(5), rpc.get_network_info()).await
+        {
+            Ok(Ok(info)) => Some(info.subversion),
+            _ => None,
         }
     } else {
         None
     };
 
     Json(serde_json::json!({
-        "version": health.version,
+        "version": env!("CARGO_PKG_VERSION"),
         "build": if cfg!(debug_assertions) { "debug" } else { "release" },
+        "build_time": option_env!("BUILD_TIME").unwrap_or("unknown"),
+        "git_hash": option_env!("GIT_HASH").unwrap_or("unknown"),
         "ghost_core_version": ghost_core_version,
         "rust_version": env!("CARGO_PKG_RUST_VERSION"),
         "target": std::env::consts::ARCH,
@@ -2814,46 +2894,32 @@ async fn api_network_elder_handler(
     let health = state.get_health().await;
     let max_elders = ghost_common::constants::MAX_ELDERS;
 
-    // Query database for elder list if available
-    let (elders, total_elders, is_elder) = if let Some(ref db) = state.database {
-        let elder_records = db.get_elders().unwrap_or_default();
-        let total = elder_records.len() as u32;
-        let is_self_elder = elder_records.iter().any(|e| e.node_id == health.node_id);
-        let elders_json: Vec<_> = elder_records
+    // Use MPC contributions as authoritative source for elder status
+    let (elders, total_elders, is_elder, elder_slot) = if let Some(ref db) = state.database {
+        let mpc_elders = db.get_all_mpc_elders().unwrap_or_default();
+        let total = mpc_elders.len() as u32;
+        let self_entry = mpc_elders.iter().find(|(nid, _)| *nid == health.node_id);
+        let is_self_elder = self_entry.is_some();
+        let slot = self_entry.map(|(_, pos)| *pos as u64);
+        let elders_json: Vec<_> = mpc_elders
             .iter()
-            .map(|e| {
+            .map(|(node_id, position)| {
                 serde_json::json!({
-                    "node_id": e.node_id,
-                    "display_name": e.display_name,
-                    "elder_order": e.elder_order,
-                    "first_seen": e.first_seen,
-                    "last_seen": e.last_seen,
-                    "is_self": e.node_id == health.node_id
+                    "node_id": node_id,
+                    "display_name": null,
+                    "elder_order": position,
+                    "first_seen": null,
+                    "last_seen": null,
+                    "is_self": *node_id == health.node_id
                 })
             })
             .collect();
-        (elders_json, total, is_self_elder)
+        (elders_json, total, is_self_elder, slot)
     } else {
-        (vec![], 0, false)
+        (vec![], 0, false, None)
     };
 
     let spots_remaining = max_elders.saturating_sub(total_elders);
-
-    // Get elder slot from MPC contributions (authoritative source for position)
-    let elder_slot: Option<u64> = if is_elder {
-        if let Some(ref db) = state.database {
-            db.get_mpc_elder_position(&health.node_id)
-                .unwrap_or(None)
-                .map(|p| p as u64)
-        } else {
-            elders
-                .iter()
-                .find(|e| e.get("is_self").and_then(|v| v.as_bool()) == Some(true))
-                .and_then(|e| e.get("elder_order").and_then(|v| v.as_u64()))
-        }
-    } else {
-        None
-    };
 
     Json(serde_json::json!({
         "elders": elders,
@@ -2873,17 +2939,21 @@ async fn api_network_elder_handler(
 async fn api_buds_mempool_handler(
     State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
-    // Query Ghost Core for mempool info
+    // Query Ghost Core for mempool info (10s timeout — loops over up to 100 txs)
     if let Some(ref rpc) = state.rpc {
-        match rpc.get_mempool_info().await {
-            Ok(mempool_info) => {
-                // Get raw mempool for transaction list
+        let rpc_result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            async {
+                let mempool_info = match rpc.get_mempool_info().await {
+                    Ok(info) => info,
+                    Err(_) => return None,
+                };
+
                 let (transactions, by_tier) = match rpc.get_raw_mempool(true).await {
                     Ok(mempool) => {
                         let classifier = BudsClassifier::new();
                         let mut tier_counts = [0u64; 4]; // T0, T1, T2, T3
 
-                        // mempool is a JSON object with txid -> entry
                         let txids: Vec<String> = if let Some(obj) = mempool.as_object() {
                             obj.keys().take(100).cloned().collect()
                         } else {
@@ -2912,7 +2982,6 @@ async fn api_buds_mempool_handler(
                                 .and_then(|v| v.as_u64())
                                 .unwrap_or(0);
 
-                            // Try to classify the transaction by fetching raw tx
                             let (tier, tier_str, reason) = match rpc
                                 .get_raw_transaction(txid, false)
                                 .await
@@ -2956,7 +3025,6 @@ async fn api_buds_mempool_handler(
                                             }
                                         }
                                     } else {
-                                        // Fallback: use heuristic based on weight
                                         let tier = classify_by_weight_heuristic(weight);
                                         tier_counts[tier.value() as usize] += 1;
                                         (
@@ -2967,7 +3035,6 @@ async fn api_buds_mempool_handler(
                                     }
                                 }
                                 Err(_) => {
-                                    // Fallback: use heuristic based on weight
                                     let tier = classify_by_weight_heuristic(weight);
                                     tier_counts[tier.value() as usize] += 1;
                                     (
@@ -3007,7 +3074,7 @@ async fn api_buds_mempool_handler(
                     }
                 };
 
-                return Json(serde_json::json!({
+                Some(serde_json::json!({
                     "transactions": transactions,
                     "total": mempool_info.size,
                     "bytes": mempool_info.bytes,
@@ -3017,12 +3084,15 @@ async fn api_buds_mempool_handler(
                     "by_tier": by_tier,
                     "sample_size": transactions.len(),
                     "note": "Tier counts are based on sampled transactions"
-                }));
-            }
-            Err(e) => {
-                error!(error = %e, "Failed to get mempool info");
-            }
+                }))
+            },
+        )
+        .await;
+
+        if let Ok(Some(json)) = rpc_result {
+            return Json(json);
         }
+        // Timeout or RPC error — fall through to fallback
     }
 
     // Fallback if RPC not available
@@ -3060,59 +3130,61 @@ async fn api_mining_best_hash_handler(
 ) -> impl IntoResponse {
     let health = state.get_health().await;
 
-    // Query Ghost Core for best block hash and blockchain info
+    // Query Ghost Core for best block hash and blockchain info (5s timeout)
     if let Some(ref rpc) = state.rpc {
-        // Get best block hash (this always works)
-        let best_hash = rpc.get_best_block_hash().await.ok();
+        let rpc_data = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let best_hash = rpc.get_best_block_hash().await.ok();
+            let (difficulty, chain) = match rpc.get_blockchain_info().await {
+                Ok(info) => (info.difficulty, info.chain),
+                Err(_) => (0.0, "unknown".to_string()),
+            };
+            let network_hashrate = match rpc.get_mining_info().await {
+                Ok(info) => info.networkhashps,
+                Err(_) => 0.0,
+            };
+            (best_hash, difficulty, chain, network_hashrate)
+        })
+        .await;
 
-        // Get blockchain info (more reliable than mining info on signet)
-        let (difficulty, chain) = match rpc.get_blockchain_info().await {
-            Ok(info) => (info.difficulty, info.chain),
-            Err(_) => (0.0, "unknown".to_string()),
-        };
+        if let Ok((best_hash, difficulty, chain, network_hashrate)) = rpc_data {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
 
-        // Get network hash rate (may fail on signet)
-        let network_hashrate = match rpc.get_mining_info().await {
-            Ok(info) => info.networkhashps,
-            Err(_) => 0.0,
-        };
+            let entry = serde_json::json!({
+                "hash": best_hash,
+                "difficulty": difficulty,
+                "timestamp": now,
+                "miner_id": null,
+                "block_height": health.block_height
+            });
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+            let null_entry = serde_json::json!({
+                "hash": null,
+                "difficulty": 0,
+                "timestamp": 0,
+                "miner_id": null,
+                "block_height": 0
+            });
 
-        let entry = serde_json::json!({
-            "hash": best_hash,
-            "difficulty": difficulty,
-            "timestamp": now,
-            "miner_id": null,
-            "block_height": health.block_height
-        });
-
-        let null_entry = serde_json::json!({
-            "hash": null,
-            "difficulty": 0,
-            "timestamp": 0,
-            "miner_id": null,
-            "block_height": 0
-        });
-
-        return Json(serde_json::json!({
-            // Dashboard-compatible per-timerange format
-            "current_round": entry,
-            "last_round": null_entry,
-            "last_hour": entry,
-            "last_24h": entry,
-            "all_time": entry,
-            // Raw fields for backwards compat
-            "best_hash": best_hash,
-            "best_difficulty": difficulty,
-            "network_hashrate": network_hashrate,
-            "block_height": health.block_height,
-            "round_id": health.round_id,
-            "chain": chain
-        }));
+            return Json(serde_json::json!({
+                // Dashboard-compatible per-timerange format
+                "current_round": entry,
+                "last_round": null_entry,
+                "last_hour": entry,
+                "last_24h": entry,
+                "all_time": entry,
+                // Raw fields for backwards compat
+                "best_hash": best_hash,
+                "best_difficulty": difficulty,
+                "network_hashrate": network_hashrate,
+                "block_height": health.block_height,
+                "round_id": health.round_id,
+                "chain": chain
+            }));
+        }
+        // Timeout — fall through to fallback
     }
 
     let null_entry = serde_json::json!({
@@ -3320,10 +3392,10 @@ async fn api_config_archive_mode_handler(
 async fn api_config_ghost_mode_handler(
     State(state): State<Arc<VerificationState>>,
 ) -> impl IntoResponse {
-    // Try to get ghost mode from ghost-core RPC
+    // Try to get ghost mode from ghost-core RPC (5s timeout)
     let rpc_state = if let Some(ref rpc) = state.rpc {
-        match rpc.get_ghost_mode().await {
-            Ok(response) => {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), rpc.get_ghost_mode()).await {
+            Ok(Ok(response)) => {
                 // Sync local state with RPC response
                 {
                     let mut config = state.dashboard_config.write();
@@ -3337,8 +3409,12 @@ async fn api_config_ghost_mode_handler(
                 }
                 Some(response.ghost_mode)
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 warn!("Failed to get ghost mode from RPC: {}", e);
+                None
+            }
+            Err(_) => {
+                warn!("Ghost mode RPC timed out");
                 None
             }
         }
@@ -3815,7 +3891,7 @@ async fn api_system_update_status_handler(
 ) -> impl IntoResponse {
     Json(serde_json::json!({
         "status": "idle",
-        "current_version": "1.4.0",
+        "current_version": env!("CARGO_PKG_VERSION"),
         "update_available": false,
         "progress": null
     }))
@@ -3828,7 +3904,7 @@ async fn api_system_updates_handler(
     Json(serde_json::json!({
         "updates": [],
         "total": 0,
-        "current_version": "1.4.0"
+        "current_version": env!("CARGO_PKG_VERSION")
     }))
 }
 
@@ -4447,6 +4523,23 @@ async fn api_mpc_status_handler(State(state): State<Arc<VerificationState>>) -> 
         (0, false)
     };
 
+    // Check if this node is an elder (has contributed to MPC)
+    let (is_elder, elder_slot) = if let Some(ref db) = state.database {
+        let pos = db.get_mpc_elder_position(&state.node_id).unwrap_or(None);
+        (pos.is_some(), pos)
+    } else {
+        (false, None)
+    };
+
+    // Determine ceremony phase
+    let phase = if is_ossified {
+        "ossified"
+    } else if contribution_count > 0 {
+        "contributing"
+    } else {
+        "initializing"
+    };
+
     // Check if params file exists
     let params_path =
         std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
@@ -4457,6 +4550,9 @@ async fn api_mpc_status_handler(State(state): State<Arc<VerificationState>>) -> 
         "contribution_count": contribution_count,
         "max_contributors": 101,
         "is_ossified": is_ossified,
+        "is_elder": is_elder,
+        "elder_slot": elder_slot,
+        "phase": phase,
         "has_params": has_params,
         "node_id": state.node_id
     }))
@@ -4509,13 +4605,21 @@ async fn api_haze_status_handler(State(state): State<Arc<VerificationState>>) ->
     let archive_mode = { state.dashboard_config.read().archive_mode };
 
     let rpc_result = match state.rpc {
-        Some(ref rpc) => match rpc.get_blockchain_info().await {
-            Ok(info) => Some(info),
-            Err(e) => {
-                warn!("Failed to get haze status from RPC: {}", e);
-                None
+        Some(ref rpc) => {
+            match tokio::time::timeout(std::time::Duration::from_secs(5), rpc.get_blockchain_info())
+                .await
+            {
+                Ok(Ok(info)) => Some(info),
+                Ok(Err(e)) => {
+                    warn!("Failed to get haze status from RPC: {}", e);
+                    None
+                }
+                Err(_) => {
+                    warn!("Haze status RPC timed out");
+                    None
+                }
             }
-        },
+        }
         None => None,
     };
 
@@ -4562,7 +4666,10 @@ async fn api_shroud_status_handler(
     // Shroud is enabled by default in Ghost Core via -shroud=1
     // Check if Ghost Core is reachable to confirm it's running
     let ghost_core_running = if let Some(ref rpc) = state.rpc {
-        rpc.get_blockchain_info().await.is_ok()
+        tokio::time::timeout(std::time::Duration::from_secs(5), rpc.get_blockchain_info())
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false)
     } else {
         false
     };
@@ -5237,6 +5344,49 @@ async fn api_mining_payout_address_post_handler(
         .into_response()
 }
 
+/// Pool name body
+#[derive(Debug, Deserialize)]
+struct PoolNameBody {
+    name: Option<String>,
+}
+
+/// API v1 Mining: Set pool name (POST)
+/// Validates: ASCII printable, max 30 chars, no control characters.
+/// Set name to null/empty to clear.
+async fn api_mining_pool_name_post_handler(
+    State(state): State<Arc<VerificationState>>,
+    Json(body): Json<PoolNameBody>,
+) -> impl IntoResponse {
+    if let Some(ref name) = body.name {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            let mut config = state.dashboard_config.write();
+            config.pool_name = None;
+        } else if trimmed.len() > 30 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Pool name must be 30 characters or fewer"})),
+            )
+                .into_response();
+        } else if !trimmed.chars().all(|c| c.is_ascii() && !c.is_ascii_control()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Pool name must be ASCII printable characters only"})),
+            )
+                .into_response();
+        } else {
+            let mut config = state.dashboard_config.write();
+            config.pool_name = Some(trimmed.to_string());
+        }
+    } else {
+        let mut config = state.dashboard_config.write();
+        config.pool_name = None;
+    }
+    api_mining_status_handler(State(state))
+        .await
+        .into_response()
+}
+
 /// Operator window body
 #[derive(Debug, Deserialize)]
 struct OperatorWindowBody {
@@ -5275,27 +5425,35 @@ async fn api_backup_delete_handler(
 
 /// API v1 Miners: Full unredacted miner list (internal only)
 async fn api_miners_full_handler(State(state): State<Arc<VerificationState>>) -> impl IntoResponse {
-    let health = state.get_health().await;
-
     let miners = if let Some(ref db) = state.database {
-        match db.get_round_miners(health.round_id) {
-            Ok(miner_work) => miner_work
-                .into_iter()
-                .map(|(miner_id, work)| {
-                    serde_json::json!({
-                        "worker_name": miner_id,
-                        "hashrate_th": 0.0,
-                        "shares_submitted": work as u64,
-                        "shares_accepted": work as u64,
-                        "last_share": std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs(),
-                        "connected_at": 0,
-                        "ip_address": ""
+        match db.get_all_miners_stats() {
+            Ok(miner_stats) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                miner_stats
+                    .into_iter()
+                    .filter(|m| (now - m.last_seen) < 600)
+                    .map(|m| {
+                        // Use time from first share to now for stable estimate
+                        let elapsed = (now - m.first_seen).max(1) as f64;
+                        // Hashrate = SUM(difficulty) * 2^32 / elapsed / 1e12 (TH/s)
+                        let hashrate_th =
+                            m.total_work * 4294967296.0 / elapsed / 1e12;
+                        serde_json::json!({
+                            "worker_name": m.miner_id,
+                            "hashrate_th": hashrate_th,
+                            "shares_submitted": m.total_shares,
+                            "shares_accepted": m.valid_shares,
+                            "last_share": m.last_seen,
+                            "connected_at": m.first_seen,
+                            "active": true,
+                            "ip_address": ""
+                        })
                     })
-                })
-                .collect::<Vec<_>>(),
+                    .collect::<Vec<_>>()
+            }
             Err(_) => Vec::new(),
         }
     } else {

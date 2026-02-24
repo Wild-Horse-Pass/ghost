@@ -130,11 +130,21 @@ impl L2BlockProducer {
 
         let tx_count = witness.tx_count() as u32;
 
-        // 5. Generate ZK proof
-        let proof = match prover.prove(&witness) {
-            Ok(p) => p,
-            Err(e) => {
+        // 5. Generate ZK proof (CPU-bound Groth16 ~14s — must not block tokio runtime)
+        let prover_clone = Arc::clone(prover);
+        let witness_clone = witness.clone();
+        let proof = match tokio::task::spawn_blocking(move || {
+            prover_clone.prove(&witness_clone)
+        })
+        .await
+        {
+            Ok(Ok(p)) => p,
+            Ok(Err(e)) => {
                 error!(error = %e, height = next_height, "ZK proof generation failed");
+                return Ok(());
+            }
+            Err(e) => {
+                error!(error = %e, height = next_height, "ZK proof task panicked");
                 return Ok(());
             }
         };
