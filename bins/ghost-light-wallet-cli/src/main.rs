@@ -709,7 +709,10 @@ async fn cmd_receive(config: WalletConfig, address_type: &str, label: Option<&st
     let addr_type = match address_type.to_lowercase().as_str() {
         "ghost" => ghost_light_wallet::payments::AddressType::GhostPay,
         "silent" => ghost_light_wallet::payments::AddressType::SilentPayment,
-        "taproot" => ghost_light_wallet::payments::AddressType::Taproot,
+        "taproot" => {
+            println!("{}", style("Taproot addresses disabled for quantum safety. Use 'ghost' or 'silent'.").red());
+            return Ok(());
+        }
         _ => {
             println!(
                 "{}",
@@ -748,12 +751,6 @@ async fn cmd_receive(config: WalletConfig, address_type: &str, label: Option<&st
             println!("  {}", style(&payment_address.address).green().bold());
             println!();
             println!("Share this address to receive privacy-preserving on-chain payments.");
-        }
-        ghost_light_wallet::payments::AddressType::Taproot => {
-            println!("Taproot Address:");
-            println!("  {}", style(&payment_address.address).green().bold());
-            println!();
-            println!("Share this address to receive standard on-chain payments.");
         }
     }
     println!();

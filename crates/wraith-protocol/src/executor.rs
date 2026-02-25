@@ -758,7 +758,7 @@ mod tests {
 
         let secp = Secp256k1::new();
 
-        // Create test addresses (P2TR)
+        // Create test addresses (P2WPKH)
         let mut addresses: Vec<Vec<String>> = Vec::new();
         for _p in 0..3 {
             let mut participant_addrs = Vec::new();
@@ -799,8 +799,8 @@ mod tests {
                 ])
                 .unwrap();
                 let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
-                let xonly = pk.x_only_public_key().0;
-                let addr = Address::p2tr(&secp, xonly, None, Network::Regtest);
+                let compressed = bitcoin::CompressedPublicKey(pk);
+                let addr = Address::p2wpkh(&compressed, Network::Regtest);
                 participant_addrs.push(addr.to_string());
             }
             addresses.push(participant_addrs);
@@ -902,8 +902,8 @@ mod tests {
                 ])
                 .unwrap();
                 let pk = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &sk);
-                let xonly = pk.x_only_public_key().0;
-                let addr = Address::p2tr(&secp, xonly, None, Network::Regtest);
+                let compressed = bitcoin::CompressedPublicKey(pk);
+                let addr = Address::p2wpkh(&compressed, Network::Regtest);
                 participant_addrs.push(addr.to_string());
             }
             addresses.push(participant_addrs);

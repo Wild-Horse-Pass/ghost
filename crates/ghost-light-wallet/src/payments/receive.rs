@@ -22,8 +22,7 @@
 
 //! Receive payment operations - address generation
 
-use bitcoin::{Address, Network};
-use secp256k1::Secp256k1;
+use bitcoin::Network;
 use tracing::debug;
 
 use ghost_keys::{GhostId, GhostNetwork};
@@ -39,9 +38,6 @@ pub enum AddressType {
 
     /// BIP-352 Silent Payment address
     SilentPayment,
-
-    /// Standard P2TR (Taproot) address
-    Taproot,
 }
 
 /// A payment address with metadata
@@ -106,22 +102,6 @@ pub fn generate_address(
                 address: encoded,
                 address_type: AddressType::SilentPayment,
                 index: None,
-                label: None,
-                created_at: chrono::Utc::now().timestamp(),
-            })
-        }
-        AddressType::Taproot => {
-            let secp = Secp256k1::new();
-            let ghost_keys = master_key.ghost_keys();
-            let spend_pubkey = ghost_keys.spend_pubkey();
-            let (xonly, _parity) = spend_pubkey.x_only_public_key();
-            let address = Address::p2tr(&secp, xonly, None, master_key.network());
-            let addr_str = address.to_string();
-            debug!(address = %addr_str, "Generated BIP-86 Taproot address");
-            Ok(PaymentAddress {
-                address: addr_str,
-                address_type: AddressType::Taproot,
-                index: Some(0),
                 label: None,
                 created_at: chrono::Utc::now().timestamp(),
             })
@@ -231,27 +211,4 @@ mod tests {
         assert_eq!(addr1.address, addr2.address);
     }
 
-    #[test]
-    fn test_taproot_address() {
-        let key = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
-        let addr = generate_address(&key, AddressType::Taproot).unwrap();
-
-        assert_eq!(addr.address_type, AddressType::Taproot);
-        assert!(
-            addr.address.starts_with("bcrt1p"),
-            "Regtest taproot address should start with bcrt1p, got: {}",
-            addr.address
-        );
-        assert_eq!(addr.index, Some(0));
-    }
-
-    #[test]
-    fn test_taproot_address_deterministic() {
-        let key1 = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
-        let key2 = MasterKey::from_mnemonic(TEST_MNEMONIC, Network::Regtest).unwrap();
-        let addr1 = generate_address(&key1, AddressType::Taproot).unwrap();
-        let addr2 = generate_address(&key2, AddressType::Taproot).unwrap();
-
-        assert_eq!(addr1.address, addr2.address);
-    }
 }

@@ -30,7 +30,6 @@
 use bitcoin::absolute::LockTime;
 use bitcoin::address::Address;
 use bitcoin::blockdata::script::{Builder, PushBytesBuf, ScriptBuf};
-use bitcoin::secp256k1::PublicKey;
 use bitcoin::transaction::{Transaction, TxIn, TxOut, Version};
 use bitcoin::{Amount, Network, Sequence, Witness};
 use serde::{Deserialize, Serialize};
@@ -60,46 +59,9 @@ impl GhostPayNode {
     }
 }
 
-/// Custom serde for PublicKey
-mod pubkey_serde {
-    use super::*;
-    use serde::{Deserializer, Serializer};
-
-    pub fn serialize<S>(pubkey: &PublicKey, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&hex::encode(pubkey.serialize()))
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<PublicKey, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: String = serde::Deserialize::deserialize(deserializer)?;
-        let bytes = hex::decode(&s).map_err(serde::de::Error::custom)?;
-        PublicKey::from_slice(&bytes).map_err(serde::de::Error::custom)
-    }
-}
-
 /// Output type in reconciliation transaction
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TxOutput {
-    /// New Ghost Lock with automatic key rotation (Silent Payments style)
-    GhostLock {
-        /// P2TR address derived from GhostId
-        address: String,
-        /// Amount in sats
-        amount: u64,
-        /// Original lock ID
-        from_lock: [u8; 32],
-        /// Ephemeral pubkey for scanning (33 bytes compressed)
-        #[serde(with = "pubkey_serde")]
-        ephemeral_pubkey: PublicKey,
-        /// Output index in this batch
-        output_index: u32,
-    },
-
     /// Payment to recipient's Ghost Lock
     Payment {
         /// Recipient address
@@ -151,7 +113,6 @@ impl TxOutput {
     /// Get output amount (0 for OP_RETURN)
     pub fn amount(&self) -> u64 {
         match self {
-            TxOutput::GhostLock { amount, .. } => *amount,
             TxOutput::Payment { amount, .. } => *amount,
             TxOutput::Exit { amount, .. } => *amount,
             TxOutput::OpReturn { .. } => 0,
@@ -163,22 +124,11 @@ impl TxOutput {
     /// Get output address (None for OP_RETURN)
     pub fn address(&self) -> Option<&str> {
         match self {
-            TxOutput::GhostLock { address, .. } => Some(address),
             TxOutput::Payment { address, .. } => Some(address),
             TxOutput::Exit { address, .. } => Some(address),
             TxOutput::OpReturn { .. } => None,
             TxOutput::TreasuryFee { address, .. } => Some(address),
             TxOutput::NodeFee { address, .. } => Some(address),
-        }
-    }
-
-    /// Get ephemeral pubkey (only for GhostLock outputs)
-    pub fn ephemeral_pubkey(&self) -> Option<&PublicKey> {
-        match self {
-            TxOutput::GhostLock {
-                ephemeral_pubkey, ..
-            } => Some(ephemeral_pubkey),
-            _ => None,
         }
     }
 }
@@ -300,14 +250,6 @@ impl ReconciliationTx {
         self.mining_fee
     }
 
-    /// Get all ephemeral pubkeys from GhostLock outputs
-    pub fn ephemeral_pubkeys(&self) -> Vec<&PublicKey> {
-        self.outputs
-            .iter()
-            .filter_map(|o| o.ephemeral_pubkey())
-            .collect()
-    }
-
     /// Compute OP_RETURN data
     pub fn op_return_data(&self) -> Vec<u8> {
         let mut data = Vec::with_capacity(40);
@@ -386,10 +328,7 @@ impl ReconciliationTx {
                     });
                 }
 
-                TxOutput::GhostLock {
-                    address, amount, ..
-                }
-                | TxOutput::Payment {
+                TxOutput::Payment {
                     address, amount, ..
                 }
                 | TxOutput::Exit {

@@ -79,7 +79,7 @@ impl ReaperConfig {
             reject_fake_pubkeys: true,
             reject_annex: true,
             reject_unreachable_code: true,
-            max_op_return_bytes: 83,
+            max_op_return_bytes: 82,
             min_drop_data_size: 76,
             reject_excess_witness: true,
             min_excess_witness_bytes: 500,

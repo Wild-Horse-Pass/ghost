@@ -223,7 +223,15 @@ impl CoinbaseBuilder {
             ));
         }
 
-        // Allow raw script pubkey bytes (for internal use with pre-computed scripts)
+        // Defense-in-depth: reject oversized raw scripts
+        // P2WSH (34 bytes) is the largest standard non-OP_RETURN scriptPubKey
+        if address.len() > 34 {
+            return Err(GhostError::InvalidInput(format!(
+                "Raw script pubkey too large: {} bytes (max 34)",
+                address.len()
+            )));
+        }
+
         Ok(ScriptBuf::from(address.to_vec()))
     }
 

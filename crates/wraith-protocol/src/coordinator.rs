@@ -284,7 +284,7 @@ impl ReputationTracker {
 
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::XOnlyPublicKey;
-use bitcoin::{Address, Network, ScriptBuf, Txid};
+use bitcoin::{Address, CompressedPublicKey, Network, ScriptBuf, Txid};
 
 use crate::blind::{
     BlindSignatureResponse, BlindedChallenge, CoordinatorSigner, PublicNonce, UnblindedToken,
@@ -1105,6 +1105,16 @@ impl WraithCoordinator {
             ));
         }
 
+        // Reject P2TR addresses for quantum safety
+        if final_address.starts_with("bc1p")
+            || final_address.starts_with("tb1p")
+            || final_address.starts_with("bcrt1p")
+        {
+            return Err(WraithError::InvalidInput(
+                "P2TR addresses are quantum-vulnerable. Use P2WPKH (bc1q...) instead.".into(),
+            ));
+        }
+
         // SECURITY: Check for duplicate address BEFORE accepting
         // This prevents address reuse attacks across anonymous submissions
         if self.submitted_addresses.contains(&final_address) {
@@ -1260,15 +1270,15 @@ impl WraithCoordinator {
     // pool without any participant linkage. The coordinator can verify tokens are
     // valid (signed by coordinator) but cannot determine which participant submitted them.
 
-    /// Convert an x-only pubkey to a P2TR address string
-    fn xonly_to_p2tr_address(&self, xonly: &[u8; 32]) -> Result<String, WraithError> {
-        let pubkey = XOnlyPublicKey::from_slice(xonly)
-            .map_err(|e| WraithError::InvalidInput(format!("Invalid x-only pubkey: {}", e)))?;
-
-        // Create a P2TR address with no script path (key-path only)
-        let secp = bitcoin::secp256k1::Secp256k1::new();
-        let address = Address::p2tr(&secp, pubkey, None, self.network);
-
+    /// Convert an x-only pubkey to a P2WPKH address string
+    fn xonly_to_p2wpkh_address(&self, xonly: &[u8; 32]) -> Result<String, WraithError> {
+        // Reconstruct compressed pubkey (even y parity, BIP-340 convention)
+        let mut compressed = [0u8; 33];
+        compressed[0] = 0x02;
+        compressed[1..].copy_from_slice(xonly);
+        let pubkey = CompressedPublicKey::from_slice(&compressed)
+            .map_err(|e| WraithError::InvalidInput(format!("Invalid pubkey: {}", e)))?;
+        let address = Address::p2wpkh(&pubkey, self.network);
         Ok(address.to_string())
     }
 
@@ -1371,7 +1381,7 @@ impl WraithCoordinator {
                         token.message.len()
                     ))
                 })?;
-                let addr = self.xonly_to_p2tr_address(&address_bytes)?;
+                let addr = self.xonly_to_p2wpkh_address(&address_bytes)?;
                 addrs.push(addr);
             }
             intermediate_addresses.push(addrs);
