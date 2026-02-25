@@ -135,16 +135,20 @@ pub enum CapacityState {
 
 impl CapacityState {
     /// Calculate from current/max miners
+    ///
+    /// M-25: Uses integer arithmetic to avoid floating-point imprecision.
+    /// `(current * 100) / max` gives the integer percentage (truncated).
     pub fn from_load(current: u32, max: u32) -> Self {
         if max == 0 {
             return Self::HardLimit;
         }
-        let percent = (current as f64 / max as f64) * 100.0;
-        if percent < 50.0 {
+        // M-25: Integer percentage — u64 intermediate prevents u32 overflow
+        let percent = (current as u64 * 100) / max as u64;
+        if percent < 50 {
             Self::Healthy
-        } else if percent < 75.0 {
+        } else if percent < 75 {
             Self::Normal
-        } else if percent < 90.0 {
+        } else if percent < 90 {
             Self::SoftLimit
         } else {
             Self::HardLimit

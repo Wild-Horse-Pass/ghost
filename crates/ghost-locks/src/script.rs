@@ -297,18 +297,6 @@ impl RecoveryInputParams {
         nsequence != u32::MAX
     }
 
-    /// Validate that an nSequence value matches the expected timelock blocks
-    ///
-    /// This checks that the nSequence encodes the correct block count for CSV.
-    pub fn matches_timelock(nsequence: u32, expected_blocks: u32) -> bool {
-        if !Self::is_valid_nsequence(nsequence) {
-            return false;
-        }
-
-        // Extract block count from lower 16 bits
-        let encoded_blocks = nsequence & 0x0000FFFF;
-        encoded_blocks == expected_blocks
-    }
 }
 
 /// Compute the tagged hash for Ghost Lock ID

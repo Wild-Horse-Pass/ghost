@@ -51,7 +51,26 @@ impl From<ConfidentialNoteInfo> for ServerNote {
     }
 }
 
-/// Manages tree sync between wallet and server
+/// Manages tree sync between wallet and server.
+///
+/// # Race Condition Warning
+///
+/// Tree synchronization is inherently susceptible to race conditions when
+/// transfers occur during the sync process:
+///
+/// 1. **Initial sync**: The wallet fetches the tree state and owned notes from
+///    the GSP server. If a transfer is finalized between the tree state fetch
+///    and the notes fetch, the local tree may have a stale root that does not
+///    reflect the latest notes.
+///
+/// 2. **Concurrent transfers**: If a transfer notification arrives via
+///    `apply_received_transfer` while an initial sync is in progress, the
+///    tree may contain duplicate or out-of-order insertions.
+///
+/// **Mitigation**: After initial sync, always call `verify_root()` to confirm
+/// the local tree matches the server's root. If there is a mismatch, discard
+/// the local tree and re-sync from scratch. The GSP server is the source of
+/// truth for the commitment tree state.
 pub struct TreeSync {
     /// The commitment tree depth
     tree_depth: usize,

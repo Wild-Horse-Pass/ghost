@@ -650,12 +650,12 @@ impl CeremonyManager {
         if let Some(commitment_hash) = contribution.commitment_hash {
             let mut pending = self.pending_commitments.write();
             if let Some(commitment) = pending.remove(&commitment_hash) {
-                // Verify commitment matches contribution
+                // H-1: Reject contribution if commitment doesn't match (tampering detected)
                 if !commitment.matches_contribution(contribution) {
-                    warn!(
-                        contributor = %contribution.contributor,
-                        "Contribution commitment mismatch - possible tampering detected"
-                    );
+                    return Err(MpcError::InvalidProof(format!(
+                        "H-1: Contribution commitment mismatch for contributor {} — possible tampering",
+                        contribution.contributor
+                    )));
                 }
                 // Record fulfilled commitment for audit
                 self.fulfilled_commitments.write().push(commitment_hash);
