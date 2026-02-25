@@ -27,13 +27,33 @@ use crate::types::{ConfidentialTransferWitness, MerkleProof};
 ///
 /// Uses precomputed zero-subtree hashes to avoid O(2^depth) traversal
 /// on sparse trees. Only subtrees containing actual leaves are computed.
+///
+/// # Nullifier Set (Double-Spend Prevention)
+///
+/// The tree maintains an internal set of spent nullifiers. A nullifier is a
+/// deterministic, unlinkable identifier derived from a note's commitment and
+/// the owner's spending key: `nullifier = MiMC(spending_key, note_id)`.
+///
+/// **Callers MUST check `is_nullifier_spent()` before accepting any new
+/// transaction that spends a note.** If the nullifier is already in the set,
+/// the transaction is a double-spend attempt and must be rejected. The
+/// `apply_transfer()` method performs this check automatically, but direct
+/// users of `spend_nullifier()` must check explicitly.
+///
+/// The nullifier set grows monotonically within an epoch and is pruned
+/// during epoch transitions by the `EpochManager`.
 #[derive(Debug, Clone)]
 pub struct CommitmentTree {
     /// Tree depth (supports 2^depth notes)
     depth: usize,
     /// Leaf values: index -> commitment (as field element bytes)
     leaves: HashMap<u64, [u8; 32]>,
-    /// Set of spent nullifiers (prevents double-spend)
+    /// Set of spent nullifiers for double-spend prevention.
+    ///
+    /// A nullifier uniquely identifies a spent note without revealing which note
+    /// was spent (unlinkability). Before adding any new commitment that spends
+    /// an existing note, the caller must verify the nullifier is not already
+    /// present in this set. See `is_nullifier_spent()` and `spend_nullifier()`.
     nullifiers: HashSet<[u8; 32]>,
     /// Next available index for new notes
     next_index: u64,

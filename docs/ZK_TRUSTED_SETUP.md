@@ -57,9 +57,9 @@ The solution is a **Multi-Party Computation ceremony** where:
 
 ### Ceremony Requirements
 
-For Ghost's payout verification circuit:
+For Ghost's ZK circuits (NoteSpendCircuit and PayoutCircuit):
 
-1. **Minimum Participants**: At least 10 independent parties
+1. **Minimum Participants**: At least 10 independent parties (Ghost supports up to 101)
 2. **Geographic Distribution**: Participants from different jurisdictions
 3. **Hardware Diversity**: Different hardware to prevent correlated failures
 4. **Transcript Publication**: Full ceremony transcript must be public
@@ -67,15 +67,18 @@ For Ghost's payout verification circuit:
 
 ### Ceremony Process
 
+Ghost implements a **rolling MPC ceremony** (not a one-time event):
+
 1. **Phase 1 (Powers of Tau)**
    - Universal ceremony for BLS12-381 curve
    - Can reuse existing ceremonies (e.g., Filecoin, Zcash)
    - Produces curve-wide parameters
 
 2. **Phase 2 (Circuit-Specific)**
-   - Specific to Ghost's PayoutCircuit
-   - Must be conducted for each circuit version
-   - Produces proving and verifying keys
+   - Specific to Ghost's NoteSpendCircuit (~12,675 constraints, depth-40 merkle, MiMC 82 rounds)
+   - Uses `NoteSpendCircuit::dummy(40)` for parameter generation (~3-4 seconds per contribution)
+   - The first 101 contributors become Elders (+1 share)
+   - Parameters ossify permanently after 101 contributions
 
 ### Using Existing Ceremonies
 
@@ -89,13 +92,13 @@ Ghost can leverage existing Powers of Tau ceremonies:
 
 ### Before Production Deployment
 
-- [ ] Conduct or adopt a Phase 1 ceremony
-- [ ] Conduct Phase 2 ceremony for PayoutCircuit
-- [ ] Publish full ceremony transcript
+- [x] Rolling MPC ceremony implemented (up to 101 contributors)
+- [x] NoteSpendCircuit parameter generation via `NoteSpendCircuit::dummy(40)`
+- [x] Toxic waste zeroed automatically via `ZeroizeOnDrop`
+- [x] Parameters stored in `~/.ghost/mpc_params/` with versioned files
+- [x] P2P contributor sync via `/api/v1/mpc/contributors`
+- [ ] Publish full ceremony transcript for mainnet
 - [ ] Have transcript independently verified
-- [ ] Store parameters in version control with checksums
-- [ ] Remove all `new_with_setup()` calls from production code
-- [ ] Use `new_with_params()` with ceremony-generated parameters
 
 ### Parameter Distribution
 

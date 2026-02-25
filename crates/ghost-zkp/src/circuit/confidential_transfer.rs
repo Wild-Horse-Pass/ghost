@@ -140,6 +140,13 @@ impl<F: PrimeField> Circuit<F> for ConfidentialTransferCircuit<F> {
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
 
+        // Range proof on sender's input value (prevent field wrap-around)
+        enforce_range(
+            cs.namespace(|| "range_sender_value"),
+            &sender_value,
+            BALANCE_BITS,
+        )?;
+
         let sender_blinding = AllocatedNum::alloc(cs.namespace(|| "sender_blinding"), || {
             self.sender_blinding
                 .ok_or(SynthesisError::AssignmentMissing)
@@ -169,6 +176,13 @@ impl<F: PrimeField> Circuit<F> for ConfidentialTransferCircuit<F> {
                     .map(|v| F::from(v))
                     .ok_or(SynthesisError::AssignmentMissing)
             })?;
+
+        // Range proof on recipient's old value (prevent field wrap-around)
+        enforce_range(
+            cs.namespace(|| "range_recipient_old_value"),
+            &recipient_old_value,
+            BALANCE_BITS,
+        )?;
 
         let recipient_old_blinding =
             AllocatedNum::alloc(cs.namespace(|| "recipient_old_blinding"), || {
@@ -740,13 +754,13 @@ mod tests {
             "Confidential transfer circuit (depth=20) constraints: {}",
             num_constraints
         );
-        // Expected ~6200 constraints
+        // ~23,000 with 82-round MiMC and range proofs on sender_value + recipient_old_value
         assert!(
-            num_constraints > 3000,
+            num_constraints > 10000,
             "Should have significant constraints"
         );
         assert!(
-            num_constraints < 15000,
+            num_constraints < 35000,
             "Should be within Groth16 feasibility"
         );
     }

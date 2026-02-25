@@ -109,6 +109,7 @@ impl<F: PrimeField> Circuit<F> for NoteConsolidateCircuit<F> {
 
         let mut value_vars = Vec::with_capacity(n);
         let mut is_real_bools = Vec::with_capacity(n);
+        let mut spending_key_vars: Vec<AllocatedNum<F>> = Vec::with_capacity(n);
 
         #[allow(clippy::needless_range_loop)]
         for i in 0..n {
@@ -171,6 +172,22 @@ impl<F: PrimeField> Circuit<F> for NoteConsolidateCircuit<F> {
                 tree_depth,
             )?;
             let siblings = alloc_siblings(ns.namespace(|| "siblings"), sibs)?;
+
+            // Index bit-decomposition consistency: note_index_field == sum(bit_i * 2^i)
+            {
+                let mut coeff = F::ONE;
+                let mut lc = LinearCombination::<F>::zero();
+                for bit in &index_bits {
+                    lc = lc + &bit.lc(CS::one(), coeff);
+                    coeff = coeff.double();
+                }
+                ns.enforce(
+                    || "index_bits_consistency",
+                    |_| lc,
+                    |lc| lc + CS::one(),
+                    |lc| lc + note_index_field.get_variable(),
+                );
+            }
 
             // ================================================================
             // 3. Compute commitment and merkle root for this input
@@ -255,7 +272,8 @@ impl<F: PrimeField> Circuit<F> for NoteConsolidateCircuit<F> {
 
             enforce_range(ns.namespace(|| "range_value"), &note_value, BALANCE_BITS)?;
 
-            // Store for sum computation
+            // Store for cross-input constraints
+            spending_key_vars.push(spending_key);
             value_vars.push(note_value);
             is_real_bools.push(is_real_bool);
         }
@@ -265,10 +283,25 @@ impl<F: PrimeField> Circuit<F> for NoteConsolidateCircuit<F> {
         //    For i > 0: is_real[i] * (spending_key[i] - spending_key[0]) == 0
         // ====================================================================
 
-        // Re-read the spending keys (we need references in scope)
-        // Actually we stored value_vars but not spending_keys. Let's enforce
-        // the spending key check during the loop above instead.
-        // MOVED: this is handled below via a separate pass.
+        if spending_key_vars.len() > 1 {
+            let first_key = &spending_key_vars[0];
+            for (i, key) in spending_key_vars.iter().enumerate().skip(1) {
+                // Extract the is_real bit variable for this input
+                match &is_real_bools[i] {
+                    Boolean::Is(ref bit) => {
+                        cs.enforce(
+                            || format!("spending_key_eq_{}", i),
+                            |lc| lc + bit.get_variable(),
+                            |lc| lc + key.get_variable() - first_key.get_variable(),
+                            |lc| lc,
+                        );
+                    }
+                    _ => {
+                        // Constant false: no constraint needed (input is not real)
+                    }
+                }
+            }
+        }
 
         // ====================================================================
         // 7. Sum conservation: output_value = sum(is_real_i * value_i)

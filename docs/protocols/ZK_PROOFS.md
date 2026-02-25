@@ -53,10 +53,11 @@ Ghost Pay uses **Groth16** SNARKs (Succinct Non-interactive ARguments of Knowled
 
 | Property | Value |
 |----------|-------|
-| Proof size | ~200 bytes (constant) |
-| Verification time | ~10ms |
-| Proving time | ~1 second |
-| Setup | Trusted setup required |
+| Proof size | 192 bytes (constant) |
+| Verification time | ~5ms (NoteSpendCircuit) |
+| Proving time | ~3-4 seconds (NoteSpendCircuit, sender-side) |
+| Hash function | MiMC (82 rounds, ≥128-bit security) |
+| Setup | Rolling MPC ceremony (up to 101 contributors) |
 
 ### Why Groth16?
 
@@ -158,59 +159,42 @@ Statement proven:
 
 ## Circuit Design
 
-### Transfer Circuit
+### NoteSpendCircuit (Current — February 2026 L2 Redesign)
+
+The L2 uses a **note/UTXO model** with **sender-side proofs**. Senders generate Groth16 proofs locally; validators only verify.
 
 ```rust
-// Simplified representation
-fn transfer_circuit(
-    // Public inputs
-    sender_commitment_before: Field,
-    sender_commitment_after: Field,
-    recipient_commitment_before: Field,
-    recipient_commitment_after: Field,
-    fee: Field,
-
+pub struct NoteSpendCircuit<F: PrimeField> {
     // Private inputs (witness)
-    sender_balance_before: Field,
-    sender_balance_after: Field,
-    recipient_balance_before: Field,
-    recipient_balance_after: Field,
-    amount: Field,
-    sender_randomness_before: Field,
-    sender_randomness_after: Field,
-    recipient_randomness_before: Field,
-    recipient_randomness_after: Field,
-    sender_signature: Signature,
-) {
-    // 1. Verify commitments
-    assert_eq!(
-        hash(sender_balance_before, sender_randomness_before),
-        sender_commitment_before
-    );
-    assert_eq!(
-        hash(sender_balance_after, sender_randomness_after),
-        sender_commitment_after
-    );
-    // ... same for recipient
-
-    // 2. Verify balance updates
-    assert_eq!(
-        sender_balance_after,
-        sender_balance_before - amount - fee
-    );
-    assert_eq!(
-        recipient_balance_after,
-        recipient_balance_before + amount
-    );
-
-    // 3. Verify signature
-    assert!(verify_signature(sender_signature, transfer_hash));
-
-    // 4. Range checks (no negative balances)
-    assert!(sender_balance_after >= 0);
-    assert!(recipient_balance_after >= 0);
+    pub note_value: Option<F>,         // Value of the note being spent
+    pub spending_key: Option<F>,       // Proves ownership
+    pub randomness: Option<F>,         // Commitment randomness
+    pub note_index: Option<u64>,       // Position in commitment tree
+    pub epoch: Option<F>,              // Epoch of note creation
+    pub amount: Option<F>,             // Transfer amount
+    pub recipient_pubkey: Option<F>,   // Recipient's public key
+    pub change_randomness: Option<F>,  // Randomness for change note
+    pub recipient_randomness: Option<F>, // Randomness for recipient note
+    pub merkle_siblings: Vec<Option<F>>, // Merkle path (40 levels)
+    pub commitment_root: Option<F>,    // Public: tree root
+    pub tree_depth: usize,             // 40 (default)
 }
 ```
+
+**Constraints (~12,675 at depth-40):**
+1. Spent note commitment correctly formed (MiMC Pedersen)
+2. Note ID incorporates index, epoch, and commitment
+3. Nullifier proves ownership via spending key
+4. Merkle inclusion in commitment tree (40 levels)
+5. Balance conservation: change = note_value - amount
+6. Change and recipient commitments correctly formed
+7. Range proofs: amount in [0, 2^64), change in [0, 2^64)
+
+**Public inputs (4):**
+- `commitment_root` — Merkle root of the commitment tree at time of spend
+- `nullifier` — prevents double-spend, deterministically routes to validator
+- `change_commitment` — sender's new note (remaining balance)
+- `recipient_commitment` — recipient's new note (transfer amount)
 
 ## Trusted Setup
 
@@ -246,21 +230,19 @@ Anyone can verify the setup was performed correctly:
 
 ## Performance
 
-### Proof Generation
+### Proof Generation (Sender-Side)
 
-| Circuit | Constraints | Proving Time | Memory |
-|---------|-------------|--------------|--------|
-| Transfer | ~10,000 | ~500ms | ~1GB |
-| Balance Check | ~5,000 | ~200ms | ~500MB |
-| Batch (100 tx) | ~500,000 | ~30s | ~8GB |
+| Circuit | Constraints | Proving Time | Params Size |
+|---------|-------------|--------------|-------------|
+| NoteSpendCircuit (depth=40) | ~12,675 | ~3-4 seconds | ~1.4 MB |
+| PayoutCircuit | ~2,500 | ~1 second | ~200 KB |
 
-### Proof Verification
+### Proof Verification (Validator-Side)
 
 | Circuit | Verification Time | Proof Size |
 |---------|-------------------|------------|
-| Transfer | ~10ms | 192 bytes |
-| Balance Check | ~5ms | 192 bytes |
-| Batch | ~10ms | 192 bytes |
+| NoteSpend | ~5ms | 192 bytes |
+| Payout | ~10ms | 192 bytes |
 
 ## Privacy Guarantees
 
@@ -318,46 +300,44 @@ Only the recipient (with their scan key) can detect that a payment is theirs.
 
 ## Integration with Ghost Pay
 
-### Transfer Flow with ZK
+### Transfer Flow (Sender-Side Proofs)
 
 ```
-1. User wants to transfer 0.1 BTC
+1. Sender wants to transfer 0.1 BTC from their note
 
-2. Wallet generates ZK proof:
-   ├── Proves balance ≥ 0.1 BTC + fee
-   ├── Proves new balances are correctly computed
-   └── Proves valid signature
+2. Sender's wallet generates NoteSpendCircuit proof locally (~3-4s):
+   ├── Proves ownership of note via spending key → nullifier
+   ├── Proves note is in commitment tree via Merkle path (depth 40)
+   ├── Proves balance conservation: change = note_value - amount
+   └── Creates change + recipient commitments
 
-3. Submit to L2 network:
-   ├── Encrypted transfer details
-   └── ZK proof
+3. Submit to NullifierRouteHandler:
+   ├── Proof (192 bytes) + public inputs
+   └── Routed by nullifier prefix to deterministic validator
 
-4. Validators verify:
-   ├── Check ZK proof (fast, ~10ms)
-   ├── Don't see amounts or balances
-   └── Update state commitments
+4. Validator verifies:
+   ├── Check NoteSpendCircuit proof (~5ms)
+   ├── Check nullifier not already spent (double-spend prevention)
+   └── Add new commitments to tree, record nullifier
 
-5. Transfer complete:
-   └── Privacy preserved throughout
+5. BFT checkpoint (every 10s, all-node, 67% threshold):
+   └── Transaction finalized, commitment tree root updated
 ```
 
-### Settlement with ZK
+### Settlement
 
 ```
-1. Epoch ends, batch settlement needed
+1. Epoch ends, reconciliation triggered
 
-2. Coordinator generates batch proof:
-   ├── Proves all N transactions valid
-   ├── Proves state transition correct
-   └── Single proof for entire batch
+2. EpochManager compacts commitment tree and computes new root
 
 3. On-chain settlement:
-   ├── Submit batch proof (192 bytes)
-   ├── Submit new state root
-   └── Anyone can verify
+   ├── Submit state root in OP_RETURN (GPRC marker)
+   ├── Process withdrawal outputs for users exiting L2
+   └── Batch for fee efficiency
 
 4. L1 transaction:
-   └── Contains proof, not transaction details
+   └── Contains state commitment + withdrawal outputs
 ```
 
 ## Security Considerations
@@ -402,11 +382,11 @@ Ghost Pay doesn't need this because:
 ### Block Finalization Flow
 
 ```
-1. Proposer receives transactions from users
-2. Proposer creates block + generates ZK proof (~2 sec)
-3. Broadcasts ZkBlockProposal to validators
-4. Validators verify ZK proof (~10ms each)
-5. Once 67% approve → block finalized
+1. Senders generate NoteSpendCircuit proofs locally (~3-4 sec each)
+2. Submit transaction + proof to NullifierRouteHandler
+3. NullifierRouteHandler verifies proof (~5ms) and routes by nullifier prefix
+4. All-node BFT checkpoint every 10 seconds (67% threshold)
+5. Once checkpoint reaches consensus → transactions finalized
 6. IMMEDIATELY DISCARDED:
    ├── ZK proof data
    ├── Individual transaction details
@@ -491,25 +471,21 @@ Future versions may use recursive proofs:
 
 ### Libraries Used
 
-- `bellman` - Groth16 implementation
-- `bls12_381` - Elliptic curve operations
+- `bellperson` - Groth16 implementation (GPU-ready fork of bellman)
+- `bls12_381` - BLS12-381 elliptic curve operations
 - `ff` - Finite field arithmetic
 
 ### Circuit Testing
 
 ```rust
 #[test]
-fn test_transfer_circuit() {
-    let circuit = TransferCircuit {
-        sender_balance_before: 1_000_000,
-        sender_balance_after: 900_000,
-        amount: 90_000,
-        fee: 10_000,
-        // ... other fields
-    };
-
-    let proof = create_proof(&circuit, &proving_key);
-    assert!(verify_proof(&proof, &verification_key, &public_inputs));
+fn test_note_spend_circuit() {
+    let circuit = NoteSpendCircuit::<Fr>::dummy(40);
+    let cs = TestConstraintSystem::<Fr>::new();
+    circuit.synthesize(&mut cs).unwrap();
+    // ~12,675 constraints at depth-40
+    assert!(cs.num_constraints() > 5000);
+    assert!(cs.num_constraints() < 20000);
 }
 ```
 

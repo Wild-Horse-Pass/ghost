@@ -21,7 +21,7 @@
 use bellperson::{
     gadgets::boolean::{AllocatedBit, Boolean},
     gadgets::num::AllocatedNum,
-    Circuit, ConstraintSystem, SynthesisError,
+    Circuit, ConstraintSystem, LinearCombination, SynthesisError,
 };
 use ff::PrimeField;
 
@@ -165,6 +165,25 @@ impl<F: PrimeField> Circuit<F> for NoteSpendCircuit<F> {
         let index_bits =
             alloc_index_bits(cs.namespace(|| "index_bits"), self.note_index, tree_depth)?;
         let siblings = alloc_siblings(cs.namespace(|| "siblings"), &self.merkle_siblings)?;
+
+        // Index bit-decomposition consistency: note_index_field == sum(bit_i * 2^i)
+        {
+            let mut coeff = F::ONE;
+            let mut lc = LinearCombination::<F>::zero();
+            for bit in &index_bits {
+                lc = lc + &bit.lc(CS::one(), coeff);
+                coeff = coeff.double();
+            }
+            cs.enforce(
+                || "index_bits_consistency",
+                |_| lc,
+                |lc| lc + CS::one(),
+                |lc| lc + note_index_field.get_variable(),
+            );
+        }
+
+        // Range proof on note_value (prevent field wrap-around on input note)
+        enforce_range(cs.namespace(|| "range_note_value"), &note_value, BALANCE_BITS)?;
 
         // ====================================================================
         // 3. Compute spent note commitment: C = MiMC(MiMC(value, blinding), COMT_DOMAIN)
@@ -573,9 +592,9 @@ mod tests {
 
         let n = cs.num_constraints();
         println!("NoteSpendCircuit (depth=40) constraints: {}", n);
-        // Should be ~3,700 — much less than BlockCircuit's ~620,000
-        assert!(n > 1000, "Expected > 1000 constraints, got {}", n);
-        assert!(n < 10000, "Expected < 10000 constraints, got {}", n);
+        // ~12,700 with 82-round MiMC, range proofs on note_value, and index_bits consistency
+        assert!(n > 5000, "Expected > 5000 constraints, got {}", n);
+        assert!(n < 20000, "Expected < 20000 constraints, got {}", n);
     }
 
     #[test]
