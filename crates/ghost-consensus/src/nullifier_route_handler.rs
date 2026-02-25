@@ -10,7 +10,7 @@
 //! 4. All active nodes vote on checkpoint (67% BFT threshold)
 //! 5. On finalization: persist, update tree, manage epochs
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -150,6 +150,9 @@ pub struct NullifierRouteHandler {
     global_msg_rate: RwLock<(Instant, u32)>,
     /// Last tree sync request per peer (for rate limiting)
     sync_requests: RwLock<HashMap<NodeId, Instant>>,
+    /// C-2: Heights for which we (as proposer) already applied commitments during propose_checkpoint.
+    /// Prevents double-applying commitments when finalize_checkpoint runs on the proposer node.
+    proposed_heights: RwLock<HashSet<u64>>,
 }
 
 impl NullifierRouteHandler {
@@ -174,6 +177,7 @@ impl NullifierRouteHandler {
             peer_msg_rates: RwLock::new(HashMap::new()),
             global_msg_rate: RwLock::new((Instant::now(), 0)),
             sync_requests: RwLock::new(HashMap::new()),
+            proposed_heights: RwLock::new(HashSet::new()),
         }
     }
 
@@ -408,6 +412,38 @@ impl NullifierRouteHandler {
             return Ok(());
         }
 
+        // H-3: Verify ZK proof before accepting broadcast transactions.
+        // Without this, a malicious validator could broadcast fabricated transactions
+        // that bypass proof verification, corrupting the confirmed pool.
+        let verifier = self.verifier.read();
+        if let Some(ref v) = *verifier {
+            let public_inputs = NoteSpendPublicInputs {
+                commitment_root: tx.commitment_root,
+                nullifier: tx.nullifier,
+                change_commitment: tx.change_commitment,
+                recipient_commitment: tx.recipient_commitment,
+            };
+            match v.verify_raw(&tx.proof, &public_inputs) {
+                Ok(true) => {} // Valid proof, continue
+                Ok(false) => {
+                    warn!(
+                        validator = %hex::encode(&msg.validator[..8]),
+                        "H-3: Rejecting broadcast with invalid ZK proof"
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    warn!(
+                        validator = %hex::encode(&msg.validator[..8]),
+                        error = %e,
+                        "H-3: Proof verification error on broadcast, rejecting"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        // If no verifier is loaded yet, accept on trust (startup phase before MPC params load)
+
         // Record nullifier (if not already known)
         let height = self.epoch_manager.current_height();
         let _ = self.epoch_manager.spend_nullifier(tx.nullifier, height);
@@ -487,6 +523,10 @@ impl NullifierRouteHandler {
                 .append_commitment(tx.recipient_commitment, height)?;
         }
 
+        // C-2: Mark this height as already having commitments applied by the proposer.
+        // finalize_checkpoint() will skip re-applying for this height.
+        self.proposed_heights.write().insert(height);
+
         // Compute new root
         let new_root = self.epoch_manager.current_root()?;
 
@@ -524,6 +564,17 @@ impl NullifierRouteHandler {
     /// Handle a checkpoint block proposal
     ///
     /// Validates the proposal and casts a vote.
+    /// Handle a checkpoint proposal after signature verification.
+    ///
+    /// # Prerequisite: Signature Already Verified
+    ///
+    /// The caller (handle_message) MUST verify the proposer's Ed25519 signature
+    /// before calling this method. This ensures we do not waste CPU on root
+    /// verification or voting for unsigned/invalid messages. The ordering is:
+    ///
+    /// 1. Verify proposer signature (in handle_message)
+    /// 2. Validate proposer identity and root (this method)
+    /// 3. Cast vote
     pub fn handle_checkpoint_proposal(
         &self,
         msg: &L2CheckpointBlockMessage,
@@ -647,16 +698,22 @@ impl NullifierRouteHandler {
         height: u64,
         proposal: Option<&L2CheckpointBlockMessage>,
     ) -> GhostResult<()> {
-        // Apply transactions to tree (if we have the proposal and haven't applied yet)
-        if let Some(block) = proposal {
-            // Append commitments for each transaction
-            for tx in &block.transactions {
-                self.epoch_manager
-                    .append_commitment(tx.change_commitment, height)?;
-                self.epoch_manager
-                    .append_commitment(tx.recipient_commitment, height)?;
+        // C-2: Only apply commitments if this node didn't already apply them as proposer.
+        // The proposer applies commitments during propose_checkpoint(); non-proposer nodes
+        // apply them here during finalization. Without this guard, the proposer would
+        // double-insert every commitment into the tree.
+        let already_applied = self.proposed_heights.read().contains(&height);
+        if !already_applied {
+            if let Some(block) = proposal {
+                for tx in &block.transactions {
+                    self.epoch_manager
+                        .append_commitment(tx.change_commitment, height)?;
+                    self.epoch_manager
+                        .append_commitment(tx.recipient_commitment, height)?;
+                }
             }
         }
+        self.proposed_heights.write().remove(&height);
 
         // Compute and register new valid root
         let new_root = self.epoch_manager.current_root()?;
@@ -932,16 +989,18 @@ impl MessageHandler for NullifierRouteHandler {
                 let msg: L2TransferBroadcastMessage = serde_json::from_slice(&envelope.payload)
                     .map_err(|e| GhostError::Serialization(e.to_string()))?;
 
-                // Verify broadcast signature
-                if self.sign_fn.read().is_some() {
-                    let sign_msg = msg.signing_message();
-                    if !self.verify_peer_signature(&msg.validator, &sign_msg, &msg.signature) {
-                        warn!(
-                            validator = %hex::encode(&msg.validator[..8]),
-                            "Rejecting broadcast with invalid signature"
-                        );
-                        return Ok(());
-                    }
+                // M-5: Verify broadcast signature — reject if signing not available
+                if self.sign_fn.read().is_none() {
+                    warn!("M-5: Rejecting L2 broadcast — sign_fn not initialized (cannot verify signatures)");
+                    return Ok(());
+                }
+                let sign_msg = msg.signing_message();
+                if !self.verify_peer_signature(&msg.validator, &sign_msg, &msg.signature) {
+                    warn!(
+                        validator = %hex::encode(&msg.validator[..8]),
+                        "Rejecting broadcast with invalid signature"
+                    );
+                    return Ok(());
                 }
 
                 self.handle_transfer_broadcast(&msg)?;
@@ -951,21 +1010,23 @@ impl MessageHandler for NullifierRouteHandler {
                 let msg: L2CheckpointBlockMessage = serde_json::from_slice(&envelope.payload)
                     .map_err(|e| GhostError::Serialization(e.to_string()))?;
 
-                // Verify proposer signature
-                if self.sign_fn.read().is_some() {
-                    let signable = msg.to_signable_bytes();
-                    if !self.verify_peer_signature(
-                        &msg.proposer,
-                        &signable,
-                        &msg.proposer_signature,
-                    ) {
-                        warn!(
-                            proposer = %hex::encode(&msg.proposer[..8]),
-                            height = msg.height,
-                            "Rejecting checkpoint with invalid proposer signature"
-                        );
-                        return Ok(());
-                    }
+                // M-5: Verify proposer signature — reject if signing not available
+                if self.sign_fn.read().is_none() {
+                    warn!("M-5: Rejecting L2 checkpoint — sign_fn not initialized (cannot verify signatures)");
+                    return Ok(());
+                }
+                let signable = msg.to_signable_bytes();
+                if !self.verify_peer_signature(
+                    &msg.proposer,
+                    &signable,
+                    &msg.proposer_signature,
+                ) {
+                    warn!(
+                        proposer = %hex::encode(&msg.proposer[..8]),
+                        height = msg.height,
+                        "Rejecting checkpoint with invalid proposer signature"
+                    );
+                    return Ok(());
                 }
 
                 // Update last checkpoint time on receiving any valid proposal
@@ -985,17 +1046,19 @@ impl MessageHandler for NullifierRouteHandler {
                 let msg: L2CheckpointVoteMessage = serde_json::from_slice(&envelope.payload)
                     .map_err(|e| GhostError::Serialization(e.to_string()))?;
 
-                // Verify voter signature
-                if self.sign_fn.read().is_some() {
-                    let sign_msg = msg.signing_message();
-                    if !self.verify_peer_signature(&msg.voter, &sign_msg, &msg.signature) {
-                        warn!(
-                            voter = %hex::encode(&msg.voter[..8]),
-                            height = msg.height,
-                            "Rejecting vote with invalid signature"
-                        );
-                        return Ok(());
-                    }
+                // M-5: Verify voter signature — reject if signing not available
+                if self.sign_fn.read().is_none() {
+                    warn!("M-5: Rejecting L2 vote — sign_fn not initialized (cannot verify signatures)");
+                    return Ok(());
+                }
+                let sign_msg = msg.signing_message();
+                if !self.verify_peer_signature(&msg.voter, &sign_msg, &msg.signature) {
+                    warn!(
+                        voter = %hex::encode(&msg.voter[..8]),
+                        height = msg.height,
+                        "Rejecting vote with invalid signature"
+                    );
+                    return Ok(());
                 }
 
                 self.handle_checkpoint_vote(&msg)?;

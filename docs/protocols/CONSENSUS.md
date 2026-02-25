@@ -403,8 +403,44 @@ ghost-cli consensus votes
 | Share propagation | <100ms | >500ms |
 | Uptime | ≥95% | <95% |
 
+## L2 BFT Checkpoints
+
+### All-Node Checkpoints
+
+Ghost Pay L2 transactions are finalized via all-node BFT checkpoints (no elder dependency):
+
+```
+Every 10 seconds:
+1. NullifierRouteHandler collects validated transactions
+2. Checkpoint proposal broadcast to all nodes
+3. All nodes vote (67% threshold)
+4. On approval: transactions finalized, commitment tree updated
+```
+
+### EpochManager
+
+The EpochManager handles L2 epoch lifecycle:
+- **Tree compaction**: Prunes spent notes from commitment tree
+- **Epoch transitions**: Advances epoch counter, triggers settlement
+- **Proposer rotation**: Different node proposes each checkpoint
+- **Commitment tree**: Maintains depth-40 MiMC Merkle tree
+
+### NullifierRouteHandler
+
+Replaces the earlier ZkVoteHandler and L2BlockProducer:
+- Validates sender-side Groth16 proofs (NoteSpendCircuit, ~5ms each)
+- Routes transactions by nullifier prefix for deterministic validator assignment
+- Manages checkpoint proposals and BFT voting
+- Produces epoch transition proposals
+
+**Key files:**
+- `crates/ghost-consensus/src/nullifier_route_handler.rs`
+- `crates/ghost-consensus/src/epoch_manager.rs`
+
 ## Related Documentation
 
 - [Architecture](ARCHITECTURE.md) - System overview
 - [Mining Pool](MINING_POOL.md) - Share handling
 - [Economics](ECONOMICS.md) - Payout calculation
+- [Ghost Pay](GHOST_PAY.md) - L2 payment network
+- [ZK Proofs](ZK_PROOFS.md) - NoteSpendCircuit details

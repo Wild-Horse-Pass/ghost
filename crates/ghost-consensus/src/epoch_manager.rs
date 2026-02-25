@@ -340,20 +340,23 @@ impl EpochManager {
     pub fn spend_nullifier(&self, nullifier: [u8; 32], block_height: u64) -> GhostResult<bool> {
         let epoch = self.current_epoch();
 
-        // Cross-epoch check: reject if spent in previous epoch (during transition window)
+        // C-3 TOCTOU fix: Acquire write lock on nullifier_set FIRST to prevent race
+        // where two threads both pass the transition check and then both insert.
+        // The write lock serializes all spend attempts atomically.
+        let mut set = self.nullifier_set.write();
+
+        // Cross-epoch check while holding the write lock
         if let Some(ref old_set) = *self.transition_nullifiers.read() {
             if old_set.contains(&nullifier) {
                 return Ok(false);
             }
         }
 
-        // Atomic check + insert with single write lock
-        {
-            let mut set = self.nullifier_set.write();
-            if !set.insert(nullifier) {
-                return Ok(false); // Already spent in current epoch
-            }
+        // Atomic check + insert (already holding write lock)
+        if !set.insert(nullifier) {
+            return Ok(false); // Already spent in current epoch
         }
+        drop(set);
 
         // Defer DB persistence — nullifiers are persisted atomically with the checkpoint
         // to prevent partial state on crash. In-memory set prevents double-spends immediately.
@@ -513,6 +516,11 @@ impl EpochManager {
     pub fn on_checkpoint_finalized(&self, height: u64) -> GhostResult<Option<CompactionResult>> {
         *self.current_height.write() = height;
 
+        // M-4: Flush pending nullifiers to the permanent set on every finalized checkpoint.
+        // This ensures nullifiers from accepted transactions are committed before
+        // any epoch boundary logic runs, preventing double-spend windows.
+        self.flush_pending_nullifiers()?;
+
         // Check if we're in a transition window that should end
         if *self.in_transition.read() {
             let epoch = self.current_epoch();
@@ -557,12 +565,29 @@ impl EpochManager {
         let unspent_notes = self.db.load_unspent_l2_notes(old_epoch)?;
         let notes_migrated = unspent_notes.len() as u64;
 
-        // 4. Build new tree from unspent notes (deterministic order)
+        // 4. Persist epoch records BEFORE migrating notes (FK trigger on l2_notes.epoch)
+        let old_final_root_copy = old_final_root;
+        self.db
+            .finalize_l2_epoch(old_epoch, boundary_height, &old_final_root_copy, notes_migrated)?;
+
+        // Insert new epoch record before any l2_notes reference it
+        // Initial root computed after tree build; use placeholder, update below
+        self.db.insert_l2_epoch(&ghost_storage::L2EpochRecord {
+            epoch: new_epoch,
+            start_height: boundary_height,
+            end_height: None,
+            initial_root: [0u8; 32], // placeholder, updated after tree build
+            final_root: None,
+            notes_migrated: 0,
+            status: "active".to_string(),
+        })?;
+
+        // 5. Build new tree from unspent notes (deterministic order)
         let mut new_tree = CommitmentTree::new(self.config.tree_depth);
         for (new_idx, note) in unspent_notes.iter().enumerate() {
             new_tree.insert(new_idx as u64, note.commitment);
 
-            // Persist migrated note in new epoch
+            // Persist migrated note in new epoch (FK satisfied: l2_epochs row exists)
             self.db
                 .insert_l2_note(new_epoch, new_idx as u64, &note.commitment, boundary_height)?;
         }
@@ -571,13 +596,17 @@ impl EpochManager {
             .root()
             .map_err(|e| GhostError::Internal(format!("Failed to compute new root: {}", e)))?;
 
-        // 5. Swap trees and move nullifiers to transition set for cross-epoch protection
+        // Update epoch record with actual initial root
+        self.db
+            .update_l2_epoch_initial_root(new_epoch, &new_initial_root)?;
+
+        // 6. Swap trees and move nullifiers to transition set for cross-epoch protection
         *self.commitment_tree.write() = new_tree;
         let old_nullifiers = std::mem::take(&mut *self.nullifier_set.write());
         *self.transition_nullifiers.write() = Some(old_nullifiers);
         *self.current_epoch.write() = new_epoch;
 
-        // 6. Add new root to valid roots
+        // 7. Add new root to valid roots
         {
             let mut roots = self.valid_roots.write();
             roots.push_back(new_initial_root);
@@ -585,20 +614,6 @@ impl EpochManager {
                 roots.pop_front();
             }
         }
-
-        // 7. Persist epoch records
-        self.db
-            .finalize_l2_epoch(old_epoch, boundary_height, &old_final_root, notes_migrated)?;
-
-        self.db.insert_l2_epoch(&ghost_storage::L2EpochRecord {
-            epoch: new_epoch,
-            start_height: boundary_height,
-            end_height: None,
-            initial_root: new_initial_root,
-            final_root: None,
-            notes_migrated: 0,
-            status: "active".to_string(),
-        })?;
 
         self.db
             .insert_l2_valid_root(boundary_height, new_epoch, &new_initial_root)?;
@@ -696,7 +711,7 @@ mod tests {
         assert_eq!(mgr.nullifier_count(), 0);
 
         // Should have one valid root
-        assert!(mgr.valid_roots.read().len() >= 1);
+        assert!(!mgr.valid_roots.read().is_empty());
     }
 
     #[test]
