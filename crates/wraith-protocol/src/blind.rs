@@ -61,8 +61,10 @@ const MAX_NONCES_PER_PARTICIPANT: usize = 100;
 /// Maximum total active nonces to prevent memory exhaustion
 const MAX_TOTAL_NONCES: usize = 1000;
 
-/// Nonce expiry time (1 hour)
-const NONCE_EXPIRY_SECS: u64 = 3600;
+/// Default nonce expiry time (1 hour)
+///
+/// L-14: Now configurable via `CoordinatorSignerConfig::nonce_expiry_secs`.
+const DEFAULT_NONCE_EXPIRY_SECS: u64 = 3600;
 
 /// Calculate Shannon entropy of byte slice
 ///
@@ -403,8 +405,11 @@ pub struct SigningNonce {
 /// 3. If this ever panics, it indicates a fundamental issue with secp256k1 library
 impl Drop for SigningNonce {
     fn drop(&mut self) {
+        use std::sync::atomic::{compiler_fence, Ordering};
+
         // First, erase using secp256k1's built-in method
         self.secret_nonce.non_secure_erase();
+        compiler_fence(Ordering::SeqCst);
 
         // CRYPT-5 FIX: Use explicit dummy value with expect() for guaranteed overwrite
         // The value [1u8; 32] is always valid:
@@ -418,12 +423,15 @@ impl Drop for SigningNonce {
              library has a fundamental bug.",
         );
         self.secret_nonce = dummy_key;
+        compiler_fence(Ordering::SeqCst);
 
         // Zeroize the dummy bytes (defense-in-depth)
         dummy.zeroize();
+        compiler_fence(Ordering::SeqCst);
 
         // Final erase pass on the dummy key
         self.secret_nonce.non_secure_erase();
+        compiler_fence(Ordering::SeqCst);
     }
 }
 
@@ -474,12 +482,19 @@ pub struct CoordinatorSignerConfig {
     /// Old keys are kept for this duration to verify in-flight signatures.
     /// Must be at least as long as the maximum session duration.
     pub grace_period_secs: u64,
+    /// L-14: Nonce expiry time in seconds (default: 3600 = 1 hour)
+    ///
+    /// Nonces older than this are automatically expired during cleanup.
+    /// Must be > 0. Shorter values reduce memory usage but may cause
+    /// in-flight signing operations to fail if participants are slow.
+    pub nonce_expiry_secs: u64,
 }
 
 impl Default for CoordinatorSignerConfig {
     fn default() -> Self {
         Self {
             grace_period_secs: DEFAULT_KEY_ROTATION_GRACE_PERIOD_SECS,
+            nonce_expiry_secs: DEFAULT_NONCE_EXPIRY_SECS,
         }
     }
 }
@@ -519,6 +534,8 @@ pub struct CoordinatorSigner {
     previous_keys: Vec<PreviousKey>,
     /// LOW-CRYPTO-1: Configurable grace period in seconds
     grace_period_secs: u64,
+    /// L-14: Configurable nonce expiry in seconds
+    nonce_expiry_secs: u64,
 }
 
 impl std::fmt::Debug for CoordinatorSigner {
@@ -573,6 +590,7 @@ impl CoordinatorSigner {
             nonces_per_participant: std::collections::HashMap::new(),
             previous_keys: Vec::new(),                   // WR4-L10
             grace_period_secs: config.grace_period_secs, // LOW-CRYPTO-1
+            nonce_expiry_secs: config.nonce_expiry_secs, // L-14
         })
     }
 
@@ -608,6 +626,7 @@ impl CoordinatorSigner {
             nonces_per_participant: std::collections::HashMap::new(),
             previous_keys: Vec::new(),                   // WR4-L10
             grace_period_secs: config.grace_period_secs, // LOW-CRYPTO-1
+            nonce_expiry_secs: config.nonce_expiry_secs, // L-14
         })
     }
 
@@ -666,11 +685,12 @@ impl CoordinatorSigner {
         let secret_nonce = random_secret_key()?;
         let public_nonce = PublicKey::from_secret_key(&secp, &secret_nonce);
 
-        // Create unique session ID for this nonce INCLUDING ghost_id binding
+        // Create unique session ID for this nonce bound to coordinator's identity pubkey
         let mut engine = sha256::Hash::engine();
-        engine.input(b"wraith/nonce-session/v2"); // v2 includes ghost_id
+        engine.input(b"wraith/nonce-session/v3"); // v3 binds to coordinator pubkey
         engine.input(&public_nonce.serialize());
-        engine.input(ghost_id.as_bytes()); // Bind to participant
+        engine.input(&self.public_key.serialize()); // Bind to coordinator identity key
+        engine.input(ghost_id.as_bytes()); // Also include participant ID
         engine.input(&random_bytes_32_with_retry()?);
         let session_id = sha256::Hash::from_engine(engine).to_byte_array();
 
@@ -698,9 +718,10 @@ impl CoordinatorSigner {
         Ok(public)
     }
 
-    /// Expire nonces older than NONCE_EXPIRY_SECS (1 hour)
+    /// Expire nonces older than the configured expiry duration (default: 1 hour)
     ///
     /// This is called automatically before creating new nonces.
+    /// L-14: Expiry duration is configurable via `CoordinatorSignerConfig::nonce_expiry_secs`.
     ///
     /// # L-22: Single-Node Limitation
     ///
@@ -719,7 +740,7 @@ impl CoordinatorSigner {
     /// 3. Monotonic time prevents time-travel attacks that could extend nonce lifetime
     fn expire_old_nonces(&mut self) {
         let now = Instant::now();
-        let expiry_duration = std::time::Duration::from_secs(NONCE_EXPIRY_SECS);
+        let expiry_duration = std::time::Duration::from_secs(self.nonce_expiry_secs);
 
         // Collect expired session IDs
         let expired: Vec<[u8; 32]> = self
@@ -949,7 +970,7 @@ impl CoordinatorSigner {
     /// Recommended: Call every 5 minutes or when memory pressure is detected.
     pub fn cleanup_expired_nonces(&mut self) -> usize {
         let now = Instant::now();
-        let expiry_duration = std::time::Duration::from_secs(NONCE_EXPIRY_SECS);
+        let expiry_duration = std::time::Duration::from_secs(self.nonce_expiry_secs);
 
         let before = self.active_nonces.len();
 

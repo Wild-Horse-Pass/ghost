@@ -34,14 +34,14 @@ const MAX_STRIKES: u32 = 3;
 
 /// Maximum number of used tokens to track in the LRU cache
 ///
-/// H-12 FIX: Increased from 100,000 to 1,000,000 tokens.
-/// At typical Wraith session rates (100 sessions/day with 50 participants each),
-/// this provides ~200 days of headroom before any eviction occurs.
+/// H-9 FIX: Increased to 10,000,000 tokens to handle sustained high-throughput
+/// operation. At peak capacity (all tiers running simultaneously with max
+/// participants), this provides headroom for multi-week operation.
 /// Combined with TOKEN_MAX_AGE_SECS (14 days), tokens are rejected by age
 /// long before capacity-based eviction would occur in normal operation.
 ///
-/// Worst case: 1M tokens * 40 bytes = ~40MB memory - acceptable for a coordinator.
-const MAX_USED_TOKENS: usize = 1_000_000;
+/// Worst case: 10M tokens * 40 bytes = ~400MB memory - acceptable for a coordinator.
+const MAX_USED_TOKENS: usize = 10_000_000;
 
 /// Maximum age for tokens in the cache (14 days)
 /// SECURITY: Must exceed 2x maximum session duration (7 days) to prevent replay attacks.
@@ -885,7 +885,12 @@ impl WraithCoordinator {
         let session_participant_id =
             derive_session_participant_id(&ghost_id, self.session.session_id());
 
-        let index = self.participants.len() as u32;
+        // L-13: Use try_from to prevent silent truncation on overflow
+        let index = u32::try_from(self.participants.len())
+            .map_err(|_| WraithError::InvalidInput(format!(
+                "Too many participants: {} exceeds u32::MAX",
+                self.participants.len()
+            )))?;
         let participant = Participant::new(index, session_participant_id.clone());
         self.participants
             .insert(session_participant_id.clone(), participant);
@@ -1527,9 +1532,13 @@ impl WraithCoordinator {
             if output.value.to_sat() == 0 {
                 continue;
             }
+            // L-13: Use try_from to prevent silent truncation on overflow
+            let vout_u32 = u32::try_from(vout).map_err(|_| {
+                WraithError::InvalidInput(format!("Output index {} exceeds u32::MAX", vout))
+            })?;
             self.phase1_outputs.push((
                 txid,
-                vout as u32,
+                vout_u32,
                 intermediate_amount,
                 output.script_pubkey.clone(),
             ));
@@ -1623,7 +1632,8 @@ impl WraithCoordinator {
                     vout,
                     amount,
                     script_pubkey: script_pubkey.clone(),
-                    participant_id: p_idx as u32,
+                    // L-13: p_idx bounded by participants.len() validated at registration
+                    participant_id: u32::try_from(p_idx).unwrap_or(u32::MAX),
                 });
                 output_idx += 1;
             }

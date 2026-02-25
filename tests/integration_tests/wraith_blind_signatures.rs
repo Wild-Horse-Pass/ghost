@@ -65,6 +65,7 @@ fn test_733_with_config_accepts_custom_grace_period() {
     let session_id = [4u8; 32];
     let config = CoordinatorSignerConfig {
         grace_period_secs: 3600, // 1 hour instead of default 7 days
+        nonce_expiry_secs: 3600, // 1 hour nonce expiry
     };
 
     let signer =

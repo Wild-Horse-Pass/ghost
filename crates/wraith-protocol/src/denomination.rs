@@ -27,7 +27,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::FEE_PERCENTAGE;
 use crate::SPLIT_RATIO;
 
 /// Standard Wraith mixing denominations
@@ -54,9 +53,9 @@ impl WraithDenomination {
         }
     }
 
-    /// Get the fee amount in satoshis (1% of output)
+    /// Get the fee amount in satoshis (1% of output, integer division)
     pub fn fee_sats(&self) -> u64 {
-        (self.output_sats() as f64 * FEE_PERCENTAGE) as u64
+        self.output_sats() / 100
     }
 
     /// Get the required input amount in satoshis (output + fee)
@@ -69,8 +68,20 @@ impl WraithDenomination {
     /// Privacy: All intermediates MUST be identical to prevent output clustering.
     /// Variable amounts would create a correlation vector allowing chain analysis
     /// to link split outputs by matching their unique sizes.
+    ///
+    /// M-23: Asserts exact divisibility — a remainder would create non-uniform
+    /// intermediate sizes, breaking the privacy invariant.
     pub fn intermediate_sats(&self) -> u64 {
-        self.output_sats() / SPLIT_RATIO as u64
+        let output = self.output_sats();
+        let ratio = SPLIT_RATIO as u64;
+        assert_eq!(
+            output % ratio,
+            0,
+            "M-23: denomination {} sats not evenly divisible by SPLIT_RATIO {}",
+            output,
+            ratio
+        );
+        output / ratio
     }
 
     /// Get the output amount in BTC

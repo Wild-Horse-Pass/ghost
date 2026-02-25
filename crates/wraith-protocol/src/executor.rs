@@ -202,9 +202,9 @@ impl WraithTransactionBuilder {
                     vout: input.vout,
                 },
                 script_sig: ScriptBuf::new(), // Will be filled by signing
-                // H-WRAITH-1: Disable RBF to prevent transaction replacement attacks
-                // Multi-party transactions must not be replaceable by any single participant
-                sequence: Sequence::MAX,
+                // H-10: Enable RBF for recovery (sequence 0xFFFFFFFD, locktime 0)
+                // This allows fee-bumping stuck transactions without locktime semantics
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                 witness: Witness::new(), // Will be filled by signing
             });
         }
@@ -363,9 +363,9 @@ impl WraithTransactionBuilder {
                     vout: input.vout,
                 },
                 script_sig: ScriptBuf::new(),
-                // H-WRAITH-1: Disable RBF to prevent transaction replacement attacks
-                // Multi-party transactions must not be replaceable by any single participant
-                sequence: Sequence::MAX,
+                // H-10: Enable RBF for recovery (sequence 0xFFFFFFFD, locktime 0)
+                // This allows fee-bumping stuck transactions without locktime semantics
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
                 witness: Witness::new(),
             });
         }
@@ -736,7 +736,7 @@ mod tests {
         let session_key = builder.session_id_hash();
         let marker: [u8; 32] = data[..32].try_into().unwrap();
         // Builder has 0 inputs (no participants added), so count = 0
-        let result = verify_encrypted_marker_v3(&marker, &session_key, 400);
+        let _result = verify_encrypted_marker_v3(&marker, &session_key, 400);
         // 0 participants won't match (range is 1..=max), which is expected for empty builder
         // The marker was generated with count=0, test that data is opaque
         assert_eq!(

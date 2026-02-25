@@ -99,8 +99,8 @@ pub const PHASE_EXECUTION_TIMEOUT_SECS: u64 = 60 * 60;
 /// Timeout for phase confirmation (6 hours - waiting for blockchain confirmations)
 pub const PHASE_CONFIRMATION_TIMEOUT_SECS: u64 = 6 * 60 * 60;
 
-/// Fee percentage (1%)
-pub const FEE_PERCENTAGE: f64 = 0.01;
+/// Fee divisor (100 = 1%). Integer-only arithmetic; no float constant.
+pub const FEE_DIVISOR: u64 = 100;
 
 /// Split ratio (1 input -> 10 intermediates)
 pub const SPLIT_RATIO: usize = 10;
@@ -116,16 +116,26 @@ pub const REFUND_VOTE_THRESHOLD: f64 = 0.67;
 
 /// OP_RETURN marker for Phase 1 (split)
 ///
-/// **3.16 SECURITY NOTE**: These plain-text markers are deprecated for new sessions.
-/// Use `generate_encrypted_marker()` instead to prevent blockchain fingerprinting.
-/// These constants are kept for backwards compatibility with existing transactions.
+/// **M-22 DEPRECATED**: Plain-text markers leak protocol usage on-chain.
+/// Use `generate_encrypted_marker_v3()` for new sessions.
+/// Retained ONLY for verifying legacy transactions.
+/// Removal target: v2.0.0 (after all pre-v2 transactions have finalized).
+#[deprecated(
+    since = "1.6.0",
+    note = "M-22: Use generate_encrypted_marker_v3() — plain-text markers leak protocol usage"
+)]
 pub const WRAITH_PHASE1_MARKER: &[u8] = b"WR1";
 
 /// OP_RETURN marker for Phase 2 (merge)
 ///
-/// **3.16 SECURITY NOTE**: These plain-text markers are deprecated for new sessions.
-/// Use `generate_encrypted_marker()` instead to prevent blockchain fingerprinting.
-/// These constants are kept for backwards compatibility with existing transactions.
+/// **M-22 DEPRECATED**: Plain-text markers leak protocol usage on-chain.
+/// Use `generate_encrypted_marker_v3()` for new sessions.
+/// Retained ONLY for verifying legacy transactions.
+/// Removal target: v2.0.0 (after all pre-v2 transactions have finalized).
+#[deprecated(
+    since = "1.6.0",
+    note = "M-22: Use generate_encrypted_marker_v3() — plain-text markers leak protocol usage"
+)]
 pub const WRAITH_PHASE2_MARKER: &[u8] = b"WR2";
 
 /// 3.16 SECURITY: Generate encrypted OP_RETURN marker (v2 — legacy)
@@ -243,6 +253,7 @@ pub fn verify_encrypted_marker(marker: &[u8; 32], session_id: &[u8; 32]) -> Opti
 ///
 /// Returns the phase number if this is a legacy WR1/WR2 marker, None otherwise.
 /// Used for backwards compatibility with pre-v2 transactions.
+#[allow(deprecated)] // M-22: Intentional use for backward-compat verification
 pub fn check_legacy_marker(marker: &[u8]) -> Option<u8> {
     if marker == WRAITH_PHASE1_MARKER {
         Some(1)

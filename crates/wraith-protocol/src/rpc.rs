@@ -163,7 +163,6 @@ impl WraithRpcBuilder {
         Ok(WraithTxMetadata {
             session_id: info.session_id,
             phase: info.phase,
-            participant_count: info.participant_count,
             valid: info.valid,
         })
     }
@@ -208,14 +207,17 @@ pub struct RpcMergeResult {
 }
 
 /// Parsed Wraith transaction metadata
+///
+/// H-11: participant_count is deliberately omitted from this public-facing struct
+/// to prevent leaking privacy information about how many users are in a CoinJoin.
+/// Only the phase is returned. The encrypted v3 marker absorbs the count into
+/// the hash, so it is not recoverable without the session ID.
 #[derive(Debug, Clone)]
 pub struct WraithTxMetadata {
     /// Session ID from OP_RETURN
     pub session_id: String,
     /// Phase (1 = split, 2 = merge)
     pub phase: u8,
-    /// Participant count
-    pub participant_count: u16,
     /// Whether valid Wraith transaction
     pub valid: bool,
 }

@@ -9,10 +9,11 @@
 use std::str::FromStr;
 
 use bitcoin::{Address, Network, ScriptBuf, Txid};
+#[allow(deprecated)]
 use wraith_protocol::{
     check_legacy_marker, generate_encrypted_marker, generate_encrypted_marker_v3,
     verify_encrypted_marker, verify_encrypted_marker_v3, Phase, PhaseExecution, PhaseState,
-    WraithDenomination, WraithInput, WraithTransactionBuilder, FEE_PERCENTAGE, SPLIT_RATIO,
+    WraithDenomination, WraithInput, WraithTransactionBuilder, FEE_DIVISOR, SPLIT_RATIO,
     WRAITH_PHASE1_MARKER, WRAITH_PHASE2_MARKER,
 };
 
@@ -79,7 +80,7 @@ fn test_700_all_denominations_output_sats() {
 #[test]
 fn test_701_fee_sats_one_percent_of_output() {
     for denom in WraithDenomination::all() {
-        let expected_fee = (denom.output_sats() as f64 * FEE_PERCENTAGE) as u64;
+        let expected_fee = denom.output_sats() / FEE_DIVISOR;
         assert_eq!(
             denom.fee_sats(),
             expected_fee,
@@ -599,6 +600,7 @@ fn test_723_v3_phase1_vs_phase2_different_markers() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_724_check_legacy_marker() {
     assert_eq!(check_legacy_marker(WRAITH_PHASE1_MARKER), Some(1));
     assert_eq!(check_legacy_marker(WRAITH_PHASE2_MARKER), Some(2));
