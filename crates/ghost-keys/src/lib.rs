@@ -49,13 +49,13 @@
 
 mod config;
 mod derivation;
+pub mod encryption;
 mod error;
 mod ghost_id;
 mod keys;
 pub mod labels;
 pub mod metadata;
 mod scanning;
-pub mod encryption;
 
 pub use config::ScanConfig;
 pub use derivation::{

@@ -155,13 +155,15 @@ impl<F: PrimeField> Circuit<F> for NoteSpendCircuit<F> {
                 .ok_or(SynthesisError::AssignmentMissing)
         })?;
 
-        let recipient_blinding = AllocatedNum::alloc(cs.namespace(|| "recipient_blinding"), || {
-            self.recipient_blinding
-                .ok_or(SynthesisError::AssignmentMissing)
-        })?;
+        let recipient_blinding =
+            AllocatedNum::alloc(cs.namespace(|| "recipient_blinding"), || {
+                self.recipient_blinding
+                    .ok_or(SynthesisError::AssignmentMissing)
+            })?;
 
         // Allocate merkle path
-        let index_bits = alloc_index_bits(cs.namespace(|| "index_bits"), self.note_index, tree_depth)?;
+        let index_bits =
+            alloc_index_bits(cs.namespace(|| "index_bits"), self.note_index, tree_depth)?;
         let siblings = alloc_siblings(cs.namespace(|| "siblings"), &self.merkle_siblings)?;
 
         // ====================================================================
@@ -212,10 +214,9 @@ impl<F: PrimeField> Circuit<F> for NoteSpendCircuit<F> {
         )?;
 
         let nullifier_domain_value = F::from(NULLIFIER_DOMAIN_SEPARATOR);
-        let nullifier_domain =
-            AllocatedNum::alloc(cs.namespace(|| "nullifier_domain"), || {
-                Ok(nullifier_domain_value)
-            })?;
+        let nullifier_domain = AllocatedNum::alloc(cs.namespace(|| "nullifier_domain"), || {
+            Ok(nullifier_domain_value)
+        })?;
         cs.enforce(
             || "nullifier_domain_constant",
             |lc| lc + nullifier_domain.get_variable(),
@@ -223,11 +224,8 @@ impl<F: PrimeField> Circuit<F> for NoteSpendCircuit<F> {
             |lc| lc + (nullifier_domain_value, CS::one()),
         );
 
-        let nullifier_inner = mimc_hash(
-            cs.namespace(|| "nullifier_inner"),
-            &spending_key,
-            &note_id,
-        )?;
+        let nullifier_inner =
+            mimc_hash(cs.namespace(|| "nullifier_inner"), &spending_key, &note_id)?;
 
         let computed_nullifier = mimc_hash(
             cs.namespace(|| "nullifier_outer"),
@@ -247,9 +245,7 @@ impl<F: PrimeField> Circuit<F> for NoteSpendCircuit<F> {
         // ====================================================================
 
         let change_value = AllocatedNum::alloc(cs.namespace(|| "change_value"), || {
-            let nv = self
-                .note_value
-                .ok_or(SynthesisError::AssignmentMissing)?;
+            let nv = self.note_value.ok_or(SynthesisError::AssignmentMissing)?;
             let a = self.amount.ok_or(SynthesisError::AssignmentMissing)?;
             Ok(F::from(nv.saturating_sub(a)))
         })?;
@@ -342,11 +338,7 @@ pub fn compute_nullifier_with_epoch_native<F: PrimeField>(
 /// Compute commitment tree root natively (for witness generation).
 ///
 /// Commitments are leaves — no additional leaf hashing needed.
-pub fn compute_note_root_native<F: PrimeField>(
-    commitment: F,
-    index: u64,
-    siblings: &[F],
-) -> F {
+pub fn compute_note_root_native<F: PrimeField>(commitment: F, index: u64, siblings: &[F]) -> F {
     let mut current = commitment;
     let mut idx = index;
 
@@ -514,10 +506,8 @@ mod tests {
             compute_nullifier_with_epoch_native(spending_key, note_index, epoch, note_commitment);
 
         // Compute output commitments
-        let change_commitment_val =
-            pedersen_commit_native(Fr::from(change_value), change_blinding);
-        let recipient_commitment_val =
-            pedersen_commit_native(Fr::from(amount), recipient_blinding);
+        let change_commitment_val = pedersen_commit_native(Fr::from(change_value), change_blinding);
+        let recipient_commitment_val = pedersen_commit_native(Fr::from(amount), recipient_blinding);
 
         NoteSpendCircuit {
             commitment_root: Some(commitment_root),
@@ -621,10 +611,7 @@ mod tests {
         let mut cs = TestConstraintSystem::<Fr>::new();
         let _ = circuit.synthesize(&mut cs);
 
-        assert!(
-            !cs.is_satisfied(),
-            "Wrong spending key must NOT satisfy"
-        );
+        assert!(!cs.is_satisfied(), "Wrong spending key must NOT satisfy");
     }
 
     #[test]
@@ -635,10 +622,7 @@ mod tests {
         let mut cs = TestConstraintSystem::<Fr>::new();
         let _ = circuit.synthesize(&mut cs);
 
-        assert!(
-            !cs.is_satisfied(),
-            "Wrong merkle proof must NOT satisfy"
-        );
+        assert!(!cs.is_satisfied(), "Wrong merkle proof must NOT satisfy");
     }
 
     #[test]
@@ -649,10 +633,7 @@ mod tests {
         let mut cs = TestConstraintSystem::<Fr>::new();
         let _ = circuit.synthesize(&mut cs);
 
-        assert!(
-            !cs.is_satisfied(),
-            "Wrong commitment root must NOT satisfy"
-        );
+        assert!(!cs.is_satisfied(), "Wrong commitment root must NOT satisfy");
     }
 
     #[test]
@@ -672,10 +653,8 @@ mod tests {
         let commitment_root = compute_note_root_native(note_commitment, note_index, &siblings);
         let nullifier =
             compute_nullifier_with_epoch_native(spending_key, note_index, epoch, note_commitment);
-        let change_commitment_val =
-            pedersen_commit_native(Fr::from(note_value), change_blinding);
-        let recipient_commitment_val =
-            pedersen_commit_native(Fr::from(amount), recipient_blinding);
+        let change_commitment_val = pedersen_commit_native(Fr::from(note_value), change_blinding);
+        let recipient_commitment_val = pedersen_commit_native(Fr::from(amount), recipient_blinding);
 
         let circuit = NoteSpendCircuit {
             commitment_root: Some(commitment_root),
@@ -721,10 +700,8 @@ mod tests {
         let commitment_root = compute_note_root_native(note_commitment, note_index, &siblings);
         let nullifier =
             compute_nullifier_with_epoch_native(spending_key, note_index, epoch, note_commitment);
-        let change_commitment_val =
-            pedersen_commit_native(Fr::from(0u64), change_blinding);
-        let recipient_commitment_val =
-            pedersen_commit_native(Fr::from(amount), recipient_blinding);
+        let change_commitment_val = pedersen_commit_native(Fr::from(0u64), change_blinding);
+        let recipient_commitment_val = pedersen_commit_native(Fr::from(amount), recipient_blinding);
 
         let circuit = NoteSpendCircuit {
             commitment_root: Some(commitment_root),
@@ -758,10 +735,8 @@ mod tests {
         let spending_key = Fr::from(42u64);
         let commitment = Fr::from(999u64);
 
-        let null_e1 =
-            compute_nullifier_with_epoch_native(spending_key, 0, 1, commitment);
-        let null_e2 =
-            compute_nullifier_with_epoch_native(spending_key, 0, 2, commitment);
+        let null_e1 = compute_nullifier_with_epoch_native(spending_key, 0, 1, commitment);
+        let null_e2 = compute_nullifier_with_epoch_native(spending_key, 0, 2, commitment);
 
         assert_ne!(
             null_e1, null_e2,

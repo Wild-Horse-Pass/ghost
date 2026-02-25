@@ -210,5 +210,4 @@ mod tests {
 
         assert_eq!(addr1.address, addr2.address);
     }
-
 }

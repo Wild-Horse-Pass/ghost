@@ -5995,7 +5995,12 @@ impl Database {
             conn.execute(
                 "INSERT INTO l2_notes (note_index, epoch, commitment, block_height)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![note_index as i64, epoch as i64, commitment.as_slice(), block_height as i64],
+                params![
+                    note_index as i64,
+                    epoch as i64,
+                    commitment.as_slice(),
+                    block_height as i64
+                ],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
@@ -6062,10 +6067,7 @@ impl Database {
     /// Load all notes for an epoch (for tree reconstruction)
     ///
     /// Returns (note_index, commitment) pairs ordered by index.
-    pub fn load_all_l2_notes_for_epoch(
-        &self,
-        epoch: u64,
-    ) -> GhostResult<Vec<(u64, [u8; 32])>> {
+    pub fn load_all_l2_notes_for_epoch(&self, epoch: u64) -> GhostResult<Vec<(u64, [u8; 32])>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -6305,16 +6307,34 @@ impl Database {
                         let proposer_id: String = row.get(4)?;
                         let active_node_count: i64 = row.get(5)?;
                         let block_data: Vec<u8> = row.get(6)?;
-                        Ok((height, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data))
+                        Ok((
+                            height,
+                            epoch,
+                            commitment_root,
+                            tx_count,
+                            proposer_id,
+                            active_node_count,
+                            block_data,
+                        ))
                     },
                 )
                 .optional()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             match result {
-                Some((height, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data)) => {
+                Some((
+                    height,
+                    epoch,
+                    commitment_root,
+                    tx_count,
+                    proposer_id,
+                    active_node_count,
+                    block_data,
+                )) => {
                     let commitment_root: [u8; 32] = commitment_root.try_into().map_err(|_| {
-                        GhostError::Database("Invalid commitment_root size in l2_checkpoints".to_string())
+                        GhostError::Database(
+                            "Invalid commitment_root size in l2_checkpoints".to_string(),
+                        )
                     })?;
                     Ok(Some(L2CheckpointRecord {
                         height: i64_to_u64_sats(height, "height")
@@ -6350,16 +6370,34 @@ impl Database {
                         let proposer_id: String = row.get(4)?;
                         let active_node_count: i64 = row.get(5)?;
                         let block_data: Vec<u8> = row.get(6)?;
-                        Ok((h, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data))
+                        Ok((
+                            h,
+                            epoch,
+                            commitment_root,
+                            tx_count,
+                            proposer_id,
+                            active_node_count,
+                            block_data,
+                        ))
                     },
                 )
                 .optional()
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             match result {
-                Some((h, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data)) => {
+                Some((
+                    h,
+                    epoch,
+                    commitment_root,
+                    tx_count,
+                    proposer_id,
+                    active_node_count,
+                    block_data,
+                )) => {
                     let commitment_root: [u8; 32] = commitment_root.try_into().map_err(|_| {
-                        GhostError::Database("Invalid commitment_root size in l2_checkpoints".to_string())
+                        GhostError::Database(
+                            "Invalid commitment_root size in l2_checkpoints".to_string(),
+                        )
                     })?;
                     Ok(Some(L2CheckpointRecord {
                         height: i64_to_u64_sats(h, "height")
@@ -6417,8 +6455,15 @@ impl Database {
 
             let mut records = Vec::new();
             for row in rows {
-                let (h, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data) =
-                    row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let (
+                    h,
+                    epoch,
+                    commitment_root,
+                    tx_count,
+                    proposer_id,
+                    active_node_count,
+                    block_data,
+                ) = row.map_err(|e| GhostError::Database(e.to_string()))?;
                 let commitment_root: [u8; 32] = commitment_root.try_into().map_err(|_| {
                     GhostError::Database(
                         "Invalid commitment_root size in l2_checkpoints".to_string(),
@@ -6591,7 +6636,9 @@ impl Database {
                 let (height, epoch, commitment_root) =
                     row.map_err(|e| GhostError::Database(e.to_string()))?;
                 let commitment_root: [u8; 32] = commitment_root.try_into().map_err(|_| {
-                    GhostError::Database("Invalid commitment_root size in l2_valid_roots".to_string())
+                    GhostError::Database(
+                        "Invalid commitment_root size in l2_valid_roots".to_string(),
+                    )
                 })?;
                 roots.push(L2ValidRootRecord {
                     height: i64_to_u64_sats(height, "height")
@@ -6633,16 +6680,24 @@ fn l2_epoch_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<L2EpochRowTupl
     let final_root: Option<Vec<u8>> = row.get(4)?;
     let notes_migrated: i64 = row.get(5)?;
     let status: String = row.get(6)?;
-    Ok((epoch, start_height, end_height, initial_root, final_root, notes_migrated, status))
+    Ok((
+        epoch,
+        start_height,
+        end_height,
+        initial_root,
+        final_root,
+        notes_migrated,
+        status,
+    ))
 }
 
 /// Helper: convert l2_epochs tuple to L2EpochRecord
 fn l2_epoch_record_from_tuple(tuple: L2EpochRowTuple) -> GhostResult<L2EpochRecord> {
     let (epoch, start_height, end_height, initial_root, final_root, notes_migrated, status) = tuple;
 
-    let initial_root: [u8; 32] = initial_root.try_into().map_err(|_| {
-        GhostError::Database("Invalid initial_root size in l2_epochs".to_string())
-    })?;
+    let initial_root: [u8; 32] = initial_root
+        .try_into()
+        .map_err(|_| GhostError::Database("Invalid initial_root size in l2_epochs".to_string()))?;
 
     let final_root = final_root
         .map(|r| {
@@ -6653,8 +6708,7 @@ fn l2_epoch_record_from_tuple(tuple: L2EpochRowTuple) -> GhostResult<L2EpochReco
         .transpose()?;
 
     Ok(L2EpochRecord {
-        epoch: i64_to_u64_sats(epoch, "epoch")
-            .map_err(|e| GhostError::Database(e.to_string()))?,
+        epoch: i64_to_u64_sats(epoch, "epoch").map_err(|e| GhostError::Database(e.to_string()))?,
         start_height: i64_to_u64_sats(start_height, "start_height")
             .map_err(|e| GhostError::Database(e.to_string()))?,
         end_height: end_height

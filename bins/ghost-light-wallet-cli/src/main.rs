@@ -710,7 +710,11 @@ async fn cmd_receive(config: WalletConfig, address_type: &str, label: Option<&st
         "ghost" => ghost_light_wallet::payments::AddressType::GhostPay,
         "silent" => ghost_light_wallet::payments::AddressType::SilentPayment,
         "taproot" => {
-            println!("{}", style("Taproot addresses disabled for quantum safety. Use 'ghost' or 'silent'.").red());
+            println!(
+                "{}",
+                style("Taproot addresses disabled for quantum safety. Use 'ghost' or 'silent'.")
+                    .red()
+            );
             return Ok(());
         }
         _ => {

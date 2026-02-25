@@ -268,7 +268,10 @@ impl CeremonyManager {
         let dummy_note = NoteSpendCircuit::<Fr>::dummy(40);
         let note_params = generate_random_parameters::<Bls12, _, _>(dummy_note, &mut OsRng)
             .map_err(|e| {
-                MpcError::Internal(format!("Failed to generate note spend genesis params: {:?}", e))
+                MpcError::Internal(format!(
+                    "Failed to generate note spend genesis params: {:?}",
+                    e
+                ))
             })?;
 
         // NoteSpendCircuit replaces both BlockCircuit and ConfidentialTransferCircuit.

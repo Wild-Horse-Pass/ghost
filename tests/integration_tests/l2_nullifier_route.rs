@@ -120,14 +120,18 @@ fn test_871_proposer_rotation_deterministic() {
             .collect();
 
         // All nodes return the same proposer
-        assert!(proposers.windows(2).all(|w| w[0] == w[1]),
-            "Disagreement on proposer at height {}", height);
+        assert!(
+            proposers.windows(2).all(|w| w[0] == w[1]),
+            "Disagreement on proposer at height {}",
+            height
+        );
 
         // Proposer should be one of the active nodes
         let proposer = proposers[0].unwrap();
         assert!(
             [node_a, node_b, node_c].contains(&proposer),
-            "Unknown proposer at height {}", height
+            "Unknown proposer at height {}",
+            height
         );
     }
 }
@@ -148,8 +152,10 @@ fn test_872_validator_routing_deterministic() {
         .map(|(_, em, _)| em.validator_for_nullifier(&nullifier))
         .collect();
 
-    assert!(validators.windows(2).all(|w| w[0] == w[1]),
-        "Disagreement on validator for nullifier");
+    assert!(
+        validators.windows(2).all(|w| w[0] == w[1]),
+        "Disagreement on validator for nullifier"
+    );
 
     // Different nullifiers may route to different validators
     let null2 = [0x43; 32];
@@ -210,7 +216,10 @@ fn test_874_transfer_invalid_root_rejected() {
 
     let result = nodes[0].2.handle_transfer(&msg);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("Invalid commitment root"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Invalid commitment root"));
 }
 
 /// Test 875: Double-spend prevention via nullifier set
@@ -397,7 +406,10 @@ fn test_879_rejection_votes_dont_reach_quorum() {
     };
     // 2/3 approval = 66.7%, needs ceil(3*67/100)=3
     let finalized = nodes[0].2.handle_checkpoint_vote(&vote_approve2).unwrap();
-    assert!(!finalized, "2/3 approvals not enough when threshold requires all 3");
+    assert!(
+        !finalized,
+        "2/3 approvals not enough when threshold requires all 3"
+    );
 }
 
 // =============================================================================
@@ -636,7 +648,10 @@ fn test_887_epoch_transition_preserves_notes() {
 
     // After epoch transition, tree should have a valid root
     let new_root = epoch_mgr.current_root().unwrap();
-    assert_ne!(new_root, [0u8; 32], "Tree should have non-zero root after transition");
+    assert_ne!(
+        new_root, [0u8; 32],
+        "Tree should have non-zero root after transition"
+    );
     assert_eq!(epoch_mgr.current_epoch(), 1);
 }
 

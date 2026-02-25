@@ -156,8 +156,7 @@ pub fn encrypt_note_data(
         .map_err(|e| GhostKeyError::CryptoError(format!("Note encryption failed: {}", e)))?;
 
     // Assemble output: ephemeral_pubkey (33) || nonce (12) || ciphertext+tag
-    let mut output =
-        Vec::with_capacity(COMPRESSED_PUBKEY_SIZE + NONCE_SIZE + ciphertext.len());
+    let mut output = Vec::with_capacity(COMPRESSED_PUBKEY_SIZE + NONCE_SIZE + ciphertext.len());
     output.extend_from_slice(&ephemeral_pubkey_bytes);
     output.extend_from_slice(&nonce_bytes);
     output.extend_from_slice(&ciphertext);
@@ -204,10 +203,9 @@ pub fn decrypt_note_data(
     let ciphertext = &encrypted[COMPRESSED_PUBKEY_SIZE + NONCE_SIZE..];
 
     // Deserialize ephemeral public key
-    let ephemeral_pubkey =
-        PublicKey::from_slice(ephemeral_pubkey_bytes).map_err(|e| {
-            GhostKeyError::DecryptionFailed(format!("Invalid ephemeral public key: {}", e))
-        })?;
+    let ephemeral_pubkey = PublicKey::from_slice(ephemeral_pubkey_bytes).map_err(|e| {
+        GhostKeyError::DecryptionFailed(format!("Invalid ephemeral public key: {}", e))
+    })?;
 
     // ECDH: shared_point = secret_key * ephemeral_pubkey
     let shared = SharedSecret::new(&ephemeral_pubkey, secret_key);
@@ -367,7 +365,11 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             GhostKeyError::DecryptionFailed(msg) => {
-                assert!(msg.contains("too short"), "Expected too-short error, got: {}", msg);
+                assert!(
+                    msg.contains("too short"),
+                    "Expected too-short error, got: {}",
+                    msg
+                );
             }
             other => panic!("Expected DecryptionFailed, got: {:?}", other),
         }
@@ -401,6 +403,9 @@ mod tests {
 
         // Embedded pubkey should be valid
         let pubkey_result = PublicKey::from_slice(&encrypted[..COMPRESSED_PUBKEY_SIZE]);
-        assert!(pubkey_result.is_ok(), "Embedded ephemeral pubkey should be valid");
+        assert!(
+            pubkey_result.is_ok(),
+            "Embedded ephemeral pubkey should be valid"
+        );
     }
 }

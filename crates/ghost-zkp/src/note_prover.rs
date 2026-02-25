@@ -281,10 +281,7 @@ impl NoteProver {
         })
     }
 
-    fn compute_public_inputs(
-        &self,
-        witness: &NoteSpendWitness,
-    ) -> ZkResult<NoteSpendPublicInputs> {
+    fn compute_public_inputs(&self, witness: &NoteSpendWitness) -> ZkResult<NoteSpendPublicInputs> {
         let spending_key: Fr = bytes_to_field(&witness.spending_key)?;
         let note_blinding: Fr = bytes_to_field(&witness.note_blinding)?;
         let change_blinding: Fr = bytes_to_field(&witness.change_blinding)?;
@@ -384,11 +381,7 @@ mod tests {
         let prover = NoteProver::new(4);
         let witness = create_test_witness(4);
         let result = prover.prove(&witness);
-        assert!(
-            result.is_ok(),
-            "Proof should succeed: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "Proof should succeed: {:?}", result.err());
         let proof = result.unwrap();
         assert!(!proof.proof.is_empty());
     }

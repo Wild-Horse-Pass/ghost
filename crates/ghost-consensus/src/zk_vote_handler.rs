@@ -406,7 +406,8 @@ impl ZkVoteHandler {
 
         // Timestamp should be reasonable (within 60 seconds)
         let now = chrono::Utc::now().timestamp() as u64;
-        if proposal.timestamp < now.saturating_sub(60) || proposal.timestamp > now.saturating_add(60)
+        if proposal.timestamp < now.saturating_sub(60)
+            || proposal.timestamp > now.saturating_add(60)
         {
             return Err(ZkRejectionReason::InvalidTimestamp);
         }

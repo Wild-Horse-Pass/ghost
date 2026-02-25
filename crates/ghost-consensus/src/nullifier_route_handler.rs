@@ -28,8 +28,8 @@ use crate::epoch_manager::{EpochManager, PROPOSER_GRACE_SECS};
 use crate::mesh::MessageHandler;
 use crate::message::{
     L2CheckpointBlockMessage, L2CheckpointVoteMessage, L2ConfidentialTransferMessage,
-    L2Transaction, L2TransferBroadcastMessage, L2TransferConfirmationMessage,
-    L2TreeSyncRequest, L2TreeSyncResponse, MessageEnvelope, MessageType,
+    L2Transaction, L2TransferBroadcastMessage, L2TransferConfirmationMessage, L2TreeSyncRequest,
+    L2TreeSyncResponse, MessageEnvelope, MessageType,
 };
 use crate::vote_handler::BroadcastFn;
 
@@ -312,10 +312,7 @@ impl NullifierRouteHandler {
         let tx = &msg.transaction;
 
         // 1. Check this node is the assigned validator
-        if let Some(assigned) = self
-            .epoch_manager
-            .validator_for_nullifier(&tx.nullifier)
-        {
+        if let Some(assigned) = self.epoch_manager.validator_for_nullifier(&tx.nullifier) {
             if assigned != self.our_id {
                 debug!("Not assigned validator for this nullifier, ignoring");
                 return Ok(None);
@@ -402,10 +399,7 @@ impl NullifierRouteHandler {
     /// Handle a broadcast of a confirmed transaction from another validator
     ///
     /// Other nodes add the transaction to their local view for checkpoint verification.
-    pub fn handle_transfer_broadcast(
-        &self,
-        msg: &L2TransferBroadcastMessage,
-    ) -> GhostResult<()> {
+    pub fn handle_transfer_broadcast(&self, msg: &L2TransferBroadcastMessage) -> GhostResult<()> {
         let tx = &msg.transaction;
 
         // Validate root is known
@@ -562,10 +556,7 @@ impl NullifierRouteHandler {
         // Validate prev_commitment_root matches our current root
         let our_root = self.epoch_manager.current_root()?;
         if msg.prev_commitment_root != our_root {
-            warn!(
-                height,
-                "Checkpoint prev_root doesn't match our tree root"
-            );
+            warn!(height, "Checkpoint prev_root doesn't match our tree root");
             // Still vote but reject
             let mut vote = L2CheckpointVoteMessage {
                 height,
@@ -608,10 +599,7 @@ impl NullifierRouteHandler {
     /// Handle a checkpoint vote
     ///
     /// Returns true if the checkpoint reached quorum and was finalized.
-    pub fn handle_checkpoint_vote(
-        &self,
-        msg: &L2CheckpointVoteMessage,
-    ) -> GhostResult<bool> {
+    pub fn handle_checkpoint_vote(&self, msg: &L2CheckpointVoteMessage) -> GhostResult<bool> {
         let height = msg.height;
         let active_count = self.epoch_manager.active_node_count();
 
@@ -746,10 +734,9 @@ impl NullifierRouteHandler {
         }
 
         // Load checkpoints from requested height
-        let checkpoints = self.db.get_l2_checkpoints_from_height(
-            request.from_height,
-            MAX_SYNC_CHECKPOINTS as u64,
-        )?;
+        let checkpoints = self
+            .db
+            .get_l2_checkpoints_from_height(request.from_height, MAX_SYNC_CHECKPOINTS as u64)?;
 
         // Deserialize checkpoint blocks from stored data
         let mut checkpoint_blocks = Vec::new();
@@ -790,10 +777,7 @@ impl NullifierRouteHandler {
     }
 
     /// Handle a tree sync response (replay checkpoints to catch up)
-    fn handle_tree_sync_response(
-        &self,
-        response: &L2TreeSyncResponse,
-    ) -> GhostResult<()> {
+    fn handle_tree_sync_response(&self, response: &L2TreeSyncResponse) -> GhostResult<()> {
         if response.checkpoints.is_empty() {
             debug!("Empty tree sync response, nothing to replay");
             return Ok(());
@@ -906,9 +890,8 @@ impl MessageHandler for NullifierRouteHandler {
 
         match envelope.msg_type {
             MessageType::L2ConfidentialTransfer => {
-                let msg: L2ConfidentialTransferMessage =
-                    serde_json::from_slice(&envelope.payload)
-                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                let msg: L2ConfidentialTransferMessage = serde_json::from_slice(&envelope.payload)
+                    .map_err(|e| GhostError::Serialization(e.to_string()))?;
 
                 match self.handle_transfer(&msg)? {
                     Some(confirmation) => {
@@ -946,9 +929,8 @@ impl MessageHandler for NullifierRouteHandler {
             }
 
             MessageType::L2TransferBroadcast => {
-                let msg: L2TransferBroadcastMessage =
-                    serde_json::from_slice(&envelope.payload)
-                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                let msg: L2TransferBroadcastMessage = serde_json::from_slice(&envelope.payload)
+                    .map_err(|e| GhostError::Serialization(e.to_string()))?;
 
                 // Verify broadcast signature
                 if self.sign_fn.read().is_some() {
@@ -966,9 +948,8 @@ impl MessageHandler for NullifierRouteHandler {
             }
 
             MessageType::L2CheckpointBlock => {
-                let msg: L2CheckpointBlockMessage =
-                    serde_json::from_slice(&envelope.payload)
-                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                let msg: L2CheckpointBlockMessage = serde_json::from_slice(&envelope.payload)
+                    .map_err(|e| GhostError::Serialization(e.to_string()))?;
 
                 // Verify proposer signature
                 if self.sign_fn.read().is_some() {
@@ -1001,9 +982,8 @@ impl MessageHandler for NullifierRouteHandler {
             }
 
             MessageType::L2CheckpointVote => {
-                let msg: L2CheckpointVoteMessage =
-                    serde_json::from_slice(&envelope.payload)
-                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                let msg: L2CheckpointVoteMessage = serde_json::from_slice(&envelope.payload)
+                    .map_err(|e| GhostError::Serialization(e.to_string()))?;
 
                 // Verify voter signature
                 if self.sign_fn.read().is_some() {

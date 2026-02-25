@@ -308,11 +308,7 @@ impl EpochManager {
     // =========================================================================
 
     /// Append a new commitment to the tree and persist
-    pub fn append_commitment(
-        &self,
-        commitment: [u8; 32],
-        block_height: u64,
-    ) -> GhostResult<u64> {
+    pub fn append_commitment(&self, commitment: [u8; 32], block_height: u64) -> GhostResult<u64> {
         let epoch = self.current_epoch();
         let index = {
             let mut tree = self.commitment_tree.write();
@@ -325,7 +321,12 @@ impl EpochManager {
         self.db
             .insert_l2_note(epoch, index, &commitment, block_height)?;
 
-        debug!(epoch, index, height = block_height, "Appended note commitment");
+        debug!(
+            epoch,
+            index,
+            height = block_height,
+            "Appended note commitment"
+        );
         Ok(index)
     }
 
@@ -336,11 +337,7 @@ impl EpochManager {
     /// to prevent cross-epoch double-spends.
     ///
     /// Returns false if the nullifier was already spent (double-spend attempt).
-    pub fn spend_nullifier(
-        &self,
-        nullifier: [u8; 32],
-        block_height: u64,
-    ) -> GhostResult<bool> {
+    pub fn spend_nullifier(&self, nullifier: [u8; 32], block_height: u64) -> GhostResult<bool> {
         let epoch = self.current_epoch();
 
         // Cross-epoch check: reject if spent in previous epoch (during transition window)
@@ -543,9 +540,7 @@ impl EpochManager {
 
         info!(
             old_epoch,
-            new_epoch,
-            boundary_height,
-            "Beginning epoch transition"
+            new_epoch, boundary_height, "Beginning epoch transition"
         );
 
         // 1. Capture old epoch's final root
@@ -568,12 +563,8 @@ impl EpochManager {
             new_tree.insert(new_idx as u64, note.commitment);
 
             // Persist migrated note in new epoch
-            self.db.insert_l2_note(
-                new_epoch,
-                new_idx as u64,
-                &note.commitment,
-                boundary_height,
-            )?;
+            self.db
+                .insert_l2_note(new_epoch, new_idx as u64, &note.commitment, boundary_height)?;
         }
 
         let new_initial_root = new_tree
@@ -614,9 +605,7 @@ impl EpochManager {
 
         info!(
             old_epoch,
-            new_epoch,
-            notes_migrated,
-            "Epoch transition complete"
+            new_epoch, notes_migrated, "Epoch transition complete"
         );
 
         Ok(CompactionResult {
@@ -650,10 +639,7 @@ impl EpochManager {
     }
 
     /// Get merkle proof for a note at the given index
-    pub fn get_merkle_proof(
-        &self,
-        index: u64,
-    ) -> GhostResult<Vec<[u8; 32]>> {
+    pub fn get_merkle_proof(&self, index: u64) -> GhostResult<Vec<[u8; 32]>> {
         let tree = self.commitment_tree.read();
         let proof = tree
             .get_proof(index)

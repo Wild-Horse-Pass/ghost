@@ -1386,7 +1386,8 @@ async fn main() -> Result<()> {
                             }
                         };
                         // The handler's broadcast_fn sends it to the mesh
-                        if let Err(e) = handler_for_proposals.handle_checkpoint_proposal(&proposal) {
+                        if let Err(e) = handler_for_proposals.handle_checkpoint_proposal(&proposal)
+                        {
                             tracing::warn!(error = %e, "Failed to handle own checkpoint proposal");
                         }
                         // Also broadcast to network
@@ -1417,10 +1418,7 @@ async fn main() -> Result<()> {
                 Ok(note_prover) => {
                     // Extract prepared VK for the verifier
                     if let Some(pvk) = note_prover.prepared_verifying_key() {
-                        let verifier = Arc::new(NoteVerifier::new(
-                            pvk,
-                            note_prover.prover_id(),
-                        ));
+                        let verifier = Arc::new(NoteVerifier::new(pvk, note_prover.prover_id()));
                         nullifier_handler_for_init.set_verifier(verifier);
                         info!(
                             elapsed_secs = start.elapsed().as_secs(),

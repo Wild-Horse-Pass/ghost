@@ -31,12 +31,12 @@ pub const MAX_CONSOLIDATION_INPUTS: usize = 4;
 pub struct NoteConsolidateCircuit<F: PrimeField> {
     // Public inputs
     pub commitment_root: Option<F>,
-    pub nullifiers: Vec<Option<F>>,       // MAX_CONSOLIDATION_INPUTS nullifiers
+    pub nullifiers: Vec<Option<F>>, // MAX_CONSOLIDATION_INPUTS nullifiers
     pub output_commitment: Option<F>,
 
     // Per-input private data (MAX_CONSOLIDATION_INPUTS entries)
     pub is_real: Vec<Option<bool>>,
-    pub spending_keys: Vec<Option<F>>,    // must all be the same for real inputs
+    pub spending_keys: Vec<Option<F>>, // must all be the same for real inputs
     pub note_values: Vec<Option<u64>>,
     pub note_blindings: Vec<Option<F>>,
     pub note_indices: Vec<Option<u64>>,
@@ -87,15 +87,13 @@ impl<F: PrimeField> Circuit<F> for NoteConsolidateCircuit<F> {
 
         let mut nullifier_pubs = Vec::with_capacity(n);
         for i in 0..n {
-            let nul = AllocatedNum::alloc_input(
-                cs.namespace(|| format!("nullifier_{}", i)),
-                || {
+            let nul =
+                AllocatedNum::alloc_input(cs.namespace(|| format!("nullifier_{}", i)), || {
                     self.nullifiers
                         .get(i)
                         .and_then(|v| *v)
                         .ok_or(SynthesisError::AssignmentMissing)
-                },
-            )?;
+                })?;
             nullifier_pubs.push(nul);
         }
 
@@ -118,8 +116,7 @@ impl<F: PrimeField> Circuit<F> for NoteConsolidateCircuit<F> {
 
             // is_real flag
             let is_real_val = self.is_real.get(i).and_then(|v| *v).unwrap_or(false);
-            let is_real_bit =
-                AllocatedBit::alloc(ns.namespace(|| "is_real"), Some(is_real_val))?;
+            let is_real_bit = AllocatedBit::alloc(ns.namespace(|| "is_real"), Some(is_real_val))?;
             let is_real_bool = Boolean::from(is_real_bit.clone());
 
             // Spending key
@@ -229,11 +226,8 @@ impl<F: PrimeField> Circuit<F> for NoteConsolidateCircuit<F> {
                 |lc| lc + (nullifier_domain_value, CS::one()),
             );
 
-            let nullifier_inner = mimc_hash(
-                ns.namespace(|| "nullifier_inner"),
-                &spending_key,
-                &note_id,
-            )?;
+            let nullifier_inner =
+                mimc_hash(ns.namespace(|| "nullifier_inner"), &spending_key, &note_id)?;
 
             let computed_nullifier = mimc_hash(
                 ns.namespace(|| "nullifier_outer"),
@@ -242,12 +236,11 @@ impl<F: PrimeField> Circuit<F> for NoteConsolidateCircuit<F> {
             )?;
 
             // effective_nullifier = is_real ? computed_nullifier : 0
-            let effective_nullifier =
-                select_or_zero(
-                    ns.namespace(|| "effective_nullifier"),
-                    &computed_nullifier,
-                    &is_real_bool,
-                )?;
+            let effective_nullifier = select_or_zero(
+                ns.namespace(|| "effective_nullifier"),
+                &computed_nullifier,
+                &is_real_bool,
+            )?;
 
             ns.enforce(
                 || "nullifier_matches",
@@ -287,11 +280,7 @@ impl<F: PrimeField> Circuit<F> for NoteConsolidateCircuit<F> {
             for i in 0..n {
                 let is_real = self.is_real.get(i).and_then(|v| *v).unwrap_or(false);
                 if is_real {
-                    let val = self
-                        .note_values
-                        .get(i)
-                        .and_then(|v| *v)
-                        .unwrap_or(0);
+                    let val = self.note_values.get(i).and_then(|v| *v).unwrap_or(0);
                     total = total.saturating_add(val);
                 }
             }
@@ -306,22 +295,16 @@ impl<F: PrimeField> Circuit<F> for NoteConsolidateCircuit<F> {
             // We allocate the product and constrain it.
             let mut product_vars = Vec::with_capacity(n);
             for i in 0..n {
-                let product = AllocatedNum::alloc(
-                    cs.namespace(|| format!("real_value_{}", i)),
-                    || {
+                let product =
+                    AllocatedNum::alloc(cs.namespace(|| format!("real_value_{}", i)), || {
                         let is_real = self.is_real.get(i).and_then(|v| *v).unwrap_or(false);
-                        let val = self
-                            .note_values
-                            .get(i)
-                            .and_then(|v| *v)
-                            .unwrap_or(0);
+                        let val = self.note_values.get(i).and_then(|v| *v).unwrap_or(0);
                         if is_real {
                             Ok(F::from(val))
                         } else {
                             Ok(F::ZERO)
                         }
-                    },
-                )?;
+                    })?;
 
                 // Constrain: product = is_real_bit * value
                 match &is_real_bools[i] {
@@ -365,11 +348,7 @@ impl<F: PrimeField> Circuit<F> for NoteConsolidateCircuit<F> {
         // 8. Range proof on output value
         // ====================================================================
 
-        enforce_range(
-            cs.namespace(|| "range_output"),
-            &output_value,
-            BALANCE_BITS,
-        )?;
+        enforce_range(cs.namespace(|| "range_output"), &output_value, BALANCE_BITS)?;
 
         // ====================================================================
         // 9. Output commitment: Commit(output_value, output_blinding)
@@ -413,9 +392,7 @@ fn select_or_zero<F: PrimeField, CS: ConstraintSystem<F>>(
             Some(false) => F::ZERO,
             None => return Err(SynthesisError::AssignmentMissing),
         };
-        let val = value
-            .get_value()
-            .ok_or(SynthesisError::AssignmentMissing)?;
+        let val = value.get_value().ok_or(SynthesisError::AssignmentMissing)?;
         Ok(bit_val * val)
     })?;
 
@@ -600,8 +577,7 @@ mod tests {
         let mut note_blindings = vec![Some(Fr::ZERO); MAX_CONSOLIDATION_INPUTS];
         let mut note_indices = vec![Some(0u64); MAX_CONSOLIDATION_INPUTS];
         let mut epochs = vec![Some(0u64); MAX_CONSOLIDATION_INPUTS];
-        let mut merkle_siblings =
-            vec![vec![Some(Fr::ZERO); tree_depth]; MAX_CONSOLIDATION_INPUTS];
+        let mut merkle_siblings = vec![vec![Some(Fr::ZERO); tree_depth]; MAX_CONSOLIDATION_INPUTS];
 
         let mut total_value = 0u64;
 
@@ -661,8 +637,7 @@ mod tests {
         }
 
         // Compute output commitment
-        let output_commitment_val =
-            pedersen_commit_native(Fr::from(total_value), output_blinding);
+        let output_commitment_val = pedersen_commit_native(Fr::from(total_value), output_blinding);
 
         NoteConsolidateCircuit {
             commitment_root: Some(tree_root),
@@ -682,8 +657,7 @@ mod tests {
 
     /// Build tree root from sparse leaves
     fn compute_tree_root(depth: usize, leaves: &[(u64, Fr)]) -> Fr {
-        let leaf_map: std::collections::HashMap<u64, Fr> =
-            leaves.iter().cloned().collect();
+        let leaf_map: std::collections::HashMap<u64, Fr> = leaves.iter().cloned().collect();
         compute_node(depth, 0, &leaf_map)
     }
 
@@ -698,8 +672,7 @@ mod tests {
 
     /// Build merkle siblings for each leaf
     fn build_tree_siblings(depth: usize, leaves: &[(u64, Fr)]) -> Vec<Vec<Fr>> {
-        let leaf_map: std::collections::HashMap<u64, Fr> =
-            leaves.iter().cloned().collect();
+        let leaf_map: std::collections::HashMap<u64, Fr> = leaves.iter().cloned().collect();
 
         leaves
             .iter()
@@ -796,7 +769,10 @@ mod tests {
         );
 
         let n = cs.num_constraints();
-        println!("NoteConsolidateCircuit (depth=40, 2 inputs) constraints: {}", n);
+        println!(
+            "NoteConsolidateCircuit (depth=40, 2 inputs) constraints: {}",
+            n
+        );
         // 4 inputs * ~3700 constraints each + overhead ≈ 15000
         assert!(n > 5000, "Expected > 5000 constraints, got {}", n);
         assert!(n < 50000, "Expected < 50000 constraints, got {}", n);

@@ -134,15 +134,15 @@ pub use note_verifier::NoteVerifier;
 
 // Re-export circuit types for advanced usage
 pub use circuit::{
-    compute_nullifier_native, pedersen_commit_native, COMMITMENT_DOMAIN_SEPARATOR,
-    NULLIFIER_DOMAIN_SEPARATOR,
-};
-pub use circuit::{
     compute_note_id_with_epoch_native, compute_note_root_native,
     compute_nullifier_with_epoch_native, BlockCircuit, BlockCircuitBuilder,
     ConfidentialTransferCircuit, MerkleCircuit, NoteConsolidateCircuit, NoteSpendCircuit,
     PaymentCircuit, PaymentStateTransitionCircuit, StateTransitionOutputs,
     MAX_CONSOLIDATION_INPUTS, NOTE_TREE_DEPTH,
+};
+pub use circuit::{
+    compute_nullifier_native, pedersen_commit_native, COMMITMENT_DOMAIN_SEPARATOR,
+    NULLIFIER_DOMAIN_SEPARATOR,
 };
 
 // ============================================================================
