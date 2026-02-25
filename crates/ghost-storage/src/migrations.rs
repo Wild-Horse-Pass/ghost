@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 21;
+const SCHEMA_VERSION: u32 = 23;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -77,6 +77,8 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (19, migrate_v19),
         (20, migrate_v20),
         (21, migrate_v21),
+        (22, migrate_v22),
+        (23, migrate_v23),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1492,6 +1494,101 @@ fn migrate_v21(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added L2 note/UTXO model tables (notes, nullifiers, checkpoints, epochs, valid_roots)");
+    Ok(())
+}
+
+/// H-12 / M-16: Add composite indexes and cascade constraints
+fn migrate_v22(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v22: Composite indexes and cascade constraints");
+
+    conn.execute_batch(
+        r#"
+        -- H-12: Composite indexes on frequently-queried columns
+        CREATE INDEX IF NOT EXISTS idx_payouts_round_type
+            ON payouts(round_id, recipient_type);
+        CREATE INDEX IF NOT EXISTS idx_shares_miner_round
+            ON shares(miner_id, round_id);
+        CREATE INDEX IF NOT EXISTS idx_rounds_status_height
+            ON rounds(payout_status, block_height);
+
+        -- M-16: Composite index on l2_valid_roots for epoch + height queries
+        CREATE INDEX IF NOT EXISTS idx_l2_valid_roots_epoch_height
+            ON l2_valid_roots(epoch, height);
+
+        -- H-12: Composite index on l2_nullifiers for epoch + nullifier lookups
+        CREATE INDEX IF NOT EXISTS idx_l2_nullifiers_epoch_nullifier
+            ON l2_nullifiers(epoch, nullifier);
+
+        -- H-12: Composite index on l2_notes for epoch + spent status queries
+        CREATE INDEX IF NOT EXISTS idx_l2_notes_epoch_spent
+            ON l2_notes(epoch, spent);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added composite indexes (H-12, M-16)");
+    Ok(())
+}
+
+/// L-10: Add foreign key references for L2 tables
+/// L-11: Add partial index on l2_notes(spent) WHERE spent = 1
+fn migrate_v23(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v23: L2 foreign keys and spent notes index");
+
+    // SQLite does not support ALTER TABLE ADD CONSTRAINT for foreign keys.
+    // Foreign keys must be defined at table creation time. Since we cannot
+    // retroactively add FK constraints to existing tables without recreating
+    // them (which risks data loss), we add a trigger-based equivalent that
+    // enforces referential integrity for new inserts.
+    //
+    // These triggers ensure that:
+    // - l2_checkpoints.epoch must reference an existing l2_epochs.epoch
+    // - l2_valid_roots.epoch must reference an existing l2_epochs.epoch
+    // - l2_notes.epoch must reference an existing l2_epochs.epoch
+    // - l2_nullifiers.epoch must reference an existing l2_epochs.epoch
+    conn.execute_batch(
+        r#"
+        -- L-10: Trigger-based FK enforcement for l2_checkpoints.epoch -> l2_epochs.epoch
+        CREATE TRIGGER IF NOT EXISTS fk_l2_checkpoints_epoch
+        BEFORE INSERT ON l2_checkpoints
+        BEGIN
+            SELECT RAISE(ABORT, 'FK violation: l2_checkpoints.epoch references nonexistent l2_epochs.epoch')
+            WHERE NOT EXISTS (SELECT 1 FROM l2_epochs WHERE epoch = NEW.epoch);
+        END;
+
+        -- L-10: Trigger-based FK enforcement for l2_valid_roots.epoch -> l2_epochs.epoch
+        CREATE TRIGGER IF NOT EXISTS fk_l2_valid_roots_epoch
+        BEFORE INSERT ON l2_valid_roots
+        BEGIN
+            SELECT RAISE(ABORT, 'FK violation: l2_valid_roots.epoch references nonexistent l2_epochs.epoch')
+            WHERE NOT EXISTS (SELECT 1 FROM l2_epochs WHERE epoch = NEW.epoch);
+        END;
+
+        -- L-10: Trigger-based FK enforcement for l2_notes.epoch -> l2_epochs.epoch
+        CREATE TRIGGER IF NOT EXISTS fk_l2_notes_epoch
+        BEFORE INSERT ON l2_notes
+        BEGIN
+            SELECT RAISE(ABORT, 'FK violation: l2_notes.epoch references nonexistent l2_epochs.epoch')
+            WHERE NOT EXISTS (SELECT 1 FROM l2_epochs WHERE epoch = NEW.epoch);
+        END;
+
+        -- L-10: Trigger-based FK enforcement for l2_nullifiers.epoch -> l2_epochs.epoch
+        CREATE TRIGGER IF NOT EXISTS fk_l2_nullifiers_epoch
+        BEFORE INSERT ON l2_nullifiers
+        BEGIN
+            SELECT RAISE(ABORT, 'FK violation: l2_nullifiers.epoch references nonexistent l2_epochs.epoch')
+            WHERE NOT EXISTS (SELECT 1 FROM l2_epochs WHERE epoch = NEW.epoch);
+        END;
+
+        -- L-11: Partial index for spent notes to optimize queries filtering spent = 1.
+        -- The existing idx_l2_notes_unspent covers spent = 0; this covers spent = 1
+        -- for settlement reconciliation queries that look up spent notes.
+        CREATE INDEX IF NOT EXISTS idx_l2_notes_spent ON l2_notes(spent) WHERE spent = 1;
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added L2 foreign key triggers (L-10) and spent notes index (L-11)");
     Ok(())
 }
 

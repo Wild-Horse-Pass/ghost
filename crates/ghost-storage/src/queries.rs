@@ -31,6 +31,32 @@ use crate::database::Database;
 use crate::models::*;
 
 // =============================================================================
+// M-15: BLOB SIZE VALIDATION
+// =============================================================================
+
+/// M-15: Maximum allowed BLOB size for storage (1MB)
+///
+/// Prevents oversized data from being inserted into BLOB columns.
+/// Any data exceeding this limit is rejected before the INSERT executes.
+pub const MAX_BLOB_SIZE: usize = 1_048_576;
+
+/// M-15: Validate that a blob does not exceed the maximum allowed size.
+///
+/// Call this before any INSERT that includes BLOB data to prevent
+/// oversized payloads from consuming excessive disk/memory.
+pub fn validate_blob_size(data: &[u8], field_name: &str) -> GhostResult<()> {
+    if data.len() > MAX_BLOB_SIZE {
+        return Err(GhostError::Database(format!(
+            "M-15: BLOB field '{}' exceeds maximum size: {} bytes (limit: {} bytes)",
+            field_name,
+            data.len(),
+            MAX_BLOB_SIZE
+        )));
+    }
+    Ok(())
+}
+
+// =============================================================================
 // L-22 FIX: HELPER FUNCTIONS FOR STATUS PARSING WITH ERROR RETURNS
 // =============================================================================
 
@@ -332,7 +358,7 @@ fn i64_to_u64(value: i64, field_name: &str) -> Result<u64, rusqlite::Error> {
 impl Database {
     /// Insert a new share
     pub fn insert_share(&self, share: &ShareRecord) -> GhostResult<i64> {
-        self.with_connection(|conn| {
+        self.with_connection_retry("insert_share", |conn| {
             conn.execute(
                 "INSERT INTO shares (round_id, miner_id, difficulty, work, share_hash, timestamp, received_by, valid)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -3096,11 +3122,11 @@ impl Database {
                 FROM rounds r
                 LEFT JOIN payouts p ON r.round_id = p.round_id
                 WHERE r.payout_status IN ('pending', 'approved', 'broadcast', 'confirmed')
-                    AND ($1 IS NULL OR r.block_height >= $1)
-                    AND ($2 IS NULL OR r.block_height <= $2)
+                    AND (?1 IS NULL OR r.block_height >= ?1)
+                    AND (?2 IS NULL OR r.block_height <= ?2)
                 GROUP BY r.round_id
                 ORDER BY r.block_height DESC
-                LIMIT $3 OFFSET $4
+                LIMIT ?3 OFFSET ?4
             ";
 
             let mut stmt = conn
@@ -3151,8 +3177,8 @@ impl Database {
                 .query_row(
                     "SELECT COUNT(DISTINCT round_id) FROM rounds
                      WHERE payout_status IN ('pending', 'approved', 'broadcast', 'confirmed')
-                       AND ($1 IS NULL OR block_height >= $1)
-                       AND ($2 IS NULL OR block_height <= $2)",
+                       AND (?1 IS NULL OR block_height >= ?1)
+                       AND (?2 IS NULL OR block_height <= ?2)",
                     params![min_height, max_height],
                     |row| row.get(0),
                 )
@@ -6570,6 +6596,23 @@ impl Database {
                     notes_migrated as i64,
                     epoch as i64,
                 ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Update the initial_root of an L2 epoch (used during epoch transition
+    /// when the epoch record is created before the tree is fully built)
+    pub fn update_l2_epoch_initial_root(
+        &self,
+        epoch: u64,
+        initial_root: &[u8; 32],
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE l2_epochs SET initial_root = ?1 WHERE epoch = ?2",
+                params![initial_root.as_slice(), epoch as i64],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())
