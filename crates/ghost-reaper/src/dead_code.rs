@@ -305,7 +305,7 @@ mod tests {
     fn test_detect_simple_envelope() {
         // OP_FALSE(0x00) OP_IF(0x63) <push 3 bytes "ord"> OP_ENDIF(0x68) OP_1(0x51)
         let script = vec![0x00, 0x63, 0x03, b'o', b'r', b'd', 0x68, 0x51];
-        let config = ReaperConfig::strict();
+        let config = ReaperConfig::default();
         let regions = detect_dead_code(&script, 0, &config);
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].dead_code_type, DeadCodeType::InscriptionEnvelope);
@@ -320,7 +320,7 @@ mod tests {
         script.extend(vec![0xAA; 80]); // 80 bytes of data
         script.push(0x75); // OP_DROP
 
-        let config = ReaperConfig::strict();
+        let config = ReaperConfig::default();
         let regions = detect_dead_code(&script, 0, &config);
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].dead_code_type, DeadCodeType::DropStuffing);
@@ -333,7 +333,7 @@ mod tests {
         script.extend(vec![0xBB; 10]);
         script.push(0x75); // OP_DROP
 
-        let config = ReaperConfig::strict();
+        let config = ReaperConfig::default();
         let regions = detect_dead_code(&script, 0, &config);
         assert!(regions.is_empty());
     }
@@ -342,7 +342,7 @@ mod tests {
     fn test_detect_unreachable_after_op_return() {
         // OP_1(0x51) OP_RETURN(0x6a) <dead bytes>
         let script = vec![0x51, 0x6a, 0xDE, 0xAD, 0xBE, 0xEF];
-        let config = ReaperConfig::strict();
+        let config = ReaperConfig::default();
         let regions = detect_dead_code(&script, 0, &config);
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].dead_code_type, DeadCodeType::UnreachableCode);
@@ -354,7 +354,7 @@ mod tests {
     fn test_nested_if_depth() {
         // OP_FALSE OP_IF OP_IF OP_ENDIF OP_ENDIF OP_1
         let script = vec![0x00, 0x63, 0x63, 0x68, 0x68, 0x51];
-        let config = ReaperConfig::strict();
+        let config = ReaperConfig::default();
         let regions = detect_dead_code(&script, 0, &config);
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].size, 5); // 0x00 0x63 0x63 0x68 0x68
@@ -364,7 +364,7 @@ mod tests {
     fn test_push_0x00_circumvention() {
         // OP_PUSHBYTES_1(0x01) 0x00 OP_IF ... — this pushes [0x00] which is falsy
         let script = vec![0x01, 0x00, 0x63, 0x03, b'o', b'r', b'd', 0x68];
-        let config = ReaperConfig::strict();
+        let config = ReaperConfig::default();
         let regions = detect_dead_code(&script, 0, &config);
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].dead_code_type, DeadCodeType::InscriptionEnvelope);
@@ -374,7 +374,7 @@ mod tests {
     fn test_negative_zero_circumvention() {
         // OP_PUSHBYTES_1(0x01) 0x80 OP_IF ... — pushes [0x80] (negative zero, falsy)
         let script = vec![0x01, 0x80, 0x63, 0x03, b'o', b'r', b'd', 0x68];
-        let config = ReaperConfig::strict();
+        let config = ReaperConfig::default();
         let regions = detect_dead_code(&script, 0, &config);
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].dead_code_type, DeadCodeType::InscriptionEnvelope);

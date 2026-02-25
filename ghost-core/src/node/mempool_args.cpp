@@ -106,15 +106,11 @@ util::Result<void> ApplyArgsManOptions(const ArgsManager& argsman, const CChainP
 
     // Ghost Reaper configuration
     {
-        const std::string reaper_mode = argsman.GetArg("-ghostreaper", "moderate");
+        const std::string reaper_mode = argsman.GetArg("-ghostreaper", "enabled");
         if (reaper_mode == "disabled") {
             mempool_opts.ghost_reaper.mode = GhostReaperMode::Disabled;
-        } else if (reaper_mode == "moderate") {
-            mempool_opts.ghost_reaper.mode = GhostReaperMode::Moderate;
-        } else if (reaper_mode == "strict") {
-            mempool_opts.ghost_reaper.mode = GhostReaperMode::Strict;
         } else {
-            return util::Error{Untranslated(strprintf("Invalid -ghostreaper mode: %s (expected: disabled, moderate, strict)", reaper_mode))};
+            mempool_opts.ghost_reaper.mode = GhostReaperMode::Enabled;
         }
 
         if (argsman.IsArgSet("-ghostreaper-maxopreturn")) {

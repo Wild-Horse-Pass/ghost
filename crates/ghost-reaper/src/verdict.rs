@@ -26,7 +26,6 @@ use serde::{Deserialize, Serialize};
 pub enum Verdict {
     Accept,
     Corpse,
-    MonitorOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -1310,22 +1310,16 @@ impl Default for RegistryConfig {
 /// ```toml
 /// [reaper]
 /// enabled = true
-/// mode = "strict"   # "strict" | "moderate" | "monitor"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReaperSettings {
     /// Enable reaper filtering
     pub enabled: bool,
-    /// Reaper mode: "strict", "moderate", or "monitor"
-    pub mode: String,
 }
 
 impl Default for ReaperSettings {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            mode: "strict".to_string(),
-        }
+        Self { enabled: true }
     }
 }
 

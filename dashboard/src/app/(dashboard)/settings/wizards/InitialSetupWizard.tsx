@@ -146,14 +146,15 @@ export default function InitialSetupWizard({ isOpen, onClose }: InitialSetupWiza
 
   const wizard = useWizard<InitialSetupData>({
     steps,
+    // Default: Max Privacy/Shares (15/15) — all capabilities enabled
     initialData: {
       nickname: '',
-      public_mining: false,
+      public_mining: true,
       payout_address: '',
       ghost_mode: true,
-      archive_mode: false,
-      reaper: false,
-      ghost_pay: false,
+      archive_mode: true,
+      reaper: true,
+      ghost_pay: true,
       mempool_profile: 'standard',
     },
   });
@@ -202,8 +203,19 @@ export default function InitialSetupWizard({ isOpen, onClose }: InitialSetupWiza
                 <h4 className="text-gray-100 font-medium mb-2">Welcome to Ghost Pool</h4>
                 <p className="text-sm text-gray-400">
                   This wizard will guide you through the initial configuration of your Ghost node.
-                  Each step configures a different aspect of your node&apos;s operation.
+                  All capabilities are enabled by default for maximum privacy and shares (15/15).
+                  You can disable anything you don&apos;t need.
                 </p>
+                <div className="mt-3 text-sm text-gray-500">
+                  <p className="font-medium text-gray-400 mb-1">Share breakdown:</p>
+                  <ul className="space-y-1 ml-2">
+                    <li>Archive Mode: +5 shares</li>
+                    <li>Ghost Pay: +4 shares</li>
+                    <li>Public Mining: +3 shares</li>
+                    <li>Reaper: +2 shares</li>
+                    <li>Elder: +1 share (automatic via MPC ceremony)</li>
+                  </ul>
+                </div>
               </div>
               <div className="p-4 rounded-lg bg-gray-800/50">
                 <h4 className="text-gray-100 font-medium mb-2">What we will set up</h4>

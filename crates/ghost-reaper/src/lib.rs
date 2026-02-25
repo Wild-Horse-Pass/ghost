@@ -32,7 +32,7 @@ mod verdict;
 mod witness;
 
 pub use analyzer::analyze;
-pub use config::{ReaperConfig, ReaperMode};
+pub use config::ReaperConfig;
 pub use verdict::{
     AnalysisLocation, DeadCodeRegion, DeadCodeType, InputAnalysis, ReaperVerdict, Verdict,
     WitnessBreakdown,

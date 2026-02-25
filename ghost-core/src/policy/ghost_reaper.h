@@ -12,13 +12,12 @@
 /** Ghost Reaper operating mode */
 enum class GhostReaperMode {
     Disabled,   //!< No Reaper filtering
-    Moderate,   //!< Default: reject obvious dead-code patterns
-    Strict,     //!< Zero tolerance for any dead-code pattern
+    Enabled,    //!< Dead-code filtering active (default)
 };
 
 /** Configuration for Ghost Reaper mempool filter */
 struct GhostReaperConfig {
-    GhostReaperMode mode{GhostReaperMode::Moderate};
+    GhostReaperMode mode{GhostReaperMode::Enabled};
     /** Maximum OP_RETURN data payload in bytes (default 83, matching Bitcoin Core relay default) */
     unsigned int max_op_return_bytes{83};
     /** Minimum push size to trigger drop stuffing detection (default 76) */

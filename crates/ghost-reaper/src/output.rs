@@ -185,7 +185,7 @@ mod tests {
         script.push(0x52); // OP_2
         script.push(0xae); // OP_CHECKMULTISIG
 
-        let config = ReaperConfig::strict();
+        let config = ReaperConfig::default();
         let regions = detect_fake_multisig_pubkeys(&script, 0, &config).unwrap();
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].dead_code_type, DeadCodeType::FakePubkey);
@@ -208,7 +208,7 @@ mod tests {
         script.push(0xae); // OP_CHECKMULTISIG
 
         // With EC validation off, valid prefixes pass
-        let mut config = ReaperConfig::strict();
+        let mut config = ReaperConfig::default();
         config.validate_pubkey_curve_point = false;
         assert!(detect_fake_multisig_pubkeys(&script, 0, &config).is_none());
     }

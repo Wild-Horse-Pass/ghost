@@ -739,30 +739,18 @@ async fn main() -> Result<()> {
     );
 
     // Setup reaper config for dead code detection
-    let reaper_config = if !config.reaper.enabled {
-        ReaperConfig::disabled()
+    let reaper_config = if config.reaper.enabled {
+        ReaperConfig::default()
     } else {
-        match config.reaper.mode.as_str() {
-            "strict" => ReaperConfig::strict(),
-            "moderate" => ReaperConfig::moderate(),
-            "monitor" => ReaperConfig::monitor(),
-            _ => {
-                warn!(
-                    mode = %config.reaper.mode,
-                    "Unknown reaper mode, defaulting to strict"
-                );
-                ReaperConfig::strict()
-            }
-        }
+        ReaperConfig::disabled()
     };
     info!(
-        "Reaper: {} (mode: {})",
+        "Reaper: {}",
         if reaper_config.enabled {
             "enabled"
         } else {
             "disabled"
-        },
-        config.reaper.mode
+        }
     );
 
     // Determine effective public_mining from mining_mode
@@ -781,7 +769,7 @@ async fn main() -> Result<()> {
         archive_mode: config.storage.archive_mode,
         ghost_pay: config.ghost_pay.is_some(),
         public_mining: is_public_mining, // Derived from mining_mode
-        reaper: config.reaper.enabled && config.reaper.mode == "strict",
+        reaper: config.reaper.enabled,
         elder_status: false,
     };
 

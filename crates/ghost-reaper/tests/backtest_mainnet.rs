@@ -48,7 +48,6 @@ struct BacktestStats {
     total_coinbase: usize,
     accepted: usize,
     corpse: usize,
-    monitor: usize,
     // Breakdown by detection type
     by_type: std::collections::HashMap<String, usize>,
     // Breakdown by spend type for corpse txs
@@ -74,7 +73,7 @@ fn is_known_spam_type(dt: &DeadCodeType) -> bool {
 #[test]
 #[ignore]
 fn backtest_recent_mainnet_blocks() {
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
 
     // Get current tip height
     let tip_output = Command::new("curl")
@@ -91,8 +90,7 @@ fn backtest_recent_mainnet_blocks() {
     let end_height = tip_height;
 
     println!(
-        "\n{}",
-        "============================================================"
+        "\n============================================================"
     );
     println!("Ghost Reaper — Mainnet Backtest");
     println!(
@@ -102,7 +100,6 @@ fn backtest_recent_mainnet_blocks() {
         end_height - start_height + 1
     );
     println!(
-        "{}",
         "============================================================\n"
     );
 
@@ -195,7 +192,7 @@ fn backtest_recent_mainnet_blocks() {
                         ));
                     }
                 }
-                Verdict::MonitorOnly => stats.monitor += 1,
+                
             }
         }
 
@@ -212,12 +209,10 @@ fn backtest_recent_mainnet_blocks() {
 
     // Print results
     println!(
-        "\n{}",
-        "============================================================"
+        "\n============================================================"
     );
     println!("RESULTS");
     println!(
-        "{}",
         "============================================================"
     );
     println!("Blocks analyzed:   {}", stats.total_blocks);
@@ -225,7 +220,6 @@ fn backtest_recent_mainnet_blocks() {
     println!("  Coinbase (skip):  {}", stats.total_coinbase);
     println!("  Accepted:         {}", stats.accepted);
     println!("  Corpse:           {}", stats.corpse);
-    println!("  Monitor:          {}", stats.monitor);
     println!(
         "  Corpse rate:      {:.4}%",
         if stats.total_txs > 0 {
@@ -285,7 +279,7 @@ fn backtest_recent_mainnet_blocks() {
 #[test]
 #[ignore]
 fn backtest_inscription_heavy_blocks() {
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
 
     // Block 774628 — first Ordinals inscription
     // Block 776000 — early inscription period
@@ -294,12 +288,10 @@ fn backtest_inscription_heavy_blocks() {
     let interesting_heights: Vec<u64> = vec![774628, 776000, 800000, 840000];
 
     println!(
-        "\n{}",
-        "============================================================"
+        "\n============================================================"
     );
     println!("Ghost Reaper — Inscription-Heavy Block Backtest");
     println!(
-        "{}",
         "============================================================\n"
     );
 

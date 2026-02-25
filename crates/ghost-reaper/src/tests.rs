@@ -3,8 +3,8 @@ use bitcoin::hashes::Hash;
 use bitcoin::transaction::Version;
 use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
 
-use crate::config::{ReaperConfig, ReaperMode};
-use crate::verdict::{DeadCodeType, Verdict};
+use crate::config::ReaperConfig;
+use crate::verdict::DeadCodeType;
 use crate::{analyze, SpendType};
 
 // ─── Test Helpers ───────────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ fn test_standard_inscription_envelope() {
 
     let sig = [0x30; 64]; // Schnorr sig
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -200,7 +200,7 @@ fn test_large_image_inscription() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -212,13 +212,12 @@ fn test_large_image_inscription() {
 fn test_legitimate_htlc() {
     // HTLC script: OP_IF <pubkey_hash> OP_ELSE <timeout> OP_CLTV OP_DROP <pubkey_hash> OP_ENDIF OP_CHECKSIG
     // All branches are reachable — no dead code
-    let mut script: Vec<u8> = Vec::new();
-    // OP_IF
-    script.push(0x63);
-    // OP_DUP OP_HASH160 PUSH20 <hash> OP_EQUALVERIFY
-    script.push(0x76); // OP_DUP
-    script.push(0xa9); // OP_HASH160
-    script.push(0x14); // PUSH20
+    let mut script: Vec<u8> = vec![
+        0x63, // OP_IF
+        0x76, // OP_DUP
+        0xa9, // OP_HASH160
+        0x14, // PUSH20
+    ];
     script.extend([0xAA; 20]);
     script.push(0x88); // OP_EQUALVERIFY
                        // OP_ELSE
@@ -241,7 +240,7 @@ fn test_legitimate_htlc() {
     let sig = [0x30; 64];
     let preimage = [0xCC; 32];
     let tx = tx_with_tapscript(&script, &[&sig, &preimage]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_accepted());
@@ -252,7 +251,7 @@ fn test_legitimate_htlc() {
 #[test]
 fn test_p2tr_key_path() {
     let tx = tx_p2tr_keypath();
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_accepted());
@@ -275,7 +274,7 @@ fn test_op_drop_data_stuffing() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -314,7 +313,7 @@ fn test_bare_multisig_fake_pubkeys() {
         script_pubkey: ScriptBuf::from(script_bytes),
     }];
     let tx = tx_with_outputs(outputs);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -345,7 +344,7 @@ fn test_small_op_return_accept() {
         },
     ];
     let tx = tx_with_outputs(outputs);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_accepted());
@@ -371,7 +370,7 @@ fn test_oversized_op_return() {
         },
     ];
     let tx = tx_with_outputs(outputs);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -412,7 +411,7 @@ fn test_witness_annex() {
             script_pubkey: p2wpkh_script(),
         }],
     };
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -448,7 +447,7 @@ fn test_encrypted_inscription() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -479,7 +478,7 @@ fn test_legitimate_plus_dead_envelope() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -489,18 +488,19 @@ fn test_legitimate_plus_dead_envelope() {
 #[test]
 fn test_push_0x00_circumvention() {
     // Instead of OP_0, attacker uses OP_PUSHBYTES_1 0x00 (which is also falsy)
-    let mut script: Vec<u8> = Vec::new();
-    script.push(0x01); // OP_PUSHBYTES_1
-    script.push(0x00); // push value [0x00] — falsy
-    script.push(0x63); // OP_IF
-    script.push(0x03);
+    let mut script: Vec<u8> = vec![
+        0x01, // OP_PUSHBYTES_1
+        0x00, // push value [0x00] — falsy
+        0x63, // OP_IF
+        0x03,
+    ];
     script.extend(b"ord");
     script.push(0x68); // OP_ENDIF
     script.push(0xac); // OP_CHECKSIG
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -529,7 +529,7 @@ fn test_empty_witness() {
             script_pubkey: p2wpkh_script(),
         }],
     };
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_accepted());
@@ -540,91 +540,11 @@ fn test_empty_witness() {
 #[test]
 fn test_coinbase_skip() {
     let tx = coinbase_tx();
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_accepted());
     assert!(verdict.dead_regions.is_empty());
-}
-
-/// Moderate mode: under threshold → Accept
-#[test]
-fn test_moderate_under_threshold() {
-    // Push 50 bytes + DROP (under moderate_max_dead_bytes=80)
-    let mut script: Vec<u8> = Vec::new();
-    // Small-ish data stuffing
-    script.push(0x4c); // OP_PUSHDATA1
-    script.push(50);
-    script.extend(vec![0xAA; 50]);
-    // Now we need a legitimate push + more code to lower the ratio
-    // Actually, let's make a longer script so the ratio stays low
-    for _ in 0..20 {
-        script.push(0x51); // OP_1 (padding, legitimate nops basically)
-    }
-    // Now the data push is still there from before — wait, we need to ensure
-    // we have a push >= min_drop_data_size. The default is 76, so 50 won't trigger.
-    // Let's use 76.
-    let mut script: Vec<u8> = Vec::new();
-    script.push(0x4c); // OP_PUSHDATA1
-    script.push(76);
-    script.extend(vec![0xAA; 76]);
-    script.push(0x75); // OP_DROP
-                       // Pad with legitimate code to keep ratio low
-    for _ in 0..800 {
-        script.push(0x51); // OP_1
-    }
-    script.push(0xac); // OP_CHECKSIG
-
-    let sig = [0x30; 64];
-    let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::moderate();
-    let verdict = analyze(&tx, &config);
-
-    // Dead region = 78 bytes (76 data + pushdata1 opcode + length byte + DROP = 76+3 = 79... let me calculate)
-    // The region is from push_offset to pos+1 (includes DROP).
-    // push_offset = 0 (start of OP_PUSHDATA1), DROP is at 0+2+76=78, so region = 78-0+1 = 79
-    // 79 < 80 (moderate_max_dead_bytes), AND ratio = 79/~879 ≈ 0.09 < 0.10
-    assert!(verdict.is_accepted());
-}
-
-/// Moderate mode: over threshold → Corpse
-#[test]
-fn test_moderate_over_threshold() {
-    // Push 100 bytes + DROP (over moderate_max_dead_bytes=80)
-    let mut script: Vec<u8> = Vec::new();
-    script.push(0x4c); // OP_PUSHDATA1
-    script.push(100);
-    script.extend(vec![0xAA; 100]);
-    script.push(0x75); // OP_DROP
-    script.push(0xac); // OP_CHECKSIG
-
-    let sig = [0x30; 64];
-    let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::moderate();
-    let verdict = analyze(&tx, &config);
-
-    assert!(verdict.is_corpse());
-}
-
-/// Monitor mode → MonitorOnly (never rejects)
-#[test]
-fn test_monitor_mode() {
-    // Big inscription that would be Corpse in strict
-    let mut script: Vec<u8> = Vec::new();
-    script.push(0x00);
-    script.push(0x63);
-    script.push(0x03);
-    script.extend(b"ord");
-    script.push(0x68);
-    script.push(0xac);
-
-    let sig = [0x30; 64];
-    let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::monitor();
-    let verdict = analyze(&tx, &config);
-
-    assert_eq!(verdict.verdict, Verdict::MonitorOnly);
-    assert!(!verdict.dead_regions.is_empty()); // still detects, just doesn't reject
 }
 
 /// Nested IF depth tracking
@@ -634,7 +554,7 @@ fn test_nested_if_depth() {
     let script = vec![0x00, 0x63, 0x63, 0x63, 0x68, 0x68, 0x68, 0xac];
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -646,18 +566,19 @@ fn test_nested_if_depth() {
 #[test]
 fn test_negative_zero_circumvention() {
     // OP_PUSHBYTES_1 0x80 OP_IF ... — [0x80] is negative zero (falsy)
-    let mut script: Vec<u8> = Vec::new();
-    script.push(0x01); // OP_PUSHBYTES_1
-    script.push(0x80); // negative zero
-    script.push(0x63); // OP_IF
-    script.push(0x03);
+    let mut script: Vec<u8> = vec![
+        0x01, // OP_PUSHBYTES_1
+        0x80, // negative zero
+        0x63, // OP_IF
+        0x03,
+    ];
     script.extend(b"ord");
     script.push(0x68); // OP_ENDIF
     script.push(0xac);
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -696,7 +617,7 @@ fn test_p2wsh_dead_code() {
 
     let sig = [0x30; 72]; // DER signature
     let tx = tx_with_witness_script(&ws, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -717,7 +638,7 @@ fn test_2drop_stuffing() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -742,7 +663,7 @@ fn test_toggle_inscription_off() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let mut config = ReaperConfig::strict();
+    let mut config = ReaperConfig::default();
     config.reject_inscription_envelope = false;
     let verdict = analyze(&tx, &config);
 
@@ -766,7 +687,7 @@ fn test_toggle_drop_off() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let mut config = ReaperConfig::strict();
+    let mut config = ReaperConfig::default();
     config.reject_drop_stuffing = false;
     let verdict = analyze(&tx, &config);
 
@@ -787,10 +708,9 @@ fn test_verdict_helpers() {
 /// Config serialization round-trip
 #[test]
 fn test_config_serde() {
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let json = serde_json::to_string(&config).unwrap();
     let deserialized: ReaperConfig = serde_json::from_str(&json).unwrap();
-    assert_eq!(deserialized.mode, ReaperMode::Strict);
     assert!(deserialized.enabled);
 }
 
@@ -840,7 +760,7 @@ fn test_multiple_dead_regions() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -862,7 +782,7 @@ fn test_notif_in_envelope() {
     let script = vec![0x00, 0x63, 0x64, 0x68, 0x68, 0xac];
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -896,7 +816,7 @@ fn test_witness_breakdown_inscription() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -927,7 +847,7 @@ fn test_witness_breakdown_drop_stuffing() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -952,7 +872,7 @@ fn test_excess_stack_items() {
     let item3 = [0x30; 64]; // "signature" (on top where CHECKSIG consumes it)
     let tx = tx_with_tapscript(&script, &[&item1, &item2, &item3]);
 
-    let mut config = ReaperConfig::strict();
+    let mut config = ReaperConfig::default();
     config.min_excess_witness_bytes = 100; // lower threshold for test
     let verdict = analyze(&tx, &config);
 
@@ -983,7 +903,7 @@ fn test_legitimate_htlc_no_excess() {
     let sig = [0x30; 64];
     let preimage = [0xDD; 32];
     let tx = tx_with_tapscript(&script, &[&sig, &preimage]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     // Should accept — the conservative count covers both branches
@@ -1013,7 +933,7 @@ fn test_ec_point_valid_prefix_invalid_point() {
         script_pubkey: ScriptBuf::from(script),
     }];
     let tx = tx_with_outputs(outputs);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -1044,7 +964,7 @@ fn test_ec_point_real_pubkey() {
         script_pubkey: ScriptBuf::from(script),
     }];
     let tx = tx_with_outputs(outputs);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     // Real pubkey should pass
@@ -1082,7 +1002,7 @@ fn test_legacy_scriptsig_data() {
             script_pubkey: p2wpkh_script(),
         }],
     };
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -1134,7 +1054,7 @@ fn test_p2sh_redeemscript_envelope() {
             script_pubkey: p2wpkh_script(),
         }],
     };
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -1206,7 +1126,7 @@ fn test_verdict_essential_excess_totals() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     // Should have computed totals

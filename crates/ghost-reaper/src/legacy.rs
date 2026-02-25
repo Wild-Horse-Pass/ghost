@@ -300,7 +300,7 @@ mod tests {
         script_sig.push(sig.len() as u8);
         script_sig.extend(&sig);
 
-        let config = ReaperConfig::strict();
+        let config = ReaperConfig::default();
         let regions = analyze_legacy_scriptsig(&script_sig, 0, &config);
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].dead_code_type, DeadCodeType::LegacyScriptSigData);

@@ -23,7 +23,7 @@
 use bitcoin::Transaction;
 use tracing::debug;
 
-use crate::config::{ReaperConfig, ReaperMode};
+use crate::config::ReaperConfig;
 use crate::dead_code::detect_dead_code;
 use crate::essential::compute_witness_breakdown;
 use crate::flow::analyze_script_flow;
@@ -37,7 +37,7 @@ use crate::witness::{has_annex, identify_spend, SpendType};
 /// Analyze a transaction for dead code in witness scripts and outputs.
 ///
 /// Returns a `ReaperVerdict` with detailed region-level findings and
-/// a final `Verdict` (Accept, Corpse, or MonitorOnly) based on the config mode.
+/// a final `Verdict` (Accept or Corpse) based on dead code presence.
 pub fn analyze(tx: &Transaction, config: &ReaperConfig) -> ReaperVerdict {
     // Disabled → accept everything
     if !config.enabled {
@@ -254,34 +254,16 @@ fn dedup_dead_bytes(regions: &[DeadCodeRegion]) -> usize {
     total
 }
 
-/// Apply mode-specific thresholds to determine the final verdict.
+/// Determine verdict: any dead bytes → Corpse, otherwise Accept.
 fn determine_verdict(
     total_dead_bytes: usize,
-    dead_code_ratio: f64,
+    _dead_code_ratio: f64,
     regions: &[DeadCodeRegion],
-    config: &ReaperConfig,
+    _config: &ReaperConfig,
 ) -> Verdict {
-    if regions.is_empty() {
-        return Verdict::Accept;
-    }
-
-    match config.mode {
-        ReaperMode::Strict => {
-            if total_dead_bytes > config.strict_max_dead_bytes {
-                Verdict::Corpse
-            } else {
-                Verdict::Accept
-            }
-        }
-        ReaperMode::Moderate => {
-            if total_dead_bytes > config.moderate_max_dead_bytes
-                || dead_code_ratio > config.moderate_max_dead_ratio
-            {
-                Verdict::Corpse
-            } else {
-                Verdict::Accept
-            }
-        }
-        ReaperMode::Monitor => Verdict::MonitorOnly,
+    if regions.is_empty() || total_dead_bytes == 0 {
+        Verdict::Accept
+    } else {
+        Verdict::Corpse
     }
 }

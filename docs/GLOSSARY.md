@@ -86,7 +86,7 @@ The incentive mechanism for node operators. Nodes earn shares in the node reward
 | Archive Mode | +5 | Random block retrieval challenges |
 | Ghost Pay | +4 | L2 block lookup challenges |
 | Public Mining | +3 | Stratum port accessibility check |
-| Reaper | +2 | Reaper strict mode verification |
+| Reaper | +2 | Reaper verification |
 | Elder Status | +1 | MPC ceremony contribution (first 101 nodes) |
 
 Maximum: 15 shares. Gatekeeper: 95% uptime over trailing 7 days required for any shares.
@@ -106,9 +106,9 @@ A node capability indicating the node accepts public miner connections on its St
 - Verification endpoint: `GET /api/v1/verify/stratum`
 
 ### Reaper Capability (+2 Shares)
-A node capability indicating the node runs Ghost Reaper in strict mode. Verified by sending test transactions containing known dead code patterns and confirming the node correctly rejects them as Corpses. Requires 95% pass rate. Previously called "Bitcoin Pure" in the share system (renamed February 2026). Not to be confused with the `bitcoin_pure` PolicyProfile, which is a separate BUDS policy name.
+A node capability indicating the node runs Ghost Reaper. Verified by sending test transactions containing known dead code patterns and confirming the node correctly rejects them as Corpses. Requires 95% pass rate. Previously called "Bitcoin Pure" in the share system (renamed February 2026). Not to be confused with the `bitcoin_pure` PolicyProfile, which is a separate BUDS policy name.
 - Verification endpoint: `POST /api/v1/verify/reaper`
-- Config condition: `reaper.enabled && reaper.mode == "strict"`
+- Config condition: `reaper.enabled`
 
 ### Elder Status (+1 Share)
 A node capability granted to the first 101 nodes that contribute to the MPC ceremony. Determined by the `mpc_contributions` database table. Positions are permanent and non-transferable; if an elder goes offline, the position is lost forever. Revoked elder numbers are never reassigned ("burned slots"). Elder status does not grant special voting power -- all nodes participate equally in BFT consensus.
@@ -283,14 +283,13 @@ The 8 categories of dead code that Reaper detects:
 8. **Legacy scriptSig Data** -- Non-standard large pushes in legacy scriptSig
 
 ### ReaperVerdict
-The result of analyzing a transaction. Contains the verdict (Accept, Corpse, or MonitorOnly), a list of dead code regions, per-input analyses, total dead/witness byte counts, and dead code ratio.
+The result of analyzing a transaction. Contains the verdict (Accept or Corpse), a list of dead code regions, per-input analyses, total dead/witness byte counts, and dead code ratio.
 
 ### Reaper Modes
-Three operating modes:
-- **Strict** -- Any dead code results in a Corpse verdict. Zero tolerance. Required for +2 Reaper shares.
-- **Moderate** -- Transaction accepted if total dead bytes <= 80 AND dead code ratio <= 10%.
-- **Monitor** -- Analysis runs and logs results but no transactions are filtered.
-- Configuration: `-ghostreaper=<mode>` (ghostd) or `[reaper] mode = "strict"` (pool.toml)
+Binary toggle:
+- **Enabled** -- Any dead code results in a Corpse verdict. Zero tolerance. Required for +2 Reaper shares.
+- **Disabled** -- No analysis or filtering performed.
+- Configuration: `-ghostreaper` (ghostd) or `[reaper] enabled = true` (pool.toml)
 
 ### Taint-Tracking Simulator
 A symbolic script execution engine within Ghost Reaper (`simulator.rs`) that traces which witness indices contribute to stack values consumed by signature verification opcodes. Witness bytes not consumed by any execution path are flagged as excess. Safety limits: 1000 stack depth, 100 IF depth, 64 branch paths.
@@ -411,12 +410,32 @@ The encryption framework used for sensitive P2P communication between Ghost node
 The digital signature algorithm used for node identity. Each node has a 32-byte Ed25519 public key as its NodeId. All consensus messages are Ed25519-signed with sender, timestamp, and payload.
 
 ### Groth16
-The zero-knowledge proof system used by Ghost Pay. SNARK (Succinct Non-Interactive Argument of Knowledge) over the BLS12-381 curve. Proof size: 192 bytes (A: 48 G1, B: 96 G2, C: 48 G1). Used for BlockCircuit (block validity / state transitions) and PayoutCircuit (payout distribution validity). Requires a trusted setup (MPC ceremony) to generate proving and verifying keys.
+The zero-knowledge proof system used by Ghost Pay. SNARK (Succinct Non-Interactive Argument of Knowledge) over the BLS12-381 curve. Proof size: 192 bytes (A: 48 G1, B: 96 G2, C: 48 G1). Used for NoteSpendCircuit (note spending / transfer validity) and PayoutCircuit (payout distribution validity). Requires a trusted setup (MPC ceremony) to generate proving and verifying keys.
 - Source: `crates/ghost-zkp/src/`
 
-### BlockCircuit
-A Groth16 ZK circuit that proves block validity by chaining state transitions through all payments. Public inputs: `prev_root`, `new_root`. Empty blocks enforce `prev_root == new_root`.
-- Source: `crates/ghost-zkp/src/block.rs`
+### NoteSpendCircuit
+A Groth16 ZK circuit that proves a sender is authorized to spend a note in the L2 commitment tree. ~12,675 constraints at depth-40 merkle tree. Uses MiMC (82 rounds) for hashing. Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`. Senders generate proofs locally (~3-4 seconds); validators verify in ~5ms. Replaced the earlier BlockCircuit design (February 2026 L2 redesign).
+- Source: `crates/ghost-zkp/src/circuit/note_spend.rs`
+
+### NullifierRouteHandler
+The L2 transaction validator that replaces the earlier ZkVoteHandler and L2BlockProducer. Validates sender-side Groth16 proofs, routes transactions by nullifier prefix for deterministic validator assignment, manages BFT checkpoints (every 10 seconds, all-node, 67% threshold), and produces epoch transition proposals.
+- Source: `crates/ghost-consensus/src/nullifier_route_handler.rs`
+
+### EpochManager
+Manages L2 epoch lifecycle: tree compaction, epoch transitions, proposer rotation, and commitment tree maintenance. Each epoch represents a batch of virtual blocks. Provides `current_root()` and `advance_epoch()` for the NullifierRouteHandler.
+- Source: `crates/ghost-consensus/src/epoch_manager.rs`
+
+### CommitmentTree
+A sparse Merkle tree (depth 40, ~1 trillion leaf capacity) that stores note commitments for the L2 note/UTXO model. Uses `precompute_zero_hashes()` for efficient sparse tree operations — without it, computing the root is O(2^depth). MiMC (82 rounds) is the hash function. Critical implementation detail: `get_node_hash()` short-circuits on zero subtrees.
+- Source: `crates/ghost-zkp/src/commitment_tree.rs`
+
+### MiMC
+A hash function used in Ghost's ZK circuits. Uses 82 rounds of Feistel-mode hashing with SHA-256-derived round constants over BLS12-381. Provides ≥128-bit security against algebraic attacks. Used for note commitments, nullifier derivation, and Merkle tree construction within NoteSpendCircuit.
+- Source: `crates/ghost-zkp/src/circuit/mimc.rs`
+- Constant: `MIMC_ROUNDS = 82`
+
+### Sender-Side Proofs
+The L2 proof architecture where senders (not validators) generate Groth16 proofs for their transactions. Senders prove they own a note and that the spend is valid (~3-4s proof generation). Validators only verify the proof (~5ms). This shifts computational burden to senders and enables parallel transaction processing. Replaced the earlier validator-side block proof model (February 2026 L2 redesign).
 
 ### PayoutCircuit
 A Groth16 ZK circuit that proves payout distribution validity: sum preservation (miners + nodes + treasury = total), 64-bit amount bounds, and metadata commitment.

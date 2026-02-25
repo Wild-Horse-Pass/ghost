@@ -1099,7 +1099,7 @@ The Ghost Reaper runs inside Ghost Core's `PreChecks()` after `IsStandardTx()`, 
 - Fake pubkeys in bare multisig (invalid 0x02/0x03 prefix)
 - P2TR annex abuse (last witness element starting with 0x50)
 
-Configuration: `-ghostreaper=<mode>` (disabled/moderate/strict, default: moderate)
+Configuration: `-ghostreaper` (enabled/disabled, default: enabled)
 
 **Layer 2 — Ghost Pool template (Rust, full analysis):**
 The existing Reaper in ghost-pool runs the complete 8-vector analysis including taint-tracking simulation, unreachable code flow analysis, and legacy scriptSig detection during template construction. This catches anything the fast C++ layer misses.
@@ -2276,36 +2276,37 @@ Three-layer defense against message replay in the P2P mesh:
 
 ### 21.1 Groth16 SNARKs
 
-Ghost uses Groth16 proofs over BLS12-381 for block validity and payout distribution:
+Ghost uses Groth16 proofs over BLS12-381 with a sender-side proof architecture:
 
-| Proof Type | Purpose | Public Inputs | Size |
-|-----------|---------|---------------|------|
-| Block Proof | Block validity / state transitions | prev_root, new_root | 192 bytes |
-| Payout Proof | Distribution validity | epoch, totals | 192 bytes |
+| Proof Type | Purpose | Public Inputs | Constraints | Size |
+|-----------|---------|---------------|-------------|------|
+| NoteSpend | Note spending / transfer validity | commitment_root, nullifier, change_commitment, recipient_commitment | ~12,675 (depth-40) | 192 bytes |
+| Payout | Distribution validity | epoch, totals | ~2,500 | 192 bytes |
 
 Proof structure: A (48 bytes, G1) + B (96 bytes, G2) + C (48 bytes, G1).
 
 ### 21.2 Circuit Design
 
-**BlockCircuit**: Chains state transitions through all payments in a block. Empty blocks enforce `prev_root == new_root`. Full ZK mode proves complete state transitions without re-execution.
-
-**PaymentCircuit**: Proves single payment validity (balance sufficiency, no underflow/overflow, correct state update).
+**NoteSpendCircuit**: Sender-side proof for spending a note in the L2 commitment tree. Uses MiMC (82 rounds) for hashing, depth-40 Merkle inclusion proofs. Senders generate proofs locally (~3-4s); validators verify in ~5ms. Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`. Replaced the earlier BlockCircuit (February 2026 L2 redesign).
 
 **PayoutCircuit**: Proves payout distribution preserves sum (miners + nodes + treasury = total) with 64-bit amount bounds.
 
+**NullifierRouteHandler**: Validates sender-side proofs, routes transactions by nullifier prefix for deterministic validator assignment, manages all-node BFT checkpoints (every 10 seconds, 67% threshold).
+
+**EpochManager**: Manages L2 epoch lifecycle — tree compaction, epoch transitions, proposer rotation, commitment tree maintenance.
+
 ### 21.3 MPC Ceremony
 
-Parameters are generated through a rolling Multi-Party Computation ceremony. See [MPC Ceremony](protocols/MPC_CEREMONY.md) for the full specification.
+Parameters are generated through a rolling Multi-Party Computation ceremony. See [MPC Ceremony](protocols/MPC_CEREMONY.md) for the full specification. MPC uses `NoteSpendCircuit::dummy(40)` for parameter generation (~3-4s per contribution).
 
 Summary:
 - First 101 contributors become Elders (+1 share)
 - 1-of-N security model (one honest participant sufficient)
-
 - Parameters stored in `~/.ghost/mpc_params/`
 
 ### 21.4 Verification
 
-- With verifying key: cryptographic verification (~10ms)
+- With verifying key: cryptographic verification (~5ms for NoteSpend proofs)
 - Without verifying key: fail closed (reject all proofs in production)
 - Subgroup checks on deserialization prevent invalid curve attacks
 

@@ -40,7 +40,7 @@ Reaper operates independently from BUDS classification. BUDS classifies transact
 - **Two-layer defense**: Layer 1 (C++ in Ghost Core mempool) + Layer 2 (Rust in ghost-pool template)
 - Layer 1 rejects common patterns before transactions enter the mempool or propagate to peers
 - Layer 2 runs the full 8-vector analysis during block template construction
-- Configurable operating mode: Strict, Moderate, or Monitor (Disabled for Layer 1)
+- Binary enabled/disabled toggle (on by default)
 - Per-vector toggles for fine-grained control
 - Taint-tracking stack simulator for computational witness analysis
 - NOT a node capability -- does not grant shares in the 5-4-3-2-1 system
@@ -57,7 +57,7 @@ Fast pattern matching inside `validation.cpp:PreChecks()`, after `IsStandardTx()
 
 **Configuration** (ghostd CLI):
 ```
--ghostreaper=<mode>          disabled, moderate, strict (default: moderate)
+-ghostreaper                 enabled/disabled (default: enabled)
 -ghostreaper-maxopreturn=<n> Maximum OP_RETURN data bytes (default: 83)
 -ghostreaper-mindropsize=<n> Minimum push size for drop stuffing (default: 76)
 ```
@@ -76,15 +76,14 @@ Every transaction analyzed by Reaper receives a verdict:
 
 | Verdict | Meaning |
 |---------|---------|
-| **Accept** | Transaction contains no significant dead code (or falls within thresholds) |
-| **Corpse** | Transaction contains dead code exceeding thresholds -- filtered from template |
-| **MonitorOnly** | Dead code detected but not filtered (Monitor mode) |
+| **Accept** | Transaction contains no dead code |
+| **Corpse** | Transaction contains dead code -- filtered from template |
 
 ### ReaperVerdict
 
 ```rust
 pub struct ReaperVerdict {
-    pub verdict: Verdict,              // Accept | Corpse | MonitorOnly
+    pub verdict: Verdict,              // Accept | Corpse
     pub dead_regions: Vec<DeadCodeRegion>,
     pub input_analyses: Vec<InputAnalysis>,
     pub total_dead_bytes: usize,
@@ -183,42 +182,7 @@ Pushes that don't match these patterns and exceed `legacy_max_push_bytes` are fl
 
 ---
 
-## 4. Operating Modes
-
-### 4.1 Strict Mode
-
-```rust
-ReaperMode::Strict { strict_max_dead_bytes: 0 }
-```
-
-Any dead code detected results in a Corpse verdict. Zero tolerance.
-
-### 4.2 Moderate Mode
-
-```rust
-ReaperMode::Moderate {
-    moderate_max_dead_bytes: 80,    // Absolute byte threshold
-    moderate_max_dead_ratio: 0.10,  // 10% ratio threshold
-}
-```
-
-Transaction accepted if **both** conditions are met:
-- `total_dead_bytes <= 80`
-- `dead_code_ratio <= 10%`
-
-Permits small amounts of dead code (e.g., timelock patterns using OP_DROP).
-
-### 4.3 Monitor Mode
-
-```rust
-ReaperMode::Monitor
-```
-
-All transactions receive `MonitorOnly` verdict regardless of dead code. Analysis still runs and results are logged, enabling operators to observe dead code patterns without filtering.
-
----
-
-## 5. Analysis Pipeline
+## 4. Analysis Pipeline
 
 ### Entry Point
 
@@ -275,7 +239,7 @@ Safety limits prevent runaway analysis:
 
 ---
 
-## 6. Integration
+## 5. Integration
 
 ### Template Construction
 
@@ -304,19 +268,13 @@ A transaction can pass BUDS policy (e.g., `PolicyProfile::full_open()`) and stil
 
 ---
 
-## 7. Configuration
+## 6. Configuration
 
 ### ReaperConfig
 
 ```rust
 pub struct ReaperConfig {
     pub enabled: bool,
-    pub mode: ReaperMode,
-
-    // Mode thresholds
-    pub strict_max_dead_bytes: usize,       // Default: 0
-    pub moderate_max_dead_bytes: usize,     // Default: 80
-    pub moderate_max_dead_ratio: f64,       // Default: 0.10
 
     // Per-vector toggles
     pub reject_inscription_envelope: bool,  // Default: true
@@ -328,7 +286,7 @@ pub struct ReaperConfig {
     pub reject_legacy_data_stuffing: bool,  // Default: true
 
     // Detection thresholds
-    pub max_op_return_bytes: usize,         // Default: 83
+    pub max_op_return_bytes: usize,         // Default: 82
     pub min_drop_data_size: usize,          // Default: 76
     pub min_excess_witness_bytes: usize,    // Default: 500
     pub legacy_max_push_bytes: usize,       // Default: 80
@@ -338,33 +296,28 @@ pub struct ReaperConfig {
 }
 ```
 
-### Preset Configurations
+### Configurations
 
-| Preset | Mode | All toggles | Usage |
-|--------|------|-------------|-------|
-| `ReaperConfig::strict()` | Strict | Enabled | Maximum filtering (default) |
-| `ReaperConfig::moderate()` | Moderate | Enabled | Allow small dead code amounts |
-| `ReaperConfig::monitor()` | Monitor | Enabled | Observation only |
-| `ReaperConfig::disabled()` | -- | -- | No analysis performed |
+| Constructor | Behavior |
+|-------------|----------|
+| `ReaperConfig::default()` | Enabled, all toggles on, zero tolerance (default) |
+| `ReaperConfig::disabled()` | No analysis performed |
 
 ### pool.toml
 
 ```toml
 [reaper]
 enabled = true
-mode = "strict"           # "strict" | "moderate" | "monitor"
-max_op_return_bytes = 83
-min_drop_data_size = 76
 ```
 
 ---
 
-## 8. Source Files
+## 7. Source Files
 
 | File | Purpose |
 |------|---------|
 | `crates/ghost-reaper/src/analyzer.rs` | Main `analyze()` entry point and verdict determination |
-| `crates/ghost-reaper/src/config.rs` | `ReaperConfig`, `ReaperMode`, preset configurations |
+| `crates/ghost-reaper/src/config.rs` | `ReaperConfig`, preset configurations |
 | `crates/ghost-reaper/src/verdict.rs` | `ReaperVerdict`, `DeadCodeRegion`, `Verdict` enum |
 | `crates/ghost-reaper/src/dead_code.rs` | Pattern-based detection (inscription, drop stuffing) |
 | `crates/ghost-reaper/src/flow.rs` | Flow analysis (dead branches, unreachable code) |

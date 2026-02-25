@@ -22,24 +22,9 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ReaperMode {
-    Strict,
-    Moderate,
-    Monitor,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReaperConfig {
     pub enabled: bool,
-    pub mode: ReaperMode,
-
-    // Strict mode: any dead bytes → reject
-    pub strict_max_dead_bytes: usize,
-
-    // Moderate mode: allow small amounts
-    pub moderate_max_dead_bytes: usize,
-    pub moderate_max_dead_ratio: f64,
 
     // Per-vector toggles
     pub reject_inscription_envelope: bool,
@@ -67,13 +52,45 @@ pub struct ReaperConfig {
 }
 
 impl ReaperConfig {
-    pub fn strict() -> Self {
+    /// Validate configuration invariants.
+    ///
+    /// Returns an error string describing the first violated invariant, or Ok(()).
+    /// Call this after deserializing from config files to catch misconfigurations
+    /// before they cause runtime failures.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_op_return_bytes == 0 {
+            return Err("max_op_return_bytes must be > 0".to_string());
+        }
+        if self.min_drop_data_size == 0 {
+            return Err("min_drop_data_size must be > 0".to_string());
+        }
+        if self.min_excess_witness_bytes == 0 && self.reject_excess_witness {
+            return Err(
+                "min_excess_witness_bytes must be > 0 when reject_excess_witness is enabled"
+                    .to_string(),
+            );
+        }
+        if self.legacy_max_push_bytes == 0 && self.reject_legacy_data_stuffing {
+            return Err(
+                "legacy_max_push_bytes must be > 0 when reject_legacy_data_stuffing is enabled"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..Self::default()
+        }
+    }
+}
+
+impl Default for ReaperConfig {
+    fn default() -> Self {
         Self {
             enabled: true,
-            mode: ReaperMode::Strict,
-            strict_max_dead_bytes: 0,
-            moderate_max_dead_bytes: 80,
-            moderate_max_dead_ratio: 0.10,
             reject_inscription_envelope: true,
             reject_drop_stuffing: true,
             reject_fake_pubkeys: true,
@@ -87,32 +104,5 @@ impl ReaperConfig {
             legacy_max_push_bytes: 80,
             validate_pubkey_curve_point: true,
         }
-    }
-
-    pub fn moderate() -> Self {
-        Self {
-            mode: ReaperMode::Moderate,
-            ..Self::strict()
-        }
-    }
-
-    pub fn monitor() -> Self {
-        Self {
-            mode: ReaperMode::Monitor,
-            ..Self::strict()
-        }
-    }
-
-    pub fn disabled() -> Self {
-        Self {
-            enabled: false,
-            ..Self::strict()
-        }
-    }
-}
-
-impl Default for ReaperConfig {
-    fn default() -> Self {
-        Self::strict()
     }
 }

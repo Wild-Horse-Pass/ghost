@@ -40,7 +40,7 @@ fn fetch_raw_block(hash: &str) -> Option<Vec<u8>> {
 #[ignore]
 fn backtest_computational_only() {
     // Disable ALL pattern filters — only computational checks active
-    let mut config = ReaperConfig::strict();
+    let mut config = ReaperConfig::default();
     config.reject_inscription_envelope = false;
     config.reject_drop_stuffing = false;
     config.reject_unreachable_code = false;
@@ -182,7 +182,7 @@ fn backtest_computational_only() {
 
     // Now run WITH all filters to compare
     println!("\n--- Comparison: full filters ---");
-    let full_config = ReaperConfig::strict();
+    let full_config = ReaperConfig::default();
     let mut full_corpse = 0;
     // Re-check just 1 block for comparison
     let hash = fetch_block_hash(tip_height).unwrap();

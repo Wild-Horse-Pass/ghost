@@ -130,7 +130,7 @@ fn test_novel_excess_stack_items_bypass() {
 
     let tx = tx_with_tapscript(&script, &[&junk1, &junk2, &sig]);
 
-    let mut config = ReaperConfig::strict();
+    let mut config = ReaperConfig::default();
     config.min_excess_witness_bytes = 100; // lower threshold
     let verdict = analyze(&tx, &config);
 
@@ -193,7 +193,7 @@ fn test_novel_excess_stack_p2wsh_multisig() {
 
     let tx = tx_with_witness_script(&ws, &[&junk1, &junk2, &dummy, &sig1, &sig2]);
 
-    let mut config = ReaperConfig::strict();
+    let mut config = ReaperConfig::default();
     config.min_excess_witness_bytes = 100;
     let verdict = analyze(&tx, &config);
 
@@ -216,7 +216,7 @@ fn test_computational_quantifies_inscription() {
     let raw_hex = "02000000000101c392e5ce84d4cb97bcad5b636f24c7e066a16704129ae35a19a2c3cd7bedc89f0000000000fdffffff011c25000000000000225120b016165b277874f8403d554c24f9fda288acae2624172a053bcf00853fe4e2630340fd03eed68e052a2a1c824eff6f33e36ea3cc83ffd74f0648224fb6bc8dfcdf2a6096b09a9fc6ec3a226856c5a588744a020097c54d5a7bc59ed65961167b2289d9204646ae5047316b4230d0086c8acec687f00b1cd9d1dc634f6cb358ac0a9a8fffac0063036f72645118746578742f706c61696e3b636861727365743d7574662d38004c9347686f73742052656170657220696e736372697074696f6e20746573743a2074686973206465616420636f64652073686f756c6420626520646574656374656420616e64207265617065642066726f6d20626c6f636b2074656d706c617465732e20546865204f505f46414c5345204f505f494620656e76656c6f706520776173746573207769746e6573732073706163652e6821c04646ae5047316b4230d0086c8acec687f00b1cd9d1dc634f6cb358ac0a9a8fff00000000";
     let raw = hex::decode(raw_hex).unwrap();
     let tx: Transaction = deserialize(&raw).unwrap();
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     let analysis = &verdict.input_analyses[0];
@@ -337,7 +337,7 @@ fn test_breakdown_minimal_tapscript() {
     let script = vec![0xac]; // OP_CHECKSIG
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     let analysis = &verdict.input_analyses[0];
@@ -371,7 +371,7 @@ fn test_breakdown_p2wsh_hashlock() {
 
     let preimage = [0xDD; 32];
     let tx = tx_with_witness_script(&ws, &[&preimage]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     let analysis = &verdict.input_analyses[0];
@@ -404,7 +404,7 @@ fn test_breakdown_multiple_dead_regions() {
 
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     let analysis = &verdict.input_analyses[0];
@@ -438,7 +438,7 @@ fn test_breakdown_none_for_keypath() {
             script_pubkey: p2tr_script(),
         }],
     };
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(
@@ -472,7 +472,7 @@ fn test_breakdown_none_for_p2wpkh() {
             script_pubkey: p2wpkh_script(),
         }],
     };
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(
@@ -491,7 +491,7 @@ fn test_legit_tapscript_exact_witness() {
     let script = vec![0xac]; // OP_CHECKSIG
     let sig = [0x30; 64];
     let tx = tx_with_tapscript(&script, &[&sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_accepted());
@@ -536,7 +536,7 @@ fn test_legit_htlc_conservative_count() {
     let sig = [0x30; 64];
     let preimage = [0xDD; 32];
     let tx = tx_with_tapscript(&script, &[&sig, &preimage]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     let bd = verdict.input_analyses[0]
@@ -570,7 +570,7 @@ fn test_legit_checksigadd_exact() {
     let sig2 = [0x30; 64];
     let empty: [u8; 0] = [];
     let tx = tx_with_tapscript(&script, &[&empty, &sig2, &sig1]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     let bd = verdict.input_analyses[0]
@@ -602,7 +602,7 @@ fn test_legit_2of3_multisig_exact() {
     let sig1 = [0x30; 72];
     let sig2 = [0x30; 71];
     let tx = tx_with_witness_script(&ws, &[&dummy, &sig1, &sig2]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     let bd = verdict.input_analyses[0]
@@ -627,7 +627,7 @@ fn test_legit_p2wsh_hashlock_exact() {
 
     let preimage = [0xDD; 32];
     let tx = tx_with_witness_script(&ws, &[&preimage]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     let bd = verdict.input_analyses[0]
@@ -643,7 +643,7 @@ fn test_legit_p2wsh_hashlock_exact() {
 /// with no computational flags
 #[test]
 fn test_legit_common_types_no_computational_flags() {
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
 
     // P2TR key-path
     let mut w1 = Witness::new();
@@ -713,7 +713,7 @@ fn test_legit_legacy_p2pkh_no_flag() {
             script_pubkey: p2wpkh_script(),
         }],
     };
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_accepted(), "Legacy P2PKH should Accept");
@@ -766,7 +766,7 @@ fn test_legit_p2sh_multisig_no_false_positive() {
             script_pubkey: p2wpkh_script(),
         }],
     };
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_accepted(), "Legacy P2SH multisig should Accept");
@@ -794,7 +794,7 @@ fn test_legit_bare_multisig_real_pubkeys() {
         script_pubkey: ScriptBuf::from(script),
     }];
     let tx = tx_with_outputs(outputs);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(
@@ -827,7 +827,7 @@ fn test_fake_multisig_ec_validation() {
         script_pubkey: ScriptBuf::from(script),
     }];
     let tx = tx_with_outputs(outputs);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -852,7 +852,7 @@ fn test_ec_validation_disabled_fallback() {
         script_pubkey: ScriptBuf::from(script),
     }];
     let tx = tx_with_outputs(outputs);
-    let mut config = ReaperConfig::strict();
+    let mut config = ReaperConfig::default();
     config.validate_pubkey_curve_point = false;
     let verdict = analyze(&tx, &config);
 
@@ -894,7 +894,7 @@ fn test_legacy_data_stuffing_500_bytes() {
             script_pubkey: p2wpkh_script(),
         }],
     };
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(verdict.is_corpse());
@@ -930,7 +930,7 @@ fn test_legacy_small_push_under_threshold() {
             script_pubkey: p2wpkh_script(),
         }],
     };
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(
@@ -965,7 +965,7 @@ fn test_legacy_disabled() {
             script_pubkey: p2wpkh_script(),
         }],
     };
-    let mut config = ReaperConfig::strict();
+    let mut config = ReaperConfig::default();
     config.reject_legacy_data_stuffing = false;
     let verdict = analyze(&tx, &config);
 
@@ -990,7 +990,7 @@ fn test_excess_below_threshold_not_flagged() {
     let sig = [0x30; 64]; // Sig on top where CHECKSIG consumes it
 
     let tx = tx_with_tapscript(&script, &[&small_junk, &sig]);
-    let config = ReaperConfig::strict(); // min_excess_witness_bytes = 500
+    let config = ReaperConfig::default(); // min_excess_witness_bytes = 500
     let verdict = analyze(&tx, &config);
 
     // There IS excess, but it's below the 500-byte threshold
@@ -1027,7 +1027,7 @@ fn test_excess_above_threshold_flagged() {
     let sig = [0x30; 64]; // Sig on top where CHECKSIG consumes it
 
     let tx = tx_with_tapscript(&script, &[&big_junk, &sig]);
-    let config = ReaperConfig::strict();
+    let config = ReaperConfig::default();
     let verdict = analyze(&tx, &config);
 
     assert!(

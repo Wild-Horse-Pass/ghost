@@ -347,7 +347,7 @@ BOOST_AUTO_TEST_CASE(clean_tx_passes_all)
 
     CTransaction tx(mtx);
     GhostReaperConfig config;
-    config.mode = GhostReaperMode::Strict;
+    config.mode = GhostReaperMode::Enabled;
     std::string reason;
     BOOST_CHECK(IsGhostReaperClean(tx, config, reason));
 }
@@ -380,24 +380,7 @@ BOOST_AUTO_TEST_CASE(strict_mode_rejects_inscription)
 
     CTransaction tx(mtx);
     GhostReaperConfig config;
-    config.mode = GhostReaperMode::Strict;
-    std::string reason;
-    BOOST_CHECK(!IsGhostReaperClean(tx, config, reason));
-    BOOST_CHECK_EQUAL(reason, "ghost-reaper-inscription-envelope");
-}
-
-BOOST_AUTO_TEST_CASE(moderate_mode_rejects_inscription)
-{
-    CMutableTransaction mtx = MakeBaseTx();
-
-    std::vector<unsigned char> witness_elem = {
-        0x00, 0x63, 0x05, 'h', 'e', 'l', 'l', 'o', 0x68
-    };
-    mtx.vin[0].scriptWitness.stack.push_back(witness_elem);
-
-    CTransaction tx(mtx);
-    GhostReaperConfig config;
-    config.mode = GhostReaperMode::Moderate;
+    config.mode = GhostReaperMode::Enabled;
     std::string reason;
     BOOST_CHECK(!IsGhostReaperClean(tx, config, reason));
     BOOST_CHECK_EQUAL(reason, "ghost-reaper-inscription-envelope");
@@ -416,7 +399,7 @@ BOOST_AUTO_TEST_CASE(custom_opreturn_limit)
 
     CTransaction tx(mtx);
     GhostReaperConfig config;
-    config.mode = GhostReaperMode::Strict;
+    config.mode = GhostReaperMode::Enabled;
 
     // Default limit (83) — should pass
     std::string reason;
@@ -441,7 +424,7 @@ BOOST_AUTO_TEST_CASE(custom_drop_size_threshold)
 
     CTransaction tx(mtx);
     GhostReaperConfig config;
-    config.mode = GhostReaperMode::Strict;
+    config.mode = GhostReaperMode::Enabled;
 
     // Default min_drop_size (76) — 50-byte push should pass
     std::string reason;

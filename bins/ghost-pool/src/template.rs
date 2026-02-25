@@ -3101,7 +3101,7 @@ mod tests {
             TemplateConfig::default(),
             rpc,
             PolicyProfile::permissive(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         // Test various heights
@@ -3118,7 +3118,7 @@ mod tests {
             TemplateConfig::default(),
             rpc,
             PolicyProfile::permissive(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         // Valid hex string
@@ -3153,7 +3153,7 @@ mod tests {
             TemplateConfig::default(),
             rpc,
             PolicyProfile::permissive(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         // Create a minimal non-witness coinbase:
@@ -3207,7 +3207,7 @@ mod tests {
             },
             rpc,
             PolicyProfile::permissive(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let (coinbase1, coinbase2, _witness_data) = processor
@@ -3312,7 +3312,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -3329,7 +3329,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -3352,7 +3352,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -3371,7 +3371,7 @@ mod tests {
             },
             rpc.clone(),
             PolicyProfile::permissive(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let result = processor.build_coinbase_parts(800_000, 312_500_000, &None);
@@ -3557,7 +3557,7 @@ mod tests {
             TemplateConfig::default(),
             rpc,
             PolicyProfile::permissive(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         )
     }
 
@@ -3735,7 +3735,7 @@ mod tests {
             },
             rpc,
             PolicyProfile::permissive(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         // This should succeed
@@ -3885,7 +3885,7 @@ mod tests {
             TemplateConfig::default(),
             rpc.clone(),
             PolicyProfile::full_open(), // allow all tiers so only reaper filters
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let (kept, stats) = processor.filter_transactions(&txs);
@@ -3976,7 +3976,7 @@ mod tests {
             TemplateConfig::default(),
             rpc,
             PolicyProfile::full_open(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let (kept, stats) = processor.filter_transactions(&txs);
@@ -4045,7 +4045,7 @@ mod tests {
             TemplateConfig::default(),
             rpc,
             PolicyProfile::full_open(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let (kept, stats) = processor.filter_transactions(&txs);
@@ -4114,7 +4114,7 @@ mod tests {
             TemplateConfig::default(),
             rpc,
             PolicyProfile::full_open(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let (kept, stats) = processor.filter_transactions(&txs);
@@ -4182,7 +4182,7 @@ mod tests {
             TemplateConfig::default(),
             rpc,
             PolicyProfile::full_open(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let (kept, stats) = processor.filter_transactions(&txs);
@@ -4253,7 +4253,7 @@ mod tests {
             TemplateConfig::default(),
             rpc,
             PolicyProfile::full_open(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let (kept, stats) = processor.filter_transactions(&txs);
@@ -4391,7 +4391,7 @@ mod tests {
         // 5. Annex present
         let mut w5 = Witness::new();
         w5.push([0x30; 64]);
-        w5.push(&[0x51, 0xac]); // OP_TRUE OP_CHECKSIG
+        w5.push([0x51, 0xac]); // OP_TRUE OP_CHECKSIG
         let mut cb5 = vec![0xc0u8];
         cb5.extend([0x55; 32]);
         w5.push(&cb5);
@@ -4465,7 +4465,7 @@ mod tests {
             TemplateConfig::default(),
             rpc,
             PolicyProfile::full_open(),
-            ReaperConfig::strict(),
+            ReaperConfig::default(),
         );
 
         let (kept, stats) = processor.filter_transactions(&txs);
