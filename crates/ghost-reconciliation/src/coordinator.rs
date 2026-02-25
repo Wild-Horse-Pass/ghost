@@ -902,6 +902,7 @@ mod tests {
                 amount: 20_000,
                 ghost_id: format!("ghost1user{}", i),
                 lock_id: Some([i; 32]),
+                confirmations: 100,
             };
             executor.add_input(input);
         }
@@ -973,6 +974,7 @@ mod tests {
                 amount: 20_000,
                 ghost_id: format!("ghost1user{}", i),
                 lock_id: Some([i; 32]),
+                confirmations: 100,
             };
             executor.add_input(input);
         }

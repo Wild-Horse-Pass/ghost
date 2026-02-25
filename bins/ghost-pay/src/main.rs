@@ -1051,13 +1051,15 @@ async fn main() -> Result<()> {
     if !keys_loaded {
         if let Ok(Some(keys_json)) = db.kv_get("ghost_keys") {
             if let Ok(keys_export) = serde_json::from_str::<GhostKeysExport>(&keys_json) {
-                if let Ok(keys) = GhostKeys::try_from(keys_export.clone()) {
+                // M-14: Serialize before consuming — GhostKeysExport no longer implements Clone
+                let keys_json_bytes = serde_json::to_vec(&keys_export).ok();
+                if let Ok(keys) = GhostKeys::try_from(keys_export) {
                     let ghost_id = keys.ghost_id();
                     let ghost_id_str = ghost_id.to_string();
 
                     // Migrate: encrypt and save, then delete plaintext
                     warn!("Migrating plaintext keys to encrypted storage (H-PAY-2 security fix)");
-                    if let Ok(keys_json_bytes) = serde_json::to_vec(&keys_export) {
+                    if let Some(keys_json_bytes) = keys_json_bytes {
                         match encrypt_keys(&keys_json_bytes, &encryption_password) {
                             Ok(encrypted) => {
                                 let encrypted_hex = hex::encode(&encrypted);
@@ -3554,8 +3556,11 @@ async fn run_settlement_loop(state: Arc<AppState>) {
             };
 
             // Fix 4: Verify UTXO exists on-chain before including in settlement
-            match state.rpc.get_tx_out(&txid.to_string(), vout, false).await {
-                Ok(Some(_)) => { /* UTXO exists, proceed */ }
+            let utxo_confirmations = match state.rpc.get_tx_out(&txid.to_string(), vout, false).await {
+                Ok(Some(tx_out)) => {
+                    // H-15: Extract confirmations for MIN_INPUT_CONFIRMATIONS check
+                    tx_out.confirmations.max(0) as u32
+                }
                 Ok(None) => {
                     warn!(
                         lock_id = %lock.lock_id,
@@ -3583,7 +3588,7 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                     );
                     continue;
                 }
-            }
+            };
 
             // Create settlement input
             let input = ReconciliationInput {
@@ -3592,6 +3597,7 @@ async fn run_settlement_loop(state: Arc<AppState>) {
                 amount: lock.amount_sats,
                 ghost_id: lock.owner_ghost_id.clone(),
                 lock_id: Some(hex_to_32bytes(&lock.lock_id)),
+                confirmations: utxo_confirmations,
             };
 
             executor.add_input(input);
@@ -4617,17 +4623,17 @@ async fn l2_pending_handler(
             "recipient_balance_before": t.recipient_balance_before,
             "sender_merkle_proof": {
                 "siblings": t.sender_merkle_proof.siblings.iter()
-                    .map(|s| hex::encode(s)).collect::<Vec<_>>(),
+                    .map(hex::encode).collect::<Vec<_>>(),
                 "index": t.sender_merkle_proof.leaf_index,
             },
             "recipient_merkle_proof": {
                 "siblings": t.recipient_merkle_proof.siblings.iter()
-                    .map(|s| hex::encode(s)).collect::<Vec<_>>(),
+                    .map(hex::encode).collect::<Vec<_>>(),
                 "index": t.recipient_merkle_proof.leaf_index,
             },
         })).collect::<Vec<_>>(),
         "intermediate_roots": intermediate_roots.iter()
-            .map(|r| hex::encode(r)).collect::<Vec<_>>(),
+            .map(hex::encode).collect::<Vec<_>>(),
     })))
 }
 

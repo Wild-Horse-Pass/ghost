@@ -6,7 +6,6 @@
 //!     --api-secret <secret> \
 //!     --params-path /path/to/confidential_params_current.bin
 
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bellperson::groth16::Parameters;
@@ -100,7 +99,7 @@ fn main() {
 
     // Build a local tree matching the server state
     // We need ALL notes in the tree, not just ours. Fetch from server.
-    let notes_url = format!(
+    let _notes_url = format!(
         "{}/api/v1/confidential/notes/{}",
         api_url,
         hex::encode(sender_owner)

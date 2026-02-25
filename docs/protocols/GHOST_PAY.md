@@ -184,24 +184,30 @@ If L2 fails, you can always exit via Ghost Lock recovery:
 
 ## State Model
 
-### Balance Tracking
+### Note/UTXO Model (February 2026 Redesign)
 
-L2 tracks balances by Ghost Lock ID:
+L2 uses a **note/UTXO model** rather than an account model. Each deposit or transfer creates notes (commitments) stored in a Merkle commitment tree (depth 40, MiMC 82 rounds). Notes are spent by revealing a nullifier and providing a Groth16 proof (NoteSpendCircuit).
 
 ```
-L2 State:
-├── GhostLock_A: 1,500,000 sats
-├── GhostLock_B: 250,000 sats
-├── GhostLock_C: 10,000,000 sats
-└── ...
+Commitment Tree (depth-40, ~1 trillion capacity):
+├── Note 0: commit(value=1.5M, pubkey, randomness, epoch)
+├── Note 1: commit(value=250K, pubkey, randomness, epoch)
+├── Note 2: commit(value=10M, pubkey, randomness, epoch)
+└── ... (sparse — uses precomputed zero hashes)
 ```
+
+**Spending a note:**
+1. Sender generates NoteSpendCircuit proof locally (~3-4s)
+2. Proof reveals: nullifier (prevents double-spend), change commitment, recipient commitment
+3. NullifierRouteHandler verifies proof (~5ms) and routes by nullifier prefix
+4. BFT checkpoint confirms transaction (every 10 seconds, all-node, 67% threshold)
 
 ### State Commitments
 
-Each epoch, state root is committed to L1:
+Each epoch, state root (commitment tree root) is committed to L1:
 
 ```
-State Root = MerkleRoot(all_balances)
+State Root = CommitmentTree.root() (MiMC Merkle root)
 
 L1 Anchor:
 OP_RETURN GPRC <version> <epoch> <state_root>
@@ -221,12 +227,13 @@ Recipients use Ghost Keys for unlinkable addresses:
 - No address reuse
 - Receiver privacy
 
-### ZK Proofs
+### ZK Proofs (Sender-Side)
 
-Transfers use ZK proofs:
-- Prove balance sufficient without revealing amount
-- Validators verify proof, not transaction details
-- Strong privacy guarantees
+Transfers use sender-side Groth16 proofs (NoteSpendCircuit):
+- Senders prove note ownership and balance sufficiency locally (~3-4s)
+- Validators verify proof only (~5ms), never see amounts or balances
+- ~12,675 constraints at depth-40 Merkle tree, MiMC 82 rounds
+- Nullifiers prevent double-spending and enable deterministic routing
 
 ### Wraith Mixing
 

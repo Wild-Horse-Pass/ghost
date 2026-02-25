@@ -53,6 +53,29 @@ pub fn validate_settlement(
         });
     }
 
+    // H-8: Reject legacy P2PKH addresses (1...) and P2SH addresses (3...)
+    // Only SegWit (bc1q/tb1q/bcrt1q) addresses are accepted for settlement outputs.
+    // Legacy addresses have larger witness discount costs and weaker security properties.
+    if destination_address.starts_with('1') {
+        return Err(ReconciliationError::InvalidProof {
+            reason: "H-8: P2PKH addresses (1...) are not accepted. Use a SegWit address (bc1q...)".to_string(),
+        });
+    }
+    if destination_address.starts_with('3') {
+        return Err(ReconciliationError::InvalidProof {
+            reason: "H-8: P2SH addresses (3...) are not accepted. Use a SegWit address (bc1q...)".to_string(),
+        });
+    }
+    // Testnet legacy addresses
+    if destination_address.starts_with('m')
+        || destination_address.starts_with('n')
+        || destination_address.starts_with('2')
+    {
+        return Err(ReconciliationError::InvalidProof {
+            reason: "H-8: Legacy testnet addresses are not accepted. Use a SegWit address (tb1q...)".to_string(),
+        });
+    }
+
     // QUANTUM SAFETY: Reject P2TR addresses (bc1p...)
     // P2TR exposes public keys on-chain, making them vulnerable to quantum attacks
     if destination_address.starts_with("bc1p")
@@ -62,19 +85,14 @@ pub fn validate_settlement(
         return Err(ReconciliationError::QuantumUnsafe);
     }
 
-    // Check Bitcoin address prefix
-    let valid_prefix = destination_address.starts_with("bc1")
-        || destination_address.starts_with("tb1")
-        || destination_address.starts_with("bcrt1")
-        || destination_address.starts_with("1")
-        || destination_address.starts_with("3")
-        || destination_address.starts_with("m")
-        || destination_address.starts_with("n")
-        || destination_address.starts_with("2");
+    // Check Bitcoin address prefix: only SegWit (bc1q/tb1q/bcrt1q) accepted
+    let valid_prefix = destination_address.starts_with("bc1q")
+        || destination_address.starts_with("tb1q")
+        || destination_address.starts_with("bcrt1q");
 
     if !valid_prefix {
         return Err(ReconciliationError::InvalidProof {
-            reason: "Invalid Bitcoin address prefix".to_string(),
+            reason: "Invalid Bitcoin address prefix — only SegWit (bc1q/tb1q/bcrt1q) accepted".to_string(),
         });
     }
 

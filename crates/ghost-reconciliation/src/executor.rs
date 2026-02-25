@@ -54,6 +54,9 @@ use crate::settlement::{Settlement, SettlementRequest};
 use crate::transaction::{ReconciliationTx, TxOutput};
 use crate::{DISPUTE_WINDOW_BLOCKS, MAX_BATCH_SIZE, MIN_BATCH_SIZE};
 
+/// H-15: Minimum confirmations required before a UTXO can be used as input
+pub const MIN_INPUT_CONFIRMATIONS: u32 = 6;
+
 /// Input UTXO for reconciliation
 #[derive(Debug, Clone)]
 pub struct ReconciliationInput {
@@ -67,6 +70,8 @@ pub struct ReconciliationInput {
     pub ghost_id: String,
     /// Lock ID (if from Ghost Lock)
     pub lock_id: Option<[u8; 32]>,
+    /// H-15: Number of confirmations this UTXO has
+    pub confirmations: u32,
 }
 
 /// H-FUND-3: Reservation for a pending batch's input
@@ -432,6 +437,16 @@ impl BatchExecutor {
     /// Settlements are only removed from the pending queue after successful batch
     /// sealing. If sealing fails, no settlements are lost.
     pub fn form_batch(&mut self) -> Result<Batch, ReconciliationError> {
+        // M-20: Clean up stale reservations before forming a new batch
+        // Prevents leaked reservations from crashed/stuck batches from blocking new ones
+        let stale_cleaned = self.cleanup_stale_reservations(3600); // 1 hour max age
+        if stale_cleaned > 0 {
+            tracing::warn!(
+                cleaned = stale_cleaned,
+                "M-20: Cleaned up stale input reservations before batch formation"
+            );
+        }
+
         if self.pending_settlements.len() < MIN_BATCH_SIZE {
             return Err(ReconciliationError::InsufficientSettlements {
                 have: self.pending_settlements.len(),
@@ -461,7 +476,23 @@ impl BatchExecutor {
 
         // H-6: Only now that sealing succeeded, remove from pending
         // Use drain to efficiently remove the first batch_size elements
-        let settlements: Vec<Settlement> = self.pending_settlements.drain(..batch_size).collect();
+        let mut settlements: Vec<Settlement> = self.pending_settlements.drain(..batch_size).collect();
+
+        // C-11: Update each settlement's batch_id now that they are assigned to a batch
+        let batch_id = *batch.id();
+        for (i, settlement) in settlements.iter_mut().enumerate() {
+            let merkle_proof = crate::batch::compute_merkle_proof(
+                batch.settlement_hashes(),
+                i,
+            );
+            if let Err(e) = settlement.mark_batched(batch_id, merkle_proof) {
+                tracing::warn!(
+                    settlement_id = %hex::encode(settlement.id()),
+                    error = %e,
+                    "C-11: Failed to update settlement batch_id (already batched?)"
+                );
+            }
+        }
 
         // Update pending tracking
         self.pending_total_sats = self
@@ -537,6 +568,18 @@ impl BatchExecutor {
                     txid: input.txid,
                     vout: input.vout,
                 };
+
+                // H-15: Check minimum confirmations before using as input
+                if input.confirmations < MIN_INPUT_CONFIRMATIONS {
+                    tracing::debug!(
+                        txid = %input.txid,
+                        vout = input.vout,
+                        confirmations = input.confirmations,
+                        required = MIN_INPUT_CONFIRMATIONS,
+                        "H-15: Skipping input with insufficient confirmations"
+                    );
+                    continue;
+                }
 
                 // C-2: Check if this input was already consumed in this batch
                 if consumed_in_batch.contains(&outpoint) {
@@ -632,6 +675,26 @@ impl BatchExecutor {
 
         // Node rewards (remaining 50% of settlement fees)
         let node_rewards = total_settlement_fees - treasury_amount;
+
+        // H-7: Verify total outputs do not exceed total inputs (prevents overflow/theft)
+        let total_committed_outputs = total_output_sats
+            .checked_add(treasury_amount)
+            .and_then(|v| v.checked_add(mining_fee))
+            .and_then(|v| v.checked_add(node_rewards));
+        match total_committed_outputs {
+            Some(total_out) if total_out > total_input_sats => {
+                return Err(ReconciliationError::InvalidSettlement(format!(
+                    "H-7: Total outputs ({} sats) exceed total inputs ({} sats)",
+                    total_out, total_input_sats
+                )));
+            }
+            None => {
+                return Err(ReconciliationError::InvalidSettlement(
+                    "H-7: Output sum overflow detected".to_string(),
+                ));
+            }
+            _ => {} // total_out <= total_input_sats, OK
+        }
 
         // Build ReconciliationTx
         let batch_id = self.next_batch_id;
@@ -1038,6 +1101,7 @@ mod tests {
             amount: 1_000_000,
             ghost_id: "ghost1abc".to_string(),
             lock_id: None,
+            confirmations: 100,
         };
 
         executor.add_input(input);
@@ -1241,6 +1305,7 @@ mod tests {
             amount: 50_000,                     // Only enough for ~5 settlements
             ghost_id: "ghost1same".to_string(), // Must match settlement
             lock_id: None,
+            confirmations: 100,
         };
         executor.add_input(single_input);
 
@@ -1285,6 +1350,7 @@ mod tests {
                 amount: 20_000,
                 ghost_id: format!("ghost1user{}", i), // Must match settlement
                 lock_id: Some(test_lock_id(i as u8)),
+                confirmations: 100,
             };
             executor.add_input(input);
         }

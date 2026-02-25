@@ -518,6 +518,26 @@ impl Settlement {
     }
 
     /// Internal constructor with settlement kind
+    ///
+    /// # Amount Validation Rules
+    ///
+    /// The following validation checks are applied to every settlement:
+    ///
+    /// 1. **Minimum amount**: `amount_sats >= MIN_SETTLEMENT_SATS` (10,000 sats).
+    ///    Settlements below this threshold are rejected because the L1 transaction
+    ///    fees would consume a disproportionate share of the settlement value,
+    ///    making it uneconomical. This also prevents dust-output DoS attacks where
+    ///    an attacker creates many tiny settlements to bloat batch sizes.
+    ///
+    /// 2. **Fee < amount**: The calculated protocol fee must be strictly less than
+    ///    the settlement amount. This prevents zero-value or negative-value outputs
+    ///    on L1, which would be rejected by Bitcoin consensus rules. The fee
+    ///    calculation uses integer division (`amount / divisor`) to avoid
+    ///    floating-point rounding issues.
+    ///
+    /// 3. **Overflow protection**: The batch-level `total_amount_sats` accumulation
+    ///    uses checked arithmetic in `Batch::add_settlement` to prevent overflow
+    ///    when summing many settlements.
     fn new_with_kind(
         kind: SettlementKind,
         source_ghost_id: String,

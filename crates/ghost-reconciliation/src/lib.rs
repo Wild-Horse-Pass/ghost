@@ -81,10 +81,10 @@ pub use settlement::*;
 pub use transaction::*;
 pub use verifier::*;
 
-/// Minimum settlements per batch
+/// Default minimum settlements per batch
 pub const MIN_BATCH_SIZE: usize = 10;
 
-/// Maximum settlements per batch
+/// Default maximum settlements per batch
 pub const MAX_BATCH_SIZE: usize = 1000;
 
 /// Batch timeout in seconds (6 hours)
@@ -96,11 +96,52 @@ pub const MIN_SETTLEMENT_SATS: u64 = 10_000;
 /// Dispute window in blocks (1 day)
 pub const DISPUTE_WINDOW_BLOCKS: u32 = 144;
 
-/// Settlement fee percentage (0.1%)
-/// PAY-M1: Use integer arithmetic to avoid floating-point rounding errors
-/// Fee = amount / 1000 (equivalent to 0.1%)
-pub const SETTLEMENT_FEE_PERCENT: f64 = 0.001;
-
 /// Settlement fee divisor for integer arithmetic (1000 = 0.1%)
-/// PAY-M1: Prefer this over SETTLEMENT_FEE_PERCENT for fee calculations
+/// M-19: Float constant removed -- all fee calculations use integer division
 pub const SETTLEMENT_FEE_DIVISOR: u64 = 1000;
+
+/// L-12: Configurable batch size parameters for settlement reconciliation.
+///
+/// These were previously hardcoded constants. Making them configurable allows
+/// operators to tune batch sizes based on network conditions and L1 fee rates.
+#[derive(Debug, Clone)]
+pub struct ReconciliationConfig {
+    /// Minimum settlements required before a batch can be sealed.
+    /// Default: 10. Must be >= 1.
+    pub min_batch_size: usize,
+    /// Maximum settlements allowed in a single batch.
+    /// Default: 1000. Must be >= min_batch_size.
+    pub max_batch_size: usize,
+    /// Batch timeout in seconds before force-sealing.
+    /// Default: 21600 (6 hours).
+    pub batch_timeout_secs: u64,
+}
+
+impl Default for ReconciliationConfig {
+    fn default() -> Self {
+        Self {
+            min_batch_size: MIN_BATCH_SIZE,
+            max_batch_size: MAX_BATCH_SIZE,
+            batch_timeout_secs: BATCH_TIMEOUT_SECS,
+        }
+    }
+}
+
+impl ReconciliationConfig {
+    /// Validate configuration values
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.min_batch_size == 0 {
+            return Err("min_batch_size must be >= 1".to_string());
+        }
+        if self.max_batch_size < self.min_batch_size {
+            return Err(format!(
+                "max_batch_size ({}) must be >= min_batch_size ({})",
+                self.max_batch_size, self.min_batch_size
+            ));
+        }
+        if self.batch_timeout_secs == 0 {
+            return Err("batch_timeout_secs must be > 0".to_string());
+        }
+        Ok(())
+    }
+}
