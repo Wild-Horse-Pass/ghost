@@ -325,7 +325,13 @@ impl fmt::Display for GhostId {
         // In practice this should never fail for valid GhostId instances
         match self.encode() {
             Ok(encoded) => write!(f, "{}", encoded),
-            Err(e) => write!(f, "<encoding error: {}>", e),
+            Err(_) => {
+                // L-7: Fallback to truncated hex of the raw pubkey bytes instead
+                // of exposing internal error details. This ensures Display never
+                // panics and always produces a usable (if degraded) representation.
+                let bytes = self.to_bytes();
+                write!(f, "ghost-invalid:{}", &hex::encode(&bytes[..16]))
+            }
         }
     }
 }

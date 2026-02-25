@@ -153,15 +153,16 @@ impl PaymentMetadata {
             ));
         }
 
-        // Basic entropy check: at least 8 unique bytes in 59 bytes of padding
-        // (birthday paradox expects ~50+ unique values)
+        // Entropy check: at least 32 unique bytes in 59 bytes of padding
+        // A proper 256-bit RNG should produce ~54 unique values in 59 bytes
+        // (birthday paradox); requiring 32 catches broken RNGs with large margin
         let mut seen = std::collections::HashSet::new();
         for &byte in padding.iter() {
             seen.insert(byte);
         }
-        if seen.len() < 8 {
+        if seen.len() < 32 {
             return Err(GhostKeyError::CryptoError(format!(
-                "Padding entropy error: only {} unique bytes in padding - RNG may be faulty",
+                "Padding entropy error: only {} unique bytes in padding (need 32+) - RNG may be faulty",
                 seen.len()
             )));
         }

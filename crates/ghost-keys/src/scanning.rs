@@ -240,8 +240,12 @@ impl<'a> PaymentDetector<'a> {
 
     /// Quick check if an output might belong to us (k=0 only)
     ///
-    /// Use this for fast filtering before doing full scan.
-    /// Most single-output payments use k=0.
+    /// **M-12 WARNING: Fast-path check with false negatives.**
+    /// This method ONLY tests the k=0 derivation index. Multi-output
+    /// transactions that use k>0 will NOT be detected by this method.
+    /// Always follow up with a full `scan()` for completeness. Use this
+    /// method only as a pre-filter to avoid expensive full scans on
+    /// outputs that clearly do not belong to us.
     pub fn quick_check(&self, ephemeral_pubkey: &PublicKey, output_pubkey: &PublicKey) -> bool {
         let shared_secret = derive_shared_secret(self.keys.scan_secret(), ephemeral_pubkey);
         let tweak = compute_tweak_v2(&shared_secret, 0);

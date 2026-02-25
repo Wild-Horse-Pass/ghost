@@ -303,13 +303,17 @@ pub fn derive_spend_key(
     let mut tweak_secret = SecretKey::from_slice(&tweak_bytes)?;
     let result = spend_secret.add_tweak(&secp256k1::Scalar::from(tweak_secret))?;
 
+    use std::sync::atomic::{compiler_fence, Ordering};
+
     // LOW-CRYPTO-4 + CRYPT-4 FIX: Multi-layer zeroization for defense-in-depth
 
     // 1. Zeroize the tweak bytes using zeroize crate (has compiler barriers)
     tweak_bytes.zeroize();
+    compiler_fence(Ordering::SeqCst);
 
     // 2. First pass: Use secp256k1's built-in erase method
     tweak_secret.non_secure_erase();
+    compiler_fence(Ordering::SeqCst);
 
     // 3. CRYPT-4 FIX: Second pass - overwrite with deterministic dummy value
     //    This provides additional protection against compiler optimization of non_secure_erase
@@ -318,10 +322,12 @@ pub fn derive_spend_key(
     if let Ok(dummy_key) = SecretKey::from_slice(&dummy_bytes) {
         tweak_secret = dummy_key;
     }
+    compiler_fence(Ordering::SeqCst);
 
     // 4. Third pass: Zeroize the dummy bytes and erase the dummy key
     dummy_bytes.zeroize();
     tweak_secret.non_secure_erase();
+    compiler_fence(Ordering::SeqCst);
 
     Ok(result)
 }

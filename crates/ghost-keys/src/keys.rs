@@ -123,6 +123,14 @@ impl GhostKeys {
         let (scan_secret, scan_pubkey) = secp.generate_keypair(&mut OsRng);
         let (spend_secret, spend_pubkey) = secp.generate_keypair(&mut OsRng);
 
+        // L-8: Two independently generated random keys have negligible collision probability
+        // (2^-256), but we assert for defense-in-depth.
+        assert_ne!(
+            scan_secret.secret_bytes(),
+            spend_secret.secret_bytes(),
+            "L-8: Generated scan and spend keys must differ"
+        );
+
         Self {
             scan_secret_bytes: ZeroizingSecretBytes::from_secret_key(&scan_secret),
             spend_secret_bytes: ZeroizingSecretBytes::from_secret_key(&spend_secret),
@@ -134,29 +142,53 @@ impl GhostKeys {
     }
 
     /// Create from existing secret keys
-    pub fn from_secrets(scan_secret: SecretKey, spend_secret: SecretKey) -> Self {
+    ///
+    /// # L-8 Security: Scan and spend keys must differ
+    ///
+    /// Returns an error if scan_secret == spend_secret to preserve the security
+    /// separation required by Silent Payments (BIP-352).
+    pub fn from_secrets(scan_secret: SecretKey, spend_secret: SecretKey) -> Result<Self, GhostKeyError> {
+        // L-8: Verify scan key != spend key for Silent Payment security
+        if scan_secret.secret_bytes() == spend_secret.secret_bytes() {
+            return Err(GhostKeyError::InvalidSecretKey(
+                "Scan and spend keys must be different for Silent Payment security".to_string(),
+            ));
+        }
         let secp = Secp256k1::new();
         let scan_pubkey = PublicKey::from_secret_key(&secp, &scan_secret);
         let spend_pubkey = PublicKey::from_secret_key(&secp, &spend_secret);
 
-        Self {
+        Ok(Self {
             scan_secret_bytes: ZeroizingSecretBytes::from_secret_key(&scan_secret),
             spend_secret_bytes: ZeroizingSecretBytes::from_secret_key(&spend_secret),
             scan_secret,
             spend_secret,
             scan_pubkey,
             spend_pubkey,
-        }
+        })
     }
 
     /// Create from raw secret bytes
+    ///
+    /// # L-8 Security: Scan and spend keys must differ
+    ///
+    /// If the scan key equals the spend key, the ECDH shared secret used for
+    /// payment detection would be derivable from the spend key alone. An attacker
+    /// who compromises the spend key could then also scan for incoming payments,
+    /// defeating the separation of concerns that Silent Payments (BIP-352) provides.
     pub fn from_bytes(
         scan_bytes: &[u8; 32],
         spend_bytes: &[u8; 32],
     ) -> Result<Self, GhostKeyError> {
+        // L-8: Verify scan key != spend key for Silent Payment security
+        if scan_bytes == spend_bytes {
+            return Err(GhostKeyError::InvalidSecretKey(
+                "Scan and spend keys must be different for Silent Payment security".to_string(),
+            ));
+        }
         let scan_secret = SecretKey::from_slice(scan_bytes)?;
         let spend_secret = SecretKey::from_slice(spend_bytes)?;
-        Ok(Self::from_secrets(scan_secret, spend_secret))
+        Self::from_secrets(scan_secret, spend_secret)
     }
 
     /// Get the scan secret key
@@ -588,15 +620,9 @@ impl GhostKeysExport {
     }
 }
 
-/// Clone implementation that maintains Zeroizing wrapper
-impl Clone for GhostKeysExport {
-    fn clone(&self) -> Self {
-        Self {
-            scan_secret: Zeroizing::new((*self.scan_secret).clone()),
-            spend_secret: Zeroizing::new((*self.spend_secret).clone()),
-        }
-    }
-}
+// M-14: Clone deliberately NOT implemented for GhostKeysExport.
+// Cloning key material creates uncontrolled copies that may not be zeroized.
+// Use references or pass by value (move) instead.
 
 /// Custom Serialize that unwraps Zeroizing for JSON compatibility
 impl Serialize for GhostKeysExport {
