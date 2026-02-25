@@ -153,10 +153,19 @@ deploy_vm() {
     echo "  $name ($ip) — role: $role"
     echo "────────────────────────────────────────"
 
-    # Stop service
+    # Stop service and wait for it to fully stop
     log_info "Stopping $SERVICE..."
     ssh_cmd "$ip" "systemctl stop $SERVICE 2>/dev/null || true"
-    sleep 1
+
+    local retries=0
+    while [[ $retries -lt 10 ]]; do
+        local state
+        state=$(ssh_cmd "$ip" "systemctl is-active $SERVICE 2>/dev/null || echo 'inactive'")
+        [[ "$state" == "inactive" || "$state" == "failed" ]] && break
+        retries=$((retries + 1))
+        sleep 1
+    done
+    [[ $retries -ge 10 ]] && { log_fail "$SERVICE did not stop on $ip"; return 1; }
 
     # Copy binary
     log_info "Copying binary..."

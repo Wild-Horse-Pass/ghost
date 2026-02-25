@@ -1164,11 +1164,10 @@ async fn main() -> Result<()> {
         Arc::new(move |node_id| qp_for_verifier.get_qualified(node_id));
 
     let health_handler = Arc::new(
-        HealthPingHandler::new(Arc::clone(mesh.peers()), Some(Arc::clone(&db)))
+        HealthPingHandler::new(Arc::clone(mesh.peers()), Some(Arc::clone(&db)), Arc::clone(&ban_manager))
             .with_elder_callback(voter_callback)
             .with_node_capabilities_callback(node_caps_callback)
-            .with_capability_verifier(capability_verifier)
-            .with_ban_manager(Arc::clone(&ban_manager)),
+            .with_capability_verifier(capability_verifier),
     );
     mesh.register_handler(
         Arc::clone(&health_handler) as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>
@@ -4157,11 +4156,16 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Wait for shutdown signal (ctrl+c or restart signal from config update)
+    // Wait for shutdown signal (ctrl+c, SIGTERM, or restart signal from config update)
     let mut shutdown_rx = shutdown_tx.subscribe();
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("Failed to install SIGTERM handler");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
-            info!("Received Ctrl+C, shutting down Ghost Pool...");
+            info!("Received SIGINT, shutting down Ghost Pool...");
+        }
+        _ = sigterm.recv() => {
+            info!("Received SIGTERM, shutting down Ghost Pool...");
         }
         _ = shutdown_rx.recv() => {
             // Shutdown triggered by restart signal monitor
@@ -4194,6 +4198,11 @@ async fn main() -> Result<()> {
     // Cleanup
     template_processor.stop();
     mesh.stop().await?;
+
+    // Checkpoint WAL and clean up database files
+    if let Err(e) = db.shutdown() {
+        warn!("Database shutdown error (non-fatal): {}", e);
+    }
 
     // Check if this was a restart request
     if restart_signal.load(std::sync::atomic::Ordering::SeqCst) {

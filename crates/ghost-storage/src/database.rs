@@ -535,6 +535,24 @@ impl Database {
         })
     }
 
+    /// Graceful shutdown: checkpoint WAL and remove WAL/SHM files
+    pub fn shutdown(&self) -> GhostResult<()> {
+        info!("Database shutdown: checkpointing WAL...");
+        match self.checkpoint() {
+            Ok(()) => info!("Database WAL checkpoint complete"),
+            Err(e) => warn!("Database WAL checkpoint failed during shutdown: {}", e),
+        }
+        // Switch from WAL to DELETE mode — removes WAL/SHM files
+        match self.with_connection(|conn| {
+            conn.execute_batch("PRAGMA journal_mode = DELETE;")
+                .map_err(|e| GhostError::Database(e.to_string()))
+        }) {
+            Ok(()) => info!("Database journal mode switched to DELETE"),
+            Err(e) => warn!("Failed to switch journal mode during shutdown: {}", e),
+        }
+        Ok(())
+    }
+
     /// L-13 FIX: Check database health by executing a simple query
     ///
     /// This verifies that the database connection is operational and can

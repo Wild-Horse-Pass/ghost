@@ -17,6 +17,7 @@ ExecStart=/opt/ghost/bin/ghost-pool --config /etc/ghost/pool.toml --data-dir /ho
 # - on-failure: restart only on non-zero exit codes
 Restart=on-failure
 RestartSec=5
+KillSignal=SIGTERM
 
 # Exit code 100 triggers forced restart (used by config update API)
 # When ghost-pool exits with 100, systemd treats it as success but still restarts
