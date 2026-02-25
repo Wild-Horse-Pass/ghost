@@ -318,6 +318,10 @@ impl ZkPayoutVoteHandler {
     /// Calculate the threshold for BFT consensus
     fn calculate_threshold(&self) -> u32 {
         let total = self.validators.read().len() as u32;
+        // H-2: Prevent division by zero when no validators are registered
+        if total == 0 {
+            return 0;
+        }
         // 67% threshold (2/3 + 1)
         (total * self.config.bft_threshold_percent / 100).max(1)
     }

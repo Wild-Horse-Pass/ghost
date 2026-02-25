@@ -81,6 +81,14 @@ pub const NOISE_OVERHEAD: usize = 16;
 pub const MAX_PAYLOAD_SIZE: usize = MAX_MESSAGE_SIZE - NOISE_OVERHEAD;
 
 /// Noise protocol errors
+///
+/// # L-5 Security: Generic Error Messages for Peers
+///
+/// The `Display` implementation on these variants is designed for internal
+/// logging only. When communicating errors to remote peers (e.g., over the
+/// wire), always use `NoiseError::peer_message()` which returns a generic
+/// string that does not leak internal state, handshake progress, or
+/// library-specific error details.
 #[derive(Debug, Error)]
 pub enum NoiseError {
     #[error("Handshake failed: {0}")]
@@ -106,6 +114,27 @@ pub enum NoiseError {
 
     #[error("Snow error: {0}")]
     Snow(#[from] snow::Error),
+}
+
+impl NoiseError {
+    /// L-5: Return a generic error message safe to send to remote peers.
+    ///
+    /// This prevents leaking internal state such as handshake stage,
+    /// library error details, or message sizes to potential attackers.
+    /// Detailed error information is available via the `Display` or
+    /// `Debug` traits for internal logging.
+    pub fn peer_message(&self) -> &'static str {
+        match self {
+            NoiseError::Handshake(_) => "handshake failed",
+            NoiseError::Encryption(_) => "encryption error",
+            NoiseError::Decryption(_) => "decryption error",
+            NoiseError::MessageTooLarge(_) => "message rejected",
+            NoiseError::InvalidPeerIdentity => "authentication failed",
+            NoiseError::NotEstablished => "session error",
+            NoiseError::Io(_) => "connection error",
+            NoiseError::Snow(_) => "protocol error",
+        }
+    }
 }
 
 /// Noise keypair for node identity

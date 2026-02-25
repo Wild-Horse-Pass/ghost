@@ -444,8 +444,12 @@ pub struct HealthPingHandler {
     rate_limiter: HealthRateLimiter,
     /// Configuration
     config: HealthHandlerConfig,
-    /// Shared ban manager for cross-handler enforcement (C1 security fix)
-    ban_manager: Option<Arc<BanManager>>,
+    /// L-6: Shared ban manager for cross-handler enforcement (required, not optional).
+    ///
+    /// The ban manager is required to ensure banned nodes are never silently
+    /// accepted. When ban_manager was Optional, a misconfiguration could result
+    /// in is_banned() always returning false, defeating ban enforcement.
+    ban_manager: Arc<BanManager>,
     /// Last registration time per node (C2 security fix - cooldown tracking)
     last_registration: RwLock<HashMap<NodeId, Instant>>,
     /// First seen time per node (C2 security fix - uptime tracking)
@@ -486,15 +490,20 @@ pub struct HealthPingHandler {
 
 impl HealthPingHandler {
     /// Create a new health ping handler with default configuration
-    pub fn new(peers: Arc<PeerManager>, db: Option<Arc<Database>>) -> Self {
-        Self::with_config(peers, db, HealthHandlerConfig::default())
+    ///
+    /// L-6: ban_manager is required to ensure banned nodes are never silently accepted.
+    pub fn new(peers: Arc<PeerManager>, db: Option<Arc<Database>>, ban_manager: Arc<BanManager>) -> Self {
+        Self::with_config(peers, db, HealthHandlerConfig::default(), ban_manager)
     }
 
     /// Create a new health ping handler with custom configuration
+    ///
+    /// L-6: ban_manager is required to ensure banned nodes are never silently accepted.
     pub fn with_config(
         peers: Arc<PeerManager>,
         db: Option<Arc<Database>>,
         config: HealthHandlerConfig,
+        ban_manager: Arc<BanManager>,
     ) -> Self {
         Self {
             peers,
@@ -507,17 +516,11 @@ impl HealthPingHandler {
                 config.rate_limit_refill_rate,
             ),
             config,
-            ban_manager: None,
+            ban_manager,
             last_registration: RwLock::new(HashMap::new()),
             first_seen_times: RwLock::new(HashMap::new()),
             difficulty_adjuster: DynamicDifficultyAdjuster::new(),
         }
-    }
-
-    /// Set the shared ban manager for cross-handler enforcement (C1 security fix)
-    pub fn with_ban_manager(mut self, ban_manager: Arc<BanManager>) -> Self {
-        self.ban_manager = Some(ban_manager);
-        self
     }
 
     /// Set the database for persistence
@@ -674,13 +677,9 @@ impl HealthPingHandler {
             .insert(*node_id, Instant::now());
     }
 
-    /// Check if node is banned (uses shared BanManager if available)
+    /// Check if node is banned
     fn is_banned(&self, node_id: &NodeId) -> bool {
-        if let Some(ref ban_manager) = self.ban_manager {
-            ban_manager.is_banned(node_id)
-        } else {
-            false
-        }
+        self.ban_manager.is_banned(node_id)
     }
 
     /// Handle a health ping message
@@ -981,7 +980,7 @@ mod tests {
     fn test_pow_verification() {
         let our_node_id = [0u8; 32];
         let peers = Arc::new(PeerManager::new(our_node_id, 100));
-        let handler = HealthPingHandler::new(peers, None);
+        let handler = HealthPingHandler::new(peers, None, Arc::new(BanManager::new()));
 
         // L-7: Dynamic difficulty starts at BASE_POW_DIFFICULTY (16)
         // Generate a node with valid PoW at that difficulty
@@ -1009,7 +1008,7 @@ mod tests {
 
         let our_node_id = [0u8; 32];
         let peers = Arc::new(PeerManager::new(our_node_id, 100));
-        let handler = HealthPingHandler::with_config(peers, None, config);
+        let handler = HealthPingHandler::with_config(peers, None, config, Arc::new(BanManager::new()));
 
         let node_id = [1u8; 32];
 
@@ -1066,7 +1065,7 @@ mod tests {
     fn test_handler_uses_dynamic_difficulty() {
         let our_node_id = [0u8; 32];
         let peers = Arc::new(PeerManager::new(our_node_id, 100));
-        let handler = HealthPingHandler::new(peers, None);
+        let handler = HealthPingHandler::new(peers, None, Arc::new(BanManager::new()));
 
         // Handler should expose current difficulty
         let difficulty = handler.current_pow_difficulty();

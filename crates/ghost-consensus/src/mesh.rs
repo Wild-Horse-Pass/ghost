@@ -2458,6 +2458,49 @@ impl MeshNetwork {
         self.identity.node_id()
     }
 
+    /// M-9: Validate that a message type is appropriate for the port it was received on.
+    ///
+    /// Each message type has exactly one correct port. Messages arriving on the wrong
+    /// port should be rejected to prevent cross-channel injection attacks (e.g., an
+    /// attacker sending vote messages on the health ping port to bypass rate limiting).
+    ///
+    /// For ZMQ messages, this validation is performed via topic matching in the subscriber
+    /// (see run_subscriber, M-P2P-1 topic validation). For Noise TCP connections, callers
+    /// should use this method to validate after deserialization.
+    pub fn is_valid_msg_type_for_port(&self, msg_type: MessageType, port: u16) -> bool {
+        let expected_port = match msg_type {
+            MessageType::ShareProof | MessageType::ShareConvergence => {
+                self.config.ports.share_propagation
+            }
+            MessageType::BlockFound => self.config.ports.block_announcement,
+            MessageType::Vote => self.config.ports.consensus_voting,
+            MessageType::HealthPing => self.config.ports.health_monitoring,
+            MessageType::Discovery => self.config.ports.discovery,
+            MessageType::ElderUpdate
+            | MessageType::ElderRegistrationProposal
+            | MessageType::ElderListProposal
+            | MessageType::ElderListApproval
+            | MessageType::MpcContribution
+            | MessageType::MpcVerificationVote
+            | MessageType::MpcParametersRequest
+            | MessageType::MpcParametersResponse => self.config.ports.elder_management,
+            MessageType::PayoutProposal => self.config.ports.payout_proposal,
+            MessageType::ZkBlockProposal
+            | MessageType::ZkVote
+            | MessageType::ZkPayoutProposal
+            | MessageType::ZkPayoutVote
+            | MessageType::EquivocationProof
+            | MessageType::L2ConfidentialTransfer
+            | MessageType::L2TransferConfirmation
+            | MessageType::L2TransferBroadcast
+            | MessageType::L2CheckpointBlock
+            | MessageType::L2CheckpointVote
+            | MessageType::L2TreeSync => self.config.ports.consensus_voting,
+            MessageType::VerificationResult => self.config.ports.health_monitoring,
+        };
+        port == expected_port
+    }
+
     /// Get outbound sender for external use
     pub fn outbound_sender(&self) -> mpsc::Sender<(String, Vec<u8>)> {
         self.outbound_tx.clone()
@@ -2470,6 +2513,22 @@ impl MeshNetwork {
     pub fn broadcast_sync(&self, msg_type: MessageType, payload: Vec<u8>) -> GhostResult<()> {
         if !self.running.load(Ordering::SeqCst) {
             return Err(GhostError::NotRunning("Mesh network not running".into()));
+        }
+
+        // C-10: Reject Noise-required messages from broadcast_sync entirely.
+        // broadcast_sync is a synchronous (non-async) path that sends over ZMQ,
+        // bypassing Noise encryption. Sensitive message types (MPC, votes, shares,
+        // etc.) MUST use the async smart_broadcast() path that routes through Noise.
+        // Allowing them here would silently send secrets in plaintext.
+        if self.should_use_noise(msg_type) {
+            error!(
+                msg_type = ?msg_type,
+                "C-10: broadcast_sync called for Noise-required message type — this bypasses encryption. Use smart_broadcast() instead."
+            );
+            return Err(GhostError::P2PMessage(
+                "C-10: Cannot send Noise-required message via broadcast_sync — use smart_broadcast()"
+                    .into(),
+            ));
         }
 
         let sequence = self.next_sequence();

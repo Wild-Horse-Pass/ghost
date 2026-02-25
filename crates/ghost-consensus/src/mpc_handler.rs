@@ -452,6 +452,13 @@ impl MpcHandler {
         let should_apply = {
             let mut pending = self.pending_contributions.write();
             if let Some(contribution) = pending.get_mut(&contribution_hash) {
+                // H-4: Insert our node ID into voters set before incrementing count.
+                // This prevents double-counting if our own vote arrives back via P2P.
+                let our_id = self.identity.node_id();
+                if !contribution.voters.insert(our_id) {
+                    // Already voted (shouldn't happen in normal flow, but guard against it)
+                    return Ok(());
+                }
                 if valid {
                     contribution.approval_count += 1;
                 } else {

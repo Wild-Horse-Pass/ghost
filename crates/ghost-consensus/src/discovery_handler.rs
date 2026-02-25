@@ -878,9 +878,24 @@ impl DiscoveryHandler {
             }
         }
 
+        // M-8: Limit how many peers we accept from a single discovery source
+        // This prevents a malicious node from flooding us with bogus peer entries.
+        const MAX_PEERS_PER_SOURCE: usize = 50;
+        let peer_list = if discovery_msg.known_peers.len() > MAX_PEERS_PER_SOURCE {
+            warn!(
+                sender = %sender_id_hex,
+                count = discovery_msg.known_peers.len(),
+                limit = MAX_PEERS_PER_SOURCE,
+                "M-8: Truncating oversized peer list from single source"
+            );
+            &discovery_msg.known_peers[..MAX_PEERS_PER_SOURCE]
+        } else {
+            &discovery_msg.known_peers
+        };
+
         // Process the peer list from the sender
         let mut new_peers = 0;
-        for peer_info in discovery_msg.known_peers {
+        for peer_info in peer_list {
             // Skip ourselves
             if peer_info.node_id == self.node_id {
                 continue;
