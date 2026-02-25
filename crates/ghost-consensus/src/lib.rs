@@ -56,6 +56,11 @@ pub mod voting;
 pub mod zk_payout_handler;
 pub mod zk_vote_handler;
 
+#[cfg(feature = "zk-consensus")]
+pub mod epoch_manager;
+#[cfg(feature = "zk-consensus")]
+pub mod nullifier_route_handler;
+
 #[cfg(feature = "mpc-ceremony")]
 pub mod mpc_handler;
 
@@ -80,6 +85,11 @@ pub use voter_eligibility::*;
 pub use voting::*;
 pub use zk_payout_handler::*;
 pub use zk_vote_handler::*;
+
+#[cfg(feature = "zk-consensus")]
+pub use epoch_manager::*;
+#[cfg(feature = "zk-consensus")]
+pub use nullifier_route_handler::*;
 
 #[cfg(feature = "mpc-ceremony")]
 pub use mpc_handler::*;

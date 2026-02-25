@@ -13,6 +13,8 @@ pub mod commitment;
 pub mod confidential_transfer;
 pub mod merkle;
 pub mod mimc;
+pub mod note_consolidate;
+pub mod note_spend;
 pub mod payment;
 pub mod payout;
 pub mod range_proof;
@@ -27,6 +29,11 @@ pub use commitment::{
 pub use confidential_transfer::ConfidentialTransferCircuit;
 pub use merkle::{MerkleCircuit, MerkleUpdateCircuit};
 pub use mimc::{bytes_to_field, field_to_bytes, mimc_hash, mimc_hash_native, MIMC_ROUNDS};
+pub use note_consolidate::{NoteConsolidateCircuit, MAX_CONSOLIDATION_INPUTS};
+pub use note_spend::{
+    compute_note_id_with_epoch_native, compute_note_root_native,
+    compute_nullifier_with_epoch_native, NoteSpendCircuit, NOTE_TREE_DEPTH,
+};
 pub use payment::{PaymentCircuit, PaymentCircuitError, PaymentOutputs};
 pub use payout::PayoutCircuit;
 pub use range_proof::enforce_range;

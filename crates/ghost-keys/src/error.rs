@@ -58,6 +58,10 @@ pub enum GhostKeyError {
     /// Tweak derivation failed (should never happen with constant-time implementation)
     #[error("Invalid tweak: {0}")]
     InvalidTweak(String),
+
+    /// Decryption failed (wrong key, tampered ciphertext, or malformed input)
+    #[error("Decryption failed: {0}")]
+    DecryptionFailed(String),
 }
 
 impl From<secp256k1::Error> for GhostKeyError {

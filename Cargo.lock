@@ -443,6 +443,7 @@ dependencies = [
  "ghost-reconciliation",
  "ghost-storage",
  "ghost-template",
+ "ghost-zkp",
  "hex",
  "parking_lot",
  "rand",

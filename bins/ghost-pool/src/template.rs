@@ -142,7 +142,7 @@ pub struct TemplateConfig {
 impl Default for TemplateConfig {
     fn default() -> Self {
         Self {
-            refresh_interval_ms: 500,
+            refresh_interval_ms: 30_000,
             min_fee_rate: 1.0,
             target_weight: 3_992_000, // ~99% of 4MW limit
             coinbase_extra: "GHOST".to_string(),

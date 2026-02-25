@@ -257,33 +257,33 @@ impl CeremonyManager {
             return Ok(false);
         }
 
-        // Generate genesis parameters using dummy circuits for all three circuit types
+        // Generate genesis parameters using NoteSpendCircuit (sender-side proofs)
         use bellperson::groth16::generate_random_parameters;
         use blstrs::Scalar as Fr;
-        use ghost_zkp::circuit::{BlockCircuit, ConfidentialTransferCircuit};
+        use ghost_zkp::circuit::NoteSpendCircuit;
         use rand::rngs::OsRng;
 
-        tracing::info!("MPC: Generating genesis parameters for all circuits...");
+        tracing::info!("MPC: Generating genesis parameters for note spend circuit (depth=40)...");
 
-        let dummy_block = BlockCircuit::<Fr>::dummy(10);
-        let block_params = generate_random_parameters::<Bls12, _, _>(dummy_block, &mut OsRng)
+        let dummy_note = NoteSpendCircuit::<Fr>::dummy(40);
+        let note_params = generate_random_parameters::<Bls12, _, _>(dummy_note, &mut OsRng)
             .map_err(|e| {
-                MpcError::Internal(format!("Failed to generate block genesis params: {:?}", e))
+                MpcError::Internal(format!("Failed to generate note spend genesis params: {:?}", e))
             })?;
 
-        let dummy_confidential = ConfidentialTransferCircuit::<Fr>::dummy(20);
-        let confidential_params =
-            generate_random_parameters::<Bls12, _, _>(dummy_confidential, &mut OsRng).map_err(
-                |e| {
-                    MpcError::Internal(format!(
-                        "Failed to generate confidential genesis params: {:?}",
-                        e
-                    ))
-                },
-            )?;
+        // NoteSpendCircuit replaces both BlockCircuit and ConfidentialTransferCircuit.
+        // Use note_params for both slots to maintain the multi-params API.
+        let dummy_note2 = NoteSpendCircuit::<Fr>::dummy(40);
+        let note_params2 = generate_random_parameters::<Bls12, _, _>(dummy_note2, &mut OsRng)
+            .map_err(|e| {
+                MpcError::Internal(format!(
+                    "Failed to generate secondary note genesis params: {:?}",
+                    e
+                ))
+            })?;
 
-        self.initialize_genesis_multi(block_params, confidential_params)?;
-        tracing::info!("MPC: Genesis parameters initialized for all circuits");
+        self.initialize_genesis_multi(note_params, note_params2)?;
+        tracing::info!("MPC: Genesis parameters initialized for NoteSpendCircuit");
         Ok(true)
     }
 

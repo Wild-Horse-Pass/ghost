@@ -966,7 +966,7 @@ impl DiscoveryHandler {
 
 #[async_trait]
 impl MessageHandler for DiscoveryHandler {
-    async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+    async fn handle_message(&self, envelope: Arc<MessageEnvelope>) -> GhostResult<()> {
         if envelope.msg_type == MessageType::Discovery {
             self.handle_discovery(&envelope).await?;
         }
@@ -1161,7 +1161,7 @@ mod tests {
             let before_count = handler.known_peer_count();
 
             // Process the message - signature is valid but node_id mismatch
-            let result = handler.handle_message(envelope).await;
+            let result = handler.handle_message(Arc::new(envelope)).await;
             assert!(
                 result.is_ok(),
                 "Should not error on mismatched node_id (just silently reject)"
@@ -1222,7 +1222,7 @@ mod tests {
         rt.block_on(async {
             let before_count = handler.known_peer_count();
 
-            let result = handler.handle_message(envelope).await;
+            let result = handler.handle_message(Arc::new(envelope)).await;
             assert!(result.is_ok(), "Valid signed message should be accepted");
 
             // The peer should be added since signature is valid and node_id matches

@@ -68,9 +68,11 @@ use crate::message::{
 const MPC_BFT_THRESHOLD_PERCENT: u32 = 75;
 
 /// Minimum number of MPC contributors before BFT voting kicks in.
-/// During bootstrap (< 3 contributors), the genesis node can approve alone.
-/// Once 3 elders exist, 75% (ceil(3*75/100)=3) approval is required.
-const MPC_BFT_BOOTSTRAP_COUNT: u32 = 3;
+/// During bootstrap (< 4 contributors), the genesis node can approve alone.
+/// Once 4+ elders exist, 75% (ceil(4*75/100)=3, i.e. 3/4) approval is required.
+/// NOTE: With 3 contributors, ceil(3*75/100)=3 requires unanimous agreement,
+/// which is too fragile (any single node offline blocks new contributions).
+const MPC_BFT_BOOTSTRAP_COUNT: u32 = 4;
 
 /// Rate limiting for MPC messages
 const RATE_LIMIT_MAX_TOKENS: u32 = 10;
@@ -678,7 +680,7 @@ impl MpcHandler {
 
 #[async_trait]
 impl MessageHandler for MpcHandler {
-    async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+    async fn handle_message(&self, envelope: Arc<MessageEnvelope>) -> GhostResult<()> {
         // Log entry for MPC message types only
         if matches!(
             envelope.msg_type,

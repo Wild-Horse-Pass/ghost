@@ -1,0 +1,1026 @@
+//! L2 Epoch Manager — tree compaction, valid root window, proposer rotation
+//!
+//! Manages the epoch lifecycle for the note/UTXO model:
+//! - Commitment tree state per epoch
+//! - Epoch transitions with deterministic tree compaction
+//! - Valid root window (both epochs valid during transition)
+//! - Deterministic proposer rotation for checkpoint blocks
+//!
+//! Epoch lifecycle:
+//! 1. Active — current epoch accepts new notes, nullifiers tracked
+//! 2. Boundary — triggered at `checkpoint_height % EPOCH_LENGTH == 0`
+//! 3. Compaction — unspent notes migrated to fresh tree, nullifiers cleared
+//! 4. Transition window — both old and new epoch roots valid
+//! 5. Archive — old epoch archived, only new epoch active
+
+use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
+
+use parking_lot::RwLock;
+use tracing::{debug, info};
+
+use ghost_common::error::{GhostError, GhostResult};
+use ghost_common::types::NodeId;
+use ghost_storage::Database;
+use ghost_zkp::CommitmentTree;
+
+// =============================================================================
+// CONFIGURATION
+// =============================================================================
+
+/// Checkpoints per epoch (~11.5 days at 10s blocks)
+pub const EPOCH_LENGTH: u64 = 100_000;
+
+/// Transition window in checkpoints (~17 minutes at 10s blocks)
+/// During this window, both old and new epoch roots are valid
+pub const TRANSITION_WINDOW: u64 = 100;
+
+/// Tree depth (supports ~1 trillion notes per epoch)
+pub const TREE_DEPTH: usize = 40;
+
+/// Maximum number of valid roots to keep in memory
+pub const MAX_VALID_ROOTS: usize = 256;
+
+/// Grace period for proposer no-show (in seconds)
+pub const PROPOSER_GRACE_SECS: u64 = 15;
+
+/// Configuration for the epoch manager
+#[derive(Debug, Clone)]
+pub struct EpochManagerConfig {
+    pub epoch_length: u64,
+    pub transition_window: u64,
+    pub tree_depth: usize,
+    pub max_valid_roots: usize,
+}
+
+impl Default for EpochManagerConfig {
+    fn default() -> Self {
+        Self {
+            epoch_length: EPOCH_LENGTH,
+            transition_window: TRANSITION_WINDOW,
+            tree_depth: TREE_DEPTH,
+            max_valid_roots: MAX_VALID_ROOTS,
+        }
+    }
+}
+
+// =============================================================================
+// EPOCH STATE
+// =============================================================================
+
+/// Status of an epoch
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EpochStatus {
+    /// Epoch is active and accepting notes
+    Active,
+    /// Epoch is in transition window (both old and new valid)
+    Transitioning,
+    /// Epoch is archived (no longer valid for new transactions)
+    Archived,
+}
+
+impl EpochStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EpochStatus::Active => "active",
+            EpochStatus::Transitioning => "transitioning",
+            EpochStatus::Archived => "archived",
+        }
+    }
+
+    pub fn parse_status(s: &str) -> Option<Self> {
+        match s {
+            "active" => Some(EpochStatus::Active),
+            "transitioning" => Some(EpochStatus::Transitioning),
+            "archived" => Some(EpochStatus::Archived),
+            _ => None,
+        }
+    }
+}
+
+/// Result of an epoch compaction operation
+#[derive(Debug, Clone)]
+pub struct CompactionResult {
+    /// New epoch number
+    pub new_epoch: u64,
+    /// Number of unspent notes migrated
+    pub notes_migrated: u64,
+    /// New tree root after compaction
+    pub new_initial_root: [u8; 32],
+    /// Old epoch's final root
+    pub old_final_root: [u8; 32],
+}
+
+// =============================================================================
+// EPOCH MANAGER
+// =============================================================================
+
+/// Manages the epoch lifecycle for the L2 note/UTXO model
+pub struct EpochManager {
+    /// Current commitment tree
+    commitment_tree: RwLock<CommitmentTree>,
+    /// Current epoch number
+    current_epoch: RwLock<u64>,
+    /// Current checkpoint height
+    current_height: RwLock<u64>,
+    /// Nullifier set for current epoch
+    nullifier_set: RwLock<HashSet<[u8; 32]>>,
+    /// Previous epoch's nullifiers (kept during transition window for cross-epoch protection)
+    transition_nullifiers: RwLock<Option<HashSet<[u8; 32]>>>,
+    /// Recent valid commitment roots (for proof validation)
+    valid_roots: RwLock<VecDeque<[u8; 32]>>,
+    /// Sorted list of active node IDs (for proposer rotation)
+    active_nodes: RwLock<Vec<NodeId>>,
+    /// Database for persistence
+    db: Arc<Database>,
+    /// Configuration
+    config: EpochManagerConfig,
+    /// Whether we're in a transition window
+    in_transition: RwLock<bool>,
+    /// Old epoch's valid roots (kept during transition window)
+    old_epoch_roots: RwLock<Vec<[u8; 32]>>,
+    /// Nullifiers pending DB persistence (persisted atomically with checkpoint)
+    pending_nullifiers: RwLock<Vec<([u8; 32], u64, u64)>>, // (nullifier, epoch, block_height)
+}
+
+impl EpochManager {
+    /// Create a new epoch manager
+    pub fn new(db: Arc<Database>, config: EpochManagerConfig) -> Self {
+        let tree = CommitmentTree::new(config.tree_depth);
+
+        Self {
+            commitment_tree: RwLock::new(tree),
+            current_epoch: RwLock::new(0),
+            current_height: RwLock::new(0),
+            nullifier_set: RwLock::new(HashSet::new()),
+            transition_nullifiers: RwLock::new(None),
+            valid_roots: RwLock::new(VecDeque::with_capacity(config.max_valid_roots)),
+            active_nodes: RwLock::new(Vec::new()),
+            db,
+            config,
+            in_transition: RwLock::new(false),
+            old_epoch_roots: RwLock::new(Vec::new()),
+            pending_nullifiers: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// Create with default configuration
+    pub fn with_defaults(db: Arc<Database>) -> Self {
+        Self::new(db, EpochManagerConfig::default())
+    }
+
+    // =========================================================================
+    // STATE ACCESSORS
+    // =========================================================================
+
+    /// Get current epoch number
+    pub fn current_epoch(&self) -> u64 {
+        *self.current_epoch.read()
+    }
+
+    /// Get current checkpoint height
+    pub fn current_height(&self) -> u64 {
+        *self.current_height.read()
+    }
+
+    /// Get the current commitment tree root
+    pub fn current_root(&self) -> GhostResult<[u8; 32]> {
+        self.commitment_tree
+            .read()
+            .root()
+            .map_err(|e| GhostError::Internal(format!("Failed to compute tree root: {}", e)))
+    }
+
+    /// Get next available note index in the current tree
+    pub fn next_note_index(&self) -> u64 {
+        self.commitment_tree.read().next_index()
+    }
+
+    /// Get the number of notes in the current tree
+    pub fn note_count(&self) -> usize {
+        self.commitment_tree.read().note_count()
+    }
+
+    /// Get the number of nullifiers in the current epoch
+    pub fn nullifier_count(&self) -> usize {
+        self.nullifier_set.read().len()
+    }
+
+    /// Check if we're in a transition window
+    pub fn is_in_transition(&self) -> bool {
+        *self.in_transition.read()
+    }
+
+    /// Get the epoch number for a checkpoint height
+    pub fn epoch_for_height(&self, height: u64) -> u64 {
+        height / self.config.epoch_length
+    }
+
+    /// Check if a height is an epoch boundary
+    pub fn is_epoch_boundary(&self, height: u64) -> bool {
+        height > 0 && height.is_multiple_of(self.config.epoch_length)
+    }
+
+    /// Get the transition window end height for an epoch boundary
+    pub fn transition_end_height(&self, boundary_height: u64) -> u64 {
+        boundary_height.saturating_add(self.config.transition_window)
+    }
+
+    // =========================================================================
+    // INITIALIZATION (RECOVERY FROM DB)
+    // =========================================================================
+
+    /// Initialize from database state (called at startup)
+    pub fn initialize(&self) -> GhostResult<()> {
+        // Load active epoch
+        if let Some(epoch_record) = self.db.get_active_l2_epoch()? {
+            *self.current_epoch.write() = epoch_record.epoch;
+            info!(epoch = epoch_record.epoch, "Restored active epoch from DB");
+
+            // Reconstruct commitment tree from persisted notes
+            let notes = self.db.load_all_l2_notes_for_epoch(epoch_record.epoch)?;
+            let mut tree = CommitmentTree::new(self.config.tree_depth);
+            for (index, commitment) in &notes {
+                tree.insert(*index, *commitment);
+            }
+            *self.commitment_tree.write() = tree;
+            info!(notes = notes.len(), "Reconstructed commitment tree");
+
+            // Reconstruct nullifier set
+            let nullifiers = self.db.load_l2_nullifiers_for_epoch(epoch_record.epoch)?;
+            let mut set = HashSet::with_capacity(nullifiers.len());
+            for n in &nullifiers {
+                set.insert(*n);
+            }
+            *self.nullifier_set.write() = set;
+            info!(nullifiers = nullifiers.len(), "Reconstructed nullifier set");
+        }
+
+        // Load valid roots
+        let roots = self.db.get_l2_valid_roots()?;
+        let mut root_deque = VecDeque::with_capacity(self.config.max_valid_roots);
+        for r in roots.iter().rev() {
+            root_deque.push_back(r.commitment_root);
+        }
+        *self.valid_roots.write() = root_deque;
+
+        // Load latest checkpoint height
+        if let Some(checkpoint) = self.db.get_latest_l2_checkpoint()? {
+            *self.current_height.write() = checkpoint.height;
+            info!(height = checkpoint.height, "Restored checkpoint height");
+        }
+
+        Ok(())
+    }
+
+    /// Initialize a fresh epoch 0 (genesis)
+    pub fn initialize_genesis(&self) -> GhostResult<()> {
+        let tree = CommitmentTree::new(self.config.tree_depth);
+        let root = tree
+            .root()
+            .map_err(|e| GhostError::Internal(format!("Failed to compute genesis root: {}", e)))?;
+
+        // Persist epoch 0
+        self.db.insert_l2_epoch(&ghost_storage::L2EpochRecord {
+            epoch: 0,
+            start_height: 0,
+            end_height: None,
+            initial_root: root,
+            final_root: None,
+            notes_migrated: 0,
+            status: "active".to_string(),
+        })?;
+
+        // Set initial valid root
+        self.db.insert_l2_valid_root(0, 0, &root)?;
+        self.valid_roots.write().push_back(root);
+
+        *self.commitment_tree.write() = tree;
+        *self.current_epoch.write() = 0;
+        *self.current_height.write() = 0;
+
+        info!("Initialized L2 epoch 0 (genesis)");
+        Ok(())
+    }
+
+    // =========================================================================
+    // NOTE OPERATIONS
+    // =========================================================================
+
+    /// Append a new commitment to the tree and persist
+    pub fn append_commitment(
+        &self,
+        commitment: [u8; 32],
+        block_height: u64,
+    ) -> GhostResult<u64> {
+        let epoch = self.current_epoch();
+        let index = {
+            let mut tree = self.commitment_tree.write();
+            let idx = tree.next_index();
+            tree.insert(idx, commitment);
+            idx
+        };
+
+        // Persist to DB
+        self.db
+            .insert_l2_note(epoch, index, &commitment, block_height)?;
+
+        debug!(epoch, index, height = block_height, "Appended note commitment");
+        Ok(index)
+    }
+
+    /// Atomically check and insert a nullifier (marks a note as spent).
+    ///
+    /// Uses a single write lock to prevent TOCTOU race conditions.
+    /// During epoch transitions, also checks the previous epoch's nullifier set
+    /// to prevent cross-epoch double-spends.
+    ///
+    /// Returns false if the nullifier was already spent (double-spend attempt).
+    pub fn spend_nullifier(
+        &self,
+        nullifier: [u8; 32],
+        block_height: u64,
+    ) -> GhostResult<bool> {
+        let epoch = self.current_epoch();
+
+        // Cross-epoch check: reject if spent in previous epoch (during transition window)
+        if let Some(ref old_set) = *self.transition_nullifiers.read() {
+            if old_set.contains(&nullifier) {
+                return Ok(false);
+            }
+        }
+
+        // Atomic check + insert with single write lock
+        {
+            let mut set = self.nullifier_set.write();
+            if !set.insert(nullifier) {
+                return Ok(false); // Already spent in current epoch
+            }
+        }
+
+        // Defer DB persistence — nullifiers are persisted atomically with the checkpoint
+        // to prevent partial state on crash. In-memory set prevents double-spends immediately.
+        self.pending_nullifiers
+            .write()
+            .push((nullifier, epoch, block_height));
+
+        debug!(epoch, height = block_height, "Recorded nullifier");
+        Ok(true)
+    }
+
+    /// Drain pending nullifiers for atomic checkpoint persistence.
+    /// Returns the accumulated (nullifier, epoch, block_height) tuples.
+    pub fn drain_pending_nullifiers(&self) -> Vec<([u8; 32], u64, u64)> {
+        std::mem::take(&mut *self.pending_nullifiers.write())
+    }
+
+    /// Flush all pending nullifiers to the database immediately.
+    /// Used during graceful shutdown to prevent data loss.
+    pub fn flush_pending_nullifiers(&self) -> GhostResult<()> {
+        let pending = self.drain_pending_nullifiers();
+        for (nullifier, epoch, block_height) in &pending {
+            self.db
+                .insert_l2_nullifier(nullifier, *epoch, *block_height)?;
+        }
+        Ok(())
+    }
+
+    /// Check if a nullifier is already spent (current epoch + transition window)
+    pub fn is_nullifier_spent(&self, nullifier: &[u8; 32]) -> bool {
+        if self.nullifier_set.read().contains(nullifier) {
+            return true;
+        }
+        // Cross-epoch check during transition window
+        if let Some(ref old_set) = *self.transition_nullifiers.read() {
+            if old_set.contains(nullifier) {
+                return true;
+            }
+        }
+        false
+    }
+
+    // =========================================================================
+    // VALID ROOT MANAGEMENT
+    // =========================================================================
+
+    /// Add a valid root after a checkpoint is finalized
+    pub fn add_valid_root(&self, root: [u8; 32], height: u64) -> GhostResult<()> {
+        let epoch = self.current_epoch();
+
+        // Add to in-memory deque
+        {
+            let mut roots = self.valid_roots.write();
+            roots.push_back(root);
+            while roots.len() > self.config.max_valid_roots {
+                roots.pop_front();
+            }
+        }
+
+        // Persist
+        self.db.insert_l2_valid_root(height, epoch, &root)?;
+
+        // Prune old roots in DB
+        self.db
+            .prune_l2_valid_roots(self.config.max_valid_roots as u64)?;
+
+        Ok(())
+    }
+
+    /// Check if a commitment root is valid (for proof verification)
+    ///
+    /// During transition windows, roots from both epochs are valid.
+    pub fn is_root_valid(&self, root: &[u8; 32]) -> bool {
+        // Check current epoch roots
+        if self.valid_roots.read().contains(root) {
+            return true;
+        }
+
+        // During transition, also check old epoch roots
+        if *self.in_transition.read() && self.old_epoch_roots.read().contains(root) {
+            return true;
+        }
+
+        false
+    }
+
+    // =========================================================================
+    // PROPOSER ROTATION
+    // =========================================================================
+
+    /// Update the sorted active node list
+    pub fn update_active_nodes(&self, mut nodes: Vec<NodeId>) {
+        nodes.sort();
+        *self.active_nodes.write() = nodes;
+    }
+
+    /// Get the number of active nodes
+    pub fn active_node_count(&self) -> usize {
+        self.active_nodes.read().len()
+    }
+
+    /// Get the designated proposer for a checkpoint height
+    ///
+    /// Deterministic rotation: `sorted_active_nodes[height % len]`
+    pub fn get_proposer(&self, height: u64) -> Option<NodeId> {
+        let nodes = self.active_nodes.read();
+        if nodes.is_empty() {
+            return None;
+        }
+        let idx = (height as usize) % nodes.len();
+        Some(nodes[idx])
+    }
+
+    /// Get the fallback proposer (next in line if primary no-shows)
+    pub fn get_fallback_proposer(&self, height: u64) -> Option<NodeId> {
+        let nodes = self.active_nodes.read();
+        if nodes.len() < 2 {
+            return None;
+        }
+        let idx = ((height as usize) + 1) % nodes.len();
+        Some(nodes[idx])
+    }
+
+    /// Check if a given node is the designated proposer for a height
+    pub fn is_proposer(&self, node_id: &NodeId, height: u64) -> bool {
+        self.get_proposer(height)
+            .map(|p| &p == node_id)
+            .unwrap_or(false)
+    }
+
+    /// Determine which validator should handle a nullifier
+    ///
+    /// Deterministic routing: `u64::from_le_bytes(nullifier[0..8]) % active_node_count`
+    pub fn validator_for_nullifier(&self, nullifier: &[u8; 32]) -> Option<NodeId> {
+        let nodes = self.active_nodes.read();
+        if nodes.is_empty() {
+            return None;
+        }
+        let hash_val = u64::from_le_bytes(nullifier[0..8].try_into().unwrap());
+        let idx = (hash_val as usize) % nodes.len();
+        Some(nodes[idx])
+    }
+
+    /// Get our index in the active node list
+    pub fn our_index(&self, our_id: &NodeId) -> Option<usize> {
+        self.active_nodes.read().iter().position(|n| n == our_id)
+    }
+
+    // =========================================================================
+    // EPOCH TRANSITIONS
+    // =========================================================================
+
+    /// Process a checkpoint finalization
+    ///
+    /// Called after a checkpoint block is finalized by BFT.
+    /// Handles epoch boundary detection and transitions.
+    pub fn on_checkpoint_finalized(&self, height: u64) -> GhostResult<Option<CompactionResult>> {
+        *self.current_height.write() = height;
+
+        // Check if we're in a transition window that should end
+        if *self.in_transition.read() {
+            let epoch = self.current_epoch();
+            let boundary = epoch.saturating_mul(self.config.epoch_length);
+            if height >= self.transition_end_height(boundary) {
+                self.end_transition()?;
+            }
+        }
+
+        // Check for epoch boundary
+        if self.is_epoch_boundary(height) {
+            let result = self.begin_epoch_transition(height)?;
+            return Ok(Some(result));
+        }
+
+        Ok(None)
+    }
+
+    /// Begin an epoch transition (tree compaction)
+    ///
+    /// All nodes run this deterministically — same inputs → same output.
+    fn begin_epoch_transition(&self, boundary_height: u64) -> GhostResult<CompactionResult> {
+        let old_epoch = self.current_epoch();
+        let new_epoch = old_epoch + 1;
+
+        info!(
+            old_epoch,
+            new_epoch,
+            boundary_height,
+            "Beginning epoch transition"
+        );
+
+        // 1. Capture old epoch's final root
+        let old_final_root = self.current_root()?;
+
+        // 2. Save old epoch roots for transition window
+        {
+            let valid = self.valid_roots.read();
+            *self.old_epoch_roots.write() = valid.iter().copied().collect();
+        }
+        *self.in_transition.write() = true;
+
+        // 3. Collect unspent notes from old epoch
+        let unspent_notes = self.db.load_unspent_l2_notes(old_epoch)?;
+        let notes_migrated = unspent_notes.len() as u64;
+
+        // 4. Build new tree from unspent notes (deterministic order)
+        let mut new_tree = CommitmentTree::new(self.config.tree_depth);
+        for (new_idx, note) in unspent_notes.iter().enumerate() {
+            new_tree.insert(new_idx as u64, note.commitment);
+
+            // Persist migrated note in new epoch
+            self.db.insert_l2_note(
+                new_epoch,
+                new_idx as u64,
+                &note.commitment,
+                boundary_height,
+            )?;
+        }
+
+        let new_initial_root = new_tree
+            .root()
+            .map_err(|e| GhostError::Internal(format!("Failed to compute new root: {}", e)))?;
+
+        // 5. Swap trees and move nullifiers to transition set for cross-epoch protection
+        *self.commitment_tree.write() = new_tree;
+        let old_nullifiers = std::mem::take(&mut *self.nullifier_set.write());
+        *self.transition_nullifiers.write() = Some(old_nullifiers);
+        *self.current_epoch.write() = new_epoch;
+
+        // 6. Add new root to valid roots
+        {
+            let mut roots = self.valid_roots.write();
+            roots.push_back(new_initial_root);
+            while roots.len() > self.config.max_valid_roots {
+                roots.pop_front();
+            }
+        }
+
+        // 7. Persist epoch records
+        self.db
+            .finalize_l2_epoch(old_epoch, boundary_height, &old_final_root, notes_migrated)?;
+
+        self.db.insert_l2_epoch(&ghost_storage::L2EpochRecord {
+            epoch: new_epoch,
+            start_height: boundary_height,
+            end_height: None,
+            initial_root: new_initial_root,
+            final_root: None,
+            notes_migrated: 0,
+            status: "active".to_string(),
+        })?;
+
+        self.db
+            .insert_l2_valid_root(boundary_height, new_epoch, &new_initial_root)?;
+
+        info!(
+            old_epoch,
+            new_epoch,
+            notes_migrated,
+            "Epoch transition complete"
+        );
+
+        Ok(CompactionResult {
+            new_epoch,
+            notes_migrated,
+            new_initial_root,
+            old_final_root,
+        })
+    }
+
+    /// End the transition window (old epoch roots no longer valid)
+    fn end_transition(&self) -> GhostResult<()> {
+        *self.in_transition.write() = false;
+        *self.transition_nullifiers.write() = None;
+        self.old_epoch_roots.write().clear();
+
+        let epoch = self.current_epoch();
+        let prev_epoch = epoch.saturating_sub(1);
+
+        // Clean up old epoch nullifiers from DB
+        let deleted = self.db.delete_l2_nullifiers_for_epoch(prev_epoch)?;
+
+        info!(
+            epoch,
+            prev_epoch,
+            nullifiers_cleaned = deleted,
+            "Transition window closed"
+        );
+
+        Ok(())
+    }
+
+    /// Get merkle proof for a note at the given index
+    pub fn get_merkle_proof(
+        &self,
+        index: u64,
+    ) -> GhostResult<Vec<[u8; 32]>> {
+        let tree = self.commitment_tree.read();
+        let proof = tree
+            .get_proof(index)
+            .map_err(|e| GhostError::Internal(format!("Failed to get merkle proof: {}", e)))?;
+        Ok(proof.siblings.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup() -> (Arc<Database>, EpochManager) {
+        let db = Arc::new(Database::in_memory().expect("Failed to create in-memory DB"));
+        let config = EpochManagerConfig {
+            epoch_length: 10, // Short epochs for testing
+            transition_window: 3,
+            tree_depth: 4,
+            max_valid_roots: 16,
+        };
+        let mgr = EpochManager::new(db.clone(), config);
+        (db, mgr)
+    }
+
+    #[test]
+    fn test_epoch_for_height() {
+        let (_db, mgr) = setup();
+        assert_eq!(mgr.epoch_for_height(0), 0);
+        assert_eq!(mgr.epoch_for_height(9), 0);
+        assert_eq!(mgr.epoch_for_height(10), 1);
+        assert_eq!(mgr.epoch_for_height(19), 1);
+        assert_eq!(mgr.epoch_for_height(20), 2);
+    }
+
+    #[test]
+    fn test_epoch_boundary() {
+        let (_db, mgr) = setup();
+        assert!(!mgr.is_epoch_boundary(0));
+        assert!(!mgr.is_epoch_boundary(1));
+        assert!(!mgr.is_epoch_boundary(9));
+        assert!(mgr.is_epoch_boundary(10));
+        assert!(!mgr.is_epoch_boundary(11));
+        assert!(mgr.is_epoch_boundary(20));
+    }
+
+    #[test]
+    fn test_genesis_initialization() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        assert_eq!(mgr.current_epoch(), 0);
+        assert_eq!(mgr.current_height(), 0);
+        assert_eq!(mgr.note_count(), 0);
+        assert_eq!(mgr.nullifier_count(), 0);
+
+        // Should have one valid root
+        assert!(mgr.valid_roots.read().len() >= 1);
+    }
+
+    #[test]
+    fn test_append_commitment() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        // Use small values that fit in BLS12-381 scalar field
+        let mut c1 = [0u8; 32];
+        c1[0] = 0xAB;
+        let idx = mgr.append_commitment(c1, 1).unwrap();
+        assert_eq!(idx, 0);
+
+        let mut c2 = [0u8; 32];
+        c2[0] = 0xCD;
+        let idx2 = mgr.append_commitment(c2, 1).unwrap();
+        assert_eq!(idx2, 1);
+
+        assert_eq!(mgr.note_count(), 2);
+    }
+
+    #[test]
+    fn test_nullifier_spend() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        let nullifier = [0x42; 32];
+        assert!(!mgr.is_nullifier_spent(&nullifier));
+
+        let spent = mgr.spend_nullifier(nullifier, 1).unwrap();
+        assert!(spent);
+        assert!(mgr.is_nullifier_spent(&nullifier));
+
+        // Double spend should fail
+        let double = mgr.spend_nullifier(nullifier, 2).unwrap();
+        assert!(!double);
+    }
+
+    #[test]
+    fn test_valid_root_management() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        let root1 = [0x11; 32];
+        let root2 = [0x22; 32];
+        let fake_root = [0xFF; 32];
+
+        mgr.add_valid_root(root1, 1).unwrap();
+        mgr.add_valid_root(root2, 2).unwrap();
+
+        assert!(mgr.is_root_valid(&root1));
+        assert!(mgr.is_root_valid(&root2));
+        assert!(!mgr.is_root_valid(&fake_root));
+    }
+
+    #[test]
+    fn test_proposer_rotation() {
+        let (_db, mgr) = setup();
+
+        let node_a = [0x01; 32];
+        let node_b = [0x02; 32];
+        let node_c = [0x03; 32];
+
+        mgr.update_active_nodes(vec![node_c, node_a, node_b]); // Will be sorted
+
+        assert_eq!(mgr.active_node_count(), 3);
+
+        // Sorted: node_a, node_b, node_c
+        let p0 = mgr.get_proposer(0).unwrap();
+        let p1 = mgr.get_proposer(1).unwrap();
+        let p2 = mgr.get_proposer(2).unwrap();
+        let p3 = mgr.get_proposer(3).unwrap();
+
+        assert_eq!(p0, node_a); // 0 % 3 = 0
+        assert_eq!(p1, node_b); // 1 % 3 = 1
+        assert_eq!(p2, node_c); // 2 % 3 = 2
+        assert_eq!(p3, node_a); // 3 % 3 = 0 (wraps)
+
+        assert!(mgr.is_proposer(&node_a, 0));
+        assert!(!mgr.is_proposer(&node_b, 0));
+    }
+
+    #[test]
+    fn test_nullifier_routing() {
+        let (_db, mgr) = setup();
+
+        let node_a = [0x01; 32];
+        let node_b = [0x02; 32];
+        mgr.update_active_nodes(vec![node_a, node_b]);
+
+        let nullifier = [0u8; 32]; // hash_val = 0, 0 % 2 = 0
+        let validator = mgr.validator_for_nullifier(&nullifier).unwrap();
+        assert_eq!(validator, node_a);
+
+        let mut nullifier2 = [0u8; 32];
+        nullifier2[0] = 1; // hash_val = 1, 1 % 2 = 1
+        let validator2 = mgr.validator_for_nullifier(&nullifier2).unwrap();
+        assert_eq!(validator2, node_b);
+    }
+
+    #[test]
+    fn test_epoch_transition() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        // Use small values that fit in BLS12-381 scalar field
+        let mut c1 = [0u8; 32];
+        c1[0] = 0x11;
+        let mut c2 = [0u8; 32];
+        c2[0] = 0x22;
+        let mut c3 = [0u8; 32];
+        c3[0] = 0x33;
+        mgr.append_commitment(c1, 1).unwrap();
+        mgr.append_commitment(c2, 2).unwrap();
+        mgr.append_commitment(c3, 3).unwrap();
+
+        // Spend one note (c2)
+        let nullifier = [0x42; 32];
+        mgr.spend_nullifier(nullifier, 4).unwrap();
+        mgr.db.mark_l2_note_spent(0, 1).unwrap(); // Mark note at index 1 as spent
+
+        assert_eq!(mgr.note_count(), 3);
+        assert_eq!(mgr.nullifier_count(), 1);
+
+        // Process checkpoints up to boundary
+        for h in 1..10 {
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            let result = mgr.on_checkpoint_finalized(h).unwrap();
+            assert!(result.is_none());
+        }
+
+        // Trigger epoch transition at boundary (height 10)
+        let root = mgr.current_root().unwrap();
+        mgr.add_valid_root(root, 10).unwrap();
+        let result = mgr.on_checkpoint_finalized(10).unwrap();
+        assert!(result.is_some());
+
+        let compaction = result.unwrap();
+        assert_eq!(compaction.new_epoch, 1);
+        assert_eq!(compaction.notes_migrated, 2); // 3 notes - 1 spent = 2 migrated
+
+        // State should be updated
+        assert_eq!(mgr.current_epoch(), 1);
+        assert_eq!(mgr.nullifier_count(), 0); // Nullifiers cleared
+        assert!(mgr.is_in_transition()); // In transition window
+
+        // Old roots should still be valid during transition
+        assert!(mgr.is_root_valid(&root));
+    }
+
+    #[test]
+    fn test_transition_window_ends() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        // Add a note and trigger epoch transition at height 10
+        let mut c = [0u8; 32];
+        c[0] = 0x11;
+        mgr.append_commitment(c, 1).unwrap();
+        for h in 1..=10 {
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+
+        assert!(mgr.is_in_transition());
+
+        // Process through transition window (3 checkpoints)
+        for h in 11..=13 {
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+
+        // Transition should be over
+        assert!(!mgr.is_in_transition());
+    }
+
+    #[test]
+    fn test_recovery_from_db() {
+        let (db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        // Use small values that fit in BLS12-381 scalar field
+        let mut c1 = [0u8; 32];
+        c1[0] = 1;
+        let mut c2 = [0u8; 32];
+        c2[0] = 2;
+
+        // Add notes and valid roots
+        mgr.append_commitment(c1, 1).unwrap();
+        mgr.append_commitment(c2, 2).unwrap();
+        mgr.spend_nullifier([0x42; 32], 3).unwrap();
+
+        // Flush pending nullifiers to DB (simulates checkpoint finalization)
+        mgr.flush_pending_nullifiers().unwrap();
+
+        let root = mgr.current_root().unwrap();
+        mgr.add_valid_root(root, 3).unwrap();
+
+        // Create a new manager pointing to same DB (simulates restart)
+        let config = EpochManagerConfig {
+            epoch_length: 10,
+            transition_window: 3,
+            tree_depth: 4,
+            max_valid_roots: 16,
+        };
+        let mgr2 = EpochManager::new(db, config);
+        mgr2.initialize().unwrap();
+
+        // State should be restored
+        assert_eq!(mgr2.current_epoch(), 0);
+        assert_eq!(mgr2.note_count(), 2);
+        assert_eq!(mgr2.nullifier_count(), 1);
+        assert!(mgr2.is_nullifier_spent(&[0x42; 32]));
+    }
+
+    #[test]
+    fn test_cross_epoch_double_spend_prevention() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        // Add notes and spend one
+        let mut c1 = [0u8; 32];
+        c1[0] = 0x11;
+        let mut c2 = [0u8; 32];
+        c2[0] = 0x22;
+        mgr.append_commitment(c1, 1).unwrap();
+        mgr.append_commitment(c2, 2).unwrap();
+
+        let nullifier = [0x42; 32];
+        assert!(mgr.spend_nullifier(nullifier, 3).unwrap());
+
+        // Mark note as spent in DB
+        mgr.db.mark_l2_note_spent(0, 0).unwrap();
+
+        // Process to epoch boundary
+        for h in 1..=10 {
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+
+        // Now in transition — current nullifier_set is empty, transition_nullifiers has old set
+        assert!(mgr.is_in_transition());
+        assert_eq!(mgr.nullifier_count(), 0); // Current epoch has no nullifiers
+
+        // Cross-epoch double-spend attempt: same nullifier in new epoch
+        assert!(!mgr.spend_nullifier(nullifier, 11).unwrap());
+
+        // Also check is_nullifier_spent
+        assert!(mgr.is_nullifier_spent(&nullifier));
+
+        // New nullifier should work fine
+        let new_nullifier = [0x99; 32];
+        assert!(mgr.spend_nullifier(new_nullifier, 11).unwrap());
+
+        // After transition window closes, old nullifiers are dropped
+        for h in 11..=13 {
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+        assert!(!mgr.is_in_transition());
+
+        // Old nullifier no longer checked (transition window closed)
+        // DB-level protection still applies, but in-memory check passes
+        assert!(!mgr.is_nullifier_spent(&nullifier));
+    }
+
+    #[test]
+    fn test_atomic_nullifier_insert() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        let nullifier = [0x42; 32];
+
+        // First insert succeeds
+        assert!(mgr.spend_nullifier(nullifier, 1).unwrap());
+
+        // Second insert fails atomically
+        assert!(!mgr.spend_nullifier(nullifier, 2).unwrap());
+
+        // Only one nullifier recorded
+        assert_eq!(mgr.nullifier_count(), 1);
+    }
+
+    #[test]
+    fn test_no_active_nodes() {
+        let (_db, mgr) = setup();
+
+        assert!(mgr.get_proposer(0).is_none());
+        assert!(mgr.get_fallback_proposer(0).is_none());
+        assert_eq!(mgr.active_node_count(), 0);
+    }
+
+    #[test]
+    fn test_fallback_proposer() {
+        let (_db, mgr) = setup();
+
+        let node_a = [0x01; 32];
+        let node_b = [0x02; 32];
+        mgr.update_active_nodes(vec![node_a, node_b]);
+
+        let primary = mgr.get_proposer(0).unwrap();
+        let fallback = mgr.get_fallback_proposer(0).unwrap();
+
+        assert_ne!(primary, fallback);
+        assert_eq!(primary, node_a);
+        assert_eq!(fallback, node_b);
+    }
+}

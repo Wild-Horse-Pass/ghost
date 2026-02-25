@@ -346,7 +346,7 @@ impl VerificationResultHandler {
 
 #[async_trait]
 impl MessageHandler for VerificationResultHandler {
-    async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+    async fn handle_message(&self, envelope: Arc<MessageEnvelope>) -> GhostResult<()> {
         if envelope.msg_type == MessageType::VerificationResult {
             self.handle_verification_result(&envelope).await?;
         }

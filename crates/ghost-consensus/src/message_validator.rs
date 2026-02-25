@@ -72,6 +72,18 @@ pub const MAX_MPC_VERIFICATION_VOTE_SIZE: usize = 500;
 pub const MAX_MPC_PARAMS_REQUEST_SIZE: usize = 5_000;
 /// MPC-C4: MPC parameters response (chunked data ~1MB)
 pub const MAX_MPC_PARAMS_RESPONSE_SIZE: usize = 1_100_000;
+/// L2 confidential transfer (~490 bytes per tx + envelope overhead)
+pub const MAX_L2_TRANSFER_SIZE: usize = 2_000;
+/// L2 transfer confirmation (receipt ~200 bytes)
+pub const MAX_L2_CONFIRMATION_SIZE: usize = 1_000;
+/// L2 transfer broadcast (~600 bytes)
+pub const MAX_L2_BROADCAST_SIZE: usize = 2_000;
+/// L2 checkpoint block (1000 txs * ~490 bytes + header)
+pub const MAX_L2_CHECKPOINT_SIZE: usize = 1_000_000;
+/// L2 checkpoint vote (~200 bytes)
+pub const MAX_L2_VOTE_SIZE: usize = 1_000;
+/// L2 tree sync (up to 10000 notes for reconstruction)
+pub const MAX_L2_TREE_SYNC_SIZE: usize = 1_000_000;
 
 /// L-13 SECURITY: Global pending message memory limit (100MB)
 ///
@@ -366,6 +378,12 @@ pub fn max_payload_size(msg_type: MessageType) -> usize {
         MessageType::MpcVerificationVote => MAX_MPC_VERIFICATION_VOTE_SIZE,
         MessageType::MpcParametersRequest => MAX_MPC_PARAMS_REQUEST_SIZE,
         MessageType::MpcParametersResponse => MAX_MPC_PARAMS_RESPONSE_SIZE,
+        MessageType::L2ConfidentialTransfer => MAX_L2_TRANSFER_SIZE,
+        MessageType::L2TransferConfirmation => MAX_L2_CONFIRMATION_SIZE,
+        MessageType::L2TransferBroadcast => MAX_L2_BROADCAST_SIZE,
+        MessageType::L2CheckpointBlock => MAX_L2_CHECKPOINT_SIZE,
+        MessageType::L2CheckpointVote => MAX_L2_VOTE_SIZE,
+        MessageType::L2TreeSync => MAX_L2_TREE_SYNC_SIZE,
     }
 }
 

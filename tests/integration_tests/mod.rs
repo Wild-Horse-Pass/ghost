@@ -29,6 +29,7 @@
 //! | 26 | settlement_reconciliation | 40 - Settlement, batches, merkle proofs (780-819) |
 //! | 27 | gsp_payment_messages | 30 - GSP payment/lock/reorg messages (820-849) |
 //! | 28 | l2_cross_layer | 20 - Cross-layer L2 integration (850-869) |
+//! | 29 | l2_nullifier_route | 20 - L2 nullifier route, sender proofs (870-889) |
 //!
 //! # Running Tests
 //!
@@ -53,6 +54,7 @@
 //! cargo test --test integration settlement_reconciliation
 //! cargo test --test integration gsp_payment_messages
 //! cargo test --test integration l2_cross_layer
+//! cargo test --test integration l2_nullifier_route
 //! ```
 
 pub mod block_template;
@@ -83,5 +85,6 @@ pub mod storage;
 pub mod stratum_payout_consensus;
 pub mod stratum_validation;
 pub mod wraith_blind_signatures;
+pub mod l2_nullifier_route;
 pub mod wraith_protocol;
 pub mod wraith_transactions;

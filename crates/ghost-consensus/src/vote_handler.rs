@@ -1502,7 +1502,7 @@ impl VoteHandler {
 
 #[async_trait]
 impl MessageHandler for VoteHandler {
-    async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+    async fn handle_message(&self, envelope: Arc<MessageEnvelope>) -> GhostResult<()> {
         // P2P4-M1: Require non-zero signature
         if envelope.signature == [0u8; 64] {
             warn!(

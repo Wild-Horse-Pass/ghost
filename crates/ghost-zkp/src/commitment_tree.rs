@@ -24,6 +24,9 @@ use crate::types::{ConfidentialTransferWitness, MerkleProof};
 /// Commitments are `MiMC(MiMC(value, blinding), COMMITMENT_DOMAIN)`.
 /// Since they are already hashes, they are stored directly as leaf values
 /// without additional hashing.
+///
+/// Uses precomputed zero-subtree hashes to avoid O(2^depth) traversal
+/// on sparse trees. Only subtrees containing actual leaves are computed.
 #[derive(Debug, Clone)]
 pub struct CommitmentTree {
     /// Tree depth (supports 2^depth notes)
@@ -34,16 +37,35 @@ pub struct CommitmentTree {
     nullifiers: HashSet<[u8; 32]>,
     /// Next available index for new notes
     next_index: u64,
+    /// Precomputed hash of an all-zero subtree at each level (0..=depth)
+    /// zero_hashes[0] = [0u8; 32] (empty leaf)
+    /// zero_hashes[i] = MiMC(zero_hashes[i-1], zero_hashes[i-1])
+    zero_hashes: Vec<[u8; 32]>,
+}
+
+/// Precompute the hash of a complete all-zero subtree at each level.
+/// This is O(depth) and allows O(depth * log(leaves)) root computation
+/// instead of O(2^depth).
+fn precompute_zero_hashes(depth: usize) -> Vec<[u8; 32]> {
+    let mut zeros = vec![[0u8; 32]; depth + 1];
+    for i in 1..=depth {
+        let left: Fr = bytes_to_field(&zeros[i - 1]).unwrap_or(Fr::from(0u64));
+        let right = left;
+        zeros[i] = field_to_bytes(mimc_hash_native(left, right));
+    }
+    zeros
 }
 
 impl CommitmentTree {
     /// Create a new empty commitment tree
     pub fn new(depth: usize) -> Self {
+        let zero_hashes = precompute_zero_hashes(depth);
         Self {
             depth,
             leaves: HashMap::new(),
             nullifiers: HashSet::new(),
             next_index: 0,
+            zero_hashes,
         }
     }
 
@@ -211,16 +233,36 @@ impl CommitmentTree {
 
     /// Get hash of a node at a given level and index
     ///
-    /// Level 0 = leaves (commitments stored directly), Level depth = root
+    /// Level 0 = leaves (commitments stored directly), Level depth = root.
+    /// Uses precomputed zero_hashes to short-circuit empty subtrees,
+    /// making this O(depth * populated_leaves) instead of O(2^depth).
     fn get_node_hash(&self, level: usize, index: u64) -> ZkResult<[u8; 32]> {
         if level == 0 {
             // Leaf node: commitment is stored directly (no leaf hashing)
-            Ok(self.get_commitment(index))
-        } else {
-            let left = self.get_node_hash(level - 1, index * 2)?;
-            let right = self.get_node_hash(level - 1, index * 2 + 1)?;
-            self.hash_pair(&left, &right)
+            return Ok(self.get_commitment(index));
         }
+
+        // Check if ANY leaf exists in this subtree's range.
+        // Subtree at (level, index) covers leaf indices [index * 2^level, (index+1) * 2^level).
+        // If no leaves exist in that range, return precomputed zero hash.
+        if !self.has_leaf_in_subtree(level, index) {
+            return Ok(self.zero_hashes[level]);
+        }
+
+        let left = self.get_node_hash(level - 1, index * 2)?;
+        let right = self.get_node_hash(level - 1, index * 2 + 1)?;
+        self.hash_pair(&left, &right)
+    }
+
+    /// Check if any leaf exists in the subtree rooted at (level, index).
+    /// The subtree covers leaf indices [index << level, (index + 1) << level).
+    fn has_leaf_in_subtree(&self, level: usize, index: u64) -> bool {
+        if self.leaves.is_empty() {
+            return false;
+        }
+        let start = index << level;
+        let end = (index + 1) << level;
+        self.leaves.keys().any(|&k| k >= start && k < end)
     }
 
     /// Hash two child nodes using MiMC (matches circuit)
@@ -498,5 +540,20 @@ mod tests {
         assert!(verifier
             .verify(&proof)
             .expect("Verification should succeed"));
+    }
+
+    #[test]
+    fn test_depth_40_tree_is_fast() {
+        // Depth 40 = ~1 trillion leaves. Without zero-subtree optimization,
+        // root() would traverse 2^40 nodes and never complete.
+        let tree = CommitmentTree::new(40);
+        let root = tree.root().unwrap();
+        assert_ne!(root, [0u8; 32]); // MiMC of zeros is non-zero
+
+        // Insert a single note and verify root changes
+        let mut tree2 = CommitmentTree::new(40);
+        tree2.insert_note(0, 1000, Fr::from(42u64));
+        let root2 = tree2.root().unwrap();
+        assert_ne!(root, root2);
     }
 }

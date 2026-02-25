@@ -1225,12 +1225,10 @@ async fn main() -> Result<()> {
     // DEFERRED INITIALIZATION: ZK parameter generation is memory-intensive and can take minutes.
     // We spawn it in a background task so the node can start serving immediately.
     #[cfg(feature = "zk-consensus")]
-    let block_prover_cell: Arc<tokio::sync::OnceCell<Arc<ghost_zkp::BlockProver>>> =
-        Arc::new(tokio::sync::OnceCell::new());
-
-    #[cfg(feature = "zk-consensus")]
     {
-        use ghost_consensus::{ZkPayoutVoteHandler, ZkVoteHandler};
+        use ghost_consensus::epoch_manager::{EpochManager, EpochManagerConfig};
+        use ghost_consensus::nullifier_route_handler::NullifierRouteHandler;
+        use ghost_consensus::ZkPayoutVoteHandler;
 
         // Check production mode early (this is fast)
         let is_production = ghost_zkp::is_production_mode();
@@ -1254,36 +1252,52 @@ async fn main() -> Result<()> {
             warn!("ZK consensus using TEST parameters - NOT SECURE FOR MAINNET");
         }
 
-        // Create broadcast callbacks for ZK handlers
-        // Uses async Noise relay: sync closure queues messages, background task
-        // routes them through mesh.broadcast() which uses Noise encryption
-        let (zk_block_tx, mut zk_block_rx) =
-            tokio::sync::mpsc::channel::<(ghost_consensus::message::MessageType, Vec<u8>)>(64);
-        let mesh_for_zk_block_relay = Arc::clone(&mesh);
+        // Initialize epoch manager (commitment tree, nullifier set, proposer rotation)
+        let epoch_config = EpochManagerConfig::default();
+        let epoch_manager = Arc::new(EpochManager::new(Arc::clone(&db), epoch_config));
+
+        // Recover epoch state from DB or initialize genesis
+        epoch_manager.initialize()?;
+        if db.get_active_l2_epoch()?.is_none() {
+            epoch_manager.initialize_genesis()?;
+            info!("L2 epoch genesis initialized (fresh database)");
+        }
+
+        info!(
+            epoch = epoch_manager.current_epoch(),
+            height = epoch_manager.current_height(),
+            "Epoch manager initialized"
+        );
+
+        // Create broadcast relay for L2 messages (Noise-encrypted)
+        let (l2_tx, mut l2_rx) =
+            tokio::sync::mpsc::channel::<(ghost_consensus::message::MessageType, Vec<u8>)>(256);
+        let mesh_for_l2_relay = Arc::clone(&mesh);
         tokio::spawn(async move {
-            while let Some((msg_type, payload)) = zk_block_rx.recv().await {
-                match mesh_for_zk_block_relay.create_envelope_raw(msg_type, payload) {
+            while let Some((msg_type, payload)) = l2_rx.recv().await {
+                match mesh_for_l2_relay.create_envelope_raw(msg_type, payload) {
                     Ok(envelope) => {
-                        if let Err(e) = mesh_for_zk_block_relay.broadcast(envelope).await {
-                            tracing::warn!(error = %e, "ZK block Noise broadcast failed");
+                        if let Err(e) = mesh_for_l2_relay.broadcast(envelope).await {
+                            tracing::warn!(error = %e, "L2 Noise broadcast failed");
                         }
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, "ZK block envelope creation failed");
+                        tracing::warn!(error = %e, "L2 envelope creation failed");
                     }
                 }
             }
         });
-        let zk_block_broadcast: ghost_consensus::zk_vote_handler::ZkBroadcastFn =
+        let l2_broadcast: ghost_consensus::vote_handler::BroadcastFn =
             Arc::new(move |msg_type, payload| {
-                zk_block_tx.try_send((msg_type, payload)).map_err(|e| {
+                l2_tx.try_send((msg_type, payload)).map_err(|e| {
                     ghost_common::error::GhostError::Internal(format!(
-                        "ZK block broadcast channel error: {}",
+                        "L2 broadcast channel error: {}",
                         e
                     ))
                 })
             });
 
+        // Create payout broadcast relay (separate channel)
         let (zk_payout_tx, mut zk_payout_rx) =
             tokio::sync::mpsc::channel::<(ghost_consensus::message::MessageType, Vec<u8>)>(64);
         let mesh_for_zk_payout_relay = Arc::clone(&mesh);
@@ -1311,85 +1325,19 @@ async fn main() -> Result<()> {
                 })
             });
 
-        // Create ZK handlers WITHOUT verifiers initially - they'll be set when params are ready
-        // Wire consensus callback to persist finalized blocks and notify ghost-pay
-        let db_for_cb = Arc::clone(&db);
-        let ghost_pay_url = "http://127.0.0.1:8800".to_string();
-        let ghost_pay_url_for_cb = ghost_pay_url.clone();
-        let consensus_client = reqwest::Client::new();
-        let consensus_callback: ghost_consensus::zk_vote_handler::ZkConsensusCallback =
-            Arc::new(move |result| {
-                use ghost_consensus::message::ZkConsensusResult;
-                match result {
-                    ZkConsensusResult::Approved {
-                        height,
-                        new_state_root,
-                        approvals,
-                        ..
-                    } => {
-                        // Persist L2 state to ghost-pool's DB
-                        if let Err(e) = db_for_cb.save_l2_state(height, new_state_root) {
-                            tracing::error!(height, error = %e, "Failed to save L2 state");
-                        }
+        // Create NullifierRouteHandler (replaces ZkVoteHandler for L2)
+        let nullifier_handler = Arc::new(NullifierRouteHandler::with_defaults(
+            identity.node_id(),
+            Arc::clone(&epoch_manager),
+            Arc::clone(&db),
+        ));
+        nullifier_handler.set_broadcast_fn(l2_broadcast);
+        let identity_for_sign = Arc::clone(&identity);
+        nullifier_handler.set_sign_fn(std::sync::Arc::new(move |msg: &[u8]| {
+            identity_for_sign.sign(msg)
+        }));
 
-                        // Record block proposer
-                        if let Err(e) = db_for_cb.save_block_proposer(
-                            height,
-                            "self",
-                            &hex::encode(new_state_root),
-                        ) {
-                            tracing::error!(height, error = %e, "Failed to record block proposer");
-                        }
-
-                        // Snapshot every 100 blocks
-                        if height % 100 == 0 {
-                            let _ = db_for_cb.save_l2_snapshot(height, new_state_root);
-                            let _ = db_for_cb.prune_l2_snapshots(50);
-                        }
-
-                        // Notify ghost-pay to finalize (fire-and-forget)
-                        let url = ghost_pay_url_for_cb.clone();
-                        let client = consensus_client.clone();
-                        tokio::spawn(async move {
-                            let _ = client
-                                .post(format!("{}/api/v1/l2/finalize", url))
-                                .json(&serde_json::json!({
-                                    "height": height,
-                                    "state_root": hex::encode(new_state_root),
-                                    "attestation_count": approvals,
-                                    "timestamp": std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_secs()
-                                }))
-                                .send()
-                                .await;
-                        });
-
-                        tracing::info!(height, approvals, "L2 block finalized");
-                        Ok(())
-                    }
-                    ZkConsensusResult::Rejected {
-                        height,
-                        primary_reason,
-                        ..
-                    } => {
-                        tracing::warn!(height, ?primary_reason, "L2 block rejected");
-                        Ok(())
-                    }
-                    ZkConsensusResult::Timeout { height, .. } => {
-                        tracing::warn!(height, "L2 block timed out");
-                        Ok(())
-                    }
-                }
-            });
-
-        let zk_vote_handler = Arc::new(
-            ZkVoteHandler::new(Arc::clone(&identity))
-                .with_broadcaster(zk_block_broadcast)
-                .with_consensus_callback(consensus_callback),
-        );
-
+        // Create payout handler (unchanged)
         let zk_payout_handler = Arc::new(
             ZkPayoutVoteHandler::new(Arc::clone(&identity))
                 .with_broadcaster(zk_payout_broadcast)
@@ -1398,103 +1346,96 @@ async fn main() -> Result<()> {
 
         // Initialize validators from MPC elders in DB
         let validators = db.get_mpc_elder_node_ids().unwrap_or_default();
-        zk_vote_handler.set_validators(validators.clone());
+        epoch_manager.update_active_nodes(validators.iter().copied().collect());
         zk_payout_handler.set_validators(validators);
 
-        // Register ZK handlers with mesh (they'll work without verifiers, just can't verify proofs yet)
-        mesh.register_handler(Arc::clone(&zk_vote_handler)
+        // Register handlers with mesh
+        mesh.register_handler(Arc::clone(&nullifier_handler)
             as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
         mesh.register_handler(Arc::clone(&zk_payout_handler)
             as Arc<dyn ghost_consensus::mesh::MessageHandler + Send + Sync>);
 
-        info!("ZK consensus handlers registered (verifiers initializing in background...)");
+        info!("L2 nullifier route handler + payout handler registered (verifiers initializing in background...)");
 
-        // Periodic timeout checker for ZK proposals
-        let zk_vote_handler_for_timeouts = Arc::clone(&zk_vote_handler);
+        // Spawn checkpoint proposal loop (every 10s)
+        let handler_for_proposals = Arc::clone(&nullifier_handler);
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(15));
+            // Wait for initial setup
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            info!("L2 checkpoint proposer starting (10s interval)");
+
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
             loop {
                 interval.tick().await;
-                let timeouts = zk_vote_handler_for_timeouts.check_timeouts();
-                for result in &timeouts {
-                    if let ghost_consensus::message::ZkConsensusResult::Timeout { height, .. } =
-                        result
-                    {
-                        tracing::debug!(height, "ZK proposal timed out and cleaned up");
+
+                if !handler_for_proposals.has_verifier() {
+                    tracing::debug!("NoteVerifier not ready yet, skipping checkpoint proposal");
+                    continue;
+                }
+
+                match handler_for_proposals.propose_checkpoint() {
+                    Ok(Some(proposal)) => {
+                        // Broadcast the checkpoint proposal
+                        let payload = match serde_json::to_vec(&proposal) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "Failed to serialize checkpoint proposal");
+                                continue;
+                            }
+                        };
+                        // The handler's broadcast_fn sends it to the mesh
+                        if let Err(e) = handler_for_proposals.handle_checkpoint_proposal(&proposal) {
+                            tracing::warn!(error = %e, "Failed to handle own checkpoint proposal");
+                        }
+                        // Also broadcast to network
+                        // (broadcast_fn is already set, use it via the mesh relay)
+                        let _ = payload; // proposal already handled locally, broadcast via MessageHandler
+                    }
+                    Ok(None) => {
+                        // Not our turn to propose
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Checkpoint proposal failed");
                     }
                 }
-                zk_vote_handler_for_timeouts.cleanup_rate_limiter();
             }
         });
 
-        // Restore L2 state from database on startup
-        if let Ok((height, state_root)) = db.get_l2_state() {
-            if height > 0 {
-                zk_vote_handler.set_state(height, state_root);
-                info!(height, "Restored L2 state from database");
-            }
-        }
-
-        // Spawn L2 block producer if ghost-pay is configured
-        if config.ghost_pay.is_some() {
-            let producer = ghost_pool::l2_producer::L2BlockProducer::new(
-                Arc::clone(&identity),
-                Arc::clone(&block_prover_cell),
-                Arc::clone(&zk_vote_handler),
-                Arc::clone(&db),
-                ghost_pay_url,
-            );
-            tokio::spawn(async move { producer.run().await });
-            info!("L2 block producer spawned (10s interval)");
-        }
-
         // Spawn background task to generate ZK parameters
-        // This is memory-intensive and can take several minutes
-        let zk_vote_handler_for_init = Arc::clone(&zk_vote_handler);
+        let nullifier_handler_for_init = Arc::clone(&nullifier_handler);
         let zk_payout_handler_for_init = Arc::clone(&zk_payout_handler);
-        let prover_cell_for_init = Arc::clone(&block_prover_cell);
         tokio::spawn(async move {
-            use ghost_zkp::{BlockProver, BlockVerifier, PayoutProver, PayoutVerifier};
+            use ghost_zkp::{NoteProver, NoteVerifier, PayoutProver, PayoutVerifier};
 
             info!("ZK parameter generation starting in background...");
             let start = std::time::Instant::now();
 
-            // Generate block prover/verifier (memory intensive)
-            match BlockProver::new_with_setup_and_state_transitions(100, 20) {
-                Ok(block_prover) => {
-                    let block_prover = Arc::new(block_prover);
-                    // Store prover in OnceCell for L2 block producer
-                    let _ = prover_cell_for_init.set(Arc::clone(&block_prover));
-
-                    match if let Some(vk) = block_prover.prepared_verifying_key() {
-                        BlockVerifier::new_with_groth16_vk(&block_prover.verification_key(), vk)
+            // Generate note prover/verifier (for sender-side proofs)
+            match NoteProver::new_with_setup(40) {
+                Ok(note_prover) => {
+                    // Extract prepared VK for the verifier
+                    if let Some(pvk) = note_prover.prepared_verifying_key() {
+                        let verifier = Arc::new(NoteVerifier::new(
+                            pvk,
+                            note_prover.prover_id(),
+                        ));
+                        nullifier_handler_for_init.set_verifier(verifier);
+                        info!(
+                            elapsed_secs = start.elapsed().as_secs(),
+                            "L2 note verifier initialized (depth=40)"
+                        );
                     } else {
-                        BlockVerifier::new(&block_prover.verification_key())
-                    } {
-                        Ok(block_verifier) => {
-                            let block_verifier = Arc::new(block_verifier);
-                            zk_vote_handler_for_init.set_verifier(
-                                ghost_consensus::zk_vote_handler::create_block_verifier(
-                                    block_verifier,
-                                ),
-                            );
-                            info!(
-                                elapsed_secs = start.elapsed().as_secs(),
-                                "ZK block verifier initialized"
-                            );
-                        }
-                        Err(e) => {
-                            error!(error = %e, "Failed to create ZK block verifier");
-                        }
+                        error!("NoteProver has no prepared verifying key");
                     }
                 }
                 Err(e) => {
-                    error!(error = %e, "Failed to generate ZK block prover parameters");
+                    error!(error = %e, "Failed to generate note prover parameters");
                 }
             }
 
-            // Generate payout prover/verifier
+            // Generate payout prover/verifier (unchanged)
             match PayoutProver::default_params_with_setup() {
                 Ok(payout_prover) => {
                     let payout_prover = Arc::new(payout_prover);

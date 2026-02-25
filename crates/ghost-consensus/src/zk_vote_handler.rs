@@ -373,6 +373,11 @@ impl ZkVoteHandler {
     }
 
     /// Validate a ZK block proposal
+    ///
+    /// Supports fast-forward: when we're behind the network and a proposal arrives
+    /// with `height > current_height + 1`, we can skip ahead if `prev_state_root`
+    /// matches our current state (proving state continuity despite the height gap).
+    /// This allows nodes that restart behind the network to catch up.
     fn validate_proposal(
         &self,
         proposal: &ZkBlockProposalMessage,
@@ -380,22 +385,28 @@ impl ZkVoteHandler {
         let current_height = *self.current_height.read();
         let current_state = *self.current_state_root.read();
 
-        // Height must be sequential
         if proposal.height != current_height + 1 {
-            return Err(ZkRejectionReason::InvalidHeight);
-        }
-
-        // Previous state root must match our current state
-        if proposal.prev_state_root != current_state {
+            // Allow fast-forward when behind and state roots are compatible
+            if proposal.height > current_height + 1 && proposal.prev_state_root == current_state {
+                let gap = proposal.height - current_height - 1;
+                warn!(
+                    current_height,
+                    proposal_height = proposal.height,
+                    skipped_blocks = gap,
+                    "Fast-forwarding L2 height to sync with network"
+                );
+                *self.current_height.write() = proposal.height - 1;
+            } else {
+                return Err(ZkRejectionReason::InvalidHeight);
+            }
+        } else if proposal.prev_state_root != current_state {
+            // Normal sequential case — verify state continuity
             return Err(ZkRejectionReason::PrevStateRootMismatch);
         }
 
         // Timestamp should be reasonable (within 60 seconds)
-        // Proposal timestamps are in seconds (UNIX epoch)
         let now = chrono::Utc::now().timestamp() as u64;
-        let tolerance = 60; // 60 seconds
-        if proposal.timestamp < now.saturating_sub(tolerance)
-            || proposal.timestamp > now.saturating_add(tolerance)
+        if proposal.timestamp < now.saturating_sub(60) || proposal.timestamp > now.saturating_add(60)
         {
             return Err(ZkRejectionReason::InvalidTimestamp);
         }
@@ -655,16 +666,9 @@ impl ZkVoteHandler {
             }
         }
 
-        // Clean up old decided proposals (keep last 10)
-        if proposals.len() > 10 {
-            let mut heights: Vec<_> = proposals.keys().cloned().collect();
-            heights.sort();
-            for height in heights.iter().take(proposals.len().saturating_sub(10)) {
-                if proposals.get(height).map(|s| s.decided).unwrap_or(false) {
-                    proposals.remove(height);
-                }
-            }
-        }
+        // Clean up ALL stale proposals (decided or not) — 3x vote timeout
+        let stale_threshold = Duration::from_millis(self.config.vote_timeout_ms * 3);
+        proposals.retain(|_height, state| state.received_at.elapsed() < stale_threshold);
 
         results
     }
@@ -779,7 +783,7 @@ impl ZkVoteHandler {
 
 #[async_trait]
 impl MessageHandler for ZkVoteHandler {
-    async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+    async fn handle_message(&self, envelope: Arc<MessageEnvelope>) -> GhostResult<()> {
         // Rate limit check - reject messages from nodes sending too fast (P2P-M4)
         if !self.rate_limiter.check_and_consume(&envelope.sender) {
             warn!(
@@ -895,19 +899,44 @@ mod tests {
         let valid_proposal = create_test_proposal(100, [1u8; 32], [2u8; 32]);
         assert!(handler.validate_proposal(&valid_proposal).is_ok());
 
-        // Invalid height (should be 100)
-        let wrong_height = create_test_proposal(101, [1u8; 32], [2u8; 32]);
+        // Height too far ahead with WRONG prev_state_root — rejected
+        let wrong_root_ahead = create_test_proposal(105, [9u8; 32], [2u8; 32]);
         assert!(matches!(
-            handler.validate_proposal(&wrong_height),
+            handler.validate_proposal(&wrong_root_ahead),
             Err(ZkRejectionReason::InvalidHeight)
         ));
 
-        // Invalid prev state root
+        // Height behind us — rejected
+        let behind = create_test_proposal(50, [1u8; 32], [2u8; 32]);
+        assert!(matches!(
+            handler.validate_proposal(&behind),
+            Err(ZkRejectionReason::InvalidHeight)
+        ));
+
+        // Invalid prev state root (sequential case)
         let wrong_root = create_test_proposal(100, [9u8; 32], [2u8; 32]);
         assert!(matches!(
             handler.validate_proposal(&wrong_root),
             Err(ZkRejectionReason::PrevStateRootMismatch)
         ));
+    }
+
+    #[test]
+    fn test_proposal_fast_forward() {
+        let identity = create_test_identity();
+        let handler = ZkVoteHandler::new(identity);
+
+        // Node is at height 99 with state root [1u8; 32]
+        handler.set_state(99, [1u8; 32]);
+
+        // Proposal at height 105 with prev_state_root matching our current state
+        // This should fast-forward our height to 104 so the proposal is sequential
+        let ff_proposal = create_test_proposal(105, [1u8; 32], [2u8; 32]);
+        assert!(handler.validate_proposal(&ff_proposal).is_ok());
+
+        // After fast-forward, our height should be 104 (proposal.height - 1)
+        let (height, _) = handler.get_state();
+        assert_eq!(height, 104, "Height should be fast-forwarded to 104");
     }
 
     #[test]

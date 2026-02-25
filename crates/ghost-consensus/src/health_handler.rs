@@ -915,7 +915,7 @@ impl HealthPingHandler {
 
 #[async_trait]
 impl MessageHandler for HealthPingHandler {
-    async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+    async fn handle_message(&self, envelope: Arc<MessageEnvelope>) -> GhostResult<()> {
         if envelope.msg_type == MessageType::HealthPing {
             self.handle_ping(&envelope).await?;
         }

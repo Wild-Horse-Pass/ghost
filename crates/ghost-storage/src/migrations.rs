@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use ghost_common::error::{GhostError, GhostResult};
 
 /// Current schema version
-const SCHEMA_VERSION: u32 = 20;
+const SCHEMA_VERSION: u32 = 21;
 
 /// Run all pending migrations
 pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
@@ -76,6 +76,7 @@ pub fn run_migrations(conn: &Connection) -> GhostResult<()> {
         (18, migrate_v18),
         (19, migrate_v19),
         (20, migrate_v20),
+        (21, migrate_v21),
     ];
 
     for &(version, migrate_fn) in pre_v10 {
@@ -1408,6 +1409,89 @@ fn migrate_v20(conn: &Connection) -> GhostResult<()> {
     .map_err(|e| GhostError::Migration(e.to_string()))?;
 
     info!("Added confidential transfer tables (notes, nullifiers, transfers)");
+    Ok(())
+}
+
+/// Migration v21: L2 note/UTXO model tables for sender-side proofs
+///
+/// Replaces the account-based L2 model with an append-only note commitment tree.
+/// Senders generate Groth16 proofs; validators verify per-tx (~5ms).
+/// Checkpoint blocks provide consistency via all-node BFT every 10 seconds.
+///
+/// Tables:
+/// - l2_notes: Commitment tree leaves (epoch-scoped)
+/// - l2_nullifiers: Spent nullifier registry (epoch-scoped, prevents double-spend)
+/// - l2_checkpoints: Checkpoint blocks with BFT consensus
+/// - l2_epochs: Epoch lifecycle and tree compaction state
+/// - l2_valid_roots: Recent finalized commitment roots for proof validation
+fn migrate_v21(conn: &Connection) -> GhostResult<()> {
+    debug!("Running migration v21: Adding L2 note/UTXO model tables");
+
+    conn.execute_batch(
+        r#"
+        -- Epoch-scoped commitment tree leaves
+        -- Each note is a Pedersen commitment appended to the tree
+        CREATE TABLE IF NOT EXISTS l2_notes (
+            note_index INTEGER NOT NULL,
+            epoch INTEGER NOT NULL,
+            commitment BLOB NOT NULL,
+            block_height INTEGER NOT NULL,
+            spent INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (epoch, note_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_l2_notes_height ON l2_notes(block_height);
+        CREATE INDEX IF NOT EXISTS idx_l2_notes_unspent ON l2_notes(epoch, spent) WHERE spent = 0;
+
+        -- Epoch-scoped nullifier registry (prevents double-spend)
+        -- Reset at each epoch boundary during tree compaction
+        CREATE TABLE IF NOT EXISTS l2_nullifiers (
+            nullifier BLOB NOT NULL,
+            epoch INTEGER NOT NULL,
+            block_height INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (epoch, nullifier)
+        );
+        CREATE INDEX IF NOT EXISTS idx_l2_nullifiers_height ON l2_nullifiers(block_height);
+
+        -- Checkpoint blocks (assembled by proposer every 10s, no proof generation)
+        CREATE TABLE IF NOT EXISTS l2_checkpoints (
+            height INTEGER PRIMARY KEY,
+            epoch INTEGER NOT NULL,
+            commitment_root BLOB NOT NULL,
+            tx_count INTEGER NOT NULL,
+            proposer_id TEXT NOT NULL,
+            active_node_count INTEGER NOT NULL,
+            block_data BLOB NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_l2_checkpoints_epoch ON l2_checkpoints(epoch);
+
+        -- Epoch lifecycle and tree compaction state
+        CREATE TABLE IF NOT EXISTS l2_epochs (
+            epoch INTEGER PRIMARY KEY,
+            start_height INTEGER NOT NULL,
+            end_height INTEGER,
+            initial_root BLOB NOT NULL,
+            final_root BLOB,
+            notes_migrated INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active'
+        );
+        CREATE INDEX IF NOT EXISTS idx_l2_epochs_status ON l2_epochs(status);
+
+        -- Recent finalized commitment roots for proof validation
+        -- Validators check that a tx's commitment_root is in this set
+        CREATE TABLE IF NOT EXISTS l2_valid_roots (
+            height INTEGER PRIMARY KEY,
+            epoch INTEGER NOT NULL,
+            commitment_root BLOB NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_l2_valid_roots_epoch ON l2_valid_roots(epoch);
+        "#,
+    )
+    .map_err(|e| GhostError::Migration(e.to_string()))?;
+
+    info!("Added L2 note/UTXO model tables (notes, nullifiers, checkpoints, epochs, valid_roots)");
     Ok(())
 }
 

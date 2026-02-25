@@ -83,6 +83,4 @@ pub mod share_handler;
 /// Input validation utilities for security.
 pub mod validation;
 
-/// L2 block production with ZK proofs.
-#[cfg(feature = "zk-consensus")]
-pub mod l2_producer;
+// L2 uses NullifierRouteHandler from ghost-consensus (sender-side proofs).

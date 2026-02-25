@@ -97,6 +97,8 @@ pub mod confidential_prover;
 pub mod confidential_verifier;
 pub mod errors;
 pub mod field_utils;
+pub mod note_prover;
+pub mod note_verifier;
 pub mod payout_prover;
 pub mod payout_verifier;
 pub mod prover;
@@ -126,14 +128,21 @@ pub use payout_verifier::{verify_payout, PayoutVerificationResult, PayoutVerifie
 pub use confidential_prover::{ConfidentialProver, ConfidentialTransferProof};
 pub use confidential_verifier::ConfidentialVerifier;
 
+// Re-export note spend types (L2 sender-side proofs)
+pub use note_prover::{NoteProver, NoteSpendProof, NoteSpendPublicInputs, NoteSpendWitness};
+pub use note_verifier::NoteVerifier;
+
 // Re-export circuit types for advanced usage
 pub use circuit::{
     compute_nullifier_native, pedersen_commit_native, COMMITMENT_DOMAIN_SEPARATOR,
     NULLIFIER_DOMAIN_SEPARATOR,
 };
 pub use circuit::{
-    BlockCircuit, BlockCircuitBuilder, ConfidentialTransferCircuit, MerkleCircuit, PaymentCircuit,
-    PaymentStateTransitionCircuit, StateTransitionOutputs,
+    compute_note_id_with_epoch_native, compute_note_root_native,
+    compute_nullifier_with_epoch_native, BlockCircuit, BlockCircuitBuilder,
+    ConfidentialTransferCircuit, MerkleCircuit, NoteConsolidateCircuit, NoteSpendCircuit,
+    PaymentCircuit, PaymentStateTransitionCircuit, StateTransitionOutputs,
+    MAX_CONSOLIDATION_INPUTS, NOTE_TREE_DEPTH,
 };
 
 // ============================================================================

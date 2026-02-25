@@ -5924,6 +5924,752 @@ impl Database {
     }
 }
 
+// =============================================================================
+// L2 NOTE/UTXO MODEL — Record Types
+// =============================================================================
+
+/// L2 note record (commitment tree leaf, epoch-scoped)
+#[derive(Debug, Clone)]
+pub struct L2NoteRecord {
+    pub note_index: u64,
+    pub epoch: u64,
+    pub commitment: [u8; 32],
+    pub block_height: u64,
+    pub spent: bool,
+}
+
+/// L2 nullifier record (epoch-scoped double-spend prevention)
+#[derive(Debug, Clone)]
+pub struct L2NullifierRecord {
+    pub nullifier: [u8; 32],
+    pub epoch: u64,
+    pub block_height: u64,
+}
+
+/// L2 checkpoint block record
+#[derive(Debug, Clone)]
+pub struct L2CheckpointRecord {
+    pub height: u64,
+    pub epoch: u64,
+    pub commitment_root: [u8; 32],
+    pub tx_count: u32,
+    pub proposer_id: String,
+    pub active_node_count: u32,
+    pub block_data: Vec<u8>,
+}
+
+/// L2 epoch record (lifecycle and compaction state)
+#[derive(Debug, Clone)]
+pub struct L2EpochRecord {
+    pub epoch: u64,
+    pub start_height: u64,
+    pub end_height: Option<u64>,
+    pub initial_root: [u8; 32],
+    pub final_root: Option<[u8; 32]>,
+    pub notes_migrated: u64,
+    pub status: String,
+}
+
+/// L2 valid root record (recent finalized roots for proof validation)
+#[derive(Debug, Clone)]
+pub struct L2ValidRootRecord {
+    pub height: u64,
+    pub epoch: u64,
+    pub commitment_root: [u8; 32],
+}
+
+impl Database {
+    // =========================================================================
+    // L2 NOTES (EPOCH-SCOPED COMMITMENT TREE)
+    // =========================================================================
+
+    /// Insert an L2 note (commitment tree leaf)
+    pub fn insert_l2_note(
+        &self,
+        epoch: u64,
+        note_index: u64,
+        commitment: &[u8; 32],
+        block_height: u64,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO l2_notes (note_index, epoch, commitment, block_height)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![note_index as i64, epoch as i64, commitment.as_slice(), block_height as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Mark an L2 note as spent
+    pub fn mark_l2_note_spent(&self, epoch: u64, note_index: u64) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE l2_notes SET spent = 1 WHERE epoch = ?1 AND note_index = ?2",
+                params![epoch as i64, note_index as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Load all unspent notes for an epoch (for tree compaction)
+    ///
+    /// H-7: Limited to MAX_QUERY_RESULTS to prevent OOM.
+    pub fn load_unspent_l2_notes(&self, epoch: u64) -> GhostResult<Vec<L2NoteRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT note_index, epoch, commitment, block_height
+                     FROM l2_notes WHERE epoch = ?1 AND spent = 0
+                     ORDER BY note_index ASC LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![epoch as i64, Self::MAX_QUERY_RESULTS], |row| {
+                    let idx: i64 = row.get(0)?;
+                    let ep: i64 = row.get(1)?;
+                    let commitment: Vec<u8> = row.get(2)?;
+                    let height: i64 = row.get(3)?;
+                    Ok((idx, ep, commitment, height))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut notes = Vec::new();
+            for row in rows {
+                let (idx, ep, commitment, height) =
+                    row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let commitment: [u8; 32] = commitment.try_into().map_err(|_| {
+                    GhostError::Database("Invalid commitment size in l2_notes".to_string())
+                })?;
+                notes.push(L2NoteRecord {
+                    note_index: i64_to_u64_sats(idx, "note_index")
+                        .map_err(|e| GhostError::Database(e.to_string()))?,
+                    epoch: i64_to_u64_sats(ep, "epoch")
+                        .map_err(|e| GhostError::Database(e.to_string()))?,
+                    commitment,
+                    block_height: i64_to_u64_sats(height, "block_height")
+                        .map_err(|e| GhostError::Database(e.to_string()))?,
+                    spent: false,
+                });
+            }
+            Ok(notes)
+        })
+    }
+
+    /// Load all notes for an epoch (for tree reconstruction)
+    ///
+    /// Returns (note_index, commitment) pairs ordered by index.
+    pub fn load_all_l2_notes_for_epoch(
+        &self,
+        epoch: u64,
+    ) -> GhostResult<Vec<(u64, [u8; 32])>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT note_index, commitment FROM l2_notes
+                     WHERE epoch = ?1 ORDER BY note_index ASC",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![epoch as i64], |row| {
+                    let idx: i64 = row.get(0)?;
+                    let commitment: Vec<u8> = row.get(1)?;
+                    Ok((idx, commitment))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut notes = Vec::new();
+            for row in rows {
+                let (idx, commitment) = row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let commitment: [u8; 32] = commitment.try_into().map_err(|_| {
+                    GhostError::Database("Invalid commitment size in l2_notes".to_string())
+                })?;
+                notes.push((
+                    i64_to_u64_sats(idx, "note_index")
+                        .map_err(|e| GhostError::Database(e.to_string()))?,
+                    commitment,
+                ));
+            }
+            Ok(notes)
+        })
+    }
+
+    /// Get the next available note index for an epoch
+    pub fn get_next_l2_note_index(&self, epoch: u64) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let result: Option<i64> = conn
+                .query_row(
+                    "SELECT MAX(note_index) FROM l2_notes WHERE epoch = ?1",
+                    params![epoch as i64],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?
+                .flatten();
+
+            match result {
+                Some(max_idx) => Ok(i64_to_u64_sats(max_idx, "max_note_index")
+                    .map_err(|e| GhostError::Database(e.to_string()))?
+                    + 1),
+                None => Ok(0),
+            }
+        })
+    }
+
+    /// Get count of L2 notes for an epoch
+    pub fn get_l2_note_count(&self, epoch: u64) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM l2_notes WHERE epoch = ?1",
+                    params![epoch as i64],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u64)
+        })
+    }
+
+    // =========================================================================
+    // L2 NULLIFIERS (EPOCH-SCOPED)
+    // =========================================================================
+
+    /// Insert an L2 nullifier (marks a note as spent within an epoch)
+    pub fn insert_l2_nullifier(
+        &self,
+        nullifier: &[u8; 32],
+        epoch: u64,
+        block_height: u64,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO l2_nullifiers (nullifier, epoch, block_height) VALUES (?1, ?2, ?3)",
+                params![nullifier.as_slice(), epoch as i64, block_height as i64],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Check if an L2 nullifier has been spent in a given epoch
+    pub fn is_l2_nullifier_spent(&self, nullifier: &[u8; 32], epoch: u64) -> GhostResult<bool> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM l2_nullifiers WHERE nullifier = ?1 AND epoch = ?2",
+                    params![nullifier.as_slice(), epoch as i64],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count > 0)
+        })
+    }
+
+    /// Load all L2 nullifiers for an epoch (for in-memory set reconstruction)
+    pub fn load_l2_nullifiers_for_epoch(&self, epoch: u64) -> GhostResult<Vec<[u8; 32]>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT nullifier FROM l2_nullifiers WHERE epoch = ?1")
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![epoch as i64], |row| {
+                    let nullifier: Vec<u8> = row.get(0)?;
+                    Ok(nullifier)
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut nullifiers = Vec::new();
+            for row in rows {
+                let nullifier = row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let nullifier: [u8; 32] = nullifier.try_into().map_err(|_| {
+                    GhostError::Database("Invalid nullifier size in l2_nullifiers".to_string())
+                })?;
+                nullifiers.push(nullifier);
+            }
+            Ok(nullifiers)
+        })
+    }
+
+    /// Get count of L2 nullifiers for an epoch
+    pub fn get_l2_nullifier_count(&self, epoch: u64) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM l2_nullifiers WHERE epoch = ?1",
+                    params![epoch as i64],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count as u64)
+        })
+    }
+
+    /// Delete all L2 nullifiers for an epoch (during epoch compaction)
+    pub fn delete_l2_nullifiers_for_epoch(&self, epoch: u64) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM l2_nullifiers WHERE epoch = ?1",
+                    params![epoch as i64],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(deleted as u64)
+        })
+    }
+
+    // =========================================================================
+    // L2 CHECKPOINTS
+    // =========================================================================
+
+    /// Insert an L2 checkpoint block
+    pub fn insert_l2_checkpoint(&self, record: &L2CheckpointRecord) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO l2_checkpoints
+                 (height, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    record.height as i64,
+                    record.epoch as i64,
+                    record.commitment_root.as_slice(),
+                    record.tx_count as i64,
+                    record.proposer_id,
+                    record.active_node_count as i64,
+                    record.block_data.as_slice(),
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Atomically persist checkpoint data: nullifiers + checkpoint record in a single transaction.
+    ///
+    /// If the process crashes mid-write, the entire checkpoint is rolled back (no partial state).
+    /// On restart, in-memory state can be re-derived from last persisted checkpoint.
+    pub fn persist_l2_checkpoint_atomic(
+        &self,
+        record: &L2CheckpointRecord,
+        nullifiers: &[([u8; 32], u64, u64)], // (nullifier, epoch, block_height)
+    ) -> GhostResult<()> {
+        self.transaction(|tx| {
+            // Persist all nullifiers from this checkpoint's transactions
+            for (nullifier, epoch, block_height) in nullifiers {
+                tx.execute(
+                    "INSERT OR IGNORE INTO l2_nullifiers (nullifier, epoch, block_height) VALUES (?1, ?2, ?3)",
+                    params![nullifier.as_slice(), *epoch as i64, *block_height as i64],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            }
+
+            // Persist checkpoint record
+            tx.execute(
+                "INSERT INTO l2_checkpoints
+                 (height, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    record.height as i64,
+                    record.epoch as i64,
+                    record.commitment_root.as_slice(),
+                    record.tx_count as i64,
+                    record.proposer_id,
+                    record.active_node_count as i64,
+                    record.block_data.as_slice(),
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            Ok(())
+        })
+    }
+
+    /// Get the latest L2 checkpoint
+    pub fn get_latest_l2_checkpoint(&self) -> GhostResult<Option<L2CheckpointRecord>> {
+        self.with_connection(|conn| {
+            let result = conn
+                .query_row(
+                    "SELECT height, epoch, commitment_root, tx_count, proposer_id,
+                            active_node_count, block_data
+                     FROM l2_checkpoints ORDER BY height DESC LIMIT 1",
+                    [],
+                    |row| {
+                        let height: i64 = row.get(0)?;
+                        let epoch: i64 = row.get(1)?;
+                        let commitment_root: Vec<u8> = row.get(2)?;
+                        let tx_count: i64 = row.get(3)?;
+                        let proposer_id: String = row.get(4)?;
+                        let active_node_count: i64 = row.get(5)?;
+                        let block_data: Vec<u8> = row.get(6)?;
+                        Ok((height, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data))
+                    },
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match result {
+                Some((height, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data)) => {
+                    let commitment_root: [u8; 32] = commitment_root.try_into().map_err(|_| {
+                        GhostError::Database("Invalid commitment_root size in l2_checkpoints".to_string())
+                    })?;
+                    Ok(Some(L2CheckpointRecord {
+                        height: i64_to_u64_sats(height, "height")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
+                        epoch: i64_to_u64_sats(epoch, "epoch")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
+                        commitment_root,
+                        tx_count: tx_count as u32,
+                        proposer_id,
+                        active_node_count: active_node_count as u32,
+                        block_data,
+                    }))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Get L2 checkpoint at a specific height
+    pub fn get_l2_checkpoint(&self, height: u64) -> GhostResult<Option<L2CheckpointRecord>> {
+        self.with_connection(|conn| {
+            let result = conn
+                .query_row(
+                    "SELECT height, epoch, commitment_root, tx_count, proposer_id,
+                            active_node_count, block_data
+                     FROM l2_checkpoints WHERE height = ?1",
+                    params![height as i64],
+                    |row| {
+                        let h: i64 = row.get(0)?;
+                        let epoch: i64 = row.get(1)?;
+                        let commitment_root: Vec<u8> = row.get(2)?;
+                        let tx_count: i64 = row.get(3)?;
+                        let proposer_id: String = row.get(4)?;
+                        let active_node_count: i64 = row.get(5)?;
+                        let block_data: Vec<u8> = row.get(6)?;
+                        Ok((h, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data))
+                    },
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match result {
+                Some((h, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data)) => {
+                    let commitment_root: [u8; 32] = commitment_root.try_into().map_err(|_| {
+                        GhostError::Database("Invalid commitment_root size in l2_checkpoints".to_string())
+                    })?;
+                    Ok(Some(L2CheckpointRecord {
+                        height: i64_to_u64_sats(h, "height")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
+                        epoch: i64_to_u64_sats(epoch, "epoch")
+                            .map_err(|e| GhostError::Database(e.to_string()))?,
+                        commitment_root,
+                        tx_count: tx_count as u32,
+                        proposer_id,
+                        active_node_count: active_node_count as u32,
+                        block_data,
+                    }))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Get L2 checkpoints starting from a given height (for tree sync)
+    pub fn get_l2_checkpoints_from_height(
+        &self,
+        from_height: u64,
+        limit: u64,
+    ) -> GhostResult<Vec<L2CheckpointRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT height, epoch, commitment_root, tx_count, proposer_id,
+                            active_node_count, block_data
+                     FROM l2_checkpoints WHERE height >= ?1
+                     ORDER BY height ASC LIMIT ?2",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![from_height as i64, limit as i64], |row| {
+                    let h: i64 = row.get(0)?;
+                    let epoch: i64 = row.get(1)?;
+                    let commitment_root: Vec<u8> = row.get(2)?;
+                    let tx_count: i64 = row.get(3)?;
+                    let proposer_id: String = row.get(4)?;
+                    let active_node_count: i64 = row.get(5)?;
+                    let block_data: Vec<u8> = row.get(6)?;
+                    Ok((
+                        h,
+                        epoch,
+                        commitment_root,
+                        tx_count,
+                        proposer_id,
+                        active_node_count,
+                        block_data,
+                    ))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut records = Vec::new();
+            for row in rows {
+                let (h, epoch, commitment_root, tx_count, proposer_id, active_node_count, block_data) =
+                    row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let commitment_root: [u8; 32] = commitment_root.try_into().map_err(|_| {
+                    GhostError::Database(
+                        "Invalid commitment_root size in l2_checkpoints".to_string(),
+                    )
+                })?;
+                records.push(L2CheckpointRecord {
+                    height: i64_to_u64_sats(h, "height")
+                        .map_err(|e| GhostError::Database(e.to_string()))?,
+                    epoch: i64_to_u64_sats(epoch, "epoch")
+                        .map_err(|e| GhostError::Database(e.to_string()))?,
+                    commitment_root,
+                    tx_count: tx_count as u32,
+                    proposer_id,
+                    active_node_count: active_node_count as u32,
+                    block_data,
+                });
+            }
+            Ok(records)
+        })
+    }
+
+    // =========================================================================
+    // L2 EPOCHS
+    // =========================================================================
+
+    /// Insert a new L2 epoch
+    pub fn insert_l2_epoch(&self, record: &L2EpochRecord) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO l2_epochs (epoch, start_height, end_height, initial_root, final_root, notes_migrated, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    record.epoch as i64,
+                    record.start_height as i64,
+                    record.end_height.map(|h| h as i64),
+                    record.initial_root.as_slice(),
+                    record.final_root.as_ref().map(|r| r.as_slice()),
+                    record.notes_migrated as i64,
+                    record.status,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Get the current (active) L2 epoch
+    pub fn get_active_l2_epoch(&self) -> GhostResult<Option<L2EpochRecord>> {
+        self.with_connection(|conn| {
+            let result = conn
+                .query_row(
+                    "SELECT epoch, start_height, end_height, initial_root, final_root,
+                            notes_migrated, status
+                     FROM l2_epochs WHERE status = 'active' ORDER BY epoch DESC LIMIT 1",
+                    [],
+                    l2_epoch_from_row,
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match result {
+                Some(tuple) => l2_epoch_record_from_tuple(tuple).map(Some),
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Get an L2 epoch by number
+    pub fn get_l2_epoch(&self, epoch: u64) -> GhostResult<Option<L2EpochRecord>> {
+        self.with_connection(|conn| {
+            let result = conn
+                .query_row(
+                    "SELECT epoch, start_height, end_height, initial_root, final_root,
+                            notes_migrated, status
+                     FROM l2_epochs WHERE epoch = ?1",
+                    params![epoch as i64],
+                    l2_epoch_from_row,
+                )
+                .optional()
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            match result {
+                Some(tuple) => l2_epoch_record_from_tuple(tuple).map(Some),
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// Finalize an L2 epoch (set end_height, final_root, notes_migrated, status)
+    pub fn finalize_l2_epoch(
+        &self,
+        epoch: u64,
+        end_height: u64,
+        final_root: &[u8; 32],
+        notes_migrated: u64,
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "UPDATE l2_epochs SET end_height = ?1, final_root = ?2, notes_migrated = ?3, status = 'archived'
+                 WHERE epoch = ?4",
+                params![
+                    end_height as i64,
+                    final_root.as_slice(),
+                    notes_migrated as i64,
+                    epoch as i64,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    // =========================================================================
+    // L2 VALID ROOTS
+    // =========================================================================
+
+    /// Insert a valid commitment root at a given checkpoint height
+    pub fn insert_l2_valid_root(
+        &self,
+        height: u64,
+        epoch: u64,
+        commitment_root: &[u8; 32],
+    ) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO l2_valid_roots (height, epoch, commitment_root)
+                 VALUES (?1, ?2, ?3)",
+                params![height as i64, epoch as i64, commitment_root.as_slice()],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    /// Check if a commitment root is valid (exists in recent valid roots)
+    pub fn is_l2_root_valid(&self, commitment_root: &[u8; 32]) -> GhostResult<bool> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM l2_valid_roots WHERE commitment_root = ?1",
+                    params![commitment_root.as_slice()],
+                    |row| row.get(0),
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(count > 0)
+        })
+    }
+
+    /// Get all valid roots (for both epochs during transition window)
+    pub fn get_l2_valid_roots(&self) -> GhostResult<Vec<L2ValidRootRecord>> {
+        self.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT height, epoch, commitment_root FROM l2_valid_roots
+                     ORDER BY height DESC LIMIT ?1",
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(params![Self::MAX_QUERY_RESULTS], |row| {
+                    let height: i64 = row.get(0)?;
+                    let epoch: i64 = row.get(1)?;
+                    let commitment_root: Vec<u8> = row.get(2)?;
+                    Ok((height, epoch, commitment_root))
+                })
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+
+            let mut roots = Vec::new();
+            for row in rows {
+                let (height, epoch, commitment_root) =
+                    row.map_err(|e| GhostError::Database(e.to_string()))?;
+                let commitment_root: [u8; 32] = commitment_root.try_into().map_err(|_| {
+                    GhostError::Database("Invalid commitment_root size in l2_valid_roots".to_string())
+                })?;
+                roots.push(L2ValidRootRecord {
+                    height: i64_to_u64_sats(height, "height")
+                        .map_err(|e| GhostError::Database(e.to_string()))?,
+                    epoch: i64_to_u64_sats(epoch, "epoch")
+                        .map_err(|e| GhostError::Database(e.to_string()))?,
+                    commitment_root,
+                });
+            }
+            Ok(roots)
+        })
+    }
+
+    /// Prune old valid roots, keeping only the most recent N
+    pub fn prune_l2_valid_roots(&self, keep_count: u64) -> GhostResult<u64> {
+        self.with_connection(|conn| {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM l2_valid_roots WHERE height NOT IN (
+                         SELECT height FROM l2_valid_roots ORDER BY height DESC LIMIT ?1
+                     )",
+                    params![keep_count as i64],
+                )
+                .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(deleted as u64)
+        })
+    }
+}
+
+/// Raw row data from l2_epochs table before conversion to L2EpochRecord
+type L2EpochRowTuple = (i64, i64, Option<i64>, Vec<u8>, Option<Vec<u8>>, i64, String);
+
+/// Helper: parse an l2_epochs row into a tuple
+fn l2_epoch_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<L2EpochRowTuple> {
+    let epoch: i64 = row.get(0)?;
+    let start_height: i64 = row.get(1)?;
+    let end_height: Option<i64> = row.get(2)?;
+    let initial_root: Vec<u8> = row.get(3)?;
+    let final_root: Option<Vec<u8>> = row.get(4)?;
+    let notes_migrated: i64 = row.get(5)?;
+    let status: String = row.get(6)?;
+    Ok((epoch, start_height, end_height, initial_root, final_root, notes_migrated, status))
+}
+
+/// Helper: convert l2_epochs tuple to L2EpochRecord
+fn l2_epoch_record_from_tuple(tuple: L2EpochRowTuple) -> GhostResult<L2EpochRecord> {
+    let (epoch, start_height, end_height, initial_root, final_root, notes_migrated, status) = tuple;
+
+    let initial_root: [u8; 32] = initial_root.try_into().map_err(|_| {
+        GhostError::Database("Invalid initial_root size in l2_epochs".to_string())
+    })?;
+
+    let final_root = final_root
+        .map(|r| {
+            r.try_into().map_err(|_| {
+                GhostError::Database("Invalid final_root size in l2_epochs".to_string())
+            })
+        })
+        .transpose()?;
+
+    Ok(L2EpochRecord {
+        epoch: i64_to_u64_sats(epoch, "epoch")
+            .map_err(|e| GhostError::Database(e.to_string()))?,
+        start_height: i64_to_u64_sats(start_height, "start_height")
+            .map_err(|e| GhostError::Database(e.to_string()))?,
+        end_height: end_height
+            .map(|h| {
+                i64_to_u64_sats(h, "end_height").map_err(|e| GhostError::Database(e.to_string()))
+            })
+            .transpose()?,
+        initial_root,
+        final_root,
+        notes_migrated: i64_to_u64_sats(notes_migrated, "notes_migrated")
+            .map_err(|e| GhostError::Database(e.to_string()))?,
+        status,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

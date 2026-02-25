@@ -58,6 +58,14 @@ pub mod topics {
     pub const EQUIVOCATION: &[u8] = b"equivoc";
     /// MPC ceremony messages (contribution, verification vote, parameter sync)
     pub const MPC: &[u8] = b"mpc";
+    /// L2 confidential transfer submission
+    pub const L2_TRANSFER: &[u8] = b"l2tx";
+    /// L2 checkpoint block
+    pub const L2_CHECKPOINT: &[u8] = b"l2chk";
+    /// L2 checkpoint vote
+    pub const L2_VOTE: &[u8] = b"l2vote";
+    /// L2 tree sync
+    pub const L2_SYNC: &[u8] = b"l2sync";
 }
 
 /// Default TTL for gossip messages (number of hops before message is dropped)
@@ -214,6 +222,18 @@ pub enum MessageType {
     MpcParametersRequest,
     /// MPC-C4: MPC parameters response (chunked parameter data)
     MpcParametersResponse,
+    /// L2: Confidential transfer submission (sender → validator)
+    L2ConfidentialTransfer,
+    /// L2: Transfer confirmation receipt (validator → sender)
+    L2TransferConfirmation,
+    /// L2: Broadcast confirmed tx to all nodes (validator → all)
+    L2TransferBroadcast,
+    /// L2: Checkpoint block proposal (proposer → all)
+    L2CheckpointBlock,
+    /// L2: Checkpoint vote (validator → all)
+    L2CheckpointVote,
+    /// L2: Tree sync request/response (node → peer)
+    L2TreeSync,
 }
 
 impl MessageType {
@@ -241,6 +261,12 @@ impl MessageType {
             Self::MpcVerificationVote => topics::MPC,
             Self::MpcParametersRequest => topics::MPC,
             Self::MpcParametersResponse => topics::MPC,
+            Self::L2ConfidentialTransfer => topics::L2_TRANSFER,
+            Self::L2TransferConfirmation => topics::L2_TRANSFER,
+            Self::L2TransferBroadcast => topics::L2_TRANSFER,
+            Self::L2CheckpointBlock => topics::L2_CHECKPOINT,
+            Self::L2CheckpointVote => topics::L2_VOTE,
+            Self::L2TreeSync => topics::L2_SYNC,
         }
     }
 
@@ -270,6 +296,12 @@ impl MessageType {
             Self::MpcVerificationVote => "mpc",
             Self::MpcParametersRequest => "mpc",
             Self::MpcParametersResponse => "mpc",
+            Self::L2ConfidentialTransfer => "l2tx",
+            Self::L2TransferConfirmation => "l2tx",
+            Self::L2TransferBroadcast => "l2tx",
+            Self::L2CheckpointBlock => "l2chk",
+            Self::L2CheckpointVote => "l2vote",
+            Self::L2TreeSync => "l2sync",
         }
     }
 }
@@ -1349,6 +1381,260 @@ pub struct MpcParametersResponseMessage {
     #[serde(with = "ghost_common::serde_hex::bytes32")]
     pub sender: NodeId,
     /// Timestamp (Unix milliseconds)
+    pub timestamp: u64,
+}
+
+// =============================================================================
+// L2 NOTE/UTXO MODEL MESSAGES
+// =============================================================================
+
+/// L2 transaction (sender creates, ~490 bytes)
+///
+/// Contains a ZK proof that a note spend is valid, plus encrypted
+/// note data for sender and recipient.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2Transaction {
+    /// Which epoch's tree this references
+    pub epoch: u64,
+    /// Nullifier (prevents double-spend, routes to validator)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub nullifier: [u8; 32],
+    /// Change commitment (sender's new note)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub change_commitment: [u8; 32],
+    /// Recipient commitment (recipient's new note)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub recipient_commitment: [u8; 32],
+    /// Commitment root at proof time (Merkle inclusion)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub commitment_root: [u8; 32],
+    /// Groth16 proof (192 bytes)
+    pub proof: Vec<u8>,
+    /// Encrypted note data for sender (change note)
+    pub encrypted_change: Vec<u8>,
+    /// Encrypted note data for recipient
+    pub encrypted_recipient: Vec<u8>,
+    /// Timestamp (Unix milliseconds)
+    pub timestamp: u64,
+}
+
+/// Epoch transition data (present at epoch boundary checkpoints)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EpochTransition {
+    /// New epoch number
+    pub new_epoch: u64,
+    /// Compacted tree root
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub new_initial_root: [u8; 32],
+}
+
+/// L2: Confidential transfer submission (sender → assigned validator)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2ConfidentialTransferMessage {
+    /// The transaction with proof
+    pub transaction: L2Transaction,
+    /// Sender's node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub sender: NodeId,
+}
+
+/// L2: Transfer confirmation receipt (validator → sender)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2TransferConfirmationMessage {
+    /// Nullifier of the confirmed transaction
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub nullifier: [u8; 32],
+    /// Validator that confirmed it
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub validator: NodeId,
+    /// Confirmation timestamp
+    pub timestamp: u64,
+    /// Validator's signature over the nullifier
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub signature: [u8; 64],
+}
+
+impl L2TransferConfirmationMessage {
+    /// Get the message to be signed
+    pub fn signing_message(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"L2TransferConfirmation/v1");
+        hasher.update(self.nullifier);
+        hasher.update(self.timestamp.to_le_bytes());
+        hasher.finalize().into()
+    }
+}
+
+/// L2: Broadcast confirmed tx to all nodes (validator → all)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2TransferBroadcastMessage {
+    /// The confirmed transaction
+    pub transaction: L2Transaction,
+    /// Validator that confirmed it
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub validator: NodeId,
+    /// Validator's signature
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub signature: [u8; 64],
+}
+
+impl L2TransferBroadcastMessage {
+    /// Get the message to be signed
+    pub fn signing_message(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"L2TransferBroadcast/v1");
+        hasher.update(self.transaction.nullifier);
+        hasher.update(self.transaction.change_commitment);
+        hasher.update(self.transaction.recipient_commitment);
+        hasher.finalize().into()
+    }
+}
+
+/// L2: Checkpoint block proposal (proposer → all)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2CheckpointBlockMessage {
+    /// Checkpoint height
+    pub height: u64,
+    /// Epoch number
+    pub epoch: u64,
+    /// Previous commitment root
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub prev_commitment_root: [u8; 32],
+    /// New commitment root (after appending all new commitments)
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub new_commitment_root: [u8; 32],
+    /// Transactions included in this checkpoint
+    pub transactions: Vec<L2Transaction>,
+    /// Number of active nodes at this checkpoint
+    pub active_node_count: u32,
+    /// Proposer's node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub proposer: NodeId,
+    /// Proposer's signature
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub proposer_signature: [u8; 64],
+    /// Timestamp (Unix milliseconds)
+    pub timestamp: u64,
+    /// Epoch transition data (present at epoch boundary)
+    pub epoch_transition: Option<EpochTransition>,
+}
+
+impl L2CheckpointBlockMessage {
+    /// Compute the hash of this checkpoint for voting
+    pub fn checkpoint_hash(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"L2CheckpointBlock/v1");
+        hasher.update(self.height.to_le_bytes());
+        hasher.update(self.epoch.to_le_bytes());
+        hasher.update(self.prev_commitment_root);
+        hasher.update(self.new_commitment_root);
+        hasher.update((self.transactions.len() as u64).to_le_bytes());
+        for tx in &self.transactions {
+            hasher.update(tx.nullifier);
+        }
+        hasher.finalize().into()
+    }
+
+    /// Get the deterministic signable bytes for the proposer signature.
+    /// Covers all fields except the signature itself.
+    pub fn to_signable_bytes(&self) -> [u8; 32] {
+        self.checkpoint_hash()
+    }
+}
+
+/// L2: Checkpoint vote (validator → all, all-node BFT)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2CheckpointVoteMessage {
+    /// Checkpoint height being voted on
+    pub height: u64,
+    /// Hash of the checkpoint block
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub checkpoint_hash: [u8; 32],
+    /// Voter's node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub voter: NodeId,
+    /// Vote (true = approve)
+    pub approve: bool,
+    /// Voter's signature
+    #[serde(with = "ghost_common::serde_hex::bytes64")]
+    pub signature: [u8; 64],
+    /// Timestamp (Unix milliseconds)
+    pub timestamp: u64,
+}
+
+impl L2CheckpointVoteMessage {
+    /// Get the message to be signed
+    pub fn signing_message(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"L2CheckpointVote/v1");
+        hasher.update(self.height.to_le_bytes());
+        hasher.update(self.checkpoint_hash);
+        hasher.update([self.approve as u8]);
+        hasher.finalize().into()
+    }
+}
+
+/// L2: Tree sync request/response (node → peer)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2TreeSyncMessage {
+    /// Requester/responder node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub node: NodeId,
+    /// Epoch to sync
+    pub epoch: u64,
+    /// Whether this is a request (true) or response (false)
+    pub is_request: bool,
+    /// Notes to sync (only present in response)
+    pub notes: Option<Vec<L2TreeSyncNote>>,
+    /// Commitment root for verification (only present in response)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commitment_root: Option<String>,
+    /// Timestamp
+    pub timestamp: u64,
+}
+
+/// A note in a tree sync response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2TreeSyncNote {
+    /// Note index in tree
+    pub index: u64,
+    /// Commitment value
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub commitment: [u8; 32],
+}
+
+/// L2: Tree sync request (new node → peer)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2TreeSyncRequest {
+    /// Requesting node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub requesting_node: NodeId,
+    /// Start syncing from this checkpoint height
+    pub from_height: u64,
+    /// Timestamp
+    pub timestamp: u64,
+}
+
+/// L2: Tree sync response (peer → requesting node)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2TreeSyncResponse {
+    /// Responding node ID
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub responding_node: NodeId,
+    /// Checkpoint blocks (batched, max 100 per response)
+    pub checkpoints: Vec<L2CheckpointBlockMessage>,
+    /// Current epoch number
+    pub current_epoch: u64,
+    /// Current commitment root for verification
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub commitment_root: [u8; 32],
+    /// Whether there are more checkpoints to sync
+    pub has_more: bool,
+    /// Timestamp
     pub timestamp: u64,
 }
 

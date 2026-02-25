@@ -47,5 +47,8 @@ pub use encryption::*;
 pub use models::*;
 pub use queries::L2StateInfo;
 pub use queries::{ConfidentialNoteRecord, ConfidentialTransferRecord};
+pub use queries::{
+    L2CheckpointRecord, L2EpochRecord, L2NoteRecord, L2NullifierRecord, L2ValidRootRecord,
+};
 pub use snapshot::*;
 // Note: queries module adds methods to Database via impl blocks

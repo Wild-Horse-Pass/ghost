@@ -170,7 +170,7 @@ impl Default for MeshConfig {
 #[async_trait]
 pub trait MessageHandler: Send + Sync {
     /// Handle a received message
-    async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()>;
+    async fn handle_message(&self, envelope: Arc<MessageEnvelope>) -> GhostResult<()>;
 }
 
 /// ZMQ socket collection for a mesh node
@@ -1252,7 +1252,8 @@ impl MeshNetwork {
         let sequence = self.next_sequence();
 
         // Sign the payload + sequence (verifier expects both)
-        let mut signed_data = payload_bytes.clone();
+        let mut signed_data = Vec::with_capacity(payload_bytes.len() + 8);
+        signed_data.extend_from_slice(&payload_bytes);
         signed_data.extend_from_slice(&sequence.to_le_bytes());
         let signature = self.identity.sign(&signed_data);
 
@@ -1274,7 +1275,8 @@ impl MeshNetwork {
         let sequence = self.next_sequence();
 
         // Sign the payload + sequence (must match create_envelope for P2P4-M1 verification)
-        let mut signed_data = payload.clone();
+        let mut signed_data = Vec::with_capacity(payload.len() + 8);
+        signed_data.extend_from_slice(&payload);
         signed_data.extend_from_slice(&sequence.to_le_bytes());
         let signature = self.identity.sign(&signed_data);
 
@@ -1414,7 +1416,14 @@ impl MeshNetwork {
             | MessageType::MpcContribution
             | MessageType::MpcVerificationVote
             | MessageType::MpcParametersRequest
-            | MessageType::MpcParametersResponse => true,
+            | MessageType::MpcParametersResponse
+            // L2 messages use Noise encryption (contain proofs and encrypted note data)
+            | MessageType::L2ConfidentialTransfer
+            | MessageType::L2TransferConfirmation
+            | MessageType::L2TransferBroadcast
+            | MessageType::L2CheckpointBlock
+            | MessageType::L2CheckpointVote
+            | MessageType::L2TreeSync => true,
         }
     }
 
@@ -1683,6 +1692,13 @@ impl MeshNetwork {
             MessageType::VerificationResult => self.config.ports.health_monitoring,
             // P2P-H3: Equivocation proofs use consensus voting port
             MessageType::EquivocationProof => self.config.ports.consensus_voting,
+            // L2 messages use consensus voting port
+            MessageType::L2ConfidentialTransfer
+            | MessageType::L2TransferConfirmation
+            | MessageType::L2TransferBroadcast
+            | MessageType::L2CheckpointBlock
+            | MessageType::L2CheckpointVote
+            | MessageType::L2TreeSync => self.config.ports.consensus_voting,
         };
         format!("tcp://{}:{}", host_only, base_port)
     }
@@ -1765,8 +1781,9 @@ impl MeshNetwork {
             msg_type = ?envelope.msg_type,
             "Dispatching to handlers"
         );
+        let envelope = Arc::new(envelope);
         for handler in handlers {
-            if let Err(e) = handler.handle_message(envelope.clone()).await {
+            if let Err(e) = handler.handle_message(Arc::clone(&envelope)).await {
                 error!(error = %e, msg_type = ?envelope.msg_type, "Handler error");
             }
         }
@@ -2458,7 +2475,8 @@ impl MeshNetwork {
         let sequence = self.next_sequence();
 
         // Sign the payload + sequence (must match create_envelope for P2P4-M1 verification)
-        let mut signed_data = payload.clone();
+        let mut signed_data = Vec::with_capacity(payload.len() + 8);
+        signed_data.extend_from_slice(&payload);
         signed_data.extend_from_slice(&sequence.to_le_bytes());
         let signature = self.identity.sign(&signed_data);
 

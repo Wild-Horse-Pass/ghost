@@ -174,7 +174,7 @@ impl ShareProofHandler {
 
 #[async_trait]
 impl MessageHandler for ShareProofHandler {
-    async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+    async fn handle_message(&self, envelope: Arc<MessageEnvelope>) -> GhostResult<()> {
         if envelope.msg_type == MessageType::ShareProof {
             self.handle_share_proof(&envelope).await?;
         }
@@ -210,7 +210,7 @@ mod tests {
 
         let envelope = make_envelope(MessageType::HealthPing, vec![]);
         // Should return Ok without processing
-        assert!(handler.handle_message(envelope).await.is_ok());
+        assert!(handler.handle_message(Arc::new(envelope)).await.is_ok());
     }
 
     #[tokio::test]
@@ -240,7 +240,7 @@ mod tests {
         let envelope = make_envelope(MessageType::ShareProof, payload);
 
         // Should silently skip (return Ok)
-        assert!(handler.handle_message(envelope).await.is_ok());
+        assert!(handler.handle_message(Arc::new(envelope)).await.is_ok());
     }
 
     #[tokio::test]
@@ -271,6 +271,6 @@ mod tests {
         let envelope = make_envelope(MessageType::ShareProof, payload);
 
         // Should silently reject stale timestamp (return Ok, but not process)
-        assert!(handler.handle_message(envelope).await.is_ok());
+        assert!(handler.handle_message(Arc::new(envelope)).await.is_ok());
     }
 }

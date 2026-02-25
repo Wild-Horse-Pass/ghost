@@ -737,7 +737,7 @@ impl ZkPayoutVoteHandler {
 
 #[async_trait]
 impl MessageHandler for ZkPayoutVoteHandler {
-    async fn handle_message(&self, envelope: MessageEnvelope) -> GhostResult<()> {
+    async fn handle_message(&self, envelope: Arc<MessageEnvelope>) -> GhostResult<()> {
         // C1: Check if node is banned using shared BanManager
         if self.is_banned(&envelope.sender) {
             return Err(ghost_common::error::GhostError::NodeBanned(format!(
