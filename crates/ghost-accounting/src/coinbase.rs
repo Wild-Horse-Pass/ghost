@@ -360,4 +360,127 @@ mod tests {
         let result = builder.build_from_entries(&entries);
         assert!(result.is_err());
     }
+
+    // ── BIP34 height encoding tests ──────────────────────────────────────
+
+    #[test]
+    fn test_bip34_height_zero() {
+        let builder = CoinbaseBuilder::new(0).with_extra_nonce_size(0).with_pool_tag(Vec::new());
+        let script = builder.build_script_sig();
+        let bytes = script.as_bytes();
+        // Height 0: length byte = 1, then 0x00
+        assert_eq!(bytes[0], 1, "height length byte should be 1 for height 0");
+        assert_eq!(bytes[1], 0x00, "height 0 should encode as 0x00");
+        assert_eq!(bytes.len(), 2, "script should be exactly 2 bytes with no extras");
+    }
+
+    #[test]
+    fn test_bip34_height_500k() {
+        let builder = CoinbaseBuilder::new(500_000).with_extra_nonce_size(0).with_pool_tag(Vec::new());
+        let script = builder.build_script_sig();
+        let bytes = script.as_bytes();
+        // 500,000 = 0x07A120 → LE bytes: [0x20, 0xA1, 0x07]
+        assert_eq!(bytes[0], 3, "height length byte should be 3 for 500,000");
+        assert_eq!(bytes[1], 0x20);
+        assert_eq!(bytes[2], 0xA1);
+        assert_eq!(bytes[3], 0x07);
+        assert_eq!(bytes.len(), 4);
+    }
+
+    #[test]
+    fn test_bip34_height_max_u32() {
+        let height: u64 = u32::MAX as u64; // 4,294,967,295
+        let builder = CoinbaseBuilder::new(height).with_extra_nonce_size(0).with_pool_tag(Vec::new());
+        let script = builder.build_script_sig();
+        let bytes = script.as_bytes();
+        // 0xFFFFFFFF → LE bytes: [0xFF, 0xFF, 0xFF, 0xFF]
+        assert_eq!(bytes[0], 4, "height length byte should be 4 for u32::MAX");
+        assert_eq!(&bytes[1..5], &[0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(bytes.len(), 5);
+    }
+
+    // ── P2TR quantum-safety rejection tests ──────────────────────────────
+
+    #[test]
+    fn test_p2tr_address_rejected() {
+        let builder = CoinbaseBuilder::new(1);
+        // Mainnet P2TR address (bc1p...)
+        let addr = b"bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297";
+        let result = builder.script_from_address(addr);
+        assert!(result.is_err(), "P2TR mainnet address must be rejected");
+        let err = result.unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("quantum") || err_str.contains("P2TR"),
+            "Error should mention quantum safety or P2TR, got: {err_str}"
+        );
+    }
+
+    #[test]
+    fn test_p2tr_testnet_rejected() {
+        let builder = CoinbaseBuilder::new(1);
+        // Testnet P2TR address (tb1p...)
+        let addr = b"tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c";
+        let result = builder.script_from_address(addr);
+        assert!(result.is_err(), "P2TR testnet address must be rejected");
+        let err = result.unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("quantum") || err_str.contains("P2TR"),
+            "Error should mention quantum safety or P2TR, got: {err_str}"
+        );
+    }
+
+    #[test]
+    fn test_p2tr_raw_script_rejected() {
+        let builder = CoinbaseBuilder::new(1);
+        // Raw witness v1 script: OP_1 (0x51) + PUSH32 (0x20) + 32 bytes
+        let mut raw_p2tr = vec![0x51, 0x20];
+        raw_p2tr.extend_from_slice(&[0xAB; 32]);
+        assert_eq!(raw_p2tr.len(), 34);
+        let result = builder.script_from_address(&raw_p2tr);
+        assert!(result.is_err(), "Raw P2TR script pubkey must be rejected");
+        let err = result.unwrap_err();
+        let err_str = err.to_string();
+        assert!(
+            err_str.contains("quantum") || err_str.contains("P2TR"),
+            "Error should mention quantum safety or P2TR, got: {err_str}"
+        );
+    }
+
+    // ── CoinbaseAllocation tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_allocation_output_count() {
+        // Treasury (1) + 2 miners + 1 node = 4 outputs
+        let alloc = CoinbaseAllocation {
+            treasury: Some((vec![0x00; 25], 50_000)),
+            tx_fees: None,
+            node_rewards: vec![(vec![0x01; 25], 10_000)],
+            miners: vec![
+                (vec![0x02; 25], 20_000),
+                (vec![0x03; 25], 20_000),
+            ],
+        };
+        assert_eq!(alloc.output_count(), 4);
+    }
+
+    #[test]
+    fn test_allocation_total_amount() {
+        let alloc = CoinbaseAllocation {
+            treasury: Some((vec![0x00; 25], 50_000)),
+            tx_fees: Some((vec![0x04; 25], 5_000)),
+            node_rewards: vec![
+                (vec![0x01; 25], 10_000),
+                (vec![0x05; 25], 8_000),
+            ],
+            miners: vec![
+                (vec![0x02; 25], 20_000),
+                (vec![0x03; 25], 7_000),
+            ],
+        };
+        let expected = 50_000 + 5_000 + 10_000 + 8_000 + 20_000 + 7_000;
+        assert_eq!(alloc.total_amount(), expected);
+        assert_eq!(alloc.total_amount(), 100_000);
+    }
 }

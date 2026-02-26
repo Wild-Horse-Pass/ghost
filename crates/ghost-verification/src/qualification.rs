@@ -1060,4 +1060,150 @@ mod tests {
         assert_eq!(provider.scaled_min_challenges(100), 10);
         assert_eq!(provider.scaled_min_challenges(1_000_000), 10);
     }
+
+    #[test]
+    fn test_pass_rate_for_archive() {
+        let config = QualificationConfig::default();
+        let rate = config.pass_rate_for("archive");
+        assert!(
+            (rate - 0.95).abs() < f64::EPSILON,
+            "archive pass rate should be 0.95, got {}",
+            rate
+        );
+    }
+
+    #[test]
+    fn test_pass_rate_for_ghostpay() {
+        let config = QualificationConfig::default();
+        let rate = config.pass_rate_for("ghostpay");
+        assert!(
+            (rate - 0.90).abs() < f64::EPSILON,
+            "ghostpay pass rate should be 0.90 (lower threshold), got {}",
+            rate
+        );
+    }
+
+    #[test]
+    fn test_pass_rate_for_stratum() {
+        let config = QualificationConfig::default();
+        let rate = config.pass_rate_for("stratum");
+        assert!(
+            (rate - 0.95).abs() < f64::EPSILON,
+            "stratum pass rate should be 0.95, got {}",
+            rate
+        );
+    }
+
+    #[test]
+    fn test_pass_rate_for_policy() {
+        let config = QualificationConfig::default();
+        let rate = config.pass_rate_for("policy");
+        assert!(
+            (rate - 0.95).abs() < f64::EPSILON,
+            "policy pass rate should be 0.95, got {}",
+            rate
+        );
+    }
+
+    #[test]
+    fn test_pass_rate_for_unknown() {
+        let config = QualificationConfig::default();
+        let rate = config.pass_rate_for("nonexistent_capability");
+        let archive_rate = config.archive_pass_rate;
+        assert!(
+            (rate - archive_rate).abs() < f64::EPSILON,
+            "unknown capability should default to archive_pass_rate ({}), got {}",
+            archive_rate,
+            rate
+        );
+    }
+
+    #[test]
+    fn test_stats_zero_challenges() {
+        let stats = QualificationStats {
+            node_id: "deadbeef".to_string(),
+            uptime_percent: 0.0,
+            passes_uptime_gate: false,
+            archive_challenges: 0,
+            archive_passed: 0,
+            policy_challenges: 0,
+            policy_passed: 0,
+            stratum_challenges: 0,
+            stratum_passed: 0,
+            ghostpay_challenges: 0,
+            ghostpay_passed: 0,
+            qualified_capabilities: NodeCapabilities::default(),
+        };
+
+        assert!(
+            (stats.archive_pass_rate() - 0.0).abs() < f64::EPSILON,
+            "archive_pass_rate should be 0.0 with 0 challenges"
+        );
+        assert!(
+            (stats.policy_pass_rate() - 0.0).abs() < f64::EPSILON,
+            "policy_pass_rate should be 0.0 with 0 challenges"
+        );
+        assert!(
+            (stats.stratum_pass_rate() - 0.0).abs() < f64::EPSILON,
+            "stratum_pass_rate should be 0.0 with 0 challenges"
+        );
+        assert!(
+            (stats.ghostpay_pass_rate() - 0.0).abs() < f64::EPSILON,
+            "ghostpay_pass_rate should be 0.0 with 0 challenges"
+        );
+    }
+
+    #[test]
+    fn test_stats_perfect_pass_rate() {
+        let stats = QualificationStats {
+            node_id: "cafebabe".to_string(),
+            uptime_percent: 1.0,
+            passes_uptime_gate: true,
+            archive_challenges: 50,
+            archive_passed: 50,
+            policy_challenges: 30,
+            policy_passed: 30,
+            stratum_challenges: 25,
+            stratum_passed: 25,
+            ghostpay_challenges: 10,
+            ghostpay_passed: 10,
+            qualified_capabilities: NodeCapabilities::default(),
+        };
+
+        assert!(
+            (stats.archive_pass_rate() - 1.0).abs() < f64::EPSILON,
+            "archive_pass_rate should be 1.0 when all pass"
+        );
+        assert!(
+            (stats.policy_pass_rate() - 1.0).abs() < f64::EPSILON,
+            "policy_pass_rate should be 1.0 when all pass"
+        );
+        assert!(
+            (stats.stratum_pass_rate() - 1.0).abs() < f64::EPSILON,
+            "stratum_pass_rate should be 1.0 when all pass"
+        );
+        assert!(
+            (stats.ghostpay_pass_rate() - 1.0).abs() < f64::EPSILON,
+            "ghostpay_pass_rate should be 1.0 when all pass"
+        );
+    }
+
+    #[test]
+    fn test_lookback_timestamp_is_7_days_ago() {
+        let db = Arc::new(Database::in_memory().unwrap());
+        let provider = QualifiedCapabilityProvider::new(db);
+
+        let lookback = provider.lookback_timestamp();
+        let now = chrono::Utc::now().timestamp();
+        let expected = now - (7 * SECONDS_PER_DAY);
+
+        // Allow 2 seconds of epsilon for timing between calls
+        let diff = (lookback - expected).abs();
+        assert!(
+            diff <= 2,
+            "lookback_timestamp should be ~604800s (7 days) before now, \
+             but diff from expected was {} seconds",
+            diff
+        );
+    }
 }

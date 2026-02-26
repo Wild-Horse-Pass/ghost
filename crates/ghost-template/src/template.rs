@@ -242,4 +242,158 @@ mod tests {
 
         assert_eq!(tx.fee_rate(), 10.0); // 1000 sat / 100 vB = 10 sat/vB
     }
+
+    // ---- Helper builders for tests ----
+
+    fn make_tx(fee: u64, weight: u64) -> TemplateTransaction {
+        TemplateTransaction {
+            data: String::new(),
+            txid: String::new(),
+            hash: String::new(),
+            depends: vec![],
+            fee,
+            sigops: 1,
+            weight,
+        }
+    }
+
+    fn make_block_template(txs: Vec<TemplateTransaction>) -> BlockTemplate {
+        BlockTemplate {
+            version: 0x20000000,
+            previousblockhash: "00".repeat(32),
+            transactions: txs,
+            coinbaseaux: CoinbaseAux::default(),
+            coinbasevalue: 5_000_000_000,
+            bits: "1d00ffff".to_string(),
+            height: 1,
+            curtime: 1700000000,
+            mintime: 1700000000,
+            mutable: vec![],
+            noncerange: "00000000ffffffff".to_string(),
+            sigoplimit: 80000,
+            sizelimit: 4000000,
+            weightlimit: 4000000,
+            longpollid: None,
+            target: "00".repeat(32),
+        }
+    }
+
+    // ---- New tests ----
+
+    #[test]
+    fn test_fee_rate_zero_weight() {
+        let tx = make_tx(5000, 0);
+        assert_eq!(tx.fee_rate(), 0.0, "zero weight must return 0.0 without div-by-zero");
+    }
+
+    #[test]
+    fn test_fee_rate_zero_fee() {
+        let tx = make_tx(0, 800);
+        assert_eq!(tx.fee_rate(), 0.0, "zero fee must return 0.0");
+    }
+
+    #[test]
+    fn test_rejection_rate_empty() {
+        let template = FilteredTemplate {
+            original: make_block_template(vec![]),
+            included_indices: vec![],
+            rejected_indices: vec![],
+            merkle_root: [0u8; 32],
+            total_fee: 0,
+            total_weight: 0,
+        };
+        assert_eq!(
+            template.rejection_rate(),
+            0.0,
+            "empty transaction list must yield 0.0 rejection rate"
+        );
+    }
+
+    #[test]
+    fn test_rejection_rate_all_rejected() {
+        let txs = vec![make_tx(100, 400), make_tx(200, 800), make_tx(300, 600)];
+        let template = FilteredTemplate {
+            original: make_block_template(txs),
+            included_indices: vec![],
+            rejected_indices: vec![0, 1, 2],
+            merkle_root: [0u8; 32],
+            total_fee: 0,
+            total_weight: 0,
+        };
+        assert_eq!(
+            template.rejection_rate(),
+            1.0,
+            "all transactions rejected must yield 1.0"
+        );
+    }
+
+    #[test]
+    fn test_fee_impact_no_filtering() {
+        let txs = vec![make_tx(1000, 400), make_tx(2000, 800)];
+        let total_fee = 1000 + 2000;
+        let total_weight = 400 + 800;
+        let template = FilteredTemplate {
+            original: make_block_template(txs),
+            included_indices: vec![0, 1],
+            rejected_indices: vec![],
+            merkle_root: [0u8; 32],
+            total_fee,
+            total_weight,
+        };
+        assert_eq!(
+            template.fee_impact(),
+            0,
+            "no rejected transactions means zero fee impact"
+        );
+    }
+
+    #[test]
+    fn test_template_stats_from_filtered() {
+        // 5 transactions: indices 0-4. Include 0,1,2; reject 3,4.
+        let txs = vec![
+            make_tx(1000, 400),  // included
+            make_tx(2000, 800),  // included
+            make_tx(3000, 1200), // included
+            make_tx(500, 200),   // rejected
+            make_tx(700, 300),   // rejected
+        ];
+        let included_fee: u64 = 1000 + 2000 + 3000;
+        let included_weight: u64 = 400 + 800 + 1200;
+        let original_fee: u64 = 1000 + 2000 + 3000 + 500 + 700;
+        let original_weight: u64 = 400 + 800 + 1200 + 200 + 300;
+
+        let filtered = FilteredTemplate {
+            original: make_block_template(txs),
+            included_indices: vec![0, 1, 2],
+            rejected_indices: vec![3, 4],
+            merkle_root: [0u8; 32],
+            total_fee: included_fee,
+            total_weight: included_weight,
+        };
+
+        let stats = TemplateStats::from_filtered(&filtered);
+
+        assert_eq!(stats.original_tx_count, 5);
+        assert_eq!(stats.filtered_tx_count, 3);
+        assert_eq!(stats.original_total_fee, original_fee);
+        assert_eq!(stats.filtered_total_fee, included_fee);
+        assert_eq!(stats.original_total_weight, original_weight);
+        assert_eq!(stats.filtered_total_weight, included_weight);
+
+        // Verify average fee rates: fee / (weight / 4.0)
+        let expected_original_avg = original_fee as f64 / (original_weight as f64 / 4.0);
+        let expected_filtered_avg = included_fee as f64 / (included_weight as f64 / 4.0);
+        assert!(
+            (stats.original_avg_fee_rate - expected_original_avg).abs() < 1e-9,
+            "original avg fee rate mismatch: got {}, expected {}",
+            stats.original_avg_fee_rate,
+            expected_original_avg
+        );
+        assert!(
+            (stats.filtered_avg_fee_rate - expected_filtered_avg).abs() < 1e-9,
+            "filtered avg fee rate mismatch: got {}, expected {}",
+            stats.filtered_avg_fee_rate,
+            expected_filtered_avg
+        );
+    }
 }

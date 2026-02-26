@@ -430,4 +430,220 @@ mod tests {
         assert!(score.score > 0.0);
         assert!(score.latency_score > 0.5);
     }
+
+    // --- 15 new tests below ---
+
+    #[test]
+    fn test_extract_host_ipv4_with_port() {
+        let result = extract_host_from_address("192.168.1.1:8080");
+        assert_eq!(result, "192.168.1.1");
+    }
+
+    #[test]
+    fn test_extract_host_ipv6_with_port() {
+        let result = extract_host_from_address("[::1]:8080");
+        assert_eq!(result, "::1");
+    }
+
+    #[test]
+    fn test_extract_host_ipv6_no_port() {
+        let result = extract_host_from_address("[::1]");
+        assert_eq!(result, "::1");
+    }
+
+    #[test]
+    fn test_extract_host_no_port() {
+        let result = extract_host_from_address("hostname");
+        assert_eq!(result, "hostname");
+    }
+
+    #[test]
+    fn test_extract_host_empty() {
+        let result = extract_host_from_address("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_extract_subnet_valid() {
+        let result = extract_ipv4_subnet("192.168.1.100:8080");
+        assert_eq!(result, Some("192.168.1".to_string()));
+    }
+
+    #[test]
+    fn test_extract_subnet_ipv6() {
+        let result = extract_ipv4_subnet("[::1]:8080");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_subnet_unparseable() {
+        let result = extract_ipv4_subnet("not-an-ip:8080");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_score_low_latency_elder() {
+        let mut peer = Peer::new([10u8; 32], "10.0.0.1:8555".to_string());
+        peer.latency_ms = Some(10);
+        peer.is_elder = true;
+        // Max out capabilities for highest possible score
+        peer.capabilities = NodeCapabilities {
+            archive_mode: true,
+            ghost_pay: true,
+            public_mining: true,
+            reaper: true,
+            elder_status: true,
+        };
+        // Set first_seen far in the past for max reliability (30+ days)
+        peer.first_seen = peer.first_seen.saturating_sub(86400 * 31);
+
+        let score = PeerScore::calculate(&peer);
+        // latency_score = 1.0 (10ms < 50), reliability_score = 1.0 (31 days),
+        // capability_score = 15/15 = 1.0, elder_bonus = 0.1
+        // score = 0.30 + 0.30 + 0.30 + 0.10 = 1.0
+        assert!(
+            score.score >= 0.95,
+            "Expected score near max, got {}",
+            score.score
+        );
+        assert_eq!(score.latency_score, 1.0);
+    }
+
+    #[test]
+    fn test_score_high_latency_non_elder() {
+        let mut peer = Peer::new([11u8; 32], "10.0.0.2:8555".to_string());
+        peer.latency_ms = Some(1000);
+        peer.is_elder = false;
+        // No capabilities
+        peer.capabilities = NodeCapabilities::default();
+
+        let score = PeerScore::calculate(&peer);
+        // latency_score = 0.2 (1000ms >= 500), reliability_score = 0.4 (just created, < 1 day),
+        // capability_score = 0/15 = 0.0, elder_bonus = 0.0
+        // score = 0.06 + 0.12 + 0.0 + 0.0 = 0.18
+        assert!(
+            score.score < 0.3,
+            "Expected low score, got {}",
+            score.score
+        );
+        assert_eq!(score.latency_score, 0.2);
+    }
+
+    #[test]
+    fn test_score_unknown_latency() {
+        let peer = Peer::new([12u8; 32], "10.0.0.3:8555".to_string());
+        // latency_ms defaults to None
+
+        let score = PeerScore::calculate(&peer);
+        assert_eq!(
+            score.latency_score, 0.5,
+            "Unknown latency should yield 0.5 latency component"
+        );
+    }
+
+    #[test]
+    fn test_select_best_peers_ordering() {
+        // Create 3 peers with clearly different scores
+        let mut peer_high = Peer::new([20u8; 32], "10.0.0.10:8555".to_string());
+        peer_high.latency_ms = Some(10);
+        peer_high.is_elder = true;
+        peer_high.capabilities = NodeCapabilities {
+            archive_mode: true,
+            ghost_pay: true,
+            public_mining: true,
+            reaper: true,
+            elder_status: true,
+        };
+        peer_high.first_seen = peer_high.first_seen.saturating_sub(86400 * 31);
+
+        let mut peer_mid = Peer::new([21u8; 32], "10.0.1.10:8555".to_string());
+        peer_mid.latency_ms = Some(150);
+        peer_mid.capabilities.archive_mode = true;
+
+        let mut peer_low = Peer::new([22u8; 32], "10.0.2.10:8555".to_string());
+        peer_low.latency_ms = Some(1000);
+
+        let peers = vec![peer_low, peer_mid, peer_high];
+        let selected = select_best_peers(&peers, 3);
+
+        assert_eq!(selected.len(), 3);
+        // Best peer (highest score) should be first
+        assert_eq!(selected[0].node_id, [20u8; 32]);
+        // Worst peer should be last
+        assert_eq!(selected[2].node_id, [22u8; 32]);
+    }
+
+    #[test]
+    fn test_select_best_peers_count_limit() {
+        let peers: Vec<Peer> = (0..5)
+            .map(|i| {
+                let mut id = [0u8; 32];
+                id[0] = i;
+                // Different subnets to avoid any subnet-related issues
+                Peer::new(id, format!("10.{}.0.1:8555", i))
+            })
+            .collect();
+
+        let selected = select_best_peers(&peers, 2);
+        assert_eq!(
+            selected.len(),
+            2,
+            "select_best_peers should return exactly the requested count"
+        );
+    }
+
+    #[test]
+    fn test_subnet_diversity_enforcement() {
+        let our_id = [0u8; 32];
+        let manager = PeerManager::new(our_id, 100);
+
+        // Add 3 peers from the same /24 subnet (192.168.1.x) -- should all succeed
+        for i in 1..=3u8 {
+            let mut id = [0u8; 32];
+            id[0] = i;
+            let peer = Peer::new(id, format!("192.168.1.{}:8555", i));
+            manager.upsert_peer(peer);
+        }
+        assert_eq!(manager.peer_count(), 3);
+
+        // 4th peer from the same /24 subnet should be rejected
+        let mut id4 = [0u8; 32];
+        id4[0] = 4;
+        let peer4 = Peer::new(id4, "192.168.1.4:8555".to_string());
+        manager.upsert_peer(peer4);
+
+        assert_eq!(
+            manager.peer_count(),
+            3,
+            "4th peer from same /24 subnet should be rejected (MAX_PEERS_PER_SUBNET=3)"
+        );
+
+        // A peer from a different /24 should still be accepted
+        let mut id5 = [0u8; 32];
+        id5[0] = 5;
+        let peer5 = Peer::new(id5, "192.168.2.1:8555".to_string());
+        manager.upsert_peer(peer5);
+
+        assert_eq!(
+            manager.peer_count(),
+            4,
+            "Peer from different /24 subnet should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_peer_stale_detection() {
+        let mut peer = Peer::new([30u8; 32], "10.0.0.30:8555".to_string());
+        // Set last_seen to 120 seconds ago
+        peer.last_seen = peer.last_seen.saturating_sub(120);
+
+        assert!(
+            peer.is_stale(60),
+            "Peer not seen for 120s should be stale with threshold 60s"
+        );
+        assert!(
+            !peer.is_stale(300),
+            "Peer not seen for 120s should NOT be stale with threshold 300s"
+        );
+    }
 }

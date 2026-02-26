@@ -5770,4 +5770,52 @@ mod tests {
             "CRIT-6: Config POST must fail-closed when auth not configured"
         );
     }
+
+    // ===========================================================================
+    // Validation Helper Tests
+    // ===========================================================================
+
+    #[test]
+    fn test_valid_hex_hash_64_chars() {
+        let hash = "a".repeat(64);
+        assert!(is_valid_hex_hash(&hash));
+    }
+
+    #[test]
+    fn test_valid_hex_hash_too_short() {
+        let hash = "a".repeat(62);
+        assert!(!is_valid_hex_hash(&hash));
+    }
+
+    #[test]
+    fn test_valid_hex_hash_too_long() {
+        let hash = "a".repeat(66);
+        assert!(!is_valid_hex_hash(&hash));
+    }
+
+    #[test]
+    fn test_valid_hex_hash_non_hex() {
+        // 'z' is not a valid hex character
+        let mut hash = "a".repeat(63);
+        hash.push('z');
+        assert!(!is_valid_hex_hash(&hash));
+    }
+
+    #[test]
+    fn test_safe_proc_path_allowed() {
+        let allowed = vec![
+            "/proc/meminfo".to_string(),
+            "/proc/cpuinfo".to_string(),
+        ];
+        assert!(is_safe_proc_path("/proc/meminfo", &allowed));
+    }
+
+    #[test]
+    fn test_safe_proc_path_traversal() {
+        let allowed = vec![
+            "/proc/meminfo".to_string(),
+            "/proc/cpuinfo".to_string(),
+        ];
+        assert!(!is_safe_proc_path("/proc/../etc/passwd", &allowed));
+    }
 }

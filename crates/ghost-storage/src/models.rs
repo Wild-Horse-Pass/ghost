@@ -1007,4 +1007,326 @@ mod tests {
         assert_eq!(RecipientType::parse("miner"), Some(RecipientType::Miner));
         assert_eq!(RecipientType::Treasury.as_str(), "treasury");
     }
+
+    // =========================================================================
+    // 1. PayoutStatus roundtrip for every variant
+    // =========================================================================
+    #[test]
+    fn test_payout_status_roundtrip_all() {
+        let variants = [
+            PayoutStatus::Active,
+            PayoutStatus::Pending,
+            PayoutStatus::Approved,
+            PayoutStatus::Broadcast,
+            PayoutStatus::Confirmed,
+            PayoutStatus::Failed,
+            PayoutStatus::Orphaned,
+        ];
+        for v in &variants {
+            let s = v.as_str();
+            let parsed = PayoutStatus::parse(s)
+                .unwrap_or_else(|| panic!("Failed to parse PayoutStatus from '{}'", s));
+            assert_eq!(*v, parsed, "Roundtrip failed for PayoutStatus::{:?}", v);
+        }
+    }
+
+    // =========================================================================
+    // 2. PayoutStatus parse unknown returns None
+    // =========================================================================
+    #[test]
+    fn test_payout_status_parse_unknown() {
+        assert_eq!(PayoutStatus::parse("bogus"), None);
+        assert_eq!(PayoutStatus::parse(""), None);
+        assert_eq!(PayoutStatus::parse("ACTIVE"), None);
+    }
+
+    // =========================================================================
+    // 3. RecipientType roundtrip for every variant
+    // =========================================================================
+    #[test]
+    fn test_recipient_type_roundtrip_all() {
+        let variants = [
+            RecipientType::Miner,
+            RecipientType::Node,
+            RecipientType::Treasury,
+            RecipientType::TxFees,
+        ];
+        for v in &variants {
+            let s = v.as_str();
+            let parsed = RecipientType::parse(s)
+                .unwrap_or_else(|| panic!("Failed to parse RecipientType from '{}'", s));
+            assert_eq!(*v, parsed, "Roundtrip failed for RecipientType::{:?}", v);
+        }
+    }
+
+    // =========================================================================
+    // 4. RecipientType parse unknown returns None
+    // =========================================================================
+    #[test]
+    fn test_recipient_type_parse_unknown() {
+        assert_eq!(RecipientType::parse("bogus"), None);
+        assert_eq!(RecipientType::parse(""), None);
+        assert_eq!(RecipientType::parse("MINER"), None);
+    }
+
+    // =========================================================================
+    // 5. VerificationResult roundtrip for all 5 variants
+    // =========================================================================
+    #[test]
+    fn test_verification_result_roundtrip_all() {
+        let variants = [
+            VerificationResult::Pending,
+            VerificationResult::Pass,
+            VerificationResult::Fail,
+            VerificationResult::Timeout,
+            VerificationResult::Error,
+        ];
+        for v in &variants {
+            let s = v.as_str();
+            let parsed = VerificationResult::parse(s)
+                .unwrap_or_else(|| panic!("Failed to parse VerificationResult from '{}'", s));
+            assert_eq!(*v, parsed, "Roundtrip failed for VerificationResult::{:?}", v);
+        }
+    }
+
+    // =========================================================================
+    // 6. VerificationResult parse unknown returns None
+    // =========================================================================
+    #[test]
+    fn test_verification_result_parse_unknown() {
+        assert_eq!(VerificationResult::parse("bogus"), None);
+        assert_eq!(VerificationResult::parse(""), None);
+        assert_eq!(VerificationResult::parse("PASS"), None);
+    }
+
+    // =========================================================================
+    // 7. GhostLockState roundtrip for all 7 variants
+    // =========================================================================
+    #[test]
+    fn test_ghost_lock_state_roundtrip_all() {
+        let variants = [
+            GhostLockState::Pending,
+            GhostLockState::Active,
+            GhostLockState::Jumping,
+            GhostLockState::PendingSettlement,
+            GhostLockState::Spent,
+            GhostLockState::Recovered,
+            GhostLockState::Expired,
+        ];
+        for v in &variants {
+            let s = v.as_str();
+            let parsed = GhostLockState::parse(s)
+                .unwrap_or_else(|| panic!("Failed to parse GhostLockState from '{}'", s));
+            assert_eq!(*v, parsed, "Roundtrip failed for GhostLockState::{:?}", v);
+        }
+    }
+
+    // =========================================================================
+    // 8. GhostLockState parse unknown returns None
+    // =========================================================================
+    #[test]
+    fn test_ghost_lock_state_parse_unknown() {
+        assert_eq!(GhostLockState::parse("bogus"), None);
+        assert_eq!(GhostLockState::parse(""), None);
+        assert_eq!(GhostLockState::parse("PENDING"), None);
+    }
+
+    // =========================================================================
+    // 9. WraithPhase roundtrip for all 6 variants
+    // =========================================================================
+    #[test]
+    fn test_wraith_phase_roundtrip_all() {
+        let variants = [
+            WraithPhase::Registration,
+            WraithPhase::Signing,
+            WraithPhase::Split,
+            WraithPhase::Shuffle,
+            WraithPhase::Merge,
+            WraithPhase::Complete,
+        ];
+        for v in &variants {
+            let s = v.as_str();
+            let parsed = WraithPhase::parse(s)
+                .unwrap_or_else(|| panic!("Failed to parse WraithPhase from '{}'", s));
+            assert_eq!(*v, parsed, "Roundtrip failed for WraithPhase::{:?}", v);
+        }
+    }
+
+    // =========================================================================
+    // 10. WraithPhase parse unknown returns None
+    // =========================================================================
+    #[test]
+    fn test_wraith_phase_parse_unknown() {
+        assert_eq!(WraithPhase::parse("bogus"), None);
+        assert_eq!(WraithPhase::parse(""), None);
+        assert_eq!(WraithPhase::parse("REGISTRATION"), None);
+    }
+
+    // =========================================================================
+    // 11. WraithStatus roundtrip for all 4 variants
+    // =========================================================================
+    #[test]
+    fn test_wraith_status_roundtrip_all() {
+        let variants = [
+            WraithStatus::Active,
+            WraithStatus::Completed,
+            WraithStatus::Failed,
+            WraithStatus::Refunded,
+        ];
+        for v in &variants {
+            let s = v.as_str();
+            let parsed = WraithStatus::parse(s)
+                .unwrap_or_else(|| panic!("Failed to parse WraithStatus from '{}'", s));
+            assert_eq!(*v, parsed, "Roundtrip failed for WraithStatus::{:?}", v);
+        }
+    }
+
+    // =========================================================================
+    // 12. WraithStatus parse unknown returns None
+    // =========================================================================
+    #[test]
+    fn test_wraith_status_parse_unknown() {
+        assert_eq!(WraithStatus::parse("bogus"), None);
+        assert_eq!(WraithStatus::parse(""), None);
+        assert_eq!(WraithStatus::parse("ACTIVE"), None);
+    }
+
+    // =========================================================================
+    // 13. ReconciliationStatus roundtrip for all 5 variants
+    // =========================================================================
+    #[test]
+    fn test_reconciliation_status_roundtrip_all() {
+        let variants = [
+            ReconciliationStatus::Pending,
+            ReconciliationStatus::Submitted,
+            ReconciliationStatus::Disputed,
+            ReconciliationStatus::Finalized,
+            ReconciliationStatus::Failed,
+        ];
+        for v in &variants {
+            let s = v.as_str();
+            let parsed = ReconciliationStatus::parse(s)
+                .unwrap_or_else(|| panic!("Failed to parse ReconciliationStatus from '{}'", s));
+            assert_eq!(*v, parsed, "Roundtrip failed for ReconciliationStatus::{:?}", v);
+        }
+    }
+
+    // =========================================================================
+    // 14. ReconciliationStatus parse unknown returns None
+    // =========================================================================
+    #[test]
+    fn test_reconciliation_status_parse_unknown() {
+        assert_eq!(ReconciliationStatus::parse("bogus"), None);
+        assert_eq!(ReconciliationStatus::parse(""), None);
+        assert_eq!(ReconciliationStatus::parse("PENDING"), None);
+    }
+
+    // =========================================================================
+    // 15. WithdrawalStatus roundtrip for all 6 variants
+    // =========================================================================
+    #[test]
+    fn test_withdrawal_status_roundtrip_all() {
+        let variants = [
+            WithdrawalStatus::Pending,
+            WithdrawalStatus::Batched,
+            WithdrawalStatus::Submitted,
+            WithdrawalStatus::Confirmed,
+            WithdrawalStatus::Failed,
+            WithdrawalStatus::Cancelled,
+        ];
+        for v in &variants {
+            let s = v.as_str();
+            let parsed = WithdrawalStatus::parse(s)
+                .unwrap_or_else(|| panic!("Failed to parse WithdrawalStatus from '{}'", s));
+            assert_eq!(*v, parsed, "Roundtrip failed for WithdrawalStatus::{:?}", v);
+        }
+    }
+
+    // =========================================================================
+    // 16. WithdrawalStatus parse unknown returns None
+    // =========================================================================
+    #[test]
+    fn test_withdrawal_status_parse_unknown() {
+        assert_eq!(WithdrawalStatus::parse("bogus"), None);
+        assert_eq!(WithdrawalStatus::parse(""), None);
+        assert_eq!(WithdrawalStatus::parse("PENDING"), None);
+    }
+
+    // =========================================================================
+    // 17. WithdrawalStatus can_transition_to valid paths
+    // =========================================================================
+    #[test]
+    fn test_withdrawal_can_transition_valid() {
+        // Pending -> Batched, Cancelled, Failed
+        assert!(WithdrawalStatus::Pending.can_transition_to(WithdrawalStatus::Batched));
+        assert!(WithdrawalStatus::Pending.can_transition_to(WithdrawalStatus::Cancelled));
+        assert!(WithdrawalStatus::Pending.can_transition_to(WithdrawalStatus::Failed));
+
+        // Batched -> Submitted, Failed
+        assert!(WithdrawalStatus::Batched.can_transition_to(WithdrawalStatus::Submitted));
+        assert!(WithdrawalStatus::Batched.can_transition_to(WithdrawalStatus::Failed));
+
+        // Submitted -> Confirmed, Failed
+        assert!(WithdrawalStatus::Submitted.can_transition_to(WithdrawalStatus::Confirmed));
+        assert!(WithdrawalStatus::Submitted.can_transition_to(WithdrawalStatus::Failed));
+    }
+
+    // =========================================================================
+    // 18. Terminal states cannot transition to anything
+    // =========================================================================
+    #[test]
+    fn test_withdrawal_can_transition_from_terminal() {
+        let terminal_states = [
+            WithdrawalStatus::Confirmed,
+            WithdrawalStatus::Failed,
+            WithdrawalStatus::Cancelled,
+        ];
+        let all_states = [
+            WithdrawalStatus::Pending,
+            WithdrawalStatus::Batched,
+            WithdrawalStatus::Submitted,
+            WithdrawalStatus::Confirmed,
+            WithdrawalStatus::Failed,
+            WithdrawalStatus::Cancelled,
+        ];
+        for terminal in &terminal_states {
+            for target in &all_states {
+                assert!(
+                    !terminal.can_transition_to(*target),
+                    "{:?} should not be able to transition to {:?}",
+                    terminal,
+                    target,
+                );
+            }
+        }
+    }
+
+    // =========================================================================
+    // 19. Invalid skip transitions are rejected
+    // =========================================================================
+    #[test]
+    fn test_withdrawal_can_transition_skip_invalid() {
+        // Pending cannot skip to Confirmed or Submitted
+        assert!(!WithdrawalStatus::Pending.can_transition_to(WithdrawalStatus::Confirmed));
+        assert!(!WithdrawalStatus::Pending.can_transition_to(WithdrawalStatus::Submitted));
+
+        // Batched cannot skip to Confirmed
+        assert!(!WithdrawalStatus::Batched.can_transition_to(WithdrawalStatus::Confirmed));
+    }
+
+    // =========================================================================
+    // 20. WithdrawalStatus is_terminal
+    // =========================================================================
+    #[test]
+    fn test_withdrawal_is_terminal() {
+        // Terminal states
+        assert!(WithdrawalStatus::Confirmed.is_terminal());
+        assert!(WithdrawalStatus::Failed.is_terminal());
+        assert!(WithdrawalStatus::Cancelled.is_terminal());
+
+        // Non-terminal states
+        assert!(!WithdrawalStatus::Pending.is_terminal());
+        assert!(!WithdrawalStatus::Batched.is_terminal());
+        assert!(!WithdrawalStatus::Submitted.is_terminal());
+    }
 }

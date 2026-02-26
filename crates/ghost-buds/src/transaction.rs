@@ -285,6 +285,9 @@ pub struct OutputAnalysis {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitcoin::hashes::Hash;
+    use bitcoin::script::Builder as ScriptBuilder;
+    use bitcoin::{Amount, ScriptBuf, WPubkeyHash};
 
     #[test]
     fn test_tier_counts() {
@@ -314,5 +317,108 @@ mod tests {
         assert_eq!(t1, 25.0);
         assert_eq!(t2, 10.0);
         assert_eq!(t3, 5.0);
+    }
+
+    #[test]
+    fn test_analyze_outputs_empty() {
+        let analysis = analyze_outputs(&[]);
+        assert_eq!(analysis.output_count, 0);
+        assert_eq!(analysis.total_value, 0);
+        assert_eq!(analysis.payment_count, 0);
+        assert_eq!(analysis.payment_value, 0);
+        assert_eq!(analysis.script_count, 0);
+        assert_eq!(analysis.script_value, 0);
+        assert_eq!(analysis.taproot_count, 0);
+        assert_eq!(analysis.taproot_value, 0);
+        assert_eq!(analysis.op_return_count, 0);
+        assert_eq!(analysis.op_return_size, 0);
+    }
+
+    #[test]
+    fn test_analyze_outputs_op_return() {
+        let op_return_script =
+            ScriptBuilder::new().push_opcode(bitcoin::opcodes::all::OP_RETURN).push_slice(b"hello").into_script();
+        let outputs = vec![TxOut {
+            value: Amount::from_sat(0),
+            script_pubkey: op_return_script,
+        }];
+        let analysis = analyze_outputs(&outputs);
+        assert_eq!(analysis.op_return_count, 1);
+        assert_eq!(analysis.output_count, 1);
+        assert_eq!(analysis.payment_count, 0);
+    }
+
+    #[test]
+    fn test_analyze_outputs_p2wpkh() {
+        // Build a valid P2WPKH scriptPubKey: OP_0 <20-byte-hash>
+        let hash = WPubkeyHash::from_slice(&[0xab; 20]).expect("valid 20 byte hash");
+        let p2wpkh_script = ScriptBuf::new_p2wpkh(&hash);
+        let outputs = vec![TxOut {
+            value: Amount::from_sat(50_000),
+            script_pubkey: p2wpkh_script,
+        }];
+        let analysis = analyze_outputs(&outputs);
+        assert_eq!(analysis.payment_count, 1);
+        assert_eq!(analysis.payment_value, 50_000);
+        assert_eq!(analysis.op_return_count, 0);
+        assert_eq!(analysis.output_count, 1);
+    }
+
+    #[test]
+    fn test_tier_percentages_zero_count() {
+        let stats = ClassificationStats::new();
+        let (t0, t1, t2, t3) = stats.tier_percentages();
+        assert_eq!(t0, 0.0);
+        assert_eq!(t1, 0.0);
+        assert_eq!(t2, 0.0);
+        assert_eq!(t3, 0.0);
+    }
+
+    #[test]
+    fn test_tier_weights_add() {
+        let mut weights = TierWeights::default();
+        weights.add(BudsTier::T0, 100);
+        weights.add(BudsTier::T0, 50);
+        weights.add(BudsTier::T1, 200);
+        weights.add(BudsTier::T2, 300);
+        weights.add(BudsTier::T3, 400);
+
+        assert_eq!(weights.t0, 150);
+        assert_eq!(weights.t1, 200);
+        assert_eq!(weights.t2, 300);
+        assert_eq!(weights.t3, 400);
+    }
+
+    #[test]
+    fn test_feature_counts_increment_all() {
+        let mut counts = FeatureCounts::default();
+
+        counts.increment(&DetectedFeature::P2pkh);
+        counts.increment(&DetectedFeature::P2wpkh);
+        counts.increment(&DetectedFeature::P2sh);
+        counts.increment(&DetectedFeature::P2wsh);
+        counts.increment(&DetectedFeature::P2tr);
+        counts.increment(&DetectedFeature::OpReturn { size: 40 });
+        counts.increment(&DetectedFeature::Multisig { m: 2, n: 3 });
+        counts.increment(&DetectedFeature::Cltv);
+        counts.increment(&DetectedFeature::Csv);
+        counts.increment(&DetectedFeature::Htlc);
+        counts.increment(&DetectedFeature::InscriptionEnvelope);
+        counts.increment(&DetectedFeature::RunesRunestone);
+        counts.increment(&DetectedFeature::Brc20Pattern);
+        counts.increment(&DetectedFeature::LargeWitness { bytes: 5000 });
+
+        assert_eq!(counts.p2pkh, 1);
+        assert_eq!(counts.p2wpkh, 1);
+        assert_eq!(counts.p2sh, 1);
+        assert_eq!(counts.p2wsh, 1);
+        assert_eq!(counts.p2tr, 1);
+        assert_eq!(counts.op_return, 1);
+        assert_eq!(counts.multisig, 1);
+        assert_eq!(counts.timelock, 2); // Cltv + Csv both map to timelock
+        assert_eq!(counts.htlc, 1);
+        assert_eq!(counts.inscription, 1);
+        assert_eq!(counts.runes, 1);
+        assert_eq!(counts.brc20, 1);
     }
 }

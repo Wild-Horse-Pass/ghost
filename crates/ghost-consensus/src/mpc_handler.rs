@@ -74,6 +74,20 @@ const MPC_BFT_THRESHOLD_PERCENT: u32 = 75;
 /// which is too fragile (any single node offline blocks new contributions).
 const MPC_BFT_BOOTSTRAP_COUNT: u32 = 4;
 
+/// Compute BFT threshold for MPC contribution approval.
+///
+/// During bootstrap (fewer than `MPC_BFT_BOOTSTRAP_COUNT` contributors) the
+/// genesis node can approve alone (threshold = 1).  Once the contributor count
+/// reaches `MPC_BFT_BOOTSTRAP_COUNT` (4), the threshold becomes a 75%
+/// supermajority: `ceil(contributor_count * 75 / 100)`.
+pub(crate) fn bft_threshold(contributor_count: u32) -> u32 {
+    if contributor_count < MPC_BFT_BOOTSTRAP_COUNT {
+        1
+    } else {
+        (contributor_count * MPC_BFT_THRESHOLD_PERCENT).div_ceil(100)
+    }
+}
+
 /// Rate limiting for MPC messages
 const RATE_LIMIT_MAX_TOKENS: u32 = 10;
 const RATE_LIMIT_REFILL_RATE: u32 = 2; // 2 per second
@@ -467,12 +481,7 @@ impl MpcHandler {
 
                 // Check if we have BFT threshold
                 let contributor_count = self.mpc_contributor_count();
-                let threshold = if contributor_count < MPC_BFT_BOOTSTRAP_COUNT {
-                    1 // Bootstrap phase: genesis node alone can approve positions 1-3
-                } else {
-                    // Normal BFT: 75% of MPC contributors (3/4 minimum)
-                    (contributor_count * MPC_BFT_THRESHOLD_PERCENT).div_ceil(100)
-                };
+                let threshold = bft_threshold(contributor_count);
 
                 info!(
                     approvals = contribution.approval_count,
@@ -550,12 +559,7 @@ impl MpcHandler {
 
                 // Check if we have BFT threshold
                 let contributor_count = self.mpc_contributor_count();
-                let threshold = if contributor_count < MPC_BFT_BOOTSTRAP_COUNT {
-                    1 // Bootstrap phase: genesis node alone can approve
-                } else {
-                    // Normal BFT: 75% of MPC contributors (3/4 minimum)
-                    (contributor_count * MPC_BFT_THRESHOLD_PERCENT).div_ceil(100)
-                };
+                let threshold = bft_threshold(contributor_count);
 
                 debug!(
                     approvals = contribution.approval_count,
@@ -764,5 +768,94 @@ mod tests {
 
         // 6th should fail
         assert!(!limiter.check_and_consume(&node_id));
+    }
+
+    // --- BFT threshold tests ---
+
+    #[test]
+    fn test_bft_threshold_bootstrap_1() {
+        // 1 contributor is below bootstrap count (4), threshold = 1
+        assert_eq!(bft_threshold(1), 1);
+    }
+
+    #[test]
+    fn test_bft_threshold_bootstrap_3() {
+        // 3 contributors still in bootstrap range (< 4), threshold = 1
+        assert_eq!(bft_threshold(3), 1);
+    }
+
+    #[test]
+    fn test_bft_threshold_4_contributors() {
+        // 4 contributors: ceil(4 * 75 / 100) = ceil(300/100) = 3
+        assert_eq!(bft_threshold(4), 3);
+    }
+
+    #[test]
+    fn test_bft_threshold_10_contributors() {
+        // 10 contributors: ceil(10 * 75 / 100) = ceil(750/100) = 8
+        assert_eq!(bft_threshold(10), 8);
+    }
+
+    #[test]
+    fn test_bft_threshold_100_contributors() {
+        // 100 contributors: ceil(100 * 75 / 100) = ceil(7500/100) = 75
+        assert_eq!(bft_threshold(100), 75);
+    }
+
+    #[test]
+    fn test_bft_threshold_101_max() {
+        // 101 contributors (max): ceil(101 * 75 / 100) = ceil(7575/100) = 76
+        assert_eq!(bft_threshold(101), 76);
+    }
+
+    // --- Rate limiter tests ---
+
+    #[test]
+    fn test_rate_limiter_independent_buckets() {
+        // Two different node_ids should have independent token pools
+        let limiter = RateLimiter::new(2, 0);
+        let node_a = [0xAAu8; 32];
+        let node_b = [0xBBu8; 32];
+
+        // Drain all tokens for node_a
+        assert!(limiter.check_and_consume(&node_a));
+        assert!(limiter.check_and_consume(&node_a));
+        assert!(!limiter.check_and_consume(&node_a)); // exhausted
+
+        // node_b should still have its full allowance
+        assert!(limiter.check_and_consume(&node_b));
+        assert!(limiter.check_and_consume(&node_b));
+        assert!(!limiter.check_and_consume(&node_b)); // exhausted
+    }
+
+    #[test]
+    fn test_rate_limiter_max_tokens_cap() {
+        // Even after a long delay the token count must not exceed max_tokens.
+        // We simulate by creating a bucket, waiting (artificially), then checking
+        // that we get at most max_tokens successful calls.
+        let max = 3u32;
+        let refill = 1000; // extremely fast refill rate
+        let limiter = RateLimiter::new(max, refill);
+        let node = [0xCCu8; 32];
+
+        // First call initialises the bucket at max_tokens.
+        assert!(limiter.check_and_consume(&node)); // leaves 2
+
+        // Manipulate last_update to simulate a long elapsed time (1 hour).
+        {
+            let mut buckets = limiter.buckets.write();
+            let bucket = buckets.get_mut(&node).unwrap();
+            bucket.last_update = Instant::now() - std::time::Duration::from_secs(3600);
+        }
+
+        // After refill the tokens should be capped at max_tokens (3).
+        // We should be able to consume exactly max_tokens times.
+        let mut successes = 0u32;
+        for _ in 0..(max + 5) {
+            if limiter.check_and_consume(&node) {
+                successes += 1;
+            }
+        }
+        assert_eq!(successes, max, "tokens should be capped at max_tokens");
     }
 }

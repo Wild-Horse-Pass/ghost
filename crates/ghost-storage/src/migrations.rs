@@ -1622,4 +1622,221 @@ mod tests {
             .expect("MEDIUM-STOR-2: Failed to get schema version after idempotent migrations");
         assert_eq!(version, SCHEMA_VERSION);
     }
+
+    /// Helper: returns all table names from sqlite_master
+    fn get_table_names(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    /// Helper: returns column names for a given table via PRAGMA table_info
+    fn get_column_names(conn: &Connection, table: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA table_info({})", table))
+            .unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn test_v1_core_tables_exist() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let tables = get_table_names(&conn);
+        for expected in &["shares", "rounds", "miners", "nodes"] {
+            assert!(
+                tables.contains(&expected.to_string()),
+                "v1 core table '{}' missing from schema. Found tables: {:?}",
+                expected,
+                tables
+            );
+        }
+    }
+
+    #[test]
+    fn test_v2_challenge_tables_exist() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let tables = get_table_names(&conn);
+        for expected in &[
+            "archive_challenges",
+            "policy_challenges",
+            "stratum_challenges",
+            "ghostpay_challenges",
+        ] {
+            assert!(
+                tables.contains(&expected.to_string()),
+                "v2 challenge table '{}' missing from schema. Found tables: {:?}",
+                expected,
+                tables
+            );
+        }
+    }
+
+    #[test]
+    fn test_v10_foreign_key_cascades() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Check that tables recreated in v10 have ON DELETE CASCADE.
+        // PRAGMA foreign_key_list returns rows with columns:
+        //   id, seq, table, from, to, on_update, on_delete, match
+        let tables_with_cascade = [
+            "payouts",
+            "verifications",
+            "peer_reputation",
+            "wraith_participants",
+            "reconciliation_entries",
+            "withdrawal_requests",
+            "elder_bonds",
+            "elder_slashing",
+        ];
+
+        for table in &tables_with_cascade {
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA foreign_key_list({})", table))
+                .unwrap();
+            let fk_rows: Vec<(String, String)> = stmt
+                .query_map([], |row| {
+                    // column 2 = referenced table, column 6 = on_delete action
+                    Ok((row.get::<_, String>(2)?, row.get::<_, String>(6)?))
+                })
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+
+            assert!(
+                !fk_rows.is_empty(),
+                "Table '{}' has no foreign keys after v10 migration",
+                table
+            );
+
+            for (ref_table, on_delete) in &fk_rows {
+                assert_eq!(
+                    on_delete, "CASCADE",
+                    "Table '{}' FK to '{}' has on_delete='{}', expected 'CASCADE'",
+                    table, ref_table, on_delete
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_v13_mpc_tables_exist() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let tables = get_table_names(&conn);
+        for expected in &["mpc_contributions", "mpc_verification_votes"] {
+            assert!(
+                tables.contains(&expected.to_string()),
+                "v13 MPC table '{}' missing from schema. Found tables: {:?}",
+                expected,
+                tables
+            );
+        }
+    }
+
+    #[test]
+    fn test_v21_l2_tables_exist() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let tables = get_table_names(&conn);
+        // v21 creates l2_notes and l2_nullifiers (the nullifier set)
+        for expected in &["l2_notes", "l2_nullifiers"] {
+            assert!(
+                tables.contains(&expected.to_string()),
+                "v21 L2 table '{}' missing from schema. Found tables: {:?}",
+                expected,
+                tables
+            );
+        }
+    }
+
+    #[test]
+    fn test_v23_triggers_exist() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name")
+            .unwrap();
+        let trigger_names: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+
+        let expected_triggers = [
+            "fk_l2_checkpoints_epoch",
+            "fk_l2_valid_roots_epoch",
+            "fk_l2_notes_epoch",
+            "fk_l2_nullifiers_epoch",
+        ];
+
+        for expected in &expected_triggers {
+            assert!(
+                trigger_names.contains(&expected.to_string()),
+                "v23 trigger '{}' missing. Found triggers: {:?}",
+                expected,
+                trigger_names
+            );
+        }
+    }
+
+    #[test]
+    fn test_schema_version_is_latest() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Verify via get_schema_version helper
+        let version = get_schema_version(&conn).unwrap();
+        assert_eq!(
+            version, SCHEMA_VERSION,
+            "Schema version {} does not match SCHEMA_VERSION constant {}",
+            version, SCHEMA_VERSION
+        );
+
+        // Also verify directly via PRAGMA user_version
+        let pragma_version: u32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(pragma_version, 23);
+    }
+
+    #[test]
+    fn test_kv_store_table_exists() {
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let tables = get_table_names(&conn);
+        assert!(
+            tables.contains(&"kv_store".to_string()),
+            "kv_store table missing from schema. Found tables: {:?}",
+            tables
+        );
+
+        // Verify the expected columns exist
+        let columns = get_column_names(&conn, "kv_store");
+        assert!(
+            columns.contains(&"key".to_string()),
+            "kv_store missing 'key' column. Found columns: {:?}",
+            columns
+        );
+        assert!(
+            columns.contains(&"value".to_string()),
+            "kv_store missing 'value' column. Found columns: {:?}",
+            columns
+        );
+    }
 }

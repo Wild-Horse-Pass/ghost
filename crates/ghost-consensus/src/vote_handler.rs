@@ -2021,4 +2021,168 @@ mod tests {
         // The handler will reject votes from banned nodes in handle_incoming_vote
         // due to the M-4 second ban check before vote submission
     }
+
+    // =========================================================================
+    // Rate Limiter Unit Tests
+    // =========================================================================
+
+    #[test]
+    fn test_rate_limiter_cleanup_removes_stale() {
+        let limiter = RateLimiter::new(100, 20);
+
+        // Create buckets for 3 nodes
+        let node1 = [1u8; 32];
+        let node2 = [2u8; 32];
+        let node3 = [3u8; 32];
+        limiter.check_and_consume(&node1);
+        limiter.check_and_consume(&node2);
+        limiter.check_and_consume(&node3);
+
+        assert_eq!(limiter.bucket_count(), 3);
+
+        // cleanup(0) means max_age_secs=0; elapsed >= 0 for all buckets, so all are removed
+        limiter.cleanup(0);
+
+        assert_eq!(
+            limiter.bucket_count(),
+            0,
+            "cleanup(0) should remove all buckets"
+        );
+    }
+
+    #[test]
+    fn test_rate_limiter_cleanup_keeps_recent() {
+        let limiter = RateLimiter::new(100, 20);
+
+        let node1 = [1u8; 32];
+        let node2 = [2u8; 32];
+        limiter.check_and_consume(&node1);
+        limiter.check_and_consume(&node2);
+
+        assert_eq!(limiter.bucket_count(), 2);
+
+        // cleanup(3600) keeps buckets less than 1 hour old; these are fresh
+        limiter.cleanup(3600);
+
+        assert_eq!(
+            limiter.bucket_count(),
+            2,
+            "cleanup(3600) should keep recently-created buckets"
+        );
+    }
+
+    #[test]
+    fn test_rate_limiter_bucket_count() {
+        let limiter = RateLimiter::new(100, 20);
+
+        let node1 = [1u8; 32];
+        let node2 = [2u8; 32];
+        let node3 = [3u8; 32];
+
+        assert_eq!(limiter.bucket_count(), 0, "starts with 0 buckets");
+
+        limiter.check_and_consume(&node1);
+        limiter.check_and_consume(&node2);
+        limiter.check_and_consume(&node3);
+
+        assert_eq!(
+            limiter.bucket_count(),
+            3,
+            "3 unique nodes should produce 3 buckets"
+        );
+    }
+
+    #[test]
+    fn test_rate_limiter_persistence_roundtrip() {
+        // Use small max_tokens so consumed buckets fall below the 90% persist threshold
+        let limiter = RateLimiter::new(5, 1);
+
+        let node1 = [1u8; 32];
+        let node2 = [2u8; 32];
+        let node3 = [3u8; 32];
+
+        // Each consume brings bucket from 5000 to 4000 millis (below 90% = 4500 threshold)
+        limiter.check_and_consume(&node1);
+        limiter.check_and_consume(&node2);
+        limiter.check_and_consume(&node3);
+
+        assert_eq!(limiter.bucket_count(), 3);
+
+        // Roundtrip through persistence
+        let json = limiter.to_persisted();
+        let restored = RateLimiter::from_persisted(5, 1, &json);
+
+        assert_eq!(
+            restored.bucket_count(),
+            3,
+            "from_persisted should restore all persisted buckets"
+        );
+    }
+
+    #[test]
+    fn test_rate_limiter_from_persisted_invalid_json() {
+        // Corrupt/invalid JSON should produce a fresh limiter without panicking
+        let limiter = RateLimiter::from_persisted(100, 20, "THIS IS NOT JSON {{{");
+
+        assert_eq!(
+            limiter.bucket_count(),
+            0,
+            "Invalid JSON should produce a fresh limiter with 0 buckets"
+        );
+
+        // Ensure the limiter is still functional
+        let node = [1u8; 32];
+        assert!(
+            limiter.check_and_consume(&node),
+            "Fresh limiter from invalid JSON should still work"
+        );
+    }
+
+    #[test]
+    fn test_rate_limiter_from_persisted_empty() {
+        // "[]" is valid JSON but not a valid PersistedRateLimiterState (expects object)
+        let limiter = RateLimiter::from_persisted(100, 20, "[]");
+
+        assert_eq!(
+            limiter.bucket_count(),
+            0,
+            "Empty array JSON should produce a valid limiter with 0 buckets"
+        );
+    }
+
+    #[test]
+    fn test_pending_proposal_count_starts_zero() {
+        let identity = create_test_identity();
+        let voting_manager = Arc::new(VotingManager::new(100));
+        let handler = VoteHandler::new(identity, voting_manager);
+
+        assert_eq!(
+            handler.pending_proposal_count(),
+            0,
+            "Freshly created VoteHandler should have 0 pending proposals"
+        );
+    }
+
+    #[test]
+    fn test_elder_management_add_remove() {
+        let identity = create_test_identity();
+        let voting_manager = Arc::new(VotingManager::new(100));
+        let handler = VoteHandler::new(identity, voting_manager);
+
+        // Add 3 elders
+        handler.add_elder([10u8; 32]);
+        handler.add_elder([20u8; 32]);
+        handler.add_elder([30u8; 32]);
+
+        assert_eq!(handler.elder_count(), 3, "Should have 3 elders after adding 3");
+
+        // Remove 1 elder
+        handler.remove_elder(&[20u8; 32]);
+
+        assert_eq!(
+            handler.elder_count(),
+            2,
+            "Should have 2 elders after removing 1"
+        );
+    }
 }
