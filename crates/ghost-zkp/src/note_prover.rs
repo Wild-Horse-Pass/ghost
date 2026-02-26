@@ -173,26 +173,6 @@ impl NoteProver {
         let circuit = self.build_circuit(witness)?;
         let public_inputs = self.compute_public_inputs(witness)?;
 
-        // Verify constraints first
-        let test_circuit = self.build_circuit(witness)?;
-        let mut cs = TestConstraintSystem::<Fr>::new();
-        test_circuit
-            .synthesize(&mut cs)
-            .map_err(|e| ZkError::SynthesisError(format!("Synthesis failed: {:?}", e)))?;
-
-        if !cs.is_satisfied() {
-            let unsatisfied = cs.which_is_unsatisfied();
-            return Err(ZkError::ProvingError(format!(
-                "Circuit constraints not satisfied: {:?}",
-                unsatisfied
-            )));
-        }
-
-        debug!(
-            "NoteSpendCircuit satisfied with {} constraints",
-            cs.num_constraints()
-        );
-
         // CR-2: Reject dummy circuits at proof generation time
         debug_assert!(
             !circuit.is_dummy,
@@ -227,6 +207,27 @@ impl NoteProver {
             }
             #[cfg(test)]
             {
+                // Only run constraint verification in test mode where we need
+                // the constraint count for simulated proofs
+                let test_circuit = self.build_circuit(witness)?;
+                let mut cs = TestConstraintSystem::<Fr>::new();
+                test_circuit
+                    .synthesize(&mut cs)
+                    .map_err(|e| ZkError::SynthesisError(format!("Synthesis failed: {:?}", e)))?;
+
+                if !cs.is_satisfied() {
+                    let unsatisfied = cs.which_is_unsatisfied();
+                    return Err(ZkError::ProvingError(format!(
+                        "Circuit constraints not satisfied: {:?}",
+                        unsatisfied
+                    )));
+                }
+
+                debug!(
+                    "NoteSpendCircuit satisfied with {} constraints",
+                    cs.num_constraints()
+                );
+
                 warn!("Using simulated proof (test mode only)");
                 self.generate_simulated_proof(witness, cs.num_constraints())
             }
