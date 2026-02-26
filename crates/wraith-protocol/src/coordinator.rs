@@ -574,10 +574,6 @@ pub struct WraithCoordinator {
     /// CRITICAL PRIVACY: coordinator verifies validity without knowing submitter identity.
     /// Each batch contains SPLIT_RATIO tokens and one final address.
     anonymous_token_batches: Vec<AnonymousTokenBatch>,
-    /// Legacy anonymous tokens (deprecated - use anonymous_token_batches instead)
-    /// Kept for backward compatibility with existing sessions
-    #[allow(dead_code)]
-    anonymous_tokens: Vec<UnblindedToken>,
     /// Tokens that have been used (for replay prevention) - time-based LRU cache
     /// SECURITY: Prevents resubmission of the same token
     /// M-WRAITH-1: Uses time-based LRU eviction instead of clearing all tokens at once
@@ -640,7 +636,6 @@ impl WraithCoordinator {
             phase1_outputs: Vec::new(),
             broadcast_fn: None,
             anonymous_token_batches: Vec::new(),
-            anonymous_tokens: Vec::new(), // Legacy field, deprecated
             used_tokens: TokenCache::default(),
             submitted_addresses: HashSet::new(),
             utxo_verifier: None,
@@ -1049,34 +1044,6 @@ impl WraithCoordinator {
     /// Use `submit_tokens_with_address_anonymous` instead, which accepts both
     /// tokens and final address in a single anonymous submission without ghost_id.
     ///
-    /// Submit final output address for Phase 2 (REMOVED - PRIVACY LEAK!)
-    ///
-    /// # CRIT-1 FIX: This method has been disabled
-    ///
-    /// **CRITICAL PRIVACY ISSUE:** This method took `ghost_id` which linked
-    /// the participant's identity to their final output address. This defeated the
-    /// privacy guarantees of the blind signature scheme.
-    ///
-    /// Use `submit_tokens_with_address_anonymous` instead, which accepts both
-    /// tokens and final address in a single anonymous submission without ghost_id.
-    #[deprecated(
-        since = "1.7.0",
-        note = "PRIVACY LEAK: Use submit_tokens_with_address_anonymous instead"
-    )]
-    pub fn submit_final_address(
-        &mut self,
-        _ghost_id: &str,
-        _address: String,
-    ) -> Result<(), WraithError> {
-        // CRIT-1 FIX: This method is now disabled to prevent privacy leaks
-        Err(WraithError::InvalidInput(
-            "submit_final_address is disabled due to privacy leak. \
-             Use submit_tokens_with_address_anonymous instead, which accepts \
-             both tokens and final address without linking to participant identity."
-                .to_string(),
-        ))
-    }
-
     /// Submit unblinded tokens with final address anonymously
     ///
     /// CRITICAL PRIVACY FIX (CRIT-1): This method takes both tokens AND final address
@@ -1214,32 +1181,6 @@ impl WraithCoordinator {
         Ok(())
     }
 
-    /// Submit unblinded tokens anonymously (REMOVED - PRIVACY LEAK!)
-    ///
-    /// # CRIT-1 FIX: This method has been disabled
-    ///
-    /// This method is DEPRECATED because it requires a separate call to
-    /// `submit_final_address` which takes ghost_id, creating a privacy leak.
-    ///
-    /// Use `submit_tokens_with_address_anonymous` instead, which accepts both
-    /// tokens and final address in a single anonymous submission.
-    #[deprecated(
-        since = "1.7.0",
-        note = "Use submit_tokens_with_address_anonymous instead to avoid privacy leak via submit_final_address"
-    )]
-    pub fn submit_tokens_anonymous(
-        &mut self,
-        _tokens: Vec<UnblindedToken>,
-    ) -> Result<(), WraithError> {
-        // CRIT-1 FIX: This method is now disabled to prevent privacy leaks
-        Err(WraithError::InvalidInput(
-            "submit_tokens_anonymous is disabled due to privacy leak. \
-             Use submit_tokens_with_address_anonymous instead, which accepts \
-             both tokens and final address in a single anonymous call."
-                .to_string(),
-        ))
-    }
-
     /// Compute a session-and-key-bound hash of a token for replay prevention
     ///
     /// WR-C4: Token hash is bound to session_id to prevent cross-session replay.
@@ -1293,15 +1234,11 @@ impl WraithCoordinator {
     }
 
     /// Check if ready to build Phase 1 transaction
-    ///
-    /// CRIT-1 FIX: Only uses anonymous_token_batches, not legacy anonymous_tokens
     pub fn ready_for_phase1(&self) -> bool {
         // Need all participants to have inputs
         let all_have_inputs = self.participants.values().all(|p| p.input.is_some());
 
         // Need one anonymous batch per participant (each batch has SPLIT_RATIO tokens + final address)
-        // CRIT-1 FIX: Only use anonymous_token_batches which include final addresses
-        // Legacy anonymous_tokens path is disabled due to privacy leak
         let have_enough_batches = self.anonymous_token_batches.len() >= self.participants.len();
 
         all_have_inputs && have_enough_batches
@@ -1314,13 +1251,10 @@ impl WraithCoordinator {
 
     /// Get count of anonymous tokens submitted (total across all batches)
     pub fn anonymous_token_count(&self) -> usize {
-        let batch_tokens: usize = self
-            .anonymous_token_batches
+        self.anonymous_token_batches
             .iter()
             .map(|b| b.tokens.len())
-            .sum();
-        // Include legacy tokens for backward compatibility
-        batch_tokens + self.anonymous_tokens.len()
+            .sum()
     }
 
     /// Build Phase 1 (split) transaction
@@ -1365,9 +1299,6 @@ impl WraithCoordinator {
             }
         }
 
-        // CRIT-1 FIX: Only use anonymous_token_batches which include both tokens AND final addresses
-        // Legacy anonymous_tokens path has been removed due to privacy leak
-
         // WR-C1: CRYPTOGRAPHIC SHUFFLE before processing to break submission order correlation
         // Note: Batches are also shuffled immediately on receipt (HIGH-2 fix)
         self.shuffle_anonymous_token_batches()?;
@@ -1404,9 +1335,7 @@ impl WraithCoordinator {
             .ok_or_else(|| WraithError::MissingData("Internal error: phase1_tx was not set".into()))
     }
 
-    // CRIT-1 FIX: shuffle_anonymous_tokens removed - legacy anonymous_tokens path is disabled
-
-    /// CRIT-1 FIX: Cryptographically shuffle anonymous token batches
+    /// Cryptographically shuffle anonymous token batches
     ///
     /// This shuffle keeps tokens and final addresses together while randomizing
     /// the order of batches. This prevents an attacker from correlating
@@ -1454,8 +1383,6 @@ impl WraithCoordinator {
     /// SECURITY: Call this immediately after building each phase transaction
     /// to minimize the window during which sensitive data could be compromised.
     pub fn clear_sensitive_data_post_build(&mut self) {
-        // Clear anonymous tokens and batches - no longer needed after building tx
-        self.anonymous_tokens.clear();
         // Note: Don't clear anonymous_token_batches yet - needed for Phase 2 final addresses!
 
         // Clear participant-linked data
@@ -1969,8 +1896,7 @@ impl WraithCoordinator {
         // Clear used tokens for this session
         self.used_tokens.clear();
 
-        // Clear anonymous token pool and batches
-        self.anonymous_tokens.clear();
+        // Clear anonymous token batches
         self.anonymous_token_batches.clear();
 
         // Clear submitted addresses
@@ -2115,8 +2041,7 @@ impl WraithCoordinator {
         // Clear used tokens (privacy: prevents cross-session token correlation)
         self.used_tokens.clear();
 
-        // Clear anonymous tokens pool and batches
-        self.anonymous_tokens.clear();
+        // Clear anonymous token batches
         self.anonymous_token_batches.clear();
 
         Some(audit)
@@ -2440,14 +2365,10 @@ mod tests {
         assert_eq!(coord.anonymous_batch_count(), 1);
         assert_eq!(coord.anonymous_token_count(), crate::SPLIT_RATIO);
 
-        // After clear, anonymous batches should be cleared from anonymous_tokens legacy field
-        // Note: anonymous_token_batches are NOT cleared as they're needed for Phase 2
-        // This test verifies the legacy anonymous_tokens are cleared
+        // After clear, anonymous_token_batches are NOT cleared as they're needed for Phase 2
         coord.clear_sensitive_data_post_build();
 
         // The batch count should still be 1 (needed for Phase 2 final addresses)
-        // But the legacy anonymous_tokens field (not used with new API) should be cleared
-        // anonymous_token_count includes batch tokens which are kept for Phase 2
         assert_eq!(coord.anonymous_batch_count(), 1, "Batches kept for Phase 2");
     }
 

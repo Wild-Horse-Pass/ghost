@@ -767,29 +767,6 @@ impl CoordinatorSigner {
 
     /// Create a new signing nonce (unbound - DISABLED FOR SECURITY)
     ///
-    /// SEC-WRAITH-2/C-6: This function has been disabled because unbound nonces are
-    /// a security vulnerability. Use `create_nonce_for_participant()` instead.
-    ///
-    /// # Returns
-    ///
-    /// Always returns an error. This is intentional to prevent use of insecure unbound nonces.
-    /// C-6: Changed from panic to Result to prevent process crash.
-    #[deprecated(
-        since = "0.2.0",
-        note = "DISABLED: Use create_nonce_for_participant() to bind nonces to participants"
-    )]
-    #[allow(unused_variables)]
-    pub fn create_nonce(&mut self) -> Result<PublicNonce, WraithError> {
-        // SEC-WRAITH-2/C-6: Deliberately disabled - unbound nonces are insecure
-        // C-6: Return error instead of panicking
-        Err(WraithError::SecurityError(
-            "create_nonce() is disabled for security. \
-             Use create_nonce_for_participant() to bind nonces to participants. \
-             Unbound nonces allow nonce hijacking attacks."
-                .to_string(),
-        ))
-    }
-
     /// Step 2: Sign a blinded challenge with participant verification
     ///
     /// Computes s = k + c'*x where k is the secret nonce and x is the signing key.
@@ -833,8 +810,6 @@ impl CoordinatorSigner {
                 ));
             }
         }
-        // Note: If nonce is unbound (from deprecated create_nonce), we allow it for backwards compat
-
         // C-WRAITH-1 FIX: NOW remove the nonce - verification has passed
         // CRIT-7: Return error instead of panicking if nonce was removed between check and removal
         // This handles race conditions or internal inconsistencies gracefully
@@ -875,33 +850,6 @@ impl CoordinatorSigner {
             signature_scalar: s.secret_bytes(),
             session_id: challenge.session_id,
         })
-    }
-
-    /// Sign a blinded challenge (unverified - DISABLED FOR SECURITY)
-    ///
-    /// SEC-WRAITH-3: This function has been disabled because it does not verify
-    /// that the requestor matches the nonce binding. Use
-    /// `sign_blinded_challenge_for_participant()` instead.
-    ///
-    /// # Returns
-    ///
-    /// Always returns an error. This is intentional to prevent use of unverified signing.
-    #[deprecated(
-        since = "0.2.0",
-        note = "DISABLED: Use sign_blinded_challenge_for_participant() to verify requestor"
-    )]
-    #[allow(unused_variables)]
-    pub fn sign_blinded_challenge(
-        &mut self,
-        challenge: &BlindedChallenge,
-    ) -> Result<BlindSignatureResponse, WraithError> {
-        // SEC-WRAITH-3: Deliberately disabled - unverified signing is insecure
-        Err(WraithError::SecurityError(
-            "sign_blinded_challenge() is disabled for security. \
-             Use sign_blinded_challenge_for_participant() to verify the requestor \
-             matches the nonce binding. Unverified signing allows nonce hijacking."
-                .to_string(),
-        ))
     }
 
     /// Verify a final unblinded signature
@@ -1839,70 +1787,6 @@ mod tests {
         assert!(
             result.is_ok(),
             "Different participant should have separate limit"
-        );
-    }
-
-    /// SEC-WRAITH-TEST-1/C-6: Verify deprecated create_nonce() returns error
-    ///
-    /// The unbound nonce function is disabled for security - it allows nonce
-    /// hijacking attacks. C-6: Changed from panic to error return.
-    #[test]
-    #[allow(deprecated)]
-    fn test_deprecated_nonce_returns_error() {
-        let session_id = [9u8; 32];
-        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
-
-        // C-6: This should return an error, not panic
-        let result = signer.create_nonce();
-
-        assert!(
-            result.is_err(),
-            "create_nonce() should return error, not succeed"
-        );
-
-        // Verify the error message is correct
-        let err = result.unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("disabled for security"),
-            "Error message should mention security: {}",
-            msg
-        );
-    }
-
-    /// SEC-WRAITH-TEST-2: Verify deprecated sign_blinded_challenge() returns error
-    ///
-    /// The unverified signing function is disabled for security - it doesn't
-    /// verify the requestor matches the nonce binding. This test verifies it
-    /// properly returns a SecurityError.
-    #[test]
-    #[allow(deprecated)]
-    fn test_deprecated_sign_returns_error() {
-        let session_id = [9u8; 32];
-        let address = generate_test_address();
-        let message = address.serialize().to_vec();
-        let participant = "test_participant";
-
-        let mut signer = CoordinatorSigner::new(&session_id).unwrap();
-
-        // Create a proper bound nonce
-        let nonce = signer.create_nonce_for_participant(participant).unwrap();
-
-        let context = BlindingContext::new(message, signer.public_key(), &nonce).unwrap();
-        let challenge = context.create_blinded_challenge().unwrap();
-
-        // Using the deprecated sign_blinded_challenge should return SecurityError
-        let result = signer.sign_blinded_challenge(&challenge);
-        assert!(
-            result.is_err(),
-            "Deprecated sign_blinded_challenge should return error"
-        );
-
-        let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("disabled"),
-            "Error should mention function is disabled: {}",
-            err
         );
     }
 

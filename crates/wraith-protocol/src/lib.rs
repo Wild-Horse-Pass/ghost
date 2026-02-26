@@ -114,55 +114,6 @@ pub const EARLY_EXECUTION_THRESHOLD: f64 = 0.75;
 /// Supermajority for refund vote (67%)
 pub const REFUND_VOTE_THRESHOLD: f64 = 0.67;
 
-/// OP_RETURN marker for Phase 1 (split)
-///
-/// **M-22 DEPRECATED**: Plain-text markers leak protocol usage on-chain.
-/// Use `generate_encrypted_marker_v3()` for new sessions.
-/// Retained ONLY for verifying legacy transactions.
-/// Removal target: v2.0.0 (after all pre-v2 transactions have finalized).
-#[deprecated(
-    since = "1.6.0",
-    note = "M-22: Use generate_encrypted_marker_v3() — plain-text markers leak protocol usage"
-)]
-pub const WRAITH_PHASE1_MARKER: &[u8] = b"WR1";
-
-/// OP_RETURN marker for Phase 2 (merge)
-///
-/// **M-22 DEPRECATED**: Plain-text markers leak protocol usage on-chain.
-/// Use `generate_encrypted_marker_v3()` for new sessions.
-/// Retained ONLY for verifying legacy transactions.
-/// Removal target: v2.0.0 (after all pre-v2 transactions have finalized).
-#[deprecated(
-    since = "1.6.0",
-    note = "M-22: Use generate_encrypted_marker_v3() — plain-text markers leak protocol usage"
-)]
-pub const WRAITH_PHASE2_MARKER: &[u8] = b"WR2";
-
-/// 3.16 SECURITY: Generate encrypted OP_RETURN marker (v2 — legacy)
-///
-/// Encrypts the phase marker using the session ID as a key, making the marker
-/// indistinguishable from random data to observers who don't know the session ID.
-/// This prevents blockchain fingerprinting of Wraith transactions.
-///
-/// **Deprecated**: Use `generate_encrypted_marker_v3()` which absorbs the participant
-/// count into the hash, eliminating the plaintext count leak.
-///
-/// # Arguments
-/// * `phase` - 1 for split, 2 for merge
-/// * `session_id` - The 32-byte session ID used as encryption key
-///
-/// # Returns
-/// A 32-byte encrypted marker that looks random but can be verified by participants
-pub fn generate_encrypted_marker(phase: u8, session_id: &[u8; 32]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-
-    let mut hasher = Sha256::new();
-    hasher.update(b"wraith/op-return-marker/v2");
-    hasher.update([phase]);
-    hasher.update(session_id);
-    hasher.finalize().into()
-}
-
 /// Generate encrypted OP_RETURN marker v3 — absorbs participant count
 ///
 /// The participant count is included in the SHA256 input, so the OP_RETURN is
@@ -218,50 +169,6 @@ pub fn verify_encrypted_marker_v3(
         }
     }
     None
-}
-
-/// 3.16 SECURITY: Verify an encrypted OP_RETURN marker (v2 — legacy)
-///
-/// Checks if a marker matches the expected encrypted marker for a given phase
-/// and session ID. Returns the phase number (1 or 2) if valid, None otherwise.
-///
-/// # Arguments
-/// * `marker` - The 32-byte marker from the OP_RETURN output
-/// * `session_id` - The 32-byte session ID used as encryption key
-///
-/// # Returns
-/// * `Some(1)` if this is a valid Phase 1 marker
-/// * `Some(2)` if this is a valid Phase 2 marker
-/// * `None` if the marker doesn't match either phase
-pub fn verify_encrypted_marker(marker: &[u8; 32], session_id: &[u8; 32]) -> Option<u8> {
-    // Check Phase 1
-    let phase1_expected = generate_encrypted_marker(1, session_id);
-    if marker == &phase1_expected {
-        return Some(1);
-    }
-
-    // Check Phase 2
-    let phase2_expected = generate_encrypted_marker(2, session_id);
-    if marker == &phase2_expected {
-        return Some(2);
-    }
-
-    None
-}
-
-/// 3.16 SECURITY: Check if a marker is a legacy plain-text marker
-///
-/// Returns the phase number if this is a legacy WR1/WR2 marker, None otherwise.
-/// Used for backwards compatibility with pre-v2 transactions.
-#[allow(deprecated)] // M-22: Intentional use for backward-compat verification
-pub fn check_legacy_marker(marker: &[u8]) -> Option<u8> {
-    if marker == WRAITH_PHASE1_MARKER {
-        Some(1)
-    } else if marker == WRAITH_PHASE2_MARKER {
-        Some(2)
-    } else {
-        None
-    }
 }
 
 #[cfg(test)]

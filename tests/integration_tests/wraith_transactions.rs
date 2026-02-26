@@ -9,12 +9,9 @@
 use std::str::FromStr;
 
 use bitcoin::{Address, Network, ScriptBuf, Txid};
-#[allow(deprecated)]
 use wraith_protocol::{
-    check_legacy_marker, generate_encrypted_marker, generate_encrypted_marker_v3,
-    verify_encrypted_marker, verify_encrypted_marker_v3, Phase, PhaseExecution, PhaseState,
+    generate_encrypted_marker_v3, verify_encrypted_marker_v3, Phase, PhaseExecution, PhaseState,
     WraithDenomination, WraithInput, WraithTransactionBuilder, FEE_DIVISOR, SPLIT_RATIO,
-    WRAITH_PHASE1_MARKER, WRAITH_PHASE2_MARKER,
 };
 
 // =============================================================================
@@ -526,10 +523,6 @@ fn test_720_v3_marker_is_exactly_32_bytes() {
         32,
         "v3 marker must be exactly 32 bytes — no plaintext leak"
     );
-
-    // Legacy v2 also 32 bytes
-    let legacy = generate_encrypted_marker(1, &session_id);
-    assert_eq!(legacy.len(), 32);
 }
 
 #[test]
@@ -593,22 +586,6 @@ fn test_723_v3_phase1_vs_phase2_different_markers() {
     assert_eq!(r1, Some((1, count)));
     let r2 = verify_encrypted_marker_v3(&marker_p2, &session_id, 400);
     assert_eq!(r2, Some((2, count)));
-
-    // Legacy v2 verification still works for old markers
-    let legacy_p1 = generate_encrypted_marker(1, &session_id);
-    assert_eq!(verify_encrypted_marker(&legacy_p1, &session_id), Some(1));
-}
-
-#[test]
-#[allow(deprecated)]
-fn test_724_check_legacy_marker() {
-    assert_eq!(check_legacy_marker(WRAITH_PHASE1_MARKER), Some(1));
-    assert_eq!(check_legacy_marker(WRAITH_PHASE2_MARKER), Some(2));
-    assert_eq!(check_legacy_marker(b"WR1"), Some(1));
-    assert_eq!(check_legacy_marker(b"WR2"), Some(2));
-    assert_eq!(check_legacy_marker(b"WR3"), None);
-    assert_eq!(check_legacy_marker(b""), None);
-    assert_eq!(check_legacy_marker(b"WRAITH"), None);
 }
 
 // =============================================================================

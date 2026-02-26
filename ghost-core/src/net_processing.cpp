@@ -21,6 +21,7 @@
 #include <deploymentstatus.h>
 #include <flatfile.h>
 #include <haze/checkpoint.h>
+#include <haze/checkpoint_signing.h>
 #include <haze/chunk_downloader.h>
 #include <haze/haze_p2p.h>
 #include <haze/stripped_block.h>
@@ -4971,6 +4972,15 @@ void PeerManagerImpl::ProcessMessage(CNode& pfrom, const std::string& msg_type, 
             LogDebug(BCLog::HAZE, "Checkpoint manifest bad version %u from peer %d\n",
                 manifest.version, pfrom.GetId());
             Misbehaving(*peer, "bad checkpoint version");
+            return;
+        }
+
+        // Verify checkpoint signature against trusted keys
+        if (!haze::VerifyCheckpoint(manifest)) {
+            LogPrintLevel(BCLog::HAZE, BCLog::Level::Warning,
+                "Checkpoint manifest from peer %d has INVALID signature for height %d\n",
+                pfrom.GetId(), manifest.height);
+            Misbehaving(*peer, "checkpoint with invalid signature");
             return;
         }
 
