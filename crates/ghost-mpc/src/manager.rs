@@ -1270,6 +1270,60 @@ mod tests {
     }
 
     #[test]
+    fn test_contribution_wrong_params_hash_rejected() {
+        let (manager, _temp) = create_test_manager();
+        manager.ensure_genesis_initialized().unwrap();
+
+        // Generate a valid contribution
+        let (new_params, mut contribution) = manager.generate_contribution("node1").unwrap();
+
+        // Tamper: modify prev_params_hash by 1 byte
+        contribution.prev_params_hash[0] ^= 0xFF;
+
+        // Verification should reject due to hash chain mismatch
+        let result = manager.verify_contribution(&new_params, &contribution);
+        assert!(result.is_err(), "Tampered prev_params_hash should be rejected");
+        let err = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error"),
+        };
+        assert!(
+            err.contains("chain") || err.contains("hash") || err.contains("mismatch"),
+            "Error should indicate chain/hash mismatch, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_commitment_hash_mismatch_rejected() {
+        let (manager, _temp) = create_test_manager();
+        manager.ensure_genesis_initialized().unwrap();
+
+        // Record a commitment with hash A
+        let commitment = manager.create_commitment("node1").unwrap();
+        let commitment_hash = manager.record_commitment(commitment).unwrap();
+
+        // Generate contribution claiming a DIFFERENT commitment hash
+        let mut wrong_hash = commitment_hash;
+        wrong_hash[0] ^= 0xFF;
+
+        let result = manager.generate_contribution_with_commitment("node1", wrong_hash);
+        assert!(
+            result.is_err(),
+            "Contribution with wrong commitment hash should be rejected"
+        );
+        let err = match result {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("Expected error for wrong commitment hash"),
+        };
+        assert!(
+            err.contains("commitment") || err.contains("not found"),
+            "Error should mention commitment mismatch, got: {}",
+            err
+        );
+    }
+
+    #[test]
     fn test_sync_contribution_count_lower_rejected() {
         let temp_dir = TempDir::new().unwrap();
 

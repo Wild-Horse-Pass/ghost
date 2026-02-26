@@ -772,19 +772,25 @@ async fn test_657_noise_connection_pool_basic() {
 
 #[tokio::test]
 async fn test_658_noise_connection_pool_establishment() {
-    use ghost_consensus::noise::NoiseKeypair;
+    use ghost_consensus::noise::{NoiseConfig, NoiseKeypair};
     use ghost_consensus::noise_pool::{NoiseConnectionPool, NoisePoolConfig};
     use tokio::net::TcpListener;
 
-    // Create two pools (simulating two peers)
+    // Create two pools (simulating two peers) with allow_unknown_peers for test
+    // (default config rejects unknown peers per B-1 secure defaults)
     let keypair1 = NoiseKeypair::generate();
     let keypair2 = NoiseKeypair::generate();
 
+    let test_config = NoisePoolConfig {
+        noise: NoiseConfig { allow_unknown_peers: true, ..NoiseConfig::default() },
+        ..NoisePoolConfig::default()
+    };
+
     let pool1 = std::sync::Arc::new(
-        NoiseConnectionPool::new(keypair1.clone(), NoisePoolConfig::default()).unwrap(),
+        NoiseConnectionPool::new(keypair1.clone(), test_config.clone()).unwrap(),
     );
     let pool2 = std::sync::Arc::new(
-        NoiseConnectionPool::new(keypair2.clone(), NoisePoolConfig::default()).unwrap(),
+        NoiseConnectionPool::new(keypair2.clone(), test_config).unwrap(),
     );
 
     // Start listener for pool2

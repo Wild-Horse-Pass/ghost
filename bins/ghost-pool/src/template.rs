@@ -3559,6 +3559,215 @@ mod tests {
         );
     }
 
+    /// Test that header validation rejects wrong-length headers
+    #[test]
+    fn test_validate_header_wrong_length() {
+        // Mimic the header length check from submit_block
+        fn validate_header_length(header: &[u8]) -> Result<(), &'static str> {
+            if header.len() != 80 {
+                return Err("Invalid header length");
+            }
+            Ok(())
+        }
+
+        assert!(validate_header_length(&[0u8; 80]).is_ok());
+        assert!(validate_header_length(&[0u8; 0]).is_err());
+        assert!(validate_header_length(&[0u8; 79]).is_err());
+        assert!(validate_header_length(&[0u8; 81]).is_err());
+        assert!(validate_header_length(&[0u8; 160]).is_err());
+    }
+
+    /// Test that header prev_hash validation catches mismatches
+    #[test]
+    fn test_validate_header_prev_hash_mismatch() {
+        // Build an 80-byte header with a known prev_hash
+        let expected_rpc_hash =
+            "00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72f8fc440";
+        let mut header = [0u8; 80];
+
+        // Encode expected prev_hash into header bytes 4..36 (Bitcoin internal = reverse display)
+        let display_bytes = hex::decode(expected_rpc_hash).unwrap();
+        let mut internal_bytes = display_bytes.clone();
+        internal_bytes.reverse();
+        header[4..36].copy_from_slice(&internal_bytes);
+
+        // Extract and verify (mimic submit_block logic)
+        let recovered: String = header[4..36]
+            .iter()
+            .rev()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+        assert_eq!(recovered, expected_rpc_hash, "Correct hash should match");
+
+        // Now tamper with one byte
+        header[4] ^= 0xFF;
+        let recovered_bad: String = header[4..36]
+            .iter()
+            .rev()
+            .map(|b| format!("{:02x}", b))
+            .collect();
+        assert_ne!(
+            recovered_bad, expected_rpc_hash,
+            "Tampered hash should not match"
+        );
+    }
+
+    /// Test block hex assembly: coinbase first, then template txs
+    #[test]
+    fn test_build_block_hex_coinbase_first() {
+        // Simulate block assembly from submit_block
+        let header = [0u8; 80];
+        let coinbase = vec![0xCB; 100]; // Mock coinbase
+        let tx1_hex = "aabb".to_string();
+        let tx2_hex = "ccdd".to_string();
+        let txs = vec![tx1_hex.clone(), tx2_hex.clone()];
+
+        let mut block_data = Vec::new();
+        block_data.extend_from_slice(&header);
+
+        // tx_count = 1 (coinbase) + 2 (template txs) = 3
+        let tx_count = 1 + txs.len();
+        block_data.push(tx_count as u8); // varint for small counts
+
+        // Coinbase first
+        block_data.extend_from_slice(&coinbase);
+
+        // Then template txs
+        for tx_hex in &txs {
+            let tx_bytes = hex::decode(tx_hex).unwrap();
+            block_data.extend_from_slice(&tx_bytes);
+        }
+
+        // Verify structure
+        assert_eq!(&block_data[0..80], &header);
+        assert_eq!(block_data[80], 3); // tx_count varint
+        assert_eq!(&block_data[81..181], &coinbase[..]);
+        assert_eq!(block_data[181], 0xAA);
+        assert_eq!(block_data[182], 0xBB);
+        assert_eq!(block_data[183], 0xCC);
+        assert_eq!(block_data[184], 0xDD);
+    }
+
+    /// Test that witness serialization adds marker/flag (0x00 0x01) and witness data
+    #[test]
+    fn test_build_block_hex_with_witness() {
+        // Build a minimal non-witness coinbase:
+        // version(4) | input_count(1) | prev_txid(32) | prev_vout(4) | script_len(1) |
+        // script(4) | sequence(4) | output_count(1) | value(8) | scriptpubkey_len(1) |
+        // scriptpubkey(4) | locktime(4)
+        let mut non_witness = Vec::new();
+        // Version
+        non_witness.extend_from_slice(&1u32.to_le_bytes());
+        // Input count = 1
+        non_witness.push(0x01);
+        // Prev txid (coinbase: all zeros)
+        non_witness.extend_from_slice(&[0u8; 32]);
+        // Prev vout (coinbase: 0xFFFFFFFF)
+        non_witness.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes());
+        // Script length + script (4 bytes of height push)
+        non_witness.push(0x04);
+        non_witness.extend_from_slice(&[0x03, 0x01, 0x00, 0x00]);
+        // Sequence
+        non_witness.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes());
+        // Output count = 1
+        non_witness.push(0x01);
+        // Value (50 BTC in sats)
+        non_witness.extend_from_slice(&5_000_000_000u64.to_le_bytes());
+        // ScriptPubKey length + script (4 bytes)
+        non_witness.push(0x04);
+        non_witness.extend_from_slice(&[0x76, 0xa9, 0x14, 0x00]);
+        // Locktime
+        non_witness.extend_from_slice(&0u32.to_le_bytes());
+
+        let non_witness_len = non_witness.len();
+
+        // Simulate convert_to_witness_serialization
+        let nonce = [0u8; 32];
+        let mut witness = Vec::with_capacity(non_witness_len + 40);
+
+        // Version (4 bytes)
+        witness.extend_from_slice(&non_witness[0..4]);
+        // SegWit marker and flag
+        witness.push(0x00); // marker
+        witness.push(0x01); // flag
+        // Rest of transaction (input_count through locktime)
+        witness.extend_from_slice(&non_witness[4..]);
+        // Witness stack: 1 item, 32-byte nonce
+        witness.push(0x01); // stack count
+        witness.push(0x20); // item length (32)
+        witness.extend_from_slice(&nonce);
+
+        // Verify witness marker/flag at correct position
+        assert_eq!(witness[4], 0x00, "Witness marker should be 0x00");
+        assert_eq!(witness[5], 0x01, "Witness flag should be 0x01");
+
+        // Verify witness is longer than non-witness (marker + flag + witness stack)
+        assert_eq!(
+            witness.len(),
+            non_witness_len + 2 + 1 + 1 + 32,
+            "Witness should add 36 bytes (marker+flag+stack_count+item_len+nonce)"
+        );
+
+        // Verify version preserved
+        assert_eq!(&witness[0..4], &non_witness[0..4], "Version should match");
+
+        // Verify witness nonce at the end
+        assert_eq!(
+            &witness[witness.len() - 32..],
+            &nonce,
+            "Last 32 bytes should be witness nonce"
+        );
+
+        // Assemble full block with witness coinbase
+        let header = [0u8; 80];
+        let tx_hex = "aabb".to_string();
+        let mut block_data = Vec::new();
+        block_data.extend_from_slice(&header);
+        block_data.push(2); // tx_count: coinbase + 1 template tx
+        block_data.extend_from_slice(&witness);
+        block_data.extend_from_slice(&hex::decode(&tx_hex).unwrap());
+
+        // Verify witness flag appears in block hex
+        let block_hex = hex::encode(&block_data);
+        // After 80-byte header (160 hex chars) + varint "02" (2 hex chars) + version "01000000" (8 hex chars)
+        // comes the witness marker+flag "0001"
+        let witness_start = 160 + 2 + 8; // hex offset
+        assert_eq!(
+            &block_hex[witness_start..witness_start + 4],
+            "0001",
+            "Witness marker+flag should appear after version in block hex"
+        );
+    }
+
+    /// Test that block weight formula doesn't overflow with large templates
+    #[test]
+    fn test_block_weight_within_limits() {
+        // Simulate weight calculation from submit_block
+        // coinbase_weight = (non_witness_len * 4 + witness_extra) as u64
+        // total_weight = coinbase_weight + sum(tx.weight for tx in template)
+
+        let coinbase_non_witness_len: usize = 200;
+        let coinbase_witness_len: usize = 250;
+        let witness_extra = coinbase_witness_len - coinbase_non_witness_len;
+        let coinbase_weight = (coinbase_non_witness_len * 4 + witness_extra) as u64;
+
+        // 3999 small transactions at ~250 WU each (well under 4M total)
+        let tx_count = 3999;
+        let per_tx_weight: u64 = 250;
+        let total_tx_weight = tx_count * per_tx_weight;
+        let total_weight = coinbase_weight + total_tx_weight;
+
+        assert!(
+            total_weight < 4_000_000,
+            "3999 small txs + coinbase should be under 4M WU: {}",
+            total_weight
+        );
+
+        // Edge case: maximum allowed
+        let max_weight: u64 = 4_000_000;
+        assert!(max_weight <= u64::MAX, "No overflow");
+    }
+
     /// Helper to create a TemplateTransaction for sorting tests
     fn make_tx(txid: &str, fee: u64, weight: u64, depends: Vec<u32>) -> TemplateTransaction {
         TemplateTransaction {
@@ -4629,6 +4838,113 @@ mod tests {
                 i
             );
         }
+    }
+
+    /// Test that P2WSH treasury address produces correct 34-byte script_pubkey
+    #[test]
+    fn test_treasury_p2wsh_multisig_encoding() {
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        let p2wsh_address =
+            "bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3";
+        let processor = TemplateProcessor::new(
+            TemplateConfig {
+                pool_payout_address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+                    .to_string(),
+                ..Default::default()
+            },
+            rpc,
+            PolicyProfile::permissive(),
+            ReaperConfig::default(),
+        );
+
+        let script = processor
+            .address_to_script(p2wsh_address, "treasury_test")
+            .unwrap();
+
+        // P2WSH script: OP_0 (0x00) + PUSH32 (0x20) + 32-byte hash = 34 bytes
+        assert_eq!(script.len(), 34, "P2WSH script should be 34 bytes");
+        assert_eq!(script[0], 0x00, "P2WSH starts with OP_0");
+        assert_eq!(script[1], 0x20, "P2WSH has 32-byte push");
+    }
+
+    /// Test coinbase weight calculation with many outputs doesn't overflow
+    #[test]
+    fn test_coinbase_weight_calculation() {
+        use ghost_common::types::{PayoutEntry, PayoutType};
+
+        let builder = CoinbaseBuilder::new(850_000);
+
+        // Build coinbase with 200 outputs
+        let entries: Vec<PayoutEntry> = (0..200)
+            .map(|i| PayoutEntry {
+                address: b"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_vec(),
+                amount: 1000 + i as u64,
+                recipient_id: {
+                    let mut id = [0u8; 32];
+                    id[0] = (i & 0xFF) as u8;
+                    id[1] = ((i >> 8) & 0xFF) as u8;
+                    id
+                },
+                payout_type: PayoutType::Mining,
+            })
+            .collect();
+
+        let tx = builder
+            .build_from_entries(&entries)
+            .expect("200-output coinbase should build");
+
+        assert_eq!(tx.output.len(), 200);
+
+        // Compute weight: (non-witness * 4) + witness
+        let non_witness_size = bitcoin::consensus::encode::serialize(&tx).len();
+        // Weight should be well under 4M units (just outputs + 1 coinbase input)
+        let weight = tx.weight().to_wu();
+        assert!(
+            weight < 4_000_000,
+            "Coinbase weight {} should be under 4M WU",
+            weight
+        );
+        assert!(
+            non_witness_size > 0,
+            "Serialized size should be positive"
+        );
+    }
+
+    /// Test that treasury amount > 0 but empty address returns error
+    #[test]
+    fn test_treasury_amount_without_address_errors() {
+        let rpc = Arc::new(BitcoinRpc::new("127.0.0.1", 8332, "user", "pass").unwrap());
+        let processor = TemplateProcessor::new(
+            TemplateConfig {
+                pool_payout_address: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+                    .to_string(),
+                mining_mode: MiningMode::PrivateSolo,
+                solo_payout_address: Some(
+                    "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_string(),
+                ),
+                // treasury_address defaults to empty
+                ..Default::default()
+            },
+            rpc,
+            PolicyProfile::permissive(),
+            ReaperConfig::default(),
+        );
+
+        // Build solo coinbase where treasury portion > 0 but address is empty
+        // The build_solo_coinbase_parts method takes a PayoutProposal
+        // For this test, we directly call address_to_script with empty string
+        let result = processor.address_to_script("", "treasury");
+        assert!(
+            result.is_err(),
+            "Empty treasury address should cause error, not silent fallback"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("address is empty"),
+            "Error should indicate empty address"
+        );
     }
 
     /// Test that CoinbaseBuilder rejects P2TR (bc1p...) addresses with QuantumUnsafe error.

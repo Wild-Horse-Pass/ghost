@@ -1441,6 +1441,320 @@ mod tests {
         assert!(result.is_some());
     }
 
+    /// Helper to create a verifier for tests (accepts proofs in #[cfg(test)] mode)
+    fn test_verifier() -> Arc<ghost_zkp::NoteVerifier> {
+        let prover = ghost_zkp::note_prover::NoteProver::new(4);
+        Arc::new(ghost_zkp::NoteVerifier::for_prover(&prover))
+    }
+
+    /// Test full checkpoint cycle: add txs → propose → vote → finalize
+    #[test]
+    fn test_checkpoint_full_cycle() {
+        let (db, epoch_mgr, handler) = setup();
+
+        // We're the only active node (proposer + validator)
+        epoch_mgr.update_active_nodes(vec![[0x01; 32]]);
+
+        // Set a sign function
+        handler.set_sign_fn(Arc::new(|msg: &[u8]| {
+            let mut sig = [0u8; 64];
+            let len = msg.len().min(64);
+            sig[..len].copy_from_slice(&msg[..len]);
+            sig
+        }));
+
+        let root = epoch_mgr.current_root().unwrap();
+        epoch_mgr.add_valid_root(root, 0).unwrap();
+
+        // Inject 3 transactions directly into confirmed pool
+        // (bypasses Groth16 verification which requires real MPC params)
+        {
+            let mut pool = handler.confirmed_pool.write();
+            for i in 1u8..=3 {
+                let mut change = [0u8; 32];
+                change[0] = i * 10;
+                let mut recipient = [0u8; 32];
+                recipient[0] = i * 20;
+
+                pool.push(L2Transaction {
+                    epoch: 0,
+                    nullifier: [i; 32],
+                    change_commitment: change,
+                    recipient_commitment: recipient,
+                    commitment_root: root,
+                    proof: vec![0u8; 192],
+                    encrypted_change: vec![],
+                    encrypted_recipient: vec![],
+                    timestamp: 0,
+                });
+            }
+        }
+
+        assert_eq!(handler.confirmed_pool_size(), 3);
+
+        // Propose checkpoint
+        let proposal = handler.propose_checkpoint().unwrap().unwrap();
+        assert_eq!(proposal.height, 1);
+        assert_eq!(proposal.transactions.len(), 3);
+        assert_eq!(proposal.proposer, [0x01; 32]);
+
+        // Vote on the checkpoint (we're the only node, so 1 vote = quorum)
+        let hash = proposal.checkpoint_hash();
+        {
+            let mut votes = handler.votes.write();
+            let state = votes
+                .entry(proposal.height)
+                .or_insert_with(|| CheckpointVoteState::new(hash));
+            state.proposal = Some(proposal.clone());
+        }
+
+        let vote = L2CheckpointVoteMessage {
+            height: 1,
+            checkpoint_hash: hash,
+            voter: [0x01; 32],
+            approve: true,
+            signature: [0u8; 64],
+            timestamp: 0,
+        };
+        let finalized = handler.handle_checkpoint_vote(&vote).unwrap();
+        assert!(finalized, "Single node vote should finalize checkpoint");
+
+        // Verify: tree root updated, confirmed pool empty
+        let new_root = epoch_mgr.current_root().unwrap();
+        assert_ne!(new_root, root, "Root should change after checkpoint");
+        assert_eq!(
+            handler.confirmed_pool_size(),
+            0,
+            "Confirmed pool should be drained after finalization"
+        );
+        assert_eq!(epoch_mgr.note_count(), 6); // 3 txs * 2 commitments each
+
+        // Verify DB persisted the checkpoint
+        let checkpoints = db
+            .get_l2_checkpoints_from_height(0, 10)
+            .unwrap();
+        assert!(
+            !checkpoints.is_empty(),
+            "Checkpoint should be persisted to DB"
+        );
+    }
+
+    /// Test tree sync request rate limiting
+    #[test]
+    fn test_tree_sync_request_rate_limiting() {
+        let (_db, _epoch_mgr, handler) = setup();
+
+        let peer = [0x42; 32];
+        let request = L2TreeSyncRequest {
+            requesting_node: peer,
+            from_height: 0,
+            timestamp: 0,
+        };
+
+        // First request should succeed
+        let result1 = handler.handle_tree_sync_request(&request).unwrap();
+        assert!(result1.is_some(), "First sync request should succeed");
+
+        // Second request within 60s should be rate limited (returns None)
+        let result2 = handler.handle_tree_sync_request(&request).unwrap();
+        assert!(
+            result2.is_none(),
+            "Second request within cooldown should be rate limited"
+        );
+
+        // Different peer should still work
+        let other_request = L2TreeSyncRequest {
+            requesting_node: [0x43; 32],
+            from_height: 0,
+            timestamp: 0,
+        };
+        let result3 = handler.handle_tree_sync_request(&other_request).unwrap();
+        assert!(
+            result3.is_some(),
+            "Different peer should not be rate limited"
+        );
+    }
+
+    /// Test that tree sync replays checkpoints so a new peer's root matches the source
+    #[test]
+    fn test_tree_sync_replays_checkpoints() {
+        // === Peer A: build a checkpoint ===
+        let (_db_a, epoch_mgr_a, handler_a) = setup();
+        epoch_mgr_a.update_active_nodes(vec![[0x01; 32]]);
+
+        handler_a.set_sign_fn(Arc::new(|msg: &[u8]| {
+            let mut sig = [0u8; 64];
+            let len = msg.len().min(64);
+            sig[..len].copy_from_slice(&msg[..len]);
+            sig
+        }));
+
+        let root_a = epoch_mgr_a.current_root().unwrap();
+        epoch_mgr_a.add_valid_root(root_a, 0).unwrap();
+
+        // Inject 2 txs into A's confirmed pool
+        {
+            let mut pool = handler_a.confirmed_pool.write();
+            for i in 1u8..=2 {
+                let mut change = [0u8; 32];
+                change[0] = i * 10;
+                let mut recipient = [0u8; 32];
+                recipient[0] = i * 20;
+                pool.push(L2Transaction {
+                    epoch: 0,
+                    nullifier: [i; 32],
+                    change_commitment: change,
+                    recipient_commitment: recipient,
+                    commitment_root: root_a,
+                    proof: vec![],
+                    encrypted_change: vec![],
+                    encrypted_recipient: vec![],
+                    timestamp: 0,
+                });
+            }
+        }
+
+        // Propose + vote to finalize checkpoint on A
+        let proposal = handler_a.propose_checkpoint().unwrap().unwrap();
+        let hash = proposal.checkpoint_hash();
+        {
+            let mut votes = handler_a.votes.write();
+            let state = votes
+                .entry(proposal.height)
+                .or_insert_with(|| CheckpointVoteState::new(hash));
+            state.proposal = Some(proposal.clone());
+        }
+        let vote = L2CheckpointVoteMessage {
+            height: 1,
+            checkpoint_hash: hash,
+            voter: [0x01; 32],
+            approve: true,
+            signature: [0u8; 64],
+            timestamp: 0,
+        };
+        handler_a.handle_checkpoint_vote(&vote).unwrap();
+
+        let root_after_a = epoch_mgr_a.current_root().unwrap();
+        assert_ne!(root_after_a, root_a, "A's root should change after checkpoint");
+
+        // === Peer B: sync from A ===
+        let db_b = Arc::new(Database::in_memory().expect("in-memory db"));
+        let config_b = EpochManagerConfig {
+            epoch_length: 100,
+            transition_window: 10,
+            tree_depth: 4,
+            max_valid_roots: 16,
+        };
+        let epoch_mgr_b = Arc::new(EpochManager::new(db_b.clone(), config_b));
+        epoch_mgr_b.initialize_genesis().unwrap();
+        let handler_b =
+            NullifierRouteHandler::with_defaults([0x02; 32], epoch_mgr_b.clone(), db_b.clone());
+
+        // Build a sync response from A's persisted checkpoint data
+        let request = L2TreeSyncRequest {
+            requesting_node: [0x02; 32],
+            from_height: 0,
+            timestamp: 0,
+        };
+        let response = handler_a
+            .handle_tree_sync_request(&request)
+            .unwrap()
+            .expect("Should produce sync response");
+
+        assert!(
+            !response.checkpoints.is_empty(),
+            "Response should contain checkpoints"
+        );
+        assert_eq!(response.commitment_root, root_after_a);
+
+        // B replays the checkpoints
+        handler_b.handle_tree_sync_response(&response).unwrap();
+
+        // Verify B's root matches A's
+        let root_b = epoch_mgr_b.current_root().unwrap();
+        assert_eq!(
+            root_b, root_after_a,
+            "Synced peer's root should match source peer"
+        );
+    }
+
+    /// Test that a transfer with an invalid (wrong) commitment root is rejected
+    #[test]
+    fn test_transfer_with_wrong_root_rejected() {
+        let (_db, epoch_mgr, handler) = setup();
+
+        epoch_mgr.update_active_nodes(vec![[0x01; 32]]);
+        handler.set_verifier(test_verifier());
+
+        // Add a valid root
+        let root = epoch_mgr.current_root().unwrap();
+        epoch_mgr.add_valid_root(root, 0).unwrap();
+
+        // Submit transfer with a WRONG commitment root
+        let wrong_root = [0xFF; 32];
+        let msg = L2ConfidentialTransferMessage {
+            transaction: L2Transaction {
+                epoch: 0,
+                nullifier: [0x42; 32],
+                change_commitment: [0u8; 32],
+                recipient_commitment: [0u8; 32],
+                commitment_root: wrong_root, // Not in valid roots
+                proof: vec![0u8; 192],
+                encrypted_change: vec![],
+                encrypted_recipient: vec![],
+                timestamp: 0,
+            },
+            sender: [0x99; 32],
+        };
+
+        let result = handler.handle_transfer(&msg);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("Invalid commitment root"),
+            "Should reject wrong root"
+        );
+    }
+
+    /// Test that a transfer with a corrupted proof is rejected when verifier has real VK
+    /// This test requires Groth16 setup (~10-30s), so it's marked #[ignore]
+    #[test]
+    #[ignore]
+    fn test_groth16_invalid_proof_rejected() {
+        let (_db, epoch_mgr, handler) = setup();
+        epoch_mgr.update_active_nodes(vec![[0x01; 32]]);
+
+        // Create a real verifier with Groth16 VK
+        let prover = ghost_zkp::note_prover::NoteProver::new_with_setup(4)
+            .expect("Groth16 setup should succeed");
+        let verifier = Arc::new(ghost_zkp::NoteVerifier::for_prover(&prover));
+        handler.set_verifier(verifier);
+
+        let root = epoch_mgr.current_root().unwrap();
+        epoch_mgr.add_valid_root(root, 0).unwrap();
+
+        // Submit with a corrupted proof (valid size but garbage bytes)
+        let msg = L2ConfidentialTransferMessage {
+            transaction: L2Transaction {
+                epoch: 0,
+                nullifier: [0x42; 32],
+                change_commitment: [0u8; 32],
+                recipient_commitment: [0u8; 32],
+                commitment_root: root,
+                proof: vec![0xFF; 192], // Garbage proof
+                encrypted_change: vec![],
+                encrypted_recipient: vec![],
+                timestamp: 0,
+            },
+            sender: [0x99; 32],
+        };
+
+        let result = handler.handle_transfer(&msg);
+        assert!(
+            result.is_err(),
+            "Corrupted proof should be rejected"
+        );
+    }
+
     #[test]
     fn test_signing_with_sign_fn() {
         let (_db, epoch_mgr, handler) = setup();

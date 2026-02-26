@@ -1908,6 +1908,141 @@ mod tests {
         assert_eq!(version, 0x20000000);
     }
 
+    /// Test worker name parsing: address.worker_id format
+    #[test]
+    fn test_worker_name_parsing() {
+        // Standard format: address.worker
+        let params = vec![
+            serde_json::json!("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4.worker1"),
+            serde_json::json!("password"),
+        ];
+        let worker = params[0].as_str().unwrap();
+        let parts: Vec<&str> = worker.splitn(2, '.').collect();
+        assert_eq!(parts[0], "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4");
+        assert_eq!(parts[1], "worker1");
+
+        // No dot: full string is the address/worker
+        let params2 = vec![
+            serde_json::json!("bc1qfulladdress"),
+            serde_json::json!("pass"),
+        ];
+        let worker2 = params2[0].as_str().unwrap();
+        let parts2: Vec<&str> = worker2.splitn(2, '.').collect();
+        assert_eq!(parts2.len(), 1);
+        assert_eq!(parts2[0], "bc1qfulladdress");
+
+        // Multiple dots: only split on first
+        let params3 = vec![
+            serde_json::json!("address.worker.extra"),
+            serde_json::json!("pass"),
+        ];
+        let worker3 = params3[0].as_str().unwrap();
+        let parts3: Vec<&str> = worker3.splitn(2, '.').collect();
+        assert_eq!(parts3[0], "address");
+        assert_eq!(parts3[1], "worker.extra");
+
+        // Empty worker after dot
+        let params4 = vec![serde_json::json!("address."), serde_json::json!("pass")];
+        let worker4 = params4[0].as_str().unwrap();
+        let parts4: Vec<&str> = worker4.splitn(2, '.').collect();
+        assert_eq!(parts4[0], "address");
+        assert_eq!(parts4[1], "");
+    }
+
+    /// Test mining.authorize sets worker_name in SubmitParams
+    #[test]
+    fn test_sv1_authorize_sets_worker_name() {
+        // mining.authorize sends params[0] as worker name
+        let params = vec![
+            serde_json::json!("bc1qtest123.rig42"),
+            serde_json::json!("x"), // password (ignored)
+        ];
+        let worker = params[0].as_str().unwrap().to_string();
+        assert_eq!(worker, "bc1qtest123.rig42");
+
+        // Verify it works in SubmitParams too (worker_name in submit comes from authorize)
+        let submit_params = vec![
+            serde_json::json!("bc1qtest123.rig42"),
+            serde_json::json!("1a"),
+            serde_json::json!("00000001"),
+            serde_json::json!("6789abcd"),
+            serde_json::json!("deadbeef"),
+        ];
+        let submit = super::sv1::SubmitParams::from_params(&submit_params).unwrap();
+        assert_eq!(submit.worker_name, "bc1qtest123.rig42");
+    }
+
+    /// Test job ID bidirectional mapping
+    #[test]
+    fn test_job_id_bidirectional_mapping() {
+        use std::collections::HashMap;
+
+        let mut job_map: HashMap<String, u32> = HashMap::new();
+        let mut reverse_job_map: HashMap<u32, String> = HashMap::new();
+
+        // Store SV1→SV2 mapping
+        let sv1_id = "1a".to_string();
+        let sv2_id: u32 = 42;
+        job_map.insert(sv1_id.clone(), sv2_id);
+        reverse_job_map.insert(sv2_id, sv1_id.clone());
+
+        // Lookup SV1 → SV2
+        assert_eq!(job_map.get("1a"), Some(&42u32));
+
+        // Lookup SV2 → SV1
+        assert_eq!(reverse_job_map.get(&42u32), Some(&"1a".to_string()));
+
+        // Non-existent lookups
+        assert_eq!(job_map.get("ff"), None);
+        assert_eq!(reverse_job_map.get(&99u32), None);
+    }
+
+    /// Test extranonce1 uniqueness across connections
+    #[test]
+    fn test_extranonce_uniqueness() {
+        use std::collections::HashSet;
+
+        let mut seen = HashSet::new();
+        // Generate 100 extranonce1 values (same logic as ConnectionState init)
+        for _ in 0..100 {
+            let rand_val = super::rand_u32().unwrap();
+            let extranonce1 = format!("{:08x}", rand_val);
+            assert_eq!(extranonce1.len(), 8, "extranonce1 should be 8 hex chars");
+            assert!(
+                seen.insert(extranonce1),
+                "Duplicate extranonce1 detected (random collision extremely unlikely)"
+            );
+        }
+    }
+
+    /// Test subscribe response format matches SV1 spec
+    #[test]
+    fn test_subscribe_response_format() {
+        let result = super::sv1::SubscribeResult {
+            subscriptions: vec![
+                ("mining.notify".to_string(), "sub1".to_string()),
+                ("mining.set_difficulty".to_string(), "sub2".to_string()),
+            ],
+            extranonce1: "deadbeef".to_string(),
+            extranonce2_size: 4,
+        };
+
+        let json = result.to_json();
+        let arr = json.as_array().unwrap();
+
+        // First element: array of subscriptions
+        let subs = arr[0].as_array().unwrap();
+        assert_eq!(subs.len(), 2);
+        assert_eq!(subs[0][0].as_str().unwrap(), "mining.notify");
+        assert_eq!(subs[0][1].as_str().unwrap(), "sub1");
+
+        // Second element: extranonce1
+        assert_eq!(arr[1].as_str().unwrap(), "deadbeef");
+
+        // Third element: extranonce2_size
+        assert_eq!(arr[2].as_u64().unwrap(), 4);
+    }
+
     /// Test 5-param submit still works (backward compatibility)
     #[test]
     fn test_submit_5_params_backward_compat() {

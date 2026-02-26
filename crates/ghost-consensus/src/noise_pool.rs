@@ -547,4 +547,52 @@ mod tests {
         // Note: This is a compile-time test to verify the API exists
         // Runtime testing would require establishing actual connections
     }
+
+    /// Test that multiple sequential sends through same pool connection all arrive intact
+    #[tokio::test]
+    async fn test_pool_concurrent_send_recv() {
+        let keypair1 = NoiseKeypair::generate();
+        let keypair2 = NoiseKeypair::generate();
+
+        let pool1 = Arc::new(NoiseConnectionPool::new(keypair1, test_pool_config()).unwrap());
+        let pool2 = Arc::new(NoiseConnectionPool::new(keypair2, test_pool_config()).unwrap());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let pool2_clone = Arc::clone(&pool2);
+        let accept_handle = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            pool2_clone.accept_connection(stream).await
+        });
+
+        let conn1 = pool1.get_connection(addr).await.unwrap();
+        let conn2 = accept_handle.await.unwrap().unwrap();
+
+        // Send 5 messages sequentially through the same connection
+        let msg_count = 5u8;
+        for i in 0..msg_count {
+            let msg = format!("msg-{}", i);
+            conn1.send(msg.as_bytes()).await.unwrap();
+        }
+
+        // Receive all 5 messages and verify none are corrupted
+        let mut received = Vec::new();
+        for _ in 0..msg_count {
+            let data = conn2.recv().await.unwrap();
+            received.push(String::from_utf8(data).unwrap());
+        }
+
+        for i in 0..msg_count {
+            assert_eq!(
+                received[i as usize],
+                format!("msg-{}", i),
+                "Message {} should arrive intact",
+                i
+            );
+        }
+
+        // Connection should still be reusable
+        assert_eq!(pool1.connection_count(), 1);
+    }
 }

@@ -1079,6 +1079,177 @@ mod tests {
         assert_ne!(new_root, root_before);
     }
 
+    /// Test that old epoch roots become invalid after the transition window closes.
+    ///
+    /// Uses max_valid_roots=4 so the target root ages out of the sliding window
+    /// during the transition, while remaining accessible via old_epoch_roots.
+    /// After the transition ends, old_epoch_roots is cleared → root becomes invalid.
+    #[test]
+    fn test_old_roots_invalid_after_transition_closes() {
+        let db = Arc::new(Database::in_memory().expect("in-memory db"));
+        let config = EpochManagerConfig {
+            epoch_length: 10,
+            transition_window: 3,
+            tree_depth: 4,
+            max_valid_roots: 4, // Small window so old roots age out
+        };
+        let mgr = EpochManager::new(db, config);
+        mgr.initialize_genesis().unwrap();
+
+        // Add unique commitments at each height to create distinct roots
+        for h in 1..=6 {
+            let mut c = [0u8; 32];
+            c[0] = h as u8;
+            mgr.append_commitment(c, h).unwrap();
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+
+        // At height 7: capture this root. With max_valid_roots=4, it will be in
+        // valid_roots at the epoch boundary [r7, r8, r9, r10] and copied to
+        // old_epoch_roots during transition. The new epoch root then pushes r7
+        // out of valid_roots, leaving it accessible ONLY via old_epoch_roots.
+        let mut c7 = [0u8; 32];
+        c7[0] = 7;
+        mgr.append_commitment(c7, 7).unwrap();
+        let target_root = mgr.current_root().unwrap();
+        mgr.add_valid_root(target_root, 7).unwrap();
+        mgr.on_checkpoint_finalized(7).unwrap();
+
+        // Heights 8-9: add distinct commitments (epoch boundary at 10)
+        for h in 8..=9 {
+            let mut c = [0u8; 32];
+            c[0] = h as u8;
+            mgr.append_commitment(c, h).unwrap();
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+
+        // Height 10: epoch boundary → transition starts
+        // valid_roots before transition: [r7, r8, r9, r10_root]
+        // old_epoch_roots = {r7, r8, r9, r10_root}
+        // Then new initial root is pushed → valid_roots = [r8, r9, r10_root, r_new]
+        // target_root (r7) is now ONLY in old_epoch_roots
+        let mut c10 = [0u8; 32];
+        c10[0] = 10;
+        mgr.append_commitment(c10, 10).unwrap();
+        let root10 = mgr.current_root().unwrap();
+        mgr.add_valid_root(root10, 10).unwrap();
+        mgr.on_checkpoint_finalized(10).unwrap();
+
+        assert!(mgr.is_in_transition());
+        assert!(
+            mgr.is_root_valid(&target_root),
+            "Target root should be valid during transition (via old_epoch_roots)"
+        );
+
+        // Close the transition window (heights 11-13)
+        for h in 11..=13 {
+            let mut c = [0u8; 32];
+            c[0] = h as u8;
+            mgr.append_commitment(c, h).unwrap();
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+
+        assert!(!mgr.is_in_transition());
+        assert!(
+            !mgr.is_root_valid(&target_root),
+            "Target root should be INVALID after transition window closes"
+        );
+    }
+
+    /// Test that nullifiers from the old epoch are cleared from DB after transition window
+    #[test]
+    fn test_transition_window_expiry_clears_nullifiers() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        // Add notes and spend one in epoch 0
+        let mut c = [0u8; 32];
+        c[0] = 0x11;
+        mgr.append_commitment(c, 1).unwrap();
+
+        let nullifier = [0x42; 32];
+        mgr.spend_nullifier(nullifier, 2).unwrap();
+        mgr.db.mark_l2_note_spent(0, 0).unwrap();
+        mgr.flush_pending_nullifiers().unwrap();
+
+        assert!(mgr.is_nullifier_spent(&nullifier));
+
+        // Process to epoch boundary (height 10)
+        for h in 1..=10 {
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+
+        assert!(mgr.is_in_transition());
+        // During transition, old nullifier should still be detected
+        assert!(
+            mgr.is_nullifier_spent(&nullifier),
+            "Nullifier should be detected during transition"
+        );
+
+        // Close transition window (3 more)
+        for h in 11..=13 {
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+
+        assert!(!mgr.is_in_transition());
+        // After transition closes, in-memory old nullifiers are cleared
+        assert!(
+            !mgr.is_nullifier_spent(&nullifier),
+            "Old epoch nullifiers should be cleared after transition window closes"
+        );
+    }
+
+    /// Test concurrent double-spend attempts on the same nullifier
+    #[test]
+    fn test_concurrent_double_spend_prevention() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        let nullifier = [0x42; 32];
+
+        // Use std threads to simulate racing spends
+        let mgr = std::sync::Arc::new(mgr);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let mgr1 = mgr.clone();
+        let barrier1 = barrier.clone();
+        let handle1 = std::thread::spawn(move || {
+            barrier1.wait();
+            mgr1.spend_nullifier(nullifier, 1)
+        });
+
+        let mgr2 = mgr.clone();
+        let barrier2 = barrier.clone();
+        let handle2 = std::thread::spawn(move || {
+            barrier2.wait();
+            mgr2.spend_nullifier(nullifier, 2)
+        });
+
+        let result1 = handle1.join().unwrap().unwrap();
+        let result2 = handle2.join().unwrap().unwrap();
+
+        // Exactly one should succeed (return true), one should fail (return false)
+        assert!(
+            (result1 && !result2) || (!result1 && result2),
+            "Exactly one spend should succeed: result1={}, result2={}",
+            result1,
+            result2
+        );
+
+        // Only one nullifier recorded
+        assert_eq!(mgr.nullifier_count(), 1);
+    }
+
     #[test]
     fn test_double_epoch_transition() {
         let (_db, mgr) = setup();

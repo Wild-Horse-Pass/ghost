@@ -1021,4 +1021,130 @@ mod tests {
             "Encrypted communication should work after keypair restore"
         );
     }
+
+    /// Test send_batch sends messages in order and all are received
+    #[tokio::test]
+    async fn test_send_batch_ordering() {
+        let initiator_keys = NoiseKeypair::generate();
+        let responder_keys = NoiseKeypair::generate();
+
+        let (client_stream, server_stream) = duplex(65536);
+
+        let responder_handle = tokio::spawn(async move {
+            let session = NoiseSession::responder(&responder_keys).unwrap();
+            session.handshake(server_stream).await
+        });
+
+        let session = NoiseSession::initiator(&initiator_keys).unwrap();
+        let (mut client_transport, _) = session.handshake(client_stream).await.unwrap();
+        let (mut server_transport, _) = responder_handle.await.unwrap().unwrap();
+
+        // Send 10 messages via send_batch
+        let messages: Vec<Vec<u8>> = (0u8..10).map(|i| vec![i; 32]).collect();
+        let refs: Vec<&[u8]> = messages.iter().map(|m| m.as_slice()).collect();
+        client_transport.send_batch(&refs).await.unwrap();
+
+        // Receive all 10 and verify order
+        for i in 0u8..10 {
+            let received = server_transport.recv().await.unwrap();
+            assert_eq!(received, vec![i; 32], "Message {} should match", i);
+        }
+    }
+
+    /// Test into_inner recovers the underlying stream for raw I/O
+    #[tokio::test]
+    async fn test_into_inner_recovers_stream() {
+        let initiator_keys = NoiseKeypair::generate();
+        let responder_keys = NoiseKeypair::generate();
+
+        let (client_stream, server_stream) = duplex(65536);
+
+        let responder_handle = tokio::spawn(async move {
+            let session = NoiseSession::responder(&responder_keys).unwrap();
+            session.handshake(server_stream).await
+        });
+
+        let session = NoiseSession::initiator(&initiator_keys).unwrap();
+        let (client_transport, _) = session.handshake(client_stream).await.unwrap();
+        let (server_transport, _) = responder_handle.await.unwrap().unwrap();
+
+        // Recover raw streams
+        let mut raw_client = client_transport.into_inner();
+        let mut raw_server = server_transport.into_inner();
+
+        // Raw writes should still work (unencrypted now)
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        raw_client.write_all(b"raw-data").await.unwrap();
+        raw_client.flush().await.unwrap();
+
+        let mut buf = [0u8; 8];
+        raw_server.read_exact(&mut buf).await.unwrap();
+        assert_eq!(&buf, b"raw-data");
+    }
+
+    /// Test oversized message is rejected with MessageTooLarge
+    #[tokio::test]
+    async fn test_oversized_message_rejected() {
+        let initiator_keys = NoiseKeypair::generate();
+        let responder_keys = NoiseKeypair::generate();
+
+        let (client_stream, server_stream) = duplex(131072);
+
+        let responder_handle = tokio::spawn(async move {
+            let session = NoiseSession::responder(&responder_keys).unwrap();
+            session.handshake(server_stream).await
+        });
+
+        let session = NoiseSession::initiator(&initiator_keys).unwrap();
+        let (mut client_transport, _) = session.handshake(client_stream).await.unwrap();
+        let _ = responder_handle.await.unwrap().unwrap();
+
+        // Try sending a message larger than MAX_PAYLOAD_SIZE
+        let oversized = vec![0xAA; MAX_PAYLOAD_SIZE + 1];
+        let result = client_transport.send(&oversized).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            NoiseError::MessageTooLarge(size) => {
+                assert_eq!(size, MAX_PAYLOAD_SIZE + 1);
+            }
+            other => panic!("Expected MessageTooLarge, got: {:?}", other),
+        }
+    }
+
+    /// Test that untrusted peer is rejected when trusted_peers list is set
+    #[tokio::test]
+    async fn test_untrusted_peer_rejected_with_trusted_list() {
+        let trusted_key = NoiseKeypair::generate();
+        let untrusted_key = NoiseKeypair::generate();
+
+        // Manager only trusts trusted_key, not untrusted_key
+        let config = NoiseConfig {
+            enabled: true,
+            required: true,
+            keypair_file: None,
+            trusted_peers: vec![trusted_key.public_key_hex()],
+            allow_unknown_peers: false,
+        };
+        let manager = NoiseManager::new(config).unwrap();
+
+        let (client_stream, server_stream) = duplex(65536);
+
+        // Untrusted peer connects as initiator
+        let untrusted_clone = untrusted_key.clone();
+        let initiator_handle = tokio::spawn(async move {
+            let session = NoiseSession::initiator(&untrusted_clone).unwrap();
+            session.handshake(client_stream).await
+        });
+
+        // Manager acts as responder — should reject untrusted peer
+        let result = manager.wrap_responder(server_stream).await;
+        match result {
+            Err(NoiseError::InvalidPeerIdentity) => {} // Expected
+            Err(other) => panic!("Expected InvalidPeerIdentity, got: {:?}", other),
+            Ok(_) => panic!("Expected error for untrusted peer"),
+        }
+
+        // Initiator side may succeed or fail depending on timing; just wait for it
+        let _ = initiator_handle.await;
+    }
 }
