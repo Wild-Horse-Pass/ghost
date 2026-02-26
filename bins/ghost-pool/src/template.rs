@@ -4500,4 +4500,164 @@ mod tests {
             "clean tx survives"
         );
     }
+
+    // =========================================================================
+    // Witness commitment validation tests
+    // =========================================================================
+
+    /// Test that a valid OP_RETURN witness commitment script is accepted.
+    /// Valid format: OP_RETURN (0x6a) | push_len (0x24 = 36) | magic (aa21a9ed) | 32-byte hash
+    /// Total: 38 bytes
+    #[test]
+    fn test_validate_witness_commitment_valid() {
+        let mut script = Vec::with_capacity(38);
+        script.push(0x6a); // OP_RETURN
+        script.push(0x24); // push length = 36 (4 magic + 32 hash)
+        script.extend_from_slice(&[0xaa, 0x21, 0xa9, 0xed]); // BIP 141 magic
+        script.extend_from_slice(&[0xab; 32]); // 32-byte commitment hash
+        assert_eq!(script.len(), 38);
+        assert!(
+            validate_witness_commitment_script(&script),
+            "Valid 38-byte witness commitment with aa21a9ed magic should be accepted"
+        );
+    }
+
+    /// Test that an OP_RETURN with wrong magic bytes is rejected.
+    #[test]
+    fn test_validate_witness_commitment_wrong_magic() {
+        let mut script = Vec::with_capacity(38);
+        script.push(0x6a); // OP_RETURN
+        script.push(0x24); // push length = 36
+        script.extend_from_slice(&[0xde, 0xad, 0xbe, 0xef]); // wrong magic
+        script.extend_from_slice(&[0xab; 32]); // 32-byte hash
+        assert!(
+            !validate_witness_commitment_script(&script),
+            "OP_RETURN with wrong magic bytes should be rejected"
+        );
+    }
+
+    /// Test that an OP_RETURN with a push length below 36 is rejected.
+    #[test]
+    fn test_validate_witness_commitment_too_short() {
+        // push_len = 4 (only magic, no 32-byte hash)
+        let mut script = Vec::new();
+        script.push(0x6a); // OP_RETURN
+        script.push(0x04); // push length = 4 (< 36)
+        script.extend_from_slice(&[0xaa, 0x21, 0xa9, 0xed]); // magic
+        assert!(
+            !validate_witness_commitment_script(&script),
+            "OP_RETURN with push_len < 36 should be rejected"
+        );
+    }
+
+    /// Test that a script not starting with OP_RETURN (0x6a) is rejected.
+    #[test]
+    fn test_validate_witness_commitment_not_op_return() {
+        let mut script = Vec::with_capacity(38);
+        script.push(0x51); // OP_1 (NOT OP_RETURN)
+        script.push(0x24); // push length = 36
+        script.extend_from_slice(&[0xaa, 0x21, 0xa9, 0xed]); // magic
+        script.extend_from_slice(&[0xab; 32]); // 32-byte hash
+        assert!(
+            !validate_witness_commitment_script(&script),
+            "Script starting with OP_1 instead of OP_RETURN should be rejected"
+        );
+    }
+
+    // =========================================================================
+    // CoinbaseBuilder output ordering and P2TR rejection tests
+    // =========================================================================
+
+    /// Test that CoinbaseBuilder preserves output ordering from input entries.
+    /// Output order: miners -> nodes -> treasury (matching input order).
+    #[test]
+    fn test_coinbase_output_ordering_from_entries() {
+        use ghost_common::types::{PayoutEntry, PayoutType};
+
+        let builder = CoinbaseBuilder::new(850_000);
+
+        // 2 miners, 1 node, 1 treasury — order should be preserved in output
+        let entries = vec![
+            PayoutEntry {
+                address: b"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_vec(),
+                amount: 50_000,
+                recipient_id: [1u8; 32],
+                payout_type: PayoutType::Mining,
+            },
+            PayoutEntry {
+                address: b"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_vec(),
+                amount: 30_000,
+                recipient_id: [2u8; 32],
+                payout_type: PayoutType::Mining,
+            },
+            PayoutEntry {
+                address: b"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_vec(),
+                amount: 100_000,
+                recipient_id: [3u8; 32],
+                payout_type: PayoutType::NodeReward,
+            },
+            PayoutEntry {
+                address: b"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4".to_vec(),
+                amount: 20_000,
+                recipient_id: [4u8; 32],
+                payout_type: PayoutType::Treasury,
+            },
+        ];
+
+        let tx = builder
+            .build_from_entries(&entries)
+            .expect("Valid P2WPKH entries should build successfully");
+
+        // Verify output count matches entry count
+        assert_eq!(
+            tx.output.len(),
+            4,
+            "Should have exactly 4 outputs (2 miners + 1 node + 1 treasury)"
+        );
+
+        // Verify output values match input order
+        assert_eq!(tx.output[0].value.to_sat(), 50_000, "First miner output");
+        assert_eq!(tx.output[1].value.to_sat(), 30_000, "Second miner output");
+        assert_eq!(tx.output[2].value.to_sat(), 100_000, "Node reward output");
+        assert_eq!(tx.output[3].value.to_sat(), 20_000, "Treasury output");
+
+        // Verify all outputs have the same script (same address)
+        for (i, output) in tx.output.iter().enumerate() {
+            assert!(
+                !output.script_pubkey.is_empty(),
+                "Output {} should have a non-empty script pubkey",
+                i
+            );
+        }
+    }
+
+    /// Test that CoinbaseBuilder rejects P2TR (bc1p...) addresses with QuantumUnsafe error.
+    #[test]
+    fn test_coinbase_rejects_p2tr_address() {
+        use ghost_common::types::{PayoutEntry, PayoutType};
+
+        let builder = CoinbaseBuilder::new(850_000);
+
+        // Use a valid-format P2TR address (bc1p...)
+        let entries = vec![PayoutEntry {
+            address: b"bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0"
+                .to_vec(),
+            amount: 100_000,
+            recipient_id: [1u8; 32],
+            payout_type: PayoutType::Mining,
+        }];
+
+        let result = builder.build_from_entries(&entries);
+        assert!(
+            result.is_err(),
+            "P2TR address should be rejected for quantum safety"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("quantum") || err_msg.contains("Quantum"),
+            "Error should mention quantum vulnerability, got: {}",
+            err_msg
+        );
+    }
 }

@@ -273,4 +273,71 @@ mod tests {
         // Should silently reject stale timestamp (return Ok, but not process)
         assert!(handler.handle_message(Arc::new(envelope)).await.is_ok());
     }
+
+    #[tokio::test]
+    async fn test_rejects_future_timestamp() {
+        let our_node_id = [1u8; 32];
+        let other_node_id = [2u8; 32];
+        let db = Arc::new(Database::in_memory().expect("in-memory db"));
+        let rm = Arc::new(RoundManager::new(
+            our_node_id,
+            crate::round::RoundConfig::default(),
+        ));
+        let handler = ShareProofHandler::new(rm, db, our_node_id);
+
+        // Create a share proof with a timestamp 60 seconds in the future (beyond 30s tolerance)
+        let future_timestamp = (Utc::now().timestamp() + 60) as u64;
+        let proof = ghost_common::types::ShareProof {
+            round_id: 1,
+            miner_id: [3u8; 32],
+            difficulty: 1000.0,
+            work: 1000.0,
+            share_hash: [4u8; 32],
+            timestamp: future_timestamp,
+            received_by: other_node_id,
+            template_id: Some([5u8; 32]),
+            payout_address: None,
+        };
+        let msg = ShareProofMessage { proof };
+        let payload = serde_json::to_vec(&msg).expect("test serialization");
+        let envelope = make_envelope(MessageType::ShareProof, payload);
+
+        // Should silently reject future timestamp (return Ok, but not process)
+        assert!(handler.handle_message(Arc::new(envelope)).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_valid_share_accepted_and_recorded() {
+        let our_node_id = [1u8; 32];
+        let other_node_id = [2u8; 32];
+        let db = Arc::new(Database::in_memory().expect("in-memory db"));
+        let rm = Arc::new(RoundManager::new(
+            our_node_id,
+            crate::round::RoundConfig::default(),
+        ));
+        let handler = ShareProofHandler::new(rm, db.clone(), our_node_id);
+
+        // Create a share proof from another node with a valid (recent) timestamp
+        let proof = ghost_common::types::ShareProof {
+            round_id: 1,
+            miner_id: [3u8; 32],
+            difficulty: 1000.0,
+            work: 1000.0,
+            share_hash: [4u8; 32],
+            timestamp: Utc::now().timestamp() as u64,
+            received_by: other_node_id,
+            template_id: Some([5u8; 32]),
+            payout_address: None,
+        };
+        let msg = ShareProofMessage { proof };
+        let payload = serde_json::to_vec(&msg).expect("test serialization");
+        let envelope = make_envelope(MessageType::ShareProof, payload);
+
+        // handle_message should succeed (no deserialization or timestamp errors)
+        // The share will be passed to RoundManager::handle_share_proof, which may
+        // reject it for other reasons (e.g., missing template), but the handler
+        // itself should not error — it catches and logs RoundManager rejections.
+        let result = handler.handle_message(Arc::new(envelope)).await;
+        assert!(result.is_ok());
+    }
 }

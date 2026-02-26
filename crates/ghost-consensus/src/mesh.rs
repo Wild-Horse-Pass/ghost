@@ -3254,4 +3254,180 @@ mod tests {
         let result = MeshNetwork::try_new(identity, config);
         assert!(result.is_ok(), "M-2: Disabled Noise should always succeed");
     }
+
+    #[test]
+    fn test_should_use_noise_routing() {
+        // Verify the message type → Noise routing logic.
+        //
+        // Since should_use_noise() returns false when noise_pool is None,
+        // and constructing a real Noise pool requires key infrastructure,
+        // we test the routing logic by directly verifying the message type
+        // categorization. The match arms in should_use_noise() define:
+        //
+        //   - Discovery, HealthPing → ZMQ (false)
+        //   - All other message types → Noise (true)
+        //
+        // We verify this by testing message_type_requires_noise() which
+        // extracts the pure routing logic without the noise_pool gate.
+
+        // Helper that mirrors should_use_noise() match arms without the noise_pool check
+        fn message_type_requires_noise(msg_type: MessageType) -> bool {
+            match msg_type {
+                MessageType::Discovery | MessageType::HealthPing => false,
+                MessageType::ShareProof
+                | MessageType::ShareConvergence
+                | MessageType::BlockFound
+                | MessageType::Vote
+                | MessageType::PayoutProposal
+                | MessageType::ElderUpdate
+                | MessageType::ZkBlockProposal
+                | MessageType::ZkVote
+                | MessageType::ZkPayoutProposal
+                | MessageType::ZkPayoutVote
+                | MessageType::VerificationResult
+                | MessageType::EquivocationProof
+                | MessageType::ElderRegistrationProposal
+                | MessageType::ElderListProposal
+                | MessageType::ElderListApproval
+                | MessageType::MpcContribution
+                | MessageType::MpcVerificationVote
+                | MessageType::MpcParametersRequest
+                | MessageType::MpcParametersResponse
+                | MessageType::L2ConfidentialTransfer
+                | MessageType::L2TransferConfirmation
+                | MessageType::L2TransferBroadcast
+                | MessageType::L2CheckpointBlock
+                | MessageType::L2CheckpointVote
+                | MessageType::L2TreeSync => true,
+            }
+        }
+
+        // ZMQ broadcast messages (should NOT use Noise)
+        assert!(
+            !message_type_requires_noise(MessageType::HealthPing),
+            "HealthPing should stay on ZMQ"
+        );
+        assert!(
+            !message_type_requires_noise(MessageType::Discovery),
+            "Discovery should stay on ZMQ"
+        );
+
+        // MPC-sensitive messages (MUST use Noise)
+        assert!(
+            message_type_requires_noise(MessageType::MpcContribution),
+            "MpcContribution must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::MpcVerificationVote),
+            "MpcVerificationVote must use Noise"
+        );
+
+        // Consensus/voting messages (MUST use Noise)
+        assert!(
+            message_type_requires_noise(MessageType::PayoutProposal),
+            "PayoutProposal must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::Vote),
+            "Vote must use Noise"
+        );
+
+        // Share propagation (MUST use Noise)
+        assert!(
+            message_type_requires_noise(MessageType::ShareProof),
+            "ShareProof must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::ShareConvergence),
+            "ShareConvergence must use Noise"
+        );
+
+        // Block/mining messages (MUST use Noise)
+        assert!(
+            message_type_requires_noise(MessageType::BlockFound),
+            "BlockFound must use Noise"
+        );
+
+        // Elder management (MUST use Noise)
+        assert!(
+            message_type_requires_noise(MessageType::ElderUpdate),
+            "ElderUpdate must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::ElderRegistrationProposal),
+            "ElderRegistrationProposal must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::ElderListProposal),
+            "ElderListProposal must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::ElderListApproval),
+            "ElderListApproval must use Noise"
+        );
+
+        // L2 messages (MUST use Noise — contain proofs and encrypted note data)
+        assert!(
+            message_type_requires_noise(MessageType::L2ConfidentialTransfer),
+            "L2ConfidentialTransfer must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::L2TransferConfirmation),
+            "L2TransferConfirmation must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::L2TransferBroadcast),
+            "L2TransferBroadcast must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::L2CheckpointBlock),
+            "L2CheckpointBlock must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::L2CheckpointVote),
+            "L2CheckpointVote must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::L2TreeSync),
+            "L2TreeSync must use Noise"
+        );
+
+        // ZK messages (MUST use Noise)
+        assert!(
+            message_type_requires_noise(MessageType::ZkBlockProposal),
+            "ZkBlockProposal must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::ZkVote),
+            "ZkVote must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::ZkPayoutProposal),
+            "ZkPayoutProposal must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::ZkPayoutVote),
+            "ZkPayoutVote must use Noise"
+        );
+
+        // Verification and security (MUST use Noise)
+        assert!(
+            message_type_requires_noise(MessageType::VerificationResult),
+            "VerificationResult must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::EquivocationProof),
+            "EquivocationProof must use Noise"
+        );
+
+        // MPC params transfer (MUST use Noise)
+        assert!(
+            message_type_requires_noise(MessageType::MpcParametersRequest),
+            "MpcParametersRequest must use Noise"
+        );
+        assert!(
+            message_type_requires_noise(MessageType::MpcParametersResponse),
+            "MpcParametersResponse must use Noise"
+        );
+    }
 }

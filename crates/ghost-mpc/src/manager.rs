@@ -1202,4 +1202,92 @@ mod tests {
         assert_eq!(fulfilled.len(), 1);
         assert_eq!(fulfilled[0], commitment_hash);
     }
+
+    // ========================================================================
+    // State loading and sync tests
+    // ========================================================================
+
+    #[test]
+    fn test_load_or_init_with_existing_state() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a CeremonyState as if restored from the database
+        let state = CeremonyState {
+            contribution_count: 5,
+            is_ossified: false,
+            current_params_hash: [0xAB; 32],
+            pending_commitment_count: 2,
+            updated_at: 1700000000,
+            ..CeremonyState::default()
+        };
+
+        // load_or_init with Some(state) should restore that state.
+        // load_current_params will be called (count > 0) but gracefully
+        // handles missing parameter files on disk.
+        let manager =
+            CeremonyManager::load_or_init(temp_dir.path().to_path_buf(), Some(state)).unwrap();
+
+        let restored = manager.state();
+        assert_eq!(restored.contribution_count, 5);
+        assert!(!restored.is_ossified);
+        assert_eq!(restored.current_params_hash, [0xAB; 32]);
+        assert_eq!(restored.pending_commitment_count, 2);
+        assert_eq!(restored.updated_at, 1700000000);
+    }
+
+    #[test]
+    fn test_load_or_init_no_state_starts_pregenesis() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // load_or_init with None should leave default (pre-genesis) state
+        let manager =
+            CeremonyManager::load_or_init(temp_dir.path().to_path_buf(), None).unwrap();
+
+        let state = manager.state();
+        assert_eq!(state.contribution_count, 0);
+        assert!(!state.is_ossified);
+        assert_eq!(state.current_params_hash, [0u8; 32]);
+        assert_eq!(state.pending_commitment_count, 0);
+        assert!(!manager.has_current_params());
+    }
+
+    #[test]
+    fn test_sync_contribution_count_higher_updates() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Start with contribution_count = 3
+        let state = CeremonyState {
+            contribution_count: 3,
+            ..CeremonyState::default()
+        };
+        let manager =
+            CeremonyManager::load_or_init(temp_dir.path().to_path_buf(), Some(state)).unwrap();
+        assert_eq!(manager.contribution_count(), 3);
+
+        // Sync with a higher network count — should update
+        manager.sync_contribution_count(10);
+        assert_eq!(manager.contribution_count(), 10);
+    }
+
+    #[test]
+    fn test_sync_contribution_count_lower_rejected() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Start with contribution_count = 10
+        let state = CeremonyState {
+            contribution_count: 10,
+            ..CeremonyState::default()
+        };
+        let manager =
+            CeremonyManager::load_or_init(temp_dir.path().to_path_buf(), Some(state)).unwrap();
+        assert_eq!(manager.contribution_count(), 10);
+
+        // Sync with a lower network count — should be rejected (no rollback)
+        manager.sync_contribution_count(5);
+        assert_eq!(
+            manager.contribution_count(),
+            10,
+            "Contribution count must not decrease — lower network counts are rejected"
+        );
+    }
 }

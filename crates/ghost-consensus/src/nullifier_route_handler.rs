@@ -1461,4 +1461,112 @@ mod tests {
         // Signature should NOT be all zeros (sign_fn was called)
         assert_ne!(proposal.proposer_signature, [0u8; 64]);
     }
+
+    #[test]
+    fn test_rate_limiting_per_peer() {
+        let (_db, _epoch_mgr, handler) = setup();
+
+        let peer = [0x42; 32];
+
+        // Should allow exactly MAX_L2_MSG_PER_PEER_PER_SEC messages
+        for i in 0..MAX_L2_MSG_PER_PEER_PER_SEC {
+            assert!(
+                handler.check_rate_limit(&peer).is_ok(),
+                "Message {} should be accepted (within limit)",
+                i
+            );
+        }
+
+        // The 101st message (index 100) should be rate limited
+        let result = handler.check_rate_limit(&peer);
+        assert!(
+            result.is_err(),
+            "Message beyond per-peer limit should be rejected"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("rate limit"),
+            "Error should mention rate limit"
+        );
+
+        // A different peer should still be allowed (per-peer, not global at this count)
+        let other_peer = [0x43; 32];
+        assert!(
+            handler.check_rate_limit(&other_peer).is_ok(),
+            "Different peer should not be affected by first peer's rate limit"
+        );
+    }
+
+    #[test]
+    fn test_finalize_checkpoint_prevents_double_apply() {
+        let (_db, epoch_mgr, handler) = setup();
+
+        // We're the only active node (proposer)
+        epoch_mgr.update_active_nodes(vec![[0x01; 32]]);
+
+        // Add a transaction to the confirmed pool so the checkpoint has content
+        let root = epoch_mgr.current_root().unwrap();
+        epoch_mgr.add_valid_root(root, 0).unwrap();
+
+        let mut change_commit = [0u8; 32];
+        change_commit[0] = 0x10;
+        let mut recipient_commit = [0u8; 32];
+        recipient_commit[0] = 0x20;
+
+        {
+            let mut pool = handler.confirmed_pool.write();
+            pool.push(L2Transaction {
+                epoch: 0,
+                nullifier: [0x42; 32],
+                change_commitment: change_commit,
+                recipient_commitment: recipient_commit,
+                commitment_root: root,
+                proof: vec![0u8; 192],
+                encrypted_change: vec![],
+                encrypted_recipient: vec![],
+                timestamp: 0,
+            });
+        }
+
+        // Propose checkpoint — this applies commitments to the tree as proposer
+        let proposal = handler.propose_checkpoint().unwrap().unwrap();
+        let note_count_after_propose = epoch_mgr.note_count();
+        assert_eq!(note_count_after_propose, 2); // 1 change + 1 recipient
+
+        // Verify the height is in proposed_heights (C-2 guard)
+        assert!(handler.proposed_heights.read().contains(&proposal.height));
+
+        // Now simulate checkpoint finalization on the SAME proposer node.
+        // Without C-2 fix, this would double-apply commitments (adding 2 more notes).
+        // With C-2 fix, finalize_checkpoint skips re-applying for this height.
+
+        // First, set up the vote state with the proposal stored
+        {
+            let mut votes = handler.votes.write();
+            let state = votes
+                .entry(proposal.height)
+                .or_insert_with(|| CheckpointVoteState::new(proposal.checkpoint_hash()));
+            state.proposal = Some(proposal.clone());
+        }
+
+        // Call finalize directly (simulating quorum reached)
+        handler
+            .finalize_checkpoint(proposal.height, Some(&proposal))
+            .unwrap();
+
+        // Tree should still have exactly 2 notes, NOT 4 (no double-apply)
+        let note_count_after_finalize = epoch_mgr.note_count();
+        assert_eq!(
+            note_count_after_finalize, 2,
+            "C-2: Proposer should NOT double-apply commitments on finalization"
+        );
+
+        // proposed_heights should be cleaned up
+        assert!(
+            !handler
+                .proposed_heights
+                .read()
+                .contains(&proposal.height),
+            "C-2: Height should be removed from proposed_heights after finalization"
+        );
+    }
 }

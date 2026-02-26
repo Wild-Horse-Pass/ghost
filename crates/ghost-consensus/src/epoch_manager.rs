@@ -1024,4 +1024,130 @@ mod tests {
         assert_eq!(primary, node_a);
         assert_eq!(fallback, node_b);
     }
+
+    #[test]
+    fn test_epoch_transition_multiple_notes_partial_spend() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        // Add 5 notes in epoch 0 (small values fitting BLS12-381 scalar field)
+        let mut commitments = Vec::new();
+        for i in 1u8..=5 {
+            let mut c = [0u8; 32];
+            c[0] = i;
+            mgr.append_commitment(c, i as u64).unwrap();
+            commitments.push(c);
+        }
+        assert_eq!(mgr.note_count(), 5);
+
+        // Spend notes at index 1 and 3 (the 2nd and 4th notes)
+        let nullifier_a = [0xAA; 32];
+        let nullifier_b = [0xBB; 32];
+        mgr.spend_nullifier(nullifier_a, 6).unwrap();
+        mgr.spend_nullifier(nullifier_b, 6).unwrap();
+        mgr.db.mark_l2_note_spent(0, 1).unwrap(); // note index 1
+        mgr.db.mark_l2_note_spent(0, 3).unwrap(); // note index 3
+
+        assert_eq!(mgr.nullifier_count(), 2);
+
+        // Process checkpoints up to boundary (epoch_length = 10)
+        for h in 1..10 {
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            let result = mgr.on_checkpoint_finalized(h).unwrap();
+            assert!(result.is_none());
+        }
+
+        // Trigger epoch transition at boundary height 10
+        let root_before = mgr.current_root().unwrap();
+        mgr.add_valid_root(root_before, 10).unwrap();
+        let result = mgr.on_checkpoint_finalized(10).unwrap();
+        assert!(result.is_some());
+
+        let compaction = result.unwrap();
+        assert_eq!(compaction.new_epoch, 1);
+        assert_eq!(compaction.notes_migrated, 3); // 5 notes - 2 spent = 3 migrated
+
+        // Verify state after transition
+        assert_eq!(mgr.current_epoch(), 1);
+        assert_eq!(mgr.note_count(), 3); // Only 3 unspent notes in new tree
+        assert_eq!(mgr.nullifier_count(), 0); // Nullifiers cleared for new epoch
+        assert!(mgr.is_in_transition());
+
+        // Verify the new tree root differs from the old one (different note set)
+        let new_root = mgr.current_root().unwrap();
+        assert_ne!(new_root, root_before);
+    }
+
+    #[test]
+    fn test_double_epoch_transition() {
+        let (_db, mgr) = setup();
+        mgr.initialize_genesis().unwrap();
+
+        // --- Epoch 0: Add 3 notes, spend 1 ---
+        for i in 1u8..=3 {
+            let mut c = [0u8; 32];
+            c[0] = i;
+            mgr.append_commitment(c, i as u64).unwrap();
+        }
+        mgr.spend_nullifier([0xAA; 32], 4).unwrap();
+        mgr.db.mark_l2_note_spent(0, 0).unwrap(); // Spend note at index 0
+        assert_eq!(mgr.note_count(), 3);
+
+        // Advance to epoch boundary at height 10
+        for h in 1..10 {
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+
+        let root = mgr.current_root().unwrap();
+        mgr.add_valid_root(root, 10).unwrap();
+        let result = mgr.on_checkpoint_finalized(10).unwrap();
+        assert!(result.is_some());
+
+        let compaction1 = result.unwrap();
+        assert_eq!(compaction1.new_epoch, 1);
+        assert_eq!(compaction1.notes_migrated, 2); // 3 - 1 spent = 2 migrated
+        assert_eq!(mgr.current_epoch(), 1);
+        assert_eq!(mgr.note_count(), 2);
+
+        // End transition window (heights 11-13, transition_window = 3)
+        for h in 11..=13 {
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+        assert!(!mgr.is_in_transition());
+
+        // --- Epoch 1: Add 2 more notes, spend none ---
+        for i in 10u8..=11 {
+            let mut c = [0u8; 32];
+            c[0] = i;
+            mgr.append_commitment(c, 14 + (i - 10) as u64).unwrap();
+        }
+        assert_eq!(mgr.note_count(), 4); // 2 migrated + 2 new
+
+        // Advance to next epoch boundary at height 20
+        for h in 14..20 {
+            let root = mgr.current_root().unwrap();
+            mgr.add_valid_root(root, h).unwrap();
+            mgr.on_checkpoint_finalized(h).unwrap();
+        }
+
+        let root = mgr.current_root().unwrap();
+        mgr.add_valid_root(root, 20).unwrap();
+        let result = mgr.on_checkpoint_finalized(20).unwrap();
+        assert!(result.is_some());
+
+        let compaction2 = result.unwrap();
+        assert_eq!(compaction2.new_epoch, 2);
+        assert_eq!(compaction2.notes_migrated, 4); // All 4 unspent notes migrated
+
+        // Final state
+        assert_eq!(mgr.current_epoch(), 2);
+        assert_eq!(mgr.note_count(), 4); // All accumulated unspent notes in final tree
+        assert_eq!(mgr.nullifier_count(), 0);
+        assert!(mgr.is_in_transition());
+    }
 }
