@@ -783,6 +783,32 @@ impl Database {
         })
     }
 
+    /// Create a round if it doesn't already exist (INSERT OR IGNORE).
+    ///
+    /// Used by payout recording to ensure the FK-referenced round exists
+    /// before inserting payout entries. Idempotent — safe to call multiple times.
+    pub fn create_round_if_not_exists(&self, round: &RoundRecord) -> GhostResult<()> {
+        self.with_connection(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO rounds (round_id, block_height, block_hash, start_time,
+                                               found_by_node, payout_status, subsidy_sats, tx_fees_sats)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    round.round_id,
+                    round.block_height,
+                    round.block_hash,
+                    round.start_time,
+                    round.found_by_node,
+                    round.payout_status.as_str(),
+                    round.subsidy_sats,
+                    round.tx_fees_sats,
+                ],
+            )
+            .map_err(|e| GhostError::Database(e.to_string()))?;
+            Ok(())
+        })
+    }
+
     /// Get a round by ID
     pub fn get_round(&self, round_id: u64) -> GhostResult<Option<RoundRecord>> {
         self.with_connection(|conn| {
@@ -7904,5 +7930,89 @@ mod tests {
             .get_next_confidential_note_index()
             .expect("Failed to get next");
         assert_eq!(next, 0);
+    }
+
+    // =========================================================================
+    // FK Payout Recording Tests
+    // =========================================================================
+
+    fn test_payout_record(round_id: u64) -> PayoutRecord {
+        PayoutRecord {
+            id: None,
+            round_id,
+            recipient_id: "abc123".to_string(),
+            recipient_type: RecipientType::Miner,
+            address: "bc1qtest".to_string(),
+            amount_sats: 50_000,
+            txid: None,
+            vout: None,
+            status: PayoutStatus::Approved,
+            created_at: 1700000000,
+            confirmed_at: None,
+        }
+    }
+
+    fn test_round_record(round_id: u64, block_height: u64) -> RoundRecord {
+        RoundRecord {
+            round_id,
+            block_height,
+            block_hash: Some("abc123".to_string()),
+            start_time: 1700000000,
+            end_time: None,
+            total_shares: 0,
+            total_work: 0.0,
+            winning_miner: None,
+            found_by_node: Some("node1".to_string()),
+            payout_status: PayoutStatus::Approved,
+            subsidy_sats: Some(312_500_000),
+            tx_fees_sats: Some(100_000),
+        }
+    }
+
+    #[test]
+    fn test_payout_insert_requires_round() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        let record = test_payout_record(999);
+        // Insert payout without creating round first → FK constraint violation
+        assert!(db.insert_payout(&record).is_err());
+    }
+
+    #[test]
+    fn test_payout_insert_with_round_succeeds() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        db.create_round(&test_round_record(1, 850_000))
+            .expect("Failed to create round");
+        let record = test_payout_record(1);
+        assert!(db.insert_payout(&record).is_ok());
+    }
+
+    #[test]
+    fn test_create_round_if_not_exists_idempotent() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        let round = test_round_record(1, 850_000);
+        db.create_round_if_not_exists(&round)
+            .expect("First create should succeed");
+        db.create_round_if_not_exists(&round)
+            .expect("Second create should also succeed (idempotent)");
+        // Verify only one round exists
+        let fetched = db.get_round(1).expect("Failed to get round");
+        assert!(fetched.is_some());
+    }
+
+    #[test]
+    fn test_create_round_if_not_exists_then_payout() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        // Use the new idempotent method (mimics what template.rs now does)
+        db.create_round_if_not_exists(&test_round_record(42, 900_000))
+            .expect("Failed to create round");
+        let record = test_payout_record(42);
+        let id = db
+            .insert_payout(&record)
+            .expect("Payout insert should succeed after round creation");
+        assert!(id > 0);
+
+        // Verify payout is queryable
+        let count = db.get_payout_count().expect("Failed to get payout count");
+        assert_eq!(count, 1);
     }
 }

@@ -273,26 +273,22 @@ impl FeeDistribution {
             + self.miner_pool
     }
 
-    /// Verify distribution adds up correctly
+    /// Verify distribution adds up correctly.
     ///
-    /// SEC-TREAS-1: Tightened tolerance from ±10 sats to ±1 sat.
-    /// Integer arithmetic should be precise - any larger variance indicates a bug.
+    /// F-3: Exact match required — integer arithmetic is precise, no tolerance needed.
     pub fn verify(&self, subsidy_sats: u64, tx_fees_sats: u64) -> bool {
         let expected = subsidy_sats + tx_fees_sats;
         let actual = self.total();
 
-        // Exact match is expected - integer arithmetic should be precise
         if actual != expected {
             tracing::warn!(
                 expected = expected,
                 actual = actual,
                 diff = (actual as i128 - expected as i128),
-                "Fee distribution mismatch detected"
+                "F-3: Fee distribution mismatch — integer arithmetic should be exact"
             );
-            // Allow ±1 satoshi only for documented rounding in basis point calculation
-            return actual >= expected.saturating_sub(1) && actual <= expected.saturating_add(1);
         }
-        true
+        actual == expected
     }
 }
 

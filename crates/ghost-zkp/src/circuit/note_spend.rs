@@ -57,6 +57,10 @@ pub struct NoteSpendCircuit<F: PrimeField> {
     pub recipient_blinding: Option<F>,
 
     pub tree_depth: usize,
+
+    /// CR-2: True for dummy circuits (MPC parameter generation only).
+    /// Proof generation will panic if this is set.
+    pub is_dummy: bool,
 }
 
 impl<F: PrimeField> NoteSpendCircuit<F> {
@@ -80,6 +84,7 @@ impl<F: PrimeField> NoteSpendCircuit<F> {
             change_blinding: Some(F::ZERO),
             recipient_blinding: Some(F::ZERO),
             tree_depth,
+            is_dummy: true,
         }
     }
 }
@@ -543,6 +548,7 @@ mod tests {
             change_blinding: Some(change_blinding),
             recipient_blinding: Some(recipient_blinding),
             tree_depth,
+            is_dummy: false,
         }
     }
 
@@ -690,6 +696,7 @@ mod tests {
             change_blinding: Some(change_blinding),
             recipient_blinding: Some(recipient_blinding),
             tree_depth,
+            is_dummy: false,
         };
 
         let mut cs = TestConstraintSystem::<Fr>::new();
@@ -737,6 +744,7 @@ mod tests {
             change_blinding: Some(change_blinding),
             recipient_blinding: Some(recipient_blinding),
             tree_depth,
+            is_dummy: false,
         };
 
         let mut cs = TestConstraintSystem::<Fr>::new();

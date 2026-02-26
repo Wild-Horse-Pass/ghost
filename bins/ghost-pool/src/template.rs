@@ -64,7 +64,7 @@ use ghost_common::rpc::{BitcoinRpc, BlockTemplate, TemplateTransaction};
 use ghost_common::types::{PayoutProposal, PayoutType, TreasuryAddress};
 use ghost_policy::PolicyProfile;
 use ghost_reaper::ReaperConfig;
-use ghost_storage::{Database, PayoutRecord, PayoutStatus, RecipientType};
+use ghost_storage::{Database, PayoutRecord, PayoutStatus, RecipientType, RoundRecord};
 
 // M-28: Import CoinbaseVerifier for pre-submission verification
 use crate::coinbase_verifier::{CoinbaseCommitment, CoinbaseOutput, CoinbaseVerifier};
@@ -589,6 +589,28 @@ impl TemplateProcessor {
     fn record_payout_entries(&self, db: &Database, proposal: &PayoutProposal) {
         let created_at = proposal.timestamp as i64;
         let round_id = proposal.round_id;
+
+        // Ensure round exists before inserting payout entries (FK constraint).
+        // Production never called create_round() so every payout insert was failing.
+        let round_record = RoundRecord {
+            round_id,
+            block_height: proposal.block_height,
+            block_hash: Some(hex::encode(proposal.block_hash)),
+            start_time: created_at,
+            end_time: None,
+            total_shares: 0,
+            total_work: 0.0,
+            winning_miner: None,
+            found_by_node: Some(hex::encode(proposal.proposer)),
+            payout_status: PayoutStatus::Approved,
+            subsidy_sats: Some(proposal.subsidy),
+            tx_fees_sats: Some(proposal.tx_fees),
+        };
+        if let Err(e) = db.create_round_if_not_exists(&round_record) {
+            warn!(round_id = round_id, error = %e, "Failed to create round record");
+            return;
+        }
+
         let mut recorded = 0u32;
 
         // Miner payouts

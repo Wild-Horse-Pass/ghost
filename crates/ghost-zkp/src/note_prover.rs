@@ -193,6 +193,17 @@ impl NoteProver {
             cs.num_constraints()
         );
 
+        // CR-2: Reject dummy circuits at proof generation time
+        debug_assert!(
+            !circuit.is_dummy,
+            "CR-2: Cannot generate proof with dummy circuit — use real witness values"
+        );
+        if circuit.is_dummy {
+            return Err(ZkError::ProvingError(
+                "CR-2: Cannot generate proof with dummy circuit".to_string(),
+            ));
+        }
+
         let proof_bytes = if let Some(ref params) = self.params {
             let proving_start = Instant::now();
             let proof: Proof<Bls12> =
@@ -278,6 +289,7 @@ impl NoteProver {
             change_blinding: Some(change_blinding),
             recipient_blinding: Some(recipient_blinding),
             tree_depth: self.tree_depth,
+            is_dummy: false,
         })
     }
 

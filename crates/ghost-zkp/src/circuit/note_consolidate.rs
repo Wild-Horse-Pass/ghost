@@ -47,6 +47,9 @@ pub struct NoteConsolidateCircuit<F: PrimeField> {
     pub output_blinding: Option<F>,
 
     pub tree_depth: usize,
+
+    /// CR-2: True for dummy circuits (MPC parameter generation only).
+    pub is_dummy: bool,
 }
 
 impl<F: PrimeField> NoteConsolidateCircuit<F> {
@@ -66,6 +69,7 @@ impl<F: PrimeField> NoteConsolidateCircuit<F> {
             merkle_siblings: vec![vec![Some(F::ZERO); tree_depth]; n],
             output_blinding: Some(F::ZERO),
             tree_depth,
+            is_dummy: true,
         }
     }
 }
@@ -685,6 +689,7 @@ mod tests {
             merkle_siblings,
             output_blinding: Some(output_blinding),
             tree_depth,
+            is_dummy: false,
         }
     }
 

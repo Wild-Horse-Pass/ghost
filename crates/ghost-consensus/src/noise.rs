@@ -287,10 +287,10 @@ impl Default for NoiseConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            required: false,
+            required: true,
             keypair_file: None,
             trusted_peers: Vec::new(),
-            allow_unknown_peers: true,
+            allow_unknown_peers: false,
         }
     }
 }
@@ -337,10 +337,23 @@ impl NoiseSession {
         })
     }
 
+    /// B-2: Maximum time allowed for the Noise handshake before aborting.
+    const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
     /// Perform the Noise XX handshake over a connection
     ///
     /// Returns an encrypted transport on success.
+    /// B-2: Times out after 10 seconds to prevent stalled handshake DoS.
     pub async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
+        self,
+        stream: S,
+    ) -> Result<(NoiseTransport<S>, [u8; 32]), NoiseError> {
+        tokio::time::timeout(Self::HANDSHAKE_TIMEOUT, self.handshake_inner(stream))
+            .await
+            .map_err(|_| NoiseError::Handshake("B-2: Handshake timed out after 10 seconds".into()))?
+    }
+
+    async fn handshake_inner<S: AsyncRead + AsyncWrite + Unpin>(
         mut self,
         mut stream: S,
     ) -> Result<(NoiseTransport<S>, [u8; 32]), NoiseError> {
@@ -708,9 +721,10 @@ mod tests {
     #[test]
     fn test_noise_config_default() {
         let config = NoiseConfig::default();
+        // B-1: Secure defaults — Noise required, unknown peers rejected
         assert!(config.enabled);
-        assert!(!config.required);
-        assert!(config.allow_unknown_peers);
+        assert!(config.required);
+        assert!(!config.allow_unknown_peers);
         assert!(config.trusted_peers.is_empty());
     }
 
@@ -764,14 +778,15 @@ mod tests {
         let manager = NoiseManager::new(config).unwrap();
 
         assert!(manager.is_enabled());
-        assert!(!manager.is_required());
+        assert!(manager.is_required());
         assert_eq!(manager.public_key().len(), 32);
     }
 
     #[tokio::test]
     async fn test_noise_manager_handshake() {
-        let config1 = NoiseConfig::default();
-        let config2 = NoiseConfig::default();
+        // Tests use allow_unknown_peers since there's no pre-shared trusted key list
+        let config1 = NoiseConfig { allow_unknown_peers: true, ..NoiseConfig::default() };
+        let config2 = NoiseConfig { allow_unknown_peers: true, ..NoiseConfig::default() };
 
         let manager1 = NoiseManager::new(config1).unwrap();
         let manager2 = NoiseManager::new(config2).unwrap();
@@ -825,6 +840,35 @@ mod tests {
             MAX_PAYLOAD_SIZE + NOISE_OVERHEAD,
             MAX_MESSAGE_SIZE - NOISE_OVERHEAD + NOISE_OVERHEAD
         );
+    }
+
+    #[tokio::test]
+    async fn test_b2_handshake_timeout() {
+        use tokio::io::duplex;
+
+        let keys = NoiseKeypair::generate();
+        let session = NoiseSession::initiator(&keys).unwrap();
+
+        // Create a duplex stream but never respond — simulates stalled peer
+        let (client_stream, _server_stream) = duplex(65536);
+
+        let start = std::time::Instant::now();
+        let result = session.handshake(client_stream).await;
+        let elapsed = start.elapsed();
+
+        match result {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.contains("timed out"),
+                    "Expected timeout error, got: {}",
+                    err_msg
+                );
+            }
+            Ok(_) => panic!("Expected handshake to fail with timeout"),
+        }
+        // Should complete within ~10s (with some slack for CI)
+        assert!(elapsed.as_secs() <= 15, "Timeout took too long: {:?}", elapsed);
     }
 
     // ==========================================================================

@@ -617,10 +617,10 @@ fn test_652_noise_config_defaults() {
 
     let config = NoiseConfig::default();
 
-    // Default should be enabled but not required (gradual rollout)
+    // B-1: Default must be secure — Noise required, unknown peers rejected
     assert!(config.enabled);
-    assert!(!config.required);
-    assert!(config.allow_unknown_peers);
+    assert!(config.required);
+    assert!(!config.allow_unknown_peers);
     assert!(config.trusted_peers.is_empty());
 }
 

@@ -2191,8 +2191,21 @@ impl MeshNetwork {
                         found.unwrap_or(("unknown", raw_data))
                     };
 
-                    // M-P2P-1: Validate topic matches envelope's msg_type
-                    // Skip messages where the topic doesn't match the declared message type
+                    // M-9: Fast pre-deserialization topic validation for single-type topics.
+                    // Rejects messages cheaply before full deserialization when the
+                    // topic maps to exactly one expected MessageType.
+                    if let Some(expected_type) = Self::primary_message_type_for_topic(topic_name) {
+                        if crate::message_validator::validate_topic_before_deser(&data, expected_type).is_err() {
+                            debug!(
+                                topic = topic_name,
+                                "M-9: Fast topic validation rejected message before deserialization"
+                            );
+                            continue;
+                        }
+                    }
+
+                    // M-P2P-1: Validate topic matches envelope's msg_type (post-deser fallback)
+                    // Covers multi-type topics (elder, mpc) that can't use the fast check
                     if let Ok(envelope) = MessageEnvelope::deserialize(&data) {
                         let expected_topic = envelope.msg_type.topic_str();
                         if topic_name != expected_topic {
@@ -2398,6 +2411,23 @@ impl MeshNetwork {
             messages_sent: self.messages_sent.load(Ordering::Relaxed),
             messages_received: self.messages_received.load(Ordering::Relaxed),
             seen_message_count: self.seen_messages.read().len(),
+        }
+    }
+
+    /// M-9: Map topic name to primary MessageType for pre-deserialization validation.
+    /// Returns None for multi-type topics (elder, mpc) which need post-deser checking.
+    fn primary_message_type_for_topic(topic: &str) -> Option<MessageType> {
+        match topic {
+            "health" => Some(MessageType::HealthPing),
+            "share" => Some(MessageType::ShareProof),
+            "block" => Some(MessageType::BlockFound),
+            "vote" => Some(MessageType::Vote),
+            "discovery" => Some(MessageType::Discovery),
+            "verify" => Some(MessageType::VerificationResult),
+            "payout" => Some(MessageType::PayoutProposal),
+            // Multi-type topics — skip fast check, rely on post-deser validation
+            "elder" | "mpc" | "l2tx" | "l2chk" | "l2vote" | "l2sync" | "unknown" => None,
+            _ => None,
         }
     }
 

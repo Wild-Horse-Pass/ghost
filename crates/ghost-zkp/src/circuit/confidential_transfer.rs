@@ -64,6 +64,9 @@ pub struct ConfidentialTransferCircuit<F: PrimeField> {
     pub recipient_new_blinding: Option<F>,
 
     pub tree_depth: usize,
+
+    /// CR-2: True for dummy circuits (MPC parameter generation only).
+    pub is_dummy: bool,
 }
 
 impl<F: PrimeField> ConfidentialTransferCircuit<F> {
@@ -92,6 +95,7 @@ impl<F: PrimeField> ConfidentialTransferCircuit<F> {
             recipient_siblings: vec![Some(F::ZERO); tree_depth],
             recipient_new_blinding: Some(F::ZERO),
             tree_depth,
+            is_dummy: true,
         }
     }
 }
@@ -696,6 +700,7 @@ mod tests {
             recipient_siblings: level_siblings_recipient.iter().map(|s| Some(*s)).collect(),
             recipient_new_blinding: Some(recipient_new_blinding),
             tree_depth,
+            is_dummy: false,
         }
     }
 
@@ -886,6 +891,7 @@ mod tests {
             recipient_siblings: recipient_siblings.iter().map(|s| Some(*s)).collect(),
             recipient_new_blinding: Some(recipient_new_blinding),
             tree_depth,
+            is_dummy: false,
         };
 
         let mut cs = TestConstraintSystem::<Fr>::new();
@@ -957,6 +963,7 @@ mod tests {
             recipient_siblings: recipient_siblings.iter().map(|s| Some(*s)).collect(),
             recipient_new_blinding: Some(recipient_new_blinding),
             tree_depth,
+            is_dummy: false,
         };
 
         let mut cs = TestConstraintSystem::<Fr>::new();

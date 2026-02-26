@@ -197,6 +197,17 @@ impl ConfidentialProver {
             cs.num_constraints()
         );
 
+        // CR-2: Reject dummy circuits at proof generation time
+        debug_assert!(
+            !circuit.is_dummy,
+            "CR-2: Cannot generate proof with dummy circuit — use real witness values"
+        );
+        if circuit.is_dummy {
+            return Err(ZkError::ProvingError(
+                "CR-2: Cannot generate proof with dummy circuit".to_string(),
+            ));
+        }
+
         // Generate proof bytes
         let proof_bytes = if let Some(ref params) = self.params {
             let proving_start = Instant::now();
@@ -322,6 +333,7 @@ impl ConfidentialProver {
             recipient_siblings,
             recipient_new_blinding: Some(recipient_new_blinding),
             tree_depth: self.tree_depth,
+            is_dummy: false,
         })
     }
 

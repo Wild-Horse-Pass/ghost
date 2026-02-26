@@ -249,65 +249,13 @@ impl PayoutProposalCreator {
     /// - Miner Pool (99% of subsidy) → Top 200 miners by work
     /// - Node Pool → Top 100 nodes by 5-4-3-2-1 capability shares
     pub fn create_proposal(&self, data: BlockFoundData) -> GhostResult<PayoutProposal> {
-        // PO4-M1: Validate block hash before creating proposal
-        Self::validate_block_hash(&data.block_hash)?;
-
-        // Block validation is handled by submitblock — Bitcoin Core verifies PoW and
-        // all consensus rules before accepting. No additional getblockheader check needed;
-        // Bitcoin Core may not have indexed the header yet, causing false failures.
-
-        // M-15 SECURITY FIX: Validate subsidy matches expected for height
-        // On MAINNET: Subsidy mismatch is a CRITICAL error - indicates template manipulation
-        // On testnets: Log warning but allow (testnets may have different subsidy rules)
-        let expected_subsidy = ghost_common::rpc::calculate_block_subsidy(data.block_height, None);
-        if data.subsidy_sats != expected_subsidy {
-            let is_mainnet = self.config.network == ghost_common::config::BitcoinNetwork::Mainnet;
-
-            if is_mainnet {
-                // M-15: On mainnet, subsidy mismatch is a CRITICAL error
-                // This could indicate:
-                // - Template manipulation attack
-                // - Block height confusion
-                // - Internal calculation bug
-                error!(
-                    height = data.block_height,
-                    expected = expected_subsidy,
-                    actual = data.subsidy_sats,
-                    "M-15 CRITICAL: Subsidy mismatch on MAINNET - rejecting payout proposal"
-                );
-                return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
-                    "M-15: Subsidy mismatch on mainnet at height {}: expected {} sats, got {} sats. \
-                     This indicates potential template manipulation or internal bug.",
-                    data.block_height, expected_subsidy, data.subsidy_sats
-                )));
-            } else {
-                // On testnets, log warning but continue (signet/testnet may differ)
-                warn!(
-                    height = data.block_height,
-                    expected = expected_subsidy,
-                    actual = data.subsidy_sats,
-                    network = ?self.config.network,
-                    "M-15: Subsidy mismatch - acceptable on testnet but would fail on mainnet"
-                );
-            }
-        }
-
-        // MED-POOL-2: Sanity check TX fees - reject absurdly high values
-        // 100 BTC (10 billion sats) is an unreasonable fee amount that would indicate
-        // either an attack or a serious bug in fee calculation.
-        const MAX_REASONABLE_FEES: u64 = 100 * 100_000_000; // 100 BTC in sats
-        if data.tx_fees_sats > MAX_REASONABLE_FEES {
-            error!(
-                tx_fees = data.tx_fees_sats,
-                max_reasonable = MAX_REASONABLE_FEES,
-                height = data.block_height,
-                "MED-POOL-2 CRITICAL: TX fees exceed sanity limit - rejecting payout"
-            );
-            return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
-                "MED-POOL-2: TX fees {} sats exceed sanity limit {} sats",
-                data.tx_fees_sats, MAX_REASONABLE_FEES
-            )));
-        }
+        // B-4/CFG-4/CFG-5: Shared validation for block hash, subsidy, and fee checks
+        self.validate_block_data(
+            &data.block_hash,
+            data.block_height,
+            data.subsidy_sats,
+            data.tx_fees_sats,
+        )?;
 
         let now = chrono::Utc::now().timestamp() as u64;
 
@@ -572,6 +520,64 @@ impl PayoutProposalCreator {
         Ok(proposal)
     }
 
+    /// Validate block data shared between pool and solo mode proposals.
+    ///
+    /// B-4/CFG-4/CFG-5: Ensures block hash, subsidy, and fee checks
+    /// are applied consistently to both code paths.
+    fn validate_block_data(
+        &self,
+        block_hash: &[u8; 32],
+        block_height: u64,
+        subsidy_sats: u64,
+        tx_fees_sats: u64,
+    ) -> GhostResult<()> {
+        // PO4-M1: Validate block hash
+        Self::validate_block_hash(block_hash)?;
+
+        // M-15: Validate subsidy matches expected for height
+        let expected_subsidy = ghost_common::rpc::calculate_block_subsidy(block_height, None);
+        if subsidy_sats != expected_subsidy {
+            let is_mainnet = self.config.network == ghost_common::config::BitcoinNetwork::Mainnet;
+            if is_mainnet {
+                error!(
+                    height = block_height,
+                    expected = expected_subsidy,
+                    actual = subsidy_sats,
+                    "M-15 CRITICAL: Subsidy mismatch on MAINNET - rejecting payout proposal"
+                );
+                return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                    "M-15: Subsidy mismatch on mainnet at height {}: expected {} sats, got {} sats",
+                    block_height, expected_subsidy, subsidy_sats
+                )));
+            } else {
+                warn!(
+                    height = block_height,
+                    expected = expected_subsidy,
+                    actual = subsidy_sats,
+                    network = ?self.config.network,
+                    "M-15: Subsidy mismatch - acceptable on testnet but would fail on mainnet"
+                );
+            }
+        }
+
+        // MED-POOL-2: Sanity check TX fees
+        const MAX_REASONABLE_FEES: u64 = 100 * 100_000_000; // 100 BTC in sats
+        if tx_fees_sats > MAX_REASONABLE_FEES {
+            error!(
+                tx_fees = tx_fees_sats,
+                max_reasonable = MAX_REASONABLE_FEES,
+                height = block_height,
+                "MED-POOL-2 CRITICAL: TX fees exceed sanity limit - rejecting payout"
+            );
+            return Err(ghost_common::error::GhostError::PayoutCalculation(format!(
+                "MED-POOL-2: TX fees {} sats exceed sanity limit {} sats",
+                tx_fees_sats, MAX_REASONABLE_FEES
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Create a solo mode payout proposal
     ///
     /// Solo mode distribution:
@@ -579,6 +585,14 @@ impl PayoutProposalCreator {
     /// - 1% pool fee → split between treasury and node pool per decay schedule
     /// - Hosting node is included in node reward pool calculation
     pub fn create_solo_proposal(&self, data: SoloBlockFoundData) -> GhostResult<PayoutProposal> {
+        // B-4/CFG-4/CFG-5: Validate block data (matching pool mode checks)
+        self.validate_block_data(
+            &data.block_hash,
+            data.block_height,
+            data.subsidy_sats,
+            data.tx_fees_sats,
+        )?;
+
         let now = chrono::Utc::now().timestamp() as u64;
 
         // Calculate fee distribution using treasury decay schedule

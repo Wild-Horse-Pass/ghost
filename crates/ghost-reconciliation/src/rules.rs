@@ -149,9 +149,19 @@ pub fn calculate_wraith_fee(amount_sats: u64) -> u64 {
     fee.clamp(1, MAX_FEE_SATS)
 }
 
-/// Calculate net amount after fee
-pub fn calculate_net_amount(amount_sats: u64) -> u64 {
-    amount_sats.saturating_sub(calculate_fee(amount_sats))
+/// Calculate net amount after fee.
+///
+/// M-21: Returns an error if the net amount is zero (fee >= amount),
+/// which would produce a dust or zero-value settlement output.
+pub fn calculate_net_amount(amount_sats: u64) -> ReconciliationResult<u64> {
+    let fee = calculate_fee(amount_sats);
+    let net = amount_sats.saturating_sub(fee);
+    if net == 0 {
+        return Err(ReconciliationError::InvalidSettlement(
+            "M-21: Net amount is zero after fees — settlement would produce dust".to_string(),
+        ));
+    }
+    Ok(net)
 }
 
 /// Check if dispute window has passed
@@ -356,5 +366,20 @@ mod tests {
 
         // High value forces batch
         assert!(rules.should_form_batch(1, 20_000_000_000, 0));
+    }
+
+    #[test]
+    fn test_m21_calculate_net_amount_rejects_zero() {
+        // Fee on 0 sats = 1 (minimum), net = 0 → error
+        assert!(calculate_net_amount(0).is_err());
+
+        // Fee on 1 sat = 1, net = 0 → error
+        assert!(calculate_net_amount(1).is_err());
+
+        // Fee on 500 sats = 1, net = 499 → ok
+        assert_eq!(calculate_net_amount(500).unwrap(), 499);
+
+        // Fee on 100_000 sats = 100, net = 99_900 → ok
+        assert_eq!(calculate_net_amount(100_000).unwrap(), 99_900);
     }
 }
