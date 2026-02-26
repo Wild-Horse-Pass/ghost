@@ -2791,7 +2791,11 @@ impl TemplateProcessor {
                 Ok(())
             }
             Ok(Some(rejection)) => {
-                warn!(height = work.height, reason = %rejection, "Block rejected");
+                if rejection == "inconclusive" || rejection == "duplicate" {
+                    info!(height = work.height, reason = %rejection, "Block not connected (stale/race)");
+                } else {
+                    warn!(height = work.height, reason = %rejection, "Block rejected");
+                }
                 Err(anyhow::anyhow!("Block rejected: {}", rejection))
             }
             Err(e) => {
@@ -2979,7 +2983,11 @@ impl TemplateProcessor {
                 Ok(())
             }
             Ok(Some(rejection)) => {
-                warn!(height = work.height, reason = %rejection, "Block rejected");
+                if rejection == "inconclusive" || rejection == "duplicate" {
+                    info!(height = work.height, reason = %rejection, "Block not connected (stale/race)");
+                } else {
+                    warn!(height = work.height, reason = %rejection, "Block rejected");
+                }
                 Err(anyhow::anyhow!("Block rejected: {}", rejection))
             }
             Err(e) => {

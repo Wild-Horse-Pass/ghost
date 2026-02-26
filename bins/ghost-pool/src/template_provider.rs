@@ -543,7 +543,12 @@ async fn handle_tdp_client(
                             )
                             .await
                             {
-                                warn!("Error handling TDP message from {}: {}", peer_addr, e);
+                                let msg = e.to_string();
+                                if msg.contains("inconclusive") || msg.contains("duplicate") {
+                                    info!("TDP block submission race from {}: {}", peer_addr, msg);
+                                } else {
+                                    warn!("Error handling TDP message from {}: {}", peer_addr, e);
+                                }
                                 // Continue processing — don't kill the connection
                             }
                         } else {
