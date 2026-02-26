@@ -105,9 +105,7 @@ impl CachedGspHandler {
         let poll_cache = Arc::clone(&cache);
 
         // C-04: Validate GSP URL is a loopback address to prevent MITM on health checks
-        let is_loopback = gsp_url.contains("127.0.0.1")
-            || gsp_url.contains("localhost")
-            || gsp_url.contains("[::1]");
+        let is_loopback = is_loopback_url(&gsp_url);
 
         if !is_loopback {
             tracing::warn!(
@@ -219,16 +217,7 @@ impl PeerProvider for PeerProviderAdapter {
             .filter(|p| &p.node_id != exclude && !p.public_address.is_empty())
             .map(|p| {
                 // Derive HTTP address from public_address + http_port
-                // public_address is typically just an IP or host
-                let host = if p.public_address.contains(':') {
-                    // Has port, extract just the host
-                    p.public_address
-                        .split(':')
-                        .next()
-                        .unwrap_or(&p.public_address)
-                } else {
-                    &p.public_address
-                };
+                let host = extract_peer_host(&p.public_address);
 
                 // CRIT-VER-1: Extract IP address for Sybil resistance
                 let ip_address = Some(host.to_string());
@@ -511,14 +500,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Setup logging
-    let level = match args.log_level.to_lowercase().as_str() {
-        "trace" => Level::TRACE,
-        "debug" => Level::DEBUG,
-        "info" => Level::INFO,
-        "warn" => Level::WARN,
-        "error" => Level::ERROR,
-        _ => Level::INFO,
-    };
+    let level = parse_log_level(&args.log_level);
 
     let subscriber = FmtSubscriber::builder()
         .with_max_level(level)
@@ -556,30 +538,11 @@ async fn main() -> Result<()> {
 
     // Determine the effective signer configuration
     // Priority: config.identity.signer > config.identity.key_path > data_dir/node.key
-    let signer_config = match &config.identity.signer {
-        Some(cfg) => {
-            // Explicit signer configuration in config file
-            cfg.clone()
-        }
-        None => {
-            // Use config key_path if it exists, otherwise fall back to data_dir
-            let cfg_key_path = expand_path(&config.identity.key_path)?;
-            if cfg_key_path.exists() {
-                SignerConfig::Local {
-                    key_path: cfg_key_path,
-                }
-            } else if default_key_path.exists() {
-                SignerConfig::Local {
-                    key_path: default_key_path.clone(),
-                }
-            } else {
-                // No key file exists, we'll generate one below
-                SignerConfig::Local {
-                    key_path: default_key_path.clone(),
-                }
-            }
-        }
-    };
+    let signer_config = resolve_signer_path(
+        &config.identity.signer,
+        &config.identity.key_path,
+        &default_key_path,
+    )?;
 
     // Load or create identity using signer config
     let identity = match &signer_config {
@@ -4238,4 +4201,278 @@ fn load_config(path: &std::path::Path) -> Result<NodeConfig> {
     }
 
     Ok(config)
+}
+
+/// Parse a log level string into a tracing Level
+fn parse_log_level(s: &str) -> Level {
+    match s.to_lowercase().as_str() {
+        "trace" => Level::TRACE,
+        "debug" => Level::DEBUG,
+        "info" => Level::INFO,
+        "warn" => Level::WARN,
+        "error" => Level::ERROR,
+        _ => Level::INFO,
+    }
+}
+
+/// Check if a URL points to a loopback address
+fn is_loopback_url(url: &str) -> bool {
+    url.contains("127.0.0.1") || url.contains("localhost") || url.contains("[::1]")
+}
+
+/// Extract the host portion from a peer address (strips port if present)
+fn extract_peer_host(address: &str) -> &str {
+    if address.contains(':') {
+        address.split(':').next().unwrap_or(address)
+    } else {
+        address
+    }
+}
+
+/// Resolve the effective signer configuration from config and defaults
+fn resolve_signer_path(
+    config_signer: &Option<SignerConfig>,
+    config_key_path: &std::path::Path,
+    default_key_path: &std::path::Path,
+) -> Result<SignerConfig> {
+    match config_signer {
+        Some(cfg) => Ok(cfg.clone()),
+        None => {
+            let cfg_key_path = expand_path(config_key_path)?;
+            if cfg_key_path.exists() {
+                Ok(SignerConfig::Local {
+                    key_path: cfg_key_path,
+                })
+            } else {
+                Ok(SignerConfig::Local {
+                    key_path: default_key_path.to_path_buf(),
+                })
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    // ── expand_path ──────────────────────────────────────────────────
+
+    #[test]
+    fn expand_path_tilde_prefix() {
+        let home = std::env::var("HOME").unwrap();
+        let result = expand_path(Path::new("~/foo")).unwrap();
+        assert_eq!(result, PathBuf::from(home).join("foo"));
+    }
+
+    #[test]
+    fn expand_path_absolute_unchanged() {
+        let result = expand_path(Path::new("/absolute/path")).unwrap();
+        assert_eq!(result, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn expand_path_relative_unchanged() {
+        let result = expand_path(Path::new("relative/path")).unwrap();
+        assert_eq!(result, PathBuf::from("relative/path"));
+    }
+
+    #[test]
+    fn expand_path_tilde_deeply_nested() {
+        let home = std::env::var("HOME").unwrap();
+        let result = expand_path(Path::new("~/deeply/nested/path")).unwrap();
+        assert_eq!(result, PathBuf::from(home).join("deeply/nested/path"));
+    }
+
+    #[test]
+    fn expand_path_tilde_alone() {
+        // strip_prefix("~/") doesn't match bare "~", so returned unchanged
+        let result = expand_path(Path::new("~")).unwrap();
+        assert_eq!(result, PathBuf::from("~"));
+    }
+
+    // ── load_config ──────────────────────────────────────────────────
+
+    #[test]
+    fn load_config_missing_file_returns_defaults() {
+        let result = load_config(Path::new("/nonexistent/ghost.toml")).unwrap();
+        let default = NodeConfig::default();
+        assert_eq!(
+            result.pool.min_payout_sats,
+            default.pool.min_payout_sats
+        );
+    }
+
+    #[test]
+    fn load_config_valid_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ghost.toml");
+        // Serialize the default config, then override a field
+        let mut default = NodeConfig::default();
+        default.bitcoin.rpc_host = "10.0.0.1".to_string();
+        default.bitcoin.rpc_user = "testuser".to_string();
+        let toml_str = toml::to_string(&default).unwrap();
+        std::fs::write(&path, &toml_str).unwrap();
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.bitcoin.rpc_host, "10.0.0.1");
+        assert_eq!(config.bitcoin.rpc_user, "testuser");
+    }
+
+    #[test]
+    fn load_config_invalid_toml_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.toml");
+        std::fs::write(&path, "this is [[[not valid toml").unwrap();
+        assert!(load_config(&path).is_err());
+    }
+
+    #[test]
+    fn load_config_empty_file_is_err() {
+        // Empty TOML is missing required fields (identity, bitcoin, etc.)
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.toml");
+        std::fs::write(&path, "").unwrap();
+        assert!(load_config(&path).is_err());
+    }
+
+    // ── parse_log_level ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_log_level_all_valid() {
+        assert_eq!(parse_log_level("trace"), Level::TRACE);
+        assert_eq!(parse_log_level("debug"), Level::DEBUG);
+        assert_eq!(parse_log_level("info"), Level::INFO);
+        assert_eq!(parse_log_level("warn"), Level::WARN);
+        assert_eq!(parse_log_level("error"), Level::ERROR);
+    }
+
+    #[test]
+    fn parse_log_level_case_insensitive() {
+        assert_eq!(parse_log_level("TRACE"), Level::TRACE);
+        assert_eq!(parse_log_level("Trace"), Level::TRACE);
+        assert_eq!(parse_log_level("DEBUG"), Level::DEBUG);
+    }
+
+    #[test]
+    fn parse_log_level_unknown_defaults_to_info() {
+        assert_eq!(parse_log_level("verbose"), Level::INFO);
+        assert_eq!(parse_log_level("nonsense"), Level::INFO);
+    }
+
+    #[test]
+    fn parse_log_level_empty_defaults_to_info() {
+        assert_eq!(parse_log_level(""), Level::INFO);
+    }
+
+    // ── is_loopback_url ──────────────────────────────────────────────
+
+    #[test]
+    fn is_loopback_url_127() {
+        assert!(is_loopback_url("http://127.0.0.1:8800/api"));
+    }
+
+    #[test]
+    fn is_loopback_url_localhost() {
+        assert!(is_loopback_url("http://localhost:8800"));
+    }
+
+    #[test]
+    fn is_loopback_url_ipv6() {
+        assert!(is_loopback_url("http://[::1]:8800"));
+    }
+
+    #[test]
+    fn is_loopback_url_external_ip() {
+        assert!(!is_loopback_url("http://10.0.0.1:8800"));
+    }
+
+    #[test]
+    fn is_loopback_url_external_domain() {
+        assert!(!is_loopback_url("http://example.com:8800"));
+    }
+
+    // ── extract_peer_host ────────────────────────────────────────────
+
+    #[test]
+    fn extract_peer_host_ip_with_port() {
+        assert_eq!(extract_peer_host("192.168.1.1:8080"), "192.168.1.1");
+    }
+
+    #[test]
+    fn extract_peer_host_ip_without_port() {
+        assert_eq!(extract_peer_host("192.168.1.1"), "192.168.1.1");
+    }
+
+    #[test]
+    fn extract_peer_host_hostname_with_port() {
+        assert_eq!(extract_peer_host("host.com:8080"), "host.com");
+    }
+
+    #[test]
+    fn extract_peer_host_empty() {
+        assert_eq!(extract_peer_host(""), "");
+    }
+
+    // ── resolve_signer_path ──────────────────────────────────────────
+
+    #[test]
+    fn resolve_signer_explicit_config() {
+        let explicit = SignerConfig::Local {
+            key_path: PathBuf::from("/custom/key"),
+        };
+        let result = resolve_signer_path(
+            &Some(explicit.clone()),
+            Path::new("/ignored"),
+            Path::new("/also_ignored"),
+        )
+        .unwrap();
+        assert_eq!(result, explicit);
+    }
+
+    #[test]
+    fn resolve_signer_config_key_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("node.key");
+        std::fs::write(&key_path, "key_data").unwrap();
+        let default_path = dir.path().join("default.key");
+
+        let result = resolve_signer_path(&None, &key_path, &default_path).unwrap();
+        assert_eq!(
+            result,
+            SignerConfig::Local {
+                key_path: key_path.clone()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_signer_config_key_missing_uses_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.key");
+        let default_path = dir.path().join("default.key");
+
+        let result = resolve_signer_path(&None, &missing, &default_path).unwrap();
+        assert_eq!(
+            result,
+            SignerConfig::Local {
+                key_path: default_path.clone()
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_signer_neither_path_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing1 = dir.path().join("a.key");
+        let missing2 = dir.path().join("b.key");
+
+        let result = resolve_signer_path(&None, &missing1, &missing2).unwrap();
+        assert_eq!(
+            result,
+            SignerConfig::Local {
+                key_path: missing2.clone()
+            }
+        );
+    }
 }

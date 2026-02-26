@@ -2390,6 +2390,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "stratum-apps",
+ "tempfile",
  "template_distribution_sv2 4.0.2",
  "thiserror 1.0.69",
  "tokio",
