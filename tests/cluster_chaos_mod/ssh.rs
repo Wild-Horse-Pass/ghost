@@ -127,6 +127,51 @@ impl SshController {
         Ok(())
     }
 
+    /// Force-stop a node, bypassing the genesis guard.
+    /// Used only by Phase 13 (genesis resilience) tests.
+    pub fn force_stop_node(node: &NodeInfo, service: &str) -> Result<String, String> {
+        println!(
+            "  [SSH] FORCE stopping {} on {} (genesis guard bypassed)",
+            service, node.name
+        );
+        Self::run(node, &format!("sudo systemctl stop {}", service))
+    }
+
+    /// Block only outgoing traffic from this node to a peer on mesh ports.
+    /// Creates an asymmetric partition: node cannot send to peer, but peer can send to node.
+    pub fn block_peer_outgoing(node: &NodeInfo, peer_ip: &str) -> Result<String, String> {
+        println!(
+            "  [SSH] Blocking {} → {} outgoing on mesh ports",
+            node.name, peer_ip
+        );
+        Self::run(
+            node,
+            &format!(
+                "sudo iptables -A GHOST_CHAOS -d {} -p tcp --dport 8080 -j REJECT --reject-with tcp-reset; \
+                 sudo iptables -A GHOST_CHAOS -d {} -p tcp --match multiport --dports 8555:8562 -j REJECT --reject-with tcp-reset",
+                peer_ip, peer_ip
+            ),
+        )
+    }
+
+    /// Block only incoming traffic from a peer to this node on mesh ports.
+    /// Creates an asymmetric partition: peer cannot send to node, but node can send to peer.
+    #[allow(dead_code)]
+    pub fn block_peer_incoming(node: &NodeInfo, peer_ip: &str) -> Result<String, String> {
+        println!(
+            "  [SSH] Blocking {} ← {} incoming on mesh ports",
+            node.name, peer_ip
+        );
+        Self::run(
+            node,
+            &format!(
+                "sudo iptables -A GHOST_CHAOS -s {} -p tcp --dport 8080 -j REJECT --reject-with tcp-reset; \
+                 sudo iptables -A GHOST_CHAOS -s {} -p tcp --match multiport --dports 8555:8562 -j REJECT --reject-with tcp-reset",
+                peer_ip, peer_ip
+            ),
+        )
+    }
+
     /// Count log lines matching a pattern since a given time.
     pub fn count_log_matches(
         node: &NodeInfo,

@@ -17,3 +17,8 @@ pub mod phase6_rolling_restart;
 pub mod phase7_network_partition;
 pub mod phase8_endpoint_coverage;
 pub mod phase9_rate_limiter;
+
+pub mod phase10_node_flapping;
+pub mod phase11_asymmetric_partition;
+pub mod phase12_compound_failures;
+pub mod phase13_genesis_resilience;
