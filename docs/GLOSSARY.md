@@ -383,7 +383,7 @@ An extension of Ghost Locks that provides automatic key rotation based on the ba
 - Spec: `docs/protocols/JUMP_LOCKS.md`
 
 ### Wraith Protocol
-A two-phase CoinJoin mixing protocol for private entry into Ghost Pay. Phase 1 (Split): N inputs become 10N intermediate Ghost Locks. Phase 2 (Merge): 10N intermediates merge back into N final Ghost Locks. Uses Schnorr blind signatures so the coordinator cannot link inputs to outputs. 1% mixing fee (L1 transaction costs deducted from this). Denominations: Micro, Small, Medium, Large.
+A two-phase CoinJoin mixing protocol for private entry into Ghost Pay. Phase 1 (Split): N inputs become OPP×N intermediate Ghost Locks (OPP = 2-10 per tier). Phase 2 (Merge): OPP×N intermediates merge back into N final Ghost Locks. Uses Schnorr blind signatures so the coordinator cannot link inputs to outputs. Fixed service fee (500-10,000 sats per denomination) + mining cost share. Denominations: Micro (100K), Small (1M), Medium (10M), Large (100M). Any Ghost node can coordinate sessions.
 - Spec: `docs/protocols/WRAITH_PROTOCOL.md`
 - Source: `crates/wraith-protocol/src/`
 

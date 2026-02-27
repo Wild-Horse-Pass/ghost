@@ -159,9 +159,9 @@ Creates intermediate Ghost Lock outputs from participant inputs.
 ```
 Inputs:  N UTXOs from participants
 Outputs:
-  - 10N intermediate Ghost Lock outputs (denomination/10 each)
-  - 1 treasury fee output (1% of total - mining fee)
-  - 1 OP_RETURN with "GPW1" marker + 32-byte session_id
+  - OPP×N intermediate Ghost Lock outputs (denomination/OPP each, OPP=2-10 per tier)
+  - 1 fee output (service fee per participant + mining cost share)
+  - 1 OP_RETURN with encrypted 32-byte marker (phase-specific key)
 ```
 
 ### Phase 2: Merge Transaction
@@ -169,23 +169,23 @@ Outputs:
 Combines intermediate outputs into final destinations.
 
 ```
-Inputs:  10 intermediate Ghost Lock outputs (from Phase 1)
+Inputs:  OPP intermediate Ghost Lock outputs per participant (from Phase 1)
 Outputs:
-  - 1 final P2TR output (full denomination)
-  - 1 OP_RETURN with "GPW2" marker + session data
+  - N final P2TR outputs (full denomination each)
+  - 1 OP_RETURN with encrypted 32-byte marker (phase-specific key)
 ```
 
 ### OP_RETURN Markers
 
-| Phase | Marker | Hex |
-|-------|--------|-----|
-| Phase 1 | "GPW1" | 0x47 0x50 0x57 0x31 |
-| Phase 2 | "GPW2" | 0x47 0x50 0x57 0x32 |
+OP_RETURN markers are encrypted 32-byte hashes (v3) using phase-specific keys
+derived from the session ID. An observer cannot distinguish Wraith markers from
+random data without knowing the session ID.
 
 ### Fee Structure (Policy)
 
-- Protocol fee: 1% of denomination per participant
-- Formula: `treasury_amount = (denomination / 100) * input_count - mining_fee`
+- Fixed service fee per denomination (500-10,000 sats)
+- Jump sessions (key rotation): mining cost only, no service fee
+- Formula: `user_pays = output_sats + service_fee + mining_cost_share`
 
 ### Privacy Properties
 

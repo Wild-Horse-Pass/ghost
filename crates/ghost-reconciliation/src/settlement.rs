@@ -64,15 +64,16 @@ pub enum SettlementKind {
     Jump,
 
     /// Key rotation routed through a Wraith mix cycle for maximum privacy.
-    /// Pays Wraith coordinator fees + mining fee share (no 0.1% protocol fee).
-    /// Gets full 250+ anonymity set through split/merge mixing.
+    /// Fee-exempt: Wraith service fee is collected inside the CoinJoin tx.
+    /// Only pays mining fee share (handled at batch level).
+    /// Gets full 140-500 anonymity set through split/merge mixing.
     WraithJump,
 }
 
 impl SettlementKind {
     /// Whether this settlement kind is fee-exempt (no 0.1% protocol fee)
     pub fn is_fee_exempt(&self) -> bool {
-        matches!(self, SettlementKind::Jump)
+        matches!(self, SettlementKind::Jump | SettlementKind::WraithJump)
     }
 
     /// Whether this kind produces Ghost Lock outputs (vs external Bitcoin addresses)
@@ -448,7 +449,7 @@ pub struct Settlement {
     destination_address: String,
     /// Amount in satoshis
     amount_sats: u64,
-    /// Fee in satoshis (0 for Jump, Wraith fees for WraithJump, 0.1% for Exit)
+    /// Fee in satoshis (0 for Jump/WraithJump, 0.1% for Exit)
     fee_sats: u64,
     /// Current state
     state: SettlementState,
@@ -501,7 +502,7 @@ impl Settlement {
 
     /// Create a new WraithJump settlement (key rotation through Wraith mix cycle)
     ///
-    /// Pays Wraith coordinator fees but not the 0.1% protocol fee.
+    /// Fee-exempt: Wraith service fee is collected inside the CoinJoin tx.
     pub fn new_wraith_jump(
         source_ghost_id: String,
         source_lock_id: [u8; 32],
@@ -564,9 +565,9 @@ impl Settlement {
                 0
             }
             SettlementKind::WraithJump => {
-                // Wraith coordinator fee (1% per the Wraith protocol)
+                // Fee-exempt: Wraith service fee already collected in CoinJoin tx
                 // Mining fee share handled at batch level
-                crate::rules::calculate_wraith_fee(amount_sats)
+                0
             }
         };
 

@@ -1731,12 +1731,12 @@ Trail is broken: No link between public input and final output
 
 #### 16.12.3 Wraith Denominations
 
-| Denomination | Input (with 1% fee) | Output | Intermediate (10x split) |
-|--------------|---------------------|--------|--------------------------|
-| Micro | 10,100 sats | 10,000 sats | 1,000 sats |
-| Small | 1,010,000 sats | 1,000,000 sats | 100,000 sats |
-| Medium | 10,100,000 sats | 10,000,000 sats | 1,000,000 sats |
-| Large | 101,000,000 sats | 100,000,000 sats | 10,000,000 sats |
+| Denomination | Output | Service Fee | Min Input | OPP | Intermediate |
+|--------------|--------|-------------|-----------|-----|--------------|
+| Micro | 100,000 sats | 500 sats | 100,500 sats | 2 | 50,000 sats |
+| Small | 1,000,000 sats | 2,000 sats | 1,002,000 sats | 4 | 250,000 sats |
+| Medium | 10,000,000 sats | 5,000 sats | 10,005,000 sats | 5 | 2,000,000 sats |
+| Large | 100,000,000 sats | 10,000 sats | 100,010,000 sats | 8 | 12,500,000 sats |
 
 #### 16.12.4 Blind Signatures
 
