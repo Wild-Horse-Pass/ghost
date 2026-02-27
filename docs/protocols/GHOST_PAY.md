@@ -60,7 +60,7 @@ Users
 | Service | Fee |
 |---------|-----|
 | Transfer | 10 sats + 0.1% |
-| Wraith Mix | 1% (L1 tx fees deducted from this) |
+| Wraith Mix | Fixed service fee (500-10,000 sats) + mining cost share |
 
 ### Fee Examples
 
@@ -238,9 +238,12 @@ Transfers use sender-side Groth16 proofs (NoteSpendCircuit):
 ### Wraith Mixing
 
 Entry via Wraith breaks the link to public Bitcoin:
-- Two-phase split-merge mixing
+- Two-phase split-merge mixing (140-500 participants per session)
 - Blind signatures for unlinkability
 - Coordinator cannot link inputs to outputs
+- Distributed coordination — any Ghost node can run sessions
+- Fixed service fees (500-10K sats) + at-cost mining
+- Jump sessions for key rotation at mining cost only (no service fee)
 
 ## Running a Ghost Pay Node
 

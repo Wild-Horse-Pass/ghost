@@ -313,8 +313,11 @@ No other solution combines all of:
 - Uses existing P2TR infrastructure
 
 ### 7. Integrated Mixing
-- Privacy built into deposit flow via Wraith
-- Not an afterthought or separate service
+- Privacy built into deposit flow via Wraith Protocol
+- 140-500 participant anonymity set (10x larger than any alternative CoinJoin)
+- Distributed coordination — any Ghost node can run sessions, no central operator to seize
+- Fixed service fees (500-10K sats) make large mixes dramatically cheaper than percentage-based protocols
+- Jump sessions provide at-cost key rotation through Wraith
 
 ---
 
@@ -366,6 +369,67 @@ No other solution combines all of:
 | Citrea | Public | Public | Public | Public |
 | Liquid | Hidden | Hidden | Hidden | Medium |
 | RGB | Hidden | Hidden | Hidden | Hidden |
+
+---
+
+## 7. CoinJoin Mixing Protocols
+
+Wraith Protocol is Ghost Pay's private entry mechanism. Here's how it compares to other Bitcoin CoinJoin implementations.
+
+### Wasabi Wallet (WabiSabi)
+
+The most popular desktop CoinJoin wallet. Uses WabiSabi protocol for centrally coordinated coinjoins with variable amounts.
+
+| Aspect | Wraith | Wasabi |
+|---|---|---|
+| Participants | 140-500 | ~60 average |
+| Phases | 2 (split + merge) | 1 |
+| Fee | Fixed (500-10K sats) + mining share | 0.3% (>0.01 BTC) + mining share |
+| Amounts | 4 fixed denominations | Variable (WabiSabi) |
+| Coordination | Distributed (any Ghost node) | Community coordinators (post-zkSNACKs shutdown) |
+| 1 BTC cost | ~17K sats (0.017%) | ~305K sats (0.3%) |
+
+Wasabi's variable amounts reduce change waste but lower the privacy set. Wraith's fixed denominations and larger participant counts provide stronger unlinkability.
+
+### Whirlpool (Samourai) — Defunct
+
+Samourai Wallet's Whirlpool provided Chaumian CoinJoin with free unlimited remixes. **Seized by US DOJ in April 2024, founders sentenced in 2025.**
+
+| Aspect | Wraith | Whirlpool |
+|---|---|---|
+| Participants | 140-500 | 5 (fixed) |
+| Fee | Fixed + mining share | 5% one-time, free remixes |
+| Coordination | Distributed | Single central server (seized) |
+| Status | Active | Dead |
+| Seizure resistance | High (no single operator) | None (single point of failure) |
+
+Whirlpool compensated for tiny 5-person rounds with unlimited free remixes. But its centralized coordinator was a fatal architectural flaw — when Samourai was seized, Whirlpool died instantly.
+
+### JoinMarket
+
+Decentralized P2P marketplace where makers offer liquidity and takers pay small fees to mix.
+
+| Aspect | Wraith | JoinMarket |
+|---|---|---|
+| Participants | 140-500 | 8-10 default |
+| Fee | Fixed + mining share | ~0.05-0.1% to makers, taker pays all mining |
+| Coordination | Distributed (built into Ghost nodes) | P2P market (no coordinator) |
+| Liquidity | Built-in (Ghost Pay users) | Low (must attract makers) |
+| Privacy set | Very large | Small |
+
+Both are decentralized, but through different mechanisms. JoinMarket's P2P market struggles with liquidity, resulting in small anonymity sets. Wraith's coordination is built into the Ghost node network, providing both decentralization and large anonymity sets.
+
+### Summary
+
+| Feature | Wraith | Wasabi | Whirlpool | JoinMarket |
+|---|---|---|---|---|
+| **Anonymity set** | **140-500** | ~60 | 5 | 8-10 |
+| **Two-phase mixing** | Yes | No | No | No |
+| **Distributed coordination** | Yes | Partial | No | Yes |
+| **Fixed fees** | Yes | No (0.3%) | Yes (5%) | No (~0.1%) |
+| **Key rotation (Jump)** | At-cost | N/A | N/A | N/A |
+| **Seizure resistance** | High | Medium | None | High |
+| **Status (2026)** | Active | Active | Dead | Active |
 
 ---
 

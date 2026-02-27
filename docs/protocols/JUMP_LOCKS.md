@@ -186,6 +186,7 @@ Users can also trigger jumps manually:
 1. **Fresh keys**: Each jump creates unlinkable new lock
 2. **Indistinguishable**: Jump tx looks like normal P2TR spend
 3. **No metadata**: Chain observers can't identify jumps
+4. **Wraith Jump sessions**: For maximum unlinkability, key rotation can be performed through a Wraith mixing session (SessionType::Jump) at mining cost only — no service fee. This breaks any chain analysis linking old and new keys through the CoinJoin anonymity set (140-500 participants).
 
 ### Usability
 
@@ -201,6 +202,15 @@ Jump transactions have minimal fees:
 - Total: ~110 vbytes typical
 
 At 10 sat/vbyte: ~1,100 sats per jump
+
+### Wraith Jump Sessions
+
+For maximum privacy, jumps can be routed through a Wraith mixing session instead of a direct on-chain transaction. Wraith Jump sessions charge **zero service fee** — only the mining cost share (~3,000-7,000 sats depending on tier and fee rate). This provides CoinJoin-level unlinkability for key rotation at near-cost.
+
+| Method | Fee | Privacy |
+|---|---|---|
+| Direct jump (on-chain) | ~1,100 sats | Good (looks like normal P2TR spend) |
+| Wraith Jump session | ~3,000-7,000 sats | Maximum (CoinJoin anonymity set) |
 
 ### Fee Budgeting
 

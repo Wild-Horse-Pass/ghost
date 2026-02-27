@@ -240,7 +240,7 @@ L2 payment network (optional). Features:
 - 0.1% fee (10 sats + 0.1%)
 - 10-second virtual blocks
 - 6-hour epochs for L1 settlement
-- Wraith mixing integration (1% fee)
+- Wraith mixing integration (fixed service fee + mining cost)
 
 ---
 
@@ -1414,9 +1414,9 @@ Users
 | Service | Fee |
 |---------|-----|
 | Transfer | 10 sats + 0.1% |
-| Wraith Mix | 1% (L1 tx fees deducted from this) |
+| Wraith Mix | Fixed service fee (500-10,000 sats) + mining cost share |
 
-**Note**: Wraith mixing incurs L1 transaction costs for the split/merge phases. These L1 miner fees are deducted from the 1% mixing fee, meaning users pay exactly 1% regardless of network conditions. The pool absorbs variable L1 costs.
+**Note**: Wraith v2 uses fixed service fees per denomination (Micro: 500, Small: 2,000, Medium: 5,000, Large: 10,000 sats) plus at-cost mining fees split across all participants. Jump sessions (key rotation) charge mining cost only — no service fee. Mining costs vary with fee rate and are transparent to users.
 
 ### 16.4 Settlement
 
@@ -1428,13 +1428,24 @@ Users
 
 ### 16.5 Wraith Protocol (Mixing)
 
-Chaumian mixing with blind signatures:
-1. User requests blinded tokens
-2. Server signs without seeing content
-3. User unblinds and uses for transfer
-4. Server cannot link input to output
+Two-phase CoinJoin mixing with Schnorr blind signatures for private entry into Ghost Pay.
 
-Denomination tiers: 0.001, 0.01, 0.1, 1 BTC
+**Phases:**
+1. Phase 1 (Split): N inputs → OPP×N intermediate Ghost Locks
+2. Phase 2 (Merge): OPP×N intermediates → N final Ghost Locks
+3. OPP (outputs per participant) varies by tier: 2, 4, 5, 8, or 10
+
+**Coordination:** Distributed — any Ghost node can coordinate sessions. No central operator.
+
+**Denominations:** 0.001, 0.01, 0.1, 1 BTC (fixed service fees: 500, 2K, 5K, 10K sats)
+
+**Session Types:** Mix (service fee + mining) or Jump (mining cost only, for key rotation)
+
+**Participant Tiers:** Micro (500), Small (320), Medium (260), Standard (250), Large (170), Whale (140)
+
+**Anonymity Set:** 140-500 participants per session — order of magnitude larger than other CoinJoin protocols
+
+**Privacy:** Schnorr blind signatures ensure the coordinating node cannot link inputs to outputs. Encrypted OP_RETURN markers (v3) prevent metadata leakage. All intermediate outputs are identical within a session (M-23 invariant).
 
 ### 16.6 ZK Proofs
 
