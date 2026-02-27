@@ -83,13 +83,26 @@ impl SshController {
         Self::run(
             node,
             &format!(
-                "sudo iptables -A GHOST_CHAOS -s {} -p tcp --dport 8080 -j DROP; \
-                 sudo iptables -A GHOST_CHAOS -s {} -p tcp --match multiport --dports 8555:8562 -j DROP; \
-                 sudo iptables -A GHOST_CHAOS -d {} -p tcp --dport 8080 -j DROP; \
-                 sudo iptables -A GHOST_CHAOS -d {} -p tcp --match multiport --dports 8555:8562 -j DROP",
+                "sudo iptables -A GHOST_CHAOS -s {} -p tcp --dport 8080 -j REJECT --reject-with tcp-reset; \
+                 sudo iptables -A GHOST_CHAOS -s {} -p tcp --match multiport --dports 8555:8562 -j REJECT --reject-with tcp-reset; \
+                 sudo iptables -A GHOST_CHAOS -d {} -p tcp --dport 8080 -j REJECT --reject-with tcp-reset; \
+                 sudo iptables -A GHOST_CHAOS -d {} -p tcp --match multiport --dports 8555:8562 -j REJECT --reject-with tcp-reset",
                 peer_ip, peer_ip, peer_ip, peer_ip
             ),
         )
+    }
+
+    /// Get the total packet count rejected by the GHOST_CHAOS chain on a node.
+    /// Returns 0 if the chain doesn't exist.
+    pub fn partition_hit_count(node: &NodeInfo) -> Result<u64, String> {
+        let output = Self::run(
+            node,
+            "sudo iptables -L GHOST_CHAOS -n -v 2>/dev/null | awk 'NR>2 {sum+=$1} END {print sum+0}'",
+        )?;
+        output
+            .trim()
+            .parse::<u64>()
+            .map_err(|e| format!("failed to parse hit count '{}': {}", output.trim(), e))
     }
 
     /// Flush and remove the GHOST_CHAOS chain, restoring normal connectivity.

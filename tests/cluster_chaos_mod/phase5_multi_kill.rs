@@ -300,11 +300,18 @@ async fn multi_kill_08_full_cluster_consistent() {
     }
     println!("  All nodes healthy");
 
-    // Heights consistent
+    // Heights consistent (retry for 429 recovery)
     let mut heights = Vec::new();
     for ip in config.all_ips() {
-        let h = client.get_block_height(ip).await.unwrap_or(0);
-        heights.push((ip, h));
+        let mut h = Err("not attempted".to_string());
+        for _ in 0..5 {
+            h = client.get_block_height(ip).await;
+            if h.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+        heights.push((ip, h.unwrap_or(0)));
     }
     let max = heights.iter().map(|(_, h)| *h).max().unwrap();
     let min = heights.iter().map(|(_, h)| *h).min().unwrap();
