@@ -2,7 +2,7 @@
 //!
 //! These tests verify end-to-end functionality across multiple components.
 //!
-//! # Test Categories (~860 tests total)
+//! # Test Categories (~875 tests total)
 //!
 //! | Category | Module | Tests |
 //! |----------|--------|-------|
@@ -30,6 +30,7 @@
 //! | 27 | gsp_payment_messages | 30 - GSP payment/lock/reorg messages (820-849) |
 //! | 28 | l2_cross_layer | 20 - Cross-layer L2 integration (850-869) |
 //! | 29 | l2_nullifier_route | 20 - L2 nullifier route, sender proofs (870-889) |
+//! | 30 | wraith_e2e | 19 - Wraith E2E sessions, Jump Lock lifecycle, affordability (890-908) |
 //!
 //! # Running Tests
 //!
@@ -55,6 +56,7 @@
 //! cargo test --test integration gsp_payment_messages
 //! cargo test --test integration l2_cross_layer
 //! cargo test --test integration l2_nullifier_route
+//! cargo test --test integration wraith_e2e
 //! ```
 
 pub mod block_template;
@@ -86,5 +88,6 @@ pub mod storage;
 pub mod stratum_payout_consensus;
 pub mod stratum_validation;
 pub mod wraith_blind_signatures;
+pub mod wraith_e2e;
 pub mod wraith_protocol;
 pub mod wraith_transactions;

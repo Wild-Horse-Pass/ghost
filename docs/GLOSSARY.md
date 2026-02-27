@@ -333,7 +333,7 @@ The highest BUDS tier present in a classified transaction (e.g., if a transactio
 ## Ghost Pay L2
 
 ### Ghost Pay
-An optional Layer 2 payment network built on top of Bitcoin Ghost. Provides instant transfers (10-second virtual blocks), low fees (10 sats + 0.1%), privacy (ZK proofs, Ghost Keys), and periodic Bitcoin L1 settlement. Nodes running Ghost Pay earn +4 shares.
+An optional Layer 2 payment network built on top of Bitcoin Ghost. Provides instant transfers (10-second virtual blocks), low fees (users pay only their share of batch mining costs), privacy (ZK proofs, Ghost Keys), and periodic Bitcoin L1 settlement. Nodes running Ghost Pay earn +4 shares.
 - Spec: `docs/protocols/GHOST_PAY.md`
 - Source: `crates/ghost-pay/src/`
 - Binary: `bins/ghost-pay/`

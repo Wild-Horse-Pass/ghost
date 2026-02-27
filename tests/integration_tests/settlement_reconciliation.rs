@@ -14,9 +14,8 @@ use bitcoin::OutPoint;
 use ghost_reconciliation::{
     batch::{compute_merkle_proof, compute_merkle_root, verify_merkle_proof, Batch, BatchState},
     executor::GlobalInputReservations,
-    rules::calculate_fee,
     settlement::{OwnershipProof, Settlement, SettlementState},
-    MAX_BATCH_SIZE, MIN_BATCH_SIZE, MIN_SETTLEMENT_SATS, SETTLEMENT_FEE_DIVISOR,
+    MAX_BATCH_SIZE, MIN_BATCH_SIZE, MIN_SETTLEMENT_SATS,
 };
 
 // =============================================================================
@@ -101,39 +100,50 @@ fn test_781_settlement_below_minimum_rejected() {
 }
 
 #[test]
-fn test_782_fee_calculation_ceiling_division() {
-    // Fee uses ceiling division: amount.div_ceil(1000), clamped to [1, MAX_FEE_SATS]
-    // For 100_000: div_ceil(1000) = 100
+fn test_782_all_settlement_types_fee_free() {
+    // Protocol fee removed — all settlement types have fee_sats == 0
+    // and net_amount_sats == amount_sats
     let s1 = make_settlement(100_000);
-    assert_eq!(s1.fee_sats(), 100);
+    assert_eq!(s1.fee_sats(), 0);
+    assert_eq!(s1.net_amount_sats(), s1.amount_sats());
 
-    // For 10_000: div_ceil(1000) = 10
     let s2 = make_settlement(10_000);
-    assert_eq!(s2.fee_sats(), 10);
+    assert_eq!(s2.fee_sats(), 0);
+    assert_eq!(s2.net_amount_sats(), s2.amount_sats());
 
-    // For 10_001: div_ceil(1000) = 11 (ceiling)
     let s3 = make_settlement(10_001);
-    assert_eq!(s3.fee_sats(), 11);
+    assert_eq!(s3.fee_sats(), 0);
+    assert_eq!(s3.net_amount_sats(), s3.amount_sats());
 
-    // Verify against standalone calculate_fee()
-    assert_eq!(calculate_fee(100_000), 100);
-    assert_eq!(calculate_fee(10_001), 11);
-    assert_eq!(calculate_fee(10_000), 10);
+    // Jump and WraithJump should also be fee-free
+    let jump = Settlement::new_jump(
+        "ghost1_test_jump".to_string(),
+        [10u8; 32],
+        "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string(),
+        50_000,
+    )
+    .unwrap();
+    assert_eq!(jump.fee_sats(), 0);
+    assert_eq!(jump.net_amount_sats(), jump.amount_sats());
 
-    // Verify the divisor constant
-    assert_eq!(SETTLEMENT_FEE_DIVISOR, 1000);
+    let wraith = Settlement::new_wraith_jump(
+        "ghost1_test_wraith".to_string(),
+        [11u8; 32],
+        "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string(),
+        50_000,
+    )
+    .unwrap();
+    assert_eq!(wraith.fee_sats(), 0);
+    assert_eq!(wraith.net_amount_sats(), wraith.amount_sats());
 }
 
 #[test]
-fn test_783_net_amount_sats_equals_amount_minus_fee() {
+fn test_783_net_amount_equals_amount_no_fee() {
     let settlement = make_settlement(100_000);
-    let expected_fee = settlement.amount_sats().div_ceil(SETTLEMENT_FEE_DIVISOR);
-    let expected_net = settlement.amount_sats() - expected_fee;
 
-    assert_eq!(settlement.fee_sats(), expected_fee);
-    assert_eq!(settlement.net_amount_sats(), expected_net);
-    assert_eq!(settlement.net_amount_sats(), 100_000 - 100);
-    assert_eq!(settlement.net_amount_sats(), 99_900);
+    assert_eq!(settlement.fee_sats(), 0);
+    assert_eq!(settlement.net_amount_sats(), settlement.amount_sats());
+    assert_eq!(settlement.net_amount_sats(), 100_000);
 }
 
 #[test]
@@ -436,24 +446,22 @@ fn test_803_add_settlement_increases_count_and_totals() {
     let settlement = make_settlement(100_000);
 
     let amount = settlement.amount_sats();
-    let fee = settlement.fee_sats();
 
     batch.add_settlement(&settlement).unwrap();
 
     assert_eq!(batch.settlement_count(), 1);
     assert_eq!(batch.total_amount_sats(), amount);
-    assert_eq!(batch.total_fee_sats(), fee);
+    assert_eq!(batch.total_fee_sats(), 0);
 
     // Add a second settlement
     let settlement2 = make_settlement(200_000);
     let amount2 = settlement2.amount_sats();
-    let fee2 = settlement2.fee_sats();
 
     batch.add_settlement(&settlement2).unwrap();
 
     assert_eq!(batch.settlement_count(), 2);
     assert_eq!(batch.total_amount_sats(), amount + amount2);
-    assert_eq!(batch.total_fee_sats(), fee + fee2);
+    assert_eq!(batch.total_fee_sats(), 0);
 }
 
 #[test]
@@ -613,7 +621,6 @@ fn test_811_total_amount_and_fee_accumulate_correctly() {
 
     let amounts = [10_000u64, 20_000, 50_000, 100_000, 200_000];
     let mut expected_total_amount = 0u64;
-    let mut expected_total_fee = 0u64;
 
     for (i, &amount) in amounts.iter().enumerate() {
         let settlement = Settlement::new(
@@ -625,13 +632,13 @@ fn test_811_total_amount_and_fee_accumulate_correctly() {
         .unwrap();
 
         expected_total_amount += settlement.amount_sats();
-        expected_total_fee += settlement.fee_sats();
+        assert_eq!(settlement.fee_sats(), 0);
 
         batch.add_settlement(&settlement).unwrap();
     }
 
     assert_eq!(batch.total_amount_sats(), expected_total_amount);
-    assert_eq!(batch.total_fee_sats(), expected_total_fee);
+    assert_eq!(batch.total_fee_sats(), 0);
     assert_eq!(batch.settlement_count(), amounts.len());
 }
 

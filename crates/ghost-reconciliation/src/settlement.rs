@@ -55,7 +55,7 @@ const SETTLEMENT_OWNERSHIP_DOMAIN: &[u8] = b"GhostSettlement/Ownership/v2";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SettlementKind {
     /// User exiting Ghost Pay to an external Bitcoin address.
-    /// Pays the 0.1% protocol fee + mining fee share.
+    /// Only pays mining fee share (protocol fee removed).
     Exit,
 
     /// Key rotation to new Ghost Lock address(es).
@@ -71,11 +71,6 @@ pub enum SettlementKind {
 }
 
 impl SettlementKind {
-    /// Whether this settlement kind is fee-exempt (no 0.1% protocol fee)
-    pub fn is_fee_exempt(&self) -> bool {
-        matches!(self, SettlementKind::Jump | SettlementKind::WraithJump)
-    }
-
     /// Whether this kind produces Ghost Lock outputs (vs external Bitcoin addresses)
     pub fn produces_ghost_lock_outputs(&self) -> bool {
         matches!(self, SettlementKind::Jump | SettlementKind::WraithJump)
@@ -449,7 +444,7 @@ pub struct Settlement {
     destination_address: String,
     /// Amount in satoshis
     amount_sats: u64,
-    /// Fee in satoshis (0 for Jump/WraithJump, 0.1% for Exit)
+    /// Fee in satoshis (always 0 — protocol fee removed, kept for hash stability)
     fee_sats: u64,
     /// Current state
     state: SettlementState,
@@ -483,8 +478,6 @@ impl Settlement {
     }
 
     /// Create a new Jump settlement (key rotation to new Ghost Lock address)
-    ///
-    /// Fee-exempt: only mining fee share, no 0.1% protocol fee.
     pub fn new_jump(
         source_ghost_id: String,
         source_lock_id: [u8; 32],
@@ -501,8 +494,6 @@ impl Settlement {
     }
 
     /// Create a new WraithJump settlement (key rotation through Wraith mix cycle)
-    ///
-    /// Fee-exempt: Wraith service fee is collected inside the CoinJoin tx.
     pub fn new_wraith_jump(
         source_ghost_id: String,
         source_lock_id: [u8; 32],
@@ -530,13 +521,7 @@ impl Settlement {
     ///    making it uneconomical. This also prevents dust-output DoS attacks where
     ///    an attacker creates many tiny settlements to bloat batch sizes.
     ///
-    /// 2. **Fee < amount**: The calculated protocol fee must be strictly less than
-    ///    the settlement amount. This prevents zero-value or negative-value outputs
-    ///    on L1, which would be rejected by Bitcoin consensus rules. The fee
-    ///    calculation uses integer division (`amount / divisor`) to avoid
-    ///    floating-point rounding issues.
-    ///
-    /// 3. **Overflow protection**: The batch-level `total_amount_sats` accumulation
+    /// 2. **Overflow protection**: The batch-level `total_amount_sats` accumulation
     ///    uses checked arithmetic in `Batch::add_settlement` to prevent overflow
     ///    when summing many settlements.
     fn new_with_kind(
@@ -554,30 +539,8 @@ impl Settlement {
             });
         }
 
-        // Calculate fee based on settlement kind
-        let fee_sats = match kind {
-            SettlementKind::Exit => {
-                // 0.1% protocol fee
-                crate::rules::calculate_fee(amount_sats)
-            }
-            SettlementKind::Jump => {
-                // Fee-exempt: no protocol fee (only mining fee share, handled at batch level)
-                0
-            }
-            SettlementKind::WraithJump => {
-                // Fee-exempt: Wraith service fee already collected in CoinJoin tx
-                // Mining fee share handled at batch level
-                0
-            }
-        };
-
-        // L-26: Validate fee is less than amount for non-exempt settlements
-        if fee_sats >= amount_sats {
-            return Err(ReconciliationError::InvalidSettlement(format!(
-                "L-26: Calculated fee {} sats >= amount {} sats - this indicates a bug in fee calculation",
-                fee_sats, amount_sats
-            )));
-        }
+        // All settlement types are fee-free (protocol fee removed)
+        let fee_sats = 0u64;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -655,33 +618,12 @@ impl Settlement {
         self.fee_sats
     }
 
-    /// Get net amount (amount - fee)
+    /// Get net amount after fee.
     ///
-    /// # L-26: Fee Validation
-    ///
-    /// This function uses saturating_sub which returns 0 if fee >= amount.
-    /// Callers should use `validate_fee()` or check that `net_amount_sats() > 0`
-    /// before processing settlements to avoid creating zero-value outputs.
-    ///
-    /// The Settlement::new() constructor already validates minimum amounts and
-    /// calculates fees using `calculate_fee()`, so valid settlements created
-    /// through the normal path will always have fee < amount.
+    /// Protocol fee has been removed, so this always returns `amount_sats`.
+    /// Kept for API compatibility.
     pub fn net_amount_sats(&self) -> u64 {
-        self.amount_sats.saturating_sub(self.fee_sats)
-    }
-
-    /// Validate that the fee is less than the amount
-    ///
-    /// L-26: Returns an error if fee >= amount, which would result in a
-    /// zero or negative net amount.
-    pub fn validate_fee(&self) -> ReconciliationResult<()> {
-        if self.fee_sats >= self.amount_sats {
-            return Err(ReconciliationError::InvalidSettlement(format!(
-                "L-26: Fee {} sats >= amount {} sats - settlement would have zero net value",
-                self.fee_sats, self.amount_sats
-            )));
-        }
-        Ok(())
+        self.amount_sats
     }
 
     /// Get current state
@@ -818,8 +760,8 @@ mod tests {
 
         assert_eq!(settlement.state(), SettlementState::Pending);
         assert_eq!(settlement.amount_sats(), 100_000);
-        assert_eq!(settlement.fee_sats(), 100); // 0.1%
-        assert_eq!(settlement.net_amount_sats(), 99_900);
+        assert_eq!(settlement.fee_sats(), 0);
+        assert_eq!(settlement.net_amount_sats(), 100_000);
         assert_eq!(settlement.source_lock_id(), &test_lock_id());
     }
 

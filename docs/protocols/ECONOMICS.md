@@ -209,7 +209,7 @@ This prevents creating uneconomical UTXOs.
 ## L2 Fee Distribution
 
 Ghost Pay L2 generates fees from:
-- Transfers: 10 sats + 0.1%
+- Transfers: Share of batch mining costs (no protocol fee)
 - Wraith mixing: Fixed service fee (500-10,000 sats) + mining cost share
 - Reconciliation: Batch settlement fees
 
@@ -313,7 +313,7 @@ All values below are hardcoded in the source. See `crates/ghost-common/src/const
 | Policy pass rate | 95% | `POLICY_PASS_RATE` |
 | Stratum pass rate | 95% | `STRATUM_PASS_RATE` |
 | Ghost Pay pass rate | 90% | `GHOSTPAY_PASS_RATE` |
-| Ghost Pay fee | 0.1% (10 bps) + 10 sat min | `GHOSTPAY_FEE_BPS` / `GHOSTPAY_MIN_FEE_SATS` |
+| Ghost Pay transfer fee | None (batch mining cost only) | No protocol fee on transfers |
 | Wraith mixing fee | Fixed: 500-10,000 sats | `WraithDenomination::service_fee()` |
 
 ### Treasury Decay Schedule

@@ -237,7 +237,7 @@ Protocol translation proxy (for future SV2 support). Features:
 
 L2 payment network (optional). Features:
 - Instant off-chain payments
-- 0.1% fee (10 sats + 0.1%)
+- No protocol fee (users share batch mining costs only)
 - 10-second virtual blocks
 - 6-hour epochs for L1 settlement
 - Wraith mixing integration (fixed service fee + mining cost)
@@ -1413,7 +1413,7 @@ Users
 
 | Service | Fee |
 |---------|-----|
-| Transfer | 10 sats + 0.1% |
+| Transfer | Share of batch mining costs |
 | Wraith Mix | Fixed service fee (500-10,000 sats) + mining cost share |
 
 **Note**: Wraith v2 uses fixed service fees per denomination (Micro: 500, Small: 2,000, Medium: 5,000, Large: 10,000 sats) plus at-cost mining fees split across all participants. Jump sessions (key rotation) charge mining cost only — no service fee. Mining costs vary with fee rate and are transparent to users.

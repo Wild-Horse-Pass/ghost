@@ -342,7 +342,7 @@ Lightning has no entry privacy. Liquid is federated. Ark requires trust in servi
 | **Self-custody** | Ghost Locks with timelocked recovery | Close channel before counterparty |
 | **Maturity** | Active development | Production (5+ years) |
 
-**Retail payments under 100k sats** use optimistic confirmation — merchant sees "Confirmed" immediately if 8 conditions about the sender's lock are met. Full settlement follows on the next virtual block. Fees: 10 sats + 0.1%.
+**Retail payments under 100k sats** use optimistic confirmation — merchant sees "Confirmed" immediately if 8 conditions about the sender's lock are met. Full settlement follows on the next virtual block. No protocol fee -- users pay only their share of batch mining costs.
 
 **Self-custody guaranteed.** If the L2 network goes offline permanently, you recover your Bitcoin on L1 after the timelock expires. No federation. No custodian.
 

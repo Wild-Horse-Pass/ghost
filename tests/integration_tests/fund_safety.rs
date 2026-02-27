@@ -668,63 +668,40 @@ fn test_011_excess_input_not_silently_lost() {
 }
 
 // =============================================================================
-// TEST 7: L2 SETTLEMENT FEE TRUNCATION
+// TEST 7: L2 SETTLEMENT FEE VERIFICATION
 // =============================================================================
-// Risk: Every settlement loses 0-1 sat through f64 truncation
-// Impact: Accumulated loss across thousands of settlements
-
-const SETTLEMENT_FEE_PERCENT: f64 = 0.1; // 0.1% fee
+// The 0.1% protocol fee has been removed. All settlements are fee-free.
+// Users only pay their share of batch mining costs.
 
 #[test]
-fn test_012_settlement_fee_truncation_accumulation() {
-    // Current implementation
-    fn calculate_fee_current(amount_sats: u64) -> u64 {
-        ((amount_sats as f64) * SETTLEMENT_FEE_PERCENT / 100.0) as u64
+fn test_012_settlements_have_zero_protocol_fee() {
+    use ghost_reconciliation::Settlement;
+
+    // Verify that settlements across various amounts all have zero fees
+    let test_amounts = [10_000u64, 50_000, 100_000, 1_000_000, 10_000_000, 100_000_000];
+
+    for &amount in &test_amounts {
+        let settlement = Settlement::new(
+            "ghost1_fund_safety".to_string(),
+            [42u8; 32],
+            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx".to_string(),
+            amount,
+        )
+        .unwrap();
+
+        assert_eq!(
+            settlement.fee_sats(),
+            0,
+            "Settlement for {} sats should have zero protocol fee",
+            amount
+        );
+        assert_eq!(
+            settlement.net_amount_sats(),
+            amount,
+            "Net amount should equal gross amount for {} sats (no fee)",
+            amount
+        );
     }
-
-    // Safe implementation using integer math
-    fn calculate_fee_safe(amount_sats: u64) -> u64 {
-        // 0.1% = 1/1000
-        amount_sats / 1000
-    }
-
-    // Test across many settlements
-    let num_settlements = 10_000;
-    let mut total_loss: u64 = 0;
-
-    for amount in (1000..=num_settlements + 999).map(|x| x * 1000) {
-        let fee_current = calculate_fee_current(amount);
-        let fee_safe = calculate_fee_safe(amount);
-
-        // Track difference
-        let diff = fee_current.abs_diff(fee_safe);
-        total_loss += diff;
-    }
-
-    println!("Settlement fee truncation test:");
-    println!("  Settlements tested: {}", num_settlements);
-    println!("  Total accumulated loss: {} sats", total_loss);
-    println!(
-        "  Average loss per settlement: {:.2} sats",
-        total_loss as f64 / num_settlements as f64
-    );
-
-    // The loss should be minimal
-    // With integer division, we lose up to 999 sats per settlement in the worst case
-    // (amounts 1-999 all round to 0 fee)
-
-    // Test edge case: very small amount
-    let tiny_amount = 500; // 500 sats
-    let fee_current = calculate_fee_current(tiny_amount);
-    let fee_safe = calculate_fee_safe(tiny_amount);
-
-    println!("\nEdge case: {} sat settlement", tiny_amount);
-    println!("  Fee (float): {} sats", fee_current);
-    println!("  Fee (integer): {} sats", fee_safe);
-
-    // Both should be 0 for 500 sats at 0.1%
-    assert_eq!(fee_current, 0);
-    assert_eq!(fee_safe, 0);
 }
 
 // =============================================================================

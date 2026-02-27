@@ -75,6 +75,7 @@
 //! let witness_script = lock.witness_script();
 //! ```
 
+mod affordability;
 mod denomination;
 mod error;
 mod jump;
@@ -83,9 +84,13 @@ mod script;
 mod state;
 mod timelock;
 
+pub use affordability::{
+    assess_affordability, recommended_action, remaining_jumps_estimate, CostEstimates,
+    JumpAffordability, RecommendedAction,
+};
 pub use denomination::{optimal_denominations, Denomination};
 pub use error::GhostLockError;
-pub use jump::JumpRiskTier;
+pub use jump::{JumpRiskTier, JumpSchedule};
 pub use lock::{GhostLock, GhostLockData};
 pub use script::{
     build_lock_script, build_normal_witness, build_p2wsh_script_pubkey, build_recovery_witness,

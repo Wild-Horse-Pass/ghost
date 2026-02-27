@@ -173,8 +173,8 @@ fn test_856_settlement_from_lock_id() {
 }
 
 #[test]
-fn test_857_settlement_net_amount_by_denomination() {
-    // For each denomination, verify net_amount = amount - fee
+fn test_857_settlement_net_amount_equals_amount() {
+    // Protocol fee removed — net_amount == amount for all denominations
     let denominations = [
         Denomination::Micro,
         Denomination::Small,
@@ -186,21 +186,16 @@ fn test_857_settlement_net_amount_by_denomination() {
         let lock = create_lock(*denom);
         let settlement = create_settlement_from_lock(&lock);
 
-        let expected_net = settlement.amount_sats() - settlement.fee_sats();
+        assert_eq!(
+            settlement.fee_sats(),
+            0,
+            "Fee should be 0 for Denomination::{}",
+            denom.name()
+        );
         assert_eq!(
             settlement.net_amount_sats(),
-            expected_net,
-            "Net amount mismatch for Denomination::{}: {} - {} != {}",
-            denom.name(),
             settlement.amount_sats(),
-            settlement.fee_sats(),
-            settlement.net_amount_sats()
-        );
-
-        // Net must be positive
-        assert!(
-            settlement.net_amount_sats() > 0,
-            "Net amount must be positive for Denomination::{}",
+            "Net amount should equal amount for Denomination::{}",
             denom.name()
         );
     }
@@ -352,7 +347,6 @@ fn test_863_batch_mixed_denomination_settlements() {
 
     let mut batch = Batch::new().expect("batch creation should succeed");
     let mut total_amount = 0u64;
-    let mut total_fee = 0u64;
 
     // Create at least MIN_BATCH_SIZE settlements, cycling through denominations
     for i in 0..12 {
@@ -360,13 +354,12 @@ fn test_863_batch_mixed_denomination_settlements() {
         let lock = create_lock(denom);
         let settlement = create_settlement_from_lock(&lock);
         total_amount += settlement.amount_sats();
-        total_fee += settlement.fee_sats();
         batch.add_settlement(&settlement).unwrap();
     }
 
     assert_eq!(batch.settlement_count(), 12);
     assert_eq!(batch.total_amount_sats(), total_amount);
-    assert_eq!(batch.total_fee_sats(), total_fee);
+    assert_eq!(batch.total_fee_sats(), 0);
 
     batch.seal().expect("seal should succeed");
     assert!(batch.merkle_root().is_some());
@@ -428,28 +421,32 @@ fn test_865_micro_intermediate_above_dust() {
 }
 
 #[test]
-fn test_866_settlement_fee_correct_per_denomination() {
-    // Verify settlement fee (0.1% with ceiling division, min 1 sat, max 1M sat) for each denomination
-    let test_cases: Vec<(Denomination, u64)> = vec![
-        (Denomination::Micro, 10),      // 10_000 / 1000 = 10
-        (Denomination::Tiny, 100),      // 100_000 / 1000 = 100
-        (Denomination::Small, 1_000),   // 1_000_000 / 1000 = 1_000
-        (Denomination::Medium, 10_000), // 10_000_000 / 1000 = 10_000
-        (Denomination::Large, 100_000), // 100_000_000 / 1000 = 100_000
-        (Denomination::XL, 1_000_000),  // 1_000_000_000 / 1000 = 1_000_000 (at cap)
+fn test_866_all_denominations_fee_free() {
+    // Protocol fee removed — all denominations should have fee_sats == 0
+    let denominations = [
+        Denomination::Micro,
+        Denomination::Tiny,
+        Denomination::Small,
+        Denomination::Medium,
+        Denomination::Large,
+        Denomination::XL,
     ];
 
-    for (denom, expected_fee) in &test_cases {
+    for denom in &denominations {
         let lock = create_lock(*denom);
         let settlement = create_settlement_from_lock(&lock);
 
         assert_eq!(
             settlement.fee_sats(),
-            *expected_fee,
-            "Fee mismatch for Denomination::{}: expected {}, got {}",
-            denom.name(),
-            expected_fee,
-            settlement.fee_sats()
+            0,
+            "Fee should be 0 for Denomination::{} (protocol fee removed)",
+            denom.name()
+        );
+        assert_eq!(
+            settlement.net_amount_sats(),
+            settlement.amount_sats(),
+            "Net amount should equal amount for Denomination::{}",
+            denom.name()
         );
     }
 }

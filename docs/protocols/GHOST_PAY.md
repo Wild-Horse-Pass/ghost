@@ -30,7 +30,7 @@ Layer 2 payment network for instant, low-fee transfers.
 
 Ghost Pay is an optional Layer 2 network built on top of Bitcoin Ghost. It provides:
 - Instant transfers (10-second virtual blocks)
-- Low fees (10 sats + 0.1%)
+- Low fees (share of batch mining costs only)
 - Privacy (ZK proofs, Ghost Keys)
 - Bitcoin settlement (periodic reconciliation)
 
@@ -59,16 +59,12 @@ Users
 
 | Service | Fee |
 |---------|-----|
-| Transfer | 10 sats + 0.1% |
+| Transfer | Share of batch mining costs |
 | Wraith Mix | Fixed service fee (500-10,000 sats) + mining cost share |
 
-### Fee Examples
+### Fee Details
 
-| Transfer Amount | Fee |
-|-----------------|-----|
-| 10,000 sats | 20 sats (10 + 10) |
-| 100,000 sats | 110 sats (10 + 100) |
-| 1,000,000 sats | 1,010 sats (10 + 1,000) |
+Transfers carry no protocol fee. Users pay only their proportional share of the batch mining cost when their L2 state is settled to L1. Mining costs vary with network fee rates and are split across all participants in a reconciliation batch.
 
 ## Time Units
 
@@ -265,8 +261,7 @@ l2_port = 9333
 epoch_length = 2160
 
 [ghost_pay.fees]
-transfer_base_sats = 10
-transfer_percent = 0.001  # 0.1%
+transfer_protocol_fee = 0  # No protocol fee on transfers
 ```
 
 ### Rewards

@@ -96,10 +96,6 @@ pub const MIN_SETTLEMENT_SATS: u64 = 10_000;
 /// Dispute window in blocks (1 day)
 pub const DISPUTE_WINDOW_BLOCKS: u32 = 144;
 
-/// Settlement fee divisor for integer arithmetic (1000 = 0.1%)
-/// M-19: Float constant removed -- all fee calculations use integer division
-pub const SETTLEMENT_FEE_DIVISOR: u64 = 1000;
-
 /// L-12: Configurable batch size parameters for settlement reconciliation.
 ///
 /// These were previously hardcoded constants. Making them configurable allows

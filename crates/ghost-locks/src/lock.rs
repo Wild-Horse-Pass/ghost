@@ -305,6 +305,32 @@ impl GhostLock {
     pub fn should_warn_jump(&self, current_height: u32) -> bool {
         self.jump_schedule.should_warn(current_height)
     }
+
+    /// Assess whether this lock can afford to jump given estimated mining costs.
+    pub fn jump_affordability(
+        &self,
+        estimated_jump_cost: u64,
+    ) -> crate::affordability::JumpAffordability {
+        crate::affordability::assess_affordability(self.sats(), estimated_jump_cost)
+    }
+
+    /// Check if this lock can afford at least one more jump.
+    pub fn can_afford_jump(&self, estimated_jump_cost: u64) -> bool {
+        crate::affordability::remaining_jumps_estimate(self.sats(), estimated_jump_cost) > 0
+    }
+
+    /// Estimate how many jumps this lock can afford before its value is exhausted.
+    pub fn remaining_jumps_estimate(&self, estimated_jump_cost: u64) -> u32 {
+        crate::affordability::remaining_jumps_estimate(self.sats(), estimated_jump_cost)
+    }
+
+    /// Get recommended action for this lock given current cost estimates.
+    pub fn recommended_action(
+        &self,
+        costs: &crate::affordability::CostEstimates,
+    ) -> crate::affordability::RecommendedAction {
+        crate::affordability::recommended_action(self.sats(), costs)
+    }
 }
 
 /// Serializable Ghost Lock data
