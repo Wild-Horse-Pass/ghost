@@ -1,0 +1,19 @@
+//! Live Cluster Chaos & Load Tests
+//!
+//! Tests that hit the real 4-node signet cluster via HTTP and SSH.
+//! Run with: cargo test --test cluster_chaos -- --ignored --test-threads=1 --nocapture
+
+pub mod client;
+pub mod config;
+pub mod metrics;
+pub mod ssh;
+
+pub mod phase1_baseline;
+pub mod phase2_load;
+pub mod phase3_chaos;
+pub mod phase4_recovery;
+pub mod phase5_multi_kill;
+pub mod phase6_rolling_restart;
+pub mod phase7_network_partition;
+pub mod phase8_endpoint_coverage;
+pub mod phase9_rate_limiter;
