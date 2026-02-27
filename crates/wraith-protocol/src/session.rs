@@ -666,6 +666,8 @@ pub struct SessionConfig {
     pub timeout_secs: Option<u64>,
     /// Network maturity mode for participant minimums
     pub mode: Option<crate::tier::WraithMode>,
+    /// Session type (Mix or Jump)
+    pub session_type: Option<crate::SessionType>,
 }
 
 impl SessionConfig {
@@ -674,6 +676,7 @@ impl SessionConfig {
         Self {
             timeout_secs: Some(timeout_secs),
             mode: None,
+            session_type: None,
         }
     }
 
@@ -682,6 +685,7 @@ impl SessionConfig {
         Self {
             timeout_secs: None,
             mode: Some(mode),
+            session_type: None,
         }
     }
 }
@@ -720,6 +724,8 @@ pub struct WraithSession {
     total_extensions_secs: u64,
     /// Network maturity mode for participant minimums
     mode: crate::tier::WraithMode,
+    /// Session type (Mix = service fee + mining, Jump = mining only)
+    session_type: crate::SessionType,
 }
 
 impl WraithSession {
@@ -756,6 +762,7 @@ impl WraithSession {
         let timeout_instant = Instant::now() + Duration::from_secs(timeout_duration);
 
         let mode = config.mode.unwrap_or_default();
+        let session_type = config.session_type.unwrap_or_default();
 
         Self {
             session_id,
@@ -772,6 +779,7 @@ impl WraithSession {
             timeout_duration_secs: timeout_duration,
             total_extensions_secs: 0,
             mode,
+            session_type,
         }
     }
 
@@ -830,6 +838,11 @@ impl WraithSession {
     /// Get the network maturity mode
     pub fn mode(&self) -> crate::tier::WraithMode {
         self.mode
+    }
+
+    /// Get the session type (Mix or Jump)
+    pub fn session_type(&self) -> crate::SessionType {
+        self.session_type
     }
 
     /// Check if session has timed out
@@ -1106,19 +1119,20 @@ mod tests {
 
     #[test]
     fn test_add_participants() {
-        // Use Whale tier in Mature mode (160 minimum) for practical test values
+        // Use Whale tier in Mature mode (140 minimum, 154 max) for practical test values
         let config = SessionConfig {
             timeout_secs: None,
             mode: Some(crate::tier::WraithMode::Mature),
+            session_type: None,
         };
         let mut session =
             WraithSession::with_config(ParticipantTier::Whale, WraithDenomination::Small, config);
 
-        for _ in 0..160 {
+        for _ in 0..140 {
             assert!(session.add_participant());
         }
 
-        assert_eq!(session.participant_count(), 160);
+        assert_eq!(session.participant_count(), 140);
         assert!(session.has_minimum_participants());
     }
 
@@ -1141,19 +1155,20 @@ mod tests {
 
     #[test]
     fn test_fill_percentage() {
-        // Use Whale tier in Mature mode (160 minimum) for practical test values
+        // Use Whale tier in Mature mode (140 minimum) for practical test values
         let config = SessionConfig {
             timeout_secs: None,
             mode: Some(crate::tier::WraithMode::Mature),
+            session_type: None,
         };
         let mut session =
             WraithSession::with_config(ParticipantTier::Whale, WraithDenomination::Small, config);
 
-        for _ in 0..80 {
+        for _ in 0..70 {
             session.add_participant();
         }
 
-        // 80/160 = 50%
+        // 70/140 = 50%
         assert!((session.fill_percentage() - 50.0).abs() < 1.0);
     }
 

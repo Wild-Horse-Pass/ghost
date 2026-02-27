@@ -35,7 +35,7 @@ use std::str::FromStr;
 
 use crate::denomination::WraithDenomination;
 use crate::error::WraithError;
-use crate::{generate_encrypted_marker_v3, SPLIT_RATIO};
+use crate::{generate_encrypted_marker_v3, SessionType};
 
 /// Input UTXO for Wraith participation
 #[derive(Debug, Clone)]
@@ -74,6 +74,10 @@ pub struct WraithTransactionBuilder {
     pub denomination: WraithDenomination,
     /// Network (mainnet, testnet, etc.)
     pub network: Network,
+    /// Outputs per participant (tier-specific, replaces hardcoded SPLIT_RATIO)
+    outputs_per_participant: usize,
+    /// Session type (Mix = service_fee + mining, Jump = mining only)
+    session_type: SessionType,
     /// Collected inputs
     inputs: Vec<WraithInput>,
     /// Collected outputs (for merge phase)
@@ -84,15 +88,28 @@ pub struct WraithTransactionBuilder {
 
 impl WraithTransactionBuilder {
     /// Create a new transaction builder
-    pub fn new(session_id: String, denomination: WraithDenomination, network: Network) -> Self {
+    pub fn new(
+        session_id: String,
+        denomination: WraithDenomination,
+        network: Network,
+        outputs_per_participant: usize,
+        session_type: SessionType,
+    ) -> Self {
         Self {
             session_id,
             denomination,
             network,
+            outputs_per_participant,
+            session_type,
             inputs: Vec::new(),
             outputs: Vec::new(),
             fee_rate: 10, // Default 10 sat/vbyte
         }
+    }
+
+    /// Get the outputs per participant
+    pub fn outputs_per_participant(&self) -> usize {
+        self.outputs_per_participant
     }
 
     /// Set fee rate
@@ -103,8 +120,13 @@ impl WraithTransactionBuilder {
 
     /// Add an input UTXO
     pub fn add_input(&mut self, input: WraithInput) -> Result<(), WraithError> {
-        // Validate input amount matches denomination
-        let expected = self.denomination.input_sats();
+        // Validate input amount: must cover output + service_fee (mining cost handled separately)
+        // Jump sessions have 0 service fee
+        let service_fee = match self.session_type {
+            SessionType::Mix => self.denomination.service_fee(),
+            SessionType::Jump => 0,
+        };
+        let expected = self.denomination.output_sats() + service_fee;
         if input.amount < expected {
             return Err(WraithError::InvalidInput(format!(
                 "Input amount {} too small, expected at least {}",
@@ -178,19 +200,28 @@ impl WraithTransactionBuilder {
             )));
         }
 
-        // Each participant needs SPLIT_RATIO intermediate addresses
+        // Each participant needs outputs_per_participant intermediate addresses
         for (i, addrs) in intermediate_addresses.iter().enumerate() {
-            if addrs.len() != SPLIT_RATIO {
+            if addrs.len() != self.outputs_per_participant {
                 return Err(WraithError::InvalidInput(format!(
                     "Participant {} needs {} addresses, got {}",
                     i,
-                    SPLIT_RATIO,
+                    self.outputs_per_participant,
                     addrs.len()
                 )));
             }
         }
 
-        let intermediate_amount = self.denomination.intermediate_sats();
+        // Budget Phase 2 (merge) mining fee into intermediates.
+        // Each intermediate carries a small surplus so the merge tx has fee budget.
+        // Without this, Phase 2 implicit_fee = 0 and the tx is rejected by nodes.
+        let base_intermediate = self.denomination.intermediate_sats(self.outputs_per_participant);
+        let merge_vsize = self.estimate_merge_vsize_for_count(self.inputs.len());
+        let merge_fee = merge_vsize * self.fee_rate;
+        let total_intermediates = (self.inputs.len() * self.outputs_per_participant) as u64;
+        let fee_pad = (merge_fee + total_intermediates - 1) / total_intermediates;
+        let intermediate_amount = base_intermediate + fee_pad;
+
         let mut tx_inputs = Vec::new();
         let mut tx_outputs = Vec::new();
 
@@ -267,7 +298,7 @@ impl WraithTransactionBuilder {
             transaction,
             session_id: self.session_id.clone(),
             participant_count: self.inputs.len(),
-            intermediate_count: self.inputs.len() * SPLIT_RATIO,
+            intermediate_count: self.inputs.len() * self.outputs_per_participant,
             fee_sats: implicit_fee,
         })
     }
@@ -326,13 +357,13 @@ impl WraithTransactionBuilder {
             )));
         }
 
-        // Each participant should have SPLIT_RATIO inputs
+        // Each participant should have outputs_per_participant inputs
         for (i, inputs) in intermediate_inputs.iter().enumerate() {
-            if inputs.len() != SPLIT_RATIO {
+            if inputs.len() != self.outputs_per_participant {
                 return Err(WraithError::InvalidInput(format!(
                     "Participant {} needs {} inputs, got {}",
                     i,
-                    SPLIT_RATIO,
+                    self.outputs_per_participant,
                     inputs.len()
                 )));
             }
@@ -401,6 +432,13 @@ impl WraithTransactionBuilder {
         let total_in: u64 = all_inputs.iter().map(|(_, i)| i.amount).sum();
         let total_out: u64 = tx_outputs.iter().map(|o| o.value.to_sat()).sum();
         let implicit_fee = total_in.saturating_sub(total_out);
+
+        // Validate merge fee covers mining cost
+        let estimated_vsize = self.estimate_merge_vsize_for_count(intermediate_inputs.len());
+        let fee = estimated_vsize * self.fee_rate;
+        if implicit_fee < fee {
+            return Err(WraithError::InsufficientFee(fee, implicit_fee));
+        }
 
         let transaction = Transaction {
             version: Version::TWO,
@@ -490,17 +528,48 @@ impl WraithTransactionBuilder {
         seed
     }
 
-    /// Estimate vsize for split transaction
+    /// Estimate vsize for split transaction (Phase 1)
     fn estimate_split_vsize(&self) -> u64 {
-        // P2TR input: ~58 vbytes
-        // P2TR output: ~43 vbytes
+        // P2TR input: ~58 vbytes (1 per participant)
+        // P2TR output: ~43 vbytes (OPP per participant)
         // OP_RETURN: ~12 vbytes
         // Overhead: ~10 vbytes
         let input_vsize = self.inputs.len() as u64 * 58;
-        let output_vsize = (self.inputs.len() * SPLIT_RATIO) as u64 * 43;
+        let output_vsize = (self.inputs.len() * self.outputs_per_participant) as u64 * 43;
         let op_return_vsize = 12;
         let overhead = 10;
         input_vsize + output_vsize + op_return_vsize + overhead
+    }
+
+    /// Estimate vsize for merge transaction (Phase 2) with given participant count
+    fn estimate_merge_vsize_for_count(&self, participant_count: usize) -> u64 {
+        // P2TR input: ~58 vbytes (OPP per participant)
+        // P2TR output: ~43 vbytes (1 per participant)
+        // OP_RETURN: ~12 vbytes
+        // Overhead: ~10 vbytes
+        let input_vsize = (participant_count * self.outputs_per_participant) as u64 * 58;
+        let output_vsize = participant_count as u64 * 43;
+        let op_return_vsize = 12;
+        let overhead = 10;
+        input_vsize + output_vsize + op_return_vsize + overhead
+    }
+
+    /// Estimate the mining cost per user for both phases
+    pub fn estimate_mining_cost_per_user(&self, participant_count: usize) -> u64 {
+        let split_vsize = {
+            let n = participant_count as u64;
+            let opp = self.outputs_per_participant as u64;
+            n * 58 + n * opp * 43 + 22 // inputs + outputs + overhead
+        };
+        let merge_vsize = {
+            let n = participant_count as u64;
+            let opp = self.outputs_per_participant as u64;
+            n * opp * 58 + n * 43 + 22
+        };
+        let total_vsize = split_vsize + merge_vsize;
+        let total_fee = total_vsize * self.fee_rate;
+        // Each user pays their share of the total mining cost
+        (total_fee + participant_count as u64 - 1) / participant_count as u64
     }
 }
 
@@ -606,14 +675,20 @@ mod tests {
         Txid::from_str("0000000000000000000000000000000000000000000000000000000000000001").unwrap()
     }
 
+    /// Default OPP for Small tier
+    const SMALL_OPP: usize = 4;
+
     #[test]
     fn test_builder_creation() {
         let builder = WraithTransactionBuilder::new(
             "session123".to_string(),
             WraithDenomination::Small,
             Network::Regtest,
+            SMALL_OPP,
+            SessionType::Mix,
         );
         assert_eq!(builder.participant_count(), 0);
+        assert_eq!(builder.outputs_per_participant(), SMALL_OPP);
     }
 
     #[test]
@@ -622,12 +697,14 @@ mod tests {
             "session123".to_string(),
             WraithDenomination::Small,
             Network::Regtest,
+            SMALL_OPP,
+            SessionType::Mix,
         );
 
         let input = WraithInput {
             txid: test_txid(),
             vout: 0,
-            amount: 1_010_000, // Small denomination input
+            amount: 1_002_000, // Small denomination: output (1M) + service_fee (2K)
             script_pubkey: ScriptBuf::new(),
             participant_id: 0,
         };
@@ -642,6 +719,8 @@ mod tests {
             "session123".to_string(),
             WraithDenomination::Small,
             Network::Regtest,
+            SMALL_OPP,
+            SessionType::Mix,
         );
 
         let input = WraithInput {
@@ -653,6 +732,29 @@ mod tests {
         };
 
         assert!(builder.add_input(input).is_err());
+    }
+
+    #[test]
+    fn test_jump_session_no_service_fee() {
+        let mut builder = WraithTransactionBuilder::new(
+            "session123".to_string(),
+            WraithDenomination::Small,
+            Network::Regtest,
+            SMALL_OPP,
+            SessionType::Jump,
+        );
+
+        // Jump: only need output amount (1M), no service fee
+        let input = WraithInput {
+            txid: test_txid(),
+            vout: 0,
+            amount: 1_000_000,
+            script_pubkey: ScriptBuf::new(),
+            participant_id: 0,
+        };
+
+        builder.add_input(input).unwrap();
+        assert_eq!(builder.participant_count(), 1);
     }
 
     #[test]
@@ -724,6 +826,8 @@ mod tests {
             "session123".to_string(),
             WraithDenomination::Small,
             Network::Regtest,
+            SMALL_OPP,
+            SessionType::Mix,
         );
 
         let data = builder.build_phase1_op_return();
@@ -762,7 +866,7 @@ mod tests {
         let mut addresses: Vec<Vec<String>> = Vec::new();
         for _p in 0..3 {
             let mut participant_addrs = Vec::new();
-            for _i in 0..SPLIT_RATIO {
+            for _i in 0..SMALL_OPP {
                 let sk = SecretKey::from_slice(&[
                     0x01 + (_p * 10 + _i) as u8,
                     0x02,
@@ -811,6 +915,8 @@ mod tests {
             "test_session".to_string(),
             WraithDenomination::Small,
             Network::Regtest,
+            SMALL_OPP,
+            SessionType::Mix,
         );
 
         for p in 0..3 {
@@ -844,8 +950,8 @@ mod tests {
             .map(|o| o.script_pubkey.clone())
             .collect();
 
-        // With 30 outputs (3 participants * 10), probability of identical ordering
-        // with true randomness is astronomically low (1/30! ~ 3.7e-33)
+        // With 12 outputs (3 participants * 4 OPP), probability of identical ordering
+        // with true randomness is very low (1/12! ~ 2.1e-9)
         assert_ne!(
             outputs1, outputs2,
             "Two transactions should have different output orderings due to CSPRNG entropy"
@@ -865,7 +971,7 @@ mod tests {
         let mut addresses: Vec<Vec<String>> = Vec::new();
         for _p in 0..2 {
             let mut participant_addrs = Vec::new();
-            for _i in 0..SPLIT_RATIO {
+            for _i in 0..SMALL_OPP {
                 let sk = SecretKey::from_slice(&[
                     0x01 + (_p * 10 + _i) as u8,
                     0x02,
@@ -913,6 +1019,8 @@ mod tests {
             "test_session".to_string(),
             WraithDenomination::Small,
             Network::Regtest,
+            SMALL_OPP,
+            SessionType::Mix,
         );
 
         for p in 0..2 {

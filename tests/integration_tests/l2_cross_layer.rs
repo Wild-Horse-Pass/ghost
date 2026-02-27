@@ -102,8 +102,9 @@ fn test_852_lock_enters_and_exits_mix_lifecycle() {
 #[test]
 fn test_853_all_wraith_intermediates_above_dust() {
     // Every wraith denomination's intermediate_sats() must exceed MIN_LOCK_SATS (546)
+    // Use largest OPP (10) which produces the smallest intermediates — worst case for dust
     for denom in WraithDenomination::all() {
-        let intermediate = denom.intermediate_sats();
+        let intermediate = denom.intermediate_sats(10);
         assert!(
             intermediate > MIN_LOCK_SATS,
             "WraithDenomination::{} intermediate_sats ({}) must exceed dust threshold ({})",
@@ -118,7 +119,7 @@ fn test_853_all_wraith_intermediates_above_dust() {
 fn test_854_denomination_mapping_wraith_to_ghost_locks() {
     // Each WraithDenomination has a corresponding ghost-locks Denomination with equal sats
     let mapping: Vec<(WraithDenomination, Denomination)> = vec![
-        (WraithDenomination::Micro, Denomination::Micro),
+        (WraithDenomination::Micro, Denomination::Tiny),
         (WraithDenomination::Small, Denomination::Small),
         (WraithDenomination::Medium, Denomination::Medium),
         (WraithDenomination::Large, Denomination::Large),
@@ -414,10 +415,10 @@ fn test_864_optimal_denominations_create_valid_locks() {
 
 #[test]
 fn test_865_micro_intermediate_above_dust() {
-    // WraithDenomination::Micro has the smallest intermediate (1000 sats)
-    // It must still exceed the dust threshold (546 sats)
-    let intermediate = WraithDenomination::Micro.intermediate_sats();
-    assert_eq!(intermediate, 1_000);
+    // WraithDenomination::Micro has the smallest intermediate at worst-case OPP=10
+    // 100,000 / 10 = 10,000 sats — well above dust threshold (546 sats)
+    let intermediate = WraithDenomination::Micro.intermediate_sats(10);
+    assert_eq!(intermediate, 10_000);
     assert!(
         intermediate > MIN_LOCK_SATS,
         "Micro intermediate ({}) must exceed dust threshold ({})",

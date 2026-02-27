@@ -24,15 +24,16 @@
 //!
 //! Standard denominations ensure all participants in a mix are
 //! indistinguishable from each other.
+//!
+//! Fee model (v2): Fixed service fee per denomination + at-cost mining.
+//! Jump sessions (key rotation) charge mining cost only (0 service fee).
 
 use serde::{Deserialize, Serialize};
-
-use crate::SPLIT_RATIO;
 
 /// Standard Wraith mixing denominations
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WraithDenomination {
-    /// 10,000 sats output (micro)
+    /// 100,000 sats output (0.001 BTC) — raised from 10K to cover mining overhead
     Micro,
     /// 1,000,000 sats output (0.01 BTC)
     Small,
@@ -46,24 +47,33 @@ impl WraithDenomination {
     /// Get the output amount in satoshis (what you receive)
     pub fn output_sats(&self) -> u64 {
         match self {
-            WraithDenomination::Micro => 10_000,
+            WraithDenomination::Micro => 100_000,
             WraithDenomination::Small => 1_000_000,
             WraithDenomination::Medium => 10_000_000,
             WraithDenomination::Large => 100_000_000,
         }
     }
 
-    /// Get the fee amount in satoshis (1% of output, integer division)
-    pub fn fee_sats(&self) -> u64 {
-        self.output_sats() / 100
+    /// Get the fixed service fee for this denomination (charged on Mix sessions only)
+    ///
+    /// Jump sessions (key rotation) have 0 service fee — mining cost only.
+    pub fn service_fee(&self) -> u64 {
+        match self {
+            WraithDenomination::Micro => 500,
+            WraithDenomination::Small => 2_000,
+            WraithDenomination::Medium => 5_000,
+            WraithDenomination::Large => 10_000,
+        }
     }
 
-    /// Get the required input amount in satoshis (output + fee)
-    pub fn input_sats(&self) -> u64 {
-        self.output_sats() + self.fee_sats()
+    /// Get the minimum required input (output + service_fee, excludes mining cost)
+    ///
+    /// Actual input required = min_input_sats + estimated mining cost per user.
+    pub fn min_input_sats(&self) -> u64 {
+        self.output_sats() + self.service_fee()
     }
 
-    /// Get the intermediate UTXO size (output / SPLIT_RATIO)
+    /// Get the intermediate UTXO size (output / outputs_per_participant)
     ///
     /// Privacy: All intermediates MUST be identical to prevent output clustering.
     /// Variable amounts would create a correlation vector allowing chain analysis
@@ -71,17 +81,17 @@ impl WraithDenomination {
     ///
     /// M-23: Asserts exact divisibility — a remainder would create non-uniform
     /// intermediate sizes, breaking the privacy invariant.
-    pub fn intermediate_sats(&self) -> u64 {
+    pub fn intermediate_sats(&self, outputs_per_participant: usize) -> u64 {
         let output = self.output_sats();
-        let ratio = SPLIT_RATIO as u64;
+        let opp = outputs_per_participant as u64;
         assert_eq!(
-            output % ratio,
+            output % opp,
             0,
-            "M-23: denomination {} sats not evenly divisible by SPLIT_RATIO {}",
+            "M-23: denomination {} sats not evenly divisible by OPP {}",
             output,
-            ratio
+            opp
         );
-        output / ratio
+        output / opp
     }
 
     /// Get the output amount in BTC
@@ -136,7 +146,7 @@ impl WraithDenomination {
     /// Find denomination by output amount
     pub fn from_output_sats(sats: u64) -> Option<Self> {
         match sats {
-            10_000 => Some(WraithDenomination::Micro),
+            100_000 => Some(WraithDenomination::Micro),
             1_000_000 => Some(WraithDenomination::Small),
             10_000_000 => Some(WraithDenomination::Medium),
             100_000_000 => Some(WraithDenomination::Large),
@@ -146,13 +156,13 @@ impl WraithDenomination {
 
     /// Find the largest denomination that fits in an amount
     pub fn largest_fitting(sats: u64) -> Option<Self> {
-        if sats >= WraithDenomination::Large.input_sats() {
+        if sats >= WraithDenomination::Large.min_input_sats() {
             Some(WraithDenomination::Large)
-        } else if sats >= WraithDenomination::Medium.input_sats() {
+        } else if sats >= WraithDenomination::Medium.min_input_sats() {
             Some(WraithDenomination::Medium)
-        } else if sats >= WraithDenomination::Small.input_sats() {
+        } else if sats >= WraithDenomination::Small.min_input_sats() {
             Some(WraithDenomination::Small)
-        } else if sats >= WraithDenomination::Micro.input_sats() {
+        } else if sats >= WraithDenomination::Micro.min_input_sats() {
             Some(WraithDenomination::Micro)
         } else {
             None
@@ -172,31 +182,91 @@ mod tests {
 
     #[test]
     fn test_denomination_values() {
-        assert_eq!(WraithDenomination::Micro.output_sats(), 10_000);
+        assert_eq!(WraithDenomination::Micro.output_sats(), 100_000);
         assert_eq!(WraithDenomination::Small.output_sats(), 1_000_000);
         assert_eq!(WraithDenomination::Medium.output_sats(), 10_000_000);
         assert_eq!(WraithDenomination::Large.output_sats(), 100_000_000);
     }
 
     #[test]
-    fn test_fees() {
-        // 1% fee
-        assert_eq!(WraithDenomination::Small.fee_sats(), 10_000);
-        assert_eq!(WraithDenomination::Small.input_sats(), 1_010_000);
+    fn test_service_fees() {
+        assert_eq!(WraithDenomination::Micro.service_fee(), 500);
+        assert_eq!(WraithDenomination::Small.service_fee(), 2_000);
+        assert_eq!(WraithDenomination::Medium.service_fee(), 5_000);
+        assert_eq!(WraithDenomination::Large.service_fee(), 10_000);
+    }
+
+    #[test]
+    fn test_min_input_sats() {
+        // min_input = output + service_fee
+        assert_eq!(WraithDenomination::Micro.min_input_sats(), 100_500);
+        assert_eq!(WraithDenomination::Small.min_input_sats(), 1_002_000);
+        assert_eq!(WraithDenomination::Medium.min_input_sats(), 10_005_000);
+        assert_eq!(WraithDenomination::Large.min_input_sats(), 100_010_000);
     }
 
     #[test]
     fn test_intermediates() {
-        // 10x split
-        assert_eq!(WraithDenomination::Small.intermediate_sats(), 100_000);
+        // Each OPP value must divide all denominations evenly (M-23)
+        for opp in [2, 4, 5, 8, 10] {
+            for denom in WraithDenomination::all() {
+                let intermediate = denom.intermediate_sats(opp);
+                assert_eq!(
+                    intermediate * opp as u64,
+                    denom.output_sats(),
+                    "OPP {} doesn't divide {:?} evenly",
+                    opp,
+                    denom
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_intermediate_specific_values() {
+        // Micro (100K) / 2 = 50K
+        assert_eq!(WraithDenomination::Micro.intermediate_sats(2), 50_000);
+        // Small (1M) / 4 = 250K
+        assert_eq!(WraithDenomination::Small.intermediate_sats(4), 250_000);
+        // Medium (10M) / 5 = 2M
+        assert_eq!(WraithDenomination::Medium.intermediate_sats(5), 2_000_000);
+        // Large (100M) / 8 = 12.5M
+        assert_eq!(WraithDenomination::Large.intermediate_sats(8), 12_500_000);
     }
 
     #[test]
     fn test_from_output_sats() {
         assert_eq!(
+            WraithDenomination::from_output_sats(100_000),
+            Some(WraithDenomination::Micro)
+        );
+        assert_eq!(
             WraithDenomination::from_output_sats(1_000_000),
             Some(WraithDenomination::Small)
         );
         assert_eq!(WraithDenomination::from_output_sats(500_000), None);
+        // Old Micro value should not match
+        assert_eq!(WraithDenomination::from_output_sats(10_000), None);
+    }
+
+    #[test]
+    fn test_largest_fitting() {
+        // Below Micro min_input (100,500) → None
+        assert_eq!(WraithDenomination::largest_fitting(100_499), None);
+        // At Micro min_input → Micro
+        assert_eq!(
+            WraithDenomination::largest_fitting(100_500),
+            Some(WraithDenomination::Micro)
+        );
+        // Above Small min_input (1,002,000) → Small
+        assert_eq!(
+            WraithDenomination::largest_fitting(1_002_000),
+            Some(WraithDenomination::Small)
+        );
+        // 2 BTC should fit Large (100,010,000)
+        assert_eq!(
+            WraithDenomination::largest_fitting(200_000_000),
+            Some(WraithDenomination::Large)
+        );
     }
 }

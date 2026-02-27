@@ -112,10 +112,10 @@ pub struct DenominationInfo {
     pub short_code: String,
     /// Output amount in sats
     pub output_sats: u64,
-    /// Required input amount (output + fee)
-    pub input_sats: u64,
-    /// Fee in sats
-    pub fee_sats: u64,
+    /// Minimum required input amount (output + service_fee, excludes mining)
+    pub min_input_sats: u64,
+    /// Fixed service fee in sats (0 for Jump sessions)
+    pub service_fee: u64,
     /// Expected wait time in hours
     pub expected_wait_hours: u32,
 }
@@ -157,8 +157,8 @@ impl WraithWizard {
                     name: d.name().to_string(),
                     short_code: d.short_code().to_string(),
                     output_sats: d.output_sats(),
-                    input_sats: d.input_sats(),
-                    fee_sats: d.fee_sats(),
+                    min_input_sats: d.min_input_sats(),
+                    service_fee: d.service_fee(),
                     expected_wait_hours: tier.expected_wait_hours(),
                 }
             })
@@ -169,7 +169,7 @@ impl WraithWizard {
     pub fn fitting_denominations(balance_sats: u64) -> Vec<DenominationInfo> {
         Self::available_denominations()
             .into_iter()
-            .filter(|d| d.input_sats <= balance_sats)
+            .filter(|d| d.min_input_sats <= balance_sats)
             .collect()
     }
 
@@ -209,11 +209,11 @@ impl WraithWizard {
         ))?;
 
         // Verify UTXO has enough sats
-        if amount_sats < denomination.input_sats() {
+        if amount_sats < denomination.min_input_sats() {
             return Err(WraithError::InvalidInput(format!(
                 "UTXO amount {} sats is less than required {} sats ({})",
                 amount_sats,
-                denomination.input_sats(),
+                denomination.min_input_sats(),
                 denomination.name()
             )));
         }
@@ -267,7 +267,7 @@ impl WraithWizard {
         let (participant_count, min_participants, fill_percentage) =
             if let Some(ref session) = self.session {
                 let tier = ParticipantTier::for_balance(
-                    self.denomination.map(|d| d.output_sats()).unwrap_or(10_000),
+                    self.denomination.map(|d| d.output_sats()).unwrap_or(100_000),
                 );
                 (
                     Some(session.participant_count()),
@@ -397,12 +397,12 @@ mod tests {
 
     #[test]
     fn test_fitting_denominations() {
-        // 50,000 sats should only fit Micro (requires 10,100)
-        let fitting = WraithWizard::fitting_denominations(50_000);
+        // 200,000 sats should only fit Micro (requires 100,500)
+        let fitting = WraithWizard::fitting_denominations(200_000);
         assert_eq!(fitting.len(), 1);
         assert_eq!(fitting[0].short_code, "MI");
 
-        // 1 BTC should fit all
+        // 2 BTC should fit all
         let fitting = WraithWizard::fitting_denominations(200_000_000);
         assert_eq!(fitting.len(), 4);
     }
@@ -417,12 +417,12 @@ mod tests {
             .unwrap();
         assert_eq!(wizard.step(), WizardStep::SelectUtxo);
 
-        // Select UTXO (10,100+ sats for Micro)
+        // Select UTXO (100,500+ sats for Micro)
         wizard
             .select_utxo(
                 "abc123def456abc123def456abc123def456abc123def456abc123def456abc123de",
                 0,
-                20_000,
+                200_000,
             )
             .unwrap();
         assert_eq!(wizard.step(), WizardStep::SelectUtxo); // stays until join
@@ -440,7 +440,7 @@ mod tests {
             .select_denomination(WraithDenomination::Large)
             .unwrap();
 
-        // Large requires 101,000,000 sats, try with 1000
+        // Large requires 100,010,000 sats, try with 1000
         let result = wizard.select_utxo("abc123", 0, 1000);
         assert!(result.is_err());
     }

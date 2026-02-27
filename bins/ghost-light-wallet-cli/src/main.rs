@@ -1275,7 +1275,7 @@ async fn cmd_wraith(config: WalletConfig) -> Result<()> {
             style(&d.name).bold(),
             d.short_code,
             style(d.output_sats).yellow(),
-            d.fee_sats,
+            d.service_fee,
             d.expected_wait_hours,
         );
     }
@@ -1304,7 +1304,7 @@ async fn cmd_wraith(config: WalletConfig) -> Result<()> {
     println!(
         "Selected: {} — requires {} sats input",
         style(selected_denom.name()).bold().green(),
-        style(selected_denom.input_sats()).yellow(),
+        style(selected_denom.min_input_sats()).yellow(),
     );
     println!();
 
@@ -1342,8 +1342,8 @@ async fn cmd_wraith(config: WalletConfig) -> Result<()> {
     println!("  UTXO: {}:{}", style(&txid).cyan(), vout);
     println!("  Amount: {} sats", style(amount).yellow());
     println!(
-        "  Fee: {} sats (1%)",
-        style(selected_denom.fee_sats()).dim()
+        "  Fee: {} sats",
+        style(selected_denom.service_fee()).dim()
     );
     println!(
         "  Output: {} sats",

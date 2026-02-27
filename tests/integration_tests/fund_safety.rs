@@ -498,81 +498,67 @@ fn test_008_timeout_state_has_defined_fund_handling() {
 // =============================================================================
 // TEST 5: WRAITH PROTOCOL INDIVISIBLE AMOUNTS
 // =============================================================================
-// Risk: Splitting N inputs into 10N outputs loses remainder satoshis
-// Impact: 0-9 satoshis per participant become implicit fees
+// Risk: Splitting N inputs into OPP*N outputs loses remainder satoshis
+// Impact: 0-(OPP-1) satoshis per participant become implicit fees
 
 #[test]
 fn test_009_wraith_split_preserves_all_satoshis() {
-    const SPLIT_RATIO: usize = 10;
+    // OPP (outputs per participant) varies by tier: 2, 4, 5, 8, 10
+    let opp_values: &[usize] = &[2, 4, 5, 8, 10];
 
     // Test various input amounts for remainder loss
     let test_amounts: Vec<u64> = vec![
-        1_000_000,  // Exactly divisible by 10
+        1_000_000,  // Exactly divisible by all OPPs
         1_000_001,  // 1 sat remainder
-        1_000_009,  // 9 sat remainder (maximum loss)
+        1_000_007,  // 7 sat remainder
         10_000_000, // Large, divisible
         10_000_007, // Large with remainder
     ];
 
-    for input_amount in test_amounts {
-        let intermediate_amount = input_amount / SPLIT_RATIO as u64;
-        let total_output = intermediate_amount * SPLIT_RATIO as u64;
-        let remainder = input_amount - total_output;
+    for &opp in opp_values {
+        for &input_amount in &test_amounts {
+            let intermediate_amount = input_amount / opp as u64;
+            let total_output = intermediate_amount * opp as u64;
+            let remainder = input_amount - total_output;
 
-        println!(
-            "Input: {} sats -> {} intermediates of {} sats = {} total, {} remainder",
-            input_amount, SPLIT_RATIO, intermediate_amount, total_output, remainder
-        );
-
-        // CRITICAL: Remainder should not vanish
-        assert!(
-            remainder < SPLIT_RATIO as u64,
-            "Remainder {} exceeds maximum expected {}",
-            remainder,
-            SPLIT_RATIO - 1
-        );
-
-        // In a safe implementation, remainder would be:
-        // 1. Added to the fee explicitly
-        // 2. Distributed among outputs (some get +1 sat)
-        // 3. Tracked and returned in Phase 2
+            // CRITICAL: Remainder should not vanish
+            assert!(
+                remainder < opp as u64,
+                "OPP {}: Remainder {} exceeds maximum expected {}",
+                opp,
+                remainder,
+                opp - 1
+            );
+        }
     }
 
-    // Test with multiple participants
-    let num_participants = 50;
-    let input_per_participant = 1_000_007; // 7 sat remainder each
+    // Test with multiple participants at worst-case OPP=10
+    let opp: u64 = 10;
+    let num_participants: u64 = 50;
+    let input_per_participant: u64 = 1_000_007; // 7 sat remainder each
     let total_input = input_per_participant * num_participants;
 
-    let intermediate_per = input_per_participant / SPLIT_RATIO as u64;
-    let total_intermediates = intermediate_per * SPLIT_RATIO as u64 * num_participants;
+    let intermediate_per = input_per_participant / opp;
+    let total_intermediates = intermediate_per * opp * num_participants;
     let total_loss = total_input - total_intermediates;
 
-    println!(
-        "\n{} participants: {} sats lost to rounding ({} per participant)",
-        num_participants,
-        total_loss,
-        total_loss / num_participants
-    );
-
-    // Maximum loss per participant is 9 sats, so 50 participants = 450 sats max
+    // Maximum loss per participant is (OPP-1) sats
     assert!(
-        total_loss <= (SPLIT_RATIO as u64 - 1) * num_participants,
+        total_loss <= (opp - 1) * num_participants,
         "Total loss {} exceeds maximum expected {}",
         total_loss,
-        (SPLIT_RATIO - 1) * num_participants as usize
+        (opp - 1) * num_participants
     );
 }
 
 #[test]
 fn test_010_wraith_split_with_fair_remainder_distribution() {
-    const SPLIT_RATIO: usize = 10;
+    // Safe implementation: distribute remainder fairly across OPP outputs
+    fn split_with_fair_remainder(input: u64, opp: usize) -> Vec<u64> {
+        let base_amount = input / opp as u64;
+        let remainder = (input % opp as u64) as usize;
 
-    // Safe implementation: distribute remainder fairly
-    fn split_with_fair_remainder(input: u64) -> Vec<u64> {
-        let base_amount = input / SPLIT_RATIO as u64;
-        let remainder = (input % SPLIT_RATIO as u64) as usize;
-
-        let mut outputs = vec![base_amount; SPLIT_RATIO];
+        let mut outputs = vec![base_amount; opp];
 
         // Distribute remainder: first `remainder` outputs get +1 sat
         for output in outputs.iter_mut().take(remainder) {
@@ -582,28 +568,29 @@ fn test_010_wraith_split_with_fair_remainder_distribution() {
         outputs
     }
 
-    // Test that all satoshis are preserved
     let test_inputs = vec![1_000_007, 1_000_009, 1_000_001, 1_000_000];
 
-    for input in test_inputs {
-        let outputs = split_with_fair_remainder(input);
-        let total_output: u64 = outputs.iter().sum();
+    // Test across all OPP values used by the protocol
+    for &opp in &[2usize, 4, 5, 8, 10] {
+        for &input in &test_inputs {
+            let outputs = split_with_fair_remainder(input, opp);
+            let total_output: u64 = outputs.iter().sum();
 
-        assert_eq!(
-            total_output, input,
-            "Fair split lost satoshis: input={}, output={}",
-            input, total_output
-        );
+            assert_eq!(
+                total_output, input,
+                "OPP {}: Fair split lost satoshis: input={}, output={}",
+                opp, input, total_output
+            );
 
-        // Verify outputs are within 1 sat of each other (fair)
-        let max_output = outputs.iter().max().unwrap();
-        let min_output = outputs.iter().min().unwrap();
-        assert!(
-            max_output - min_output <= 1,
-            "Outputs not fairly distributed: max={}, min={}",
-            max_output,
-            min_output
-        );
+            // Verify outputs are within 1 sat of each other (fair)
+            let max_output = outputs.iter().max().unwrap();
+            let min_output = outputs.iter().min().unwrap();
+            assert!(
+                max_output - min_output <= 1,
+                "OPP {}: Outputs not fairly distributed: max={}, min={}",
+                opp, max_output, min_output
+            );
+        }
     }
 }
 

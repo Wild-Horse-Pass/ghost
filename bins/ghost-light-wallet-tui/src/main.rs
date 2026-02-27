@@ -890,7 +890,7 @@ where
                                     app.status_message = format!(
                                         "Selected {}. Enter UTXO txid (requires {} sats):",
                                         denom.name(),
-                                        denom.input_sats()
+                                        denom.min_input_sats()
                                     );
                                 }
                             }
@@ -2013,7 +2013,7 @@ fn render_locks(app: &App) -> Paragraph<'static> {
                         ),
                         Span::raw(format!(
                             " {} sats out, {} sats fee, ~{}h wait",
-                            d.output_sats, d.fee_sats, d.expected_wait_hours
+                            d.output_sats, d.service_fee, d.expected_wait_hours
                         )),
                     ]));
                 }
@@ -2278,7 +2278,7 @@ fn render_wallet_wizard(wiz: &ActiveWalletWizard, _app: &App) -> (String, Vec<Li
                     ]));
                     lines.push(Line::from(""));
                     lines.push(Line::from(
-                        "  Minimum: 10,000 sats. Maximum: 100,000,000 sats (1 BTC)",
+                        "  Minimum: 100,000 sats. Maximum: 100,000,000 sats (1 BTC)",
                     ));
                 }
                 CreateLockStep::SelectTimelock => {

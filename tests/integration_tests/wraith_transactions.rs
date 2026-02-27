@@ -11,7 +11,7 @@ use std::str::FromStr;
 use bitcoin::{Address, Network, ScriptBuf, Txid};
 use wraith_protocol::{
     generate_encrypted_marker_v3, verify_encrypted_marker_v3, Phase, PhaseExecution, PhaseState,
-    WraithDenomination, WraithInput, WraithTransactionBuilder, FEE_DIVISOR, SPLIT_RATIO,
+    SessionType, WraithDenomination, WraithInput, WraithTransactionBuilder,
 };
 
 // =============================================================================
@@ -51,9 +51,9 @@ fn make_input(amount: u64, participant_id: u32) -> WraithInput {
     }
 }
 
-/// Generate `SPLIT_RATIO` (10) unique Signet P2TR addresses for one participant.
-fn address_set_for_participant(participant_idx: u8) -> Vec<String> {
-    (0..SPLIT_RATIO)
+/// Generate `opp` unique Signet P2TR addresses for one participant.
+fn address_set_for_participant(participant_idx: u8, opp: usize) -> Vec<String> {
+    (0..opp)
         .map(|i| {
             // Use a unique seed per (participant, index) combination
             let seed = (participant_idx as u16 * 11 + i as u16 + 1) as u8;
@@ -68,48 +68,45 @@ fn address_set_for_participant(participant_idx: u8) -> Vec<String> {
 
 #[test]
 fn test_700_all_denominations_output_sats() {
-    assert_eq!(WraithDenomination::Micro.output_sats(), 10_000);
+    assert_eq!(WraithDenomination::Micro.output_sats(), 100_000);
     assert_eq!(WraithDenomination::Small.output_sats(), 1_000_000);
     assert_eq!(WraithDenomination::Medium.output_sats(), 10_000_000);
     assert_eq!(WraithDenomination::Large.output_sats(), 100_000_000);
 }
 
 #[test]
-fn test_701_fee_sats_one_percent_of_output() {
-    for denom in WraithDenomination::all() {
-        let expected_fee = denom.output_sats() / FEE_DIVISOR;
-        assert_eq!(
-            denom.fee_sats(),
-            expected_fee,
-            "Fee mismatch for {:?}: expected {}, got {}",
-            denom,
-            expected_fee,
-            denom.fee_sats()
-        );
-    }
+fn test_701_fixed_service_fees() {
+    assert_eq!(WraithDenomination::Micro.service_fee(), 500);
+    assert_eq!(WraithDenomination::Small.service_fee(), 2_000);
+    assert_eq!(WraithDenomination::Medium.service_fee(), 5_000);
+    assert_eq!(WraithDenomination::Large.service_fee(), 10_000);
 }
 
 #[test]
-fn test_702_input_sats_equals_output_plus_fee() {
+fn test_702_min_input_equals_output_plus_service_fee() {
     for denom in WraithDenomination::all() {
         assert_eq!(
-            denom.input_sats(),
-            denom.output_sats() + denom.fee_sats(),
-            "input_sats mismatch for {:?}",
+            denom.min_input_sats(),
+            denom.output_sats() + denom.service_fee(),
+            "min_input_sats mismatch for {:?}",
             denom
         );
     }
 }
 
 #[test]
-fn test_703_intermediate_sats_equals_output_div_split_ratio() {
+fn test_703_intermediate_sats_equals_output_div_opp() {
+    // All OPPs {2,4,5,8,10} must divide all denominations evenly (M-23)
+    let opps = [2, 4, 5, 8, 10];
     for denom in WraithDenomination::all() {
-        assert_eq!(
-            denom.intermediate_sats(),
-            denom.output_sats() / SPLIT_RATIO as u64,
-            "intermediate_sats mismatch for {:?}",
-            denom
-        );
+        for &opp in &opps {
+            assert_eq!(
+                denom.intermediate_sats(opp),
+                denom.output_sats() / opp as u64,
+                "intermediate_sats mismatch for {:?} with OPP {}",
+                denom, opp
+            );
+        }
     }
 }
 
@@ -118,10 +115,10 @@ fn test_704_intermediate_sats_identical_across_calls() {
     // All intermediate amounts must be identical for privacy — no variance allowed.
     // Variable amounts would create a correlation vector for chain analysis.
     for denom in WraithDenomination::all() {
-        let expected = denom.intermediate_sats();
+        let expected = denom.intermediate_sats(4);
         for _ in 0..100 {
             assert_eq!(
-                denom.intermediate_sats(),
+                denom.intermediate_sats(4),
                 expected,
                 "{:?}: intermediate_sats must return identical values on every call",
                 denom
@@ -155,12 +152,12 @@ fn test_706_from_output_sats_invalid_returns_none() {
 
 #[test]
 fn test_707_largest_fitting_boundary_values() {
-    // Below Micro input_sats (10_100) -> None
-    assert_eq!(WraithDenomination::largest_fitting(10_099), None);
+    // Below Micro min_input_sats (100_500) -> None
+    assert_eq!(WraithDenomination::largest_fitting(100_499), None);
 
     // Exactly at Micro boundary -> Micro
     assert_eq!(
-        WraithDenomination::largest_fitting(WraithDenomination::Micro.input_sats()),
+        WraithDenomination::largest_fitting(WraithDenomination::Micro.min_input_sats()),
         Some(WraithDenomination::Micro)
     );
 
@@ -172,19 +169,19 @@ fn test_707_largest_fitting_boundary_values() {
 
     // Exactly at Small boundary -> Small
     assert_eq!(
-        WraithDenomination::largest_fitting(WraithDenomination::Small.input_sats()),
+        WraithDenomination::largest_fitting(WraithDenomination::Small.min_input_sats()),
         Some(WraithDenomination::Small)
     );
 
     // Exactly at Medium boundary -> Medium
     assert_eq!(
-        WraithDenomination::largest_fitting(WraithDenomination::Medium.input_sats()),
+        WraithDenomination::largest_fitting(WraithDenomination::Medium.min_input_sats()),
         Some(WraithDenomination::Medium)
     );
 
     // Exactly at Large boundary -> Large
     assert_eq!(
-        WraithDenomination::largest_fitting(WraithDenomination::Large.input_sats()),
+        WraithDenomination::largest_fitting(WraithDenomination::Large.min_input_sats()),
         Some(WraithDenomination::Large)
     );
 
@@ -234,6 +231,8 @@ fn test_710_new_builder_zero_participants() {
         "session-710".to_string(),
         WraithDenomination::Small,
         Network::Signet,
+        4,
+        SessionType::Mix,
     );
 
     assert_eq!(builder.participant_count(), 0);
@@ -246,15 +245,17 @@ fn test_711_add_input_sufficient_amount_succeeds() {
         "session-711".to_string(),
         WraithDenomination::Small,
         Network::Signet,
+        4,
+        SessionType::Mix,
     );
 
-    let result = builder.add_input(make_input(WraithDenomination::Small.input_sats(), 0));
+    let result = builder.add_input(make_input(WraithDenomination::Small.min_input_sats(), 0));
     assert!(result.is_ok());
     assert_eq!(builder.participant_count(), 1);
 
     // Amount above minimum also accepted
     let result = builder.add_input(make_input(
-        WraithDenomination::Small.input_sats() + 50_000,
+        WraithDenomination::Small.min_input_sats() + 50_000,
         1,
     ));
     assert!(result.is_ok());
@@ -267,68 +268,76 @@ fn test_712_input_below_denomination_rejected() {
         "session-712".to_string(),
         WraithDenomination::Small,
         Network::Signet,
+        4,
+        SessionType::Mix,
     );
 
     // One sat below the required input amount
-    let result = builder.add_input(make_input(WraithDenomination::Small.input_sats() - 1, 0));
+    let result = builder.add_input(make_input(WraithDenomination::Small.min_input_sats() - 1, 0));
     assert!(result.is_err());
     assert_eq!(builder.participant_count(), 0);
 }
 
 #[test]
 fn test_713_split_tx_output_count() {
-    // Split: N participants -> 10*N intermediate outputs + 1 OP_RETURN marker
+    // Split: N participants -> OPP*N intermediate outputs + 1 OP_RETURN marker
+    const OPP: usize = 4; // Small denomination OPP
     let n = 3;
     let mut builder = WraithTransactionBuilder::new(
         "session-713".to_string(),
         WraithDenomination::Small,
         Network::Signet,
+        OPP,
+        SessionType::Mix,
     );
 
     for p in 0..n {
         // Provide enough to cover intermediates + fee headroom
         builder
             .add_input(make_input(
-                WraithDenomination::Small.input_sats() + 100_000,
+                WraithDenomination::Small.min_input_sats() + 100_000,
                 p as u32,
             ))
             .unwrap();
     }
 
     let addresses: Vec<Vec<String>> = (0..n)
-        .map(|p| address_set_for_participant(p as u8))
+        .map(|p| address_set_for_participant(p as u8, OPP))
         .collect();
 
     let split_tx = builder.build_split_transaction(&addresses).unwrap();
-    let expected_outputs = n * SPLIT_RATIO + 1; // +1 for OP_RETURN
+    let expected_outputs = n * OPP + 1; // +1 for OP_RETURN
     assert_eq!(
         split_tx.transaction.output.len(),
         expected_outputs,
-        "Split tx should have 10*N + 1 outputs, got {}",
+        "Split tx should have OPP*N + 1 outputs, got {}",
         split_tx.transaction.output.len()
     );
 }
 
 #[test]
 fn test_714_split_tx_participant_count_matches() {
+    const OPP: usize = 2; // Micro denomination OPP
     let n = 2;
     let mut builder = WraithTransactionBuilder::new(
         "session-714".to_string(),
         WraithDenomination::Micro,
         Network::Signet,
+        OPP,
+        SessionType::Mix,
     );
 
     for p in 0..n {
         builder
             .add_input(make_input(
-                WraithDenomination::Micro.input_sats() + 10_000,
+                WraithDenomination::Micro.min_input_sats() + 10_000,
                 p as u32,
             ))
             .unwrap();
     }
 
     let addresses: Vec<Vec<String>> = (0..n)
-        .map(|p| address_set_for_participant(p as u8 + 100))
+        .map(|p| address_set_for_participant(p as u8 + 100, OPP))
         .collect();
 
     let split_tx = builder.build_split_transaction(&addresses).unwrap();
@@ -337,28 +346,31 @@ fn test_714_split_tx_participant_count_matches() {
 
 #[test]
 fn test_715_split_tx_intermediate_count() {
+    const OPP: usize = 2; // Micro denomination OPP
     let n = 4;
     let mut builder = WraithTransactionBuilder::new(
         "session-715".to_string(),
         WraithDenomination::Micro,
         Network::Signet,
+        OPP,
+        SessionType::Mix,
     );
 
     for p in 0..n {
         builder
             .add_input(make_input(
-                WraithDenomination::Micro.input_sats() + 10_000,
+                WraithDenomination::Micro.min_input_sats() + 10_000,
                 p as u32,
             ))
             .unwrap();
     }
 
     let addresses: Vec<Vec<String>> = (0..n)
-        .map(|p| address_set_for_participant(p as u8 + 50))
+        .map(|p| address_set_for_participant(p as u8 + 50, OPP))
         .collect();
 
     let split_tx = builder.build_split_transaction(&addresses).unwrap();
-    assert_eq!(split_tx.intermediate_count, n * SPLIT_RATIO);
+    assert_eq!(split_tx.intermediate_count, n * OPP);
 }
 
 #[test]
@@ -367,6 +379,8 @@ fn test_716_build_split_no_inputs_error() {
         "session-716".to_string(),
         WraithDenomination::Small,
         Network::Signet,
+        4,
+        SessionType::Mix,
     );
 
     let result = builder.build_split_transaction(&[]);
@@ -375,32 +389,35 @@ fn test_716_build_split_no_inputs_error() {
 
 #[test]
 fn test_717_split_wrong_address_set_count_error() {
+    const OPP: usize = 4; // Small denomination OPP
     let mut builder = WraithTransactionBuilder::new(
         "session-717".to_string(),
         WraithDenomination::Small,
         Network::Signet,
+        OPP,
+        SessionType::Mix,
     );
 
     // Add 2 participants
     for p in 0..2 {
         builder
             .add_input(make_input(
-                WraithDenomination::Small.input_sats() + 100_000,
+                WraithDenomination::Small.min_input_sats() + 100_000,
                 p,
             ))
             .unwrap();
     }
 
     // Provide only 1 address set (need 2)
-    let addresses = vec![address_set_for_participant(1)];
+    let addresses = vec![address_set_for_participant(1, OPP)];
     let result = builder.build_split_transaction(&addresses);
     assert!(result.is_err(), "Mismatched address set count should fail");
 
     // Provide 3 address sets (need 2)
     let addresses = vec![
-        address_set_for_participant(1),
-        address_set_for_participant(2),
-        address_set_for_participant(3),
+        address_set_for_participant(1, OPP),
+        address_set_for_participant(2, OPP),
+        address_set_for_participant(3, OPP),
     ];
     let result = builder.build_split_transaction(&addresses);
     assert!(result.is_err(), "Too many address sets should also fail");
@@ -409,11 +426,14 @@ fn test_717_split_wrong_address_set_count_error() {
 #[test]
 fn test_718_merge_tx_output_count() {
     // Merge: N participants -> N final outputs + 1 OP_RETURN
+    const OPP: usize = 2; // Micro denomination OPP
     let n = 3usize;
     let mut builder = WraithTransactionBuilder::new(
         "session-718".to_string(),
         WraithDenomination::Micro,
         Network::Signet,
+        OPP,
+        SessionType::Mix,
     );
 
     // We still need at least one input registered in the builder for session context,
@@ -421,21 +441,24 @@ fn test_718_merge_tx_output_count() {
     for p in 0..n {
         builder
             .add_input(make_input(
-                WraithDenomination::Micro.input_sats() + 10_000,
+                WraithDenomination::Micro.min_input_sats() + 10_000,
                 p as u32,
             ))
             .unwrap();
     }
 
-    let intermediate_amount = WraithDenomination::Micro.intermediate_sats();
+    // Intermediates carry a fee pad for Phase 2 mining cost (same as real split tx)
+    let base_intermediate = WraithDenomination::Micro.intermediate_sats(OPP);
+    let fee_pad = 1_000u64; // ~1000 sats/intermediate covers merge mining at 10 sat/vB
+    let intermediate_amount = base_intermediate + fee_pad;
 
-    // Build intermediate inputs: each participant has SPLIT_RATIO inputs
+    // Build intermediate inputs: each participant has OPP inputs
     let intermediate_inputs: Vec<Vec<WraithInput>> = (0..n)
         .map(|p| {
-            (0..SPLIT_RATIO)
+            (0..OPP)
                 .map(|i| WraithInput {
                     txid: test_txid(),
-                    vout: (p * SPLIT_RATIO + i) as u32,
+                    vout: (p * OPP + i) as u32,
                     amount: intermediate_amount,
                     script_pubkey: ScriptBuf::new(),
                     participant_id: p as u32,
@@ -461,30 +484,36 @@ fn test_718_merge_tx_output_count() {
 
 #[test]
 fn test_719_merge_tx_consumes_all_intermediate_inputs() {
+    const OPP: usize = 2; // Micro denomination OPP
     let n = 2usize;
     let mut builder = WraithTransactionBuilder::new(
         "session-719".to_string(),
         WraithDenomination::Micro,
         Network::Signet,
+        OPP,
+        SessionType::Mix,
     );
 
     for p in 0..n {
         builder
             .add_input(make_input(
-                WraithDenomination::Micro.input_sats() + 10_000,
+                WraithDenomination::Micro.min_input_sats() + 10_000,
                 p as u32,
             ))
             .unwrap();
     }
 
-    let intermediate_amount = WraithDenomination::Micro.intermediate_sats();
+    // Intermediates carry a fee pad for Phase 2 mining cost
+    let base_intermediate = WraithDenomination::Micro.intermediate_sats(OPP);
+    let fee_pad = 1_000u64;
+    let intermediate_amount = base_intermediate + fee_pad;
 
     let intermediate_inputs: Vec<Vec<WraithInput>> = (0..n)
         .map(|p| {
-            (0..SPLIT_RATIO)
+            (0..OPP)
                 .map(|i| WraithInput {
                     txid: test_txid(),
-                    vout: (p * SPLIT_RATIO + i) as u32,
+                    vout: (p * OPP + i) as u32,
                     amount: intermediate_amount,
                     script_pubkey: ScriptBuf::new(),
                     participant_id: p as u32,
@@ -501,12 +530,12 @@ fn test_719_merge_tx_consumes_all_intermediate_inputs() {
         .build_merge_transaction(&intermediate_inputs, &final_addresses)
         .unwrap();
 
-    // All 10*N intermediate inputs should appear as transaction inputs
-    let expected_input_count = n * SPLIT_RATIO;
+    // All OPP*N intermediate inputs should appear as transaction inputs
+    let expected_input_count = n * OPP;
     assert_eq!(
         merge_tx.transaction.input.len(),
         expected_input_count,
-        "Merge tx should consume all 10*N intermediate inputs"
+        "Merge tx should consume all OPP*N intermediate inputs"
     );
 }
 

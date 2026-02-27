@@ -44,19 +44,19 @@ fn test_430_session_initial_state() {
 
 #[test]
 fn test_431_minimum_participants_by_tier() {
-    // Tiers organized by balance range, optimized for 80KB tx size limit
-    assert_eq!(ParticipantTier::Micro.min_participants(), 400); // 0.001-0.01 BTC
-    assert_eq!(ParticipantTier::Small.min_participants(), 340); // 0.01-0.1 BTC
-    assert_eq!(ParticipantTier::Medium.min_participants(), 290); // 0.1-1 BTC
+    // Tiers organized by balance range, optimized for new fee model
+    assert_eq!(ParticipantTier::Micro.min_participants(), 500); // 0.001-0.01 BTC
+    assert_eq!(ParticipantTier::Small.min_participants(), 320); // 0.01-0.1 BTC
+    assert_eq!(ParticipantTier::Medium.min_participants(), 260); // 0.1-1 BTC
     assert_eq!(ParticipantTier::Standard.min_participants(), 250); // 1-10 BTC
-    assert_eq!(ParticipantTier::Large.min_participants(), 195); // 10-50 BTC
-    assert_eq!(ParticipantTier::Whale.min_participants(), 160); // 50+ BTC
+    assert_eq!(ParticipantTier::Large.min_participants(), 170); // 10-50 BTC
+    assert_eq!(ParticipantTier::Whale.min_participants(), 140); // 50+ BTC
 }
 
 #[test]
 fn test_432_denomination_outputs() {
     // Real WraithDenomination values (no XL variant)
-    assert_eq!(WraithDenomination::Micro.output_sats(), 10_000); // 0.0001 BTC
+    assert_eq!(WraithDenomination::Micro.output_sats(), 100_000); // 0.001 BTC
     assert_eq!(WraithDenomination::Small.output_sats(), 1_000_000); // 0.01 BTC
     assert_eq!(WraithDenomination::Medium.output_sats(), 10_000_000); // 0.1 BTC
     assert_eq!(WraithDenomination::Large.output_sats(), 100_000_000); // 1 BTC
@@ -74,13 +74,13 @@ fn test_433_add_participant_to_session() {
 #[test]
 fn test_434_session_can_start_when_min_reached() {
     let mut session = WraithSession::with_config(
-        ParticipantTier::Whale, // 160 minimum in Mature mode
+        ParticipantTier::Whale, // 140 minimum in Mature mode
         WraithDenomination::Small,
         SessionConfig::with_mode(WraithMode::Mature),
     );
 
     // Not enough participants
-    for _ in 0..159 {
+    for _ in 0..139 {
         session.add_participant();
     }
     assert!(!session.has_minimum_participants());
@@ -98,7 +98,7 @@ fn test_435_session_start_transitions_state() {
         SessionConfig::with_mode(WraithMode::Mature),
     );
 
-    for _ in 0..160 {
+    for _ in 0..140 {
         session.add_participant();
     }
 
@@ -124,7 +124,7 @@ fn test_437_phase_progression() {
     );
 
     // Fill session with minimum participants
-    for _ in 0..160 {
+    for _ in 0..140 {
         session.add_participant();
     }
     session.start_collecting().unwrap();

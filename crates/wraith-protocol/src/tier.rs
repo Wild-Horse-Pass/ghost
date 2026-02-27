@@ -35,8 +35,11 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Maximum transaction size budget in vbytes (safe margin under 100KB limit)
-pub const MAX_TX_VBYTES: usize = 80_000;
+/// Maximum transaction size budget in vbytes (10% margin under 100KB standard limit)
+///
+/// Phase 2 is the binding constraint: OPP×58 + 43 vbytes per user > Phase 1's 58 + OPP×43.
+/// 90K provides sufficient headroom for all tiers in both phases.
+pub const MAX_TX_VBYTES: usize = 90_000;
 
 /// Network maturity mode for participant minimums
 ///
@@ -82,21 +85,24 @@ pub const VBYTES_PER_OUTPUT: usize = 43;
 /// (larger anonymity set) with fewer outputs. Larger balances get more outputs
 /// for denomination mixing but fewer participants.
 ///
-/// All tiers are designed to fit within 80KB transaction size limit.
+/// All tiers are designed to fit within 90KB vbyte budget for both Phase 1 and Phase 2.
+/// Phase 2 is the binding constraint (OPP inputs per participant × 58 vB).
+///
+/// OPP values are chosen so all denominations {100K, 1M, 10M, 100M} divide evenly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum ParticipantTier {
-    /// 0.001-0.01 BTC: 400 participants, 3 outputs each
+    /// 0.001-0.01 BTC: 500 participants, 2 outputs each
     Micro,
-    /// 0.01-0.1 BTC: 340 participants, 4 outputs each
+    /// 0.01-0.1 BTC: 320 participants, 4 outputs each
     Small,
-    /// 0.1-1 BTC: 290 participants, 5 outputs each
+    /// 0.1-1 BTC: 260 participants, 5 outputs each
     #[default]
     Medium,
-    /// 1-10 BTC: 250 participants, 6 outputs each
+    /// 1-10 BTC: 250 participants, 5 outputs each
     Standard,
-    /// 10-50 BTC: 195 participants, 8 outputs each
+    /// 10-50 BTC: 170 participants, 8 outputs each
     Large,
-    /// 50+ BTC: 160 participants, 10 outputs each
+    /// 50+ BTC: 140 participants, 10 outputs each
     Whale,
 }
 
@@ -104,12 +110,12 @@ impl ParticipantTier {
     /// Get the minimum number of participants for this tier
     pub fn min_participants(&self) -> usize {
         match self {
-            ParticipantTier::Micro => 400,
-            ParticipantTier::Small => 340,
-            ParticipantTier::Medium => 290,
+            ParticipantTier::Micro => 500,
+            ParticipantTier::Small => 320,
+            ParticipantTier::Medium => 260,
             ParticipantTier::Standard => 250,
-            ParticipantTier::Large => 195,
-            ParticipantTier::Whale => 160,
+            ParticipantTier::Large => 170,
+            ParticipantTier::Whale => 140,
         }
     }
 
@@ -119,12 +125,14 @@ impl ParticipantTier {
     }
 
     /// Get the number of outputs per participant for this tier
+    ///
+    /// OPP values {2,4,5,5,8,10} all divide denominations {100K, 1M, 10M, 100M} evenly.
     pub fn outputs_per_participant(&self) -> usize {
         match self {
-            ParticipantTier::Micro => 3,
+            ParticipantTier::Micro => 2,
             ParticipantTier::Small => 4,
             ParticipantTier::Medium => 5,
-            ParticipantTier::Standard => 6,
+            ParticipantTier::Standard => 5,
             ParticipantTier::Large => 8,
             ParticipantTier::Whale => 10,
         }
@@ -169,12 +177,12 @@ impl ParticipantTier {
     /// Get the tier description
     pub fn description(&self) -> &'static str {
         match self {
-            ParticipantTier::Micro => "Micro balance (0.001-0.01 BTC): 400 participants, 3 outputs",
-            ParticipantTier::Small => "Small balance (0.01-0.1 BTC): 340 participants, 4 outputs",
-            ParticipantTier::Medium => "Medium balance (0.1-1 BTC): 290 participants, 5 outputs",
-            ParticipantTier::Standard => "Standard balance (1-10 BTC): 250 participants, 6 outputs",
-            ParticipantTier::Large => "Large balance (10-50 BTC): 195 participants, 8 outputs",
-            ParticipantTier::Whale => "Whale balance (50+ BTC): 160 participants, 10 outputs",
+            ParticipantTier::Micro => "Micro balance (0.001-0.01 BTC): 500 participants, 2 outputs",
+            ParticipantTier::Small => "Small balance (0.01-0.1 BTC): 320 participants, 4 outputs",
+            ParticipantTier::Medium => "Medium balance (0.1-1 BTC): 260 participants, 5 outputs",
+            ParticipantTier::Standard => "Standard balance (1-10 BTC): 250 participants, 5 outputs",
+            ParticipantTier::Large => "Large balance (10-50 BTC): 170 participants, 8 outputs",
+            ParticipantTier::Whale => "Whale balance (50+ BTC): 140 participants, 10 outputs",
         }
     }
 
@@ -193,11 +201,29 @@ impl ParticipantTier {
         }
     }
 
-    /// Calculate the estimated transaction size in vbytes
+    /// Estimate Phase 1 (split) transaction size in vbytes
+    ///
+    /// Phase 1: N inputs (1 per participant) → N×OPP outputs
+    /// Per user: 58 vB input + OPP×43 vB outputs
+    pub fn estimated_phase1_vbytes(&self) -> usize {
+        let n = self.min_participants();
+        let opp = self.outputs_per_participant();
+        (n * VBYTES_PER_INPUT) + (n * opp * VBYTES_PER_OUTPUT)
+    }
+
+    /// Estimate Phase 2 (merge) transaction size in vbytes
+    ///
+    /// Phase 2: N×OPP inputs → N outputs (1 per participant)
+    /// Per user: OPP×58 vB inputs + 43 vB output
+    pub fn estimated_phase2_vbytes(&self) -> usize {
+        let n = self.min_participants();
+        let opp = self.outputs_per_participant();
+        (n * opp * VBYTES_PER_INPUT) + (n * VBYTES_PER_OUTPUT)
+    }
+
+    /// Calculate the estimated transaction size in vbytes (max of Phase 1 and Phase 2)
     pub fn estimated_tx_vbytes(&self) -> usize {
-        let participants = self.min_participants();
-        let outputs = self.outputs_per_participant();
-        (participants * VBYTES_PER_INPUT) + (participants * outputs * VBYTES_PER_OUTPUT)
+        self.estimated_phase1_vbytes().max(self.estimated_phase2_vbytes())
     }
 
     /// Get all tiers
@@ -253,11 +279,13 @@ impl ParticipantTier {
         (count as f64 / self.min_participants_for_mode(mode) as f64 * 100.0).min(100.0)
     }
 
-    /// Estimate tx vbytes for a specific mode's participant count
+    /// Estimate tx vbytes for a specific mode's participant count (max of Phase 1 and Phase 2)
     pub fn estimated_tx_vbytes_for_mode(&self, mode: WraithMode) -> usize {
-        let participants = self.min_participants_for_mode(mode);
-        let outputs = self.outputs_per_participant();
-        (participants * VBYTES_PER_INPUT) + (participants * outputs * VBYTES_PER_OUTPUT)
+        let n = self.min_participants_for_mode(mode);
+        let opp = self.outputs_per_participant();
+        let phase1 = (n * VBYTES_PER_INPUT) + (n * opp * VBYTES_PER_OUTPUT);
+        let phase2 = (n * opp * VBYTES_PER_INPUT) + (n * VBYTES_PER_OUTPUT);
+        phase1.max(phase2)
     }
 
     /// Validate that this tier's transaction fits within size limits
@@ -278,40 +306,56 @@ mod tests {
 
     #[test]
     fn test_min_participants() {
-        assert_eq!(ParticipantTier::Micro.min_participants(), 400);
-        assert_eq!(ParticipantTier::Small.min_participants(), 340);
-        assert_eq!(ParticipantTier::Medium.min_participants(), 290);
+        assert_eq!(ParticipantTier::Micro.min_participants(), 500);
+        assert_eq!(ParticipantTier::Small.min_participants(), 320);
+        assert_eq!(ParticipantTier::Medium.min_participants(), 260);
         assert_eq!(ParticipantTier::Standard.min_participants(), 250);
-        assert_eq!(ParticipantTier::Large.min_participants(), 195);
-        assert_eq!(ParticipantTier::Whale.min_participants(), 160);
+        assert_eq!(ParticipantTier::Large.min_participants(), 170);
+        assert_eq!(ParticipantTier::Whale.min_participants(), 140);
     }
 
     #[test]
     fn test_outputs_per_participant() {
-        assert_eq!(ParticipantTier::Micro.outputs_per_participant(), 3);
+        assert_eq!(ParticipantTier::Micro.outputs_per_participant(), 2);
         assert_eq!(ParticipantTier::Small.outputs_per_participant(), 4);
         assert_eq!(ParticipantTier::Medium.outputs_per_participant(), 5);
-        assert_eq!(ParticipantTier::Standard.outputs_per_participant(), 6);
+        assert_eq!(ParticipantTier::Standard.outputs_per_participant(), 5);
         assert_eq!(ParticipantTier::Large.outputs_per_participant(), 8);
         assert_eq!(ParticipantTier::Whale.outputs_per_participant(), 10);
     }
 
     #[test]
-    fn test_all_tiers_fit_in_80kb() {
+    fn test_all_tiers_fit_in_90kb() {
         for tier in ParticipantTier::all() {
             let vbytes = tier.estimated_tx_vbytes();
             assert!(
                 vbytes <= MAX_TX_VBYTES,
-                "Tier {:?} exceeds 80KB: {} vbytes",
+                "Tier {:?} exceeds 90KB: {} vbytes (Phase1={}, Phase2={})",
                 tier,
-                vbytes
+                vbytes,
+                tier.estimated_phase1_vbytes(),
+                tier.estimated_phase2_vbytes(),
+            );
+        }
+    }
+
+    #[test]
+    fn test_phase2_is_binding_constraint() {
+        // Phase 2 should be larger than Phase 1 for all tiers (it has more inputs)
+        for tier in ParticipantTier::all() {
+            assert!(
+                tier.estimated_phase2_vbytes() >= tier.estimated_phase1_vbytes(),
+                "Tier {:?}: Phase 2 ({}) should be >= Phase 1 ({})",
+                tier,
+                tier.estimated_phase2_vbytes(),
+                tier.estimated_phase1_vbytes(),
             );
         }
     }
 
     #[test]
     fn test_tier_tx_sizes() {
-        // Verify all tiers fit within 80KB budget (MAX_TX_VBYTES)
+        // Verify all tiers fit within 90KB budget (MAX_TX_VBYTES)
         for tier in ParticipantTier::all() {
             let size = tier.estimated_tx_vbytes();
             assert!(
@@ -323,19 +367,23 @@ mod tests {
             );
         }
 
-        // Verify specific sizes match design calculations:
-        // Micro: 400 * 58 + 400 * 3 * 43 = 74,800
-        // Small: 340 * 58 + 340 * 4 * 43 = 78,200
-        // Medium: 290 * 58 + 290 * 5 * 43 = 79,170
-        // Standard: 250 * 58 + 250 * 6 * 43 = 79,000
-        // Large: 195 * 58 + 195 * 8 * 43 = 78,390
-        // Whale: 160 * 58 + 160 * 10 * 43 = 78,080
-        assert_eq!(ParticipantTier::Micro.estimated_tx_vbytes(), 74_800);
-        assert_eq!(ParticipantTier::Small.estimated_tx_vbytes(), 78_200);
-        assert_eq!(ParticipantTier::Medium.estimated_tx_vbytes(), 79_170);
-        assert_eq!(ParticipantTier::Standard.estimated_tx_vbytes(), 79_000);
-        assert_eq!(ParticipantTier::Large.estimated_tx_vbytes(), 78_390);
-        assert_eq!(ParticipantTier::Whale.estimated_tx_vbytes(), 78_080);
+        // Phase 2 vbytes (binding constraint): N×OPP×58 + N×43
+        // Micro: 500×2×58 + 500×43 = 79,500
+        // Small: 320×4×58 + 320×43 = 88,000
+        // Medium: 260×5×58 + 260×43 = 86,580
+        // Standard: 250×5×58 + 250×43 = 83,250
+        // Large: 170×8×58 + 170×43 = 86,190
+        // Whale: 140×10×58 + 140×43 = 87,220
+        assert_eq!(ParticipantTier::Micro.estimated_phase2_vbytes(), 79_500);
+        assert_eq!(ParticipantTier::Small.estimated_phase2_vbytes(), 88_000);
+        assert_eq!(ParticipantTier::Medium.estimated_phase2_vbytes(), 86_580);
+        assert_eq!(ParticipantTier::Standard.estimated_phase2_vbytes(), 83_250);
+        assert_eq!(ParticipantTier::Large.estimated_phase2_vbytes(), 86_190);
+        assert_eq!(ParticipantTier::Whale.estimated_phase2_vbytes(), 87_220);
+
+        // Phase 1 vbytes: N×58 + N×OPP×43
+        assert_eq!(ParticipantTier::Micro.estimated_phase1_vbytes(), 72_000);
+        assert_eq!(ParticipantTier::Small.estimated_phase1_vbytes(), 73_600);
     }
 
     #[test]
@@ -403,11 +451,11 @@ mod tests {
 
     #[test]
     fn test_minimum_anonymity_set() {
-        // All tiers must have at least 160 participants (Whale minimum)
+        // All tiers must have at least 140 participants (Whale minimum)
         for tier in ParticipantTier::all() {
             assert!(
-                tier.min_participants() >= 160,
-                "Tier {:?} has fewer than 160 participants",
+                tier.min_participants() >= 140,
+                "Tier {:?} has fewer than 140 participants",
                 tier
             );
         }
@@ -415,25 +463,25 @@ mod tests {
 
     #[test]
     fn test_meets_minimum() {
-        assert!(ParticipantTier::Micro.meets_minimum(400));
-        assert!(!ParticipantTier::Micro.meets_minimum(399));
-        assert!(ParticipantTier::Whale.meets_minimum(160));
-        assert!(!ParticipantTier::Whale.meets_minimum(159));
+        assert!(ParticipantTier::Micro.meets_minimum(500));
+        assert!(!ParticipantTier::Micro.meets_minimum(499));
+        assert!(ParticipantTier::Whale.meets_minimum(140));
+        assert!(!ParticipantTier::Whale.meets_minimum(139));
     }
 
     #[test]
     fn test_fill_percentage() {
-        assert!((ParticipantTier::Micro.fill_percentage(200) - 50.0).abs() < 0.1);
-        assert!((ParticipantTier::Micro.fill_percentage(400) - 100.0).abs() < 0.1);
-        // Capped at 100%
+        assert!((ParticipantTier::Micro.fill_percentage(250) - 50.0).abs() < 0.1);
         assert!((ParticipantTier::Micro.fill_percentage(500) - 100.0).abs() < 0.1);
+        // Capped at 100%
+        assert!((ParticipantTier::Micro.fill_percentage(600) - 100.0).abs() < 0.1);
     }
 
     #[test]
     fn test_max_participants() {
         // 10% over minimum
-        assert_eq!(ParticipantTier::Micro.max_participants(), 440);
-        assert_eq!(ParticipantTier::Whale.max_participants(), 176);
+        assert_eq!(ParticipantTier::Micro.max_participants(), 550);
+        assert_eq!(ParticipantTier::Whale.max_participants(), 154);
     }
 
     #[test]
@@ -490,7 +538,7 @@ mod tests {
 
     #[test]
     fn test_bootstrap_tx_sizes_within_limit() {
-        // 10 participants × (58 input + outputs × 43) must fit in 80KB
+        // 10 participants must fit in 90KB for any tier
         for tier in ParticipantTier::all() {
             let vbytes = tier.estimated_tx_vbytes_for_mode(WraithMode::Bootstrap);
             assert!(
@@ -501,10 +549,10 @@ mod tests {
                 MAX_TX_VBYTES
             );
         }
-        // Verify specific: 10 × 58 + 10 × 10 × 43 = 580 + 4300 = 4,880 (Whale, worst case)
+        // Whale (OPP=10): Phase2 = 10×10×58 + 10×43 = 5800+430 = 6,230 (binding)
         assert_eq!(
             ParticipantTier::Whale.estimated_tx_vbytes_for_mode(WraithMode::Bootstrap),
-            4_880
+            6_230
         );
     }
 
@@ -518,9 +566,9 @@ mod tests {
         assert!(ParticipantTier::Whale.meets_minimum_for_mode(15, WraithMode::Growth));
         assert!(!ParticipantTier::Whale.meets_minimum_for_mode(14, WraithMode::Growth));
 
-        // Mature: Whale needs 160
-        assert!(ParticipantTier::Whale.meets_minimum_for_mode(160, WraithMode::Mature));
-        assert!(!ParticipantTier::Whale.meets_minimum_for_mode(159, WraithMode::Mature));
+        // Mature: Whale needs 140
+        assert!(ParticipantTier::Whale.meets_minimum_for_mode(140, WraithMode::Mature));
+        assert!(!ParticipantTier::Whale.meets_minimum_for_mode(139, WraithMode::Mature));
     }
 
     #[test]

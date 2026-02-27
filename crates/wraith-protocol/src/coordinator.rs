@@ -276,6 +276,30 @@ impl ReputationTracker {
         self.strikes.remove(&hashed);
     }
 
+    /// P-3: Record a failure using a pre-computed ghost_id hash
+    ///
+    /// Used by the coordinator which stores hashed ghost_ids instead of plaintext.
+    /// Converts the hash bytes to hex string for compatibility with the existing HashMap.
+    pub fn record_failure_by_hash(&mut self, ghost_id_hash: &[u8; 32]) {
+        let hashed = hex::encode(ghost_id_hash);
+        let strikes = self.strikes.entry(hashed.clone()).or_insert(0);
+        *strikes += 1;
+        if *strikes >= MAX_STRIKES {
+            self.banned.insert(hashed);
+        }
+    }
+
+    /// P-3: Record a success using a pre-computed ghost_id hash
+    ///
+    /// Used by the coordinator which stores hashed ghost_ids instead of plaintext.
+    /// Converts the hash bytes to hex string for compatibility with the existing HashMap.
+    pub fn record_success_by_hash(&mut self, ghost_id_hash: &[u8; 32]) {
+        let hashed = hex::encode(ghost_id_hash);
+        if let Some(strikes) = self.strikes.get_mut(&hashed) {
+            *strikes = strikes.saturating_sub(1);
+        }
+    }
+
     /// Get all banned participants
     pub fn get_banned(&self) -> Vec<String> {
         self.banned.iter().cloned().collect()
@@ -295,7 +319,7 @@ use crate::executor::{MergeTransaction, SplitTransaction, WraithInput, WraithTra
 use crate::phase::PhaseState;
 use crate::session::{SessionState, WraithSession};
 use crate::tier::ParticipantTier;
-use crate::SPLIT_RATIO;
+use crate::SessionType;
 
 /// Minimal audit record retained after purging sensitive session data
 ///
@@ -540,7 +564,7 @@ type BroadcastFn = Arc<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 /// corresponds to that batch, but cannot determine which participant owns it.
 #[derive(Debug, Clone)]
 pub struct AnonymousTokenBatch {
-    /// Tokens in this batch (SPLIT_RATIO tokens per batch)
+    /// Tokens in this batch (outputs_per_participant() tokens per batch)
     pub tokens: Vec<UnblindedToken>,
     /// Final output address for Phase 2 (submitted anonymously with tokens)
     pub final_address: String,
@@ -556,8 +580,9 @@ pub struct WraithCoordinator {
     participants: HashMap<String, Participant>, // session_participant_id -> Participant
     /// Mapping from ghost_id to session_participant_id (WR-M4)
     ghost_id_to_session_id: HashMap<String, String>,
-    /// Reverse mapping from session_participant_id to ghost_id (for reputation tracking)
-    session_id_to_ghost_id: HashMap<String, String>,
+    /// Reverse mapping from session_participant_id to ghost_id hash (for reputation tracking)
+    /// P-3: Stores SHA256 hash instead of plaintext ghost_id to prevent privacy leaks
+    session_id_to_ghost_id_hash: HashMap<String, [u8; 32]>,
     /// Participant order (for deterministic indexing) - stores session_participant_ids
     participant_order: Vec<String>,
     /// Network (mainnet, testnet, etc.)
@@ -572,7 +597,7 @@ pub struct WraithCoordinator {
     broadcast_fn: Option<BroadcastFn>,
     /// Anonymous token batches - tokens and final addresses verified but NOT linked to any participant
     /// CRITICAL PRIVACY: coordinator verifies validity without knowing submitter identity.
-    /// Each batch contains SPLIT_RATIO tokens and one final address.
+    /// Each batch contains outputs_per_participant() tokens and one final address.
     anonymous_token_batches: Vec<AnonymousTokenBatch>,
     /// Tokens that have been used (for replay prevention) - time-based LRU cache
     /// SECURITY: Prevents resubmission of the same token
@@ -588,6 +613,8 @@ pub struct WraithCoordinator {
     reputation: Option<Arc<parking_lot::RwLock<ReputationTracker>>>,
     /// WR4-L9: Optional audit log for recording mix operations
     audit_log: Option<Arc<dyn AuditLog>>,
+    /// Session type (Mix or Jump) - determines fee model
+    session_type: SessionType,
 }
 
 /// UTXO verification callback type
@@ -618,6 +645,7 @@ impl WraithCoordinator {
         tier: ParticipantTier,
         denomination: WraithDenomination,
         network: Network,
+        session_type: SessionType,
     ) -> Result<Self, WraithError> {
         let session = WraithSession::new(tier, denomination);
         let signer = CoordinatorSigner::new(session.session_id())?;
@@ -628,7 +656,7 @@ impl WraithCoordinator {
             signer,
             participants: HashMap::new(),
             ghost_id_to_session_id: HashMap::new(),
-            session_id_to_ghost_id: HashMap::new(),
+            session_id_to_ghost_id_hash: HashMap::new(),
             participant_order: Vec::new(),
             network,
             phase1_tx: None,
@@ -643,6 +671,7 @@ impl WraithCoordinator {
             require_utxo_for_registration: true,
             reputation: None,
             audit_log: None,
+            session_type,
         };
 
         // WR4-L9: Log session creation (if audit log is set later, this won't be recorded)
@@ -746,12 +775,33 @@ impl WraithCoordinator {
         }
     }
 
+    /// Get the outputs per participant for this session's tier
+    pub fn outputs_per_participant(&self) -> usize {
+        self.session.tier().outputs_per_participant()
+    }
+
     /// Get current Unix timestamp
     fn current_timestamp() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
+    }
+
+    /// P-3: Hash ghost_id for privacy-preserving storage in reverse mapping
+    ///
+    /// Uses SHA256 with domain separator to produce a one-way hash.
+    /// The coordinator only needs to look up the hash for reputation tracking,
+    /// never to recover the original ghost_id.
+    fn hash_ghost_id(ghost_id: &str) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(b"wraith/ghost-id-hash/v1");
+        hasher.update(ghost_id.as_bytes());
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        hash
     }
 
     /// Get session ID
@@ -861,19 +911,19 @@ impl WraithCoordinator {
         if let Some(ref reputation) = self.reputation {
             let rep = reputation.read();
             if rep.is_banned(&ghost_id) {
-                return Err(WraithError::InvalidInput(format!(
-                    "Participant {} is banned due to prior failures",
-                    ghost_id
-                )));
+                // P-5: Generic message prevents information leakage about ban status
+                return Err(WraithError::InvalidInput(
+                    "Registration rejected".into(),
+                ));
             }
         }
 
         // Check if already registered using ghost_id mapping
         if self.ghost_id_to_session_id.contains_key(&ghost_id) {
-            return Err(WraithError::InvalidInput(format!(
-                "Participant {} already registered",
-                ghost_id
-            )));
+            // P-5: Generic message prevents information leakage about registration status
+            return Err(WraithError::InvalidInput(
+                "Registration rejected".into(),
+            ));
         }
 
         // Derive session-specific participant ID (WR-M4)
@@ -891,8 +941,8 @@ impl WraithCoordinator {
             .insert(session_participant_id.clone(), participant);
         self.ghost_id_to_session_id
             .insert(ghost_id.clone(), session_participant_id.clone());
-        self.session_id_to_ghost_id
-            .insert(session_participant_id.clone(), ghost_id);
+        self.session_id_to_ghost_id_hash
+            .insert(session_participant_id.clone(), Self::hash_ghost_id(&ghost_id));
         self.participant_order.push(session_participant_id);
         self.session.add_participant();
 
@@ -926,8 +976,12 @@ impl WraithCoordinator {
             WraithError::MissingData("Internal error: participant mapping inconsistent".into())
         })?;
 
-        // Validate input amount
-        let expected = self.session.denomination().input_sats();
+        // Validate input amount: output + service_fee (session_type aware)
+        let service_fee = match self.session_type {
+            SessionType::Mix => self.session.denomination().service_fee(),
+            SessionType::Jump => 0,
+        };
+        let expected = self.session.denomination().output_sats() + service_fee;
         if input.amount < expected {
             return Err(WraithError::InvalidInput(format!(
                 "Input amount {} too small, need at least {}",
@@ -961,7 +1015,7 @@ impl WraithCoordinator {
     /// Request nonces for blind signing (Step 1 of interactive protocol)
     ///
     /// Participant calls this to get public nonces before creating blinded challenges.
-    /// Returns `SPLIT_RATIO` nonces, one for each intermediate output.
+    /// Returns `outputs_per_participant()` nonces, one for each intermediate output.
     ///
     /// SECURITY: Each nonce is bound to the requesting participant's session-specific ID
     /// to prevent nonce hijacking attacks.
@@ -974,8 +1028,9 @@ impl WraithCoordinator {
             .clone();
 
         // Create nonces for each intermediate output, BOUND to session-specific participant ID
-        let mut nonces = Vec::with_capacity(SPLIT_RATIO);
-        for _ in 0..SPLIT_RATIO {
+        let opp = self.outputs_per_participant();
+        let mut nonces = Vec::with_capacity(opp);
+        for _ in 0..opp {
             let nonce = self.signer.create_nonce_for_participant(&session_id)?;
             nonces.push(nonce);
         }
@@ -1000,10 +1055,10 @@ impl WraithCoordinator {
         ghost_id: &str,
         challenges: Vec<BlindedChallenge>,
     ) -> Result<Vec<BlindSignatureResponse>, WraithError> {
-        if challenges.len() != SPLIT_RATIO {
+        if challenges.len() != self.outputs_per_participant() {
             return Err(WraithError::InvalidInput(format!(
                 "Expected {} blinded challenges, got {}",
-                SPLIT_RATIO,
+                self.outputs_per_participant(),
                 challenges.len()
             )));
         }
@@ -1014,7 +1069,7 @@ impl WraithCoordinator {
             .clone();
 
         // Sign each blinded challenge WITH session-specific participant verification
-        let mut responses = Vec::with_capacity(SPLIT_RATIO);
+        let mut responses = Vec::with_capacity(self.outputs_per_participant());
         for challenge in &challenges {
             let response = self
                 .signer
@@ -1062,10 +1117,10 @@ impl WraithCoordinator {
         tokens: Vec<UnblindedToken>,
         final_address: String,
     ) -> Result<(), WraithError> {
-        if tokens.len() != SPLIT_RATIO {
+        if tokens.len() != self.outputs_per_participant() {
             return Err(WraithError::InvalidInput(format!(
                 "Expected {} tokens, got {}",
-                SPLIT_RATIO,
+                self.outputs_per_participant(),
                 tokens.len()
             )));
         }
@@ -1090,10 +1145,10 @@ impl WraithCoordinator {
         // SECURITY: Check for duplicate address BEFORE accepting
         // This prevents address reuse attacks across anonymous submissions
         if self.submitted_addresses.contains(&final_address) {
-            return Err(WraithError::InvalidInput(format!(
-                "Duplicate address rejected: {} (already submitted)",
-                final_address
-            )));
+            // P-9: Generic message prevents address leakage in error responses
+            return Err(WraithError::InvalidInput(
+                "Duplicate address rejected".into(),
+            ));
         }
 
         // CRIT-CRYPTO-2 FIX: Atomic check-and-reserve for all tokens to prevent race conditions
@@ -1238,7 +1293,7 @@ impl WraithCoordinator {
         // Need all participants to have inputs
         let all_have_inputs = self.participants.values().all(|p| p.input.is_some());
 
-        // Need one anonymous batch per participant (each batch has SPLIT_RATIO tokens + final address)
+        // Need one anonymous batch per participant (each batch has outputs_per_participant() tokens + final address)
         let have_enough_batches = self.anonymous_token_batches.len() >= self.participants.len();
 
         all_have_inputs && have_enough_batches
@@ -1270,8 +1325,8 @@ impl WraithCoordinator {
         }
 
         // WR4-L7: Check output count limit
-        // Phase 1 creates SPLIT_RATIO outputs per participant + 1 OP_RETURN
-        let expected_outputs = self.participants.len() * crate::SPLIT_RATIO + 1;
+        // Phase 1 creates outputs_per_participant() outputs per participant + 1 OP_RETURN
+        let expected_outputs = self.participants.len() * self.outputs_per_participant() + 1;
         if expected_outputs > MAX_TX_OUTPUTS {
             return Err(WraithError::TransactionError(format!(
                 "Transaction too large: {} outputs exceeds maximum {} outputs",
@@ -1287,6 +1342,8 @@ impl WraithCoordinator {
             self.session_id_hex(),
             *self.session.denomination(),
             self.network,
+            self.outputs_per_participant(),
+            self.session_type,
         );
 
         // Add inputs in order
@@ -1309,7 +1366,7 @@ impl WraithCoordinator {
 
         // Secure path: each batch has tokens + final address together
         for batch in &self.anonymous_token_batches {
-            let mut addrs = Vec::with_capacity(SPLIT_RATIO);
+            let mut addrs = Vec::with_capacity(self.outputs_per_participant());
             for token in &batch.tokens {
                 let address_bytes: [u8; 32] = token.message.clone().try_into().map_err(|_| {
                     WraithError::InvalidInput(format!(
@@ -1450,9 +1507,8 @@ impl WraithCoordinator {
             .as_ref()
             .ok_or_else(|| WraithError::PhaseError("Phase 1 transaction not built".to_string()))?;
 
-        let intermediate_amount = self.session.denomination().intermediate_sats();
-
         // Get script pubkeys from the Phase 1 transaction outputs
+        // Use actual output values (includes Phase 2 fee padding from executor)
         // Skip the last output (OP_RETURN marker)
         for (vout, output) in phase1_tx.transaction.output.iter().enumerate() {
             // Skip OP_RETURN output (zero value)
@@ -1466,7 +1522,7 @@ impl WraithCoordinator {
             self.phase1_outputs.push((
                 txid,
                 vout_u32,
-                intermediate_amount,
+                output.value.to_sat(),
                 output.script_pubkey.clone(),
             ));
         }
@@ -1544,15 +1600,17 @@ impl WraithCoordinator {
             self.session_id_hex(),
             *self.session.denomination(),
             self.network,
+            self.outputs_per_participant(),
+            self.session_type,
         );
 
-        // Build intermediate inputs (10 per participant)
+        // Build intermediate inputs (OPP per participant)
         let mut intermediate_inputs: Vec<Vec<WraithInput>> = Vec::new();
         let mut output_idx = 0;
 
         for (p_idx, _session_id) in self.participant_order.iter().enumerate() {
             let mut participant_inputs = Vec::new();
-            for _ in 0..SPLIT_RATIO {
+            for _ in 0..self.outputs_per_participant() {
                 let (txid, vout, amount, ref script_pubkey) = self.phase1_outputs[output_idx];
                 participant_inputs.push(WraithInput {
                     txid,
@@ -1683,12 +1741,12 @@ impl WraithCoordinator {
         self.session.confirm_phase2(block_height)?;
 
         // Record success for all participants in reputation tracker (WR-M3)
-        // Use reverse mapping to get original ghost_ids
+        // P-3: Use hashed ghost_id from reverse mapping instead of plaintext
         if let Some(ref reputation) = self.reputation {
             let mut rep = reputation.write();
             for session_id in &self.participant_order {
-                if let Some(ghost_id) = self.session_id_to_ghost_id.get(session_id) {
-                    rep.record_success(ghost_id);
+                if let Some(ghost_id_hash) = self.session_id_to_ghost_id_hash.get(session_id) {
+                    rep.record_success_by_hash(ghost_id_hash);
                 }
             }
         }
@@ -1814,12 +1872,12 @@ impl WraithCoordinator {
                     .collect();
 
                 // Record failures in reputation tracker (WR-M3)
-                // Use reverse mapping to get original ghost_ids
+                // P-3: Use hashed ghost_id from reverse mapping instead of plaintext
                 if let Some(ref reputation) = self.reputation {
                     let mut rep = reputation.write();
                     for session_id in &missing_session_ids {
-                        if let Some(ghost_id) = self.session_id_to_ghost_id.get(session_id) {
-                            rep.record_failure(ghost_id);
+                        if let Some(ghost_id_hash) = self.session_id_to_ghost_id_hash.get(session_id) {
+                            rep.record_failure_by_hash(ghost_id_hash);
                         }
                     }
                 }
@@ -1844,12 +1902,12 @@ impl WraithCoordinator {
                     .collect();
 
                 // Record failures in reputation tracker (WR-M3)
-                // Use reverse mapping to get original ghost_ids
+                // P-3: Use hashed ghost_id from reverse mapping instead of plaintext
                 if let Some(ref reputation) = self.reputation {
                     let mut rep = reputation.write();
                     for session_id in &missing_session_ids {
-                        if let Some(ghost_id) = self.session_id_to_ghost_id.get(session_id) {
-                            rep.record_failure(ghost_id);
+                        if let Some(ghost_id_hash) = self.session_id_to_ghost_id_hash.get(session_id) {
+                            rep.record_failure_by_hash(ghost_id_hash);
                         }
                     }
                 }
@@ -1917,7 +1975,7 @@ impl WraithCoordinator {
 
         // Clear ghost_id mappings
         self.ghost_id_to_session_id.clear();
-        self.session_id_to_ghost_id.clear();
+        self.session_id_to_ghost_id_hash.clear();
 
         tracing::debug!(
             session_id = %self.session_id_hex(),
@@ -2036,7 +2094,7 @@ impl WraithCoordinator {
 
         // Clear ghost_id mappings (severs all cross-session tracking ability)
         self.ghost_id_to_session_id.clear();
-        self.session_id_to_ghost_id.clear();
+        self.session_id_to_ghost_id_hash.clear();
 
         // Clear used tokens (privacy: prevents cross-session token correlation)
         self.used_tokens.clear();
@@ -2076,7 +2134,7 @@ mod tests {
         denomination: WraithDenomination,
         network: Network,
     ) -> WraithCoordinator {
-        WraithCoordinator::new(tier, denomination, network)
+        WraithCoordinator::new(tier, denomination, network, SessionType::Mix)
             .expect("test RNG should work")
             .without_utxo_required_for_registration()
     }
@@ -2150,7 +2208,7 @@ mod tests {
 
         // Participant 1 requests nonces through the coordinator
         let nonces1 = coord.request_nonces("ghost1").unwrap();
-        assert_eq!(nonces1.len(), crate::SPLIT_RATIO);
+        assert_eq!(nonces1.len(), coord.outputs_per_participant());
 
         // Participant 1 creates blinded challenges
         let mut challenges1 = Vec::new();
@@ -2212,7 +2270,7 @@ mod tests {
         assert_eq!(coord.anonymous_batch_count(), 2);
 
         // Verify total token count across batches
-        assert_eq!(coord.anonymous_token_count(), 2 * crate::SPLIT_RATIO);
+        assert_eq!(coord.anonymous_token_count(), 2 * coord.outputs_per_participant());
 
         // The coordinator cannot determine which tokens/addresses belong to which participant
         // This is verified by the fact that submit_tokens_with_address_anonymous takes no ghost_id
@@ -2363,7 +2421,7 @@ mod tests {
             .submit_tokens_with_address_anonymous(tokens, final_address)
             .unwrap();
         assert_eq!(coord.anonymous_batch_count(), 1);
-        assert_eq!(coord.anonymous_token_count(), crate::SPLIT_RATIO);
+        assert_eq!(coord.anonymous_token_count(), coord.outputs_per_participant());
 
         // After clear, anonymous_token_batches are NOT cleared as they're needed for Phase 2
         coord.clear_sensitive_data_post_build();
@@ -2447,6 +2505,7 @@ mod tests {
             ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
+            SessionType::Mix,
         )
         .expect("test RNG should work")
         .with_reputation(reputation)
@@ -2456,9 +2515,10 @@ mod tests {
         let result = coord.register_participant("banned_ghost".to_string());
         assert!(result.is_err(), "Banned ghost should be rejected");
         let err_str = result.unwrap_err().to_string();
+        // P-5: Error message is now generic to prevent information leakage
         assert!(
-            err_str.contains("banned") || err_str.contains("Participant is banned"),
-            "Error should mention banned: {}",
+            err_str.contains("Registration rejected"),
+            "Error should say registration rejected: {}",
             err_str
         );
 
@@ -2480,6 +2540,7 @@ mod tests {
             ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
+            SessionType::Mix,
         )
         .expect("test RNG should work")
         .with_utxo_verifier(move |_txid, _vout| {
@@ -2522,6 +2583,7 @@ mod tests {
             ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
+            SessionType::Mix,
         )
         .expect("test RNG should work")
         .with_utxo_verifier(|_txid, _vout| {
@@ -2622,6 +2684,7 @@ mod tests {
             ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
+            SessionType::Mix,
         )
         .expect("test RNG should work")
         .with_utxo_verifier(|_txid, _vout| Ok(true)) // UTXO exists
@@ -2648,6 +2711,7 @@ mod tests {
             ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
+            SessionType::Mix,
         )
         .expect("test RNG should work")
         .with_utxo_verifier(move |_txid, _vout| {
@@ -2677,6 +2741,7 @@ mod tests {
             ParticipantTier::Micro,
             WraithDenomination::Small,
             Network::Regtest,
+            SessionType::Mix,
         )
         .expect("test RNG should work")
         .with_utxo_verifier(|_txid, _vout| Ok(false)) // UTXO does NOT exist
