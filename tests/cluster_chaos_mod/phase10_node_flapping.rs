@@ -252,14 +252,24 @@ async fn flap_05_mesh_reconverges() {
             ip
         );
 
-        let peers = client.get_peer_count(ip).await.unwrap_or(0);
-        assert!(
-            peers >= 3,
-            "{} has {} peers (expected >=3)",
-            ip,
-            peers
-        );
-        println!("  {} healthy, {} peers", ip, peers);
+        // Wait for peer discovery (may lag behind health check)
+        let deadline = tokio::time::Instant::now() + config.recovery_timeout;
+        loop {
+            if let Ok(peers) = client.get_peer_count(ip).await {
+                if peers >= 3 {
+                    println!("  {} healthy, {} peers", ip, peers);
+                    break;
+                }
+            }
+            if tokio::time::Instant::now() > deadline {
+                let peers = client.get_peer_count(ip).await.unwrap_or(0);
+                panic!(
+                    "{} has {} peers after {:?} (expected >=3)",
+                    ip, peers, config.recovery_timeout
+                );
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
     }
     println!("  Full 4-node mesh reconverged");
 }
