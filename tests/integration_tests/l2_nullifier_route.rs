@@ -16,6 +16,7 @@ use ghost_consensus::message::{
 };
 use ghost_consensus::nullifier_route_handler::NullifierRouteHandler;
 use ghost_storage::Database;
+use ghost_zkp::NoteVerifier;
 
 // =============================================================================
 // HELPERS
@@ -41,6 +42,9 @@ fn setup_node(node_id: [u8; 32]) -> (Arc<Database>, Arc<EpochManager>, Arc<Nulli
         epoch_mgr.clone(),
         db.clone(),
     ));
+
+    // S-1: Verifier must be set for handle_transfer_broadcast (fail-closed)
+    handler.set_verifier(Arc::new(NoteVerifier::test_accept_all()));
 
     (db, epoch_mgr, handler)
 }
@@ -663,10 +667,28 @@ fn test_887_epoch_transition_preserves_notes() {
 #[test]
 fn test_888_handler_without_verifier() {
     let node_a = [0x01; 32];
-    let nodes = setup_multi_node(&[node_a]);
 
-    let root = nodes[0].1.current_root().unwrap();
-    nodes[0].1.add_valid_root(root, 0).unwrap();
+    // Build handler WITHOUT verifier to test fail-closed behavior
+    let db = Arc::new(Database::in_memory().expect("in-memory DB"));
+    let config = EpochManagerConfig {
+        epoch_length: 100,
+        transition_window: 10,
+        tree_depth: TEST_TREE_DEPTH,
+        max_valid_roots: 16,
+    };
+    let epoch_mgr = Arc::new(EpochManager::new(db.clone(), config));
+    epoch_mgr.initialize_genesis().unwrap();
+    epoch_mgr.update_active_nodes(vec![node_a]);
+
+    let handler = Arc::new(NullifierRouteHandler::with_defaults(
+        node_a,
+        epoch_mgr.clone(),
+        db.clone(),
+    ));
+    // Deliberately NOT calling handler.set_verifier()
+
+    let root = epoch_mgr.current_root().unwrap();
+    epoch_mgr.add_valid_root(root, 0).unwrap();
 
     let msg = L2ConfidentialTransferMessage {
         transaction: make_test_tx([0x42; 32], root),
@@ -674,12 +696,12 @@ fn test_888_handler_without_verifier() {
     };
 
     // Without verifier set, should reject transfers
-    let result = nodes[0].2.handle_transfer(&msg);
+    let result = handler.handle_transfer(&msg);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No verifier"));
 
     // But checkpoint proposals should still work (no proof involved)
-    let proposal = nodes[0].2.propose_checkpoint().unwrap();
+    let proposal = handler.propose_checkpoint().unwrap();
     assert!(proposal.is_some());
 }
 
