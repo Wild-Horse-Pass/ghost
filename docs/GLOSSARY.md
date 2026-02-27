@@ -414,7 +414,7 @@ The zero-knowledge proof system used by Ghost Pay. SNARK (Succinct Non-Interacti
 - Source: `crates/ghost-zkp/src/`
 
 ### NoteSpendCircuit
-A Groth16 ZK circuit that proves a sender is authorized to spend a note in the L2 commitment tree. ~12,675 constraints at depth-40 merkle tree. Uses MiMC (82 rounds) for hashing. Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`. Senders generate proofs locally (~3-4 seconds); validators verify in ~5ms. Replaced the earlier BlockCircuit design (February 2026 L2 redesign).
+A Groth16 ZK circuit that proves a sender is authorized to spend a note in the L2 commitment tree. ~12,675 constraints at depth-40 merkle tree. Uses MiMC (82 rounds) for hashing. Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`. Senders generate proofs locally (~170ms); validators verify in ~5ms. Replaced the earlier BlockCircuit design (February 2026 L2 redesign).
 - Source: `crates/ghost-zkp/src/circuit/note_spend.rs`
 
 ### NullifierRouteHandler
@@ -435,7 +435,7 @@ A hash function used in Ghost's ZK circuits. Uses 82 rounds of Feistel-mode hash
 - Constant: `MIMC_ROUNDS = 82`
 
 ### Sender-Side Proofs
-The L2 proof architecture where senders (not validators) generate Groth16 proofs for their transactions. Senders prove they own a note and that the spend is valid (~3-4s proof generation). Validators only verify the proof (~5ms). This shifts computational burden to senders and enables parallel transaction processing. Replaced the earlier validator-side block proof model (February 2026 L2 redesign).
+The L2 proof architecture where senders (not validators) generate Groth16 proofs for their transactions. Senders prove they own a note and that the spend is valid (~170ms proof generation). Validators only verify the proof (~5ms). This shifts computational burden to senders and enables parallel transaction processing. Replaced the earlier validator-side block proof model (February 2026 L2 redesign).
 
 ### PayoutCircuit
 A Groth16 ZK circuit that proves payout distribution validity: sum preservation (miners + nodes + treasury = total), 64-bit amount bounds, and metadata commitment.

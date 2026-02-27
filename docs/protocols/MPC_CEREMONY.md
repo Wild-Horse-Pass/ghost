@@ -343,7 +343,7 @@ pub struct NoteSpendCircuit<F: PrimeField> {
 Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`
 ~12,675 constraints at depth-40. Uses MiMC (82 rounds) for hashing.
 Proof size: 192 bytes (A: 48 G1, B: 96 G2, C: 48 G1)
-Proving time: ~3-4 seconds (sender-side). Verification: ~5ms.
+Proving time: ~170ms (sender-side). Verification: ~5ms.
 
 ### 9.2 PayoutCircuit
 

@@ -197,7 +197,7 @@ Commitment Tree (depth-40, ~1 trillion capacity):
 ```
 
 **Spending a note:**
-1. Sender generates NoteSpendCircuit proof locally (~3-4s)
+1. Sender generates NoteSpendCircuit proof locally (~170ms)
 2. Proof reveals: nullifier (prevents double-spend), change commitment, recipient commitment
 3. NullifierRouteHandler verifies proof (~5ms) and routes by nullifier prefix
 4. BFT checkpoint confirms transaction (every 10 seconds, all-node, 67% threshold)
@@ -230,7 +230,7 @@ Recipients use Ghost Keys for unlinkable addresses:
 ### ZK Proofs (Sender-Side)
 
 Transfers use sender-side Groth16 proofs (NoteSpendCircuit):
-- Senders prove note ownership and balance sufficiency locally (~3-4s)
+- Senders prove note ownership and balance sufficiency locally (~170ms)
 - Validators verify proof only (~5ms), never see amounts or balances
 - ~12,675 constraints at depth-40 Merkle tree, MiMC 82 rounds
 - Nullifiers prevent double-spending and enable deterministic routing

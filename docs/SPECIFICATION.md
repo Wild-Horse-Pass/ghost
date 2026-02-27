@@ -2287,7 +2287,7 @@ Proof structure: A (48 bytes, G1) + B (96 bytes, G2) + C (48 bytes, G1).
 
 ### 21.2 Circuit Design
 
-**NoteSpendCircuit**: Sender-side proof for spending a note in the L2 commitment tree. Uses MiMC (82 rounds) for hashing, depth-40 Merkle inclusion proofs. Senders generate proofs locally (~3-4s); validators verify in ~5ms. Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`. Replaced the earlier BlockCircuit (February 2026 L2 redesign).
+**NoteSpendCircuit**: Sender-side proof for spending a note in the L2 commitment tree. Uses MiMC (82 rounds) for hashing, depth-40 Merkle inclusion proofs. Senders generate proofs locally (~170ms); validators verify in ~5ms. Public inputs: `commitment_root`, `nullifier`, `change_commitment`, `recipient_commitment`. Replaced the earlier BlockCircuit (February 2026 L2 redesign).
 
 **PayoutCircuit**: Proves payout distribution preserves sum (miners + nodes + treasury = total) with 64-bit amount bounds.
 

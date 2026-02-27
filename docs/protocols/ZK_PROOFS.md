@@ -55,7 +55,7 @@ Ghost Pay uses **Groth16** SNARKs (Succinct Non-interactive ARguments of Knowled
 |----------|-------|
 | Proof size | 192 bytes (constant) |
 | Verification time | ~5ms (NoteSpendCircuit) |
-| Proving time | ~3-4 seconds (NoteSpendCircuit, sender-side) |
+| Proving time | ~170ms (NoteSpendCircuit, sender-side) |
 | Hash function | MiMC (82 rounds, ≥128-bit security) |
 | Setup | Rolling MPC ceremony (up to 101 contributors) |
 
@@ -234,7 +234,7 @@ Anyone can verify the setup was performed correctly:
 
 | Circuit | Constraints | Proving Time | Params Size |
 |---------|-------------|--------------|-------------|
-| NoteSpendCircuit (depth=40) | ~12,675 | ~3-4 seconds | ~1.4 MB |
+| NoteSpendCircuit (depth=40) | ~12,675 | ~170ms | ~1.4 MB |
 | PayoutCircuit | ~2,500 | ~1 second | ~200 KB |
 
 ### Proof Verification (Validator-Side)
@@ -305,7 +305,7 @@ Only the recipient (with their scan key) can detect that a payment is theirs.
 ```
 1. Sender wants to transfer 0.1 BTC from their note
 
-2. Sender's wallet generates NoteSpendCircuit proof locally (~3-4s):
+2. Sender's wallet generates NoteSpendCircuit proof locally (~170ms):
    ├── Proves ownership of note via spending key → nullifier
    ├── Proves note is in commitment tree via Merkle path (depth 40)
    ├── Proves balance conservation: change = note_value - amount
@@ -382,7 +382,7 @@ Ghost Pay doesn't need this because:
 ### Block Finalization Flow
 
 ```
-1. Senders generate NoteSpendCircuit proofs locally (~3-4 sec each)
+1. Senders generate NoteSpendCircuit proofs locally (~170ms each)
 2. Submit transaction + proof to NullifierRouteHandler
 3. NullifierRouteHandler verifies proof (~5ms) and routes by nullifier prefix
 4. All-node BFT checkpoint every 10 seconds (67% threshold)
