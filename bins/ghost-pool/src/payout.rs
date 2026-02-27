@@ -713,6 +713,22 @@ impl PayoutProposalCreator {
             tx_fees_unallocated: 0, // Solo mode: TX fees always go to solo miner
         };
 
+        // S-2: M-04 cross-check — verify solo proposal sums to expected total
+        let total_miner: u64 = proposal.miner_payouts.iter().map(|p| p.amount).sum();
+        let total_node: u64 = proposal.node_payouts.iter().map(|p| p.amount).sum();
+        let proposal_total = total_miner
+            .saturating_add(total_node)
+            .saturating_add(proposal.treasury_amount);
+        let expected_total = data.subsidy_sats.saturating_add(data.tx_fees_sats);
+        if proposal_total != expected_total {
+            return Err(ghost_common::error::GhostError::PayoutCalculation(
+                format!(
+                    "M-04: Solo cross-check failed: proposal={} != expected={}",
+                    proposal_total, expected_total
+                ),
+            ));
+        }
+
         info!(
             round_id = data.round_id,
             height = data.block_height,
@@ -1154,7 +1170,6 @@ impl PayoutProposalCreator {
                 {
                     warn!(
                         miner_id,
-                        address = %address_str,
                         error = %e,
                         "MED-POOL-5: Miner has invalid payout address - treating as empty"
                     );

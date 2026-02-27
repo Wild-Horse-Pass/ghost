@@ -75,6 +75,25 @@ impl Default for NullifierRouteConfig {
 }
 
 // =============================================================================
+// VERIFIED VOTE NEWTYPE (S-6)
+// =============================================================================
+
+/// S-6: Newtype ensuring votes are only constructed after signature verification.
+/// Can only be created via `VerifiedVote::new()` in `handle_message()` after
+/// Ed25519 signature verification completes successfully.
+pub(crate) struct VerifiedVote {
+    voter: NodeId,
+    approve: bool,
+}
+
+impl VerifiedVote {
+    /// Create a verified vote. Only call after signature verification.
+    pub(crate) fn new(voter: NodeId, approve: bool) -> Self {
+        Self { voter, approve }
+    }
+}
+
+// =============================================================================
 // CHECKPOINT VOTE STATE
 // =============================================================================
 
@@ -101,8 +120,10 @@ impl CheckpointVoteState {
         }
     }
 
-    fn add_vote(&mut self, voter: NodeId, approve: bool) -> bool {
-        self.votes.insert(voter, approve).is_none() // true if new vote
+    /// Add a vote from a verified source. S-6: accepts VerifiedVote newtype
+    /// to ensure only signature-verified votes can be added.
+    fn add_vote(&mut self, vote: VerifiedVote) -> bool {
+        self.votes.insert(vote.voter, vote.approve).is_none() // true if new vote
     }
 
     fn approval_count(&self) -> usize {
@@ -441,8 +462,12 @@ impl NullifierRouteHandler {
                     return Ok(());
                 }
             }
+        } else {
+            // S-1: Fail-closed — reject broadcast if verifier is not loaded.
+            // This matches handle_transfer() at line 360 which correctly rejects.
+            warn!("Rejecting L2 broadcast — verifier not loaded");
+            return Ok(());
         }
-        // If no verifier is loaded yet, accept on trust (startup phase before MPC params load)
 
         // Record nullifier (if not already known)
         let height = self.epoch_manager.current_height();
@@ -670,7 +695,7 @@ impl NullifierRouteHandler {
                 return Ok(false);
             }
 
-            state.add_vote(msg.voter, msg.approve);
+            state.add_vote(VerifiedVote::new(msg.voter, msg.approve));
 
             if state.has_quorum(active_count, self.config.bft_threshold_percent) {
                 state.finalized = true;
@@ -764,6 +789,8 @@ impl NullifierRouteHandler {
         let cutoff = current_height.saturating_sub(100);
         let mut votes = self.votes.write();
         votes.retain(|h, _| *h > cutoff);
+        // S-5: Prune proposed_heights to prevent unbounded growth
+        self.proposed_heights.write().retain(|h| *h > cutoff);
     }
 
     // =========================================================================
@@ -1324,6 +1351,9 @@ mod tests {
     fn test_transfer_broadcast_dedup() {
         let (_db, epoch_mgr, handler) = setup();
 
+        // S-1: Verifier must be set or broadcasts are rejected
+        handler.set_verifier(test_verifier());
+
         let root = epoch_mgr.current_root().unwrap();
         epoch_mgr.add_valid_root(root, 0).unwrap();
 
@@ -1353,30 +1383,30 @@ mod tests {
     fn test_bft_threshold_calculation() {
         // div_ceil(3 * 67, 100) = div_ceil(201, 100) = 3 → all 3 must vote
         let mut state = CheckpointVoteState::new([0; 32]);
-        state.add_vote([1; 32], true);
-        state.add_vote([2; 32], true);
+        state.add_vote(VerifiedVote::new([1; 32], true));
+        state.add_vote(VerifiedVote::new([2; 32], true));
         assert!(!state.has_quorum(3, 67)); // 2/3 = 66.6% < 67%
 
-        state.add_vote([3; 32], true);
+        state.add_vote(VerifiedVote::new([3; 32], true));
         assert!(state.has_quorum(3, 67)); // 3/3 = 100% >= 67%
 
         // div_ceil(4 * 67, 100) = div_ceil(268, 100) = 3 → need 3 of 4
         let mut state2 = CheckpointVoteState::new([0; 32]);
-        state2.add_vote([1; 32], true);
-        state2.add_vote([2; 32], true);
+        state2.add_vote(VerifiedVote::new([1; 32], true));
+        state2.add_vote(VerifiedVote::new([2; 32], true));
         assert!(!state2.has_quorum(4, 67)); // 2/4 = 50% < 67%
 
-        state2.add_vote([3; 32], true);
+        state2.add_vote(VerifiedVote::new([3; 32], true));
         assert!(state2.has_quorum(4, 67)); // 3/4 = 75% >= 67%
 
         // div_ceil(10 * 67, 100) = div_ceil(670, 100) = 7 → need 7 of 10
         let mut state3 = CheckpointVoteState::new([0; 32]);
         for i in 0..6 {
-            state3.add_vote([i as u8; 32], true);
+            state3.add_vote(VerifiedVote::new([i as u8; 32], true));
         }
         assert!(!state3.has_quorum(10, 67)); // 6/10 = 60% < 67%
 
-        state3.add_vote([6; 32], true);
+        state3.add_vote(VerifiedVote::new([6; 32], true));
         assert!(state3.has_quorum(10, 67)); // 7/10 = 70% >= 67%
 
         // Edge: 0 active nodes
@@ -1441,10 +1471,9 @@ mod tests {
         assert!(result.is_some());
     }
 
-    /// Helper to create a verifier for tests (accepts proofs in #[cfg(test)] mode)
+    /// Helper to create a verifier for tests (accepts all proofs unconditionally)
     fn test_verifier() -> Arc<ghost_zkp::NoteVerifier> {
-        let prover = ghost_zkp::note_prover::NoteProver::new(4);
-        Arc::new(ghost_zkp::NoteVerifier::for_prover(&prover))
+        Arc::new(ghost_zkp::NoteVerifier::test_accept_all())
     }
 
     /// Test full checkpoint cycle: add txs → propose → vote → finalize
@@ -1882,5 +1911,120 @@ mod tests {
                 .contains(&proposal.height),
             "C-2: Height should be removed from proposed_heights after finalization"
         );
+    }
+
+    /// S-1: Broadcast without verifier is rejected (fail-closed)
+    #[test]
+    fn test_broadcast_rejected_without_verifier() {
+        let (_db, epoch_mgr, handler) = setup();
+
+        let root = epoch_mgr.current_root().unwrap();
+        epoch_mgr.add_valid_root(root, 0).unwrap();
+
+        // Verifier is NOT set — should reject
+        assert!(!handler.has_verifier());
+
+        let broadcast = L2TransferBroadcastMessage {
+            transaction: L2Transaction {
+                epoch: 0,
+                nullifier: [0x42; 32],
+                change_commitment: [0u8; 32],
+                recipient_commitment: [0u8; 32],
+                commitment_root: root,
+                proof: vec![0u8; 192],
+                encrypted_change: vec![],
+                encrypted_recipient: vec![],
+                timestamp: 0,
+            },
+            validator: [0x99; 32],
+            signature: [0u8; 64],
+        };
+
+        handler.handle_transfer_broadcast(&broadcast).unwrap();
+        // S-1: confirmed_pool should remain empty since verifier is not loaded
+        assert_eq!(
+            handler.confirmed_pool_size(),
+            0,
+            "S-1: Broadcast without verifier should be rejected"
+        );
+    }
+
+    /// S-1: Broadcast WITH verifier set is accepted
+    #[test]
+    fn test_broadcast_accepted_with_verifier() {
+        let (_db, epoch_mgr, handler) = setup();
+
+        let root = epoch_mgr.current_root().unwrap();
+        epoch_mgr.add_valid_root(root, 0).unwrap();
+
+        // Set a test verifier that accepts all proofs
+        handler.set_verifier(test_verifier());
+
+        let broadcast = L2TransferBroadcastMessage {
+            transaction: L2Transaction {
+                epoch: 0,
+                nullifier: [0x42; 32],
+                change_commitment: [0u8; 32],
+                recipient_commitment: [0u8; 32],
+                commitment_root: root,
+                proof: vec![0u8; 192],
+                encrypted_change: vec![],
+                encrypted_recipient: vec![],
+                timestamp: 0,
+            },
+            validator: [0x99; 32],
+            signature: [0u8; 64],
+        };
+
+        handler.handle_transfer_broadcast(&broadcast).unwrap();
+        assert_eq!(
+            handler.confirmed_pool_size(),
+            1,
+            "S-1: Broadcast with verifier should be accepted"
+        );
+    }
+
+    /// S-5: proposed_heights are pruned along with vote states
+    #[test]
+    fn test_proposed_heights_pruned() {
+        let (_db, _epoch_mgr, handler) = setup();
+
+        // Add 200 heights to proposed_heights
+        {
+            let mut heights = handler.proposed_heights.write();
+            for h in 1..=200 {
+                heights.insert(h);
+            }
+        }
+        assert_eq!(handler.proposed_heights.read().len(), 200);
+
+        // Prune at current_height=200, cutoff=100
+        handler.prune_vote_states(200);
+
+        // Only heights > 100 should remain
+        let heights = handler.proposed_heights.read();
+        assert_eq!(heights.len(), 100, "S-5: Should have pruned heights <= 100");
+        assert!(!heights.contains(&100), "S-5: Height 100 should be pruned");
+        assert!(heights.contains(&101), "S-5: Height 101 should remain");
+        assert!(heights.contains(&200), "S-5: Height 200 should remain");
+    }
+
+    /// S-6: VerifiedVote newtype ensures type-safe vote construction
+    #[test]
+    fn test_verified_vote_newtype() {
+        let mut state = CheckpointVoteState::new([0; 32]);
+
+        // Create verified votes (simulating post-signature-verification)
+        let vote1 = VerifiedVote::new([1; 32], true);
+        let vote2 = VerifiedVote::new([2; 32], false);
+
+        assert!(state.add_vote(vote1)); // New vote → true
+        assert!(state.add_vote(vote2)); // New vote → true
+
+        // Duplicate voter
+        let vote_dup = VerifiedVote::new([1; 32], true);
+        assert!(!state.add_vote(vote_dup)); // Duplicate → false
+
+        assert_eq!(state.approval_count(), 1); // Only [1;32] approved
     }
 }

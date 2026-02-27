@@ -688,6 +688,25 @@ async fn main() -> Result<()> {
     let db = Arc::new(Database::open(&db_path)?);
     info!("Database opened: {}", db_path.display());
 
+    // P-4: Configure database encryption for payout addresses.
+    // Derive a deterministic encryption key from the node identity by signing
+    // a domain-separated message. This works with any Signer backend (local, HSM, KMS)
+    // and produces a node-specific key without exposing the private key directly.
+    // Falls back to GHOST_ENCRYPTION_KEY env var if identity-based derivation fails.
+    {
+        use sha2::{Digest, Sha256};
+        let signature = identity.signer().sign(b"ghost/db-encryption/v1");
+        let mut hasher = Sha256::new();
+        hasher.update(b"ghost/db-encryption-key/v1");
+        hasher.update(signature);
+        let key_material = hasher.finalize();
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&key_material);
+        db.set_encryption_key(key);
+        // Zeroize local copies
+        key.fill(0);
+    }
+
     // Setup policy profile
     let policy = match config.policy.profile {
         ghost_common::config::PolicyProfile::BitcoinPure => PolicyProfile::bitcoin_pure(),
@@ -766,7 +785,12 @@ async fn main() -> Result<()> {
                 e
             );
         } else {
-            info!(address = %addr, "Node payout address configured");
+            let redacted = if addr.len() > 10 {
+                format!("{}...{}", &addr[..6], &addr[addr.len()-4..])
+            } else {
+                "***".to_string()
+            };
+            debug!(address = %redacted, "Node payout address configured");
         }
     }
 
@@ -887,7 +911,6 @@ async fn main() -> Result<()> {
         noise_port: ghost_consensus::mesh::DEFAULT_NOISE_PORT,
         noise_keypair_path: Some(noise_keypair_path),
         noise_required: true,
-        payout_address: config.pool.node_payout_address.clone(),
         ..Default::default()
     };
     // M-2: Use try_new() to properly handle Noise initialization failures

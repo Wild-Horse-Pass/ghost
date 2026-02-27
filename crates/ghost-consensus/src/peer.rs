@@ -207,6 +207,18 @@ impl PeerManager {
         self.peers.read().len()
     }
 
+    /// S-3: Check if a peer is "established" (first seen > 1 hour ago).
+    /// Unknown/new peers should be rate-limited more aggressively.
+    pub fn is_established(&self, node_id: &NodeId) -> bool {
+        let peers = self.peers.read();
+        if let Some(peer) = peers.get(node_id) {
+            let now = chrono::Utc::now().timestamp() as u64;
+            now.saturating_sub(peer.first_seen) >= 3600 // 1 hour
+        } else {
+            false // Unknown peer = not established
+        }
+    }
+
     /// Get unique peer count by address
     ///
     /// Returns count of unique IP addresses, which represents actual peer nodes.

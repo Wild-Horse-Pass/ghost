@@ -132,9 +132,6 @@ pub struct MeshConfig {
     ///
     /// Default: false (gradual rollout mode)
     pub noise_required: bool,
-    /// Node's payout address for node reward distribution
-    /// Broadcast in health pings so peers know where to send node reward payouts
-    pub payout_address: Option<String>,
 }
 
 /// Default Noise port for encrypted TCP connections
@@ -161,7 +158,6 @@ impl Default for MeshConfig {
             // - Snooping on consensus votes, share submissions, and payouts
             // Fallback mode should ONLY be used during development/testing.
             noise_required: true,
-            payout_address: None,
         }
     }
 }
@@ -1104,6 +1100,11 @@ impl MeshNetwork {
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string()),
             trusted_peers: Vec::new(), // Accept all peers initially
+            // S-3: allow_unknown_peers=true is intentional for open membership.
+            // Unknown peers (not MPC contributors, not seen >1 hour) are rate-limited
+            // at 2x cost per message by the peer tracker (PeerTracker::is_established).
+            // This prevents Sybil-driven message floods from new identities while
+            // still allowing legitimate new nodes to join the network.
             allow_unknown_peers: true,
         };
 
@@ -1394,7 +1395,9 @@ impl MeshNetwork {
         }
 
         match msg_type {
-            // Broadcast messages stay on ZMQ (need broadcast for discovery)
+            // P-7: Discovery must remain plaintext for bootstrap (can't encrypt to unknown peers).
+            // HealthPing stays plaintext for broadcast scaling but sensitive fields removed (P-1).
+            // All financial operations (payouts, votes, shares) require Noise.
             MessageType::Discovery | MessageType::HealthPing => false,
 
             // Sensitive messages use Noise encryption
@@ -2355,7 +2358,6 @@ impl MeshNetwork {
                 miner_count: self.peers.peer_count() as u32,
                 timestamp: chrono::Utc::now().timestamp_millis() as u64,
                 pow_proof,
-                payout_address: self.config.payout_address.clone(),
             };
 
             match self.create_envelope(

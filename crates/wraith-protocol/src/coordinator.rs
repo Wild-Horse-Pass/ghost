@@ -829,6 +829,21 @@ impl WraithCoordinator {
         self.session.has_minimum_participants()
     }
 
+    /// Get the coordinator's signing public key
+    ///
+    /// Participants need this to create `BlindingContext` during the blind signature flow.
+    /// In the real protocol, this key is shared with participants when they join the session.
+    pub fn coordinator_public_key(&self) -> &bitcoin::secp256k1::PublicKey {
+        self.signer.public_key()
+    }
+
+    /// Get the coordinator's key ID
+    ///
+    /// Participants need this to unblind signature responses into valid tokens.
+    pub fn coordinator_key_id(&self) -> &[u8; 32] {
+        self.signer.key_id()
+    }
+
     /// Register a new participant
     ///
     /// Checks reputation (if tracker is set) and rejects banned participants.

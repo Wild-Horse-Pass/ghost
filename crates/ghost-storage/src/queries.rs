@@ -1055,6 +1055,12 @@ impl Database {
             ));
         }
 
+        // P-4: Encrypt payout address before storing
+        let encrypted_payout = match &node.payout_address {
+            Some(addr) if !addr.is_empty() => Some(self.encrypt_address(addr)?),
+            other => other.clone(),
+        };
+
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO nodes (node_id, public_address, display_name, first_seen, last_seen,
@@ -1077,7 +1083,7 @@ impl Database {
                     node.is_elder,
                     node.elder_order,
                     node.capabilities,
-                    node.payout_address,
+                    encrypted_payout,
                 ],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
@@ -1086,16 +1092,53 @@ impl Database {
     }
 
     /// Get a node by ID
+    ///
+    /// P-4: Decrypts the payout_address if encryption is configured.
     pub fn get_node(&self, node_id: &str) -> GhostResult<Option<NodeRecord>> {
-        self.with_connection(|conn| get_node_internal(conn, node_id))
+        let node = self.with_connection(|conn| get_node_internal(conn, node_id))?;
+        self.decrypt_node_record(node)
+    }
+
+    /// P-4: Decrypt payout_address in an optional NodeRecord
+    fn decrypt_node_record(
+        &self,
+        node: Option<NodeRecord>,
+    ) -> GhostResult<Option<NodeRecord>> {
+        match node {
+            Some(mut n) => {
+                if let Some(ref addr) = n.payout_address {
+                    if !addr.is_empty() {
+                        n.payout_address = Some(self.decrypt_address(addr)?);
+                    }
+                }
+                Ok(Some(n))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// P-4: Decrypt payout_address in a vec of NodeRecords
+    fn decrypt_node_records(&self, nodes: Vec<NodeRecord>) -> GhostResult<Vec<NodeRecord>> {
+        nodes
+            .into_iter()
+            .map(|mut n| {
+                if let Some(ref addr) = n.payout_address {
+                    if !addr.is_empty() {
+                        n.payout_address = Some(self.decrypt_address(addr)?);
+                    }
+                }
+                Ok(n)
+            })
+            .collect()
     }
 
     /// Get all elders (ordered by registration)
     ///
     /// H-7: Limited to MAX_QUERY_RESULTS rows to prevent OOM attacks
     /// Note: Protocol limits elders to 101, but we add LIMIT for defense in depth
+    /// P-4: Decrypts payout addresses.
     pub fn get_elders(&self) -> GhostResult<Vec<NodeRecord>> {
-        self.with_connection(|conn| {
+        let nodes = self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT node_id, public_address, display_name, first_seen, last_seen,
@@ -1113,7 +1156,8 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             Ok(nodes)
-        })
+        })?;
+        self.decrypt_node_records(nodes)
     }
 
     /// Get all node IDs with payout addresses
@@ -1140,8 +1184,10 @@ impl Database {
     }
 
     /// Get top N nodes by shares received
+    ///
+    /// P-4: Decrypts payout addresses.
     pub fn get_top_nodes_by_shares(&self, limit: u32) -> GhostResult<Vec<NodeRecord>> {
-        self.with_connection(|conn| {
+        let nodes = self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT node_id, public_address, display_name, first_seen, last_seen,
@@ -1159,7 +1205,8 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             Ok(nodes)
-        })
+        })?;
+        self.decrypt_node_records(nodes)
     }
 
     /// Update node last seen timestamp
@@ -1610,8 +1657,10 @@ impl Database {
 
 impl Database {
     /// Get a miner by ID
+    ///
+    /// P-4: Decrypts the payout_address if encryption is configured.
     pub fn get_miner(&self, miner_id: &str) -> GhostResult<Option<MinerRecord>> {
-        self.with_connection(|conn| {
+        let miner = self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT miner_id, payout_address, first_seen, last_seen,
@@ -1640,26 +1689,49 @@ impl Database {
                 .map_err(|e| GhostError::Database(e.to_string()))?;
 
             Ok(miner)
-        })
+        })?;
+        // P-4: Decrypt the payout address
+        match miner {
+            Some(mut m) => {
+                if !m.payout_address.is_empty() {
+                    m.payout_address = self.decrypt_address(&m.payout_address)?;
+                }
+                Ok(Some(m))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Get miner's payout address by ID
+    ///
+    /// P-4: Decrypts the address if encryption is configured.
     pub fn get_miner_payout_address(&self, miner_id: &str) -> GhostResult<Option<String>> {
-        self.with_connection(|conn| {
-            let address: Option<String> = conn
-                .query_row(
-                    "SELECT payout_address FROM miners WHERE miner_id = ?1",
-                    [miner_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|e| GhostError::Database(e.to_string()))?;
-            Ok(address)
-        })
+        let stored: Option<String> = self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT payout_address FROM miners WHERE miner_id = ?1",
+                [miner_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| GhostError::Database(e.to_string()))
+        })?;
+        // P-4: Decrypt the address if present
+        match stored {
+            Some(addr) if !addr.is_empty() => Ok(Some(self.decrypt_address(&addr)?)),
+            other => Ok(other),
+        }
     }
 
     /// Upsert a miner (insert or update)
+    ///
+    /// P-4: Encrypts the payout_address before storing if encryption is configured.
     pub fn upsert_miner(&self, miner: &MinerRecord) -> GhostResult<()> {
+        // P-4: Encrypt the payout address before storing
+        let encrypted_address = if miner.payout_address.is_empty() {
+            miner.payout_address.clone()
+        } else {
+            self.encrypt_address(&miner.payout_address)?
+        };
         self.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO miners (
@@ -1678,7 +1750,7 @@ impl Database {
                     avg_hashrate_ths = ?10",
                 params![
                     miner.miner_id,
-                    miner.payout_address,
+                    encrypted_address,
                     miner.first_seen,
                     miner.last_seen,
                     miner.connected_node,
@@ -1699,8 +1771,12 @@ impl Database {
     /// Uses INSERT OR REPLACE (UPSERT) to atomically insert or update the miner,
     /// preventing TOCTOU race conditions that could occur with separate
     /// UPDATE-then-INSERT logic.
+    ///
+    /// P-4: Encrypts the address before storing if encryption is configured.
     pub fn update_miner_address(&self, miner_id: &str, payout_address: &str) -> GhostResult<()> {
         let now = chrono::Utc::now().timestamp();
+        // P-4: Encrypt the address before storing
+        let encrypted_address = self.encrypt_address(payout_address)?;
 
         self.with_connection(|conn| {
             // Use INSERT ... ON CONFLICT for atomic upsert (SQLite 3.24+)
@@ -1711,7 +1787,7 @@ impl Database {
                  ON CONFLICT(miner_id) DO UPDATE SET
                      payout_address = excluded.payout_address,
                      last_seen = excluded.last_seen",
-                params![miner_id, payout_address, now],
+                params![miner_id, encrypted_address, now],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
 
@@ -1762,31 +1838,40 @@ impl Database {
     }
 
     /// Get node's payout address by ID
+    ///
+    /// P-4: Decrypts the address if encryption is configured.
     pub fn get_node_payout_address(&self, node_id: &str) -> GhostResult<Option<String>> {
-        self.with_connection(|conn| {
-            let address: Option<String> = conn
-                .query_row(
-                    "SELECT payout_address FROM nodes WHERE node_id = ?1",
-                    [node_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(|e| GhostError::Database(e.to_string()))?
-                .flatten();
-            Ok(address)
-        })
+        let stored: Option<String> = self.with_connection(|conn| {
+            conn.query_row(
+                "SELECT payout_address FROM nodes WHERE node_id = ?1",
+                [node_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| GhostError::Database(e.to_string()))
+        })?
+        .flatten();
+        // P-4: Decrypt the address if present
+        match stored {
+            Some(addr) if !addr.is_empty() => Ok(Some(self.decrypt_address(&addr)?)),
+            other => Ok(other),
+        }
     }
 
     /// Update node's payout address
+    ///
+    /// P-4: Encrypts the address before storing if encryption is configured.
     pub fn update_node_payout_address(
         &self,
         node_id: &str,
         payout_address: &str,
     ) -> GhostResult<()> {
+        // P-4: Encrypt the address before storing
+        let encrypted_address = self.encrypt_address(payout_address)?;
         self.with_connection(|conn| {
             conn.execute(
                 "UPDATE nodes SET payout_address = ?1 WHERE node_id = ?2",
-                params![payout_address, node_id],
+                params![encrypted_address, node_id],
             )
             .map_err(|e| GhostError::Database(e.to_string()))?;
             Ok(())

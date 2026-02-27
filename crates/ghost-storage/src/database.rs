@@ -22,7 +22,7 @@
 
 //! Database connection and management
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use std::sync::Arc;
@@ -195,6 +195,8 @@ struct DatabaseInner {
     path: String,
     /// Whether this is an in-memory database
     in_memory: bool,
+    /// P-4: Encryption key for payout addresses (at-rest encryption)
+    encryption_key: RwLock<Option<[u8; 32]>>,
 }
 
 impl Database {
@@ -300,6 +302,7 @@ impl Database {
                 write_conn: Mutex::new(conn),
                 path: path_str,
                 in_memory: false,
+                encryption_key: RwLock::new(None),
             }),
         };
 
@@ -322,6 +325,7 @@ impl Database {
                 write_conn: Mutex::new(conn),
                 path: ":memory:".to_string(),
                 in_memory: true,
+                encryption_key: RwLock::new(None),
             }),
         };
 
@@ -462,6 +466,68 @@ impl Database {
     /// Check if this is an in-memory database
     pub fn is_in_memory(&self) -> bool {
         self.inner.in_memory
+    }
+
+    // =========================================================================
+    // P-4: DATABASE ENCRYPTION FOR PAYOUT ADDRESSES
+    // =========================================================================
+
+    /// P-4: Set the encryption key for at-rest encryption of payout addresses.
+    ///
+    /// Must be called after Database::open() and before any address read/write
+    /// operations. Uses the existing ChaCha20-Poly1305 encryption from
+    /// `crate::encryption`.
+    pub fn set_encryption_key(&self, key: [u8; 32]) {
+        *self.inner.encryption_key.write() = Some(key);
+        info!("P-4: Database encryption key configured for payout addresses");
+    }
+
+    /// P-4: Check if an encryption key is configured
+    pub fn has_encryption_key(&self) -> bool {
+        self.inner.encryption_key.read().is_some()
+    }
+
+    /// P-4: Encrypt a payout address before storing in the database.
+    ///
+    /// If no encryption key is configured, returns the plaintext unchanged
+    /// (backward compatible). Encrypted values are prefixed with "enc:" to
+    /// distinguish them from plaintext during migration.
+    pub fn encrypt_address(&self, plaintext: &str) -> GhostResult<String> {
+        let key_guard = self.inner.encryption_key.read();
+        match *key_guard {
+            None => Ok(plaintext.to_string()),
+            Some(ref key) => {
+                let encrypted = crate::encryption::encrypt_sensitive(plaintext, key)?;
+                Ok(format!("enc:{}", encrypted))
+            }
+        }
+    }
+
+    /// P-4: Decrypt a payout address retrieved from the database.
+    ///
+    /// Handles both plaintext (pre-migration) and encrypted values gracefully:
+    /// - Plaintext values are returned as-is (will be encrypted on next write)
+    /// - Encrypted values (prefixed with "enc:") are decrypted
+    /// - If encrypted data is found but no key is configured, returns an error
+    pub fn decrypt_address(&self, stored: &str) -> GhostResult<String> {
+        if !stored.starts_with("enc:") {
+            // Plaintext (pre-migration data) — return as-is
+            return Ok(stored.to_string());
+        }
+
+        let key_guard = self.inner.encryption_key.read();
+        match *key_guard {
+            None => {
+                warn!("P-4: Encrypted address found but no encryption key configured");
+                Err(GhostError::Crypto(
+                    "Encrypted address found but no encryption key configured".into(),
+                ))
+            }
+            Some(ref key) => {
+                let base64_data = &stored[4..]; // Skip "enc:" prefix
+                crate::encryption::decrypt_sensitive(base64_data, key)
+            }
+        }
     }
 
     /// L-15: Verify and fix auxiliary file (WAL/SHM) permissions.
@@ -1238,5 +1304,143 @@ mod tests {
         let quick = RetryConfig::quick();
         assert_eq!(quick.max_retries, 3);
         assert!(quick.max_backoff_ms < default.max_backoff_ms);
+    }
+
+    // =========================================================================
+    // P-4: DATABASE ENCRYPTION TESTS
+    // =========================================================================
+
+    fn test_encryption_key() -> [u8; 32] {
+        [
+            0x1a, 0x2b, 0x3c, 0x4d, 0x5e, 0x6f, 0x70, 0x81, 0x92, 0xa3, 0xb4, 0xc5, 0xd6,
+            0xe7, 0xf8, 0x09, 0x0a, 0x1b, 0x2c, 0x3d, 0x4e, 0x5f, 0x60, 0x71, 0x82, 0x93,
+            0xa4, 0xb5, 0xc6, 0xd7, 0xe8, 0xf9,
+        ]
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_address_roundtrip() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        db.set_encryption_key(test_encryption_key());
+
+        let address = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+        let encrypted = db
+            .encrypt_address(address)
+            .expect("Failed to encrypt address");
+
+        // Encrypted value should be prefixed with "enc:"
+        assert!(encrypted.starts_with("enc:"));
+        assert_ne!(encrypted, address);
+
+        let decrypted = db
+            .decrypt_address(&encrypted)
+            .expect("Failed to decrypt address");
+        assert_eq!(decrypted, address);
+    }
+
+    #[test]
+    fn test_no_key_returns_plaintext() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        // No encryption key set
+
+        let address = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+        let result = db
+            .encrypt_address(address)
+            .expect("Failed to encrypt address");
+
+        // Without key, should return plaintext
+        assert_eq!(result, address);
+        assert!(!result.starts_with("enc:"));
+    }
+
+    #[test]
+    fn test_decrypt_plaintext_passthrough() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        db.set_encryption_key(test_encryption_key());
+
+        // Pre-migration plaintext should pass through unchanged
+        let plaintext = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
+        let result = db
+            .decrypt_address(plaintext)
+            .expect("Failed to decrypt plaintext address");
+        assert_eq!(result, plaintext);
+    }
+
+    #[test]
+    fn test_decrypt_encrypted_without_key_fails() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        db.set_encryption_key(test_encryption_key());
+
+        let address = "bc1qtest";
+        let encrypted = db
+            .encrypt_address(address)
+            .expect("Failed to encrypt address");
+
+        // Create a new DB without key
+        let db2 = Database::in_memory().expect("Failed to create in-memory database");
+        let result = db2.decrypt_address(&encrypted);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_has_encryption_key() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        assert!(!db.has_encryption_key());
+
+        db.set_encryption_key(test_encryption_key());
+        assert!(db.has_encryption_key());
+    }
+
+    #[test]
+    fn test_miner_address_encryption_roundtrip() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        db.set_encryption_key(test_encryption_key());
+
+        let miner_id = "test_miner_001";
+        let address = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+
+        // Store encrypted
+        db.update_miner_address(miner_id, address)
+            .expect("Failed to update miner address");
+
+        // Retrieve and verify it's decrypted
+        let retrieved = db
+            .get_miner_payout_address(miner_id)
+            .expect("Failed to get miner address");
+        assert_eq!(retrieved, Some(address.to_string()));
+    }
+
+    #[test]
+    fn test_node_address_encryption_roundtrip() {
+        let db = Database::in_memory().expect("Failed to create in-memory database");
+        db.set_encryption_key(test_encryption_key());
+
+        let node_id = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let address = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+
+        // First register the node so it exists
+        db.upsert_node(&crate::models::NodeRecord {
+            node_id: node_id.to_string(),
+            public_address: Some("127.0.0.1:8555".to_string()),
+            display_name: None,
+            first_seen: 1000,
+            last_seen: 1000,
+            is_elder: false,
+            elder_order: None,
+            capabilities: "{}".to_string(),
+            total_uptime_secs: 0,
+            uptime_7d_percent: 0.0,
+            verification_pass_rate: 0.0,
+            total_shares_received: 0,
+            total_blocks_found: 0,
+            payout_address: Some(address.to_string()),
+        })
+        .expect("Failed to upsert node");
+
+        // Retrieve and verify it's decrypted
+        let retrieved = db
+            .get_node_payout_address(node_id)
+            .expect("Failed to get node address");
+        assert_eq!(retrieved, Some(address.to_string()));
     }
 }

@@ -893,15 +893,6 @@ impl HealthPingHandler {
                 debug!(error = %e, peer_id = %short_id, "Failed to register node from health ping");
             }
 
-            // Update node's payout address if provided
-            if let Some(ref addr) = ping.payout_address {
-                if !addr.is_empty() {
-                    if let Err(e) = db.update_node_payout_address(&node_id_hex, addr) {
-                        warn!(error = %e, peer_id = %short_id, "Failed to update node payout address");
-                    }
-                }
-            }
-
             // Record uptime sample - node is online since we received their health ping
             if let Err(e) = db.record_uptime_sample(&node_id_hex, now, true) {
                 warn!(error = %e, peer_id = %short_id, "Failed to record uptime sample");

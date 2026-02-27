@@ -18,6 +18,8 @@ use crate::types::GROTH16_PROOF_SIZE;
 pub struct NoteVerifier {
     prepared_vk: Option<Arc<PreparedVerifyingKey<Bls12>>>,
     prover_id: [u8; 32],
+    /// Accept all proofs unconditionally (for external crate tests only)
+    accept_all: bool,
 }
 
 impl NoteVerifier {
@@ -26,6 +28,7 @@ impl NoteVerifier {
         Self {
             prepared_vk: Some(prepared_vk),
             prover_id,
+            accept_all: false,
         }
     }
 
@@ -34,6 +37,17 @@ impl NoteVerifier {
         Self {
             prepared_vk: prover.prepared_verifying_key(),
             prover_id: prover.prover_id(),
+            accept_all: false,
+        }
+    }
+
+    /// Create a test verifier that accepts all proofs unconditionally.
+    /// For use in external crate tests where `#[cfg(test)]` doesn't propagate.
+    pub fn test_accept_all() -> Self {
+        Self {
+            prepared_vk: None,
+            prover_id: [0u8; 32],
+            accept_all: true,
         }
     }
 
@@ -45,6 +59,11 @@ impl NoteVerifier {
     /// Verify a note spend proof
     #[instrument(skip_all)]
     pub fn verify(&self, proof: &NoteSpendProof) -> ZkResult<bool> {
+        // Test mode: accept all proofs unconditionally (for cross-crate tests)
+        if self.accept_all {
+            return Ok(true);
+        }
+
         let start = Instant::now();
 
         if proof.prover_id != self.prover_id {
@@ -100,6 +119,11 @@ impl NoteVerifier {
         proof_bytes: &[u8],
         public_inputs: &NoteSpendPublicInputs,
     ) -> ZkResult<bool> {
+        // Test mode: accept all proofs unconditionally (for cross-crate tests)
+        if self.accept_all {
+            return Ok(true);
+        }
+
         let start = Instant::now();
 
         if let Some(ref prepared_vk) = self.prepared_vk {
@@ -257,6 +281,7 @@ mod tests {
         let verifier = NoteVerifier {
             prepared_vk: None,
             prover_id: [0xFF; 32],
+            accept_all: false,
         };
         let witness = create_test_witness(4);
 

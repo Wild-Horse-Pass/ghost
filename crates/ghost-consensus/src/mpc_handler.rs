@@ -99,10 +99,14 @@ pub type MpcBroadcastFn = Arc<dyn Fn(MessageType, Vec<u8>) -> GhostResult<()> + 
 /// Arguments: (new_params_hash, contributor_node_id)
 pub type ParamsUpdateCallback = Arc<dyn Fn(&[u8; 32], &[u8; 32]) + Send + Sync>;
 
-/// Token bucket for rate limiting
+/// S-4: One token in millis (1000 millis = 1 token)
+const MPC_MILLIS_PER_TOKEN: u64 = 1000;
+
+/// S-4: Token bucket for rate limiting using integer millis (matches H-14 pattern from vote_handler.rs)
 #[derive(Clone)]
 struct TokenBucket {
-    tokens: f64,
+    /// Tokens × 1000 for sub-token precision without floating point
+    tokens_millis: u64,
     last_update: Instant,
 }
 
@@ -125,23 +129,26 @@ impl RateLimiter {
     fn check_and_consume(&self, node_id: &NodeId) -> bool {
         let mut buckets = self.buckets.write();
         let now = Instant::now();
+        let max_millis = (self.max_tokens as u64).saturating_mul(MPC_MILLIS_PER_TOKEN);
 
         let bucket = buckets.entry(*node_id).or_insert_with(|| TokenBucket {
-            tokens: self.max_tokens as f64,
+            tokens_millis: max_millis,
             last_update: now,
         });
 
-        // Refill tokens
-        let elapsed = now
+        // S-4: Refill tokens using integer millisecond arithmetic (no f64)
+        let elapsed_ms = now
             .duration_since(bucket.last_update)
-            .as_secs_f64()
-            .min(3600.0);
-        let new_tokens = bucket.tokens + elapsed * self.refill_rate as f64;
-        bucket.tokens = new_tokens.min(self.max_tokens as f64);
+            .as_millis()
+            .min(3_600_000) as u64;
+        // refill_millis = elapsed_ms * refill_rate (tokens/sec) * 1000 (millis/token) / 1000 (ms→sec)
+        // Simplifies to: elapsed_ms * refill_rate
+        let refill_millis = elapsed_ms.saturating_mul(self.refill_rate as u64);
+        bucket.tokens_millis = bucket.tokens_millis.saturating_add(refill_millis).min(max_millis);
         bucket.last_update = now;
 
-        if bucket.tokens >= 1.0 {
-            bucket.tokens -= 1.0;
+        if bucket.tokens_millis >= MPC_MILLIS_PER_TOKEN {
+            bucket.tokens_millis -= MPC_MILLIS_PER_TOKEN;
             true
         } else {
             false

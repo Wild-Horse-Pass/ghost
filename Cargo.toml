@@ -220,7 +220,7 @@ ghost-consensus = { workspace = true, features = ["test-utils", "zk-consensus"] 
 ghost-template = { workspace = true }
 ghost-keys = { workspace = true }
 ghost-locks = { workspace = true }
-wraith-protocol = { workspace = true }
+wraith-protocol = { workspace = true, features = ["dev-mode"] }
 ghost-reconciliation = { workspace = true }
 ghost-storage = { workspace = true }
 ghost-gsp-proto = { workspace = true }
