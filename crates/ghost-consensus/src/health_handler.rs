@@ -1111,7 +1111,8 @@ mod tests {
     #[test]
     fn test_m1_rate_limiter_no_overflow() {
         // M-1: Test that large but reasonable values don't overflow
-        let limiter = HealthRateLimiter::new(1000, 100);
+        // Use refill_rate=0 so tokens don't refill during the loop
+        let limiter = HealthRateLimiter::new(1000, 0);
         let node = [1u8; 32];
 
         // Exhaust all tokens
