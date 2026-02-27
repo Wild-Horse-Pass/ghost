@@ -430,4 +430,27 @@ mod tests {
         assert!(proof.is_real_proof());
         assert_eq!(proof.proof.len(), GROTH16_PROOF_SIZE);
     }
+
+    #[test]
+    #[ignore] // Expensive — production depth 40 param gen + proof (~2s total)
+    fn test_groth16_prove_depth40_benchmark() {
+        use std::time::Instant;
+
+        let prover = NoteProver::new_with_setup(40).expect("Setup should succeed");
+        let witness = create_test_witness(40);
+
+        // Warm-up
+        prover.prove(&witness).expect("Proof should succeed");
+
+        let mut times = Vec::new();
+        for _ in 0..3 {
+            let start = Instant::now();
+            let proof = prover.prove(&witness).expect("Proof should succeed");
+            times.push(start.elapsed());
+            assert!(proof.is_real_proof());
+        }
+
+        let avg = times.iter().sum::<std::time::Duration>() / times.len() as u32;
+        eprintln!("Average NoteSpend proof time (depth 40): {:?}", avg);
+    }
 }
