@@ -59,27 +59,22 @@
 pub mod batch;
 pub mod broadcaster;
 pub mod commitment;
-pub mod coordinator;
 pub mod error;
 pub mod executor;
 pub mod proof;
-pub mod rpc;
 pub mod rules;
 pub mod settlement;
 pub mod transaction;
-pub mod verifier;
 
 pub use batch::*;
 pub use broadcaster::*;
 pub use commitment::*;
-pub use coordinator::*;
 pub use error::*;
 pub use executor::*;
 pub use proof::*;
 pub use rules::*;
 pub use settlement::*;
 pub use transaction::*;
-pub use verifier::*;
 
 /// Default minimum settlements per batch
 pub const MIN_BATCH_SIZE: usize = 10;

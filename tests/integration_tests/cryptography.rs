@@ -489,10 +489,7 @@ fn test_040_multiple_signatures_same_message() {
 
 // =============================================================================
 // Additional tests would continue for:
-// - HMAC-SHA256 (Tests 41-44) - in payout_commitment module
-// - Payout Commitment (Tests 45-54) - in payout_commitment module
 // - Noise Protocol (Tests 55-64) - requires noise module
 // - Blind Signatures (Tests 65-74) - in wraith protocol
-// - Shamir Secret Sharing (Tests 75-81) - in encrypted_proposal module
 // - Silent Payment Keys (Tests 82-85) - in ghost-keys
 // =============================================================================

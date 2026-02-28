@@ -166,30 +166,6 @@ let result = rpc_builder.build_merge_transaction(&intermediates, &finals).await?
 let txid = rpc_builder.broadcast_transaction(&result.hex).await?;
 ```
 
-### ghost-reconciliation/src/rpc.rs
-
-```rust
-use ghost_reconciliation::rpc::ReconciliationRpcBuilder;
-
-let rpc_builder = ReconciliationRpcBuilder::new(rpc);
-
-// Build reconciliation transaction via ghost-core
-let result = rpc_builder.build_reconciliation_tx(
-    &inputs,
-    &outputs,
-    epoch_id,
-    &state_root,
-    Some(&treasury_address),
-    Some(treasury_amount),
-).await?;
-
-// Create PSBT for multi-party signing
-let psbt = rpc_builder.create_batch_psbt(&inputs, &outputs).await?;
-
-// Combine signed PSBTs
-let combined = rpc_builder.combine_psbts(vec![psbt1, psbt2]).await?;
-```
-
 ### Architecture: Pure Rust vs RPC
 
 Each crate provides two approaches:
@@ -198,7 +174,7 @@ Each crate provides two approaches:
    - Good for: Testing, validation, understanding transaction structure
    - Limitation: Cannot sign without wallet access
 
-2. **RPC-backed** (rpc.rs): Delegate to ghost-core
+2. **RPC-backed**: Delegate to ghost-core
    - Good for: Production use with real transactions
    - Benefit: Signed transactions via wallet integration
 

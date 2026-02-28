@@ -26,13 +26,9 @@ use bitcoin::{
     absolute::LockTime, transaction::Version, Amount, OutPoint, ScriptBuf, Sequence, Transaction,
     TxIn, TxOut, Witness,
 };
-use tracing::info;
-
 use ghost_common::constants::MAX_COINBASE_OUTPUTS;
 use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::types::PayoutEntry;
-
-use crate::payout::PayoutResult;
 
 /// Coinbase transaction builder
 #[derive(Debug, Clone)]
@@ -101,50 +97,6 @@ impl CoinbaseBuilder {
         }
 
         ScriptBuf::from(script_data)
-    }
-
-    /// Build coinbase transaction from payout result
-    pub fn build(&self, payouts: &PayoutResult) -> GhostResult<Transaction> {
-        // Validate output count
-        if payouts.output_count() > MAX_COINBASE_OUTPUTS {
-            return Err(GhostError::TooManyOutputs {
-                count: payouts.output_count(),
-                limit: MAX_COINBASE_OUTPUTS,
-            });
-        }
-
-        // Build outputs
-        let mut outputs = Vec::new();
-
-        // Add all payout entries
-        for entry in payouts.all_entries() {
-            let script = self.script_from_address(&entry.address)?;
-            outputs.push(TxOut {
-                value: Amount::from_sat(entry.amount),
-                script_pubkey: script,
-            });
-        }
-
-        // Build the coinbase transaction
-        let tx = Transaction {
-            version: Version::TWO,
-            lock_time: LockTime::ZERO,
-            input: vec![TxIn {
-                previous_output: OutPoint::null(), // Coinbase has null input
-                script_sig: self.build_script_sig(),
-                sequence: Sequence::MAX,
-                witness: Witness::new(),
-            }],
-            output: outputs,
-        };
-
-        info!(
-            height = self.block_height,
-            outputs = tx.output.len(),
-            "Built coinbase transaction"
-        );
-
-        Ok(tx)
     }
 
     /// Build coinbase from raw entries
@@ -259,30 +211,6 @@ pub struct CoinbaseAllocation {
 }
 
 impl CoinbaseAllocation {
-    /// Create from payout result
-    pub fn from_payout_result(payouts: &PayoutResult) -> Self {
-        Self {
-            treasury: payouts
-                .treasury_entry
-                .as_ref()
-                .map(|e| (e.address.clone(), e.amount)),
-            tx_fees: payouts
-                .tx_fee_entry
-                .as_ref()
-                .map(|e| (e.address.clone(), e.amount)),
-            node_rewards: payouts
-                .node_payouts
-                .iter()
-                .map(|e| (e.address.clone(), e.amount))
-                .collect(),
-            miners: payouts
-                .miner_payouts
-                .iter()
-                .map(|e| (e.address.clone(), e.amount))
-                .collect(),
-        }
-    }
-
     /// Total output count
     pub fn output_count(&self) -> usize {
         let mut count = 0;

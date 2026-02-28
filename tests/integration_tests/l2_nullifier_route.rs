@@ -732,3 +732,170 @@ fn test_889_vote_state_pruning() {
     // heights 1-100 should be pruned after height 200 is finalized.
     // We just verify the system doesn't crash with 200 votes.
 }
+
+// =============================================================================
+// TEST 890: Full-flow end-to-end integration test
+// =============================================================================
+
+/// Test 890: Full flow from transfer submission through checkpoint finalization
+///
+/// This is the end-to-end integration test that chains:
+/// 1. 3-node setup with genesis root
+/// 2. Transaction creation and routing to correct validator
+/// 3. Validator confirms transfer
+/// 4. Broadcast to all nodes
+/// 5. Proposer creates checkpoint
+/// 6. Non-proposers vote to approve
+/// 7. BFT quorum reached → checkpoint finalized
+/// 8. Assertions: checkpoint persisted, nullifier spent, height advanced
+#[test]
+fn test_890_full_flow_transfer_to_finalization() {
+    // ── Step 1: Setup 3 nodes ──────────────────────────────────────────────
+    let node_a = [0x01; 32];
+    let node_b = [0x02; 32];
+    let node_c = [0x03; 32];
+    let node_ids = [node_a, node_b, node_c];
+
+    let nodes = setup_multi_node(&node_ids);
+
+    // Add genesis root as valid on all nodes
+    let genesis_root = nodes[0].1.current_root().unwrap();
+    for (_, epoch_mgr, _) in &nodes {
+        epoch_mgr.add_valid_root(genesis_root, 0).unwrap();
+    }
+
+    // ── Step 2: Create tx and route to correct validator ───────────────────
+    let nullifier = [0xAA; 32];
+    let validator_id = nodes[0].1.validator_for_nullifier(&nullifier).unwrap();
+    let validator_idx = node_ids.iter().position(|id| *id == validator_id).unwrap();
+
+    let tx = make_test_tx(nullifier, genesis_root);
+
+    let msg = L2ConfidentialTransferMessage {
+        transaction: tx.clone(),
+        sender: [0x99; 32],
+    };
+
+    // ── Step 3: Validator confirms transfer ────────────────────────────────
+    let confirmation = nodes[validator_idx]
+        .2
+        .handle_transfer(&msg)
+        .expect("Transfer should succeed on correct validator");
+    assert!(
+        confirmation.is_some(),
+        "Correct validator should return confirmation"
+    );
+
+    // ── Step 4: Broadcast to all nodes ─────────────────────────────────────
+    let broadcast = L2TransferBroadcastMessage {
+        transaction: tx,
+        validator: validator_id,
+        signature: [0u8; 64],
+    };
+
+    for (_, _, handler) in &nodes {
+        handler
+            .handle_transfer_broadcast(&broadcast)
+            .expect("Broadcast should succeed");
+    }
+
+    // Verify all nodes have the tx in their confirmed pool
+    for (i, (_, _, handler)) in nodes.iter().enumerate() {
+        assert_eq!(
+            handler.confirmed_pool_size(),
+            1,
+            "Node {} should have 1 confirmed tx",
+            i
+        );
+    }
+
+    // ── Step 5: Proposer creates checkpoint ────────────────────────────────
+    let proposer_id = nodes[0].1.get_proposer(1).unwrap();
+    let proposer_idx = node_ids.iter().position(|id| *id == proposer_id).unwrap();
+
+    let proposal = nodes[proposer_idx]
+        .2
+        .propose_checkpoint()
+        .expect("Proposer should succeed")
+        .expect("Proposer should produce a proposal");
+
+    assert_eq!(proposal.height, 1);
+    assert_eq!(proposal.transactions.len(), 1);
+    assert_eq!(proposal.proposer, proposer_id);
+    let checkpoint_hash = proposal.checkpoint_hash();
+
+    // Proposer's pool should be drained
+    assert_eq!(nodes[proposer_idx].2.confirmed_pool_size(), 0);
+
+    // ── Step 6: Non-proposers validate and vote ────────────────────────────
+    let mut votes: Vec<L2CheckpointVoteMessage> = Vec::new();
+
+    // Proposer self-vote
+    votes.push(L2CheckpointVoteMessage {
+        height: 1,
+        checkpoint_hash,
+        voter: proposer_id,
+        approve: true,
+        signature: [0u8; 64],
+        timestamp: 0,
+    });
+
+    // Other nodes validate the proposal and produce approval votes
+    for (i, (_, _, handler)) in nodes.iter().enumerate() {
+        if i == proposer_idx {
+            continue;
+        }
+        let vote = handler
+            .handle_checkpoint_proposal(&proposal)
+            .expect("Proposal validation should succeed")
+            .expect("Valid proposal should produce a vote");
+
+        assert!(vote.approve, "Node {} should approve valid proposal", i);
+        assert_eq!(vote.height, 1);
+        votes.push(vote);
+    }
+
+    assert_eq!(votes.len(), 3, "Should have 3 votes (1 self + 2 voters)");
+
+    // ── Step 7: Feed votes to proposer to reach quorum ────────────────────
+    // Quorum = 3/3 for a 3-node network (ceil(3 * 67 / 100) = 3).
+    let mut finalized_count = 0;
+    for vote in &votes {
+        let finalized = nodes[proposer_idx]
+            .2
+            .handle_checkpoint_vote(vote)
+            .expect("Vote handling should succeed");
+        if finalized {
+            finalized_count += 1;
+        }
+    }
+    assert_eq!(
+        finalized_count, 1,
+        "Exactly one vote should trigger finalization (the 3rd)"
+    );
+
+    // ── Step 8: Assertions ─────────────────────────────────────────────────
+    // Checkpoint should be persisted in the proposer's DB
+    let checkpoint = nodes[proposer_idx]
+        .0
+        .get_l2_checkpoint(1)
+        .expect("DB query should succeed");
+    assert!(
+        checkpoint.is_some(),
+        "Checkpoint at height 1 should be persisted"
+    );
+    let record = checkpoint.unwrap();
+    assert_eq!(record.height, 1);
+    assert_eq!(record.epoch, 0);
+
+    // Nullifier should be spent (double-spend should fail)
+    let double_spend_msg = L2ConfidentialTransferMessage {
+        transaction: make_test_tx(nullifier, genesis_root),
+        sender: [0x99; 32],
+    };
+    let double_spend_result = nodes[validator_idx].2.handle_transfer(&double_spend_msg);
+    assert!(
+        double_spend_result.is_err(),
+        "Nullifier should be spent after checkpoint finalization"
+    );
+}

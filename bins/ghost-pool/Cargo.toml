@@ -98,15 +98,10 @@ bs58 = { version = "0.4.0", features = ["check"] }
 secp256k1 = { version = "0.28.2", features = ["rand"] }
 rand = "0.8"
 
-# TUI dashboard (optional)
-ratatui = { workspace = true, optional = true }
-crossterm = { version = "0.27", optional = true }
-
 [features]
 # Both ZK consensus and MPC ceremony enabled by default
 # ZK parameter generation is deferred to background task to avoid blocking startup
 default = ["zk-consensus", "mpc-ceremony"]
-tui = ["ratatui", "crossterm"]
 # Enable ZK consensus for block/payout proofs
 zk-consensus = ["ghost-consensus/zk-consensus", "ghost-zkp"]
 # Enable MPC ceremony for ZK parameter generation

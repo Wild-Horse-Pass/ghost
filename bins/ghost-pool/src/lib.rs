@@ -28,9 +28,7 @@
 //! # Modules
 //!
 //! - [`coinbase_verifier`] - Validates coinbase transactions against approved payouts
-//! - [`connection`] - Manages miner connections and session state
 //! - [`payout`] - Payout proposal creation and BFT consensus integration
-//! - [`payout_commitment`] - Cryptographic commitments for payout proposals
 //! - [`payout_validator`] - Validates payout proposals against economic rules
 //! - [`registry`] - Load balancer registration and health reporting
 //! - [`reorg`] - Chain reorganization detection and handling
@@ -44,14 +42,8 @@
 /// Coinbase transaction verification against payout commitments.
 pub mod coinbase_verifier;
 
-/// Miner connection and session management.
-pub mod connection;
-
 /// Payout proposal creation and consensus coordination.
 pub mod payout;
-
-/// Cryptographic commitments for payout integrity.
-pub mod payout_commitment;
 
 /// Economic validation of payout proposals.
 pub mod payout_validator;
