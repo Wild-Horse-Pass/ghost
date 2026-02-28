@@ -172,6 +172,102 @@ impl SshController {
         )
     }
 
+    // --- Config management methods ---
+
+    /// Config file path on remote nodes.
+    const CONFIG_PATH: &'static str = "/etc/ghost/pool.toml";
+    const CONFIG_BACKUP: &'static str = "/etc/ghost/pool.toml.chaos_backup";
+
+    /// Backup the current config file. Fails if backup already exists (prevents double-backup).
+    pub fn backup_config(node: &NodeInfo) -> Result<String, String> {
+        println!("  [SSH] Backing up config on {}", node.name);
+        Self::run(
+            node,
+            &format!(
+                "test ! -f {} && sudo cp {} {}",
+                Self::CONFIG_BACKUP,
+                Self::CONFIG_PATH,
+                Self::CONFIG_BACKUP
+            ),
+        )
+    }
+
+    /// Restore config from backup. Removes the backup file after restore.
+    pub fn restore_config(node: &NodeInfo) -> Result<String, String> {
+        println!("  [SSH] Restoring config on {}", node.name);
+        Self::run(
+            node,
+            &format!(
+                "sudo cp {} {} && sudo rm -f {}",
+                Self::CONFIG_BACKUP,
+                Self::CONFIG_PATH,
+                Self::CONFIG_BACKUP
+            ),
+        )
+    }
+
+    /// Check if a config backup exists.
+    pub fn has_config_backup(node: &NodeInfo) -> Result<bool, String> {
+        let output = Self::run(
+            node,
+            &format!("test -f {} && echo yes || echo no", Self::CONFIG_BACKUP),
+        )?;
+        Ok(output.trim() == "yes")
+    }
+
+    /// Patch a TOML field within a specific section using section-aware sed.
+    /// Example: `patch_config_field(node, "storage", "archive_mode", "false")`
+    pub fn patch_config_field(
+        node: &NodeInfo,
+        section: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<String, String> {
+        println!(
+            "  [SSH] Patching {}.{} = {} on {}",
+            section, key, value, node.name
+        );
+        // Section-aware sed: only modify lines between [section] and the next [
+        Self::run(
+            node,
+            &format!(
+                r#"sudo sed -i '/^\[{}\]/,/^\[/{{s/^{} = .*/{} = {}/}}' {}"#,
+                section,
+                key,
+                key,
+                value,
+                Self::CONFIG_PATH
+            ),
+        )
+    }
+
+    /// Read a TOML field value from a specific section.
+    pub fn read_config_field(
+        node: &NodeInfo,
+        section: &str,
+        key: &str,
+    ) -> Result<String, String> {
+        let output = Self::run(
+            node,
+            &format!(
+                r#"sed -n '/^\[{}\]/,/^\[/{{/^{} = /p}}' {} | head -1 | sed 's/.*= //' | tr -d '"'"#,
+                section,
+                key,
+                Self::CONFIG_PATH
+            ),
+        )?;
+        Ok(output.trim().to_string())
+    }
+
+    /// Restart the service (stop + start). Does NOT use genesis guard.
+    pub fn restart_service(node: &NodeInfo, service: &str) -> Result<String, String> {
+        println!("  [SSH] Restarting {} on {}", service, node.name);
+        Self::run(
+            node,
+            &format!("sudo systemctl restart {}", service),
+        )
+    }
+
     /// Count log lines matching a pattern since a given time.
     pub fn count_log_matches(
         node: &NodeInfo,

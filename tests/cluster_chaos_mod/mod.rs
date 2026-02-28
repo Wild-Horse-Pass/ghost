@@ -22,3 +22,8 @@ pub mod phase10_node_flapping;
 pub mod phase11_asymmetric_partition;
 pub mod phase12_compound_failures;
 pub mod phase13_genesis_resilience;
+
+pub mod phase14_deploy_heterogeneous;
+pub mod phase15_hetero_baseline;
+pub mod phase16_hetero_chaos;
+pub mod phase17_restore_configs;
