@@ -1386,8 +1386,39 @@ async fn main() -> Result<()> {
             info!("ZK parameter generation starting in background...");
             let start = std::time::Instant::now();
 
-            // Generate note prover/verifier (for sender-side proofs)
-            match NoteProver::new_with_setup(40) {
+            // Generate note prover/verifier - prefer MPC-generated params when available
+            #[cfg(feature = "mpc-ceremony")]
+            let note_prover_result: Result<NoteProver, String> = {
+                let mpc_dir = std::path::PathBuf::from(
+                    std::env::var("MPC_PARAMS_PATH").unwrap_or_else(|_| {
+                        format!(
+                            "{}/.ghost/mpc_params",
+                            std::env::var("HOME").unwrap_or_default()
+                        )
+                    }),
+                );
+                let note_spend_path = mpc_dir.join("note_spend_params_current.bin");
+                if note_spend_path.exists() {
+                    match ghost_mpc::params::load_parameters(&note_spend_path) {
+                        Ok(params) => {
+                            info!("Using MPC-generated note_spend parameters");
+                            Ok(NoteProver::new_with_params(Arc::new(params), 40))
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to load MPC note_spend params, falling back to random setup");
+                            NoteProver::new_with_setup(40).map_err(|e| format!("{}", e))
+                        }
+                    }
+                } else {
+                    warn!("No MPC note_spend params on disk, using random trusted setup");
+                    NoteProver::new_with_setup(40).map_err(|e| format!("{}", e))
+                }
+            };
+            #[cfg(not(feature = "mpc-ceremony"))]
+            let note_prover_result: Result<NoteProver, String> =
+                NoteProver::new_with_setup(40).map_err(|e| format!("{}", e));
+
+            match note_prover_result {
                 Ok(note_prover) => {
                     // Extract prepared VK for the verifier
                     if let Some(pvk) = note_prover.prepared_verifying_key() {
