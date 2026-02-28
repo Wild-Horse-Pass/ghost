@@ -36,11 +36,15 @@ use crate::types::TreasuryAddress;
 /// Config files should not be group or world readable as they may contain
 /// sensitive information like RPC passwords, signing keys, and API secrets.
 ///
-/// This function logs a warning if the config file has overly permissive
-/// permissions. It does not fail because operators may have legitimate
-/// reasons for their permission choices, but it alerts them to the risk.
+/// On mainnet: returns `Err` if the config is group/world accessible (mode & 0o077 != 0).
+/// On other networks: logs a warning but allows startup to continue.
+///
+/// Pass `None` for network to get the legacy warn-only behavior.
 #[cfg(unix)]
-pub fn validate_config_permissions(path: &Path) {
+pub fn validate_config_permissions(
+    path: &Path,
+    network: Option<&BitcoinNetwork>,
+) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     match std::fs::metadata(path) {
@@ -48,13 +52,23 @@ pub fn validate_config_permissions(path: &Path) {
             let mode = metadata.permissions().mode();
             // Check if group or world readable/writable (0o077 mask)
             if mode & 0o077 != 0 {
-                tracing::warn!(
-                    "H-11 SECURITY: Config file {} has overly permissive mode {:o}. \
-                     Recommended: chmod 600 {}",
-                    path.display(),
-                    mode & 0o777,
-                    path.display()
-                );
+                let is_mainnet = matches!(network, Some(BitcoinNetwork::Mainnet));
+                if is_mainnet {
+                    return Err(format!(
+                        "H-11 SECURITY: Config file {} has overly permissive mode {:o}. \
+                         Mainnet requires chmod 600 on config files containing secrets.",
+                        path.display(),
+                        mode & 0o777,
+                    ));
+                } else {
+                    tracing::warn!(
+                        "H-11 SECURITY: Config file {} has overly permissive mode {:o}. \
+                         Recommended: chmod 600 {}",
+                        path.display(),
+                        mode & 0o777,
+                        path.display()
+                    );
+                }
             }
         }
         Err(e) => {
@@ -65,12 +79,17 @@ pub fn validate_config_permissions(path: &Path) {
             );
         }
     }
+    Ok(())
 }
 
 /// H-11: No-op on non-Unix platforms
 #[cfg(not(unix))]
-pub fn validate_config_permissions(_path: &Path) {
+pub fn validate_config_permissions(
+    _path: &Path,
+    _network: Option<&BitcoinNetwork>,
+) -> Result<(), String> {
     // Config permission validation is only applicable on Unix systems
+    Ok(())
 }
 
 /// Main node configuration
@@ -1846,5 +1865,61 @@ mod tests {
         let tls = TlsConfig::default();
         assert!(tls.cert_path.is_none());
         assert!(tls.key_path.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_config_permissions_mainnet_rejects_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pool.toml");
+        std::fs::write(&path, "# test config").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let result = validate_config_permissions(&path, Some(&BitcoinNetwork::Mainnet));
+        assert!(
+            result.is_err(),
+            "Mainnet must reject world-readable config files"
+        );
+        assert!(
+            result.unwrap_err().contains("Mainnet"),
+            "Error should mention mainnet"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_config_permissions_mainnet_accepts_secure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pool.toml");
+        std::fs::write(&path, "# test config").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let result = validate_config_permissions(&path, Some(&BitcoinNetwork::Mainnet));
+        assert!(
+            result.is_ok(),
+            "Mainnet should accept 0600 config: {:?}",
+            result.err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_config_permissions_signet_warns_but_succeeds() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pool.toml");
+        std::fs::write(&path, "# test config").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let result = validate_config_permissions(&path, Some(&BitcoinNetwork::Signet));
+        assert!(
+            result.is_ok(),
+            "Signet should warn but allow world-readable config"
+        );
     }
 }

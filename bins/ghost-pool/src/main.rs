@@ -4207,11 +4207,16 @@ fn expand_path(path: &std::path::Path) -> Result<PathBuf> {
 /// Load configuration from file
 fn load_config(path: &std::path::Path) -> Result<NodeConfig> {
     let config = if path.exists() {
-        // Check config file permissions (warns if world-readable)
-        ghost_common::config::validate_config_permissions(path);
-
         let content = std::fs::read_to_string(path)?;
         let config: NodeConfig = toml::from_str(&content)?;
+
+        // Check config file permissions — fails on mainnet if world-readable
+        ghost_common::config::validate_config_permissions(
+            path,
+            Some(&config.bitcoin.network),
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+
         config
     } else {
         info!("No config file found at {}, using defaults", path.display());

@@ -31,20 +31,20 @@ else
     exit 1
 fi
 
-# Generate RPC password
+# Generate RPC password and write environment file
 RPC_PASS=$(head -c 32 /dev/urandom | base64 | tr -d '=+/' | head -c 32)
-RPC_CONF="$CONF_DIR/ghostd-rpc.conf"
-cat > "$RPC_CONF" << EOF
-rpcuser=ghost
-rpcpassword=$RPC_PASS
+ENV_FILE="$CONF_DIR/ghostd.env"
+cat > "$ENV_FILE" << EOF
+GHOST_RPC_USER=ghost
+GHOST_RPC_PASSWORD=$RPC_PASS
 EOF
-chmod 600 "$RPC_CONF"
-chown "$GHOST_USER:$GHOST_USER" "$RPC_CONF"
-echo "Generated RPC credentials at $RPC_CONF"
+chmod 600 "$ENV_FILE"
+chown "$GHOST_USER:$GHOST_USER" "$ENV_FILE"
+echo "Generated RPC credentials at $ENV_FILE"
 
-# Install service file (substitute RPC password)
+# Install service file
 if [ -f /tmp/ghostd.service ]; then
-    sed "s/__GHOST_RPC_PASS__/$RPC_PASS/g" /tmp/ghostd.service > "$SERVICE_FILE"
+    cp /tmp/ghostd.service "$SERVICE_FILE"
 else
     echo "ERROR: /tmp/ghostd.service not found."
     exit 1
@@ -78,7 +78,7 @@ systemctl start ghostd
 echo "=== ghostd service started ==="
 echo "Check status: systemctl status ghostd"
 echo "Check logs: journalctl -u ghostd -f"
-echo "RPC password stored at: $RPC_CONF"
+echo "RPC password stored at: $ENV_FILE"
 
 # Enable checkpoint timer
 if [ -f /etc/systemd/system/ghost-checkpoint.timer ]; then

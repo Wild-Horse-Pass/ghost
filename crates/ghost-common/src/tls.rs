@@ -7,7 +7,6 @@
 //! a self-signed Ed25519 certificate is generated automatically (suitable for
 //! development and testnets only -- mainnet validation rejects this path).
 
-use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -72,32 +71,31 @@ fn load_pem_files(
     (Vec<CertificateDer<'static>>, PrivateKeyDer<'static>),
     Box<dyn std::error::Error + Send + Sync>,
 > {
-    let cert_data = fs::read(cert_path).map_err(|e| {
-        format!(
-            "Failed to read TLS certificate from {}: {}",
-            cert_path.display(),
-            e
-        )
-    })?;
-    let key_data = fs::read(key_path).map_err(|e| {
-        format!(
-            "Failed to read TLS private key from {}: {}",
-            key_path.display(),
-            e
-        )
-    })?;
+    use rustls::pki_types::pem::PemObject;
 
-    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut &cert_data[..])
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to parse PEM certificates: {}", e))?;
+    let certs: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_file_iter(cert_path)
+            .map_err(|e| {
+                format!(
+                    "Failed to read TLS certificate from {}: {}",
+                    cert_path.display(),
+                    e
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to parse PEM certificates: {}", e))?;
 
     if certs.is_empty() {
         return Err("No certificates found in PEM file".into());
     }
 
-    let key = rustls_pemfile::private_key(&mut &key_data[..])
-        .map_err(|e| format!("Failed to parse PEM private key: {}", e))?
-        .ok_or("No private key found in PEM file")?;
+    let key = PrivateKeyDer::from_pem_file(key_path).map_err(|e| {
+        format!(
+            "Failed to read/parse TLS private key from {}: {}",
+            key_path.display(),
+            e
+        )
+    })?;
 
     Ok((certs, key))
 }

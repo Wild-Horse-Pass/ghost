@@ -1,0 +1,9 @@
+# Security audit configuration for cargo-audit
+# See: https://rustsec.org/
+
+[advisories]
+# bincode 1.3.3 is unmaintained (RUSTSEC-2024-0011) but is a transitive
+# dependency via bellperson (ZKP library). Cannot upgrade without forking
+# bellperson. The exposure is limited: bincode is only used internally for
+# ZKP proof serialization, never for untrusted external input.
+ignore = ["RUSTSEC-2024-0011"]

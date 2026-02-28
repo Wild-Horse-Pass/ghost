@@ -9,19 +9,20 @@ Type=simple
 User=ghost
 Group=ghost
 
+EnvironmentFile=-/etc/ghost/ghostd.env
 ExecStart=/opt/ghost/bin/ghostd \
   -signet \
   -datadir=/var/lib/bitcoin \
   -server=1 \
   -rpcbind=127.0.0.1 \
   -rpcport=38332 \
-  -rpcuser=ghostrpc \
-  -rpcpassword=ghost_signet_rpc_2024 \
+  -rpcuser=${GHOST_RPC_USER} \
+  -rpcpassword=${GHOST_RPC_PASSWORD} \
   -rpcallowip=127.0.0.1/32 \
   -maxconnections=32 \
   -listen=1 \
   -port=38333 \
-  -ghostreaper=moderate \
+  -ghostreaper=enabled \
   -zmqpubhashblock=tcp://127.0.0.1:28332 \
   -zmqpubhashtx=tcp://127.0.0.1:28333 \
   -zmqpubsequence=tcp://127.0.0.1:28334

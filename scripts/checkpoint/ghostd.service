@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 User=ghost
 Group=ghost
+EnvironmentFile=-/etc/ghost/ghostd.env
 ExecStart=/opt/ghost/bin/ghostd \
   -signet \
   -hazemode=full_archive \
@@ -14,8 +15,8 @@ ExecStart=/opt/ghost/bin/ghostd \
   -server=1 \
   -rpcbind=127.0.0.1 \
   -rpcport=38332 \
-  -rpcuser=ghost \
-  -rpcpassword=__GHOST_RPC_PASS__ \
+  -rpcuser=${GHOST_RPC_USER} \
+  -rpcpassword=${GHOST_RPC_PASSWORD} \
   -rpcallowip=127.0.0.1/32 \
   -disablewallet \
   -maxconnections=32 \

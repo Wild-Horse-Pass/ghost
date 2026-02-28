@@ -58,6 +58,7 @@ bitcoin = { workspace = true }
 futures = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
+zeroize = { workspace = true }
 rand = { workspace = true }
 chrono = { workspace = true }
 getrandom = { workspace = true }

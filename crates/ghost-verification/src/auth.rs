@@ -51,6 +51,7 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::sync::Arc;
 use tracing::warn;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// HMAC-SHA256 type alias
 type HmacSha256 = Hmac<Sha256>;
@@ -70,7 +71,7 @@ const MAX_TIMESTAMP_DRIFT_SECS: u64 = 30;
 /// - Unauthorized share injection attacks
 /// - Spoofed work credits
 /// - Fake consensus triggers
-#[derive(Clone)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct InternalAuth {
     secret: [u8; 32],
 }
@@ -211,6 +212,19 @@ pub enum AuthError {
     InvalidSecret(String),
 }
 
+impl AuthError {
+    /// Return a generic message safe for HTTP responses (no internal details).
+    pub fn client_message(&self) -> &'static str {
+        match self {
+            AuthError::MissingHeader(_) => "Missing required authentication header",
+            AuthError::InvalidSignature(_) => "Invalid signature",
+            AuthError::TimestampOutOfRange { .. } => "Request timestamp out of acceptable range",
+            AuthError::WeakSecret(_) => "Authentication configuration error",
+            AuthError::InvalidSecret(_) => "Authentication configuration error",
+        }
+    }
+}
+
 impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -294,7 +308,7 @@ pub fn verify_internal_auth(
         warn!(error = %e, "Internal API authentication failed");
         (
             StatusCode::UNAUTHORIZED,
-            format!("Authentication failed: {}", e),
+            format!("Authentication failed: {}", e.client_message()),
         )
     })
 }
@@ -449,6 +463,75 @@ mod tests {
             InternalAuth::from_hex(bad_hex),
             Err(AuthError::InvalidSecret(_))
         ));
+    }
+
+    #[test]
+    fn test_secret_zeroized_on_drop() {
+        use zeroize::Zeroize;
+
+        let secret = test_secret();
+        let mut auth = InternalAuth::new(&secret).unwrap();
+
+        // Verify it works before zeroization
+        let body = b"test";
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let sig = auth.sign(ts, body);
+        assert!(auth.verify(&sig, ts, body).is_ok());
+
+        // Zeroize and verify the secret is zeroed
+        auth.zeroize();
+        assert_eq!(auth.secret, [0u8; 32], "Secret must be zeroed after zeroize()");
+    }
+
+    #[test]
+    fn test_client_message_contains_no_timestamps() {
+        let err = AuthError::TimestampOutOfRange {
+            received: 1700000000,
+            server_time: 1700000099,
+        };
+        let msg = err.client_message();
+        // Must not contain any numeric timestamp values
+        assert!(
+            !msg.contains("1700000000"),
+            "client_message must not leak received timestamp"
+        );
+        assert!(
+            !msg.contains("1700000099"),
+            "client_message must not leak server timestamp"
+        );
+        // Display (for logs) SHOULD contain timestamps
+        let display = format!("{}", err);
+        assert!(
+            display.contains("1700000000") && display.contains("1700000099"),
+            "Display should contain timestamps for logging"
+        );
+    }
+
+    #[test]
+    fn test_client_messages_are_generic() {
+        let cases: Vec<AuthError> = vec![
+            AuthError::MissingHeader("X-Ghost-Signature".to_string()),
+            AuthError::InvalidSignature("bad hex".to_string()),
+            AuthError::TimestampOutOfRange {
+                received: 100,
+                server_time: 200,
+            },
+            AuthError::WeakSecret("too short".to_string()),
+            AuthError::InvalidSecret("bad encoding".to_string()),
+        ];
+        for err in &cases {
+            let msg = err.client_message();
+            assert!(!msg.is_empty(), "client_message should not be empty");
+            // None should contain numeric details from the variant fields
+            assert!(
+                !msg.contains("100") && !msg.contains("200"),
+                "client_message should not contain internal details: {}",
+                msg
+            );
+        }
     }
 
     // L-27: Verify 60-second timestamp tolerance

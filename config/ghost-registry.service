@@ -8,7 +8,7 @@ Wants=network-online.target
 Type=simple
 User=ghost
 Group=ghost
-Environment="CLOUDFLARE_API_TOKEN=your_cloudflare_api_token_here"
+EnvironmentFile=-/etc/ghost/registry.env
 ExecStart=/usr/local/bin/ghost-registry --config /etc/ghost/registry.toml
 Restart=always
 RestartSec=5
