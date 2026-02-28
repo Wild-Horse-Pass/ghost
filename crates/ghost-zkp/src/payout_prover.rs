@@ -176,6 +176,37 @@ impl PayoutProver {
         })
     }
 
+    /// Create a payout prover with MPC-generated parameters
+    ///
+    /// This is the production constructor. Parameters come from the MPC ceremony,
+    /// which guarantees the toxic waste is destroyed (1-of-N security).
+    pub fn new_with_params(
+        max_miners: usize,
+        max_nodes: usize,
+        params: Arc<Parameters<Bls12>>,
+    ) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"ghost-zkp-payout-prover-v2-groth16");
+        hasher.update(max_miners.to_le_bytes());
+        hasher.update(max_nodes.to_le_bytes());
+        let prover_id: [u8; 32] = hasher.finalize().into();
+
+        let prepared_vk = prepare_verifying_key(&params.vk);
+
+        Self {
+            max_miners,
+            max_nodes,
+            prover_id,
+            params: Some(params),
+            prepared_vk: Some(Arc::new(prepared_vk)),
+        }
+    }
+
+    /// Create with default parameters using MPC-generated params
+    pub fn default_with_params(params: Arc<Parameters<Bls12>>) -> Self {
+        Self::new_with_params(MAX_MINERS, MAX_NODES, params)
+    }
+
     /// Create a new payout prover with full Groth16 setup
     ///
     /// **SECURITY WARNING: FOR TESTING ONLY**

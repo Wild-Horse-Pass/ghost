@@ -260,16 +260,27 @@ impl CeremonyManager {
         // Generate genesis parameters using NoteSpendCircuit (sender-side proofs)
         use bellperson::groth16::generate_random_parameters;
         use blstrs::Scalar as Fr;
+        use ghost_zkp::circuit::payout::PayoutCircuit;
         use ghost_zkp::circuit::NoteSpendCircuit;
         use rand::rngs::OsRng;
 
-        tracing::info!("MPC: Generating genesis parameters for note spend circuit (depth=40)...");
+        tracing::info!("MPC: Generating genesis parameters for note spend + payout circuits...");
 
         let dummy_note = NoteSpendCircuit::<Fr>::dummy(40);
         let note_params = generate_random_parameters::<Bls12, _, _>(dummy_note, &mut OsRng)
             .map_err(|e| {
                 MpcError::Internal(format!(
                     "Failed to generate note spend genesis params: {:?}",
+                    e
+                ))
+            })?;
+
+        // Generate payout circuit genesis parameters (max_miners=100, max_nodes=50)
+        let dummy_payout = PayoutCircuit::<Fr>::dummy(100, 50);
+        let payout_params = generate_random_parameters::<Bls12, _, _>(dummy_payout, &mut OsRng)
+            .map_err(|e| {
+                MpcError::Internal(format!(
+                    "Failed to generate payout genesis params: {:?}",
                     e
                 ))
             })?;
@@ -285,8 +296,8 @@ impl CeremonyManager {
                 ))
             })?;
 
-        self.initialize_genesis_multi(note_params, note_params2)?;
-        tracing::info!("MPC: Genesis parameters initialized for NoteSpendCircuit");
+        self.initialize_genesis_multi(note_params, payout_params, note_params2)?;
+        tracing::info!("MPC: Genesis parameters initialized for NoteSpend + Payout + Confidential");
         Ok(true)
     }
 
@@ -872,6 +883,7 @@ impl CeremonyManager {
     pub fn initialize_genesis_multi(
         &self,
         note_spend_params: Parameters<Bls12>,
+        payout_params: Parameters<Bls12>,
         confidential_params: Parameters<Bls12>,
     ) -> MpcResult<()> {
         let mut state = self.state.write();
@@ -887,6 +899,10 @@ impl CeremonyManager {
         // Save note spend params as v0
         save_parameters(&self.files.note_spend_params_path(0), &note_spend_params)?;
         save_verifying_key(&self.files.note_spend_vk_path(), &note_spend_params.vk)?;
+
+        // Save payout params as v0
+        save_parameters(&self.files.payout_params_path(0), &payout_params)?;
+        save_verifying_key(&self.files.payout_vk_path(), &payout_params.vk)?;
 
         // Save confidential params as v0
         save_parameters(
@@ -906,6 +922,10 @@ impl CeremonyManager {
         *self.note_spend_params.write() = Some(Arc::new(note_spend_params));
         *self.note_spend_vk.write() = Some(Arc::new(note_spend_vk));
 
+        let payout_vk = prepare_verifying_key(&payout_params.vk);
+        *self.payout_params.write() = Some(Arc::new(payout_params));
+        *self.payout_vk.write() = Some(Arc::new(payout_vk));
+
         let confidential_vk = prepare_verifying_key(&confidential_params.vk);
         *self.confidential_params.write() = Some(Arc::new(confidential_params));
         *self.confidential_vk.write() = Some(Arc::new(confidential_vk));
@@ -921,7 +941,7 @@ impl CeremonyManager {
 
         info!(
             params_hash = %hex::encode(params_hash),
-            circuits = "block + confidential",
+            circuits = "note_spend + payout + confidential",
             "Initialized MPC ceremony with multi-circuit genesis parameters"
         );
 

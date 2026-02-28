@@ -1406,10 +1406,46 @@ async fn main() -> Result<()> {
                 }
             }
 
-            // Generate payout prover/verifier (unchanged)
-            match PayoutProver::default_params_with_setup() {
+            // Generate payout prover/verifier - prefer MPC-generated params when available
+            #[cfg(feature = "mpc-ceremony")]
+            let payout_prover_result: Result<std::sync::Arc<PayoutProver>, String> = {
+                let mpc_dir = std::path::PathBuf::from(
+                    std::env::var("MPC_PARAMS_PATH").unwrap_or_else(|_| {
+                        format!(
+                            "{}/.ghost/mpc_params",
+                            std::env::var("HOME").unwrap_or_default()
+                        )
+                    }),
+                );
+                let payout_path = mpc_dir.join("payout_params_current.bin");
+                if payout_path.exists() {
+                    match ghost_mpc::params::load_parameters(&payout_path) {
+                        Ok(params) => {
+                            info!("Using MPC-generated payout parameters");
+                            Ok(Arc::new(PayoutProver::default_with_params(Arc::new(params))))
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to load MPC payout params, falling back to random setup");
+                            PayoutProver::default_params_with_setup()
+                                .map(Arc::new)
+                                .map_err(|e| format!("{}", e))
+                        }
+                    }
+                } else {
+                    warn!("No MPC payout params on disk, using random trusted setup");
+                    PayoutProver::default_params_with_setup()
+                        .map(Arc::new)
+                        .map_err(|e| format!("{}", e))
+                }
+            };
+            #[cfg(not(feature = "mpc-ceremony"))]
+            let payout_prover_result: Result<std::sync::Arc<PayoutProver>, String> =
+                PayoutProver::default_params_with_setup()
+                    .map(Arc::new)
+                    .map_err(|e| format!("{}", e));
+
+            match payout_prover_result {
                 Ok(payout_prover) => {
-                    let payout_prover = Arc::new(payout_prover);
                     let payout_verifier = Arc::new(PayoutVerifier::for_prover(&payout_prover));
                     zk_payout_handler_for_init.set_verifier(
                         ghost_consensus::zk_payout_handler::create_payout_verifier(payout_verifier),
