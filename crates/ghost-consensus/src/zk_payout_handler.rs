@@ -49,8 +49,8 @@ use crate::vote_handler::RateLimiter;
 use crate::epoch::{EpochTracker, SettlerRole};
 use crate::mesh::MessageHandler;
 use crate::message::{
-    MessageEnvelope, MessageType, ZkPayoutConsensusResult, ZkPayoutProposalMessage,
-    ZkPayoutRejectionReason, ZkPayoutVoteMessage,
+    EquivocationProofMessage, MessageEnvelope, MessageType, ZkPayoutConsensusResult,
+    ZkPayoutProposalMessage, ZkPayoutRejectionReason, ZkPayoutVoteMessage,
 };
 
 /// Callback for broadcasting ZK payout messages
@@ -155,6 +155,8 @@ struct ZkPayoutProposalState {
     approvals: HashSet<NodeId>,
     /// Nodes that voted to reject (with reasons)
     rejections: HashMap<NodeId, ZkPayoutRejectionReason>,
+    /// S-2: Stored vote messages per voter for equivocation proof construction
+    vote_messages: HashMap<NodeId, ZkPayoutVoteMessage>,
     /// When the proposal was received
     received_at: Instant,
     /// Whether consensus has been reached
@@ -169,6 +171,7 @@ impl ZkPayoutProposalState {
             proposal,
             approvals: HashSet::new(),
             rejections: HashMap::new(),
+            vote_messages: HashMap::new(),
             received_at: Instant::now(),
             decided: false,
             result: None,
@@ -382,17 +385,20 @@ impl ZkPayoutVoteHandler {
         &self,
         proposal: &ZkPayoutProposalMessage,
     ) -> Result<(), ZkPayoutRejectionReason> {
-        // Verify settler authorization if epoch tracker is available
-        if let Some(ref tracker) = self.epoch_tracker {
-            let settler_role = tracker
-                .is_settler(&proposal.proposer, proposal.epoch)
-                .map_err(|_| {
-                    ZkPayoutRejectionReason::Other("Failed to check settler".to_string())
-                })?;
+        // SECURITY: Fail-closed — epoch tracker MUST be available to verify settler authorization.
+        // If epoch tracker is None, reject all proposals rather than allowing unauthorized submissions.
+        let tracker = self.epoch_tracker.as_ref().ok_or_else(|| {
+            ZkPayoutRejectionReason::Other("Epoch tracker not initialized".to_string())
+        })?;
 
-            if settler_role == SettlerRole::NotSettler {
-                return Err(ZkPayoutRejectionReason::InvalidSettler);
-            }
+        let settler_role = tracker
+            .is_settler(&proposal.proposer, proposal.epoch)
+            .map_err(|_| {
+                ZkPayoutRejectionReason::Other("Failed to check settler".to_string())
+            })?;
+
+        if settler_role == SettlerRole::NotSettler {
+            return Err(ZkPayoutRejectionReason::InvalidSettler);
         }
 
         // Timestamp should be reasonable (within 5 minutes)
@@ -537,33 +543,74 @@ impl ZkPayoutVoteHandler {
         }
 
         // H5: Equivocation detection - check if voter already voted differently
-        if vote.approve {
-            // Trying to approve - check if they already rejected
-            if state.rejections.contains_key(&voter) {
-                // EQUIVOCATION: Voter already rejected, now trying to approve
-                warn!(
-                    epoch,
-                    voter = %hex::encode(&voter[..8]),
-                    "EQUIVOCATION DETECTED: voter already rejected, now trying to approve"
-                );
-                drop(proposals); // Release lock before banning
-                self.ban_node(voter);
-                return Ok(());
-            }
+        let equivocated = if vote.approve {
+            state.rejections.contains_key(&voter)
         } else {
-            // Trying to reject - check if they already approved
-            if state.approvals.contains(&voter) {
-                // EQUIVOCATION: Voter already approved, now trying to reject
-                warn!(
+            state.approvals.contains(&voter)
+        };
+
+        if equivocated {
+            warn!(
+                epoch,
+                voter = %hex::encode(&voter[..8]),
+                "EQUIVOCATION DETECTED: voter changed vote direction"
+            );
+
+            // S-2: Extract the original vote for the equivocation proof
+            let original_vote = state.vote_messages.get(&voter).cloned();
+            drop(proposals); // Release lock before banning and broadcasting
+
+            self.ban_node(voter);
+
+            // S-2: Broadcast equivocation proof to network (matching vote_handler.rs SEC-EQUIV-1)
+            if let Some(ref broadcast) = self.broadcast_fn {
+                let vote1_data = original_vote
+                    .as_ref()
+                    .and_then(|v| serde_json::to_vec(v).ok())
+                    .unwrap_or_default();
+                let vote2_data = serde_json::to_vec(vote).unwrap_or_default();
+
+                let mut proof_msg = EquivocationProofMessage::new(
+                    voter,
                     epoch,
-                    voter = %hex::encode(&voter[..8]),
-                    "EQUIVOCATION DETECTED: voter already approved, now trying to reject"
+                    "zk_payout_vote".to_string(),
+                    vote1_data,
+                    vote2_data,
+                    self.identity.node_id(),
                 );
-                drop(proposals); // Release lock before banning
-                self.ban_node(voter);
-                return Ok(());
+
+                let signing_msg = proof_msg.signing_message();
+                proof_msg.reporter_signature = self.identity.sign(&signing_msg);
+
+                match serde_json::to_vec(&proof_msg) {
+                    Ok(payload) => {
+                        if let Err(e) = broadcast(MessageType::EquivocationProof, payload) {
+                            warn!(
+                                error = %e,
+                                "Failed to broadcast ZK payout equivocation proof"
+                            );
+                        } else {
+                            info!(
+                                equivocator = %hex::encode(&voter[..8]),
+                                epoch,
+                                "Broadcast ZK payout equivocation proof to network"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            "Failed to serialize ZK payout equivocation proof"
+                        );
+                    }
+                }
             }
+
+            return Ok(());
         }
+
+        // Store the vote message for potential equivocation proof construction
+        state.vote_messages.insert(voter, vote.clone());
 
         // Record the vote
         if vote.approve {
@@ -806,6 +853,29 @@ mod tests {
         Arc::new(NodeIdentity::generate())
     }
 
+    /// Create a test EpochTracker that recognizes [0xAB; 32] as Primary settler for epoch 1.
+    /// Uses in-memory DB and records proposer at the epoch boundary via public API.
+    fn create_test_epoch_tracker() -> Arc<EpochTracker> {
+        let db = ghost_storage::Database::in_memory().expect("in-memory DB");
+        let snapshot_mgr = Arc::new(ghost_storage::snapshot::SnapshotManager::new(db, 100, 10));
+        let tracker = EpochTracker::new(snapshot_mgr);
+
+        let proposer = [0xABu8; 32];
+        let state_root = [0u8; 32];
+
+        // Record proposer at epoch 1's end block so is_settler returns Primary
+        let epoch_end = EpochTracker::epoch_end_block(1);
+        tracker.record_proposer(epoch_end, &proposer, &state_root).unwrap();
+
+        // Also record for epoch 0
+        let epoch_0_end = EpochTracker::epoch_end_block(0);
+        if epoch_0_end > 0 {
+            tracker.record_proposer(epoch_0_end, &proposer, &state_root).unwrap();
+        }
+
+        Arc::new(tracker)
+    }
+
     fn create_test_proposal(epoch: u64, proposer: NodeId) -> ZkPayoutProposalMessage {
         ZkPayoutProposalMessage {
             epoch,
@@ -825,10 +895,14 @@ mod tests {
         }
     }
 
-    /// Create a handler with a permissive test verifier
-    /// This is needed because we implement fail-closed: no verifier = reject all proofs
+    /// Create a handler with a permissive test verifier and epoch tracker
+    /// This is needed because we implement fail-closed: no verifier = reject all proofs,
+    /// and S-1 fail-closed: no epoch tracker = reject all proposals.
     fn create_test_handler(identity: Arc<NodeIdentity>) -> ZkPayoutVoteHandler {
-        ZkPayoutVoteHandler::new(identity).with_verifier(Arc::new(|_, _, _, _, _, _, _, _| true))
+        let tracker = create_test_epoch_tracker();
+        ZkPayoutVoteHandler::new(identity)
+            .with_epoch_tracker(tracker)
+            .with_verifier(Arc::new(|_, _, _, _, _, _, _, _| true))
     }
 
     #[test]
@@ -880,11 +954,12 @@ mod tests {
     #[test]
     fn test_proposal_validation() {
         let identity = create_test_identity();
-        let handler = ZkPayoutVoteHandler::new(identity);
+        let handler = create_test_handler(identity);
 
         let proposer = [0xABu8; 32];
 
-        // Valid proposal
+        // Valid proposal (epoch tracker returns NotSettler for unknown proposers,
+        // but our test tracker treats everyone as Primary)
         let valid_proposal = create_test_proposal(1, proposer);
         assert!(handler.validate_proposal(&valid_proposal).is_ok());
 
@@ -903,6 +978,20 @@ mod tests {
             handler.validate_proposal(&empty_proof),
             Err(ZkPayoutRejectionReason::InvalidProof)
         ));
+    }
+
+    #[test]
+    fn test_validate_proposal_fails_without_epoch_tracker() {
+        // S-1 SECURITY: validate_proposal must fail-closed when epoch_tracker is None
+        let identity = create_test_identity();
+        let handler = ZkPayoutVoteHandler::new(identity);
+
+        let proposer = [0xABu8; 32];
+        let proposal = create_test_proposal(1, proposer);
+
+        // Without epoch_tracker, ALL proposals must be rejected
+        let result = handler.validate_proposal(&proposal);
+        assert!(result.is_err(), "S-1: validate_proposal must reject when epoch_tracker is None");
     }
 
     #[test]

@@ -784,6 +784,9 @@ pub fn verify_vote_signature(vote: &Vote, proposal_hash: &[u8; 32]) -> bool {
     }
 }
 
+/// Default maximum active voting sessions (S-3 OOM protection)
+const DEFAULT_MAX_ACTIVE_SESSIONS: usize = 100;
+
 /// Voting manager for multiple sessions
 #[derive(Debug)]
 pub struct VotingManager {
@@ -794,6 +797,8 @@ pub struct VotingManager {
     completed: RwLock<VecDeque<VotingSession>>,
     /// Max completed sessions to keep
     max_completed: usize,
+    /// S-3: Maximum active sessions to prevent unbounded memory growth
+    max_active_sessions: usize,
 }
 
 impl VotingManager {
@@ -803,7 +808,14 @@ impl VotingManager {
             sessions: RwLock::new(HashMap::new()),
             completed: RwLock::new(VecDeque::new()),
             max_completed,
+            max_active_sessions: DEFAULT_MAX_ACTIVE_SESSIONS,
         }
+    }
+
+    /// Set the maximum number of active sessions (S-3 OOM protection)
+    pub fn with_max_active_sessions(mut self, max: usize) -> Self {
+        self.max_active_sessions = max;
+        self
     }
 
     /// Start a new voting session
@@ -812,6 +824,16 @@ impl VotingManager {
 
         let mut sessions = self.sessions.write();
         if sessions.contains_key(&key) {
+            return false;
+        }
+
+        // S-3: Reject new sessions when at capacity to prevent unbounded memory growth
+        if sessions.len() >= self.max_active_sessions {
+            warn!(
+                active = sessions.len(),
+                max = self.max_active_sessions,
+                "Rejecting voting session: active session limit reached"
+            );
             return false;
         }
 

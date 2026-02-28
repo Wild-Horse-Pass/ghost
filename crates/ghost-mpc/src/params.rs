@@ -193,29 +193,39 @@ impl ParameterFiles {
 
 /// Save parameters to a file
 ///
-/// SECURITY: Uses fsync to ensure parameters are durably written to disk.
-/// This prevents data loss if the system crashes before the OS flushes buffers.
+/// S-5 SECURITY: Uses atomic write (temp file + rename) to prevent corruption
+/// if the process crashes mid-write. Also uses fsync for durability.
 pub fn save_parameters(path: &Path, params: &Parameters<Bls12>) -> MpcResult<()> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
+    let temp_path = path.with_extension("tmp");
 
-    // Use bellperson's built-in serialization
-    params
-        .write(&mut writer)
-        .map_err(|e| MpcError::Serialization(e.to_string()))?;
+    // Write to temp file first
+    let result = (|| -> MpcResult<()> {
+        let file = File::create(&temp_path)?;
+        let mut writer = BufWriter::new(file);
 
-    writer.flush()?;
+        params
+            .write(&mut writer)
+            .map_err(|e| MpcError::Serialization(e.to_string()))?;
 
-    // SECURITY: Ensure data is synced to persistent storage
-    // This prevents parameter corruption if the system crashes before
-    // the OS flushes its write buffers to disk.
-    writer.get_ref().sync_all()?;
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+        Ok(())
+    })();
+
+    // Clean up temp file on error
+    if let Err(e) = result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
+
+    // Atomic rename to target path
+    fs::rename(&temp_path, path)?;
 
     let file_size = fs::metadata(path)?.len();
     info!(
         path = %path.display(),
         size_bytes = file_size,
-        "Saved MPC parameters (synced to disk)"
+        "Saved MPC parameters (atomic write)"
     );
 
     Ok(())
@@ -239,19 +249,31 @@ pub fn load_parameters(path: &Path) -> MpcResult<Parameters<Bls12>> {
 }
 
 /// Save a verifying key to a file
+///
+/// S-5 SECURITY: Uses atomic write (temp file + rename) to prevent corruption.
 pub fn save_verifying_key(path: &Path, vk: &VerifyingKey<Bls12>) -> MpcResult<()> {
-    let file = File::create(path)?;
-    let mut writer = BufWriter::new(file);
+    let temp_path = path.with_extension("tmp");
 
-    vk.write(&mut writer)
-        .map_err(|e| MpcError::Serialization(e.to_string()))?;
+    let result = (|| -> MpcResult<()> {
+        let file = File::create(&temp_path)?;
+        let mut writer = BufWriter::new(file);
 
-    writer.flush()?;
+        vk.write(&mut writer)
+            .map_err(|e| MpcError::Serialization(e.to_string()))?;
 
-    // SECURITY: Ensure data is synced to persistent storage
-    writer.get_ref().sync_all()?;
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+        Ok(())
+    })();
 
-    info!(path = %path.display(), "Saved verifying key (synced to disk)");
+    if let Err(e) = result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
+
+    fs::rename(&temp_path, path)?;
+
+    info!(path = %path.display(), "Saved verifying key (atomic write)");
 
     Ok(())
 }
@@ -289,7 +311,10 @@ pub fn hash_params_file(path: &Path) -> MpcResult<[u8; 32]> {
     Ok(hasher.finalize().into())
 }
 
-/// Atomically update the "current" symlink/copy to point to new version
+/// Atomically update the "current" params to point to new version
+///
+/// S-6 SECURITY: Uses read → write temp → rename pattern for atomic updates,
+/// preventing corruption if the process crashes mid-copy.
 pub fn update_current_params(files: &ParameterFiles, version: u32) -> MpcResult<()> {
     let note_spend_src = files.note_spend_params_path(version);
     let payout_src = files.payout_params_path(version);
@@ -298,12 +323,8 @@ pub fn update_current_params(files: &ParameterFiles, version: u32) -> MpcResult<
     let payout_dst = files.current_payout_params_path();
     let confidential_dst = files.current_confidential_params_path();
 
-    // On Unix, we'd use symlinks. For portability, we copy.
-    // This is atomic enough for our purposes since we only read "current"
-    // after initialization.
-
     if note_spend_src.exists() {
-        fs::copy(&note_spend_src, &note_spend_dst)?;
+        atomic_copy(&note_spend_src, &note_spend_dst)?;
         info!(
             version = version,
             path = %note_spend_dst.display(),
@@ -312,7 +333,7 @@ pub fn update_current_params(files: &ParameterFiles, version: u32) -> MpcResult<
     }
 
     if payout_src.exists() {
-        fs::copy(&payout_src, &payout_dst)?;
+        atomic_copy(&payout_src, &payout_dst)?;
         info!(
             version = version,
             path = %payout_dst.display(),
@@ -321,7 +342,7 @@ pub fn update_current_params(files: &ParameterFiles, version: u32) -> MpcResult<
     }
 
     if confidential_src.exists() {
-        fs::copy(&confidential_src, &confidential_dst)?;
+        atomic_copy(&confidential_src, &confidential_dst)?;
         info!(
             version = version,
             path = %confidential_dst.display(),
@@ -329,6 +350,30 @@ pub fn update_current_params(files: &ParameterFiles, version: u32) -> MpcResult<
         );
     }
 
+    Ok(())
+}
+
+/// Atomically copy a file by writing to a temp file and renaming.
+fn atomic_copy(src: &Path, dst: &Path) -> MpcResult<()> {
+    let temp_path = dst.with_extension("tmp");
+
+    let result = (|| -> MpcResult<()> {
+        let mut reader = BufReader::new(File::open(src)?);
+        let file = File::create(&temp_path)?;
+        let mut writer = BufWriter::new(file);
+
+        std::io::copy(&mut reader, &mut writer)?;
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+        Ok(())
+    })();
+
+    if let Err(e) = result {
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
+
+    fs::rename(&temp_path, dst)?;
     Ok(())
 }
 

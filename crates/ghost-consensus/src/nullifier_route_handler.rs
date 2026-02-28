@@ -153,6 +153,8 @@ pub struct NullifierRouteHandler {
     verifier: RwLock<Option<Arc<NoteVerifier>>>,
     /// Confirmed transactions waiting for next checkpoint
     confirmed_pool: RwLock<Vec<L2Transaction>>,
+    /// S-4: O(1) nullifier dedup index for confirmed_pool (parallel HashSet)
+    confirmed_nullifiers: RwLock<HashSet<[u8; 32]>>,
     /// Vote state per checkpoint height
     votes: RwLock<HashMap<u64, CheckpointVoteState>>,
     /// Database
@@ -189,6 +191,7 @@ impl NullifierRouteHandler {
             epoch_manager,
             verifier: RwLock::new(None),
             confirmed_pool: RwLock::new(Vec::new()),
+            confirmed_nullifiers: RwLock::new(HashSet::new()),
             votes: RwLock::new(HashMap::new()),
             db,
             config,
@@ -400,6 +403,7 @@ impl NullifierRouteHandler {
                 return Err(GhostError::Internal("Confirmed pool full".into()));
             }
             pool.push(tx.clone());
+            self.confirmed_nullifiers.write().insert(tx.nullifier);
         }
 
         // 7. Create signed confirmation receipt
@@ -473,12 +477,11 @@ impl NullifierRouteHandler {
         let height = self.epoch_manager.current_height();
         let _ = self.epoch_manager.spend_nullifier(tx.nullifier, height);
 
-        // Add to confirmed pool
+        // Add to confirmed pool (S-4: O(1) dedup via HashSet instead of linear scan)
         {
-            let mut pool = self.confirmed_pool.write();
-            // Deduplicate by nullifier
-            if !pool.iter().any(|t| t.nullifier == tx.nullifier) {
-                pool.push(tx.clone());
+            let mut nullifiers = self.confirmed_nullifiers.write();
+            if nullifiers.insert(tx.nullifier) {
+                self.confirmed_pool.write().push(tx.clone());
             }
         }
 
@@ -527,13 +530,14 @@ impl NullifierRouteHandler {
             );
         }
 
-        // Drain confirmed pool
+        // Drain confirmed pool (S-4: clear nullifiers HashSet in sync)
         let transactions: Vec<L2Transaction> = {
             let mut pool = self.confirmed_pool.write();
             let txs: Vec<L2Transaction> = pool
                 .drain(..)
                 .take(self.config.max_txs_per_checkpoint)
                 .collect();
+            self.confirmed_nullifiers.write().clear();
             txs
         };
 
