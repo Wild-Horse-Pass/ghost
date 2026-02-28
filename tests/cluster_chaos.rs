@@ -1,4 +1,4 @@
-//! Live Cluster Chaos & Load Tests (124 tests across 17 phases)
+//! Live Cluster Chaos & Load Tests (139 tests across 20 phases)
 //!
 //! Hits the 4-node signet cluster via HTTP and SSH to verify:
 //! - Phase 1: Baseline health and consistency (8 tests)
@@ -18,11 +18,14 @@
 //! - Phase 15: Heterogeneous baseline — verify mixed configs work together (8 tests)
 //! - Phase 16: Heterogeneous chaos — load + kills + partitions with mixed configs (8 tests)
 //! - Phase 17: Restore original configs — undo Phase 14 deployment (4 tests)
+//! - Phase 18: Deploy Ghost Core modes — enable tormode on VM3 (4 tests)
+//! - Phase 19: Ghost Core mode chaos — load + kills + partitions with Tor/clearnet mix (8 tests)
+//! - Phase 20: Restore Ghost Core configs — undo Phase 18 deployment (3 tests)
 //!
 //! All tests are `#[ignore]` — run explicitly:
 //!
 //! ```bash
-//! # Full suite (sequential, ~70-90 minutes)
+//! # Full suite (sequential, ~90-120 minutes)
 //! cargo test --test cluster_chaos -- --ignored --test-threads=1 --nocapture
 //!
 //! # Individual phases
@@ -43,9 +46,15 @@
 //! cargo test --test cluster_chaos phase15 -- --ignored --test-threads=1 --nocapture
 //! cargo test --test cluster_chaos phase16 -- --ignored --test-threads=1 --nocapture
 //! cargo test --test cluster_chaos phase17 -- --ignored --test-threads=1 --nocapture
+//! cargo test --test cluster_chaos phase18 -- --ignored --test-threads=1 --nocapture
+//! cargo test --test cluster_chaos phase19 -- --ignored --test-threads=1 --nocapture
+//! cargo test --test cluster_chaos phase20 -- --ignored --test-threads=1 --nocapture
 //!
 //! # Heterogeneous config suite (phases 14-17 together)
 //! cargo test --test cluster_chaos "phase1[4-7]" -- --ignored --test-threads=1 --nocapture
+//!
+//! # Ghost Core mode suite (phases 18-20 together)
+//! cargo test --test cluster_chaos "phase1[8-9]\|phase20" -- --ignored --test-threads=1 --nocapture
 //! ```
 
 #[path = "cluster_chaos_mod/mod.rs"]

@@ -27,3 +27,7 @@ pub mod phase14_deploy_heterogeneous;
 pub mod phase15_hetero_baseline;
 pub mod phase16_hetero_chaos;
 pub mod phase17_restore_configs;
+
+pub mod phase18_deploy_core_modes;
+pub mod phase19_core_mode_chaos;
+pub mod phase20_restore_core_configs;

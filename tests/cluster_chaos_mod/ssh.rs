@@ -290,4 +290,146 @@ impl SshController {
             )
         })
     }
+
+    // --- Ghost Core (C++ daemon) management ---
+
+    /// Ghost Core config file path.
+    const GHOST_CONF_PATH: &'static str = "/home/ghost/.ghost/ghost-core/ghost.conf";
+    const GHOST_CONF_BACKUP: &'static str = "/home/ghost/.ghost/ghost-core/ghost.conf.chaos_backup";
+
+    /// Ghost Core service name.
+    pub const GHOST_CORE_SERVICE: &'static str = "ghost-core";
+
+    /// Backup the ghost.conf file.
+    pub fn backup_ghost_conf(node: &NodeInfo) -> Result<String, String> {
+        println!("  [SSH] Backing up ghost.conf on {}", node.name);
+        Self::run(
+            node,
+            &format!(
+                "test ! -f {} && cp {} {}",
+                Self::GHOST_CONF_BACKUP,
+                Self::GHOST_CONF_PATH,
+                Self::GHOST_CONF_BACKUP
+            ),
+        )
+    }
+
+    /// Restore ghost.conf from backup. Removes backup after restore.
+    pub fn restore_ghost_conf(node: &NodeInfo) -> Result<String, String> {
+        println!("  [SSH] Restoring ghost.conf on {}", node.name);
+        Self::run(
+            node,
+            &format!(
+                "cp {} {} && rm -f {}",
+                Self::GHOST_CONF_BACKUP,
+                Self::GHOST_CONF_PATH,
+                Self::GHOST_CONF_BACKUP
+            ),
+        )
+    }
+
+    /// Check if a ghost.conf backup exists.
+    pub fn has_ghost_conf_backup(node: &NodeInfo) -> Result<bool, String> {
+        let output = Self::run(
+            node,
+            &format!("test -f {} && echo yes || echo no", Self::GHOST_CONF_BACKUP),
+        )?;
+        Ok(output.trim() == "yes")
+    }
+
+    /// Add a flag to ghost.conf under the [signet] section.
+    /// Bitcoin Core config format: key=value (no spaces).
+    pub fn add_ghost_conf_flag(
+        node: &NodeInfo,
+        key: &str,
+        value: &str,
+    ) -> Result<String, String> {
+        println!(
+            "  [SSH] Adding ghost.conf flag {}={} on {}",
+            key, value, node.name
+        );
+        // Add the flag under the [signet] section (after the signetchallenge line)
+        Self::run(
+            node,
+            &format!(
+                r#"grep -q '^{}=' {} || sed -i '/^signetchallenge=51$/a {}={}' {}"#,
+                key,
+                Self::GHOST_CONF_PATH,
+                key,
+                value,
+                Self::GHOST_CONF_PATH
+            ),
+        )
+    }
+
+    /// Remove a flag from ghost.conf.
+    #[allow(dead_code)]
+    pub fn remove_ghost_conf_flag(node: &NodeInfo, key: &str) -> Result<String, String> {
+        println!(
+            "  [SSH] Removing ghost.conf flag {} on {}",
+            key, node.name
+        );
+        Self::run(
+            node,
+            &format!(
+                r#"sed -i '/^{}=/d' {}"#,
+                key,
+                Self::GHOST_CONF_PATH
+            ),
+        )
+    }
+
+    /// Restart the ghost-core daemon.
+    /// Uses ghost-cli RPC to stop, then systemctl to start.
+    pub fn restart_ghost_core(node: &NodeInfo) -> Result<String, String> {
+        println!("  [SSH] Restarting ghost-core on {}", node.name);
+        // Stop the running process via RPC (works regardless of systemd state)
+        Self::run(
+            node,
+            "/opt/ghost/bin/ghost-cli -datadir=/home/ghost/.ghost/ghost-core stop 2>/dev/null; \
+             sleep 3; \
+             sudo systemctl reset-failed ghost-core 2>/dev/null; \
+             sudo systemctl start ghost-core",
+        )
+    }
+
+    /// Stop the ghost-core daemon via RPC.
+    pub fn stop_ghost_core(node: &NodeInfo) -> Result<String, String> {
+        println!("  [SSH] Stopping ghost-core on {}", node.name);
+        // Use ghost-cli RPC to stop the daemon, works regardless of systemd service state
+        Self::run(
+            node,
+            "/opt/ghost/bin/ghost-cli -datadir=/home/ghost/.ghost/ghost-core stop 2>/dev/null; \
+             sleep 2; \
+             sudo systemctl stop ghost-core 2>/dev/null; true",
+        )
+    }
+
+    /// Start the ghost-core service.
+    pub fn start_ghost_core(node: &NodeInfo) -> Result<String, String> {
+        println!("  [SSH] Starting ghost-core on {}", node.name);
+        // Reset any "failed" state before starting
+        Self::run(
+            node,
+            "sudo systemctl reset-failed ghost-core 2>/dev/null; \
+             sudo systemctl start ghost-core",
+        )
+    }
+
+    /// Check if ghost-core daemon is running (checks process, not systemd state).
+    pub fn is_ghost_core_active(node: &NodeInfo) -> Result<bool, String> {
+        let output = Self::run(
+            node,
+            "pidof ghostd >/dev/null 2>&1 || pidof bitcoin-node >/dev/null 2>&1; echo $?",
+        )?;
+        Ok(output.trim() == "0")
+    }
+
+    /// Read the ghostd/bitcoin-node process command line to verify active flags.
+    pub fn read_ghostd_cmdline(node: &NodeInfo) -> Result<String, String> {
+        Self::run(
+            node,
+            "cat /proc/$(pidof ghostd || pidof bitcoin-node)/cmdline 2>/dev/null | tr '\\0' ' '",
+        )
+    }
 }
