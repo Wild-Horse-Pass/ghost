@@ -1603,8 +1603,35 @@ async fn main() -> Result<()> {
                                                                 size = data.len(),
                                                                 peer = %host,
                                                                 hash = %hex::encode(&hash[..8]),
-                                                                "MPC params_callback: Verified and updated params"
+                                                                "MPC params_callback: Verified and updated note_spend params"
                                                             );
+                                                        }
+                                                        // Also fetch latest payout params from same peer
+                                                        let payout_url = format!("http://{}:8080/api/v1/mpc/payout-params", host);
+                                                        if let Ok(payout_resp) = reqwest::Client::new()
+                                                            .get(&payout_url)
+                                                            .timeout(std::time::Duration::from_secs(60))
+                                                            .send()
+                                                            .await
+                                                        {
+                                                            if payout_resp.status().is_success() {
+                                                                if let Ok(payout_data) = payout_resp.bytes().await {
+                                                                    if payout_data.len() > 1000 {
+                                                                        let payout_current = params_dir.join("payout_params_current.bin");
+                                                                        let payout_write = std::fs::read_link(&payout_current)
+                                                                            .unwrap_or(payout_current.clone());
+                                                                        if let Err(e) = std::fs::write(&payout_write, &payout_data) {
+                                                                            tracing::warn!(error = %e, "MPC params_callback: Failed to save payout params");
+                                                                        } else {
+                                                                            tracing::info!(
+                                                                                size = payout_data.len(),
+                                                                                peer = %host,
+                                                                                "MPC params_callback: Updated payout params"
+                                                                            );
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
                                                         }
                                                         return;
                                                     }
@@ -1822,7 +1849,35 @@ async fn main() -> Result<()> {
                                                     warn!(error = %e, "MPC: Failed to create params symlink");
                                                 }
 
-                                                info!(size = data.len(), peer = %host, "MPC: Fetched genesis params from peer!");
+                                                info!(size = data.len(), peer = %host, "MPC: Fetched genesis note_spend params from peer!");
+
+                                                // Also fetch payout params from same peer
+                                                let payout_url = format!("http://{}:8080/api/v1/mpc/payout-params", host);
+                                                if let Ok(payout_resp) = reqwest::Client::new()
+                                                    .get(&payout_url)
+                                                    .timeout(std::time::Duration::from_secs(60))
+                                                    .send()
+                                                    .await
+                                                {
+                                                    if payout_resp.status().is_success() {
+                                                        if let Ok(payout_data) = payout_resp.bytes().await {
+                                                            if payout_data.len() > 1000 {
+                                                                let payout_path = params_dir.join("payout_params_v0.bin");
+                                                                let payout_current = params_dir.join("payout_params_current.bin");
+                                                                if let Err(e) = std::fs::write(&payout_path, &payout_data) {
+                                                                    warn!(error = %e, "MPC: Failed to save fetched payout params");
+                                                                } else {
+                                                                    let _ = std::fs::remove_file(&payout_current);
+                                                                    if let Err(e) = std::os::unix::fs::symlink(&payout_path, &payout_current) {
+                                                                        warn!(error = %e, "MPC: Failed to create payout params symlink");
+                                                                    }
+                                                                    info!(size = payout_data.len(), peer = %host, "MPC: Fetched payout params from peer!");
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
                                                 fetched = true;
                                                 break;
                                             }
@@ -2276,9 +2331,32 @@ async fn main() -> Result<()> {
                                         {
                                             warn!(error = %e, "MPC: Failed to reload refreshed params");
                                         } else {
-                                            info!(size = data.len(), peer = %host, "MPC: Refreshed params from network for retry");
+                                            info!(size = data.len(), peer = %host, "MPC: Refreshed note_spend params from network for retry");
                                             // Invalidate cached contribution since params changed
                                             cached_msg = None;
+                                        }
+                                        // Also refresh payout params from same peer
+                                        let payout_url = format!("http://{}:8080/api/v1/mpc/payout-params", host);
+                                        if let Ok(payout_resp) = reqwest::Client::new()
+                                            .get(&payout_url)
+                                            .timeout(std::time::Duration::from_secs(60))
+                                            .send()
+                                            .await
+                                        {
+                                            if payout_resp.status().is_success() {
+                                                if let Ok(payout_data) = payout_resp.bytes().await {
+                                                    if payout_data.len() > 1000 {
+                                                        let payout_current = params_dir.join("payout_params_current.bin");
+                                                        let payout_write = std::fs::read_link(&payout_current)
+                                                            .unwrap_or(payout_current.clone());
+                                                        if let Err(e) = std::fs::write(&payout_write, &payout_data) {
+                                                            warn!(error = %e, "MPC: Failed to save refreshed payout params");
+                                                        } else {
+                                                            info!(size = payout_data.len(), peer = %host, "MPC: Refreshed payout params from network");
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                         break;
                                     }

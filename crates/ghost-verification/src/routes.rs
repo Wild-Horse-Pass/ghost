@@ -308,6 +308,10 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
         )
         // MPC ceremony endpoints
         .route("/api/v1/mpc/params", get(api_mpc_params_handler))
+        .route(
+            "/api/v1/mpc/payout-params",
+            get(api_mpc_payout_params_handler),
+        )
         .route("/api/v1/mpc/status", get(api_mpc_status_handler))
         .route(
             "/api/v1/mpc/contributors",
@@ -4508,6 +4512,46 @@ async fn api_mpc_params_handler(State(_state): State<Arc<VerificationState>>) ->
                 StatusCode::INTERNAL_SERVER_ERROR,
                 [(axum::http::header::CONTENT_TYPE, "application/json")],
                 serde_json::json!({"error": "Failed to read params"})
+                    .to_string()
+                    .into_bytes(),
+            )
+        }
+    }
+}
+
+/// MPC payout params handler - serves current MPC payout parameters file for P2P sync
+async fn api_mpc_payout_params_handler(
+    State(_state): State<Arc<VerificationState>>,
+) -> impl IntoResponse {
+    let params_path =
+        std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+            .join(".ghost/mpc_params/payout_params_current.bin");
+
+    if !params_path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            serde_json::json!({"error": "MPC payout params not available"})
+                .to_string()
+                .into_bytes(),
+        );
+    }
+
+    match std::fs::read(&params_path) {
+        Ok(data) => {
+            debug!(size = data.len(), "Serving MPC payout params");
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                data,
+            )
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to read MPC payout params file");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                serde_json::json!({"error": "Failed to read payout params"})
                     .to_string()
                     .into_bytes(),
             )
