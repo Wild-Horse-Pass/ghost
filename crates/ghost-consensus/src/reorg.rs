@@ -815,24 +815,33 @@ impl L1ChainMonitor {
 // Reorg Coordinator - Integrates Fork Detection with ZK Vote Handler (P2P-H7)
 // =============================================================================
 
+#[cfg(feature = "zk-consensus")]
 use crate::message::{EquivocationProofMessage, MessageType};
+#[cfg(feature = "zk-consensus")]
 use crate::zk_vote_handler::ZkVoteHandler;
+#[cfg(feature = "zk-consensus")]
 use ghost_common::error::GhostResult;
+#[cfg(feature = "zk-consensus")]
 use ghost_common::identity::NodeIdentity;
+#[cfg(feature = "zk-consensus")]
 use std::sync::Arc;
 
+#[cfg(feature = "zk-consensus")]
 /// Callback for broadcasting equivocation proofs to the network
 pub type EquivocationBroadcastFn =
     Arc<dyn Fn(MessageType, Vec<u8>) -> GhostResult<()> + Send + Sync>;
 
+#[cfg(feature = "zk-consensus")]
 /// Callback for getting BFT vote counts for a chain at a specific height
 /// Returns (our_vote_count, their_vote_count) for fork resolution
 pub type VoteCountFn = Arc<dyn Fn(u64, [u8; 32], [u8; 32]) -> (u32, u32) + Send + Sync>;
 
+#[cfg(feature = "zk-consensus")]
 /// Callback for loading snapshot state root from storage
 /// Returns the state root at the target height, or None if not found
 pub type SnapshotLoaderFn = Arc<dyn Fn(u64) -> Option<[u8; 32]> + Send + Sync>;
 
+#[cfg(feature = "zk-consensus")]
 /// Configuration for the reorg coordinator
 #[derive(Debug, Clone)]
 pub struct ReorgCoordinatorConfig {
@@ -844,6 +853,7 @@ pub struct ReorgCoordinatorConfig {
     pub snapshot_interval: u64,
 }
 
+#[cfg(feature = "zk-consensus")]
 impl Default for ReorgCoordinatorConfig {
     fn default() -> Self {
         Self {
@@ -854,6 +864,7 @@ impl Default for ReorgCoordinatorConfig {
     }
 }
 
+#[cfg(feature = "zk-consensus")]
 /// Result of a reorg coordination action
 #[derive(Debug, Clone)]
 pub enum ReorgResult {
@@ -879,6 +890,7 @@ pub enum ReorgResult {
     Error { reason: String },
 }
 
+#[cfg(feature = "zk-consensus")]
 /// Coordinates reorg detection, resolution, and state rollback (P2P-H7)
 ///
 /// This is the integration point between:
@@ -921,6 +933,7 @@ pub struct ReorgCoordinator {
     snapshot_loader: parking_lot::RwLock<Option<SnapshotLoaderFn>>,
 }
 
+#[cfg(feature = "zk-consensus")]
 impl ReorgCoordinator {
     /// Create a new reorg coordinator
     pub fn new(
@@ -1565,6 +1578,7 @@ mod tests {
     // ReorgCoordinator Tests (P2P-H7)
     // ==========================================================================
 
+    #[cfg(feature = "zk-consensus")]
     #[test]
     fn test_reorg_coordinator_creation() {
         use crate::zk_vote_handler::ZkVoteHandler;
@@ -1584,6 +1598,7 @@ mod tests {
         assert_eq!(coordinator.get_state(), (0, [0u8; 32]));
     }
 
+    #[cfg(feature = "zk-consensus")]
     #[test]
     fn test_reorg_coordinator_rollback() {
         use crate::zk_vote_handler::ZkVoteHandler;
@@ -1628,6 +1643,7 @@ mod tests {
         assert_eq!(zk_handler.get_state(), (90, [2u8; 32]));
     }
 
+    #[cfg(feature = "zk-consensus")]
     #[test]
     fn test_reorg_coordinator_chain_switch() {
         use crate::zk_vote_handler::ZkVoteHandler;
@@ -1691,6 +1707,7 @@ mod tests {
         assert_eq!(zk_handler.get_state(), (96, [20u8; 32]));
     }
 
+    #[cfg(feature = "zk-consensus")]
     #[test]
     fn test_reorg_coordinator_no_action() {
         use crate::zk_vote_handler::ZkVoteHandler;
@@ -1716,6 +1733,7 @@ mod tests {
         assert_eq!(zk_handler.get_state(), (100, [1u8; 32]));
     }
 
+    #[cfg(feature = "zk-consensus")]
     #[test]
     fn test_reorg_coordinator_resolve_fork_deferred_insufficient_votes() {
         use crate::zk_vote_handler::ZkVoteHandler;
@@ -1759,6 +1777,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "zk-consensus")]
     #[test]
     fn test_reorg_coordinator_resolve_fork_deferred_auto_resolve_disabled() {
         use crate::zk_vote_handler::ZkVoteHandler;
@@ -1802,6 +1821,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "zk-consensus")]
     #[test]
     fn test_reorg_coordinator_slash_proposer() {
         use crate::zk_vote_handler::ZkVoteHandler;
@@ -1863,6 +1883,7 @@ mod tests {
         assert_eq!(zk_handler.validator_count(), 0);
     }
 
+    #[cfg(feature = "zk-consensus")]
     #[test]
     fn test_reorg_coordinator_with_snapshot_loader() {
         use crate::zk_vote_handler::ZkVoteHandler;
@@ -1909,6 +1930,7 @@ mod tests {
         assert_eq!(zk_handler.get_state(), (90, [99u8; 32]));
     }
 
+    #[cfg(feature = "zk-consensus")]
     #[test]
     fn test_reorg_coordinator_config_default() {
         let config = ReorgCoordinatorConfig::default();
@@ -1917,6 +1939,7 @@ mod tests {
         assert_eq!(config.snapshot_interval, 100);
     }
 
+    #[cfg(feature = "zk-consensus")]
     #[test]
     fn test_reorg_result_variants() {
         // Test all ReorgResult variants can be created

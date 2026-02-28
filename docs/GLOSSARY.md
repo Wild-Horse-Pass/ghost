@@ -468,7 +468,7 @@ The first node in the network, started with the `--genesis` flag. Auto-approves 
 A revoked elder number that is never reassigned. When an elder is revoked (67% BFT vote after 7+ days offline), their position number is permanently retired. Tracked in the `burned_elder_numbers` database table.
 
 ### MPC Parameter Files
-Stored in `~/.ghost/mpc_params/`. Each version (`block_params_v{N}.bin`, `payout_params_v{N}.bin`) is a complete parameter set (~200MB). A `_current.bin` symlink points to the latest. Transferred between peers in 1MB chunks.
+Stored in `~/.ghost/mpc_params/`. Each version (`note_spend_params_v{N}.bin`, `payout_params_v{N}.bin`) is a complete parameter set (~200MB). A `_current.bin` symlink points to the latest. Transferred between peers in 1MB chunks.
 
 ---
 

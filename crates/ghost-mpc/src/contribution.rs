@@ -287,13 +287,13 @@ pub fn generate_contribution<R: RngCore + CryptoRng>(
 
 /// Result of a multi-circuit contribution
 pub struct MultiContributionResult {
-    /// Transformed block parameters
-    pub block_params: Parameters<Bls12>,
+    /// Transformed note spend parameters (NoteSpendCircuit)
+    pub note_spend_params: Parameters<Bls12>,
     /// Transformed payout parameters (if provided)
     pub payout_params: Option<Parameters<Bls12>>,
     /// Transformed confidential transfer parameters (if provided)
     pub confidential_params: Option<Parameters<Bls12>>,
-    /// Contribution record (hash chain based on block params)
+    /// Contribution record (hash chain based on note spend params)
     pub contribution: MpcContribution,
 }
 
@@ -301,10 +301,10 @@ pub struct MultiContributionResult {
 ///
 /// This ensures all parameter sets are transformed with identical randomness,
 /// maintaining the 1-of-N security guarantee across all circuits.
-/// The hash chain tracks block params as the primary circuit.
+/// The hash chain tracks note spend params as the primary circuit.
 ///
 /// # Arguments
-/// * `block_params` - Block circuit parameters (required)
+/// * `note_spend_params` - Note spend circuit parameters (required)
 /// * `payout_params` - Payout circuit parameters (optional)
 /// * `confidential_params` - Confidential transfer circuit parameters (optional)
 /// * `ceremony_id` - Unique ceremony identifier
@@ -312,7 +312,7 @@ pub struct MultiContributionResult {
 /// * `contributor` - Contributor identifier
 /// * `rng` - Cryptographically secure RNG
 pub fn generate_multi_contribution<R: RngCore + CryptoRng>(
-    block_params: &Parameters<Bls12>,
+    note_spend_params: &Parameters<Bls12>,
     payout_params: Option<&Parameters<Bls12>>,
     confidential_params: Option<&Parameters<Bls12>>,
     ceremony_id: &[u8; 32],
@@ -323,12 +323,12 @@ pub fn generate_multi_contribution<R: RngCore + CryptoRng>(
     // Generate toxic waste (shared across all circuits)
     let toxic = ToxicWaste::random(rng);
 
-    // Hash the previous block parameters (primary chain)
-    let prev_params_hash = hash_parameters(block_params)?;
+    // Hash the previous note spend parameters (primary chain)
+    let prev_params_hash = hash_parameters(note_spend_params)?;
 
     // Apply transformation to all parameter sets
-    let new_block_params = apply_contribution(block_params, &toxic)?;
-    let new_block_hash = hash_parameters(&new_block_params)?;
+    let new_note_spend_params = apply_contribution(note_spend_params, &toxic)?;
+    let new_note_spend_hash = hash_parameters(&new_note_spend_params)?;
 
     let new_payout_params = match payout_params {
         Some(params) => Some(apply_contribution(params, &toxic)?),
@@ -346,7 +346,7 @@ pub fn generate_multi_contribution<R: RngCore + CryptoRng>(
     let contribution = MpcContribution {
         position,
         prev_params_hash,
-        new_params_hash: new_block_hash,
+        new_params_hash: new_note_spend_hash,
         proof,
         contributor: contributor.to_string(),
         timestamp: std::time::SystemTime::now()
@@ -359,7 +359,7 @@ pub fn generate_multi_contribution<R: RngCore + CryptoRng>(
     // toxic is automatically zeroized here on drop
 
     Ok(MultiContributionResult {
-        block_params: new_block_params,
+        note_spend_params: new_note_spend_params,
         payout_params: new_payout_params,
         confidential_params: new_confidential_params,
         contribution,

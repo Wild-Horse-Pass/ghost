@@ -1457,7 +1457,7 @@ async fn main() -> Result<()> {
                 current_params_hash: s.current_params_hash,
                 is_ossified: s.is_ossified,
                 ossified_at: s.ossified_at,
-                block_vk_hash: s.block_vk_hash,
+                note_spend_vk_hash: s.block_vk_hash,
                 payout_vk_hash: s.payout_vk_hash,
                 updated_at: s.updated_at,
                 // Fields added in later versions - derive ceremony_id from params hash
@@ -1536,7 +1536,7 @@ async fn main() -> Result<()> {
                                 match resp.bytes().await {
                                     Ok(data) if data.len() > 1000 => {
                                         // Write to temp file, load, verify hash
-                                        let tmp_path = params_dir.join("block_params_tmp.bin");
+                                        let tmp_path = params_dir.join("note_spend_params_tmp.bin");
                                         if let Err(e) = std::fs::write(&tmp_path, &data) {
                                             tracing::warn!(error = %e, peer = %host,
                                                 "MPC params_callback: Failed to write temp params");
@@ -1551,7 +1551,7 @@ async fn main() -> Result<()> {
                                                     Ok(hash) if hash == expected => {
                                                         // Hash matches! Move to current
                                                         let current = params_dir
-                                                            .join("block_params_current.bin");
+                                                            .join("note_spend_params_current.bin");
                                                         if let Err(e) =
                                                             std::fs::rename(&tmp_path, &current)
                                                         {
@@ -1767,9 +1767,9 @@ async fn main() -> Result<()> {
                                                 // Save params to disk
                                                 let _ = std::fs::create_dir_all(&params_dir);
                                                 let params_path =
-                                                    params_dir.join("block_params_v0.bin");
+                                                    params_dir.join("note_spend_params_v0.bin");
                                                 let current_path =
-                                                    params_dir.join("block_params_current.bin");
+                                                    params_dir.join("note_spend_params_current.bin");
 
                                                 if let Err(e) = std::fs::write(&params_path, &data)
                                                 {
@@ -2025,7 +2025,7 @@ async fn main() -> Result<()> {
                                 // if BFT rejects. Instead, write the binary directly.
                                 let params_dir = ceremony_manager_for_startup.params_dir().clone();
                                 let _ = std::fs::create_dir_all(&params_dir);
-                                let current_path = params_dir.join("block_params_current.bin");
+                                let current_path = params_dir.join("note_spend_params_current.bin");
                                 let mut buf = Vec::new();
                                 if new_params.write(&mut buf).is_ok() {
                                     if let Err(e) = std::fs::write(&current_path, &buf) {
@@ -2226,7 +2226,7 @@ async fn main() -> Result<()> {
                                         // Ensure params directory exists (may have been wiped)
                                         let _ = std::fs::create_dir_all(&params_dir);
                                         let params_path =
-                                            params_dir.join("block_params_current.bin");
+                                            params_dir.join("note_spend_params_current.bin");
                                         // Resolve symlink target or overwrite directly
                                         let write_path = std::fs::read_link(&params_path)
                                             .unwrap_or(params_path.clone());

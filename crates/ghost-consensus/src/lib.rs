@@ -50,6 +50,7 @@ pub mod verification_handler;
 pub mod vote_handler;
 pub mod voting;
 pub mod zk_payout_handler;
+#[cfg(feature = "zk-consensus")]
 pub mod zk_vote_handler;
 
 #[cfg(feature = "zk-consensus")]
@@ -76,6 +77,7 @@ pub use verification_handler::*;
 pub use vote_handler::*;
 pub use voting::*;
 pub use zk_payout_handler::*;
+#[cfg(feature = "zk-consensus")]
 pub use zk_vote_handler::*;
 
 #[cfg(feature = "zk-consensus")]

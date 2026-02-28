@@ -310,14 +310,14 @@ pub fn load_trusted_params() -> ZkResult<()> {
     // 2.4 HIGH: Verify parameter hashes against ceremony output
     let expected_hashes = parse_expected_hashes()?;
 
-    // Check block parameters
-    let block_params_path = base_path.join("block_params_current.bin");
-    if block_params_path.exists() {
-        let actual_hash = compute_params_file_hash(&block_params_path)?;
+    // Check note spend parameters
+    let note_spend_params_path = base_path.join("note_spend_params_current.bin");
+    if note_spend_params_path.exists() {
+        let actual_hash = compute_params_file_hash(&note_spend_params_path)?;
         if let Some(expected) = expected_hashes.get("BLOCK") {
             if &actual_hash != expected {
                 return Err(ZkError::InvalidParams(format!(
-                    "2.4 HIGH: Block parameter hash mismatch! \
+                    "2.4 HIGH: Note spend parameter hash mismatch! \
                      Expected: {}, Got: {}. \
                      Parameters may be corrupted or tampered.",
                     hex::encode(expected),
@@ -326,7 +326,7 @@ pub fn load_trusted_params() -> ZkResult<()> {
             }
             tracing::info!(
                 hash = %hex::encode(actual_hash),
-                "2.4 HIGH: Block parameters hash verified"
+                "2.4 HIGH: Note spend parameters hash verified"
             );
         }
     }
@@ -427,13 +427,13 @@ pub fn verify_zk_setup_for_mainnet() -> ZkResult<()> {
     }
 
     // Step 3: Verify at least one parameter file exists
-    let block_params = base_path.join("block_params_current.bin");
+    let note_spend_params = base_path.join("note_spend_params_current.bin");
     let payout_params = base_path.join("payout_params_current.bin");
 
-    if !block_params.exists() && !payout_params.exists() {
+    if !note_spend_params.exists() && !payout_params.exists() {
         return Err(ZkError::InvalidParams(format!(
             "C-5 CRITICAL: No parameter files found in {}. \
-             Expected block_params_current.bin and/or payout_params_current.bin",
+             Expected note_spend_params_current.bin and/or payout_params_current.bin",
             params_path
         )));
     }

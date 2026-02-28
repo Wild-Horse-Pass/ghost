@@ -4481,7 +4481,7 @@ async fn api_mpc_params_handler(State(_state): State<Arc<VerificationState>>) ->
     // Get MPC params path from home directory
     let params_path =
         std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
-            .join(".ghost/mpc_params/block_params_current.bin");
+            .join(".ghost/mpc_params/note_spend_params_current.bin");
 
     if !params_path.exists() {
         return (
@@ -4545,7 +4545,7 @@ async fn api_mpc_status_handler(State(state): State<Arc<VerificationState>>) -> 
     // Check if params file exists
     let params_path =
         std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
-            .join(".ghost/mpc_params/block_params_current.bin");
+            .join(".ghost/mpc_params/note_spend_params_current.bin");
     let has_params = params_path.exists();
 
     Json(serde_json::json!({

@@ -34,19 +34,19 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
-/// Container for block, payout, and confidential transfer parameters
+/// Container for note spend, payout, and confidential transfer parameters
 /// Note: Not Clone because PreparedVerifyingKey doesn't implement Clone.
 /// Use Arc<MpcParameters> for shared ownership.
 #[derive(Default)]
 pub struct MpcParameters {
-    /// Parameters for block proofs
-    pub block_params: Option<Parameters<Bls12>>,
+    /// Parameters for note spend proofs (NoteSpendCircuit)
+    pub note_spend_params: Option<Parameters<Bls12>>,
     /// Parameters for payout proofs
     pub payout_params: Option<Parameters<Bls12>>,
     /// Parameters for confidential transfer proofs
     pub confidential_params: Option<Parameters<Bls12>>,
-    /// Prepared verifying key for block proofs (for fast verification)
-    pub block_vk: Option<PreparedVerifyingKey<Bls12>>,
+    /// Prepared verifying key for note spend proofs (for fast verification)
+    pub note_spend_vk: Option<PreparedVerifyingKey<Bls12>>,
     /// Prepared verifying key for payout proofs
     pub payout_vk: Option<PreparedVerifyingKey<Bls12>>,
     /// Prepared verifying key for confidential transfer proofs
@@ -65,10 +65,10 @@ impl ParameterFiles {
         Self { dir: dir.into() }
     }
 
-    /// Path to block parameters file
-    pub fn block_params_path(&self, contribution_count: u32) -> PathBuf {
+    /// Path to note spend parameters file
+    pub fn note_spend_params_path(&self, contribution_count: u32) -> PathBuf {
         self.dir
-            .join(format!("block_params_v{}.bin", contribution_count))
+            .join(format!("note_spend_params_v{}.bin", contribution_count))
     }
 
     /// Path to payout parameters file
@@ -77,9 +77,9 @@ impl ParameterFiles {
             .join(format!("payout_params_v{}.bin", contribution_count))
     }
 
-    /// Path to the current (latest) block parameters
-    pub fn current_block_params_path(&self) -> PathBuf {
-        self.dir.join("block_params_current.bin")
+    /// Path to the current (latest) note spend parameters
+    pub fn current_note_spend_params_path(&self) -> PathBuf {
+        self.dir.join("note_spend_params_current.bin")
     }
 
     /// Path to the current (latest) payout parameters
@@ -87,9 +87,9 @@ impl ParameterFiles {
         self.dir.join("payout_params_current.bin")
     }
 
-    /// Path to the block verifying key
-    pub fn block_vk_path(&self) -> PathBuf {
-        self.dir.join("block_vk.bin")
+    /// Path to the note spend verifying key
+    pub fn note_spend_vk_path(&self) -> PathBuf {
+        self.dir.join("note_spend_vk.bin")
     }
 
     /// Path to the payout verifying key
@@ -139,7 +139,7 @@ impl ParameterFiles {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
 
-            if let Some(rest) = name_str.strip_prefix("block_params_v") {
+            if let Some(rest) = name_str.strip_prefix("note_spend_params_v") {
                 if let Some(version_str) = rest.strip_suffix(".bin") {
                     if let Ok(version) = version_str.parse::<u32>() {
                         versions.push(version);
@@ -291,10 +291,10 @@ pub fn hash_params_file(path: &Path) -> MpcResult<[u8; 32]> {
 
 /// Atomically update the "current" symlink/copy to point to new version
 pub fn update_current_params(files: &ParameterFiles, version: u32) -> MpcResult<()> {
-    let block_src = files.block_params_path(version);
+    let note_spend_src = files.note_spend_params_path(version);
     let payout_src = files.payout_params_path(version);
     let confidential_src = files.confidential_params_path(version);
-    let block_dst = files.current_block_params_path();
+    let note_spend_dst = files.current_note_spend_params_path();
     let payout_dst = files.current_payout_params_path();
     let confidential_dst = files.current_confidential_params_path();
 
@@ -302,12 +302,12 @@ pub fn update_current_params(files: &ParameterFiles, version: u32) -> MpcResult<
     // This is atomic enough for our purposes since we only read "current"
     // after initialization.
 
-    if block_src.exists() {
-        fs::copy(&block_src, &block_dst)?;
+    if note_spend_src.exists() {
+        fs::copy(&note_spend_src, &note_spend_dst)?;
         info!(
             version = version,
-            path = %block_dst.display(),
-            "Updated current block parameters"
+            path = %note_spend_dst.display(),
+            "Updated current note spend parameters"
         );
     }
 
@@ -371,8 +371,8 @@ mod tests {
         let files = ParameterFiles::new(&dir);
 
         assert_eq!(
-            files.block_params_path(5),
-            PathBuf::from("/tmp/mpc/block_params_v5.bin")
+            files.note_spend_params_path(5),
+            PathBuf::from("/tmp/mpc/note_spend_params_v5.bin")
         );
         assert_eq!(
             files.payout_params_path(10),

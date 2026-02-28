@@ -67,7 +67,7 @@ Each contribution cryptographically chains to the previous, forming a hash-linke
 pub struct CeremonyManager {
     state: RwLock<CeremonyState>,
     files: ParameterFiles,
-    block_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
+    note_spend_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
     payout_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
 }
 
@@ -210,14 +210,14 @@ Parameters are stored in the node's data directory:
 
 ```
 ~/.ghost/mpc_params/
-├── block_params_v0.bin        # Genesis parameters
-├── block_params_v1.bin        # After elder 2
+├── note_spend_params_v0.bin        # Genesis parameters
+├── note_spend_params_v1.bin        # After elder 2
 ├── ...
-├── block_params_v100.bin      # After elder 101 (ossified)
-├── block_params_current.bin   # Symlink to latest
-├── payout_params_v*.bin       # Same versioning for payout circuit
-├── block_vk.bin               # Block verifying key
-└── payout_vk.bin              # Payout verifying key
+├── note_spend_params_v100.bin      # After elder 101 (ossified)
+├── note_spend_params_current.bin   # Symlink to latest
+├── payout_params_v*.bin            # Same versioning for payout circuit
+├── note_spend_vk.bin               # Note spend verifying key
+└── payout_vk.bin                   # Payout verifying key
 ```
 
 Parameter files use magic markers and version gaps to detect corruption. Each version is a complete parameter set (~200MB), transferred between peers in 1MB chunks via `MpcParametersRequest`/`MpcParametersResponse` messages.

@@ -58,7 +58,7 @@ pub struct CeremonyState {
     /// Block height when ossification occurred (if ossified)
     pub ossified_at: Option<u64>,
     /// Hash of the block verifying key
-    pub block_vk_hash: Option<[u8; 32]>,
+    pub note_spend_vk_hash: Option<[u8; 32]>,
     /// Hash of the payout verifying key
     pub payout_vk_hash: Option<[u8; 32]>,
     /// Last update timestamp
@@ -83,14 +83,14 @@ pub struct CeremonyManager {
     state: RwLock<CeremonyState>,
     /// Parameter file manager
     files: ParameterFiles,
-    /// Current block proving parameters (hot-swappable)
-    block_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
+    /// Current note spend proving parameters (hot-swappable)
+    note_spend_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
     /// Current payout proving parameters (hot-swappable)
     payout_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
     /// Current confidential transfer proving parameters (hot-swappable)
     confidential_params: RwLock<Option<Arc<Parameters<Bls12>>>>,
-    /// Prepared block verifying key (for fast verification)
-    block_vk: RwLock<Option<Arc<PreparedVerifyingKey<Bls12>>>>,
+    /// Prepared note spend verifying key (for fast verification)
+    note_spend_vk: RwLock<Option<Arc<PreparedVerifyingKey<Bls12>>>>,
     /// Prepared payout verifying key
     payout_vk: RwLock<Option<Arc<PreparedVerifyingKey<Bls12>>>>,
     /// Prepared confidential transfer verifying key
@@ -109,10 +109,10 @@ impl CeremonyManager {
         Self {
             state: RwLock::new(CeremonyState::default()),
             files: ParameterFiles::new(params_dir),
-            block_params: RwLock::new(None),
+            note_spend_params: RwLock::new(None),
             payout_params: RwLock::new(None),
             confidential_params: RwLock::new(None),
-            block_vk: RwLock::new(None),
+            note_spend_vk: RwLock::new(None),
             payout_vk: RwLock::new(None),
             confidential_vk: RwLock::new(None),
             // CRIT-2 FIX: Initialize commitment tracking
@@ -155,17 +155,17 @@ impl CeremonyManager {
     pub fn load_current_params(&self) -> MpcResult<()> {
         self.files.ensure_dir()?;
 
-        let block_path = self.files.current_block_params_path();
-        if block_path.exists() {
-            match load_parameters(&block_path) {
+        let note_spend_path = self.files.current_note_spend_params_path();
+        if note_spend_path.exists() {
+            match load_parameters(&note_spend_path) {
                 Ok(params) => {
                     let vk = prepare_verifying_key(&params.vk);
-                    *self.block_params.write() = Some(Arc::new(params));
-                    *self.block_vk.write() = Some(Arc::new(vk));
-                    info!("Loaded current block parameters");
+                    *self.note_spend_params.write() = Some(Arc::new(params));
+                    *self.note_spend_vk.write() = Some(Arc::new(vk));
+                    info!("Loaded current note spend parameters");
                 }
                 Err(e) => {
-                    warn!(error = %e, "Failed to load block parameters");
+                    warn!(error = %e, "Failed to load note spend parameters");
                 }
             }
         }
@@ -242,7 +242,7 @@ impl CeremonyManager {
 
     /// Check if we have current parameters loaded
     pub fn has_current_params(&self) -> bool {
-        self.block_params.read().is_some()
+        self.note_spend_params.read().is_some()
     }
 
     /// Ensure genesis parameters are initialized
@@ -290,9 +290,9 @@ impl CeremonyManager {
         Ok(true)
     }
 
-    /// Get current block parameters for proving
-    pub fn block_params(&self) -> Option<Arc<Parameters<Bls12>>> {
-        self.block_params.read().clone()
+    /// Get current note spend parameters for proving
+    pub fn note_spend_params(&self) -> Option<Arc<Parameters<Bls12>>> {
+        self.note_spend_params.read().clone()
     }
 
     /// Get current payout parameters for proving
@@ -300,9 +300,9 @@ impl CeremonyManager {
         self.payout_params.read().clone()
     }
 
-    /// Get current block verifying key
-    pub fn block_vk(&self) -> Option<Arc<PreparedVerifyingKey<Bls12>>> {
-        self.block_vk.read().clone()
+    /// Get current note spend verifying key
+    pub fn note_spend_vk(&self) -> Option<Arc<PreparedVerifyingKey<Bls12>>> {
+        self.note_spend_vk.read().clone()
     }
 
     /// Get current payout verifying key
@@ -338,7 +338,7 @@ impl CeremonyManager {
         contributor_id: &str,
     ) -> MpcResult<(Parameters<Bls12>, MpcContribution)> {
         let result = self.generate_multi_circuit_contribution(contributor_id)?;
-        Ok((result.block_params, result.contribution))
+        Ok((result.note_spend_params, result.contribution))
     }
 
     /// Generate a contribution that transforms all circuit parameter sets
@@ -361,8 +361,8 @@ impl CeremonyManager {
         }
 
         // Get current parameters for all circuits
-        let current_block = self.block_params.read();
-        let block_params = current_block.as_ref().ok_or_else(|| {
+        let current_note_spend = self.note_spend_params.read();
+        let note_spend_params = current_note_spend.as_ref().ok_or_else(|| {
             MpcError::Internal("No current block parameters loaded for contribution".into())
         })?;
 
@@ -378,7 +378,7 @@ impl CeremonyManager {
 
         let mut rng = OsRng;
         let result = generate_multi_contribution(
-            block_params.as_ref(),
+            note_spend_params.as_ref(),
             payout_ref,
             confidential_ref,
             &ceremony_id,
@@ -427,8 +427,8 @@ impl CeremonyManager {
         }
 
         // Get current block parameters
-        let current_block = self.block_params.read();
-        let block_params = current_block.as_ref().ok_or_else(|| {
+        let current_note_spend = self.note_spend_params.read();
+        let note_spend_params = current_note_spend.as_ref().ok_or_else(|| {
             MpcError::Internal("No current parameters loaded for contribution".into())
         })?;
 
@@ -444,7 +444,7 @@ impl CeremonyManager {
 
         let mut rng = OsRng;
         let result = generate_multi_contribution(
-            block_params.as_ref(),
+            note_spend_params.as_ref(),
             payout_ref,
             confidential_ref,
             &ceremony_id,
@@ -461,7 +461,7 @@ impl CeremonyManager {
             "Generated MPC contribution (DB-driven position)"
         );
 
-        Ok((result.block_params, result.contribution))
+        Ok((result.note_spend_params, result.contribution))
     }
 
     /// Generate a contribution with a prior commitment (RECOMMENDED)
@@ -544,7 +544,7 @@ impl CeremonyManager {
         }
 
         // Get current parameters
-        let current_params = self.block_params.read();
+        let current_params = self.note_spend_params.read();
         let params = current_params.as_ref().ok_or_else(|| {
             MpcError::Internal("No current parameters loaded for verification".into())
         })?;
@@ -576,7 +576,7 @@ impl CeremonyManager {
     /// Called when >67% of elders have approved the contribution.
     pub fn apply_contribution_multi(
         &self,
-        new_block_params: Parameters<Bls12>,
+        new_note_spend_params: Parameters<Bls12>,
         new_payout_params: Option<Parameters<Bls12>>,
         new_confidential_params: Option<Parameters<Bls12>>,
         contribution: &MpcContribution,
@@ -599,10 +599,10 @@ impl CeremonyManager {
         // Save new parameters to disk
         self.files.ensure_dir()?;
 
-        // Block params (always present)
-        let block_path = self.files.block_params_path(contribution.position);
-        save_parameters(&block_path, &new_block_params)?;
-        save_verifying_key(&self.files.block_vk_path(), &new_block_params.vk)?;
+        // Note spend params (always present)
+        let note_spend_path = self.files.note_spend_params_path(contribution.position);
+        save_parameters(&note_spend_path, &new_note_spend_params)?;
+        save_verifying_key(&self.files.note_spend_vk_path(), &new_note_spend_params.vk)?;
 
         // Payout params (if provided)
         if let Some(ref payout_params) = new_payout_params {
@@ -621,10 +621,10 @@ impl CeremonyManager {
         // Update current symlinks
         update_current_params(&self.files, contribution.position)?;
 
-        // Hot-swap block params
-        let block_vk = prepare_verifying_key(&new_block_params.vk);
-        *self.block_params.write() = Some(Arc::new(new_block_params));
-        *self.block_vk.write() = Some(Arc::new(block_vk));
+        // Hot-swap note spend params
+        let note_spend_vk = prepare_verifying_key(&new_note_spend_params.vk);
+        *self.note_spend_params.write() = Some(Arc::new(new_note_spend_params));
+        *self.note_spend_vk.write() = Some(Arc::new(note_spend_vk));
 
         // Hot-swap payout params
         if let Some(payout_params) = new_payout_params {
@@ -643,7 +643,7 @@ impl CeremonyManager {
         // Update state
         state.contribution_count = contribution.position;
         state.current_params_hash = contribution.new_params_hash;
-        state.block_vk_hash = Some(contribution.new_params_hash);
+        state.note_spend_vk_hash = Some(contribution.new_params_hash);
         state.updated_at = contribution.timestamp;
 
         // CRIT-2 FIX: If contribution has a commitment hash, verify and mark as fulfilled
@@ -836,7 +836,7 @@ impl CeremonyManager {
 
         // Save genesis parameters as v0
         self.files.ensure_dir()?;
-        let params_path = self.files.block_params_path(0);
+        let params_path = self.files.note_spend_params_path(0);
         save_parameters(&params_path, &genesis_params)?;
         update_current_params(&self.files, 0)?;
 
@@ -845,8 +845,8 @@ impl CeremonyManager {
 
         // Hot-swap
         let vk = prepare_verifying_key(&genesis_params.vk);
-        *self.block_params.write() = Some(Arc::new(genesis_params));
-        *self.block_vk.write() = Some(Arc::new(vk));
+        *self.note_spend_params.write() = Some(Arc::new(genesis_params));
+        *self.note_spend_vk.write() = Some(Arc::new(vk));
 
         // Update state - contribution count stays 0 for genesis
         let now = std::time::SystemTime::now()
@@ -867,11 +867,11 @@ impl CeremonyManager {
 
     /// Initialize genesis with all three circuit types
     ///
-    /// Generates and saves genesis parameters for block, and confidential transfer circuits.
-    /// All three sets go through the same MPC ceremony transformations.
+    /// Generates and saves genesis parameters for note spend and confidential transfer circuits.
+    /// All sets go through the same MPC ceremony transformations.
     pub fn initialize_genesis_multi(
         &self,
-        block_params: Parameters<Bls12>,
+        note_spend_params: Parameters<Bls12>,
         confidential_params: Parameters<Bls12>,
     ) -> MpcResult<()> {
         let mut state = self.state.write();
@@ -884,9 +884,9 @@ impl CeremonyManager {
 
         self.files.ensure_dir()?;
 
-        // Save block params as v0
-        save_parameters(&self.files.block_params_path(0), &block_params)?;
-        save_verifying_key(&self.files.block_vk_path(), &block_params.vk)?;
+        // Save note spend params as v0
+        save_parameters(&self.files.note_spend_params_path(0), &note_spend_params)?;
+        save_verifying_key(&self.files.note_spend_vk_path(), &note_spend_params.vk)?;
 
         // Save confidential params as v0
         save_parameters(
@@ -898,13 +898,13 @@ impl CeremonyManager {
         // Update current symlinks
         update_current_params(&self.files, 0)?;
 
-        // Hash primary (block) parameters for the chain
-        let params_hash = hash_parameters(&block_params)?;
+        // Hash primary (note spend) parameters for the chain
+        let params_hash = hash_parameters(&note_spend_params)?;
 
         // Hot-swap all params into memory
-        let block_vk = prepare_verifying_key(&block_params.vk);
-        *self.block_params.write() = Some(Arc::new(block_params));
-        *self.block_vk.write() = Some(Arc::new(block_vk));
+        let note_spend_vk = prepare_verifying_key(&note_spend_params.vk);
+        *self.note_spend_params.write() = Some(Arc::new(note_spend_params));
+        *self.note_spend_vk.write() = Some(Arc::new(note_spend_vk));
 
         let confidential_vk = prepare_verifying_key(&confidential_params.vk);
         *self.confidential_params.write() = Some(Arc::new(confidential_params));
