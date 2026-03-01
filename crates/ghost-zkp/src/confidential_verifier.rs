@@ -15,6 +15,9 @@ use crate::field_utils::bytes_to_field;
 use crate::types::{ConfidentialPublicInputs, GROTH16_PROOF_SIZE};
 
 /// Verifies confidential transfer proofs
+///
+/// **Deprecated:** Use `GhostNoteVerifier` instead.
+#[deprecated(note = "Use GhostNoteVerifier instead")]
 pub struct ConfidentialVerifier {
     /// Prepared verifying key for Groth16 verification
     prepared_vk: Option<Arc<PreparedVerifyingKey<Bls12>>>,

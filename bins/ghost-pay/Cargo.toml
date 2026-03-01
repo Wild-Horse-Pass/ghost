@@ -91,6 +91,9 @@ rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 hyper-util = { workspace = true }
 
+# HTTP client for L2 transaction relay to ghost-pool
+reqwest = { workspace = true }
+
 # For E2E test example (ZK proof generation)
 bellperson = "0.26"
 blstrs = { workspace = true }

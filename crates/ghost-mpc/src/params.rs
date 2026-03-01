@@ -39,7 +39,7 @@ use tracing::{debug, info};
 /// Use Arc<MpcParameters> for shared ownership.
 #[derive(Default)]
 pub struct MpcParameters {
-    /// Parameters for note spend proofs (NoteSpendCircuit)
+    /// Parameters for note spend proofs (GhostNoteSpendCircuit)
     pub note_spend_params: Option<Parameters<Bls12>>,
     /// Parameters for payout proofs
     pub payout_params: Option<Parameters<Bls12>>,

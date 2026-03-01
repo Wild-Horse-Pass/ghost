@@ -11,18 +11,18 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::errors::{ZkError, ZkResult};
 use crate::field_utils::bytes_to_field;
-use crate::note_prover::{NoteSpendProof, NoteSpendPublicInputs};
+use crate::note_prover::{GhostNoteSpendProof, GhostNoteSpendPublicInputs};
 use crate::types::GROTH16_PROOF_SIZE;
 
 /// Verifies note spend proofs
-pub struct NoteVerifier {
+pub struct GhostNoteVerifier {
     prepared_vk: Option<Arc<PreparedVerifyingKey<Bls12>>>,
     prover_id: [u8; 32],
     /// Accept all proofs unconditionally (for external crate tests only)
     accept_all: bool,
 }
 
-impl NoteVerifier {
+impl GhostNoteVerifier {
     /// Create a verifier with a Groth16 verification key
     pub fn new(prepared_vk: Arc<PreparedVerifyingKey<Bls12>>, prover_id: [u8; 32]) -> Self {
         Self {
@@ -33,7 +33,7 @@ impl NoteVerifier {
     }
 
     /// Create a verifier from a prover (inherits VK if available)
-    pub fn for_prover(prover: &crate::note_prover::NoteProver) -> Self {
+    pub fn for_prover(prover: &crate::note_prover::GhostNoteProver) -> Self {
         Self {
             prepared_vk: prover.prepared_verifying_key(),
             prover_id: prover.prover_id(),
@@ -58,7 +58,7 @@ impl NoteVerifier {
 
     /// Verify a note spend proof
     #[instrument(skip_all)]
-    pub fn verify(&self, proof: &NoteSpendProof) -> ZkResult<bool> {
+    pub fn verify(&self, proof: &GhostNoteSpendProof) -> ZkResult<bool> {
         // Test mode: accept all proofs unconditionally (for cross-crate tests)
         if self.accept_all {
             return Ok(true);
@@ -117,7 +117,7 @@ impl NoteVerifier {
     pub fn verify_raw(
         &self,
         proof_bytes: &[u8],
-        public_inputs: &NoteSpendPublicInputs,
+        public_inputs: &GhostNoteSpendPublicInputs,
     ) -> ZkResult<bool> {
         // Test mode: accept all proofs unconditionally (for cross-crate tests)
         if self.accept_all {
@@ -155,7 +155,7 @@ impl NoteVerifier {
 
     fn verify_groth16(
         &self,
-        proof: &NoteSpendProof,
+        proof: &GhostNoteSpendProof,
         prepared_vk: &PreparedVerifyingKey<Bls12>,
     ) -> ZkResult<bool> {
         let groth16_proof = self.deserialize_proof(&proof.proof)?;
@@ -173,7 +173,7 @@ impl NoteVerifier {
     }
 
     /// Build public inputs in circuit order: root, nullifier, change, recipient
-    fn build_public_inputs(&self, inputs: &NoteSpendPublicInputs) -> ZkResult<Vec<Fr>> {
+    fn build_public_inputs(&self, inputs: &GhostNoteSpendPublicInputs) -> ZkResult<Vec<Fr>> {
         Ok(vec![
             bytes_to_field(&inputs.commitment_root)?,
             bytes_to_field(&inputs.nullifier)?,
@@ -248,11 +248,11 @@ impl NoteVerifier {
 mod tests {
     use super::*;
     use crate::circuit::mimc::field_to_bytes;
-    use crate::note_prover::{NoteProver, NoteSpendWitness};
+    use crate::note_prover::{GhostNoteProver, GhostNoteSpendWitness};
     use blstrs::Scalar as Fr;
 
-    fn create_test_witness(tree_depth: usize) -> NoteSpendWitness {
-        NoteSpendWitness {
+    fn create_test_witness(tree_depth: usize) -> GhostNoteSpendWitness {
+        GhostNoteSpendWitness {
             spending_key: field_to_bytes(Fr::from(42u64)),
             note_value: 1000,
             note_blinding: field_to_bytes(Fr::from(111u64)),
@@ -267,8 +267,8 @@ mod tests {
 
     #[test]
     fn test_prove_verify_roundtrip() {
-        let prover = NoteProver::new(4);
-        let verifier = NoteVerifier::for_prover(&prover);
+        let prover = GhostNoteProver::new(4);
+        let verifier = GhostNoteVerifier::for_prover(&prover);
         let witness = create_test_witness(4);
 
         let proof = prover.prove(&witness).unwrap();
@@ -277,8 +277,8 @@ mod tests {
 
     #[test]
     fn test_prover_id_mismatch() {
-        let prover = NoteProver::new(4);
-        let verifier = NoteVerifier {
+        let prover = GhostNoteProver::new(4);
+        let verifier = GhostNoteVerifier {
             prepared_vk: None,
             prover_id: [0xFF; 32],
             accept_all: false,
@@ -291,8 +291,8 @@ mod tests {
 
     #[test]
     fn test_empty_proof_rejected() {
-        let prover = NoteProver::new(4);
-        let verifier = NoteVerifier::for_prover(&prover);
+        let prover = GhostNoteProver::new(4);
+        let verifier = GhostNoteVerifier::for_prover(&prover);
         let witness = create_test_witness(4);
 
         let mut proof = prover.prove(&witness).unwrap();
@@ -303,10 +303,10 @@ mod tests {
     #[test]
     #[ignore] // Expensive ~10-30s
     fn test_groth16_prove_verify_roundtrip() {
-        let prover = NoteProver::new_with_setup(4).expect("Setup should succeed");
+        let prover = GhostNoteProver::new_with_setup(4).expect("Setup should succeed");
         assert!(prover.has_groth16_params());
 
-        let verifier = NoteVerifier::for_prover(&prover);
+        let verifier = GhostNoteVerifier::for_prover(&prover);
         assert!(verifier.has_groth16_vk());
 
         let witness = create_test_witness(4);

@@ -1,5 +1,7 @@
 //! Confidential transfer circuit for privacy-preserving L2 transfers
 //!
+//! **Deprecated:** Use `GhostNoteSpendCircuit` instead.
+//!
 //! Proves a transfer is valid without revealing amounts:
 //!
 //! **Public inputs** (visible to validators):
@@ -33,6 +35,10 @@ use super::range_proof::enforce_range;
 use super::BALANCE_BITS;
 
 /// Circuit proving a confidential transfer is valid
+///
+/// **Deprecated:** Use `GhostNoteSpendCircuit` instead. This circuit is retained for
+/// backward compatibility with existing proofs but should not be used for new transfers.
+#[deprecated(note = "Use GhostNoteSpendCircuit instead")]
 pub struct ConfidentialTransferCircuit<F: PrimeField> {
     // Public inputs
     pub old_commitment_root: Option<F>,

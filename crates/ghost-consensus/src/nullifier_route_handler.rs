@@ -22,7 +22,7 @@ use ghost_common::error::{GhostError, GhostResult};
 use ghost_common::identity;
 use ghost_common::types::NodeId;
 use ghost_storage::Database;
-use ghost_zkp::{NoteSpendPublicInputs, NoteVerifier};
+use ghost_zkp::{GhostNoteSpendPublicInputs, GhostNoteVerifier};
 
 use crate::epoch_manager::{EpochManager, PROPOSER_GRACE_SECS};
 use crate::mesh::MessageHandler;
@@ -57,6 +57,11 @@ const SYNC_REQUEST_COOLDOWN_SECS: u64 = 60;
 
 /// Signing function type (matches NodeIdentity.sign() signature)
 pub type SignFn = Arc<dyn Fn(&[u8]) -> [u8; 64] + Send + Sync>;
+
+/// Checkpoint finalization callback type.
+/// Called after a checkpoint is finalized with (height, state_root, tx_count).
+/// Used to notify ghost-pay of finalized L2 blocks.
+pub type FinalizeFn = Arc<dyn Fn(u64, [u8; 32], u32) + Send + Sync>;
 
 /// Configuration for the nullifier route handler
 #[derive(Debug, Clone)]
@@ -150,7 +155,7 @@ pub struct NullifierRouteHandler {
     /// Epoch manager (tree, nullifiers, roots, proposer rotation)
     epoch_manager: Arc<EpochManager>,
     /// Note verifier (Groth16 proof verification)
-    verifier: RwLock<Option<Arc<NoteVerifier>>>,
+    verifier: RwLock<Option<Arc<GhostNoteVerifier>>>,
     /// Confirmed transactions waiting for next checkpoint
     confirmed_pool: RwLock<Vec<L2Transaction>>,
     /// S-4: O(1) nullifier dedup index for confirmed_pool (parallel HashSet)
@@ -176,6 +181,8 @@ pub struct NullifierRouteHandler {
     /// C-2: Heights for which we (as proposer) already applied commitments during propose_checkpoint.
     /// Prevents double-applying commitments when finalize_checkpoint runs on the proposer node.
     proposed_heights: RwLock<HashSet<u64>>,
+    /// Callback for checkpoint finalization (notifies ghost-pay)
+    finalize_fn: RwLock<Option<FinalizeFn>>,
 }
 
 impl NullifierRouteHandler {
@@ -202,6 +209,7 @@ impl NullifierRouteHandler {
             global_msg_rate: RwLock::new((Instant::now(), 0)),
             sync_requests: RwLock::new(HashMap::new()),
             proposed_heights: RwLock::new(HashSet::new()),
+            finalize_fn: RwLock::new(None),
         }
     }
 
@@ -215,7 +223,7 @@ impl NullifierRouteHandler {
     }
 
     /// Set the verifier (after MPC params are loaded)
-    pub fn set_verifier(&self, verifier: Arc<NoteVerifier>) {
+    pub fn set_verifier(&self, verifier: Arc<GhostNoteVerifier>) {
         *self.verifier.write() = Some(verifier);
     }
 
@@ -227,6 +235,11 @@ impl NullifierRouteHandler {
     /// Set the signing function (from NodeIdentity)
     pub fn set_sign_fn(&self, f: SignFn) {
         *self.sign_fn.write() = Some(f);
+    }
+
+    /// Set the finalization callback (notifies ghost-pay when checkpoints are finalized)
+    pub fn set_finalize_fn(&self, f: FinalizeFn) {
+        *self.finalize_fn.write() = Some(f);
     }
 
     /// Sign a message using our signing function
@@ -246,6 +259,45 @@ impl NullifierRouteHandler {
     /// Get the confirmed pool size
     pub fn confirmed_pool_size(&self) -> usize {
         self.confirmed_pool.read().len()
+    }
+
+    /// Submit an externally-verified L2 transaction for consensus processing.
+    ///
+    /// Called by ghost-pool's HTTP API when ghost-pay forwards a verified NoteSpend
+    /// transaction. Handles validation, confirmation, and mesh broadcast.
+    pub fn submit_external_transfer(
+        &self,
+        msg: &L2ConfidentialTransferMessage,
+    ) -> GhostResult<()> {
+        match self.handle_transfer(msg)? {
+            Some(confirmation) => {
+                // Broadcast confirmation to network
+                if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                    let payload = serde_json::to_vec(&confirmation)
+                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                    broadcast(MessageType::L2TransferConfirmation, payload)?;
+                }
+
+                // Broadcast the confirmed tx to all nodes (signed)
+                let mut broadcast_msg = L2TransferBroadcastMessage {
+                    transaction: msg.transaction.clone(),
+                    validator: self.our_id,
+                    signature: [0u8; 64],
+                };
+                let sign_msg = broadcast_msg.signing_message();
+                broadcast_msg.signature = self.sign(&sign_msg);
+
+                if let Some(ref broadcast) = *self.broadcast_fn.read() {
+                    let payload = serde_json::to_vec(&broadcast_msg)
+                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
+                    broadcast(MessageType::L2TransferBroadcast, payload)?;
+                }
+            }
+            None => {
+                // Not the assigned validator for this nullifier — recorded but not confirmed
+            }
+        }
+        Ok(())
     }
 
     // =========================================================================
@@ -366,7 +418,7 @@ impl NullifierRouteHandler {
         // 4. Verify Groth16 proof
         let verifier = self.verifier.read();
         if let Some(ref v) = *verifier {
-            let public_inputs = NoteSpendPublicInputs {
+            let public_inputs = GhostNoteSpendPublicInputs {
                 commitment_root: tx.commitment_root,
                 nullifier: tx.nullifier,
                 change_commitment: tx.change_commitment,
@@ -442,7 +494,7 @@ impl NullifierRouteHandler {
         // that bypass proof verification, corrupting the confirmed pool.
         let verifier = self.verifier.read();
         if let Some(ref v) = *verifier {
-            let public_inputs = NoteSpendPublicInputs {
+            let public_inputs = GhostNoteSpendPublicInputs {
                 commitment_root: tx.commitment_root,
                 nullifier: tx.nullifier,
                 change_commitment: tx.change_commitment,
@@ -783,6 +835,11 @@ impl NullifierRouteHandler {
 
         // Clean up old vote states
         self.prune_vote_states(height);
+
+        // Notify ghost-pay of finalized checkpoint
+        if let Some(ref finalize_fn) = *self.finalize_fn.read() {
+            finalize_fn(height, new_root, tx_count as u32);
+        }
 
         debug!(height, tx_count, "Checkpoint finalized");
         Ok(())
@@ -1476,8 +1533,8 @@ mod tests {
     }
 
     /// Helper to create a verifier for tests (accepts all proofs unconditionally)
-    fn test_verifier() -> Arc<ghost_zkp::NoteVerifier> {
-        Arc::new(ghost_zkp::NoteVerifier::test_accept_all())
+    fn test_verifier() -> Arc<ghost_zkp::GhostNoteVerifier> {
+        Arc::new(ghost_zkp::GhostNoteVerifier::test_accept_all())
     }
 
     /// Test full checkpoint cycle: add txs → propose → vote → finalize
@@ -1757,9 +1814,9 @@ mod tests {
         epoch_mgr.update_active_nodes(vec![[0x01; 32]]);
 
         // Create a real verifier with Groth16 VK
-        let prover = ghost_zkp::note_prover::NoteProver::new_with_setup(4)
+        let prover = ghost_zkp::note_prover::GhostNoteProver::new_with_setup(4)
             .expect("Groth16 setup should succeed");
-        let verifier = Arc::new(ghost_zkp::NoteVerifier::for_prover(&prover));
+        let verifier = Arc::new(ghost_zkp::GhostNoteVerifier::for_prover(&prover));
         handler.set_verifier(verifier);
 
         let root = epoch_mgr.current_root().unwrap();

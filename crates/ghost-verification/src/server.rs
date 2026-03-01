@@ -704,6 +704,10 @@ pub struct BlockFoundInfo {
 /// commitment but the commitment requires a submitted block.
 pub type BlockFoundFn = Arc<dyn Fn(BlockFoundInfo) + Send + Sync>;
 
+/// Callback for submitting L2 NoteSpend transactions to the mesh
+/// Takes serialized L2ConfidentialTransferMessage JSON bytes, returns Ok(()) on success.
+pub type L2SubmitFn = Arc<dyn Fn(Vec<u8>) -> GhostResult<()> + Send + Sync>;
+
 /// Parse user_identity string to extract payout address and worker name.
 /// Format: <payout_address>.<worker_name>
 /// Returns (payout_address, worker_name) or (user_identity, "default") if no dot found.
@@ -898,6 +902,8 @@ pub struct VerificationState {
     debug_endpoints_frozen: AtomicBool,
     /// Prometheus metrics (optional - only present when running as ghost-pool)
     pub metrics: Option<Arc<Metrics>>,
+    /// Callback to submit L2 NoteSpend transactions to the consensus mesh
+    pub l2_submit_fn: Option<L2SubmitFn>,
 }
 
 /// Archive handler trait
@@ -1019,7 +1025,14 @@ impl VerificationState {
             // L-28: Debug endpoints flag frozen from DashboardConfig
             debug_endpoints_frozen: AtomicBool::new(debug_enabled),
             metrics: None,
+            l2_submit_fn: None,
         }
+    }
+
+    /// Set the L2 NoteSpend submission callback
+    pub fn with_l2_submit(mut self, f: L2SubmitFn) -> Self {
+        self.l2_submit_fn = Some(f);
+        self
     }
 
     /// Signal that a restart is needed (config update API)

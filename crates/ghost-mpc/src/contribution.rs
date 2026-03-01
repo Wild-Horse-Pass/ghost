@@ -287,7 +287,7 @@ pub fn generate_contribution<R: RngCore + CryptoRng>(
 
 /// Result of a multi-circuit contribution
 pub struct MultiContributionResult {
-    /// Transformed note spend parameters (NoteSpendCircuit)
+    /// Transformed note spend parameters (GhostNoteSpendCircuit)
     pub note_spend_params: Parameters<Bls12>,
     /// Transformed payout parameters (if provided)
     pub payout_params: Option<Parameters<Bls12>>,

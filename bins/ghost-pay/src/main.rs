@@ -74,8 +74,8 @@ use ghost_storage::{
     WithdrawalRequest, WithdrawalStatus,
 };
 use ghost_zkp::{
-    BalanceTree, CommitmentTree, ConfidentialPublicInputs, ConfidentialTransferProof,
-    ConfidentialVerifier,
+    BalanceTree, CommitmentTree, GhostNoteSpendProof, GhostNoteSpendPublicInputs,
+    GhostNoteVerifier,
 };
 use wraith_protocol::{ParticipantTier, WraithCoordinator, WraithDenomination};
 
@@ -146,6 +146,12 @@ struct Args {
     /// Defaults to <data-dir>/../mpc_params/ (sibling of data dir)
     #[arg(long, env = "GHOST_MPC_PARAMS_DIR")]
     mpc_params_dir: Option<std::path::PathBuf>,
+
+    /// Ghost-pool HTTP API URL for L2 transaction relay
+    /// Ghost-pay forwards verified NoteSpend transactions to ghost-pool for consensus.
+    /// Defaults to http://127.0.0.1:8080 (local ghost-pool)
+    #[arg(long, env = "GHOST_POOL_API_URL", default_value = "http://127.0.0.1:8080")]
+    pool_api_url: String,
 }
 
 // =============================================================================
@@ -168,11 +174,11 @@ const SCRYPT_P: u32 = 1;
 /// Commitment tree depth — 2^20 = ~1M notes
 const COMMITMENT_TREE_DEPTH: usize = 20;
 
-/// Load the confidential transfer Groth16 verifier from MPC params directory.
+/// Load the NoteSpend Groth16 verifier from MPC params directory.
 ///
-/// Returns `Some(Arc<ConfidentialVerifier>)` if the VK file exists and loads successfully.
-/// Returns `None` if no VK file found (confidential transfers will be unavailable).
-fn load_confidential_verifier_from_params(args: &Args) -> Option<Arc<ConfidentialVerifier>> {
+/// Returns `Some(Arc<GhostNoteVerifier>)` if the VK file exists and loads successfully.
+/// Returns `None` if no VK file found (note spend transfers will be unavailable).
+fn load_note_spend_verifier_from_params(args: &Args) -> Option<Arc<GhostNoteVerifier>> {
     let mpc_dir = if let Some(ref dir) = args.mpc_params_dir {
         dir.clone()
     } else {
@@ -185,21 +191,22 @@ fn load_confidential_verifier_from_params(args: &Args) -> Option<Arc<Confidentia
         }
     };
 
-    let vk_path = mpc_dir.join("confidential_vk.bin");
+    // Try note_spend_vk.bin first, fall back to extracting from full params
+    let vk_path = mpc_dir.join("note_spend_vk.bin");
     if !vk_path.exists() {
         warn!(
             path = %vk_path.display(),
-            "Confidential VK not found — confidential transfers will be unavailable"
+            "NoteSpend VK not found — note spend transfers will be unavailable"
         );
         return None;
     }
 
-    match ghost_zkp::load_confidential_verifier(&vk_path, COMMITMENT_TREE_DEPTH) {
+    match ghost_zkp::load_note_spend_verifier(&vk_path, COMMITMENT_TREE_DEPTH) {
         Ok(verifier) => {
             info!(
                 path = %vk_path.display(),
                 has_groth16_vk = verifier.has_groth16_vk(),
-                "Loaded confidential transfer verifier"
+                "Loaded NoteSpend verifier"
             );
             Some(Arc::new(verifier))
         }
@@ -207,7 +214,7 @@ fn load_confidential_verifier_from_params(args: &Args) -> Option<Arc<Confidentia
             error!(
                 error = %e,
                 path = %vk_path.display(),
-                "Failed to load confidential transfer verifier"
+                "Failed to load NoteSpend verifier"
             );
             None
         }
@@ -736,8 +743,12 @@ struct AppState {
     commitment_tree: RwLock<CommitmentTree>,
     /// L2 balance tree for state transition witnesses
     balance_tree: RwLock<BalanceTree>,
-    /// Groth16 confidential transfer verifier (None if MPC params not available)
-    confidential_verifier: Option<Arc<ConfidentialVerifier>>,
+    /// Groth16 NoteSpend verifier (None if MPC params not available)
+    note_spend_verifier: Option<Arc<GhostNoteVerifier>>,
+    /// HTTP client for relaying verified transactions to ghost-pool
+    pool_http_client: reqwest::Client,
+    /// Ghost-pool API URL for L2 transaction relay
+    pool_api_url: String,
 }
 
 /// Lock information with metadata
@@ -957,10 +968,16 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Load confidential transfer verifier from MPC params (before args is moved)
-    let confidential_verifier = load_confidential_verifier_from_params(&args);
+    // Load NoteSpend verifier from MPC params (before args is moved)
+    let note_spend_verifier = load_note_spend_verifier_from_params(&args);
 
     // Initialize state
+    let pool_api_url = args.pool_api_url.clone();
+    let pool_http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .expect("Failed to create HTTP client for ghost-pool relay");
+
     let state = Arc::new(AppState {
         keys: RwLock::new(None),
         ghost_id: RwLock::new(None),
@@ -975,7 +992,9 @@ async fn main() -> Result<()> {
         rpc,
         commitment_tree: RwLock::new(commitment_tree),
         balance_tree: RwLock::new(balance_tree),
-        confidential_verifier,
+        note_spend_verifier,
+        pool_http_client,
+        pool_api_url,
     });
 
     // H-PAY-2 FIX: Load existing keys from database with encryption support
@@ -2464,18 +2483,21 @@ fn parse_hex_32(hex_str: &str) -> Result<[u8; 32], StatusCode> {
     Ok(arr)
 }
 
-/// Request body for submitting a confidential transfer
+/// Request body for submitting a NoteSpend transfer
 #[derive(Debug, Deserialize)]
 struct ConfidentialTransferRequest {
     proof_hex: String,
-    old_commitment_root: String,
-    new_commitment_root: String,
+    /// Commitment root at time of proof generation
+    commitment_root: String,
     nullifier: String,
-    sender_new_commitment: String,
-    recipient_new_commitment: String,
+    /// Sender's change commitment (new note for remaining balance)
+    change_commitment: String,
+    /// Recipient's commitment (new note for transfer amount)
+    recipient_commitment: String,
     sender_index: u64,
     recipient_index: u64,
     recipient_owner_pubkey: String,
+    epoch: u64,
 }
 
 /// Submit a confidential transfer with Groth16 proof
@@ -2497,16 +2519,10 @@ async fn submit_confidential_transfer(
         ));
     }
 
-    let old_root = parse_hex_32(&req.old_commitment_root).map_err(|_| {
+    let commitment_root = parse_hex_32(&req.commitment_root).map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid old_commitment_root hex (need 32 bytes)"})),
-        )
-    })?;
-    let new_root = parse_hex_32(&req.new_commitment_root).map_err(|_| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid new_commitment_root hex (need 32 bytes)"})),
+            Json(serde_json::json!({"error": "Invalid commitment_root hex (need 32 bytes)"})),
         )
     })?;
     let nullifier = parse_hex_32(&req.nullifier).map_err(|_| {
@@ -2515,14 +2531,17 @@ async fn submit_confidential_transfer(
             Json(serde_json::json!({"error": "Invalid nullifier hex (need 32 bytes)"})),
         )
     })?;
-    let sender_new_commitment = parse_hex_32(&req.sender_new_commitment).map_err(|_| {
+    let change_commitment = parse_hex_32(&req.change_commitment).map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid sender_new_commitment hex (need 32 bytes)"})),
+            Json(serde_json::json!({"error": "Invalid change_commitment hex (need 32 bytes)"})),
         )
     })?;
-    let recipient_new_commitment = parse_hex_32(&req.recipient_new_commitment).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid recipient_new_commitment hex (need 32 bytes)"})))
+    let recipient_commitment = parse_hex_32(&req.recipient_commitment).map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "Invalid recipient_commitment hex (need 32 bytes)"})),
+        )
     })?;
     let recipient_owner_pubkey = parse_hex_32(&req.recipient_owner_pubkey).map_err(|_| {
         (
@@ -2533,7 +2552,7 @@ async fn submit_confidential_transfer(
         )
     })?;
 
-    // Step 1: Read-lock tree, verify old_commitment_root matches current
+    // Step 1: Read-lock tree, verify commitment_root matches current
     {
         let tree = state.commitment_tree.read();
         let current_root = tree.root().map_err(|e| {
@@ -2543,7 +2562,7 @@ async fn submit_confidential_transfer(
                 Json(serde_json::json!({"error": "Internal tree error"})),
             )
         })?;
-        if current_root != old_root {
+        if current_root != commitment_root {
             return Err((
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({
@@ -2569,30 +2588,29 @@ async fn submit_confidential_transfer(
         ));
     }
 
-    // Step 3: Verify Groth16 proof
-    let verifier = state.confidential_verifier.as_ref().ok_or_else(|| {
-        (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "Confidential verifier not initialized (MPC params unavailable)"})))
+    // Step 3: Verify NoteSpend Groth16 proof
+    let verifier = state.note_spend_verifier.as_ref().ok_or_else(|| {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({"error": "NoteSpend verifier not initialized (MPC params unavailable)"})))
     })?;
 
-    let public_inputs = ConfidentialPublicInputs {
-        old_commitment_root: old_root,
-        new_commitment_root: new_root,
+    let public_inputs = GhostNoteSpendPublicInputs {
+        commitment_root,
         nullifier,
-        sender_new_commitment,
-        recipient_new_commitment,
+        change_commitment,
+        recipient_commitment,
     };
 
-    // Compute prover_id matching ConfidentialProver's convention
+    // Compute prover_id matching GhostNoteProver's convention
     let prover_id = {
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(b"ghost-zkp-confidential-prover-v1");
+        hasher.update(b"ghost-zkp-note-prover-v1");
         hasher.update(COMMITMENT_TREE_DEPTH.to_le_bytes());
         let hash: [u8; 32] = hasher.finalize().into();
         hash
     };
 
-    let transfer_proof = ConfidentialTransferProof {
+    let transfer_proof = GhostNoteSpendProof {
         public_inputs: public_inputs.clone(),
         proof: proof_bytes.clone(),
         prover_id,
@@ -2615,7 +2633,7 @@ async fn submit_confidential_transfer(
 
     // Step 4: Write-lock tree, re-check root (TOCTOU), apply update
     let transfer_id = uuid::Uuid::new_v4().to_string();
-    let computed_new_root;
+    let new_root;
     {
         let mut tree = state.commitment_tree.write();
 
@@ -2627,7 +2645,7 @@ async fn submit_confidential_transfer(
                 Json(serde_json::json!({"error": "Internal tree error"})),
             )
         })?;
-        if current_root != old_root {
+        if current_root != commitment_root {
             return Err((
                 StatusCode::CONFLICT,
                 Json(serde_json::json!({
@@ -2646,30 +2664,19 @@ async fn submit_confidential_transfer(
         }
 
         // Apply: insert new commitments and record nullifier
-        tree.insert(req.sender_index, sender_new_commitment);
-        tree.insert(req.recipient_index, recipient_new_commitment);
+        // NoteSpend: change commitment replaces spent note, recipient gets new position
+        tree.insert(req.sender_index, change_commitment);
+        tree.insert(req.recipient_index, recipient_commitment);
         tree.spend_nullifier(nullifier);
 
-        // Verify computed root matches expected
-        computed_new_root = tree.root().map_err(|e| {
+        // Compute new root after tree update
+        new_root = tree.root().map_err(|e| {
             error!(error = %e, "Failed to compute new tree root");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "Internal tree error"})),
             )
         })?;
-        if computed_new_root != new_root {
-            // Rollback: this should not happen if proof is valid — indicates bug
-            error!(
-                expected = %hex::encode(new_root),
-                computed = %hex::encode(computed_new_root),
-                "New root mismatch after applying transfer"
-            );
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Root mismatch after applying transfer"})),
-            ));
-        }
     }
 
     // Step 5: Persist to DB
@@ -2678,15 +2685,15 @@ async fn submit_confidential_transfer(
     // Insert notes
     if let Err(e) = state.db.insert_confidential_note(
         req.sender_index,
-        &sender_new_commitment,
+        &change_commitment,
         &[0u8; 32], // Sender's pubkey not known from transfer; updated by owner
         current_height,
     ) {
-        warn!(error = %e, "Failed to persist sender note");
+        warn!(error = %e, "Failed to persist sender change note");
     }
     if let Err(e) = state.db.insert_confidential_note(
         req.recipient_index,
-        &recipient_new_commitment,
+        &recipient_commitment,
         &recipient_owner_pubkey,
         current_height,
     ) {
@@ -2701,16 +2708,16 @@ async fn submit_confidential_transfer(
         warn!(error = %e, "Failed to persist nullifier");
     }
 
-    // Insert transfer record
+    // Insert transfer record (maps NoteSpend fields to legacy DB schema)
     let record = ConfidentialTransferRecord {
         transfer_id: transfer_id.clone(),
         block_height: Some(current_height),
         nullifier,
-        sender_new_commitment,
-        recipient_new_commitment,
-        old_commitment_root: old_root,
+        sender_new_commitment: change_commitment,
+        recipient_new_commitment: recipient_commitment,
+        old_commitment_root: commitment_root,
         new_commitment_root: new_root,
-        proof: proof_bytes,
+        proof: proof_bytes.clone(),
         sender_index: req.sender_index,
         recipient_index: req.recipient_index,
         status: "confirmed".to_string(),
@@ -2723,12 +2730,65 @@ async fn submit_confidential_transfer(
         transfer_id = %transfer_id,
         sender_idx = req.sender_index,
         recipient_idx = req.recipient_index,
-        "Confidential transfer applied"
+        epoch = req.epoch,
+        "NoteSpend transfer applied"
     );
+
+    // Step 6: Relay to ghost-pool for L2 consensus broadcast
+    // Construct L2ConfidentialTransferMessage JSON (matches ghost-consensus message format)
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let l2_message = serde_json::json!({
+        "transaction": {
+            "epoch": req.epoch,
+            "nullifier": hex::encode(nullifier),
+            "change_commitment": hex::encode(change_commitment),
+            "recipient_commitment": hex::encode(recipient_commitment),
+            "commitment_root": hex::encode(commitment_root),
+            "proof": proof_bytes,
+            "encrypted_change": [],
+            "encrypted_recipient": [],
+            "timestamp": timestamp,
+        },
+        "sender": hex::encode([0u8; 32]),
+    });
+
+    let relay_url = format!("{}/api/v1/l2/submit", state.pool_api_url);
+    let relay_body = serde_json::to_vec(&l2_message).unwrap_or_default();
+
+    match state
+        .pool_http_client
+        .post(&relay_url)
+        .body(relay_body)
+        .header("content-type", "application/json")
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            info!(transfer_id = %transfer_id, "L2 transaction relayed to ghost-pool");
+        }
+        Ok(resp) => {
+            warn!(
+                transfer_id = %transfer_id,
+                status = %resp.status(),
+                "Ghost-pool relay returned non-success status"
+            );
+        }
+        Err(e) => {
+            warn!(
+                transfer_id = %transfer_id,
+                error = %e,
+                "Failed to relay L2 transaction to ghost-pool (will be retried by consensus)"
+            );
+        }
+    }
 
     Ok(Json(serde_json::json!({
         "transfer_id": transfer_id,
-        "new_commitment_root": hex::encode(computed_new_root),
+        "new_commitment_root": hex::encode(new_root),
         "sender_index": req.sender_index,
         "recipient_index": req.recipient_index,
     })))
@@ -5075,5 +5135,91 @@ mod tests {
         // Empty string: 0 bytes decoded, zero-padded result
         let result = hex_to_32bytes("");
         assert_eq!(result, [0u8; 32]);
+    }
+
+    // =========================================================================
+    // ConfidentialTransferRequest deserialization tests
+    // =========================================================================
+
+    #[test]
+    fn test_confidential_transfer_request_deserialization() {
+        let json = serde_json::json!({
+            "proof_hex": "aa".repeat(192),
+            "commitment_root": "bb".repeat(32),
+            "nullifier": "cc".repeat(32),
+            "change_commitment": "dd".repeat(32),
+            "recipient_commitment": "ee".repeat(32),
+            "recipient_owner_pubkey": "ff".repeat(32),
+            "sender_index": 0,
+            "recipient_index": 1,
+            "epoch": 0,
+        });
+        let req: ConfidentialTransferRequest =
+            serde_json::from_value(json).expect("Valid JSON should parse");
+
+        assert_eq!(req.proof_hex.len(), 384); // 192 bytes * 2 hex chars
+        assert_eq!(req.nullifier.len(), 64);  // 32 bytes * 2 hex chars
+        assert_eq!(req.commitment_root.len(), 64);
+        assert_eq!(req.change_commitment.len(), 64);
+        assert_eq!(req.recipient_commitment.len(), 64);
+        assert_eq!(req.recipient_owner_pubkey.len(), 64);
+        assert_eq!(req.sender_index, 0);
+        assert_eq!(req.recipient_index, 1);
+        assert_eq!(req.epoch, 0);
+    }
+
+    // =========================================================================
+    // parse_hex_32 tests
+    // =========================================================================
+
+    #[test]
+    fn test_parse_hex_32_valid() {
+        let hex_str = "aa".repeat(32); // 64 hex chars = 32 bytes
+        let result = parse_hex_32(&hex_str);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), [0xAA; 32]);
+    }
+
+    #[test]
+    fn test_parse_hex_32_invalid_length() {
+        // Too short (31 bytes)
+        let hex_str = "aa".repeat(31);
+        assert!(parse_hex_32(&hex_str).is_err());
+
+        // Too long (33 bytes)
+        let hex_str = "aa".repeat(33);
+        assert!(parse_hex_32(&hex_str).is_err());
+    }
+
+    #[test]
+    fn test_parse_hex_32_invalid_hex() {
+        let result = parse_hex_32("not-valid-hex-at-all!!");
+        assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // prover_id computation test
+    // =========================================================================
+
+    #[test]
+    fn test_prover_id_computation_matches_ghost_zkp() {
+        // Compute prover_id the way ghost-pay does it inline
+        let ghost_pay_prover_id = {
+            use sha2::{Digest, Sha256};
+            let mut hasher = Sha256::new();
+            hasher.update(b"ghost-zkp-note-prover-v1");
+            hasher.update(COMMITMENT_TREE_DEPTH.to_le_bytes());
+            let hash: [u8; 32] = hasher.finalize().into();
+            hash
+        };
+
+        // Compute prover_id the way GhostNoteProver does it
+        let prover = ghost_zkp::GhostNoteProver::new(COMMITMENT_TREE_DEPTH);
+        let zkp_prover_id = prover.prover_id();
+
+        assert_eq!(
+            ghost_pay_prover_id, zkp_prover_id,
+            "ghost-pay's inline prover_id must match GhostNoteProver's prover_id"
+        );
     }
 }

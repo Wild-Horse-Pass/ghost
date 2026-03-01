@@ -703,6 +703,9 @@ pub struct ConfidentialNote {
 /// All fields here are private to the prover — they are never revealed
 /// to validators. Only the public inputs (roots, nullifier, new commitments)
 /// are visible.
+///
+/// **Deprecated:** Use `GhostNoteSpendWitness` instead.
+#[deprecated(note = "Use GhostNoteSpendWitness instead")]
 #[derive(Debug, Clone)]
 pub struct ConfidentialTransferWitness {
     // Sender's existing note
@@ -740,6 +743,7 @@ pub struct ConfidentialTransferWitness {
     pub recipient_new_blinding: [u8; 32],
 }
 
+#[allow(deprecated)]
 impl ConfidentialTransferWitness {
     /// Validate witness consistency
     pub fn validate(&self) -> Result<(), WitnessValidationError> {
@@ -765,6 +769,9 @@ impl ConfidentialTransferWitness {
 /// Public inputs for confidential transfer verification
 ///
 /// These are visible to validators — everything else is hidden.
+///
+/// **Deprecated:** Use `GhostNoteSpendPublicInputs` instead.
+#[deprecated(note = "Use GhostNoteSpendPublicInputs instead")]
 #[derive(Debug, Clone)]
 pub struct ConfidentialPublicInputs {
     /// Merkle root of commitment tree before transfer

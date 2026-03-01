@@ -93,7 +93,9 @@
 
 pub mod circuit;
 pub mod commitment_tree;
+#[allow(deprecated)]
 pub mod confidential_prover;
+#[allow(deprecated)]
 pub mod confidential_verifier;
 pub mod errors;
 pub mod field_utils;
@@ -109,6 +111,7 @@ pub mod verifier;
 // Re-export main types
 pub use errors::{ZkError, ZkResult};
 pub use prover::BlockProver;
+#[allow(deprecated)]
 pub use types::{
     BlockProof, BlockWitness, BlockWitnessV2, ConfidentialNote, ConfidentialPublicInputs,
     ConfidentialTransferWitness, MerkleProof, PaymentTransitionWitness, PaymentWitness,
@@ -124,19 +127,24 @@ pub use state_tree::{BalanceTree, BalanceTreeBuilder};
 pub use payout_prover::{PayoutProof, PayoutProver, PayoutWitness};
 pub use payout_verifier::{verify_payout, PayoutVerificationResult, PayoutVerifier};
 
-// Re-export confidential transfer types
+// Re-export confidential transfer types (deprecated — use NoteSpend equivalents)
+#[allow(deprecated)]
 pub use confidential_prover::{ConfidentialProver, ConfidentialTransferProof};
+#[allow(deprecated)]
 pub use confidential_verifier::ConfidentialVerifier;
 
 // Re-export note spend types (L2 sender-side proofs)
-pub use note_prover::{NoteProver, NoteSpendProof, NoteSpendPublicInputs, NoteSpendWitness};
-pub use note_verifier::NoteVerifier;
+pub use note_prover::{
+    GhostNoteProver, GhostNoteSpendProof, GhostNoteSpendPublicInputs, GhostNoteSpendWitness,
+};
+pub use note_verifier::GhostNoteVerifier;
 
 // Re-export circuit types for advanced usage
+#[allow(deprecated)]
 pub use circuit::{
     compute_note_id_with_epoch_native, compute_note_root_native,
     compute_nullifier_with_epoch_native, BlockCircuit, BlockCircuitBuilder,
-    ConfidentialTransferCircuit, MerkleCircuit, NoteConsolidateCircuit, NoteSpendCircuit,
+    ConfidentialTransferCircuit, MerkleCircuit, NoteConsolidateCircuit, GhostNoteSpendCircuit,
     PaymentCircuit, PaymentStateTransitionCircuit, StateTransitionOutputs,
     MAX_CONSOLIDATION_INPUTS, NOTE_TREE_DEPTH,
 };
@@ -492,6 +500,10 @@ pub fn is_zk_setup_valid_for_mainnet() -> bool {
 ///
 /// The VK file is typically generated during MPC ceremony or dev setup
 /// and saved as `confidential_vk.bin`.
+///
+/// **Deprecated:** Use `load_note_spend_verifier` instead.
+#[deprecated(note = "Use load_note_spend_verifier instead")]
+#[allow(deprecated)]
 pub fn load_confidential_verifier(
     vk_path: &std::path::Path,
     tree_depth: usize,
@@ -529,6 +541,54 @@ pub fn load_confidential_verifier(
     ))
 }
 
+// ============================================================================
+// NoteSpend Verifier Loading
+// ============================================================================
+
+/// Load a NoteSpend verifying key from disk.
+///
+/// Reads a `VerifyingKey<Bls12>` file, prepares it for efficient verification,
+/// and returns a `GhostNoteVerifier` ready to verify NoteSpend Groth16 proofs.
+///
+/// The VK file is typically `note_spend_vk.bin` from the MPC ceremony or
+/// extracted from `note_spend_params_current.bin`.
+pub fn load_note_spend_verifier(
+    vk_path: &std::path::Path,
+    tree_depth: usize,
+) -> ZkResult<GhostNoteVerifier> {
+    use bellperson::groth16::{prepare_verifying_key, VerifyingKey};
+    use blstrs::Bls12;
+    use std::io::BufReader;
+
+    if !vk_path.exists() {
+        return Err(ZkError::InvalidParams(format!(
+            "NoteSpend VK not found: {}",
+            vk_path.display()
+        )));
+    }
+
+    let file = std::fs::File::open(vk_path)
+        .map_err(|e| ZkError::InvalidParams(format!("Failed to open VK: {}", e)))?;
+    let reader = BufReader::new(file);
+
+    let vk: VerifyingKey<Bls12> = VerifyingKey::read(reader)
+        .map_err(|e| ZkError::InvalidParams(format!("Failed to read VK: {}", e)))?;
+
+    let prepared_vk = prepare_verifying_key(&vk);
+
+    // Compute prover ID (must match what GhostNoteProver uses)
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"ghost-zkp-note-prover-v1");
+    hasher.update(tree_depth.to_le_bytes());
+    let prover_id: [u8; 32] = hasher.finalize().into();
+
+    Ok(GhostNoteVerifier::new(
+        std::sync::Arc::new(prepared_vk),
+        prover_id,
+    ))
+}
+
 /// Generate confidential transfer Groth16 parameters and save to disk.
 ///
 /// **WARNING**: This uses a random trusted setup. For production, use MPC ceremony.
@@ -538,6 +598,7 @@ pub fn load_confidential_verifier(
 /// - `confidential_params_current.bin` - Full proving parameters
 /// - `confidential_vk.bin` - Verification key only
 #[cfg(not(feature = "zk-production"))]
+#[allow(deprecated)]
 pub fn generate_confidential_params(dir: &std::path::Path, tree_depth: usize) -> ZkResult<()> {
     use bellperson::groth16::{generate_random_parameters, Parameters};
     use blstrs::Bls12;

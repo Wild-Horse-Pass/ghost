@@ -37,6 +37,9 @@ use crate::field_utils::bytes_to_field;
 use crate::types::{ConfidentialPublicInputs, ConfidentialTransferWitness, GROTH16_PROOF_SIZE};
 
 /// Generates ZK proofs for confidential transfers
+///
+/// **Deprecated:** Use `GhostNoteProver` instead.
+#[deprecated(note = "Use GhostNoteProver instead")]
 pub struct ConfidentialProver {
     /// Groth16 proving parameters
     params: Option<Arc<Parameters<Bls12>>>,
@@ -49,6 +52,9 @@ pub struct ConfidentialProver {
 }
 
 /// Proof of a valid confidential transfer (192 bytes Groth16)
+///
+/// **Deprecated:** Use `GhostNoteSpendProof` instead.
+#[deprecated(note = "Use GhostNoteSpendProof instead")]
 #[derive(Debug, Clone)]
 pub struct ConfidentialTransferProof {
     /// Public inputs visible to validators

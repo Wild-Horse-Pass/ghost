@@ -10,6 +10,7 @@
 
 pub mod block;
 pub mod commitment;
+#[allow(deprecated)]
 pub mod confidential_transfer;
 pub mod merkle;
 pub mod mimc;
@@ -26,13 +27,14 @@ pub use commitment::{
     pedersen_commit, pedersen_commit_native, COMMITMENT_DOMAIN_SEPARATOR,
     NULLIFIER_DOMAIN_SEPARATOR,
 };
+#[allow(deprecated)]
 pub use confidential_transfer::ConfidentialTransferCircuit;
 pub use merkle::{MerkleCircuit, MerkleUpdateCircuit};
 pub use mimc::{bytes_to_field, field_to_bytes, mimc_hash, mimc_hash_native, MIMC_ROUNDS};
 pub use note_consolidate::{NoteConsolidateCircuit, MAX_CONSOLIDATION_INPUTS};
 pub use note_spend::{
     compute_note_id_with_epoch_native, compute_note_root_native,
-    compute_nullifier_with_epoch_native, NoteSpendCircuit, NOTE_TREE_DEPTH,
+    compute_nullifier_with_epoch_native, GhostNoteSpendCircuit, NOTE_TREE_DEPTH,
 };
 pub use payment::{PaymentCircuit, PaymentCircuitError, PaymentOutputs};
 pub use payout::PayoutCircuit;

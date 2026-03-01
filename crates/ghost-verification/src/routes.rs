@@ -306,6 +306,8 @@ pub fn create_router(state: Arc<VerificationState>) -> Router {
             "/api/v1/settings/ghostpay_payout_address",
             get(api_settings_ghostpay_payout_address_handler),
         )
+        // L2 NoteSpend submission endpoint
+        .route("/api/v1/l2/submit", post(api_l2_submit_handler))
         // MPC ceremony endpoints
         .route("/api/v1/mpc/params", get(api_mpc_params_handler))
         .route(
@@ -4481,6 +4483,36 @@ async fn metrics_handler(State(state): State<Arc<VerificationState>>) -> impl In
 // ============================================================================
 
 /// MPC params handler - serves current MPC parameters file for P2P sync
+/// POST /api/v1/l2/submit — Accept L2 NoteSpend transaction for mesh broadcast
+///
+/// Called by ghost-pay after verifying a NoteSpend proof. Forwards the transaction
+/// to the consensus mesh via the l2_submit_fn callback.
+async fn api_l2_submit_handler(
+    State(state): State<Arc<VerificationState>>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let submit_fn = match &state.l2_submit_fn {
+        Some(f) => f.clone(),
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "L2 submission not configured"})),
+            );
+        }
+    };
+
+    match submit_fn(body.to_vec()) {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"status": "submitted"})),
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": format!("{}", e)})),
+        ),
+    }
+}
+
 async fn api_mpc_params_handler(State(_state): State<Arc<VerificationState>>) -> impl IntoResponse {
     // Get MPC params path from home directory
     let params_path =

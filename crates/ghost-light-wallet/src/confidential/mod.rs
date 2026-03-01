@@ -11,9 +11,14 @@
 //! - [`tree_sync`] - Commitment tree synchronization with GSP
 
 pub mod notes;
+pub mod params_cache;
 pub mod prover;
 pub mod tree_sync;
 
 pub use notes::{NoteStore, OwnedNote};
-pub use prover::{ClientProver, ConfidentialTransferResult};
+pub use params_cache::{default_params_cache_dir, ParamsCache};
+#[allow(deprecated)]
+pub use prover::{
+    ClientProver, ConfidentialTransferResult, NoteSpendClientProver, NoteSpendTransferResult,
+};
 pub use tree_sync::TreeSync;

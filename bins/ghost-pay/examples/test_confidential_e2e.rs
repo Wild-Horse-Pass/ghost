@@ -1,10 +1,15 @@
 //! End-to-end test: shield notes → generate Groth16 proof → submit confidential transfer
 //!
+//! **Deprecated:** This example uses the legacy ConfidentialTransfer circuit.
+//! New code should use the NoteSpend circuit via `GhostNoteProver`.
+//!
 //! Usage:
 //!   cargo run -p ghost-pay --example test_confidential_e2e -- \
 //!     --api-url http://127.0.0.1:8800 \
 //!     --api-secret <secret> \
 //!     --params-path /path/to/confidential_params_current.bin
+
+#![allow(deprecated)]
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
