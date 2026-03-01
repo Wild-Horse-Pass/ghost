@@ -1418,6 +1418,15 @@ pub struct L2Transaction {
     pub timestamp: u64,
 }
 
+/// L2: Shield commitment (for checkpoint batching and transfer prerequisites)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShieldCommitment {
+    #[serde(with = "ghost_common::serde_hex::bytes32")]
+    pub commitment: [u8; 32],
+    pub note_index: u64,
+    pub block_height: u64,
+}
+
 /// Epoch transition data (present at epoch boundary checkpoints)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpochTransition {
@@ -1477,6 +1486,11 @@ pub struct L2TransferBroadcastMessage {
     /// Validator's signature
     #[serde(with = "ghost_common::serde_hex::bytes64")]
     pub signature: [u8; 64],
+    /// Shield commitments that must be applied before validating this transfer's root.
+    /// Piggybacked on the broadcast for instant (~100-200ms) network confirmation
+    /// instead of waiting for the next checkpoint (~10s).
+    #[serde(default)]
+    pub prerequisites: Vec<ShieldCommitment>,
 }
 
 impl L2TransferBroadcastMessage {
@@ -1488,6 +1502,10 @@ impl L2TransferBroadcastMessage {
         hasher.update(self.transaction.nullifier);
         hasher.update(self.transaction.change_commitment);
         hasher.update(self.transaction.recipient_commitment);
+        for p in &self.prerequisites {
+            hasher.update(p.commitment);
+            hasher.update(p.note_index.to_le_bytes());
+        }
         hasher.finalize().into()
     }
 }
@@ -1507,6 +1525,10 @@ pub struct L2CheckpointBlockMessage {
     pub new_commitment_root: [u8; 32],
     /// Transactions included in this checkpoint
     pub transactions: Vec<L2Transaction>,
+    /// Shield commitments included in this checkpoint (fallback distribution path).
+    /// Nodes that missed piggybacked prerequisites get shields here.
+    #[serde(default)]
+    pub shield_commitments: Vec<ShieldCommitment>,
     /// Number of active nodes at this checkpoint
     pub active_node_count: u32,
     /// Proposer's node ID
@@ -1534,6 +1556,11 @@ impl L2CheckpointBlockMessage {
         hasher.update((self.transactions.len() as u64).to_le_bytes());
         for tx in &self.transactions {
             hasher.update(tx.nullifier);
+        }
+        hasher.update((self.shield_commitments.len() as u64).to_le_bytes());
+        for sc in &self.shield_commitments {
+            hasher.update(sc.commitment);
+            hasher.update(sc.note_index.to_le_bytes());
         }
         hasher.finalize().into()
     }
@@ -1635,18 +1662,6 @@ pub struct L2TreeSyncResponse {
     /// Whether there are more checkpoints to sync
     pub has_more: bool,
     /// Timestamp
-    pub timestamp: u64,
-}
-
-/// L2: Commitment sync (ghost-pay shield/transfer → all nodes)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct L2CommitmentSyncMessage {
-    #[serde(with = "ghost_common::serde_hex::bytes32")]
-    pub sender: NodeId,
-    #[serde(with = "ghost_common::serde_hex::bytes32")]
-    pub commitment: [u8; 32],
-    pub note_index: u64,
-    pub block_height: u64,
     pub timestamp: u64,
 }
 

@@ -27,10 +27,9 @@ use ghost_zkp::{GhostNoteSpendPublicInputs, GhostNoteVerifier};
 use crate::epoch_manager::{EpochManager, PROPOSER_GRACE_SECS};
 use crate::mesh::MessageHandler;
 use crate::message::{
-    L2CheckpointBlockMessage, L2CheckpointVoteMessage, L2CommitmentSyncMessage,
-    L2ConfidentialTransferMessage, L2Transaction, L2TransferBroadcastMessage,
-    L2TransferConfirmationMessage, L2TreeSyncRequest, L2TreeSyncResponse, MessageEnvelope,
-    MessageType,
+    L2CheckpointBlockMessage, L2CheckpointVoteMessage, L2ConfidentialTransferMessage,
+    L2Transaction, L2TransferBroadcastMessage, L2TransferConfirmationMessage, L2TreeSyncRequest,
+    L2TreeSyncResponse, MessageEnvelope, MessageType, ShieldCommitment,
 };
 use crate::vote_handler::BroadcastFn;
 
@@ -162,6 +161,9 @@ pub struct NullifierRouteHandler {
     confirmed_pool: RwLock<Vec<L2Transaction>>,
     /// S-4: O(1) nullifier dedup index for confirmed_pool (parallel HashSet)
     confirmed_nullifiers: RwLock<HashSet<[u8; 32]>>,
+    /// Shield commitments pending inclusion in next checkpoint.
+    /// Drained by propose_checkpoint() and piggybacked on transfer broadcasts.
+    pending_shields: RwLock<Vec<ShieldCommitment>>,
     /// Vote state per checkpoint height
     votes: RwLock<HashMap<u64, CheckpointVoteState>>,
     /// Database
@@ -201,6 +203,7 @@ impl NullifierRouteHandler {
             verifier: RwLock::new(None),
             confirmed_pool: RwLock::new(Vec::new()),
             confirmed_nullifiers: RwLock::new(HashSet::new()),
+            pending_shields: RwLock::new(Vec::new()),
             votes: RwLock::new(HashMap::new()),
             db,
             config,
@@ -266,53 +269,112 @@ impl NullifierRouteHandler {
     /// Submit an externally-verified L2 transaction for consensus processing.
     ///
     /// Called by ghost-pool's HTTP API when ghost-pay forwards a verified NoteSpend
-    /// transaction. Handles validation, confirmation, and mesh broadcast.
+    /// transaction. Always validates locally (bypasses deterministic routing) since
+    /// ghost-pay already verified the proof. Broadcasts signed confirmation + transfer
+    /// to the network. Other nodes verify the proof via handle_transfer_broadcast().
     pub fn submit_external_transfer(
         &self,
         msg: &L2ConfidentialTransferMessage,
     ) -> GhostResult<()> {
-        match self.handle_transfer(msg)? {
-            Some(confirmation) => {
-                // Broadcast confirmation to network
-                if let Some(ref broadcast) = *self.broadcast_fn.read() {
-                    let payload = serde_json::to_vec(&confirmation)
-                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
-                    broadcast(MessageType::L2TransferConfirmation, payload)?;
-                }
+        let tx = &msg.transaction;
 
-                // Broadcast the confirmed tx to all nodes (signed)
-                let mut broadcast_msg = L2TransferBroadcastMessage {
-                    transaction: msg.transaction.clone(),
-                    validator: self.our_id,
-                    signature: [0u8; 64],
-                };
-                let sign_msg = broadcast_msg.signing_message();
-                broadcast_msg.signature = self.sign(&sign_msg);
-
-                if let Some(ref broadcast) = *self.broadcast_fn.read() {
-                    let payload = serde_json::to_vec(&broadcast_msg)
-                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
-                    broadcast(MessageType::L2TransferBroadcast, payload)?;
-                }
-            }
-            None => {
-                // Not the assigned validator — forward to mesh for correct validator
-                if let Some(ref broadcast) = *self.broadcast_fn.read() {
-                    let payload = serde_json::to_vec(msg)
-                        .map_err(|e| GhostError::Serialization(e.to_string()))?;
-                    broadcast(MessageType::L2ConfidentialTransfer, payload)?;
-                    debug!(
-                        nullifier = %hex::encode(&msg.transaction.nullifier[..8]),
-                        "Forwarded transfer to mesh (not assigned validator)"
-                    );
-                }
-            }
+        // Validate root and nullifier locally (no deterministic routing needed —
+        // this node acts as validator for HTTP submissions from colocated ghost-pay)
+        if !self.epoch_manager.is_root_valid(&tx.commitment_root) {
+            return Err(GhostError::InvalidInput(
+                "Invalid commitment root".into(),
+            ));
         }
+        if self.epoch_manager.is_nullifier_spent(&tx.nullifier) {
+            return Err(GhostError::InvalidInput(
+                "Nullifier already spent".into(),
+            ));
+        }
+
+        // Verify Groth16 proof
+        let verifier = self.verifier.read();
+        if let Some(ref v) = *verifier {
+            let public_inputs = GhostNoteSpendPublicInputs {
+                commitment_root: tx.commitment_root,
+                nullifier: tx.nullifier,
+                change_commitment: tx.change_commitment,
+                recipient_commitment: tx.recipient_commitment,
+            };
+            let valid = v
+                .verify_raw(&tx.proof, &public_inputs)
+                .map_err(|e| GhostError::Internal(format!("Proof verification error: {}", e)))?;
+            if !valid {
+                return Err(GhostError::InvalidInput(
+                    "Proof verification failed".into(),
+                ));
+            }
+        } else {
+            return Err(GhostError::Internal(
+                "No verifier available — MPC params not loaded".into(),
+            ));
+        }
+        drop(verifier);
+
+        // Atomically record nullifier as spent
+        let height = self.epoch_manager.current_height();
+        if !self.epoch_manager.spend_nullifier(tx.nullifier, height)? {
+            return Err(GhostError::InvalidInput("Nullifier race".into()));
+        }
+
+        // Add to confirmed pool
+        {
+            let mut pool = self.confirmed_pool.write();
+            pool.push(tx.clone());
+            self.confirmed_nullifiers.write().insert(tx.nullifier);
+        }
+
+        // Signed confirmation
+        let mut confirmation = L2TransferConfirmationMessage {
+            nullifier: tx.nullifier,
+            validator: self.our_id,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+            signature: [0u8; 64],
+        };
+        let sign_msg = confirmation.signing_message();
+        confirmation.signature = self.sign(&sign_msg);
+
+        // Snapshot pending shields as prerequisites for instant network confirmation
+        let prerequisites: Vec<ShieldCommitment> = self.pending_shields.read().clone();
+
+        // Broadcast confirmation + signed transfer with prerequisites
+        if let Some(ref broadcast) = *self.broadcast_fn.read() {
+            let payload = serde_json::to_vec(&confirmation)
+                .map_err(|e| GhostError::Serialization(e.to_string()))?;
+            broadcast(MessageType::L2TransferConfirmation, payload)?;
+
+            let mut bcast = L2TransferBroadcastMessage {
+                transaction: tx.clone(),
+                validator: self.our_id,
+                signature: [0u8; 64],
+                prerequisites,
+            };
+            let sign_msg = bcast.signing_message();
+            bcast.signature = self.sign(&sign_msg);
+            let payload = serde_json::to_vec(&bcast)
+                .map_err(|e| GhostError::Serialization(e.to_string()))?;
+            broadcast(MessageType::L2TransferBroadcast, payload)?;
+        }
+
+        debug!(
+            nullifier = %hex::encode(&tx.nullifier[..8]),
+            pool_size = self.confirmed_pool_size(),
+            "External transfer validated and broadcast"
+        );
+
         Ok(())
     }
 
-    /// Sync a commitment from ghost-pay to the L2 tree and broadcast to mesh.
-    /// Called when ghost-pay shields a note or applies a transfer.
+    /// Sync a commitment from ghost-pay to the local L2 tree.
+    ///
+    /// Called when ghost-pay shields a note. No broadcast — shields reach the
+    /// network via two paths:
+    /// 1. Piggybacked as prerequisites on the next L2TransferBroadcastMessage (~100-200ms)
+    /// 2. Batched in the next L2CheckpointBlockMessage (~10s, BFT finalized)
     pub fn sync_commitment(
         &self,
         commitment: [u8; 32],
@@ -324,23 +386,17 @@ impl NullifierRouteHandler {
         let root = self.epoch_manager.current_root()?;
         self.epoch_manager.add_valid_root(root, block_height)?;
 
-        // Broadcast to mesh so all nodes sync
-        if let Some(ref broadcast) = *self.broadcast_fn.read() {
-            let msg = L2CommitmentSyncMessage {
-                sender: self.our_id,
-                commitment,
-                note_index,
-                block_height,
-                timestamp: chrono::Utc::now().timestamp_millis() as u64,
-            };
-            let payload = serde_json::to_vec(&msg)
-                .map_err(|e| GhostError::Serialization(e.to_string()))?;
-            broadcast(MessageType::L2TreeSync, payload)?;
-        }
+        // Queue for checkpoint inclusion and transfer prerequisites
+        self.pending_shields.write().push(ShieldCommitment {
+            commitment,
+            note_index,
+            block_height,
+        });
+
         debug!(
             index = note_index,
             height = block_height,
-            "Synced commitment to tree + mesh"
+            "Synced commitment to local tree (pending checkpoint)"
         );
         Ok(())
     }
@@ -528,6 +584,18 @@ impl NullifierRouteHandler {
     pub fn handle_transfer_broadcast(&self, msg: &L2TransferBroadcastMessage) -> GhostResult<()> {
         let tx = &msg.transaction;
 
+        // Apply piggybacked shield prerequisites before root check.
+        // Ensures our tree includes shield commitments that the transfer's proof
+        // was built against. insert_commitment_at is idempotent (INSERT OR IGNORE).
+        for p in &msg.prerequisites {
+            let _ = self
+                .epoch_manager
+                .insert_commitment_at(p.note_index, p.commitment, p.block_height);
+            if let Ok(root) = self.epoch_manager.current_root() {
+                let _ = self.epoch_manager.add_valid_root(root, p.block_height);
+            }
+        }
+
         // Validate root is known
         if !self.epoch_manager.is_root_valid(&tx.commitment_root) {
             warn!("Broadcast tx has unknown commitment root, ignoring");
@@ -638,6 +706,10 @@ impl NullifierRouteHandler {
             txs
         };
 
+        // Drain pending shields for checkpoint inclusion (fallback distribution path)
+        let shield_commitments: Vec<ShieldCommitment> =
+            self.pending_shields.write().drain(..).collect();
+
         // Get current root before appending
         let prev_root = self.epoch_manager.current_root()?;
 
@@ -662,6 +734,7 @@ impl NullifierRouteHandler {
             prev_commitment_root: prev_root,
             new_commitment_root: new_root,
             transactions,
+            shield_commitments,
             active_node_count: self.epoch_manager.active_node_count() as u32,
             proposer: self.our_id,
             proposer_signature: [0u8; 64],
@@ -727,6 +800,25 @@ impl NullifierRouteHandler {
                     );
                     return Ok(None);
                 }
+            }
+        }
+
+        // Apply shield commitments from the proposal before root comparison.
+        // The proposer already applied these locally in sync_commitment();
+        // non-proposer nodes need them to match the prev_commitment_root.
+        for sc in &msg.shield_commitments {
+            let _ = self
+                .epoch_manager
+                .insert_commitment_at(sc.note_index, sc.commitment, sc.block_height);
+        }
+        if !msg.shield_commitments.is_empty() {
+            if let Ok(root) = self.epoch_manager.current_root() {
+                let height_for_root = msg
+                    .shield_commitments
+                    .last()
+                    .map(|sc| sc.block_height)
+                    .unwrap_or(height);
+                let _ = self.epoch_manager.add_valid_root(root, height_for_root);
             }
         }
 
@@ -865,6 +957,15 @@ impl NullifierRouteHandler {
         let already_applied = self.proposed_heights.read().contains(&height);
         if !already_applied {
             if let Some(block) = proposal {
+                // Apply shield commitments (idempotent via INSERT OR IGNORE)
+                for sc in &block.shield_commitments {
+                    let _ = self.epoch_manager.insert_commitment_at(
+                        sc.note_index,
+                        sc.commitment,
+                        sc.block_height,
+                    );
+                }
+
                 for tx in &block.transactions {
                     self.epoch_manager
                         .append_commitment(tx.change_commitment, height)?;
@@ -1021,6 +1122,15 @@ impl NullifierRouteHandler {
         for block in &response.checkpoints {
             let height = block.height;
 
+            // Apply shield commitments first (they may be needed for tx roots)
+            for sc in &block.shield_commitments {
+                let _ = self.epoch_manager.insert_commitment_at(
+                    sc.note_index,
+                    sc.commitment,
+                    sc.block_height,
+                );
+            }
+
             // Append commitments from each transaction
             for tx in &block.transactions {
                 self.epoch_manager
@@ -1130,10 +1240,14 @@ impl MessageHandler for NullifierRouteHandler {
                         }
 
                         // Broadcast the confirmed tx to all nodes (signed)
+                        // Include pending shields as prerequisites for instant confirmation
+                        let prerequisites: Vec<ShieldCommitment> =
+                            self.pending_shields.read().clone();
                         let mut broadcast_msg = L2TransferBroadcastMessage {
                             transaction: msg.transaction,
                             validator: self.our_id,
                             signature: [0u8; 64],
+                            prerequisites,
                         };
                         let sign_msg = broadcast_msg.signing_message();
                         broadcast_msg.signature = self.sign(&sign_msg);
@@ -1235,25 +1349,8 @@ impl MessageHandler for NullifierRouteHandler {
             }
 
             MessageType::L2TreeSync => {
-                // Try commitment sync first (lightweight, most common in production)
-                if let Ok(sync_msg) =
-                    serde_json::from_slice::<L2CommitmentSyncMessage>(&envelope.payload)
-                {
-                    if sync_msg.sender != self.our_id {
-                        self.epoch_manager.insert_commitment_at(
-                            sync_msg.note_index,
-                            sync_msg.commitment,
-                            sync_msg.block_height,
-                        )?;
-                        let root = self.epoch_manager.current_root()?;
-                        self.epoch_manager
-                            .add_valid_root(root, sync_msg.block_height)?;
-                        debug!(
-                            index = sync_msg.note_index,
-                            "Applied commitment sync from peer"
-                        );
-                    }
-                } else if let Ok(request) =
+                // Tree sync request/response for new nodes joining the network
+                if let Ok(request) =
                     serde_json::from_slice::<L2TreeSyncRequest>(&envelope.payload)
                 {
                     if let Some(response) = self.handle_tree_sync_request(&request)? {
@@ -1532,6 +1629,7 @@ mod tests {
             },
             validator: [0x99; 32],
             signature: [0u8; 64],
+            prerequisites: vec![],
         };
 
         handler.handle_transfer_broadcast(&broadcast).unwrap();
@@ -2099,6 +2197,7 @@ mod tests {
             },
             validator: [0x99; 32],
             signature: [0u8; 64],
+            prerequisites: vec![],
         };
 
         handler.handle_transfer_broadcast(&broadcast).unwrap();
@@ -2135,6 +2234,7 @@ mod tests {
             },
             validator: [0x99; 32],
             signature: [0u8; 64],
+            prerequisites: vec![],
         };
 
         handler.handle_transfer_broadcast(&broadcast).unwrap();

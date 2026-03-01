@@ -6008,7 +6008,7 @@ impl Database {
     ) -> GhostResult<()> {
         self.with_connection(|conn| {
             conn.execute(
-                "INSERT INTO l2_notes (note_index, epoch, commitment, block_height)
+                "INSERT OR IGNORE INTO l2_notes (note_index, epoch, commitment, block_height)
                  VALUES (?1, ?2, ?3, ?4)",
                 params![
                     note_index as i64,

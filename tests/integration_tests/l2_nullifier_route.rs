@@ -433,6 +433,7 @@ fn test_880_broadcast_adds_to_pool() {
         transaction: make_test_tx([0x42; 32], root),
         validator: [0x99; 32],
         signature: [0u8; 64],
+        prerequisites: vec![],
     };
 
     assert_eq!(nodes[0].2.confirmed_pool_size(), 0);
@@ -453,6 +454,7 @@ fn test_881_broadcast_dedup() {
         transaction: make_test_tx([0x42; 32], root),
         validator: [0x99; 32],
         signature: [0u8; 64],
+        prerequisites: vec![],
     };
 
     nodes[0].2.handle_transfer_broadcast(&broadcast).unwrap();
@@ -476,6 +478,7 @@ fn test_882_multiple_broadcasts_accumulate() {
             transaction: make_test_tx([i; 32], root),
             validator: [0x99; 32],
             signature: [0u8; 64],
+            prerequisites: vec![],
         };
         nodes[0].2.handle_transfer_broadcast(&broadcast).unwrap();
     }
@@ -502,6 +505,7 @@ fn test_883_checkpoint_includes_confirmed_txs() {
             transaction: make_test_tx([i; 32], root),
             validator: node_a,
             signature: [0u8; 64],
+            prerequisites: vec![],
         };
         nodes[0].2.handle_transfer_broadcast(&broadcast).unwrap();
     }
@@ -908,6 +912,7 @@ fn test_894_finalize_fn_called_on_checkpoint() {
         transaction: tx,
         validator: validator_id,
         signature: [0u8; 64],
+        prerequisites: vec![],
     };
     for (_, _, handler) in &nodes {
         handler.handle_transfer_broadcast(&broadcast).unwrap();
@@ -1025,6 +1030,7 @@ fn test_895_external_submit_through_finalization() {
         transaction: tx,
         validator: validator_id,
         signature: [0u8; 64],
+        prerequisites: vec![],
     };
     for (_, _, handler) in &nodes {
         handler.handle_transfer_broadcast(&broadcast).unwrap();
@@ -1208,6 +1214,7 @@ fn test_890_full_flow_transfer_to_finalization() {
         transaction: tx,
         validator: validator_id,
         signature: [0u8; 64],
+        prerequisites: vec![],
     };
 
     for (_, _, handler) in &nodes {
