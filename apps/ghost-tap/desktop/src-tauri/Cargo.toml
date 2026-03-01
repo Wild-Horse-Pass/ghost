@@ -1,0 +1,26 @@
+[package]
+name = "ghost-tap-desktop"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "ghost_tap_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-shell = "2"
+ghost-tap-core = { path = "../../core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+parking_lot = "0.12"
+secrecy = "0.8"
+uuid = { version = "1", features = ["v4"] }

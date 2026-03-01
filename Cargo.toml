@@ -61,6 +61,7 @@ members = [
     # Mobile Apps
     "apps/ghost-tap/core",
     "apps/ghost-tap/tests/integration",
+    "apps/ghost-tap/desktop/src-tauri",
 ]
 exclude = [
     # sv2-apps has its own workspace structure
