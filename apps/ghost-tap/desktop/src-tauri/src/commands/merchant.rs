@@ -116,6 +116,8 @@ pub fn create_invoice(
     }
 
     let payment_uri = invoice.to_payment_uri();
+    let amount_paid = invoice.amount_paid();
+    let status = invoice.status.to_string();
 
     Ok(InvoiceResponse {
         invoice_id: invoice.invoice_id,
@@ -123,8 +125,8 @@ pub fn create_invoice(
         amount: invoice.amount,
         ghost_address: invoice.ghost_address,
         due_date: invoice.due_date,
-        status: invoice.status.to_string(),
-        amount_paid: invoice.amount_paid(),
+        status,
+        amount_paid,
         payment_uri,
         memo: invoice.memo,
     })
